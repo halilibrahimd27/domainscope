@@ -162,6 +162,24 @@ describe('config.knownOrigins: the remembered origins rank first', () => {
     assert.deepEqual(byName(empty).get('www.example.com').originCandidates, byName(plain).get('www.example.com').originCandidates);
   });
 
+  test('a wildcard entry masked for one name is no known origin of that name', async () => {
+    const LIST = [{ name: '*.example.com', ip: '192.0.2.40', port: 443, source: 'zone', lastConfirmed: LAST, except: ['www.example.com', 'bad name'] }];
+    const { result } = await scan({ knownOrigins: LIST });
+    assert.ok(!byName(result).get('www.example.com').originCandidates.some((c) => c.kind === 'known'), 'www: masked');
+    assert.equal(byName(result).get('shop.example.com').originCandidates[0].kind, 'known');
+    assert.deepEqual(result.known.names, ['blog.example.com', 'shop.example.com']);
+    // From the map itself: a CLI report found www elsewhere, after asking the wildcard's address.
+    let map = setRemember(null, true);
+    ({ map } = applyObservations(map, [{ name: '*.example.com', ip: '192.0.2.40', port: null, outcome: 'hosted' }], { source: 'zone', at: '2026-09-01T00:00:00Z' }));
+    ({ map } = applyObservations(map, [
+      { name: 'www.example.com', ip: '192.0.2.40', port: 443, outcome: 'not-hosted' },
+      { name: 'www.example.com', ip: '198.51.100.40', port: 443, outcome: 'hosted' }
+    ], { source: 'cli-json', at: LAST }));
+    const again = (await scan({ knownOrigins: knownForScan(map) })).result;
+    assert.deepEqual(byName(again).get('www.example.com').originCandidates.filter((c) => c.kind === 'known').map((c) => c.ip), ['198.51.100.40']);
+    assert.deepEqual(byName(again).get('shop.example.com').originCandidates.filter((c) => c.kind === 'known').map((c) => c.ip), ['192.0.2.40']);
+  });
+
   test('a stale entry of the map is never passed to the scan', () => {
     let map = setRemember(null, true);
     ({ map } = applyObservations(map, [{ name: 'www.example.com', ip: '192.0.2.40', port: 443, outcome: 'hosted' }], { source: 'zone', at: '2026-09-01T00:00:00Z' }));

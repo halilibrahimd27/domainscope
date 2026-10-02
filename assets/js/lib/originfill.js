@@ -29,7 +29,8 @@
 import { readEstateReport, ESTATE_MAX_REPORTS } from './estate.js';
 import { normalizeIP } from './netinfo.js';
 import {
-  sanitizeOriginMap, originName, originPort, originKey, originServer, originNow, originTimeAt, ORIGIN_SOURCES, ORIGIN_MAP_LIMITS, ORIGIN_DEFAULT_PORT
+  sanitizeOriginMap, originName, originPort, originKey, originServer, originNow, originTimeAt, originWildcard,
+  ORIGIN_SOURCES, ORIGIN_MAP_LIMITS, ORIGIN_DEFAULT_PORT
 } from './originmap.js';
 
 /* ------------------------------------------------------------------------ */
@@ -89,6 +90,11 @@ export function setRemember(map, on) {
  *   address and port, with the name found nowhere else, marks it `<src>-not-hosted`. A zone file
  *   names a proxied name's origins: its other entries are `zone-other`. An entry confirmed by the
  *   same run, or at or after its time, is never marked; a stale entry takes the newer of two marks.
+ * - A `*.parent` entry covers every name one label under it: such a name counts as proxied, and
+ *   'hosted' at the wildcard's address and port adds nothing of its own. A probe that contradicts
+ *   the wildcard for one name (as above, at its address and port) masks it for that name only: the
+ *   name gets its own stale entry there (the wildcard's dates and source), and the wildcard stands
+ *   for the other names.
  * - With remembering off nothing changes (`off: true`).
  * - A run is never later than `now` (the real clock unless given): a report dated in the future (a
  *   fast clock, an edited file) counts as now, and so cannot outrank every later check.
@@ -105,8 +111,21 @@ export function applyObservations(map, observations, { source, at, now, proxied 
   const when = originTimeAt(at, nowMs);
   if (out.off || !when || !ORIGIN_SOURCES.includes(source)) return out;
   const t = ms(when);
-  const names = new Set(m.entries.map((e) => e.name));
-  const isProxied = (name) => names.has(name) || typeof proxied !== 'function' || !!proxied(name);
+  // The entries by name, kept up to date as the run adds some (a report can hold 200,000 rows).
+  const byName = new Map();
+  const index = (e) => {
+    if (!byName.has(e.name)) byName.set(e.name, []);
+    byName.get(e.name).push(e);
+  };
+  for (const e of m.entries) index(e);
+  const own = (name) => byName.get(name) || [];
+  /** The active `*.parent` entries that cover a name (a wildcard name has none). */
+  const wildcards = (name) => {
+    const w = originWildcard(name);
+    return w ? own(w).filter((e) => !e.stale) : [];
+  };
+  const sits = (e, ip, port) => e.ip === ip && e.port === port;
+  const isProxied = (name) => byName.has(name) || wildcards(name).length > 0 || typeof proxied !== 'function' || !!proxied(name);
   const lookup = (ip) => (typeof serverOf === 'function' ? originServer(serverOf(ip)) : null);
   const obs = [];
   for (const o of Array.isArray(observations) ? observations : []) {
@@ -126,19 +145,19 @@ export function applyObservations(map, observations, { source, at, now, proxied 
   for (const o of obs) {
     if (o.port === null) continue;
     if (!asked.has(o.name)) asked.set(o.name, new Map());
-    const at = asked.get(o.name);
+    const answers = asked.get(o.name);
     const k = `${o.ip}|${o.port}`;
-    if (OUTCOMES.indexOf(o.outcome) < OUTCOMES.indexOf(at.get(k) ?? 'unknown') || !at.has(k)) at.set(k, o.outcome);
+    if (!answers.has(k) || OUTCOMES.indexOf(o.outcome) < OUTCOMES.indexOf(answers.get(k))) answers.set(k, o.outcome);
   }
-  const matches = (e, o) => e.name === o.name && e.ip === o.ip && (o.port === null || e.port === o.port);
   const confirmed = new Set();
   const skipped = new Set();
   // Per name: where the run found it hosted, in order.
   const foundAt = new Map();
-  for (const o of obs.filter((x) => x.outcome === 'hosted')) {
+  for (const o of obs) {
+    if (o.outcome !== 'hosted') continue;
     if (!foundAt.has(o.name)) foundAt.set(o.name, []);
     foundAt.get(o.name).push(o);
-    const hits = m.entries.filter((e) => matches(e, o));
+    const hits = own(o.name).filter((e) => e.ip === o.ip && (o.port === null || e.port === o.port));
     for (const e of hits) {
       // A zone file names no port: never a confirmation of another port, nor of an answer a probe
       // of this one gave (the address is known: no new entry either).
@@ -150,46 +169,73 @@ export function applyObservations(map, observations, { source, at, now, proxied 
       confirmed.add(originKey(e));
     }
     if (hits.length) continue;
+    // A wildcard entry already says this address serves the name: nothing of its own to add.
+    if (wildcards(o.name).some((w) => sits(w, o.ip, o.port ?? ORIGIN_DEFAULT_PORT))) continue;
     if (!isProxied(o.name)) {
       skipped.add(o.name);
       continue;
     }
     const e = { name: o.name, ip: o.ip, port: o.port ?? ORIGIN_DEFAULT_PORT, source, firstSeen: when, lastConfirmed: when, server: o.server || lookup(o.ip), stale: null };
     // An older run than one that found the name on another address: its finding is already superseded.
-    const newer = m.entries
-      .filter((x) => x.name === e.name && x.ip !== e.ip && !x.stale && FOUND_ELSEWHERE[x.source] && ms(x.lastConfirmed) > t)
+    const newer = own(e.name)
+      .filter((x) => x.ip !== e.ip && !x.stale && FOUND_ELSEWHERE[x.source] && ms(x.lastConfirmed) > t)
       .sort((a, b) => ms(b.lastConfirmed) - ms(a.lastConfirmed))[0];
     if (newer) {
       e.stale = { reason: FOUND_ELSEWHERE[newer.source], at: newer.lastConfirmed, ip: newer.ip, port: newer.port };
       out.staled.push(originKey(e));
     }
     m.entries.push(e);
+    index(e);
     confirmed.add(originKey(e));
     out.added.push(originKey(e));
   }
   const [elsewhere, notHosted] = CONTRADICTS[source] || [null, null];
+  const stamp = (reason, by) => ({ reason, at: when, ...(by ? { ip: by.ip, port: by.port ?? ORIGIN_DEFAULT_PORT } : {}) });
   const mark = (e, reason, by = null) => {
     if (!reason || confirmed.has(originKey(e)) || t <= ms(e.lastConfirmed)) return;
     // The newest contradiction is kept: an older run's mark never replaces a newer one.
     if (e.stale && ms(e.stale.at) >= t) return;
-    e.stale = { reason, at: when, ...(by ? { ip: by.ip, port: by.port ?? ORIGIN_DEFAULT_PORT } : {}) };
+    e.stale = stamp(reason, by);
     out.staled.push(originKey(e));
   };
-  /** Where the run found the name hosted at another address than `ip` (the first such), or null. */
-  const foundElsewhere = (name, ip) => (foundAt.get(name) || []).find((o) => o.ip !== ip) || null;
-  for (const e of m.entries) {
-    if (source === 'zone') {
-      // A zone file names the proxied name's origins: an entry at another address is not one.
-      const by = foundAt.has(e.name) && !foundAt.get(e.name).some((o) => o.ip === e.ip) ? foundAt.get(e.name)[0] : null;
-      if (by) mark(e, elsewhere, by);
-      continue;
+  /**
+   * A probe contradicted a wildcard entry for one name: the name gets its own entry at the
+   * wildcard's address and port, stale, which masks the wildcard for that name only
+   * (lib/originmap.js originsFor / knownForScan). It carries the wildcard's dates and source.
+   */
+  const mask = (name, w, reason, by = null) => {
+    if (!reason || t <= ms(w.lastConfirmed)) return;
+    const e = { name, ip: w.ip, port: w.port, source: w.source, firstSeen: w.firstSeen, lastConfirmed: w.lastConfirmed, server: w.server, stale: stamp(reason, by) };
+    m.entries.push(e);
+    index(e);
+    out.staled.push(originKey(e));
+  };
+  if (source === 'zone') {
+    // A zone file names the proxied name's origins: an entry at another address is not one.
+    for (const [name, found] of foundAt) {
+      for (const e of own(name)) if (!found.some((o) => o.ip === e.ip)) mark(e, elsewhere, found[0]);
     }
-    // The CLI and Verify contradict only what they asked: this address and port, without the name.
-    const answer = asked.has(e.name) ? asked.get(e.name).get(`${e.ip}|${e.port}`) : undefined;
-    if (!answer || answer === 'hosted') continue;
-    const by = foundElsewhere(e.name, e.ip);
-    if (by && !(foundAt.get(e.name) || []).some((o) => o.ip === e.ip)) mark(e, elsewhere, by);
-    else if (answer === 'not-hosted') mark(e, notHosted);
+  } else if (elsewhere) {
+    // The CLI and Verify contradict only what they asked: an address and port without the name
+    // (or without an answer while the name was found on another address).
+    for (const [name, answers] of asked) {
+      const found = foundAt.get(name) || [];
+      const verdict = (ip, answer) => {
+        if (!answer || answer === 'hosted') return null;
+        const by = found.find((o) => o.ip !== ip);
+        if (by && !found.some((o) => o.ip === ip)) return [elsewhere, by];
+        return answer === 'not-hosted' ? [notHosted, null] : null;
+      };
+      for (const e of own(name)) {
+        const v = verdict(e.ip, answers.get(`${e.ip}|${e.port}`));
+        if (v) mark(e, v[0], v[1]);
+      }
+      for (const w of wildcards(name)) {
+        if (own(name).some((e) => sits(e, w.ip, w.port))) continue;
+        const v = verdict(w.ip, answers.get(`${w.ip}|${w.port}`));
+        if (v) mask(name, w, v[0], v[1]);
+      }
+    }
   }
   out.skipped = [...skipped].sort();
   out.map = finish(m, nowMs);

@@ -335,6 +335,31 @@ describe('the merge rules (lib/originfill.js applyObservations)', () => {
     ]);
   });
 
+  test('a wildcard entry: a run that contradicts it for one name masks it for that name only', () => {
+    const W = '192.0.2.10';
+    let { map } = applyObservations(ON, [{ name: '*.example.net', ip: W, port: null, outcome: 'hosted' }], { source: 'zone', at: DAY1 });
+    // The CLI found www answered without the name at the wildcard's address, and served elsewhere.
+    let res = applyObservations(map, [notHosted('www.example.net', W), hosted('www.example.net', '198.51.100.40')], { source: 'cli-json', at: DAY2 });
+    ({ map } = res);
+    assert.deepEqual(res.added, ['www.example.net|198.51.100.40|443']);
+    assert.deepEqual(res.staled, [`www.example.net|${W}|443`]);
+    assert.deepEqual(entry(map, `www.example.net|${W}|443`).stale, { reason: 'cli-elsewhere', at: DAY2, ip: '198.51.100.40', port: 443 });
+    assert.equal(entry(map, `*.example.net|${W}|443`).stale, null, 'the wildcard itself stands');
+    const view = (name) => originsFor(map, name).map((e) => `${e.name} ${e.ip} ${e.stale ? 'stale' : 'active'}`);
+    assert.deepEqual(view('www.example.net'), ['www.example.net 198.51.100.40 active', `www.example.net ${W} stale`], 'no longer the wildcard\'s address');
+    assert.deepEqual(view('shop.example.net'), [`*.example.net ${W} active`], 'the other names keep it');
+    assert.deepEqual(knownForScan(map).find((k) => k.name === '*.example.net').except, ['www.example.net']);
+    // A name the wildcard already says is served there adds nothing of its own; no answer alone says nothing.
+    res = applyObservations(map, [hosted('shop.example.net', W), unknown('api.example.net', W)], { source: 'verify', at: DAY3 });
+    assert.deepEqual([res.added, res.confirmed, res.staled], [[], [], []]);
+    // Answered without the name, found nowhere else: masked as not served there.
+    res = applyObservations(map, [notHosted('api.example.net', W)], { source: 'verify', at: DAY3 });
+    assert.deepEqual(entry(res.map, `api.example.net|${W}|443`).stale, { reason: 'verify-not-hosted', at: DAY3 });
+    // A run older than the wildcard's last confirmation masks nothing.
+    res = applyObservations(map, [notHosted('blog.example.net', W)], { source: 'cli-json', at: '2026-09-01T00:00:00Z' });
+    assert.deepEqual(res.staled, []);
+  });
+
   test('what a run says it added is what the map kept: the caps can drop a new entry', () => {
     const full = [];
     for (let i = 0; i < ORIGIN_MAP_LIMITS.entries; i += 1) full.push({ name: `h${i}.example.com`, ip: `198.51.100.${i % 250}`, source: 'zone', lastConfirmed: DAY2 });

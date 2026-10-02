@@ -434,8 +434,9 @@ function normalizeZoneInput(zone) {
 /**
  * Validate `config.knownOrigins` (lib/originmap.js knownForScan: the workspace's remembered,
  * not stale origins) defensively, as plain data: a name (`*.x` allowed), an address that is no
- * CDN / WAF edge and no Cloudflare placeholder, a port 1-65535 (443 when absent). One entry per
- * name, address and port; at most MAX_KNOWN_ORIGINS.
+ * CDN / WAF edge and no Cloudflare placeholder, a port 1-65535 (443 when absent); a wildcard's
+ * `except` (the names it does not apply to) as a Set of host names. One entry per name, address
+ * and port; at most MAX_KNOWN_ORIGINS.
  * @param {unknown} list
  * @returns {Array<{ name: string, ip: string, port: number, source: string|null, lastConfirmed: string|null, server: string|null }>}
  */
@@ -453,7 +454,13 @@ function normalizeKnownOrigins(list) {
     const key = `${name}|${ip}|${port}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ name, ip, port, source: text(k.source, 20), lastConfirmed: text(k.lastConfirmed, 40), server: text(k.server, 80) });
+    // A wildcard entry's `except`: the names it does not apply to (the origin map masked it for them).
+    const except = name.startsWith('*.') && Array.isArray(k.except)
+      ? new Set(k.except.slice(0, MAX_KNOWN_ORIGINS).map((n) => (typeof n === 'string' ? normalizeHostname(n) : null)).filter(Boolean)) : null;
+    out.push({
+      name, ip, port, source: text(k.source, 20), lastConfirmed: text(k.lastConfirmed, 40), server: text(k.server, 80),
+      ...(except && except.size ? { except } : {})
+    });
   }
   return out;
 }
@@ -1732,7 +1739,8 @@ export async function runScan(config = {}, hooks = {}) {
     }
     for (const host of proxiedHosts) {
       const dot = host.name.indexOf('.');
-      const list = [...(byName.get(host.name) || []), ...(dot > 0 ? byName.get(`*.${host.name.slice(dot + 1)}`) || [] : [])];
+      const wild = dot > 0 ? (byName.get(`*.${host.name.slice(dot + 1)}`) || []).filter((k) => !(k.except && k.except.has(host.name))) : [];
+      const list = [...(byName.get(host.name) || []), ...wild];
       if (list.length) knownByHost.set(host.name, list);
     }
   }

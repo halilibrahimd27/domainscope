@@ -72,6 +72,13 @@ export function originPort(v) {
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null;
 }
 
+/** The `*.parent` name that covers a host name (one label under it), or null (a wildcard or a bare label). */
+export function originWildcard(name) {
+  const n = typeof name === 'string' ? name : '';
+  const dot = n.indexOf('.');
+  return dot > 0 && !n.startsWith('*.') ? `*.${n.slice(dot + 1)}` : null;
+}
+
 /** An entry's key: `name|ip|port`. */
 export const originKey = (e) => `${e.name}|${e.ip}|${e.port}`;
 
@@ -165,7 +172,9 @@ export function originIndex(map) {
 }
 
 /**
- * A name's entries: its own and a `*.parent` one covering it, active first, newest first.
+ * A name's entries: its own and a `*.parent` one covering it, active first, newest first. A
+ * wildcard entry at an address and port the name has an entry of its own for is left out: that
+ * entry (a stale one masks the wildcard for this name) speaks for it.
  * @param {object|null} map the map, or its {@link originIndex} (for many names)
  * @param {string} name
  * @returns {object[]}
@@ -174,18 +183,36 @@ export function originsFor(map, name) {
   const n = originName(name);
   const { map: m, byName } = originIndex(map);
   if (!n || !m) return [];
-  const dot = n.indexOf('.');
-  const wild = dot > 0 && !n.startsWith('*.') ? `*.${n.slice(dot + 1)}` : null;
-  return [...(byName.get(n) || []), ...((wild && byName.get(wild)) || [])].sort(rank);
+  const mine = byName.get(n) || [];
+  const wild = originWildcard(n);
+  const covering = ((wild && byName.get(wild)) || []).filter((w) => !mine.some((e) => e.ip === w.ip && e.port === w.port));
+  return [...mine, ...covering].sort(rank);
 }
 
 /**
- * The active (not stale) entries as a scan's known origins (lib/scanner.js `knownOrigins`).
+ * The active (not stale) entries as a scan's known origins (lib/scanner.js `knownOrigins`). A
+ * wildcard entry lists in `except` the names it does not apply to: those with an entry of their
+ * own at its address and port (a stale one masks it, an active one speaks for itself).
  * @param {object|null} map the map, or its {@link originIndex}
- * @returns {Array<{ name: string, ip: string, port: number, server: string|null, source: string, lastConfirmed: string }>}
+ * @returns {Array<{ name: string, ip: string, port: number, server: string|null, source: string, lastConfirmed: string, except?: string[] }>}
  */
 export function knownForScan(map) {
   const { map: m } = originIndex(map);
-  return m ? m.entries.filter((e) => !e.stale)
-    .map(({ name, ip, port, server, source, lastConfirmed }) => ({ name, ip, port, server, source, lastConfirmed })) : [];
+  if (!m) return [];
+  // The names with an entry of their own, by address and port.
+  const at = new Map();
+  for (const e of m.entries) {
+    if (e.name.startsWith('*.')) continue;
+    const k = `${e.ip}|${e.port}`;
+    if (!at.has(k)) at.set(k, []);
+    at.get(k).push(e.name);
+  }
+  return m.entries.filter((e) => !e.stale).map(({ name, ip, port, server, source, lastConfirmed }) => {
+    const out = { name, ip, port, server, source, lastConfirmed };
+    if (name.startsWith('*.')) {
+      const except = [...new Set((at.get(`${ip}|${port}`) || []).filter((n) => originWildcard(n) === name))].sort();
+      if (except.length) out.except = except;
+    }
+    return out;
+  });
 }

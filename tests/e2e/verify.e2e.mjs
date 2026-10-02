@@ -746,20 +746,15 @@ async function main() {
       assertEqual([shop.status, shop.warn, shop.exp], ['UPDATED', ['chain-incomplete'], 'exposed'], 'shop: new cert, intermediate missing, origin exposed');
       assertEqual(await headKeys(page), ['some', 'chain', 'unreachable', 'exposed', 'notHere'], 'headline keys');
       assertEqual(await badge(page), { text: '1/3', warn: true, ok: false }, 'badge');
-      // The origin check would go to the workspace's origin map, but remembering is off (the default):
-      // the tab says so and links to the switch, and nothing is written.
-      const om = await page.evaluate(() => {
-        const note = document.querySelector('.scan-tab-verify [data-vfy="origin-map"]');
-        return { off: !!note?.querySelector('[data-role="om-off"]'), href: note?.querySelector('a')?.getAttribute('href') || '' };
-      });
-      assertEqual([om.off, /#\/inventory\?tab=origins$/.test(om.href)], [true, true], `the origin map note (${om.href})`);
-      assertEqual(await originMapOf(page), null, 'nothing written while remembering is off');
+      // A hint's candidate is no origin: the batch says nothing about the origin map and writes nothing.
+      assert(!(await page.evaluate(() => !!document.querySelector('.scan-tab-verify [data-vfy="origin-map"]'))), 'no origin map note');
+      assertEqual(await originMapOf(page), null, 'nothing written');
     });
 
     await run.step('certificate swapped on the server: Check again (3) → www and shop new, headline "partial" 2 of 3', async () => {
       await page.evaluate(() => window.__gpFlip());
       assertEqual(await recheckCount(page), '3', 'www, shop (chain), legacy');
-      // Remembering origins switched on (Servers › Origin map): this batch's origin check is remembered.
+      // Remembering origins switched on (Servers › Origin map): a hint's candidate is still never remembered.
       await page.evaluate(async () => (await import('./assets/js/state.js')).state.setWorkspaceData('origins', { v: 1, remember: true, entries: [] }));
       const mark = await panelState(page);
       const c0 = await gpCount(page);
@@ -774,11 +769,10 @@ async function main() {
       assert(/2 of 3/.test(text), `partial text: ${text}`);
       assertEqual((await badge(page)).text, '2/3', 'badge 2/3');
       assertEqual(await recheckCount(page), '1', 'only legacy left');
-      // The origin check (shop, proxied, on web01 by a hint) went into the origin map, from Verify; the tab says so.
-      const map = await originMapOf(page);
-      assertEqual(map.entries.map((e) => `${e.name} ${e.ip}:${e.port} ${e.source} ${e.server} ${e.stale}`), [`${N('shop')} 1.2.3.4:443 verify web01 null`], 'remembered');
-      const note = await page.evaluate(() => document.querySelector('.scan-tab-verify [data-vfy="origin-map"]')?.textContent || '');
-      assert(/Origin map: 1 added, 0 confirmed, 0 marked stale\./.test(note), `origin map note: ${note}`);
+      // shop answered on web01 with a certificate for the name, but only because a hint paired them:
+      // nothing is remembered and the tab says nothing about the origin map.
+      assertEqual(await originMapOf(page), { v: 1, remember: true, entries: [] }, 'nothing remembered from a hint');
+      assert(!(await page.evaluate(() => !!document.querySelector('.scan-tab-verify [data-vfy="origin-map"]'))), 'no origin map note');
       // Back to the default (off, no map) for the steps that follow.
       await page.evaluate(async () => (await import('./assets/js/state.js')).state.setWorkspaceData('origins', null));
       assertEqual(await originMapOf(page), null, 'origin map forgotten');

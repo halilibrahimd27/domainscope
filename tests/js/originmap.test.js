@@ -24,6 +24,7 @@ const DAY3 = '2026-10-01T08:00:00.000Z';
 const ON = setRemember(null, true);
 const hosted = (name, ip, port = 443, server = null) => ({ name, ip, port, outcome: 'hosted', server });
 const notHosted = (name, ip, port = 443) => ({ name, ip, port, outcome: 'not-hosted' });
+const unknown = (name, ip, port = 443) => ({ name, ip, port, outcome: 'unknown' });
 const keys = (map) => map.entries.map(originKey);
 const entry = (map, key) => map.entries.find((e) => originKey(e) === key);
 
@@ -199,11 +200,24 @@ describe('the merge rules (lib/originfill.js applyObservations)', () => {
     assert.deepEqual(fresh.added, ['www.example.com|192.0.2.10|443'], 'a new zone origin gets port 443');
   });
 
+  test('an entry the run did not ask is never marked "elsewhere" (a pool); one it asked without an answer is', () => {
+    let { map } = applyObservations(ON, [hosted('shop.example.com', '203.0.113.10'), hosted('shop.example.com', '203.0.113.30')], { source: 'cli-json', at: DAY1 });
+    let res = applyObservations(map, [hosted('shop.example.com', '198.51.100.20')], { source: 'cli-json', at: DAY2 });
+    assert.deepEqual([res.added, res.staled], [['shop.example.com|198.51.100.20|443'], []], 'the other two were not asked: still active');
+    ({ map } = res);
+    res = applyObservations(map, [hosted('shop.example.com', '198.51.100.20'), unknown('shop.example.com', '203.0.113.30')], { source: 'cli-json', at: DAY3 });
+    assert.deepEqual(res.staled, ['shop.example.com|203.0.113.30|443']);
+    assert.deepEqual(entry(res.map, 'shop.example.com|203.0.113.30|443').stale, { reason: 'cli-elsewhere', at: DAY3, ip: '198.51.100.20', port: 443 });
+    assert.equal(entry(res.map, 'shop.example.com|203.0.113.10|443').stale, null, 'still not asked');
+  });
+
   test('found on another port of the same address: the same server, not marked "elsewhere"', () => {
-    // Verify asks 443 for an origin remembered on 8443: hosted there adds the 443 entry and
-    // leaves the 8443 one alone; another address of the name is still marked.
+    // Asked on 443 and on 8443: hosted on 443 adds that entry and leaves the 8443 one alone (no
+    // answer there); another address of the name asked without an answer is marked.
     let { map } = applyObservations(ON, [hosted('shop.example.com', '203.0.113.10', 8443), hosted('shop.example.com', '203.0.113.30')], { source: 'cli-json', at: DAY1 });
-    const res = applyObservations(map, [hosted('shop.example.com', '203.0.113.10', 443)], { source: 'verify', at: DAY2 });
+    const res = applyObservations(map, [
+      hosted('shop.example.com', '203.0.113.10', 443), unknown('shop.example.com', '203.0.113.10', 8443), unknown('shop.example.com', '203.0.113.30')
+    ], { source: 'verify', at: DAY2 });
     assert.deepEqual(res.added, ['shop.example.com|203.0.113.10|443']);
     assert.deepEqual(res.staled, ['shop.example.com|203.0.113.30|443']);
     ({ map } = res);
@@ -242,7 +256,7 @@ describe('edits by hand', () => {
     let { map } = res;
     assert.deepEqual([map.entries[0].source, map.entries[0].server], ['manual', 'web03']);
     // The same key again confirms it (and clears a stale mark).
-    ({ map } = applyObservations(map, [hosted('shop.example.com', '198.51.100.20')], { source: 'cli-json', at: DAY2 }));
+    ({ map } = applyObservations(map, [hosted('shop.example.com', '198.51.100.20'), notHosted('shop.example.com', '203.0.113.10')], { source: 'cli-json', at: DAY2 }));
     assert.ok(entry(map, res.key).stale);
     ({ map } = addManualOrigin(map, { name: 'shop.example.com', ip: '203.0.113.10' }, { at: DAY3 }));
     assert.equal(entry(map, res.key).stale, null);

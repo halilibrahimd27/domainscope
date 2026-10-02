@@ -12,9 +12,10 @@
  * - {@link cliReportObservations}: the CLI's `--json` reports, read with lib/estate.js
  *   readEstateReport (the Certificate estate view's reader): per name asked and endpoint,
  *   UPDATED / NEEDS_UPDATE / ORIGIN_CERT = it serves the name, NOT_HOSTED = it does not, anything
- *   else (PRIVATE_CERT, TLS_ERROR, TIMEOUT, CLOSED) says nothing. Source 'cli-json'.
- * - {@link verifyObservations}: SSL Targets › Verify — the origin checks (a proxied name on an
- *   inventory origin, `via` hint / zone / known) with a verdict, read the same way. Source 'verify'.
+ *   else (PRIVATE_CERT, TLS_ERROR, TIMEOUT, CLOSED) = asked, no answer. Source 'cli-json'.
+ * - {@link verifyObservations}: SSL Targets › Verify — the checks of exact origins (a proxied name
+ *   on an inventory origin the origin map or the zone file names, `via` known / zone) with a
+ *   verdict, read the same way. A hint's candidate is never one. Source 'verify'.
  * - {@link compareObservations}: Retire an IP › the old and the new server — the new address
  *   serves the name when it answered with a certificate covering it (not 'broken', not
  *   'unreachable'). Source 'compare' (it never marks anything stale).
@@ -34,6 +35,8 @@ import {
 /* Writing the map                                                          */
 /* ------------------------------------------------------------------------ */
 
+/** What an observation says, the strongest first: served, answered without the name, no answer. */
+const OUTCOMES = Object.freeze(['hosted', 'not-hosted', 'unknown']);
 /** The stale reasons each source gives: [found on another server, no longer served here]. */
 const CONTRADICTS = Object.freeze({
   'cli-json': ['cli-elsewhere', 'cli-not-hosted'], verify: ['verify-elsewhere', 'verify-not-hosted'], zone: ['zone-other', null]
@@ -61,17 +64,20 @@ export function setRemember(map, on) {
 /**
  * Apply what one run saw to the map. Every observation is one name at one address:
  * `outcome` 'hosted' (it serves the name), 'not-hosted' (it answered without it) or 'unknown'
- * (no answer, an error: nothing changes). `port` null matches any port of the address (a zone
- * file names no port) and adds {@link ORIGIN_DEFAULT_PORT}.
+ * (no answer, an error: it was asked, and said nothing). `port` null matches any port of the
+ * address (a zone file names no port) and adds {@link ORIGIN_DEFAULT_PORT}.
  *
  * - 'hosted' confirms the matching entries (`lastConfirmed`, `source`; a stale mark older than
  *   the run goes) or adds one — only for a proxied name: one the map has, or `proxied(name)`
  *   (absent: every name); the others are listed in `skipped`.
- * - A run that found a name hosted marks the name's entries at other addresses stale
- *   (`<src>-elsewhere`, `zone-other`; another port of an address it found the name at is the same
- *   server and is left alone), and 'not-hosted' the entry at that address (`<src>-not-hosted`) — the CLI
- *   JSON, Verify and a zone file contradict; a comparison or a manual entry never does. An entry
- *   confirmed by the same run, or after it, is never marked.
+ * - Contradictions (the CLI JSON, Verify, a zone file; a comparison or a manual entry never
+ *   contradicts): a run marks an entry `<src>-elsewhere` only when it asked that entry's address
+ *   and port and got no answer or an answer without the name while it found the name on another
+ *   address (another port of an address it found the name at is the same server); an entry it
+ *   did not ask is left alone (a name may have several origins). 'not-hosted' at an entry's
+ *   address and port, with the name found nowhere else, marks it `<src>-not-hosted`. A zone file
+ *   names a proxied name's origins: its other entries are `zone-other`. An entry confirmed by the
+ *   same run, or after it, is never marked.
  * - With remembering off nothing changes (`off: true`).
  * @param {object|null} map
  * @param {Array<{ name: string, ip: string, port?: number|null, outcome: 'hosted'|'not-hosted'|'unknown', server?: string|null }>} observations
@@ -95,17 +101,29 @@ export function applyObservations(map, observations, { source, at, proxied = nul
     const ip = normalizeIP(String(o.ip ?? ''));
     const anyPort = o.port === null || o.port === undefined;
     const port = anyPort ? null : originPort(o.port);
-    if (!name || !ip || (!anyPort && !port) || !['hosted', 'not-hosted'].includes(o.outcome)) continue;
+    if (!name || !ip || (!anyPort && !port) || !OUTCOMES.includes(o.outcome)) continue;
+    // Only a zone file names no port, and it only says where a name is served.
+    if (anyPort && o.outcome !== 'hosted') continue;
     obs.push({ name, ip, port, outcome: o.outcome, server: originServer(o.server) });
+  }
+  // What the run asked, per name: each address and port with its answer (served, then not served,
+  // then no answer wins when it was asked twice).
+  const asked = new Map();
+  for (const o of obs) {
+    if (o.port === null) continue;
+    if (!asked.has(o.name)) asked.set(o.name, new Map());
+    const at = asked.get(o.name);
+    const k = `${o.ip}|${o.port}`;
+    if (OUTCOMES.indexOf(o.outcome) < OUTCOMES.indexOf(at.get(k) ?? 'unknown') || !at.has(k)) at.set(k, o.outcome);
   }
   const matches = (e, o) => e.name === o.name && e.ip === o.ip && (o.port === null || e.port === o.port);
   const confirmed = new Set();
   const skipped = new Set();
-  // Per name: where the run first found it hosted, and every address it found it at.
+  // Per name: where the run found it hosted, in order.
   const foundAt = new Map();
   for (const o of obs.filter((x) => x.outcome === 'hosted')) {
-    if (!foundAt.has(o.name)) foundAt.set(o.name, { first: o, ips: new Set() });
-    foundAt.get(o.name).ips.add(o.ip);
+    if (!foundAt.has(o.name)) foundAt.set(o.name, []);
+    foundAt.get(o.name).push(o);
     const hits = m.entries.filter((e) => matches(e, o));
     for (const e of hits) {
       if (t >= ms(e.lastConfirmed)) Object.assign(e, { lastConfirmed: when, source });
@@ -130,13 +148,22 @@ export function applyObservations(map, observations, { source, at, proxied = nul
     e.stale = { reason, at: when, ...(by ? { ip: by.ip, port: by.port ?? ORIGIN_DEFAULT_PORT } : {}) };
     out.staled.push(originKey(e));
   };
-  // Found on another server: an entry at an address the run found the name at (another port of
-  // the same server, e.g. Verify asking 443 for an origin remembered on 8443) is not contradicted.
+  /** Where the run found the name hosted at another address than `ip` (the first such), or null. */
+  const foundElsewhere = (name, ip) => (foundAt.get(name) || []).find((o) => o.ip !== ip) || null;
   for (const e of m.entries) {
-    const found = foundAt.get(e.name);
-    if (found && !found.ips.has(e.ip)) mark(e, elsewhere, found.first);
+    if (source === 'zone') {
+      // A zone file names the proxied name's origins: an entry at another address is not one.
+      const by = foundAt.has(e.name) && !foundAt.get(e.name).some((o) => o.ip === e.ip) ? foundAt.get(e.name)[0] : null;
+      if (by) mark(e, elsewhere, by);
+      continue;
+    }
+    // The CLI and Verify contradict only what they asked: this address and port, without the name.
+    const answer = asked.has(e.name) ? asked.get(e.name).get(`${e.ip}|${e.port}`) : undefined;
+    if (!answer || answer === 'hosted') continue;
+    const by = foundElsewhere(e.name, e.ip);
+    if (by && !(foundAt.get(e.name) || []).some((o) => o.ip === e.ip)) mark(e, elsewhere, by);
+    else if (answer === 'not-hosted') mark(e, notHosted);
   }
-  for (const o of obs.filter((x) => x.outcome === 'not-hosted')) for (const e of m.entries) if (matches(e, o)) mark(e, notHosted);
   out.confirmed = [...confirmed].filter((k) => !out.added.includes(k));
   out.skipped = [...skipped].sort();
   out.map = finish(m);
@@ -197,8 +224,14 @@ export function removeOrigins(map, keys) {
 export const HOSTED_STATUSES = Object.freeze(['UPDATED', 'NEEDS_UPDATE', 'ORIGIN_CERT']);
 /** The status that says it does not. */
 export const NOT_HOSTED_STATUS = 'NOT_HOSTED';
-/** The `via` of a Verify origin check (lib/verify.js isOriginPair). */
-const ORIGIN_VIAS = new Set(['hint', 'zone', 'known']);
+/**
+ * The `via` of a Verify origin check that names an exact origin (lib/verify.js isOriginPair):
+ * the origin map's own entry or the zone file's origin. A 'hint' pair is only a candidate (an SPF,
+ * MX or sibling address paired with every proxied name): a server answering for the name with a
+ * covering certificate (a shared wildcard, say) is not shown to be its origin, so it never
+ * confirms, adds or contradicts an entry.
+ */
+const EXACT_VIAS = new Set(['known', 'zone']);
 
 /** 'hosted' / 'not-hosted' / 'unknown' of a CLI or Verify status. */
 export function outcomeOf(status) {
@@ -273,14 +306,15 @@ export function readCliReports(files) {
 }
 
 /**
- * SSL Targets › Verify: the origin checks of a batch that got a verdict (lib/verify.js rows).
+ * SSL Targets › Verify: the exact-origin checks of a batch that got a verdict (lib/verify.js rows,
+ * `via` known or zone), an unanswered one included: it was asked.
  * @param {object[]} rows
  * @returns {Array<{ name: string, ip: string, port: number, outcome: string, server: string|null }>}
  */
 export function verifyObservations(rows) {
   const out = [];
   for (const r of Array.isArray(rows) ? rows : []) {
-    if (!r || r.state !== 'done' || r.stale || !r.proxied || !ORIGIN_VIAS.has(r.via) || !r.status) continue;
+    if (!r || r.state !== 'done' || r.stale || !r.proxied || !EXACT_VIAS.has(r.via) || !r.status) continue;
     out.push({ name: r.name, ip: r.ip, port: r.port, outcome: outcomeOf(r.status), server: r.server ? r.server.name : null });
   }
   return out;

@@ -39,7 +39,7 @@ export const FORM_ERRORS = Object.freeze(['off', 'name', 'ip', 'port', 'limit'])
 
 registerStrings('en', {
   'omp.privacy': 'The origin map stays in this browser, in the current workspace (IndexedDB). It leaves the browser only inside a workspace hand-over file you export yourself.',
-  'omp.lead': 'Which server and port really serves a name behind a CDN, remembered once a CLI sweep, a zone file, a Verify origin check or a server comparison found it. Subdomains and SSL Targets rank these origins first and put them in the CLI command.',
+  'omp.lead': 'Which server and port really serves a name behind a CDN, remembered once a CLI sweep, a zone file or a server comparison found it. Verify checks the remembered origins (and a zone file’s) again, never a mere candidate. Subdomains and SSL Targets rank these origins first and put them in the CLI command.',
   'omp.remember': 'Remember origins in this workspace',
   'omp.rememberHint': 'Off by default. While it is off nothing is written to this map.',
   'omp.offHere': 'Remembering is off: Zone File, Verify, Retire an IP, CLI reports and the form below write nothing here.',
@@ -57,7 +57,7 @@ registerStrings('en', {
   'omp.col.actions': 'Actions',
   'omp.active': 'Active',
   'omp.firstSeen': 'First seen {date}',
-  'omp.empty': 'Nothing remembered yet. Remember a zone file’s origins, import a CLI report, run Verify with origin checks, or add one below.',
+  'omp.empty': 'Nothing remembered yet. Remember a zone file’s origins, import a CLI report, remember the new server of a comparison, or add one below.',
   'omp.edit': 'Edit {name} → {target}',
   'omp.delete': 'Delete {name} → {target}',
   'omp.deleted': 'Deleted {name} → {target}.',
@@ -86,7 +86,7 @@ registerStrings('en', {
   'omp.importTitle': 'Import CLI reports',
   'omp.importSubtitle': 'The --json reports of ssl_origin_scan.py, read in this browser',
   'omp.importDrop': 'Drop the report.json files here',
-  'omp.importHint': 'A server that answers UPDATED, NEEDS_UPDATE or ORIGIN_CERT for a name behind a CDN is remembered. A report that finds a remembered name on another server, or not at its address any more, marks that entry stale.',
+  'omp.importHint': 'A server that answers UPDATED, NEEDS_UPDATE or ORIGIN_CERT for a name behind a CDN is remembered. A report that asked a remembered origin and did not find the name there marks that entry stale; an origin the report did not ask stays as it is.',
   'omp.importAll': 'Also names not known to be behind a CDN',
   'omp.importAllHint': 'Otherwise only names the origin map, the imported zone file or the last scan in this tab show behind a CDN are added (and those a server answered with a Cloudflare Origin CA certificate).',
   'omp.importFile': '{file}: {text}',
@@ -100,7 +100,7 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'omp.privacy': 'Origin haritası bu tarayıcıda, geçerli çalışma alanında (IndexedDB) kalır. Tarayıcıdan yalnızca kendi dışa aktardığınız bir çalışma alanı devir dosyasının içinde çıkar.',
-  'omp.lead': 'Bir CDN’in arkasındaki adı gerçekte hangi sunucunun ve portun sunduğu; bir CLI taraması, zone dosyası, Doğrula origin kontrolü ya da sunucu karşılaştırması bir kez bulduğunda hatırlanır. Subdomain Tarama ve SSL Hedefleri bu origin’leri ilk sıraya koyar ve CLI komutuna ekler.',
+  'omp.lead': 'Bir CDN’in arkasındaki adı gerçekte hangi sunucunun ve portun sunduğu; bir CLI taraması, zone dosyası ya da sunucu karşılaştırması bir kez bulduğunda hatırlanır. Doğrula, hatırlanan origin’leri (ve bir zone dosyasınınkileri) yeniden kontrol eder; yalnızca aday olan bir adresi asla hatırlamaz. Subdomain Tarama ve SSL Hedefleri bu origin’leri ilk sıraya koyar ve CLI komutuna ekler.',
   'omp.remember': 'Bu çalışma alanında origin’leri hatırla',
   'omp.rememberHint': 'Varsayılan olarak kapalı. Kapalıyken bu haritaya hiçbir şey yazılmaz.',
   'omp.offHere': 'Hatırlama kapalı: Zone Dosyası, Doğrula, IP emekliye ayırma, CLI raporları ve aşağıdaki form buraya hiçbir şey yazmaz.',
@@ -118,7 +118,7 @@ registerStrings('tr', {
   'omp.col.actions': 'İşlemler',
   'omp.active': 'Geçerli',
   'omp.firstSeen': 'İlk görülme: {date}',
-  'omp.empty': 'Henüz hatırlanan bir şey yok. Bir zone dosyasının origin’lerini hatırlatın, bir CLI raporu içe aktarın, Doğrula’yı origin kontrolleriyle çalıştırın ya da aşağıdan bir tane ekleyin.',
+  'omp.empty': 'Henüz hatırlanan bir şey yok. Bir zone dosyasının origin’lerini hatırlatın, bir CLI raporu içe aktarın, bir karşılaştırmadaki yeni sunucuyu hatırlatın ya da aşağıdan bir tane ekleyin.',
   'omp.edit': '{name} → {target} kaydını düzenle',
   'omp.delete': '{name} → {target} kaydını sil',
   'omp.deleted': '{name} → {target} silindi.',
@@ -147,7 +147,7 @@ registerStrings('tr', {
   'omp.importTitle': 'CLI raporlarını içe aktar',
   'omp.importSubtitle': 'ssl_origin_scan.py’nin --json raporları, bu tarayıcıda okunur',
   'omp.importDrop': 'report.json dosyalarını buraya bırakın',
-  'omp.importHint': 'CDN arkasındaki bir ad için UPDATED, NEEDS_UPDATE ya da ORIGIN_CERT yanıtı veren sunucu hatırlanır. Hatırlanan bir adı başka bir sunucuda ya da artık kendi adresinde olmadığını gösteren rapor, o kaydı eskimiş olarak işaretler.',
+  'omp.importHint': 'CDN arkasındaki bir ad için UPDATED, NEEDS_UPDATE ya da ORIGIN_CERT yanıtı veren sunucu hatırlanır. Hatırlanan bir origin’i sorup adı orada bulamayan rapor, o kaydı eskimiş olarak işaretler; raporun sormadığı bir origin olduğu gibi kalır.',
   'omp.importAll': 'CDN arkasında olduğu bilinmeyen adlar da eklensin',
   'omp.importAllHint': 'Aksi halde yalnızca origin haritasının, içe aktarılan zone dosyasının ya da bu sekmedeki son taramanın CDN arkasında gösterdiği adlar eklenir (bir sunucunun Cloudflare Origin CA sertifikasıyla yanıt verdiği adlar da).',
   'omp.importFile': '{file}: {text}',

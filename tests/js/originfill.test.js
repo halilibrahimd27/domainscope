@@ -10,7 +10,7 @@ import { readFile } from 'node:fs/promises';
 
 import {
   zoneObservations, cliReportObservations, readCliReports, verifyObservations, compareObservations, outcomeOf,
-  applyObservations, setRemember, HOSTED_STATUSES
+  applyObservations, addManualOrigin, setRemember, HOSTED_STATUSES
 } from '../../assets/js/lib/originfill.js';
 import { originKey, knownForScan } from '../../assets/js/lib/originmap.js';
 import { proxiedOriginMap } from '../../assets/js/lib/zoneorigins.js';
@@ -110,7 +110,10 @@ describe('the CLI --json reports', () => {
   });
 
   test('files that are not reports are named, the others read oldest first', async () => {
-    const late = report({ finishedAt: '2026-10-02T08:00:00.000Z', rows: [{ name: 'shop.example.com', ip: '198.51.100.20', status: 'UPDATED' }] });
+    const late = report({
+      finishedAt: '2026-10-02T08:00:00.000Z',
+      rows: [{ name: 'shop.example.com', ip: '198.51.100.20', status: 'UPDATED' }, { name: 'shop.example.com', ip: '203.0.113.10', status: 'NOT_HOSTED' }]
+    });
     const early = report({ finishedAt: '2026-09-02T08:00:00.000Z', rows: [{ name: 'shop.example.com', ip: '203.0.113.10', status: 'UPDATED' }] });
     const { reports, errors } = readCliReports([
       { name: 'late.json', text: JSON.stringify(late) }, { name: 'notes.txt', text: 'hello' },
@@ -134,25 +137,55 @@ describe('SSL Targets › Verify', () => {
     server: { id: 's1', name: 'web03' }, status: 'UPDATED', ...extra
   });
 
-  test('origin checks with a verdict; DNS pairs, unfinished and stale rows say nothing', () => {
+  test('only exact origins say something: remembered and zone-file checks with a verdict, an unanswered one included', () => {
     const obs = verifyObservations([
-      row(), row({ via: 'known', ip: '203.0.113.20', status: 'NOT_HOSTED' }), row({ via: 'zone', ip: '203.0.113.30', status: 'TIMEOUT' }),
-      row({ via: 'dns' }), row({ state: 'pending' }), row({ stale: true }), row({ proxied: false }), row({ status: null })
+      row({ via: 'known' }), row({ via: 'zone', ip: '203.0.113.20', status: 'NOT_HOSTED' }), row({ via: 'known', ip: '203.0.113.30', status: 'TIMEOUT' }),
+      row({ via: 'hint' }), row({ via: 'dns' }), row({ via: 'known', state: 'pending' }), row({ via: 'known', stale: true }),
+      row({ via: 'known', proxied: false }), row({ via: 'known', status: null })
     ]);
     assert.deepEqual(obs, [
       { name: 'shop.example.com', ip: '203.0.113.10', port: 443, outcome: 'hosted', server: 'web03' },
       { name: 'shop.example.com', ip: '203.0.113.20', port: 443, outcome: 'not-hosted', server: 'web03' },
       { name: 'shop.example.com', ip: '203.0.113.30', port: 443, outcome: 'unknown', server: 'web03' }
-    ]);
+    ], 'a hint is only a candidate: never an observation');
   });
 
-  test('a confirmed candidate is remembered; a remembered origin answering without the name goes stale', () => {
-    let { map } = applyObservations(ON, [{ name: 'shop.example.com', ip: '203.0.113.20', port: 443, outcome: 'hosted' }], { source: 'cli-json', at: '2026-09-20T08:00:00Z' });
-    const res = applyObservations(map, verifyObservations([row(), row({ via: 'known', ip: '203.0.113.20', status: 'NOT_HOSTED' })]), { source: 'verify', at: AT });
+  test('candidates a hint pointed at are never remembered and contradict nothing (one wildcard certificate everywhere)', () => {
+    // The mail server and the apex web server both serve the company's wildcard certificate, so every
+    // hint pair "answers" for every proxied name. The remembered origins are on servers Verify never asked.
+    let { map } = applyObservations(ON, [{ name: 'www.example.com', ip: '198.51.100.30', port: 443, outcome: 'hosted' }], { source: 'cli-json', at: '2026-09-30T08:00:00Z' });
+    ({ map } = addManualOrigin(map, { name: 'shop.example.com', ip: '198.51.100.31' }, { at: '2026-09-30T09:00:00Z' }));
+    const rows = [];
+    for (const name of ['blog.example.com', 'shop.example.com', 'www.example.com']) {
+      for (const ip of ['203.0.113.10', '203.0.113.25']) rows.push(row({ via: 'hint', name, ip, status: 'NEEDS_UPDATE' }));
+    }
+    const res = applyObservations(map, verifyObservations(rows), { source: 'verify', at: AT });
+    assert.deepEqual([res.added, res.confirmed, res.staled], [[], [], []]);
+    assert.deepEqual(res.map, map, 'the map is unchanged');
+  });
+
+  test('a remembered origin is confirmed when it serves the name, stale when it answers without it', () => {
+    let { map } = applyObservations(ON, [
+      { name: 'shop.example.com', ip: '203.0.113.10', port: 443, outcome: 'hosted' },
+      { name: 'www.example.com', ip: '203.0.113.20', port: 443, outcome: 'hosted' }
+    ], { source: 'cli-json', at: '2026-09-20T08:00:00Z' });
+    const res = applyObservations(map, verifyObservations([
+      row({ via: 'known' }), row({ via: 'known', name: 'www.example.com', ip: '203.0.113.20', status: 'NOT_HOSTED' })
+    ]), { source: 'verify', at: AT });
     ({ map } = res);
-    assert.deepEqual(res.added, ['shop.example.com|203.0.113.10|443']);
-    assert.deepEqual(map.entries.find((e) => e.ip === '203.0.113.20').stale.reason, 'verify-elsewhere',
-      'found elsewhere in the same run: the first mark that applies');
+    assert.deepEqual([res.added, res.confirmed, res.staled], [[], ['shop.example.com|203.0.113.10|443'], ['www.example.com|203.0.113.20|443']]);
+    assert.equal(map.entries.find((e) => e.name === 'shop.example.com').source, 'verify');
+    assert.deepEqual(map.entries.find((e) => e.name === 'www.example.com').stale, { reason: 'verify-not-hosted', at: AT });
+  });
+
+  test('a zone-file origin found serving the name is remembered; an unanswered remembered origin is marked only when the name was found elsewhere', () => {
+    let { map } = applyObservations(ON, [{ name: 'shop.example.com', ip: '203.0.113.20', port: 443, outcome: 'hosted' }], { source: 'cli-json', at: '2026-09-20T08:00:00Z' });
+    let res = applyObservations(map, verifyObservations([row({ via: 'known', ip: '203.0.113.20', status: 'TIMEOUT' })]), { source: 'verify', at: AT });
+    assert.deepEqual([res.added, res.confirmed, res.staled], [[], [], []], 'no answer alone says nothing');
+    res = applyObservations(map, verifyObservations([row({ via: 'zone' }), row({ via: 'known', ip: '203.0.113.20', status: 'TIMEOUT' })]), { source: 'verify', at: AT });
+    ({ map } = res);
+    assert.deepEqual([res.added, res.staled], [['shop.example.com|203.0.113.10|443'], ['shop.example.com|203.0.113.20|443']]);
+    assert.deepEqual(map.entries.find((e) => e.ip === '203.0.113.20').stale, { reason: 'verify-elsewhere', at: AT, ip: '203.0.113.10', port: 443 });
   });
 });
 

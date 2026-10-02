@@ -18,7 +18,7 @@ import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/l
 import { parseInventory } from '../../assets/js/lib/inventory.js';
 import { buildVerifyPairs, isOriginPair } from '../../assets/js/lib/verify.js';
 import { knownForScan } from '../../assets/js/lib/originmap.js';
-import { applyObservations, setRemember } from '../../assets/js/lib/originfill.js';
+import { applyObservations, setRemember, verifyObservations } from '../../assets/js/lib/originfill.js';
 import { originOverview, originSweep, originSweepTokens, knownOfResult } from '../../assets/js/views/subdomains.js';
 
 const SOA = { mname: 'ns.dns-infra.invalid', rname: 'hostmaster.dns-infra.invalid', serial: 1, refresh: 900, retry: 900, expire: 1800, minimum: 60 };
@@ -54,14 +54,14 @@ function answer(zone, name, type) {
   return { rcode: 'SERVFAIL', answers: [] };
 }
 
-function world() {
+function world(zone = WORLD) {
   const log = [];
   const fetchImpl = async (url) => {
     const resolver = RESOLVERS.find((r) => url.startsWith(`${r.url}?`));
     if (!resolver) throw new TypeError(`unexpected URL ${url}`);
     const q = decodeMessage(base64UrlDecode(new URL(url).searchParams.get('dns'))).questions[0];
     log.push({ name: q.name, type: q.type, resolver: resolver.id });
-    const out = answer(resolver.id === 'google' ? { ...WORLD, ...LEAK } : WORLD, q.name, q.type);
+    const out = answer(resolver.id === 'google' ? { ...zone, ...LEAK } : zone, q.name, q.type);
     return new Response(encodeMessage({
       id: 0, flags: { qr: true, rd: true, ra: true }, rcode: out.rcode,
       questions: [{ name: q.name, type: q.type }], answers: out.answers, authorities: out.authorities || [], edns: {}
@@ -79,13 +79,13 @@ const KNOWN = [
   { name: 'bad name', ip: '198.51.100.32' }
 ];
 
-async function scan(extra = {}) {
-  const w = world();
+async function scan(extra = {}, { zone = WORLD, inventory = 'web03 192.0.2.40\nweb01 203.0.113.10' } = {}) {
+  const w = world(zone);
   const stages = [];
   const result = await runScan({
     domains: ['example.com'], sources: [], bruteforce: 'small', wordlist: ['www', 'shop', 'blog', 'api'], mine: false,
     permutationBudget: 0, recursive: false, balance: false, sourceGraceMs: 0,
-    inventory: parseInventory('web03 192.0.2.40\nweb01 203.0.113.10'), dns: w.dns, fetchImpl: w.fetchImpl, ...extra
+    inventory: parseInventory(inventory), dns: w.dns, fetchImpl: w.fetchImpl, ...extra
   }, { onStage: (name, info) => stages.push([name, info]) });
   return { result, stages, log: w.log };
 }
@@ -186,6 +186,30 @@ describe('the command the views build (views/subdomains.js) and the Verify pairs
       assert.match(command, /198\.51\.100\.30:8443/, shell);
     }
     assert.deepEqual(knownOfResult({}), { targets: [], ports: false });
+  });
+
+  test('Verify after a scan with a mail server hint: candidates are never remembered, remembered origins never marked', async () => {
+    // The MX host and the apex web server are in the inventory and both serve the company's wildcard
+    // certificate, so every hint pair answers. The remembered origins are on servers Verify never asks.
+    const zone = {
+      ...WORLD,
+      'example.com': { A: ['203.0.113.10'], MX: [{ preference: 10, exchange: 'mail.example.com' }] },
+      'mail.example.com': { A: ['203.0.113.25'] }
+    };
+    let map = setRemember(null, true);
+    ({ map } = applyObservations(map, [
+      { name: 'www.example.com', ip: '198.51.100.30', port: 443, outcome: 'hosted' },
+      { name: 'shop.example.com', ip: '198.51.100.31', port: 443, outcome: 'hosted' }
+    ], { source: 'cli-json', at: LAST }));
+    const { result } = await scan({ knownOrigins: knownForScan(map), originHints: true, resolverLeak: false },
+      { zone, inventory: 'mail 203.0.113.25\nweb01 203.0.113.10' });
+    const { pairs } = buildVerifyPairs(result);
+    assert.ok(pairs.some((p) => p.via === 'hint' && p.ip === '203.0.113.25'), 'the mail server is a candidate');
+    const rows = pairs.filter(isOriginPair).map((p) => ({ ...p, state: 'done', stale: false, status: 'NEEDS_UPDATE' }));
+    assert.ok(rows.length >= 6, `every proxied name on both servers (${rows.length})`);
+    const res = applyObservations(map, verifyObservations(rows), { source: 'verify', at: '2026-10-01T12:00:00.000Z' });
+    assert.deepEqual([res.added, res.confirmed, res.staled], [[], [], []]);
+    assert.deepEqual(knownForScan(res.map).map((k) => `${k.name} ${k.ip}`), ['shop.example.com 198.51.100.31', 'www.example.com 198.51.100.30']);
   });
 
   test('a remembered origin on an inventory server is an origin pair (opt-in), checked like the zone\'s', async () => {

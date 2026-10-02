@@ -13,9 +13,11 @@
  *   session shows the consent + cost dialog; consent is never stored and "Delete all local data"
  *   resets it (ui/globalping-gate.js keeps it, with the quota every view shares). Origin checks
  *   (a proxied name on an inventory origin IP, from an origin hint or the zone file) are opt-in.
- * - A finished batch's origin checks go into the workspace's origin map (ui/origin-map.js, source
- *   'verify') while it remembers origins: a confirmed name is remembered, one found elsewhere or
- *   not served at a remembered address marks that entry stale; the tab says what changed.
+ * - A finished batch's checks of exact origins (`via` known or zone: the origin map's own entry,
+ *   the zone file's origin; never a hint's candidate) go into the workspace's origin map
+ *   (ui/origin-map.js, source 'verify') while it remembers origins: one serving the name is
+ *   confirmed or remembered, one answering without it (or not at all while the name was found on
+ *   another of them) marks that entry stale; the tab says what changed.
  * - Private, reserved and CDN-edge addresses and names Globalping refuses are listed but never
  *   sent. Private and reserved addresses, refused names and every address the internet could not
  *   answer go into a ready-made CLI command; CDN edges do not (the CDN serves its own certificate).
@@ -1312,12 +1314,14 @@ function execute(job, client, targets, { maxProbes, now = undefined }) {
 }
 
 /**
- * The batch's origin checks with a verdict into the origin map of the workspace the scan ran in
- * (never another one switched to meanwhile); `job.originNote` says what changed, or that
- * remembering is off.
+ * The batch's checks of exact origins (the origin map's own, the zone file's: never a hint's
+ * candidate) with a verdict into the origin map of the workspace the scan ran in (never another
+ * one switched to meanwhile); `job.originNote` says what this batch changed, or that remembering
+ * is off, and is empty after a batch without such a check.
  * @param {object} job
  */
 function recordVerifyOrigins(job) {
+  job.originNote = null;
   const observations = verifyObservations(job.batch);
   if (!observations.length || (job.workspace && job.workspace !== state.workspace.id)) return;
   const res = recordOrigins(observations, { source: 'verify', at: job.finishedAt });

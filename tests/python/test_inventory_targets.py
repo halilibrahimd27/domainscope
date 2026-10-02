@@ -343,6 +343,43 @@ class InventoryTopologyParity(unittest.TestCase):
         self.assertEqual(sos.parse_inventory('name,ip,TLS Ports\nweb01,10.0.0.1,8443', 'x')
                          .servers[0].tls_ports, [8443])
 
+    def test_on_a_line_a_semicolon_or_bar_continues_a_value_unless_a_key_follows(self):
+        inventory = sos.parse_inventory('\n'.join([
+            'web01 10.0.0.1 ports=443;8443', 'web02 10.0.0.2 ports=443|8443',
+            'lb01;203.0.113.2;ports=443;terminates_tls=no',
+            'web03 | 10.0.0.3 | ports=443 | terminates_tls=no',
+            'web04 10.0.0.4 ports=443;terminates_tls=no']), 'x.txt')
+        self.assertEqual([(s.name, s.tls_ports, s.terminates_tls) for s in inventory.servers], [
+            ('web01', [443, 8443], None), ('web02', [443, 8443], None), ('lb01', [443], False),
+            ('web03', [443], False), ('web04', [443], False)])
+        self.assertEqual(inventory.warnings, [])
+
+    def test_structured_values_and_csv_cells_split_only_on_commas_and_semicolons(self):
+        records = sos.parse_inventory(json.dumps([
+            {'name': 'lb01', 'ip': '203.0.113.2', 'backends': ['Web Server 1', 'Web Server 2']},
+            {'name': 'Web Server 1', 'ip': '10.0.0.1'},
+            {'name': 'Web Server 2', 'ip': '10.0.0.2', 'terminates_tls': 'no'}]), 'x.json')
+        self.assertEqual((records.servers[0].backends, records.warnings),
+                         (['Web Server 1', 'Web Server 2'], []))
+        aws = sos.parse_inventory(json.dumps({'Reservations': [{'Instances': [
+            {'PrivateIpAddress': '203.0.113.2', 'Tags': [{'Key': 'Name', 'Value': 'edge lb'}],
+             'backends': 'prod web 1; prod web 2'},
+            {'PrivateIpAddress': '10.0.0.1', 'Tags': [{'Key': 'Name', 'Value': 'prod web 1'}]},
+            {'PrivateIpAddress': '10.0.0.2', 'Tags': [{'Key': 'Name', 'Value': 'prod web 2'}]}]}]}),
+            'x.json')
+        self.assertEqual(([s.backends for s in aws.servers if s.name == 'edge lb'], aws.warnings),
+                         ([['prod web 1', 'prod web 2']], []))
+        rows = sos.parse_inventory('name,ip,backends\n"Load Balancer 1",203.0.113.2,"Web Server 1;Web '
+                                   'Server 2"\n"Web Server 1",10.0.0.1,\n"Web Server 2",10.0.0.2,', 'x')
+        self.assertEqual((rows.servers[0].backends, rows.warnings), (['Web Server 1', 'Web Server 2'], []))
+        listed = sos.parse_inventory(json.dumps([
+            {'name': 'lb01', 'ip': '203.0.113.2', 'backends': 'web01, web02'},
+            {'name': 'web01', 'ip': '10.0.0.1'}, {'name': 'web02', 'ip': '10.0.0.2'}]), 'x.json')
+        self.assertEqual(listed.servers[0].backends, ['web01', 'web02'])
+        vip = sos.parse_inventory(json.dumps([{'name': 'lb01', 'ip': '203.0.113.2',
+                                              'vip': '203.0.113.50 203.0.113.51'}]), 'x.json')
+        self.assertEqual([(w.code, w.reason) for w in vip.warnings], [('TOPOLOGY', 'vip')])
+
     def test_tls_ports_that_carry_no_tls_replace_p_only_with_a_warning(self):
         inventory = sos.parse_inventory('web01 10.0.0.1 ports=22,80\nweb02 10.0.0.2 ports=443,8443\n'
                                         'web03 10.0.0.3 tls_ports=3306', 'x.txt')

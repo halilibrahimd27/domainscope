@@ -1565,9 +1565,11 @@ _TOPOLOGY_HELP = {
 }
 _TLS_YES = ('yes', 'true', 'on', '1')
 _TLS_NO = ('no', 'false', 'off', '0')
-# key=value on a line; the value runs to the next space, ';' or '|' (commas make a list)
+# key=value on a line: the value runs to the next space; a ';' or '|' in it continues it
+# (ports=443;8443) unless the next key= follows (ports=443;terminates_tls=no)
 _TOPOLOGY_TOKEN_RE = re.compile(
-    r'(^|[\s,;|])([A-Za-z][A-Za-z0-9_-]*)=("[^"]*"|\'[^\']*\'|[^\s;|"\']*)')
+    r'(^|[\s,;|])([A-Za-z][A-Za-z0-9_.-]*)=("[^"]*"|\'[^\']*\'|'
+    r'(?:[^\s;|"\']|[;|](?![A-Za-z][A-Za-z0-9_.-]*=)(?=[^\s;|"\']))*)')
 _QUOTED_RE = re.compile(r'^(["\'])(.*)\1$', re.S)
 
 TopologyValue = Tuple[str, Any, str, int]   # (key, value, raw, line)
@@ -1588,10 +1590,12 @@ def _unquote(text: Any) -> str:
     return (match.group(2) if match else text).strip()
 
 
-def _topology_items(value: Any) -> Optional[List[str]]:
-    """The items of a topology value: a string split on commas, whitespace and ';', a number,
-    a boolean (yes / no) or a list of those; None for anything else (an object, a list holding
-    one: ``ports: [{containerPort: 80}]``), which is then read as before."""
+def _topology_items(value: Any, structured: bool = False) -> Optional[List[str]]:
+    """The items of a topology value: a string, a number, a boolean (yes / no) or a list of
+    those; None for anything else (an object, a list holding one: ``ports: [{containerPort:
+    80}]``), which is then read as before. A line's value splits on whitespace, ',', ';' and
+    '|'; a ``structured`` one (JSON / YAML, a CSV cell) on ',' and ';' only, so a name may hold
+    spaces (an AWS Name tag). Mirrors lib/inventory.js topologyItems()."""
     if value is None:
         return []
     if isinstance(value, bool):
@@ -1601,14 +1605,14 @@ def _topology_items(value: Any) -> Optional[List[str]]:
     if isinstance(value, float):
         return [str(int(value)) if value.is_integer() else str(value)]
     if isinstance(value, str):
-        return [item for item in (_unquote(v) for v in re.split(r'[\s,;]+', _unquote(value)))
-                if item]
+        pattern = r'[,;]+' if structured else r'[\s,;|]+'
+        return [item for item in (_unquote(v) for v in re.split(pattern, _unquote(value))) if item]
     if isinstance(value, list):
         out = []  # type: List[str]
         for item in value:
             if isinstance(item, (dict, list)):
                 return None
-            out.extend(_topology_items(item) or [])
+            out.extend(_topology_items(item, structured) or [])
         return out
     return None
 
@@ -1905,11 +1909,12 @@ class _InventoryBuilder:
                       'these ports instead of -p' % (key, raw, ', '.join(plain)), 'plainPorts')
         return key, value, raw, line
 
-    def line_topology(self, found: Sequence[Tuple[str, str]], line: int) -> List[TopologyValue]:
-        """The topology of one line or CSV row (malformed values warned about)."""
+    def line_topology(self, found: Sequence[Tuple[str, str]], line: int,
+                      structured: bool = False) -> List[TopologyValue]:
+        """The topology of one line or CSV row (``structured``; malformed values warned about)."""
         out = []  # type: List[TopologyValue]
         for key, raw in found:
-            value = self.read_topology(key, _topology_items(raw), _unquote(raw), line)
+            value = self.read_topology(key, _topology_items(raw, structured), _unquote(raw), line)
             if value is not None:
                 out.append(value)
         return out
@@ -2228,7 +2233,7 @@ def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder) -> 
         values = [v for v in values if ip_idx or _address_token(v) or is_ip_block(v)]
         groups = [cells[i] for i in group_idx if i < len(cells) and cells[i]]
         topology = builder.line_topology([(header[i], cells[i]) for i in topology_idx
-                                          if i < len(cells) and cells[i]], number)
+                                          if i < len(cells) and cells[i]], number, True)
         name_ip = _address_token(name) if name else None
         if name_ip:
             values.insert(0, name_ip)
@@ -2274,7 +2279,7 @@ def _parse_yaml(lines: List[str], builder: _InventoryBuilder) -> None:
                 if key == 'hosts' and i > 0 and keys[i - 1] not in ('all', 'children')]
 
     def keep(host: str, key: str, value: Any, number: int) -> None:
-        items = _topology_items(value)
+        items = _topology_items(value, True)
         raw = ','.join(items or [])
         read = builder.read_topology(key, items, raw, number)
         if read is not None:
@@ -2581,7 +2586,7 @@ def _parse_json(data: Any, builder: _InventoryBuilder, key_hint: Optional[str] =
     # Topology keys of this record holding a scalar or a list of scalars (anything else, e.g.
     # kubectl's "ports": [{"containerPort": 80}], is read as before).
     topology_keys = {key: (topology_key, items) for key, topology_key, items in
-                     ((k, _topology_key(k, True), _topology_items(v)) for k, v in data.items())
+                     ((k, _topology_key(k, True), _topology_items(v, True)) for k, v in data.items())
                      if topology_key is not None and items is not None}
     record = {k: v for k, v in data.items() if k not in topology_keys}
     if name is not None or _json_has_ip_field(record) or _json_host_values(record):
@@ -2609,7 +2614,7 @@ def _parse_json(data: Any, builder: _InventoryBuilder, key_hint: Optional[str] =
         if child_key == 'vars' and isinstance(child, dict):  # a group's vars
             for key, value in child.items():
                 topology_key = _topology_key(key, True)
-                if topology_key is not None and _topology_items(value) is not None:
+                if topology_key is not None and _topology_items(value, True) is not None:
                     builder.warn(0, 'TOPOLOGY', '%s in a group\'s vars: group variables are not '
                                  'read for the topology - set it on each host' % topology_key,
                                  'groupVars')

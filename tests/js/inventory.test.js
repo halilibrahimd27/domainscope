@@ -877,6 +877,37 @@ test('back-compat: a JSON / YAML `ports` key (Shodan, Ansible host vars) parses 
   assert.deepEqual(parseInventory('name,ip,TLS Ports\nweb01,10.0.0.1,8443').servers[0].tlsPorts, [8443]);
 });
 
+test('topology keys: on a line, ; and | continue a value unless a key= follows', () => {
+  const r = parseInventory([
+    'web01 10.0.0.1 ports=443;8443', 'web02 10.0.0.2 ports=443|8443', 'lb01;203.0.113.2;ports=443;terminates_tls=no',
+    'web03 | 10.0.0.3 | ports=443 | terminates_tls=no', 'web04 10.0.0.4 ports=443;terminates_tls=no'
+  ].join('\n'));
+  assert.deepEqual(r.servers.map((s) => [s.name, s.tlsPorts, s.terminatesTls ?? null]), [
+    ['web01', [443, 8443], null], ['web02', [443, 8443], null], ['lb01', [443], false], ['web03', [443], false], ['web04', [443], false]
+  ]);
+  assert.deepEqual(r.warnings, []);
+});
+
+test('topology keys: JSON / YAML list items and strings and CSV cells split on , and ; only (a name may hold spaces)', () => {
+  const json = parseInventory(JSON.stringify([{ name: 'lb01', ip: '203.0.113.2', backends: ['Web Server 1', 'Web Server 2'] },
+    { name: 'Web Server 1', ip: '10.0.0.1' }, { name: 'Web Server 2', ip: '10.0.0.2', terminates_tls: 'no' }]));
+  assert.deepEqual([json.servers[0].backends, json.warnings], [['Web Server 1', 'Web Server 2'], []]);
+  const aws = parseInventory(JSON.stringify({ Reservations: [{ Instances: [
+    { PrivateIpAddress: '203.0.113.2', Tags: [{ Key: 'Name', Value: 'edge lb' }], backends: 'prod web 1; prod web 2' },
+    { PrivateIpAddress: '10.0.0.1', Tags: [{ Key: 'Name', Value: 'prod web 1' }] },
+    { PrivateIpAddress: '10.0.0.2', Tags: [{ Key: 'Name', Value: 'prod web 2' }] }] }] }));
+  assert.deepEqual([aws.servers.find((s) => s.name === 'edge lb').backends, aws.warnings], [['prod web 1', 'prod web 2'], []]);
+  const csv = parseInventory('name,ip,backends\n"Load Balancer 1",203.0.113.2,"Web Server 1;Web Server 2"\n"Web Server 1",10.0.0.1,\n"Web Server 2",10.0.0.2,');
+  assert.deepEqual([csv.servers[0].backends, csv.warnings], [['Web Server 1', 'Web Server 2'], []]);
+  // a comma still splits a string, spaces around it go
+  const list = parseInventory(JSON.stringify([{ name: 'lb01', ip: '203.0.113.2', backends: 'web01, web02' },
+    { name: 'web01', ip: '10.0.0.1' }, { name: 'web02', ip: '10.0.0.2' }]));
+  assert.deepEqual(list.servers[0].backends, ['web01', 'web02']);
+  // a space-separated list in a structured string is one item: an address list that cannot be one is a warning
+  const vip = parseInventory(JSON.stringify([{ name: 'lb01', ip: '203.0.113.2', vip: '203.0.113.50 203.0.113.51' }]));
+  assert.deepEqual(vip.warnings.map((w) => [w.code, w.reason]), [['TOPOLOGY', 'vip']]);
+});
+
 test('topology keys: TLS ports that usually carry no TLS (22, 80, 3306 …) replace -p only with a warning', () => {
   const r = parseInventory('web01 10.0.0.1 ports=22,80\nweb02 10.0.0.2 ports=443,8443\nweb03 10.0.0.3 tls_ports=3306');
   assert.deepEqual(r.servers.map((s) => [s.name, s.tlsPorts]), [['web01', [22, 80]], ['web02', [443, 8443]], ['web03', [3306]]]);

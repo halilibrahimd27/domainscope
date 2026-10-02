@@ -286,19 +286,21 @@ function topologyKey(key, structured = false) {
 const unquote = (s) => String(s).trim().replace(/^(["'])(.*)\1$/s, '$2').trim();
 
 /**
- * The items of a topology value (a string split on commas, spaces and ';', a number, a boolean, a
- * list of those); null for an object or a list holding one (`ports: [{ containerPort: 80 }]`), read as before.
+ * The items of a topology value (a string, a number, a boolean, a list of those); null for an
+ * object or a list holding one (`ports: [{ containerPort: 80 }]`), read as before. A line's
+ * value splits on spaces, ',', ';' and '|'; a `structured` one (JSON / YAML, a CSV cell) on ','
+ * and ';' only, so a name may hold spaces (an AWS Name tag).
  */
-function topologyItems(value) {
+function topologyItems(value, structured = false) {
   if (value === null || value === undefined) return [];
-  if (typeof value === 'string') return unquote(value).split(/[\s,;]+/).map((v) => unquote(v)).filter(Boolean);
+  if (typeof value === 'string') return unquote(value).split(structured ? /[,;]+/ : /[\s,;|]+/).map((v) => unquote(v)).filter(Boolean);
   if (typeof value === 'number') return [String(value)];
   if (typeof value === 'boolean') return [value ? 'yes' : 'no'];
   if (!Array.isArray(value)) return null;
   const out = [];
   for (const v of value) {
     if (v !== null && typeof v === 'object') return null;
-    out.push(...topologyItems(v));
+    out.push(...topologyItems(v, structured));
   }
   return out;
 }
@@ -350,8 +352,11 @@ function readTopology(ctx, key, items, raw, line) {
   return { key, value, raw, line };
 }
 
-/** `key=value` with a topology key on a line; the value runs to the next space, ';' or '|' (commas make a list). */
-const TOPOLOGY_TOKEN_RE = /(^|[\s,;|])([A-Za-z][A-Za-z0-9_-]*)=("[^"]*"|'[^']*'|[^\s;|"']*)/g;
+/**
+ * `key=value` with a topology key on a line. The value runs to the next space; a ';' or '|' in
+ * it continues it (`ports=443;8443`) unless the next `key=` follows (`ports=443;terminates_tls=no`).
+ */
+const TOPOLOGY_TOKEN_RE = /(^|[\s,;|])([A-Za-z][A-Za-z0-9_.-]*)=("[^"]*"|'[^']*'|(?:[^\s;|"']|[;|](?![A-Za-z][A-Za-z0-9_.-]*=)(?=[^\s;|"']))*)/g;
 
 /** The topology `key=value` tokens taken out of a line before it is split on commas: `{ rest, found: [{ key, raw }] }`. */
 function splitTopology(line) {
@@ -365,11 +370,11 @@ function splitTopology(line) {
   return { rest: found.length ? rest : line, found };
 }
 
-/** The topology of one line or CSV row: the values read, malformed ones warned about. */
-function lineTopology(ctx, found, line) {
+/** The topology of one line or CSV row (`structured`): the values read, malformed ones warned about. */
+function lineTopology(ctx, found, line, structured = false) {
   const out = [];
   for (const { key, raw } of found) {
-    const t = readTopology(ctx, key, topologyItems(raw), unquote(raw), line);
+    const t = readTopology(ctx, key, topologyItems(raw, structured), unquote(raw), line);
     if (t) out.push(t);
   }
   return out;
@@ -875,7 +880,7 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false, g
   for (const [key, value] of Object.entries(node)) {
     if (NAME_KEY_SET.has(key) && validName(value)) continue; // the name itself
     const tk = topologyKey(key, true);
-    const items = tk ? topologyItems(value) : null;
+    const items = tk ? topologyItems(value, true) : null;
     if (items) topology.push({ key, value, item: { topo: tk, items, raw: Array.isArray(value) ? value.join(',') : String(value ?? '') } });
     else entries.push(visit(key, value));
   }
@@ -1357,7 +1362,7 @@ function parseCsv(text, csv, ctx) {
       else if (col.role === 'group') groups.push(...value.split(/[,;|]+/).map((g) => g.trim()).filter(Boolean));
       else if (col.role === 'topology') topoFound.push({ key: col.key, raw: value });
     });
-    const topology = lineTopology(ctx, topoFound, rec.line);
+    const topology = lineTopology(ctx, topoFound, rec.line, true);
     for (const col of nameCols) {
       const value = cells[col.i] || '';
       if (!value) continue;

@@ -81,6 +81,10 @@ describe('zone-tools', () => {
     assert.deepEqual(pick(Z.readOther([{ name: 'db', text: 'www 300 IN A 192.0.2.1\n' }], { zone, parse })), ['example.com', 'user', 'high'], 'a file that names no zone at all');
     const header = [{ name: 'p', text: JSON.stringify({ result: [{ id: '1', zone_name: 'example.org', name: 'example.org', type: 'A', content: '192.0.2.1', ttl: 1, proxied: false }], success: true }) }];
     assert.equal(Z.readOther(header, { zone, parse }).origin, 'example.org', 'a name the file states is kept');
+    // A batch that only deletes: its DELETE names choose too.
+    const cleanup = (name) => [{ name: 'pasted', text: JSON.stringify({ Changes: [{ Action: 'DELETE', ResourceRecordSet: { Name: name, Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.10' }] } }] }) }];
+    assert.deepEqual(pick(Z.readOther(cleanup('old.example.com.'), { zone, parse })), ['example.com', 'user', 'high'], 'its DELETEs fit under this zone');
+    assert.deepEqual(pick(Z.readOther(cleanup('old.example.net.'), { zone, parse })), ['old.example.net', 'records', 'low'], 'another zone\'s DELETEs keep their guess');
   });
 
   test('the notes of a change batch and an incomplete export, in English and Turkish', () => {

@@ -360,8 +360,10 @@ export function readOther(files, { zone, typed = '', parse }) {
   const own = zone && zone.origin ? zone.origin : null;
   if (name || !own) return other;
   if (other.fatal) return other.fatal.code === 'ORIGIN_REQUIRED' ? parse(files, { origin: own }) : other;
-  if (other.originConfidence !== 'low' || !other.records.length) return other;
-  return other.records.every((r) => r.name === own || r.name.endsWith(`.${own}`)) ? parse(files, { origin: own }) : other;
+  // Its names: the records, and what a change batch deletes (one that only deletes has no records).
+  const names = [...other.records.map((r) => r.name), ...(other.changeBatch ? other.changeBatch.deletes.map((d) => d.name) : [])];
+  if (other.originConfidence !== 'low' || !names.length) return other;
+  return names.every((n) => n === own || n.endsWith(`.${own}`)) ? parse(files, { origin: own }) : other;
 }
 
 /* ------------------------------------------------------------------------ */

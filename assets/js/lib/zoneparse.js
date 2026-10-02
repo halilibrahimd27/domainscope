@@ -2937,7 +2937,8 @@ function parseRoute53(docs, zone, b, opts) {
     zone.changeBatch = { upserts, deletes };
     issues.add('CHANGE_BATCH', 0, { upserts, deletes: deletes.length }, `a change batch: ${upserts} set(s) read, ${deletes.length} DELETE(s) left out`);
   };
-  if (sets.every((_, at) => skip.has(at))) return { fatal: fatalIssue('EMPTY', {}, 'no record sets') };
+  // Nothing to read is EMPTY, but for a change batch that only deletes: changes with no records.
+  if (!deletes.length && sets.every((_, at) => skip.has(at))) return { fatal: fatalIssue('EMPTY', {}, 'no record sets') };
   const trunc = own(lastDoc, 'IsTruncated');
   if (trunc === true || trunc === 'true' || typeof own(lastDoc, 'NextToken') === 'string') {
     zone.partial = true;

@@ -959,7 +959,12 @@ describe('Route 53 JSON and cli53', () => {
       assert.deepEqual(z.warnings.find((w) => w.code === 'CHANGE_BATCH'), { code: 'CHANGE_BATCH', severity: 'info', line: 0, source: 0, params: { upserts: 2, deletes: 1 },
         detail: 'a change batch: 2 set(s) read, 1 DELETE(s) left out' });
     }
-    assert.equal(P(JSON.stringify({ Changes: [changes[2]] })).fatal.code, 'EMPTY', 'only DELETEs: nothing in the zone');
+    // Only DELETEs: a batch that takes sets away, no records, its zone named after them.
+    const cleanup = P(JSON.stringify({ Changes: [changes[2]] }));
+    assert.deepEqual([cleanup.fatal, cleanup.records.length, cleanup.origin, cleanup.originConfidence], [null, 0, 'old.example.com', 'low']);
+    assert.deepEqual(cleanup.changeBatch, { upserts: 0, deletes: [{ name: 'old.example.com', type: 'A', id: null }] });
+    assert.deepEqual(cleanup.warnings.find((w) => w.code === 'CHANGE_BATCH').params, { upserts: 0, deletes: 1 });
+    assert.equal(P(JSON.stringify({ Changes: [{ Action: 'DELETE', ResourceRecordSet: { Type: 'A' } }] })).fatal.code, 'EMPTY', 'nothing it could read: EMPTY');
     assert.equal(P(JSON.stringify({ Changes: [{ Foo: 1 }] })).fatal.code, 'UNSUPPORTED_JSON', 'a list of something else');
   });
 

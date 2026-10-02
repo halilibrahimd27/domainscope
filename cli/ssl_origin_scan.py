@@ -1902,16 +1902,15 @@ class _InventoryBuilder:
 
     def apply_topology(self, server: Server, topology: Sequence[TopologyValue]) -> None:
         """Merge a line's topology into ``server``: ports, VIPs, NAT addresses and backends add
-        up; terminates_tls keeps the first value, a different later one is a 'conflict'."""
+        up; terminates_tls given both ways is a 'conflict' and yes, the safe value."""
         for key, value, raw, line in topology:
             if key == 'terminates_tls':
-                if server.terminates_tls is None:
+                if server.terminates_tls is not None and server.terminates_tls != value:
+                    self.warn(line, 'TOPOLOGY', _conflict_text(raw, server.name,
+                                                               server.terminates_tls), 'conflict')
+                    server.terminates_tls = True
+                else:
                     server.terminates_tls = value
-                elif server.terminates_tls != value:
-                    self.warn(line, 'TOPOLOGY', 'terminates_tls=%s for %s: it was already %s - '
-                              'the first value stays' % (raw, server.name,
-                                                         'yes' if server.terminates_tls else 'no'),
-                              'conflict')
                 continue
             if key == 'backends':
                 server.backend_refs.extend((ref, line, self.source) for ref in value)
@@ -2827,11 +2826,16 @@ def _merge_topology(existing: Server, server: Server) -> List[InventoryWarning]:
     if existing.terminates_tls is None:
         existing.terminates_tls = server.terminates_tls
         return []
-    return [InventoryWarning(server.line, 'TOPOLOGY', 'terminates_tls=%s for %s: it was already '
-                             '%s - the first value stays'
-                             % ('yes' if server.terminates_tls else 'no', server.name,
-                                'yes' if existing.terminates_tls else 'no'),
-                             server.source, 'conflict')]
+    text = _conflict_text('yes' if server.terminates_tls else 'no', server.name,
+                          existing.terminates_tls)
+    existing.terminates_tls = True
+    return [InventoryWarning(server.line, 'TOPOLOGY', text, server.source, 'conflict')]
+
+
+def _conflict_text(raw: str, name: str, before: bool) -> str:
+    """The TOPOLOGY 'conflict' text: terminates_tls given both ways keeps yes, the safe value."""
+    return ('terminates_tls=%s for %s: it was already %s - yes is kept (the safe value)'
+            % (raw, name, 'yes' if before else 'no'))
 
 
 # =====================================================================================

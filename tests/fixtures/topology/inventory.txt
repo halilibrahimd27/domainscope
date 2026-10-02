@@ -10,8 +10,8 @@ db01 10.0.0.40:5432 ports=443
 # malformed values, a second terminates_tls and a key without a server: warnings, never dropped
 bad01 10.0.0.50 ports=0,https
 bad02 10.0.0.51 terminates_tls=maybe vip=203.0.113.300
-bad03 10.0.0.52 nat=203.0.113.60:443 backends=web99,bad03
-web01 10.0.0.21 terminates_tls=yes
+bad03 10.0.0.52 nat=203.0.113.60:443 backends=web99,bad03 terminates_tls=no
+bad03 10.0.0.52 terminates_tls=yes
 ports=443
 [web]
 web03 ansible_host=10.0.0.70 terminates_tls=no

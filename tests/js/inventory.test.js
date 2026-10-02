@@ -856,6 +856,17 @@ test('topology keys: every malformed value is a TOPOLOGY warning naming the key'
   for (const reason of new Set(r.warnings.map((w) => w.reason))) assert.ok(TOPOLOGY_REASONS.includes(reason), reason);
 });
 
+test('topology keys: terminates_tls given both ways keeps yes, the safe value, and warns', () => {
+  for (const text of ['web01 10.0.0.1 terminates_tls=no\nweb01 10.0.0.1 terminates_tls=yes', 'web01 10.0.0.1 terminates_tls=yes\nweb01 10.0.0.1 terminates_tls=no',
+    'web01 10.0.0.1 terminates_tls=no terminates_tls=yes', 'web01 10.0.0.1 terminates_tls=no\n10.0.0.1 terminates_tls=yes']) {
+    const r = parseInventory(text);
+    assert.deepEqual(r.servers.map((s) => [s.name, s.terminatesTls]), [['web01', true]], text);
+    assert.deepEqual(r.warnings.map((w) => [w.code, w.reason]), [['TOPOLOGY', 'conflict']], text);
+  }
+  // the same value twice is no conflict
+  assert.deepEqual(parseInventory('web01 10.0.0.1 terminates_tls=no\nweb01 10.0.0.1 terminates_tls=off').warnings, []);
+});
+
 test('topology keys: names, booleans and spellings; backends by name, by address, across lines', () => {
   const r = parseInventory([
     'LB01 203.0.113.2 Backends=WEB01 terminatesTls=Yes',

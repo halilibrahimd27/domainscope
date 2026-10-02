@@ -14,7 +14,7 @@
       "extra": {
         "bad01": { "endpoints": ["10.0.0.50"], "tlsPorts": [], "terminatesTls": null, "vips": [], "nats": [], "backends": [] },
         "bad02": { "endpoints": ["10.0.0.51"], "tlsPorts": [], "terminatesTls": null, "vips": [], "nats": [], "backends": [] },
-        "bad03": { "endpoints": ["10.0.0.52"], "tlsPorts": [], "terminatesTls": null, "vips": [], "nats": [], "backends": [] },
+        "bad03": { "endpoints": ["10.0.0.52"], "tlsPorts": [], "terminatesTls": true, "vips": [], "nats": [], "backends": [] },
         "web03": { "endpoints": ["10.0.0.70"], "tlsPorts": [], "terminatesTls": false, "vips": [], "nats": [], "backends": [] }
       },
       "warnings": [

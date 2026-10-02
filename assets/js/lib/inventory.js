@@ -66,7 +66,7 @@ import { normalizeIP, parseCidr, ipInCidr } from './netinfo.js';
  *   (`203.0.113.10:2222` under `[web]`), Ansible's SSH port: the address is kept, on `-p`.
  *   TOPOLOGY ({@link TOPOLOGY_REASONS}): a malformed value — 'ports', 'terminatesTls', 'vip',
  *   'nat', 'backends' —, 'unknownBackend' (names no server here), 'selfBackend', 'conflict'
- *   (terminates_tls given both ways; the first stays), 'noServer' (a line or record with
+ *   (terminates_tls given both ways: yes is kept), 'noServer' (a line or record with
  *   topology keys but no server) and 'groupVars' (Ansible group vars are not read: set it per host).
  */
 
@@ -515,7 +515,7 @@ const emptyTopology = () => ({ tlsPorts: [], terminatesTls: undefined, vips: [],
 
 /**
  * Merge an entry's topology into a server draft, in line order: ports, VIPs, NAT addresses and
- * backends add up; terminates_tls keeps the first value, a different later one is a 'conflict'.
+ * backends add up; terminates_tls given both ways is a 'conflict' and yes, the safe value.
  */
 function mergeTopology(d, list, ctx) {
   const push = (arr, values) => {
@@ -527,8 +527,10 @@ function mergeTopology(d, list, ctx) {
     else if (t.key === 'nat') push(d.topo.nats, t.value);
     else if (t.key === 'backends') for (const ref of t.value) d.topo.backendRefs.push({ ref, line: t.line });
     else if (t.key === 'terminates_tls') {
-      if (d.topo.terminatesTls === undefined) d.topo.terminatesTls = t.value;
-      else if (d.topo.terminatesTls !== t.value) ctx.warn(t.line, 'TOPOLOGY', undefined, `terminates_tls=${t.raw}`, 'conflict');
+      if (d.topo.terminatesTls !== undefined && d.topo.terminatesTls !== t.value) {
+        ctx.warn(t.line, 'TOPOLOGY', undefined, `terminates_tls=${t.raw}`, 'conflict');
+        d.topo.terminatesTls = true;
+      } else d.topo.terminatesTls = t.value;
     }
   }
 }

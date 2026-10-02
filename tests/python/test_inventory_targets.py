@@ -21,7 +21,9 @@ Run from the repository root:
 
 import importlib.util
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -313,6 +315,31 @@ class InventoryTopologyParity(unittest.TestCase):
         k8s = sos.parse_inventory(json.dumps([{'name': 'web01', 'ip': '10.0.0.1', 'ports': [
             {'containerPort': 80, 'protocol': 'TCP'}]}]), 'x.json')
         self.assertEqual((k8s.servers[0].tls_ports, k8s.warnings), ([], []))
+
+    def test_terminates_tls_given_both_ways_keeps_yes_and_warns(self):
+        for text in ('web01 10.0.0.1 terminates_tls=no\nweb01 10.0.0.1 terminates_tls=yes',
+                     'web01 10.0.0.1 terminates_tls=yes\nweb01 10.0.0.1 terminates_tls=no',
+                     'web01 10.0.0.1 terminates_tls=no terminates_tls=yes'):
+            with self.subTest(text=text):
+                inventory = sos.parse_inventory(text, 'x.txt')
+                self.assertEqual([(s.name, s.terminates_tls) for s in inventory.servers], [('web01', True)])
+                self.assertEqual([(w.code, w.reason) for w in inventory.warnings], [('TOPOLOGY', 'conflict')])
+                self.assertIn('yes is kept', str(inventory.warnings[0]))
+        self.assertEqual(sos.parse_inventory('web01 10.0.0.1 terminates_tls=no\nweb01 10.0.0.1 '
+                                             'terminates_tls=off', 'x.txt').warnings, [])
+        # two -t files: the same rule
+        d = tempfile.mkdtemp(prefix='ds-conflict-')
+        try:
+            a, b = os.path.join(d, 'a.txt'), os.path.join(d, 'b.txt')
+            Path(a).write_text('web01 10.0.0.1 terminates_tls=no\n', encoding='utf-8')
+            Path(b).write_text('web01 10.0.0.1 terminates_tls=yes\n', encoding='utf-8')
+            servers, warnings = sos.load_targets([a, b])
+            self.assertEqual([(s.name, s.terminates_tls) for s in servers], [('web01', True)])
+            self.assertEqual([(w.code, w.reason) for w in warnings], [('TOPOLOGY', 'conflict')])
+        finally:
+            for name in os.listdir(d):
+                os.remove(os.path.join(d, name))
+            os.rmdir(d)
 
     def test_backends_by_name_and_address_across_lines_and_files(self):
         inventory = sos.parse_inventory('\n'.join([

@@ -27,6 +27,7 @@
 
 import { rdataKey } from './zoneparse.js';
 import { toCsv, toJson } from './export.js';
+import { txtBytes, joinBytes } from './zonetext.js';
 
 /** Row statuses, in display order. */
 export const DIFF_STATUSES = Object.freeze(['added', 'removed', 'changed', 'same', 'ignored']);
@@ -131,6 +132,14 @@ function caaValue(tag, value) {
 /** Whitespace-collapsed RDATA text (a value the parser kept as text). */
 const textKey = (s) => String(s ?? '').trim().replace(/\s+/g, ' ');
 
+/** Bytes as a string of code points 0–255: a comparison key with one character per byte. */
+function byteKey(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return s;
+}
+
+
 /**
  * The comparison key of one record's value.
  * @param {object} r ZoneRecord
@@ -144,8 +153,11 @@ export function valueKey(r, { origin = null, joinTxt = DIFF_DEFAULTS.joinTxt, ig
   const data = relativeData(type, r.data, origin);
   switch (type) {
     case 'TXT':
-    case 'SPF':
-      return joinTxt ? `txt ${JSON.stringify((Array.isArray(data) ? data : [data]).join(''))}` : rdataKey(type, data);
+    case 'SPF': {
+      // By the bytes: the joined text with joinTxt, else each string.
+      const strings = txtBytes(r);
+      return joinTxt ? `txt ${JSON.stringify(byteKey(joinBytes(strings)))}` : `txts ${JSON.stringify(strings.map(byteKey))}`;
+    }
     case 'SOA': {
       const names = `${data.mname} ${data.rname}`;
       return ignoreSoa ? names : `${names} ${data.serial} ${data.refresh} ${data.retry} ${data.expire} ${data.minimum}`;

@@ -8,17 +8,127 @@
  */
 
 const utf8 = new TextEncoder();
+const utf8Strict = new TextDecoder('utf-8', { fatal: true });
 const octal = (b) => `\\${b.toString(8).padStart(3, '0')}`;
+
+/* ------------------------------------------------------------------------ */
+/* A TXT record's character-strings as bytes                                */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The character-strings of a TXT-like presentation text as bytes: quoted strings or bare words,
+ * `\DDD` a byte, `\X` the character X, any other character its UTF-8 bytes. lib/zoneparse.js
+ * writes a TXT record's `text` so (its `data` decodes each string on its own, so a character
+ * split across two strings, or a byte that is not UTF-8, cannot be told from it).
+ * @param {string} text e.g. `"a\195" "\188b"`
+ * @returns {Uint8Array[]}
+ */
+export function charStringBytes(text) {
+  const s = String(text ?? '');
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    while (i < s.length && (s[i] === ' ' || s[i] === '\t')) i += 1;
+    if (i >= s.length) break;
+    const quoted = s[i] === '"';
+    if (quoted) i += 1;
+    const bytes = [];
+    let run = '';
+    const flush = () => {
+      if (run) for (const b of utf8.encode(run)) bytes.push(b);
+      run = '';
+    };
+    while (i < s.length) {
+      const c = s[i];
+      if (quoted ? c === '"' : c === ' ' || c === '\t') break;
+      if (c === '\\' && i + 1 < s.length) {
+        flush();
+        const d = s.slice(i + 1, i + 4);
+        if (/^\d{3}$/.test(d)) {
+          bytes.push(Number(d) & 0xff);
+          i += 4;
+        } else {
+          const cp = s.codePointAt(i + 1);
+          run = String.fromCodePoint(cp);
+          flush();
+          i += cp > 0xffff ? 3 : 2;
+        }
+        continue;
+      }
+      run += c;
+      i += 1;
+    }
+    flush();
+    if (quoted) i += 1;
+    out.push(Uint8Array.from(bytes));
+  }
+  return out;
+}
+
+/**
+ * A TXT / SPF record's character-strings as bytes (lib/zoneparse.js ZoneRecord): read from its
+ * presentation text, which holds them exactly; else (no text) its decoded strings as UTF-8.
+ * @param {{ text?: string, data?: string[]|string }} record
+ * @returns {Uint8Array[]}
+ */
+export function txtBytes(record) {
+  if (typeof record.text === 'string' && record.text) return charStringBytes(record.text);
+  return (Array.isArray(record.data) ? record.data : [record.data]).map((s) => utf8.encode(String(s ?? '')));
+}
+
+/**
+ * Byte strings joined into one.
+ * @param {Uint8Array[]} list
+ * @returns {Uint8Array}
+ */
+export function joinBytes(list) {
+  const out = new Uint8Array(list.reduce((n, b) => n + b.length, 0));
+  let at = 0;
+  for (const b of list) {
+    out.set(b, at);
+    at += b.length;
+  }
+  return out;
+}
+
+/**
+ * The UTF-8 text of bytes, or null when they are not UTF-8.
+ * @param {Uint8Array} bytes
+ * @returns {string|null}
+ */
+export function utf8Text(bytes) {
+  try {
+    return utf8Strict.decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bytes cut into character-strings of at most 255 bytes (RFC 1035 §3.3; one empty string for none).
+ * @param {Uint8Array} bytes
+ * @returns {Uint8Array[]}
+ */
+export function split255(bytes) {
+  if (!bytes.length) return [bytes];
+  const out = [];
+  for (let i = 0; i < bytes.length; i += 255) out.push(bytes.subarray(i, i + 255));
+  return out;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Route 53, YAML, octoDNS                                                  */
+/* ------------------------------------------------------------------------ */
 
 /**
  * A character-string as Route 53 reads it: quoted, `"` and `\` escaped, every byte outside
  * printable ASCII as a three-digit octal escape (Route 53's own escape form, never \DDD decimal).
- * @param {string} s
+ * @param {string|Uint8Array} s a string (written as its UTF-8 bytes) or the bytes themselves
  * @returns {string}
  */
 export function route53String(s) {
   let out = '"';
-  for (const b of utf8.encode(String(s ?? ''))) {
+  for (const b of s instanceof Uint8Array ? s : utf8.encode(String(s ?? ''))) {
     if (b === 0x22 || b === 0x5c) out += `\\${String.fromCharCode(b)}`;
     else if (b >= 0x20 && b <= 0x7e) out += String.fromCharCode(b);
     else out += octal(b);

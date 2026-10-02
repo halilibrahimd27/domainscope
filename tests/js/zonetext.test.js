@@ -2,7 +2,7 @@
 // character-string, a YAML scalar octoDNS reads back, octoDNS's TXT form and key order). No network.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { yamlString } from '../../assets/js/lib/zonetext.js';
+import { yamlString, route53String, charStringBytes, joinBytes, utf8Text, split255 } from '../../assets/js/lib/zonetext.js';
 import { parseYamlSubset } from '../../assets/js/lib/zoneparse.js';
 
 const ch = (...cps) => String.fromCodePoint(...cps);
@@ -35,5 +35,33 @@ describe('yamlString', () => {
     assert.equal(yamlString("it's"), "'it''s'");
     assert.equal(yamlString('a"b'), `'a"b'`);
     assert.equal(yamlString(`a${BS}b`), `'a${BS}b'`);
+  });
+});
+
+describe('TXT character-strings as bytes', () => {
+  const hex = (list) => list.map((b) => Buffer.from(b).toString('hex'));
+
+  test('charStringBytes reads a presentation text: quoted strings, escaped bytes and characters, raw UTF-8, unquoted words', () => {
+    assert.deepEqual(hex(charStringBytes(`"a${BS}195" "${BS}188b"`)), ['61c3', 'bc62'], 'a character split across two strings stays two bytes apart');
+    assert.deepEqual(hex(charStringBytes(`"${BS}255x"`)), ['ff78'], 'a byte that is not UTF-8');
+    assert.deepEqual(hex(charStringBytes(`"${ch(0xfc)}"`)), ['c3bc'], 'raw UTF-8');
+    assert.deepEqual(hex(charStringBytes(`"a${BS}"b" "${BS}${BS}"`)), ['612262', '5c']);
+    assert.deepEqual(hex(charStringBytes('abc "d e"')), ['616263', '642065']);
+    assert.deepEqual(hex(charStringBytes('""')), ['']);
+    assert.deepEqual(hex(charStringBytes(`"${ch(0x1f600)}"`)), ['f09f9880']);
+  });
+
+  test('joinBytes, utf8Text (null when the bytes are not UTF-8) and split255', () => {
+    const joined = joinBytes(charStringBytes(`"a${BS}195" "${BS}188b"`));
+    assert.equal(utf8Text(joined), `a${ch(0xfc)}b`, 'joined first, then decoded');
+    assert.equal(utf8Text(Uint8Array.from([0xff, 0x78])), null);
+    assert.deepEqual(split255(new Uint8Array(600)).map((b) => b.length), [255, 255, 90]);
+    assert.deepEqual(split255(new Uint8Array(0)).map((b) => b.length), [0]);
+  });
+
+  test('route53String takes bytes too: every byte outside printable ASCII as its octal escape', () => {
+    assert.equal(route53String(Uint8Array.from([0x61, 0xc3])), `"a${BS}303"`);
+    assert.equal(route53String(Uint8Array.from([0xff, 0x22, 0x5c])), `"${BS}377${BS}"${BS}${BS}"`);
+    assert.equal(route53String(`k${ch(0xe4)}se`), `"k${BS}303${BS}244se"`, 'a string as its UTF-8 bytes');
   });
 });

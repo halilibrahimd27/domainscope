@@ -76,6 +76,18 @@ describe('values', () => {
     assert.notEqual(valueKey(split, { joinTxt: false }), valueKey(whole, { joinTxt: false }));
   });
 
+  test('TXT by its bytes: a character split across two strings is the same text, a byte that is not UTF-8 never its Latin-1 look-alike', () => {
+    const BS = '\\';
+    const split = bind(`x TXT "a${BS}195" "${BS}188b"`);
+    const whole = bind(`x TXT "a${BS}195${BS}188b"`);
+    assert.deepEqual(lines(diffZones(split, whole)), ['same x TXT |txt-split']);
+    assert.deepEqual(lines(diffZones(split, whole, { joinTxt: false })), ['changed x TXT values|']);
+    for (const joinTxt of [true, false]) {
+      assert.deepEqual(lines(diffZones(bind(`x TXT "${BS}255"`), bind(`x TXT "${BS}195${BS}191"`), { joinTxt })), ['changed x TXT values|'], `joinTxt ${joinTxt}`);
+    }
+    assert.deepEqual(lines(diffZones(bind(`x TXT "${BS}195${BS}188"`), bind(`x TXT "${String.fromCodePoint(0xfc)}"`))), ['same x TXT |']);
+  });
+
   test('names inside RDATA relative to their zone: a copy under another name compares equal', () => {
     assert.equal(valueKey(rec('www CNAME @'), { origin: 'example.com' }), valueKey(rec('www CNAME @', 'example.net'), { origin: 'example.net' }));
     assert.notEqual(valueKey(rec('www CNAME other.example.org.'), { origin: 'example.com' }), valueKey(rec('www CNAME @'), { origin: 'example.com' }));

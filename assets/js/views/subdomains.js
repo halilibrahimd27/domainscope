@@ -77,7 +77,7 @@ import {
   WORDLIST_SMALL, LOCALE_PACK_CODES, localesForDomain, parseCustomWordlist, wordlistInfo
 } from '../lib/wordlist.js';
 import { createLearnedStore } from '../lib/learned.js';
-import { knownForScan, originsFor, originTarget } from '../lib/originmap.js';
+import { knownForScan, originIndex, originsFor, originTarget } from '../lib/originmap.js';
 import { backToLastRun, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { buildFittedSweepCommand, validateTargets, validateNames } from '../lib/cmdline.js';
@@ -4724,7 +4724,8 @@ function buildRunUI(run, ctx, { onFinish, onScanWith }) {
     // 00. The workspace's origin map: remembered origins first; a stale entry of one of these
     //     hosts is shown, not used (Servers › Origin map says why).
     const knownRows = o.proxied.filter((p) => p.known.length);
-    const map = stateSingleton.workspaceData('origins');
+    // Read once for this render (a full map holds 2,000 entries), then looked up per proxied host.
+    const map = originIndex(stateSingleton.workspaceData('origins'));
     const staleRows = o.proxied.flatMap((p) => originsFor(map, p.name).filter((e) => e.stale).map((e) => ({ name: p.name, e })));
     if (knownRows.length || staleRows.length) {
       blocks.push(h('div', { class: 'sub-org-block', dataset: { block: 'known' } },

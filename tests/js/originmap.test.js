@@ -9,10 +9,14 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
+import * as originmap from '../../assets/js/lib/originmap.js';
 import {
   sanitizeOriginMap, originsFor, knownForScan, originKey, originTarget, originName, originPort,
   ORIGIN_MAP_LIMITS, ORIGIN_SOURCES, STALE_REASONS
 } from '../../assets/js/lib/originmap.js';
+
+/** lib/originmap.js originIndex (looked up at call time, so the other tests run without it). */
+const originIndex = (map) => originmap.originIndex(map);
 import { applyObservations, addManualOrigin, removeOrigins, setRemember } from '../../assets/js/lib/originfill.js';
 import { createWorkspaceStore, createMemoryBackend, WORKSPACE_PARTS, sanitizePart } from '../../assets/js/lib/workspace.js';
 import { exportWorkspaceFile, openWorkspaceFile } from '../../assets/js/lib/handover.js';
@@ -416,6 +420,30 @@ describe('reading the map', () => {
     assert.deepEqual(knownForScan(map).map((k) => k.ip), ['203.0.113.40', '203.0.113.41']);
     assert.deepEqual(Object.keys(knownForScan(map)[0]).sort(), ['ip', 'lastConfirmed', 'name', 'port', 'server', 'source']);
     assert.deepEqual(knownForScan(null), []);
+  });
+});
+
+describe('reading a full map, once per render', () => {
+  test('indexed once, then a lookup per proxied host: 2,000 entries and 1,000 lookups well under a second', () => {
+    const entries = [];
+    for (let i = 0; i < ORIGIN_MAP_LIMITS.entries; i += 1) {
+      entries.push({
+        name: `host${i % 700}.example.com`, ip: `198.51.${100 + Math.floor(i / 250)}.${i % 250}`, port: i % 3 ? 443 : 8443,
+        source: 'cli-json', lastConfirmed: new Date(Date.parse(DAY1) + i * 1000).toISOString(),
+        stale: i % 5 ? null : { reason: 'cli-elsewhere', at: DAY3, ip: '203.0.113.9', port: 443 }
+      });
+    }
+    const map = sanitizeOriginMap({ remember: true, entries });
+    const started = performance.now();
+    const index = originIndex(map);
+    for (let i = 0; i < 1000; i += 1) originsFor(index, `host${i % 700}.example.com`);
+    knownForScan(index);
+    const took = performance.now() - started;
+    assert.ok(took < 750, `${took.toFixed(0)} ms for one index, 1,000 lookups and the scan's list`);
+    assert.equal(originIndex(index), index, 'an index is its own index');
+    assert.deepEqual(originsFor(index, 'host1.example.com'), originsFor(map, 'host1.example.com'), 'the same answer as from the map');
+    assert.deepEqual(knownForScan(index), knownForScan(map));
+    assert.deepEqual(originsFor(originIndex(null), 'host1.example.com'), []);
   });
 });
 

@@ -141,28 +141,51 @@ export function sanitizeOriginMap(value, { now } = {}) {
   return remember || entries.length ? { v: 1, remember, entries } : null;
 }
 
+/** The indexes {@link originIndex} made (an index passed where a map is expected is used as is). */
+const INDEXES = new WeakSet();
+
+/**
+ * The map read once for many lookups — a view's render, the scan's list: sanitized once, its
+ * entries by name. Every reader here takes the map or its index; give a render the index, so a
+ * full map (2,000 entries) is not checked again for each proxied host.
+ * @param {object|null} map the workspace part, or an index (returned as is)
+ * @returns {{ map: object|null, byName: Map<string, object[]> }}
+ */
+export function originIndex(map) {
+  if (map && typeof map === 'object' && INDEXES.has(map)) return map;
+  const m = sanitizeOriginMap(map);
+  const byName = new Map();
+  for (const e of m ? m.entries : []) {
+    if (!byName.has(e.name)) byName.set(e.name, []);
+    byName.get(e.name).push(e);
+  }
+  const index = Object.freeze({ map: m, byName });
+  INDEXES.add(index);
+  return index;
+}
+
 /**
  * A name's entries: its own and a `*.parent` one covering it, active first, newest first.
- * @param {object|null} map
+ * @param {object|null} map the map, or its {@link originIndex} (for many names)
  * @param {string} name
  * @returns {object[]}
  */
 export function originsFor(map, name) {
   const n = originName(name);
-  const m = sanitizeOriginMap(map);
+  const { map: m, byName } = originIndex(map);
   if (!n || !m) return [];
   const dot = n.indexOf('.');
   const wild = dot > 0 && !n.startsWith('*.') ? `*.${n.slice(dot + 1)}` : null;
-  return m.entries.filter((e) => e.name === n || e.name === wild).sort(rank);
+  return [...(byName.get(n) || []), ...((wild && byName.get(wild)) || [])].sort(rank);
 }
 
 /**
  * The active (not stale) entries as a scan's known origins (lib/scanner.js `knownOrigins`).
- * @param {object|null} map
+ * @param {object|null} map the map, or its {@link originIndex}
  * @returns {Array<{ name: string, ip: string, port: number, server: string|null, source: string, lastConfirmed: string }>}
  */
 export function knownForScan(map) {
-  const m = sanitizeOriginMap(map);
+  const { map: m } = originIndex(map);
   return m ? m.entries.filter((e) => !e.stale)
     .map(({ name, ip, port, server, source, lastConfirmed }) => ({ name, ip, port, server, source, lastConfirmed })) : [];
 }

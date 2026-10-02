@@ -68,7 +68,7 @@ import { state as stateSingleton } from '../state.js';
 import { scanFraction } from '../lib/jobprogress.js';
 import { startJob, NotifyButton } from '../ui/jobs.js';
 import { expectedCasChanged } from '../ui/expected-ca.js';
-import { knownForScan, originsFor, originTarget } from '../lib/originmap.js';
+import { knownForScan, originIndex, originsFor, originTarget } from '../lib/originmap.js';
 import { StaleBadge, staleText } from '../ui/origin-map.js';
 import {
   CertAlternatives, CertChainNotes, CertLoader, CertPfxNote, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad, pfxFocusTarget,
@@ -3570,7 +3570,8 @@ function buildRunUI(run, ctx, { onFinish }) {
 
     // The workspace's origin map: the remembered origins of these proxied names first (exact, and
     // what the command probes), then a stale entry of one of them, shown but not used.
-    const originsMap = state.workspaceData('origins');
+    // Read once for this render (a full map holds 2,000 entries), then looked up per proxied host.
+    const originsMap = originIndex(state.workspaceData('origins'));
     const knownRows = [
       ...overview.proxied.flatMap((p) => p.known.map((k) => ({ name: p.name, target: k.target, entry: originsFor(originsMap, p.name).find((e) => e.ip === k.ip && e.port === k.port) || null, stale: false }))),
       ...overview.proxied.flatMap((p) => originsFor(originsMap, p.name).filter((e) => e.stale).map((e) => ({ name: p.name, target: originTarget(e), entry: e, stale: true })))

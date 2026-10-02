@@ -2649,8 +2649,9 @@ export const ORIGIN_SOURCES = ['cli-json', 'zone', 'verify', 'compare', 'manual'
   ORIGIN_MAP_LIMITS = { entries: 2000, perName: 16, server: 80 }, ORIGIN_DEFAULT_PORT = 443
 export function sanitizeOriginMap(value, { now }?) -> OriginMap | null   // every entry checked (normalizeHostname, normalizeIP, port, dates, source, server name, stale reason), one per name|ip|port
                                                               // (the latest confirmation), capped per name and in all (active, then recent, kept first); null while off with no entry
-export function originsFor(map, name) -> OriginEntry[]        // its own entries and a `*.parent` one covering it, active first
-export function knownForScan(map) -> Array<{ name, ip, port, server, source, lastConfirmed }>   // the active entries: lib/scanner.js knownOrigins (§5.12)
+export function originIndex(map) -> { map, byName }             // sanitized once, entries by name: what a render reads (an index passes through)
+export function originsFor(mapOrIndex, name) -> OriginEntry[] // its own entries and a `*.parent` one covering it, active first
+export function knownForScan(mapOrIndex) -> Array<{ name, ip, port, server, source, lastConfirmed }>   // the active entries: lib/scanner.js knownOrigins (§5.12)
 export function originName(s), originPort(v) /* '' → 443 */, originKey(e) /* name|ip|port */, originTarget(e) /* ip, ip:port, [v6]:port */, originTime(v), originServer(v),
   originNow(now) /* ms; the real clock when absent */, originTimeAt(v, nowMs) /* an ISO time, at most nowMs */
 // lib/originfill.js

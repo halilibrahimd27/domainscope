@@ -886,6 +886,9 @@ describe('diff: audit', () => {
     assert.deepEqual(tags(changes), ['NEW example.com expiryDays', 'NEW example.net', 'GONE example.org', 'NEW? example.com dnssec', 'GONE? example.com dkim']);
     assert.match(changeText(changes[0]), /^example\.com: new rule expiryDays >= 60: fail — 40 days left/);
     assert.equal(changeText(changes[1]), 'example.net: now audited: 1 rule failed');
+    // a domain added that meets every rule is listed, never counted (no exit 4 with --fail-on-change)
+    assert.deepEqual(tags(diff([target('example.com', [rule('expiryDays', 'pass')])], [target('example.com', [rule('expiryDays', 'pass')]), target('example.org', [rule('expiryDays', 'pass')])])),
+      ['NEW? example.org']);
   });
 
   test('values from DNS and the registry in the evidence are code parts (Markdown code spans)', () => {

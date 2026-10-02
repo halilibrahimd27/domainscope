@@ -659,8 +659,9 @@ function diffAudit(before, after, { t }) {
     const b = old.get(domain);
     if (!b) {
       const failing = (a.rules || []).filter((r) => r.status === 'fail');
+      // counted only when a rule fails: a domain added that meets every rule is no news to act on
       out.push(change('NEW', domain, null, [`now audited: ${failing.length} rule${failing.length === 1 ? '' : 's'} failed`],
-        { tone: failing.length ? 'bad' : 'info', kind: 'appeared', after: failing.map((r) => r.id) }));
+        { tone: failing.length ? 'bad' : 'info', counts: failing.length > 0, kind: 'appeared', after: failing.map((r) => r.id) }));
       continue;
     }
     const prev = new Map((b.rules || []).map((r) => [r.id, r]));

@@ -938,7 +938,13 @@ export function portfolioSummaryFacts(factsList, { at = null, stopped = false, n
     notRegistered: list.filter((f) => reg(f).state === 'not-found').map((f) => f.domain),
     nsExpiring,
     nsUnregistered: [...gone].map(([domain, of]) => ({ domain, of })).sort((a, b) => a.domain.localeCompare(b.domain, 'en')),
-    dnssec: { validated: count((f) => f.dnssec && f.dnssec.state === 'validated'), signed: count((f) => f.dnssec && (f.dnssec.state === 'signed' || f.dnssec.state === 'failing')), unsigned: count((f) => f.dnssec && f.dnssec.state === 'unsigned') },
+    dnssec: {
+      validated: count((f) => f.dnssec && f.dnssec.state === 'validated'),
+      signed: count((f) => f.dnssec && f.dnssec.state === 'signed'),
+      // DS published, the keys not validated: Domain Health's dnssec.broken
+      broken: count((f) => f.dnssec && f.dnssec.state === 'failing'),
+      unsigned: count((f) => f.dnssec && f.dnssec.state === 'unsigned')
+    },
     caaNone: count((f) => f.caa && (f.caa.state === 'none' || f.caa.state === 'unrestricted')),
     spfOver: list.filter((f) => f.spf && f.spf.over).map((f) => f.domain),
     spfBad: list.filter((f) => f.spf && f.spf.state && f.spf.state !== 'ok').map((f) => f.domain),

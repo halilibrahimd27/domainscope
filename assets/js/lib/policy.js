@@ -396,14 +396,10 @@ const RULE_EVAL = {
   dnssec(entry, f) {
     const d = f.dnssec;
     if (!d || !d.state) return cell(entry, 'unknown', null, unknownWhy(d, 'DS'));
-    // DS at the parent but the DNSKEY lookup failed: signed, whether it validates is not known.
-    if (d.state === 'failing') {
-      const want = policyRule('dnssec').levels.indexOf(entry.value);
-      const asSigned = compare(entry.op, 1, want);
-      const asValidated = compare(entry.op, 2, want);
-      const status = asSigned && asValidated ? 'pass' : !asSigned && !asValidated ? 'fail' : 'unknown';
-      return cell(entry, status, 'signed', ev('pol.ev.dnssec.failing'));
-    }
+    // DS at the parent, but the keys cannot be validated (the DNSKEY answer is an error, a
+    // validating resolver's SERVFAIL): Domain Health's dnssec.broken — validating resolvers refuse
+    // the domain. It fails every dnssec requirement, whatever its level or operator.
+    if (d.state === 'failing') return cell(entry, 'fail', 'failing', ev('pol.ev.dnssec.failing'));
     return orderedCell(entry, d.state, ev(`pol.ev.dnssec.${d.state}`));
   },
   caa(entry, f) {
@@ -667,7 +663,8 @@ const STRINGS = [
   ['pol.ev.nxdomain', ['the domain does not exist in DNS (NXDOMAIN)', 'alan adı DNS’te yok (NXDOMAIN)']],
   ['pol.ev.dnssec.validated', ['signed (DS) and validated', 'imzalı (DS) ve doğrulanıyor']],
   ['pol.ev.dnssec.signed', ['signed (DS), not validated by the resolver', 'imzalı (DS), çözümleyici doğrulamıyor']],
-  ['pol.ev.dnssec.failing', ['signed (DS), but the keys could not be read', 'imzalı (DS), ama anahtarlar okunamadı']],
+  ['pol.ev.dnssec.failing', ['DS published, but the keys cannot be validated: DNSSEC is broken (validating resolvers refuse the domain)',
+    'DS yayımlanmış ama anahtarlar doğrulanamıyor: DNSSEC bozuk (doğrulama yapan çözümleyiciler alan adını reddeder)']],
   ['pol.ev.dnssec.unsigned', ['not signed: no DS record', 'imzasız: DS kaydı yok']],
   ['pol.ev.caa.present', ['CAA allows {list}', 'CAA şunlara izin veriyor: {list}']],
   ['pol.ev.caa.none', ['no CAA record: any CA may issue', 'CAA kaydı yok: her CA sertifika verebilir']],

@@ -460,7 +460,7 @@ describe('the calendar and the exports', () => {
     assert.deepEqual(s.dmarcWeak, ['example.net', 'example-test.com.tr']);
     assert.deepEqual(s.parkedOpen, ['example.net']);
     assert.equal(s.failedLookups, 1);
-    assert.deepEqual(s.dnssec, { validated: 1, signed: 0, unsigned: 3 });
+    assert.deepEqual(s.dnssec, { validated: 1, signed: 0, broken: 0, unsigned: 3 }, 'a DS whose keys cannot be validated is counted as broken, never as signed');
   });
 
   test('every column has its lookups', () => {

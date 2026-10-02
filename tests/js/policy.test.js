@@ -187,15 +187,19 @@ describe('evaluatePolicy', () => {
     assert.equal(cellOf(p, ns([{ domain: 'example.org', state: 'not-found', daysLeft: null }]), 'nsExpiryDays').status, 'fail', 'never "not known"');
   });
 
-  test('DNSSEC as levels; DS with keys that could not be read', () => {
+  test('DNSSEC as levels; DS with keys that cannot be validated fails every requirement', () => {
     const atLeast = one({ dnssec: 'signed' });
     const validated = one({ dnssec: 'validated' });
     const d = (state) => facts({ dnssec: { state } });
     assert.deepEqual(['validated', 'signed', 'unsigned'].map((s) => cellOf(atLeast, d(s), 'dnssec').status), ['pass', 'pass', 'fail']);
     assert.deepEqual(['validated', 'signed', 'unsigned'].map((s) => cellOf(validated, d(s), 'dnssec').status), ['pass', 'fail', 'fail']);
-    assert.equal(cellOf(atLeast, d('failing'), 'dnssec').status, 'pass', 'signed for sure');
-    assert.equal(cellOf(validated, d('failing'), 'dnssec').status, 'unknown', 'validated or not: not known');
-    assert.equal(cellOf(one({ dnssec: '== unsigned' }), d('failing'), 'dnssec').status, 'fail');
+    // DS published, but the keys could not be validated (a validating resolver's SERVFAIL): Domain
+    // Health's dnssec.broken — validating resolvers refuse the domain. It never passes.
+    for (const req of ['signed', '>= signed', '>= validated', '== signed', '== unsigned', '>= unsigned', '<= validated', '!= validated']) {
+      const c = cellOf(one({ dnssec: req }), d('failing'), 'dnssec');
+      assert.deepEqual([c.status, c.evidence.key], ['fail', 'pol.ev.dnssec.failing'], req);
+    }
+    assert.equal(evidenceText(cellOf(atLeast, d('failing'), 'dnssec'), t), 'DS published, but the keys cannot be validated: DNSSEC is broken (validating resolvers refuse the domain)');
     assert.equal(cellOf(atLeast, facts({ dnssec: { state: null, failure: {} } }), 'dnssec').status, 'unknown');
   });
 

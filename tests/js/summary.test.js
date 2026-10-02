@@ -1035,6 +1035,7 @@ describe('portfolio (Domain portfolio)', () => {
       '- DNSSEC: 1 validated · 2 not signed',
       '- **Policy** `@team *strict*`: all 4 domains meet every rule'
     ]);
+    assert.equal(lines(md(PF.portfolioSummary({ ...quiet, dnssec: { validated: 1, signed: 1, broken: 1, unsigned: 1 } }, opts())))[2], '- DNSSEC: 1 validated · 1 signed · 1 broken · 1 not signed');
     const partial = PF.portfolioSummary({ ...quiet, noRdap: 1, policy: { ...quiet.policy, counts: { domains: 4, failing: 0, passing: 3, unknown: 1 } } }, opts());
     assert.equal(lines(md(partial))[1], '- No domain whose expiry is known expires within 30 days');
     assert.equal(lines(md(partial))[3], '- **Policy** `@team *strict*`: no domain fails a rule; 1 could not be checked in full');

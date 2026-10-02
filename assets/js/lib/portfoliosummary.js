@@ -53,7 +53,7 @@ export function portfolioSummary(facts, opts) {
   if ((f.notRegistered || []).length) lines.push([strong(`${t('sum.pf.notRegistered')}:`), ' ', ...named(f.notRegistered)]);
   if ((f.unlocked || []).length) lines.push([strong(`${t('sum.pf.unlocked')}:`), ' ', ...named(f.unlocked)]);
   const d = f.dnssec || {};
-  lines.push([`DNSSEC: ${k.counts([['sum.pf.validated', d.validated], ['sum.pf.signed', d.signed], ['sum.pf.unsigned', d.unsigned]]) || t('sum.pf.notKnown')}`]);
+  lines.push([`DNSSEC: ${k.counts([['sum.pf.validated', d.validated], ['sum.pf.signed', d.signed], ['sum.pf.broken', d.broken], ['sum.pf.unsigned', d.unsigned]]) || t('sum.pf.notKnown')}`]);
   const mail = [];
   if ((f.spfOver || []).length) mail.push([t('sum.pf.spfOver', { count: f.spfOver.length }), ': ', ...named(f.spfOver)]);
   if ((f.dmarcWeak || []).length) mail.push([t('sum.pf.dmarcWeak', { count: f.dmarcWeak.length }), ': ', ...named(f.dmarcWeak)]);
@@ -94,6 +94,7 @@ const STRINGS = [
   ['sum.pf.unlocked', ['No transfer lock', 'Transfer kilidi yok']],
   ['sum.pf.validated', ['{count} validated', '{count} doğrulanıyor']],
   ['sum.pf.signed', ['{count} signed', '{count} imzalı']],
+  ['sum.pf.broken', ['{count} broken', '{count} bozuk']],
   ['sum.pf.unsigned', ['{count} not signed', '{count} imzasız']],
   ['sum.pf.notKnown', ['not known', 'bilinmiyor']],
   ['sum.pf.mail', ['Mail', 'E-posta']],

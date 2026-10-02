@@ -548,7 +548,7 @@ export const PROVIDERS = Object.freeze([
   edgeByName('alibaba-waf', 'Alibaba Cloud WAF / Anti-DDoS', ['yundunwaf1.com', 'yundunwaf2.com', 'yundunwaf3.com',
     'yundunwaf4.com', 'yundunwaf5.com', 'alicloudwaf.com'], 'waf', [/(?:^|\.)aliyunddos\d{4}\.com$/]),
   edgeByName('tencent-cdn', 'Tencent Cloud CDN', ['dnsv1.com', 'dnsv1.com.cn', 'cdntip.com', 'spcdntip.com', 'tdnsv5.com',
-    'tdnsv6.com', 'tdnsstic1.cn', 'tdnsdp1.cn']),
+    'tdnsstic1.cn', 'tdnsdp1.cn']),
   edgeByName('tencent-edgeone', 'Tencent EdgeOne', ['dnse0.com', 'dnse1.com', 'dnse2.com', 'dnse3.com', 'dnse4.com',
     'dnse5.com', 'dnse0.cn']),
   edgeByName('tencent-waf', 'Tencent Cloud WAF', ['qcloudwaf.com', 'qcloudwzgj.com', 'qcloudzygj.com', 'qcloudcjgj.com'], 'waf'),

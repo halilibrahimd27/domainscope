@@ -214,7 +214,6 @@ test('mainland China: CDNs and WAFs recognised by CNAME only (Global DNS’s Chi
     'www.example.com.cdn.dnsv1.com': 'tencent-cdn',
     'www.example.com.dsa.dnsv1.com.cn': 'tencent-cdn',
     'best.sched.sma-dk.tdnsstic1.cn': 'tencent-cdn',
-    'res.example.com.sched.legopic1-dk.tdnsv6.com': 'tencent-cdn',
     'www.example.com.eo.dnse2.com': 'tencent-edgeone',
     'eo.0abcdefg.share.dnse1.com': 'tencent-edgeone',
     'www.example.com.eo.dnse0.cn': 'tencent-edgeone',
@@ -247,7 +246,7 @@ test('mainland China: CDNs and WAFs recognised by CNAME only (Global DNS’s Chi
   // Steering names that hand out an operator's own servers, rejected suffixes and look-alikes.
   for (const name of [
     'www.example.com.gds.alibabadns.com', 'www.example.com.gslb.qianxun.com', 'www.example.com.akadns.net',
-    'x.huaweicloudwaf.com', 'www.example.com.ctlcdn.cn', 'notkunluncan.com', 'kunluncan.com.example.net',
+    'x.huaweicloudwaf.com', 'www.example.com.ctlcdn.cn', 'res.example.com.sched.legopic1-dk.tdnsv6.com', 'notkunluncan.com', 'kunluncan.com.example.net',
     'x.aliyunddos12.com', 'x.aliyunddos1002.com.example.net', 'x.notaliyunddos1002.com', 'notcloudflarecn.net'
   ]) assert.equal(matchProviderByCname(name), null, name);
   // No suffix is listed twice or under another operator's suffix (the first one would win).

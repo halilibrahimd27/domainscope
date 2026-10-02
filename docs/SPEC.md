@@ -2663,7 +2663,7 @@ export function rememberedRows(mapOrIndex, name, used) -> Array<{ ip, port, targ
 export function originName(s), originPort(v) /* '' → 443 */, originKey(e) /* name|ip|port */, originTarget(e) /* ip, ip:port, [v6]:port */,
   originTime(v, nowMs?) /* an ISO time, at most nowMs */, originServer(v), originNow(now) /* ms; the real clock when absent */
 // lib/originfill.js
-export function applyObservations(map, observations, { source, at, now, proxied, serverOf }) -> { map, off, added, confirmed, staled /* keys the map kept: counted after the caps */, skipped /* names */ }
+export function applyObservations(map, observations, { source, at, now, proxied, serverOf }) -> { map, off, added, confirmed, staled /* keys the map kept: counted after the caps; one added stale counts as added only */, skipped /* names */ }
   // observations: [{ name, ip, port /* null: the address (a zone file names no port) */, outcome: 'hosted'|'not-hosted'|'unknown' /* asked, no answer */, server? }]
 export function addManualOrigin(map, { name, ip, port, server }, { at, now, replace /* key */, serverOf }) -> { map, error: null|'off'|'name'|'ip'|'port'|'limit', key }
 export function removeOrigins(map, keys) -> map ; setRemember(map, on) -> map

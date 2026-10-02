@@ -276,6 +276,8 @@ describe('the merge rules (lib/originfill.js applyObservations)', () => {
     const newThenOld = older(newer(ON));
     const oldThenNew = newer(older(ON));
     assert.deepEqual(newThenOld, oldThenNew);
+    const counted = applyObservations(newer(ON), [hosted(N, A)], { source: 'cli-json', at: '2026-09-01T00:00:00Z' });
+    assert.deepEqual([counted.added, counted.confirmed, counted.staled], [[`${N}|${A}|443`], [], []], 'added (stale from the start), counted once');
     assert.deepEqual(entry(newThenOld, `${N}|${A}|443`).stale, { reason: 'cli-elsewhere', at: '2026-10-02T00:00:00.000Z', ip: B, port: 443 });
     assert.deepEqual(knownForScan(newThenOld).map((k) => k.ip), [B]);
     // A confirmation and a contradiction of the same moment: active, whichever came first.

@@ -180,10 +180,7 @@ export function applyObservations(map, observations, { source, at, now, proxied 
     const newer = own(e.name)
       .filter((x) => x.ip !== e.ip && !x.stale && FOUND_ELSEWHERE[x.source] && ms(x.lastConfirmed) > t)
       .sort((a, b) => ms(b.lastConfirmed) - ms(a.lastConfirmed))[0];
-    if (newer) {
-      e.stale = { reason: FOUND_ELSEWHERE[newer.source], at: newer.lastConfirmed, ip: newer.ip, port: newer.port };
-      out.staled.push(originKey(e));
-    }
+    if (newer) e.stale = { reason: FOUND_ELSEWHERE[newer.source], at: newer.lastConfirmed, ip: newer.ip, port: newer.port };
     m.entries.push(e);
     index(e);
     confirmed.add(originKey(e));
@@ -244,7 +241,8 @@ export function applyObservations(map, observations, { source, at, now, proxied 
   const added = new Set(out.added);
   out.added = out.added.filter((k) => kept.has(k));
   out.confirmed = [...confirmed].filter((k) => !added.has(k) && kept.has(k));
-  out.staled = [...new Set(out.staled)].filter((k) => kept.has(k));
+  // An entry added stale (a newer run ruled it out) is counted once, as added.
+  out.staled = [...new Set(out.staled)].filter((k) => kept.has(k) && !added.has(k));
   return out;
 }
 

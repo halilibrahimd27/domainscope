@@ -5,7 +5,7 @@ all:
         lb01:
           ansible_host: 203.0.113.2
           owner: ops
-          ports: [443, 8443]
+          tls_ports: [443, 8443]
           vip: 203.0.113.50
           backends: [web01, web02]
         lb02:
@@ -23,16 +23,17 @@ all:
           terminates_tls: no
         web02:
           ansible_host: 10.0.0.22
-          ports: 8443
+          tls_ports: 8443
           terminates_tls: yes
     app:
       hosts:
         app01:
           ansible_host: 10.0.0.30
           nat: 203.0.113.10
+          ports: [22, 80]
         db01:
           ansible_host: 10.0.0.40:5432
-          ports: 443
+          tls_ports: 443
         bad01:
           ansible_host: 10.0.0.50
-          ports: 0
+          tls_ports: 0

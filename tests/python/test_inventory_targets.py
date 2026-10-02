@@ -316,6 +316,45 @@ class InventoryTopologyParity(unittest.TestCase):
             {'containerPort': 80, 'protocol': 'TCP'}]}]), 'x.json')
         self.assertEqual((k8s.servers[0].tls_ports, k8s.warnings), ([], []))
 
+    def test_a_json_or_yaml_ports_key_parses_as_on_main(self):
+        # Shodan-style records and Ansible host vars: `ports` is never TLS ports there (main
+        # scanned these on -p, and still does); tls_ports is the structured key.
+        shodan = json.dumps([{'ip_str': '203.0.113.10', 'ports': [22, 80, 443],
+                              'hostnames': ['www.example.com'], 'org': 'Example'}])
+        for text in (shodan, 'all:\n  hosts:\n    web01:\n      ansible_host: 10.0.0.1\n'
+                             '      ports: [22, 80]\n',
+                     json.dumps({'_meta': {'hostvars': {'web01': {'ansible_host': '10.0.0.1',
+                                                                  'ports': '22,80'}}}})):
+            with self.subTest(text=text):
+                inventory = sos.parse_inventory(text, 'x')
+                self.assertEqual(inventory.warnings, [])
+                server = inventory.servers[0]
+                self.assertEqual((server.tls_ports, server.ports, server.hostnames), ([], {}, []))
+                self.assertEqual(server.ports_for(server.ips[0], [443, 8443]), [443, 8443])
+                self.assertFalse(server.has_topology())
+        record = sos.parse_inventory(json.dumps([{'name': 'web01', 'ip': '10.0.0.1',
+                                                  'tls_ports': [443, 8443]}]), 'x.json')
+        self.assertEqual((record.servers[0].tls_ports, record.warnings), ([443, 8443], []))
+        yaml = sos.parse_inventory('all:\n  hosts:\n    web01:\n      ansible_host: 10.0.0.1\n'
+                                   '      tlsPorts: 8443\n', 'x.yaml')
+        self.assertEqual(yaml.servers[0].tls_ports, [8443])
+        self.assertEqual(sos.parse_inventory('web01 10.0.0.1 tls_ports=8443', 'x').servers[0]
+                         .tls_ports, [8443])
+        self.assertEqual(sos.parse_inventory('name,ip,TLS Ports\nweb01,10.0.0.1,8443', 'x')
+                         .servers[0].tls_ports, [8443])
+
+    def test_tls_ports_that_carry_no_tls_replace_p_only_with_a_warning(self):
+        inventory = sos.parse_inventory('web01 10.0.0.1 ports=22,80\nweb02 10.0.0.2 ports=443,8443\n'
+                                        'web03 10.0.0.3 tls_ports=3306', 'x.txt')
+        self.assertEqual([(s.name, s.tls_ports) for s in inventory.servers],
+                         [('web01', [22, 80]), ('web02', [443, 8443]), ('web03', [3306])])
+        self.assertEqual([(w.line, w.code, w.reason) for w in inventory.warnings],
+                         [(1, 'TOPOLOGY', 'plainPorts'), (3, 'TOPOLOGY', 'plainPorts')])
+        self.assertEqual(str(inventory.warnings[0]), 'x.txt:1: TOPOLOGY ports=22,80: 22, 80 usually '
+                         'carry no TLS - the server is scanned on these ports instead of -p')
+        csv_inventory = sos.parse_inventory('hostname,ip,ports\nweb01,10.0.0.1,"22,80"', 'x.csv')
+        self.assertEqual([(w.line, w.reason) for w in csv_inventory.warnings], [(2, 'plainPorts')])
+
     def test_terminates_tls_given_both_ways_keeps_yes_and_warns(self):
         for text in ('web01 10.0.0.1 terminates_tls=no\nweb01 10.0.0.1 terminates_tls=yes',
                      'web01 10.0.0.1 terminates_tls=yes\nweb01 10.0.0.1 terminates_tls=no',
@@ -349,7 +388,8 @@ class InventoryTopologyParity(unittest.TestCase):
         self.assertEqual([(s.name, s.backends, s.terminates_tls) for s in inventory.servers], [
             ('LB01', ['web01', '10.0.0.22'], True), ('web01', [], False), ('10.0.0.22', [], None),
             ('web03', [], False)])
-        self.assertEqual(sos.TOPOLOGY_KEYS, ('ports', 'terminates_tls', 'vip', 'backends', 'nat'))
+        self.assertEqual(sos.TOPOLOGY_KEYS, ('ports', 'tls_ports', 'terminates_tls', 'vip', 'backends',
+                                             'nat'))
 
     def test_the_web_apps_targets_txt_reads_back_to_the_same_topology(self):
         # tests/fixtures/topology/targets.txt is what the web app writes for inventory.txt

@@ -6,7 +6,7 @@ lb02 203.0.113.3 vip=203.0.113.50 backends="web01, web02"
 web01 10.0.0.21 terminates_tls=no
 web02 10.0.0.22 Terminates-TLS=yes ports=8443
 10.0.0.30 app01 nat=203.0.113.10
-db01 10.0.0.40:5432 ports=443
+db01 10.0.0.40:5432 tls_ports=443
 # malformed values, a second terminates_tls and a key without a server: warnings, never dropped
 bad01 10.0.0.50 ports=0,https
 bad02 10.0.0.51 terminates_tls=maybe vip=203.0.113.300

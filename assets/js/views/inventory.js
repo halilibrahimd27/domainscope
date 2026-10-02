@@ -132,6 +132,7 @@ registerStrings('en', {
   'inv.warn.PARSE.sshPort': 'Ansible SSH port — a port on an Ansible host is its SSH port (ansible_port), not a TLS port: the CLI scans this server on its -p ports',
   'inv.warn.TOPOLOGY': 'Topology key that could not be used',
   'inv.warn.TOPOLOGY.ports': 'Invalid ports= — TLS ports are numbers from 1 to 65535, comma separated (ports=443,8443)',
+  'inv.warn.TOPOLOGY.plainPorts': 'ports= lists a port that usually carries no TLS (22, 80 …) — the server is scanned on these ports instead of -p: list its TLS ports',
   'inv.warn.TOPOLOGY.terminatesTls': 'Invalid terminates_tls= — write yes or no',
   'inv.warn.TOPOLOGY.vip': 'Invalid vip= — a shared address is an IP address without a port',
   'inv.warn.TOPOLOGY.nat': 'Invalid nat= — a public address is an IP address without a port',
@@ -155,7 +156,7 @@ registerStrings('en', {
   'inv.ex.yaml': 'YAML',
   'inv.ex.json': 'JSON',
   'inv.ex.topology': 'Topology',
-  'inv.topologyNote': 'Topology keys on a server’s line (or as CSV columns, Ansible host variables, JSON keys) say where TLS terminates: ports=443,8443 (its TLS ports, for addresses written without a port), terminates_tls=no (a plain-HTTP backend that never gets the certificate), vip= (an address an HA pair shares), backends=web01,web02 (a load balancer and the servers behind it) and nat= (the public address DNS answers with). SSL Targets and the CLI follow them.',
+  'inv.topologyNote': 'Topology keys on a server’s line (or as CSV columns, Ansible host variables, JSON keys) say where TLS terminates: ports=443,8443 (its TLS ports, for addresses written without a port; in JSON and YAML the key is tls_ports, since a ports key there usually lists every open port), terminates_tls=no (a plain-HTTP backend that never gets the certificate), vip= (an address an HA pair shares), backends=web01,web02 (a load balancer and the servers behind it) and nat= (the public address DNS answers with). SSL Targets and the CLI follow them.',
   'inv.formatsNote': 'Comments (#, ;, //) are ignored. The same server on several lines merges its IPs. CSV headers such as name/hostname/server and ip/ip_address/public_ip/private_ip/address are recognised; JSON from Terraform, AWS, Ansible and kubectl works too. An address written with a port (203.0.113.10:8443, [2001:db8::1]:8443) keeps it: the CLI scans it on that port instead of -p. In an Ansible INI inventory (a [group] section, or a line with ansible_* variables) the port of the host at the start of a line (203.0.113.10:2222) is Ansible’s SSH port, so that host is scanned on -p.'
 });
 
@@ -214,6 +215,7 @@ registerStrings('tr', {
   'inv.warn.PARSE.sshPort': 'Ansible SSH portu — bir Ansible host adının ya da adresinin portu SSH portudur (ansible_port), TLS portu değil: CLI bu sunucuyu -p portlarından tarar',
   'inv.warn.TOPOLOGY': 'Kullanılamayan topoloji anahtarı',
   'inv.warn.TOPOLOGY.ports': 'Geçersiz ports= — TLS portları 1 ile 65535 arasında, virgülle ayrılmış sayılardır (ports=443,8443)',
+  'inv.warn.TOPOLOGY.plainPorts': 'ports= genelde TLS taşımayan bir port içeriyor (22, 80 …) — sunucu -p yerine bu portlardan taranır: TLS portlarını yazın',
   'inv.warn.TOPOLOGY.terminatesTls': 'Geçersiz terminates_tls= — yes ya da no yazın',
   'inv.warn.TOPOLOGY.vip': 'Geçersiz vip= — paylaşılan adres portsuz bir IP adresidir',
   'inv.warn.TOPOLOGY.nat': 'Geçersiz nat= — genel adres portsuz bir IP adresidir',
@@ -237,7 +239,7 @@ registerStrings('tr', {
   'inv.ex.yaml': 'YAML',
   'inv.ex.json': 'JSON',
   'inv.ex.topology': 'Topoloji',
-  'inv.topologyNote': 'Bir sunucunun satırındaki (ya da CSV sütunu, Ansible host değişkeni, JSON anahtarı olarak yazılan) topoloji anahtarları TLS’in nerede sonlandığını söyler: ports=443,8443 (portsuz yazılan adreslerinin TLS portları), terminates_tls=no (sertifikayı hiç almayan düz HTTP arka uç sunucusu), vip= (bir HA çiftinin paylaştığı adres), backends=web01,web02 (yük dengeleyici ve arkasındaki sunucular) ve nat= (DNS’in döndürdüğü genel adres). SSL Hedefleri ve CLI bunlara uyar.',
+  'inv.topologyNote': 'Bir sunucunun satırındaki (ya da CSV sütunu, Ansible host değişkeni, JSON anahtarı olarak yazılan) topoloji anahtarları TLS’in nerede sonlandığını söyler: ports=443,8443 (portsuz yazılan adreslerinin TLS portları; JSON ve YAML’da anahtar tls_ports’tur, çünkü oradaki ports anahtarı genelde açık portların hepsidir), terminates_tls=no (sertifikayı hiç almayan düz HTTP arka uç sunucusu), vip= (bir HA çiftinin paylaştığı adres), backends=web01,web02 (yük dengeleyici ve arkasındaki sunucular) ve nat= (DNS’in döndürdüğü genel adres). SSL Hedefleri ve CLI bunlara uyar.',
   'inv.formatsNote': 'Yorumlar (#, ;, //) yok sayılır. Birden çok satırda geçen aynı sunucunun IP’leri birleştirilir. name/hostname/server ve ip/ip_address/public_ip/private_ip/address gibi CSV başlıkları tanınır; Terraform, AWS, Ansible ve kubectl JSON çıktıları da çalışır. Portuyla yazılan bir adres (203.0.113.10:8443, [2001:db8::1]:8443) portunu korur: CLI onu -p yerine o porttan tarar. Ansible INI envanterinde ([grup] bölümü ya da ansible_* değişkenli bir satır) satır başındaki host adının ya da adresin portu (203.0.113.10:2222) Ansible’ın SSH portudur; o sunucu -p portlarından taranır.'
 });
 

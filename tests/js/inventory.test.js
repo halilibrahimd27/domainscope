@@ -856,6 +856,36 @@ test('topology keys: every malformed value is a TOPOLOGY warning naming the key'
   for (const reason of new Set(r.warnings.map((w) => w.reason))) assert.ok(TOPOLOGY_REASONS.includes(reason), reason);
 });
 
+test('back-compat: a JSON / YAML `ports` key (Shodan, Ansible host vars) parses as on main, never as TLS ports; tls_ports is the key there', () => {
+  // main's exact results for these inputs
+  const shodan = JSON.stringify([{ ip_str: '203.0.113.10', ports: [22, 80, 443], hostnames: ['www.example.com'], org: 'Example' }]);
+  assert.deepEqual(parseInventory(shodan), {
+    servers: [{ id: '203.0.113.10', name: '203.0.113.10', ips: ['203.0.113.10'], groups: [], line: 1, aliases: [] }],
+    warnings: [], stats: { lines: 1, servers: 1, ips: 1 }
+  });
+  assert.deepEqual(parseInventory('all:\n  hosts:\n    web01:\n      ansible_host: 10.0.0.1\n      ports: [22, 80]\n'), {
+    servers: [{ id: 'web01', name: 'web01', ips: ['10.0.0.1'], groups: [], line: 4, aliases: [] }],
+    warnings: [], stats: { lines: 5, servers: 1, ips: 1 }
+  });
+  assert.equal(parseInventory(JSON.stringify({ _meta: { hostvars: { web01: { ansible_host: '10.0.0.1', ports: '22,80' } } } })).servers[0].tlsPorts, undefined);
+  // tls_ports is read in JSON and YAML
+  const json = parseInventory(JSON.stringify([{ name: 'web01', ip: '10.0.0.1', tls_ports: [443, 8443] }]));
+  assert.deepEqual([json.servers[0].tlsPorts, serverTargets(json.servers[0]), json.warnings], [[443, 8443], ['10.0.0.1:443', '10.0.0.1:8443'], []]);
+  assert.deepEqual(parseInventory('all:\n  hosts:\n    web01:\n      ansible_host: 10.0.0.1\n      tlsPorts: 8443\n').servers[0].tlsPorts, [8443]);
+  // on a line and in a CSV column both spellings are read
+  assert.deepEqual(parseInventory('web01 10.0.0.1 tls_ports=8443').servers[0].tlsPorts, [8443]);
+  assert.deepEqual(parseInventory('name,ip,TLS Ports\nweb01,10.0.0.1,8443').servers[0].tlsPorts, [8443]);
+});
+
+test('topology keys: TLS ports that usually carry no TLS (22, 80, 3306 …) replace -p only with a warning', () => {
+  const r = parseInventory('web01 10.0.0.1 ports=22,80\nweb02 10.0.0.2 ports=443,8443\nweb03 10.0.0.3 tls_ports=3306');
+  assert.deepEqual(r.servers.map((s) => [s.name, s.tlsPorts]), [['web01', [22, 80]], ['web02', [443, 8443]], ['web03', [3306]]]);
+  assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.reason, w.detail]), [
+    [1, 'TOPOLOGY', 'plainPorts', 'ports=22,80'], [3, 'TOPOLOGY', 'plainPorts', 'tls_ports=3306']
+  ]);
+  assert.deepEqual(parseInventory('hostname,ip,ports\nweb01,10.0.0.1,"22,80"').warnings.map((w) => [w.line, w.reason]), [[2, 'plainPorts']]);
+});
+
 test('topology keys: terminates_tls given both ways keeps yes, the safe value, and warns', () => {
   for (const text of ['web01 10.0.0.1 terminates_tls=no\nweb01 10.0.0.1 terminates_tls=yes', 'web01 10.0.0.1 terminates_tls=yes\nweb01 10.0.0.1 terminates_tls=no',
     'web01 10.0.0.1 terminates_tls=no terminates_tls=yes', 'web01 10.0.0.1 terminates_tls=no\n10.0.0.1 terminates_tls=yes']) {
@@ -882,7 +912,7 @@ test('topology keys: names, booleans and spellings; backends by name, by address
     ['web03', null, false],
     ['10.0.0.22', null, null]
   ]);
-  assert.deepEqual(TOPOLOGY_KEYS, ['ports', 'terminates_tls', 'vip', 'backends', 'nat']);
+  assert.deepEqual(TOPOLOGY_KEYS, ['ports', 'tls_ports', 'terminates_tls', 'vip', 'backends', 'nat']);
   assert.equal(terminatesTls(r.servers[0]), true);
   assert.equal(terminatesTls(r.servers[1]), false);
   assert.equal(terminatesTls({}), true, 'not given: yes');

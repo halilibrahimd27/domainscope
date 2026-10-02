@@ -1546,11 +1546,18 @@ def _strip_comment(line: str) -> str:
 
 # Topology keys (lib/inventory.js TOPOLOGY_KEYS), read in every inventory format: where TLS
 # really terminates. Keys are compared after _normalize_header (Terminates-TLS, terminatesTls).
-TOPOLOGY_KEYS = ('ports', 'terminates_tls', 'vip', 'backends', 'nat')
-_TOPOLOGY_MALFORMED = {'ports': 'ports', 'terminates_tls': 'terminatesTls', 'vip': 'vip',
-                       'nat': 'nat', 'backends': 'backends'}
+# In JSON / YAML only tls_ports gives TLS ports: a `ports` key there (Shodan, an Ansible var) is
+# read as before.
+TOPOLOGY_KEYS = ('ports', 'tls_ports', 'terminates_tls', 'vip', 'backends', 'nat')
+_PORTS_KEYS = ('ports', 'tls_ports')
+_TOPOLOGY_MALFORMED = {'ports': 'ports', 'tls_ports': 'ports', 'terminates_tls': 'terminatesTls',
+                       'vip': 'vip', 'nat': 'nat', 'backends': 'backends'}
+# Ports that usually carry no TLS (plain or STARTTLS protocols): kept in a ports= list, warned about
+_PLAIN_PORTS = frozenset((20, 21, 22, 23, 25, 53, 80, 110, 119, 143, 389, 3306, 3389, 5432, 6379,
+                          8080, 27017))
 _TOPOLOGY_HELP = {
     'ports': 'ports= takes TLS ports 1-65535, comma separated (ports=443,8443)',
+    'tls_ports': 'tls_ports= takes TLS ports 1-65535, comma separated (tls_ports=443,8443)',
     'terminates_tls': 'terminates_tls= takes yes or no',
     'vip': 'vip= takes IP addresses without a port',
     'nat': 'nat= takes IP addresses without a port',
@@ -1566,10 +1573,13 @@ _QUOTED_RE = re.compile(r'^(["\'])(.*)\1$', re.S)
 TopologyValue = Tuple[str, Any, str, int]   # (key, value, raw, line)
 
 
-def _topology_key(key: Any) -> Optional[str]:
-    """The topology key ``key`` is (normalised), or None."""
+def _topology_key(key: Any, structured: bool = False) -> Optional[str]:
+    """The topology key ``key`` is (normalised), or None; ``structured`` (JSON / YAML): ``ports``
+    is none there, ``tls_ports`` is."""
     normalized = _normalize_header(str(key))
-    return normalized if normalized in TOPOLOGY_KEYS else None
+    if normalized not in TOPOLOGY_KEYS or (structured and normalized == 'ports'):
+        return None
+    return normalized
 
 
 def _unquote(text: Any) -> str:
@@ -1631,7 +1641,7 @@ def _topology_value(key: str, items: Sequence[str]) -> Any:
         return True if word in _TLS_YES else False if word in _TLS_NO else None
     out = []  # type: List[Any]
     for item in items:
-        if key == 'ports':
+        if key in _PORTS_KEYS:
             if not (item.isascii() and item.isdigit() and 1 <= int(item) <= 65535):
                 return None
             value = int(item)  # type: Any
@@ -1889,6 +1899,10 @@ class _InventoryBuilder:
             self.warn(line, 'TOPOLOGY', '%s=%s: %s' % (key, raw, _TOPOLOGY_HELP[key]),
                       _TOPOLOGY_MALFORMED[key])
             return None
+        plain = [str(port) for port in value if port in _PLAIN_PORTS] if key in _PORTS_KEYS else []
+        if plain:
+            self.warn(line, 'TOPOLOGY', '%s=%s: %s usually carry no TLS - the server is scanned on '
+                      'these ports instead of -p' % (key, raw, ', '.join(plain)), 'plainPorts')
         return key, value, raw, line
 
     def line_topology(self, found: Sequence[Tuple[str, str]], line: int) -> List[TopologyValue]:
@@ -1915,7 +1929,8 @@ class _InventoryBuilder:
             if key == 'backends':
                 server.backend_refs.extend((ref, line, self.source) for ref in value)
                 continue
-            target = {'ports': server.tls_ports, 'vip': server.vips, 'nat': server.nats}[key]
+            target = {'ports': server.tls_ports, 'tls_ports': server.tls_ports, 'vip': server.vips,
+                      'nat': server.nats}[key]
             for item in value:
                 if item not in target:
                     target.append(item)
@@ -2285,7 +2300,7 @@ def _parse_yaml(lines: List[str], builder: _InventoryBuilder) -> None:
         while stack and stack[-1][0] >= indent:
             stack.pop()
         parent = stack[-1][1] if stack else None
-        topology_key = _topology_key(key)
+        topology_key = _topology_key(key, True)
         if topology_key is not None and parent == 'vars':
             builder.warn(number, 'TOPOLOGY', '%s in a group\'s vars: group variables are not read '
                          'for the topology - set it on each host' % topology_key, 'groupVars')
@@ -2566,7 +2581,7 @@ def _parse_json(data: Any, builder: _InventoryBuilder, key_hint: Optional[str] =
     # Topology keys of this record holding a scalar or a list of scalars (anything else, e.g.
     # kubectl's "ports": [{"containerPort": 80}], is read as before).
     topology_keys = {key: (topology_key, items) for key, topology_key, items in
-                     ((k, _topology_key(k), _topology_items(v)) for k, v in data.items())
+                     ((k, _topology_key(k, True), _topology_items(v)) for k, v in data.items())
                      if topology_key is not None and items is not None}
     record = {k: v for k, v in data.items() if k not in topology_keys}
     if name is not None or _json_has_ip_field(record) or _json_host_values(record):
@@ -2593,7 +2608,7 @@ def _parse_json(data: Any, builder: _InventoryBuilder, key_hint: Optional[str] =
             continue
         if child_key == 'vars' and isinstance(child, dict):  # a group's vars
             for key, value in child.items():
-                topology_key = _topology_key(key)
+                topology_key = _topology_key(key, True)
                 if topology_key is not None and _topology_items(value) is not None:
                     builder.warn(0, 'TOPOLOGY', '%s in a group\'s vars: group variables are not '
                                  'read for the topology - set it on each host' % topology_key,
@@ -8039,7 +8054,10 @@ targets (-t, repeatable):
 topology (keys on a server's line in an inventory file, or CSV columns, Ansible host
   variables, JSON keys; the web app's Servers view reads the same): where TLS terminates.
     ports=443,8443         the server's TLS ports, in place of -p for its addresses written
-                           without a port (an address written with its own port keeps it)
+                           without a port (an address written with its own port keeps it);
+                           in JSON and YAML the key is tls_ports (a ports key there usually
+                           lists every open port, so it is not read); a port that usually
+                           carries no TLS (22, 80 ...) is a warning
     terminates_tls=yes|no  no: a backend that never gets the certificate (plain HTTP behind
                            a load balancer) - not scanned unless --include-backends
     vip=203.0.113.50       an address several servers share (an HA pair): the certificate

@@ -258,22 +258,28 @@ const FIELD_LABELS = new Set(['name', 'host', 'hostname', 'ip', 'ips', 'ipv4', '
 /* Topology keys (cli/ssl_origin_scan.py reads them alike)                  */
 /* ------------------------------------------------------------------------ */
 
-/** The topology keys as {@link normalizeKey} writes them (`Terminates-TLS`, `terminatesTls` → terminates_tls). */
-export const TOPOLOGY_KEYS = Object.freeze(['ports', 'terminates_tls', 'vip', 'backends', 'nat']);
+/**
+ * The topology keys as {@link normalizeKey} writes them (`Terminates-TLS`, `terminatesTls` → terminates_tls).
+ * In JSON / YAML only `tls_ports` gives TLS ports: a `ports` key there (Shodan, an Ansible var) is read as before.
+ */
+export const TOPOLOGY_KEYS = Object.freeze(['ports', 'tls_ports', 'terminates_tls', 'vip', 'backends', 'nat']);
 const TOPOLOGY_KEY_SET = new Set(TOPOLOGY_KEYS);
 
 /** The `reason` of a TOPOLOGY warning: a malformed value of each key, then the other causes. */
-export const TOPOLOGY_REASONS = Object.freeze(['ports', 'terminatesTls', 'vip', 'nat', 'backends',
+export const TOPOLOGY_REASONS = Object.freeze(['ports', 'terminatesTls', 'vip', 'nat', 'backends', 'plainPorts',
   'unknownBackend', 'selfBackend', 'conflict', 'noServer', 'groupVars']);
-const MALFORMED_REASON = { ports: 'ports', terminates_tls: 'terminatesTls', vip: 'vip', nat: 'nat', backends: 'backends' };
+const MALFORMED_REASON = { ports: 'ports', tls_ports: 'ports', terminates_tls: 'terminatesTls', vip: 'vip', nat: 'nat', backends: 'backends' };
+/** Ports that usually carry no TLS (plain or STARTTLS protocols): in a ports= list they are kept, with a warning. */
+const PLAIN_PORTS = new Set([20, 21, 22, 23, 25, 53, 80, 110, 119, 143, 389, 3306, 3389, 5432, 6379, 8080, 27017]);
+const isPortsKey = (k) => k === 'ports' || k === 'tls_ports';
 
 const TLS_YES = new Set(['yes', 'true', 'on', '1']);
 const TLS_NO = new Set(['no', 'false', 'off', '0']);
 
-/** The topology key `key` is (normalised), or null. */
-function topologyKey(key) {
+/** The topology key `key` is (normalised), or null; `structured` (JSON / YAML): `ports` is none there. */
+function topologyKey(key, structured = false) {
   const k = normalizeKey(key);
-  return TOPOLOGY_KEY_SET.has(k) ? k : null;
+  return TOPOLOGY_KEY_SET.has(k) && !(structured && k === 'ports') ? k : null;
 }
 
 /** A value without the quotes around it (`"web01, web02"`). */
@@ -317,7 +323,7 @@ function topologyValue(key, items) {
   const out = [];
   for (const item of items) {
     let v;
-    if (key === 'ports') {
+    if (isPortsKey(key)) {
       v = /^\d+$/.test(item) ? Number(item) : 0;
       if (!(v >= 1 && v <= 65535)) return undefined;
     } else if (key === 'vip' || key === 'nat') {
@@ -340,6 +346,7 @@ function readTopology(ctx, key, items, raw, line) {
     ctx.warn(line, 'TOPOLOGY', undefined, `${key}=${raw}`, MALFORMED_REASON[key]);
     return null;
   }
+  if (isPortsKey(key) && value.some((p) => PLAIN_PORTS.has(p))) ctx.warn(line, 'TOPOLOGY', undefined, `${key}=${raw}`, 'plainPorts');
   return { key, value, raw, line };
 }
 
@@ -522,7 +529,7 @@ function mergeTopology(d, list, ctx) {
     for (const v of values) if (!arr.includes(v)) arr.push(v);
   };
   for (const t of list || []) {
-    if (t.key === 'ports') push(d.topo.tlsPorts, t.value);
+    if (isPortsKey(t.key)) push(d.topo.tlsPorts, t.value);
     else if (t.key === 'vip') push(d.topo.vips, t.value);
     else if (t.key === 'nat') push(d.topo.nats, t.value);
     else if (t.key === 'backends') for (const ref of t.value) d.topo.backendRefs.push({ ref, line: t.line });
@@ -867,7 +874,7 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false, g
   const topology = [];
   for (const [key, value] of Object.entries(node)) {
     if (NAME_KEY_SET.has(key) && validName(value)) continue; // the name itself
-    const tk = topologyKey(key);
+    const tk = topologyKey(key, true);
     const items = tk ? topologyItems(value) : null;
     if (items) topology.push({ key, value, item: { topo: tk, items, raw: Array.isArray(value) ? value.join(',') : String(value ?? '') } });
     else entries.push(visit(key, value));

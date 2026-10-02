@@ -216,7 +216,10 @@ registerStrings('en', {
   'pf.ics.summaryNs': '{domain} expires (name servers of {list})',
   'pf.ics.registrar': 'Registrar: {registrar}',
   'pf.ics.renew': 'Renew it before this date.',
-  'pf.ics.ns': 'The name servers of {list} are under this domain: if it lapses, whoever registers it answers for those zones.',
+  'pf.ics.ns': {
+    one: 'The name servers of {list} are under this domain: if it lapses, whoever registers it answers for that zone.',
+    other: 'The name servers of {list} are under this domain: if it lapses, whoever registers it answers for those zones.'
+  },
   'pf.ics.alarm': '{domain} expires on {date}',
   'pf.ics.none': 'No expiry date is known for the domains shown.',
   'pf.exported': 'Saved {file}',
@@ -397,10 +400,13 @@ registerStrings('tr', {
   'pf.export.icsTitle': 'Her bitiş tarihi için tam günlük bir etkinlik (tablonun gösterdiği alan adları ve ad sunucularının alan adları), 30 ve 7 gün önce hatırlatmalı; daha yeni bir dosya içe aktarıldığında etkinlikler güncellenir.',
   'pf.ics.name': 'DomainScope: alan adı bitişleri',
   'pf.ics.summary': '{domain} alan adının süresi doluyor',
-  'pf.ics.summaryNs': '{domain} alan adının süresi doluyor ({list} ad sunucuları)',
+  'pf.ics.summaryNs': { one: '{domain} alan adının süresi doluyor ({list} alan adının ad sunucuları)', other: '{domain} alan adının süresi doluyor ({list} alan adlarının ad sunucuları)' },
   'pf.ics.registrar': 'Kayıt firması: {registrar}',
   'pf.ics.renew': 'Bu tarihten önce yenileyin.',
-  'pf.ics.ns': '{list} alan adlarının ad sunucuları bu alan adının altında: süresi dolarsa, onu yeniden kaydeden herkes bu zone’lar adına yanıt verebilir.',
+  'pf.ics.ns': {
+    one: '{list} alan adının ad sunucuları bu alan adının altında: süresi dolarsa, onu yeniden kaydeden herkes bu zone adına yanıt verebilir.',
+    other: '{list} alan adlarının ad sunucuları bu alan adının altında: süresi dolarsa, onu yeniden kaydeden herkes bu zone’lar adına yanıt verebilir.'
+  },
   'pf.ics.alarm': '{domain} alan adının süresi {date} tarihinde doluyor',
   'pf.ics.none': 'Gösterilen alan adları için bilinen bir bitiş tarihi yok.',
   'pf.exported': '{file} kaydedildi',
@@ -523,11 +529,12 @@ export function matrixCountsText(counts, t) {
 export function calendarEvents(factsList, t) {
   return expiryEvents(factsList).map((e) => {
     const list = e.nsOf.join(', ');
-    const summary = e.nsOf.length && !e.portfolio ? t('pf.ics.summaryNs', { domain: e.domain, list }) : t('pf.ics.summary', { domain: e.domain });
+    const count = e.nsOf.length;
+    const summary = count && !e.portfolio ? t('pf.ics.summaryNs', { domain: e.domain, list, count }) : t('pf.ics.summary', { domain: e.domain });
     const description = [
       e.registrar ? t('pf.ics.registrar', { registrar: e.registrar }) : null,
       t('pf.ics.renew'),
-      e.nsOf.length ? t('pf.ics.ns', { list }) : null
+      count ? t('pf.ics.ns', { list, count }) : null
     ].filter(Boolean).join('\n');
     // the local day, as the event (lib/ics.js) and the table show it
     const day = `${e.expires.getFullYear()}-${String(e.expires.getMonth() + 1).padStart(2, '0')}-${String(e.expires.getDate()).padStart(2, '0')}`;

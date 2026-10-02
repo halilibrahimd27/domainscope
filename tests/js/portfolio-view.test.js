@@ -130,9 +130,20 @@ describe('Domain portfolio view helpers', () => {
     assert.equal(late[0].alarm, 'example.com expires on 2026-10-15');
     if (prevTz === undefined) delete process.env.TZ;
     else process.env.TZ = prevTz;
+    // a name server domain serving one portfolio domain: that zone, said in the singular
+    const one = [facts('example.com', { ns: nsOn([nsDomain('example.net', 12)]) })];
+    assert.deepEqual([calendarEvents(one, t)[0].summary, calendarEvents(one, t)[0].description.split('\n').at(-1)], [
+      'example.net expires (name servers of example.com)',
+      'The name servers of example.com are under this domain: if it lapses, whoever registers it answers for that zone.'
+    ]);
     setLang('tr');
     const tr = calendarEvents(list, t);
-    assert.equal(tr[0].summary, 'example.net alan adının süresi doluyor (example.com, example.org, example-test.com.tr ad sunucuları)');
+    assert.equal(tr[0].summary, 'example.net alan adının süresi doluyor (example.com, example.org, example-test.com.tr alan adlarının ad sunucuları)');
+    assert.equal(tr[0].description.split('\n').at(-1), 'example.com, example.org, example-test.com.tr alan adlarının ad sunucuları bu alan adının altında: süresi dolarsa, onu yeniden kaydeden herkes bu zone’lar adına yanıt verebilir.');
+    assert.deepEqual([calendarEvents(one, t)[0].summary, calendarEvents(one, t)[0].description.split('\n').at(-1)], [
+      'example.net alan adının süresi doluyor (example.com alan adının ad sunucuları)',
+      'example.com alan adının ad sunucuları bu alan adının altında: süresi dolarsa, onu yeniden kaydeden herkes bu zone adına yanıt verebilir.'
+    ]);
     const local = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     assert.equal(tr[1].alarm, `example.org alan adının süresi ${local(day(20))} tarihinde doluyor`);
     setLang('en');

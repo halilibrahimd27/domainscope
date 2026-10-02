@@ -62,7 +62,9 @@ const JS = join(ASSETS, 'js');
  * and the answer classification of lib/netinfo.js (12 KB), which only the discovery engine and the
  * views that classify answers use, then left the start route: the IP parsing and CIDR math the
  * shell, the workspace's inventory and the Copy summary need are in lib/ip.js (4 KB), which
- * netinfo.js re-exports: ≈ 364 KB (372,300 bytes).
+ * netinfo.js re-exports: ≈ 364 KB (372,300 bytes). The origin map (lib/originmap.js, which the
+ * workspace store and every scan read, and the Subdomains view's rows of remembered origins) added
+ * ≈ 5.5 KB: ≈ 369 KB (377,888 bytes), 992 bytes under the budget.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

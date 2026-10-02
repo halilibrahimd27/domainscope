@@ -12,8 +12,8 @@
  * - {@link cliReportObservations}: the CLI's `--json` reports, read with lib/estate.js
  *   readEstateReport (the Certificate estate view's reader): per name asked and endpoint,
  *   UPDATED / NEEDS_UPDATE / ORIGIN_CERT / PRIVATE_CERT (a covering certificate) = it serves the
- *   name, NOT_HOSTED = it does not, anything else (TLS_ERROR, TIMEOUT, CLOSED) = asked, no answer.
- *   Source 'cli-json'.
+ *   name, NOT_HOSTED = it does not, anything else (TLS_ERROR, TIMEOUT, CLOSED) = asked, no answer;
+ *   a port that did not open (a `connect` row) was asked for every name of the run. Source 'cli-json'.
  * - {@link verifyObservations}: SSL Targets › Verify — the checks of exact origins (a proxied name
  *   on an inventory origin the origin map or the zone file names, `via` known / zone) with a
  *   verdict, read the same way. A hint's candidate is never one. Source 'verify'.
@@ -341,7 +341,9 @@ export function zoneObservations(origins) {
 /**
  * One CLI `--json` report (the parsed document): its observations, when it ran (finishedAt, else
  * startedAt) and the names an endpoint answered with a Cloudflare Origin CA certificate (an
- * origin behind Cloudflare: proxied whatever this page knows).
+ * origin behind Cloudflare: proxied whatever this page knows). An endpoint whose port did not open
+ * (a `connect` row: CLOSED, TIMEOUT — a server switched off) was asked for every name of the run
+ * (`names`, else the names its rows probed): one 'unknown' observation per name there.
  * @param {object} doc
  * @returns {{ observations: Array<{ name: string, ip: string, port: number, outcome: string, server: string|null }>,
  *   at: string|null, originCertNames: string[] }}
@@ -351,16 +353,23 @@ export function cliReportObservations(doc) {
   const observations = [];
   const originCert = new Set();
   const seen = new Set();
-  for (const row of Array.isArray(d.results) ? d.results : []) {
-    if (!row || typeof row !== 'object' || (row.probe !== 'sni' && row.probe !== 'wildcard')) continue;
+  const rows = (Array.isArray(d.results) ? d.results : []).filter((row) => row && typeof row === 'object');
+  // The names the run asked: its `names`, else what its rows probed (as the CLI reads a report).
+  const asked = (Array.isArray(d.names) ? d.names : []).map((n) => n && n.name).filter((n) => typeof n === 'string' && n);
+  const names = asked.length ? asked : rows.map((row) => row.name).filter((n) => typeof n === 'string' && n);
+  for (const row of rows) {
+    const connect = row.probe === 'connect';
+    if (!connect && row.probe !== 'sni' && row.probe !== 'wildcard') continue;
     const ip = normalizeIP(String(row.ip ?? ''));
-    if (!ip || typeof row.name !== 'string' || !row.name || !Number.isInteger(row.port)) continue;
-    const key = `${row.name}|${ip}|${row.port}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (!ip || !Number.isInteger(row.port) || (!connect && (typeof row.name !== 'string' || !row.name))) continue;
     // The CLI names a bare-address target after its address: that is no server name.
     const server = typeof row.server === 'string' && row.server && normalizeIP(row.server) !== ip ? row.server : null;
-    observations.push({ name: row.name, ip, port: row.port, outcome: outcomeOf(row.status), server });
+    for (const name of connect ? names : [row.name]) {
+      const key = `${name}|${ip}|${row.port}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      observations.push({ name, ip, port: row.port, outcome: connect ? 'unknown' : outcomeOf(row.status), server });
+    }
     if (row.status === 'ORIGIN_CERT') originCert.add(row.name);
   }
   const at = [d.finishedAt, d.startedAt].find((v) => typeof v === 'string' && !Number.isNaN(Date.parse(v))) || null;

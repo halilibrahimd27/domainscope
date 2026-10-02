@@ -81,7 +81,24 @@ describe('the CLI --json reports', () => {
       'www.example-test.com.tr 2001:db8::13 web03'
     ], 'PRIVATE_CERT on web01, web02 and web03 is a covering certificate');
     assert.ok(r.observations.some((o) => o.outcome === 'not-hosted' && o.ip === '198.51.100.20' && o.name === 'www.example-test.com.tr'));
-    assert.ok(!r.observations.some((o) => o.ip === '198.51.100.21'), 'a closed port (a connect row) is no observation');
+    assert.deepEqual(r.observations.filter((o) => o.ip === '198.51.100.21').map((o) => `${o.name} ${o.port} ${o.outcome}`).sort(),
+      ['a.wild.example.net 443 unknown', 'www.example-test.com.tr 443 unknown'], 'a closed port (a connect row): every name of the run asked there, no answer');
+  });
+
+  test('the old server switched off: its closed or silent port counts as asked, so a report finding the name on the new one marks it', () => {
+    for (const status of ['CLOSED', 'TIMEOUT']) {
+      const { map } = applyObservations(ON, [{ name: 'www.example.net', ip: '192.0.2.10', port: null, outcome: 'hosted' }], { source: 'zone', at: '2026-09-01T00:00:00Z' });
+      const doc = {
+        ...report({ rows: [{ name: 'www.example.net', ip: '198.51.100.30', status: 'UPDATED', server: 'new' }] }),
+        names: [{ name: 'www.example.net', sni: 'www.example.net', wildcard: false }]
+      };
+      doc.results.unshift({ server: 'old', ip: '192.0.2.10', port: 443, probe: 'connect', name: null, sni: null, status });
+      const { observations } = cliReportObservations(doc);
+      assert.deepEqual(observations.find((o) => o.ip === '192.0.2.10'), { name: 'www.example.net', ip: '192.0.2.10', port: 443, outcome: 'unknown', server: 'old' }, status);
+      const res = applyObservations(map, observations, { source: 'cli-json', at: AT });
+      assert.deepEqual(res.staled, ['www.example.net|192.0.2.10|443'], status);
+      assert.deepEqual(knownForScan(res.map).map((k) => k.ip), ['198.51.100.30'], status);
+    }
   });
 
   test('only names known to be behind a CDN are added: here the Origin CA one', async () => {

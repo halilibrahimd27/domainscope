@@ -624,6 +624,19 @@ describe('pitfalls', () => {
     for (const t of ['bind', 'octodns', 'dnscontrol']) assert.deepEqual(convertZone(many, t).files.map((f) => f.filename), [convertFilename('example.com', t)], t);
   });
 
+  test('Route 53: an alias that targets another alias of the zone goes after it, in the same or a later change batch', () => {
+    const sets = Array.from({ length: 495 }, (_, i) => ({ Name: `h${i}.example.com.`, Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.1' }] }));
+    const alias = (name, target) => ({ Name: name, Type: 'A', AliasTarget: { HostedZoneId: 'Z0EXAMPLE', DNSName: target, EvaluateTargetHealth: false } });
+    sets.push(alias('app.example.com.', 'www.example.com.'), alias('api.example.com.', 'app.example.com.'));
+    for (let i = 0; i < 8; i += 1) sets.push(alias(`b${i}.example.com.`, `lb${i}.example.net.`));
+    sets.push(alias('www.example.com.', 'lb.example.net.'));
+    const res = convertZone(parseZone(JSON.stringify({ ResourceRecordSets: sets }), { format: 'route53', origin: 'example.com' }), 'route53');
+    assert.ok(res.files.length > 1);
+    const order = res.files.flatMap((f) => JSON.parse(f.text).Changes.map((c) => c.ResourceRecordSet.Name));
+    const at = (name) => order.indexOf(name);
+    assert.ok(at('www.example.com.') < at('app.example.com.') && at('app.example.com.') < at('api.example.com.'), order.slice(-12).join(' '));
+  });
+
   test('Route 53: a record set no change batch takes (over 400 values, or 16,000 characters of values) is an error', () => {
     const prefixes = ['192.0.2', '198.51.100', '203.0.113'];
     const wide = bind(Array.from({ length: 401 }, (_, i) => `rr A ${prefixes[i % 3]}.${Math.floor(i / 3)}`).join('\n'));
@@ -631,6 +644,9 @@ describe('pitfalls', () => {
     assert.deepEqual([pit(res, 'batch-size').severity, pit(res, 'batch-size').names, pit(res, 'batch-size').params], ['error', ['rr'], { target: 'Route 53', values: 400, chars: 16000 }]);
     const long = bind(Array.from({ length: 9 }, (_, i) => `t TXT "${String(i).repeat(255)}" "${'x'.repeat(255)}" "${'y'.repeat(255)}" "${'z'.repeat(255)}" "${'w'.repeat(255)}" "${'v'.repeat(255)}" "${'u'.repeat(255)}"`).join('\n'));
     assert.deepEqual(pit(convertZone(long, 'route53'), 'batch-size').names, ['t'], '9 values of about 1,800 characters: over 16,000');
+    const alone = convertZone(long, 'route53');
+    assert.deepEqual([alone.files.length, alone.files[0].filename, pit(alone, 'batch-split'), JSON.parse(alone.text).Comment],
+      [1, 'example.com.route53.json', null, 'example.com, written by DomainScope from bind'], 'one set too big is no reason to split');
     assert.equal(pit(convertZone(bind('rr A 192.0.2.1'), 'route53'), 'batch-size'), null);
   });
 

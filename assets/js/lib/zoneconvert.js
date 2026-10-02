@@ -748,12 +748,12 @@ function route53Text(zone, steps, sets, pits, about) {
     const first = set.steps[0].r;
     const rrs = { Name: route53Name(set.name), Type: set.type };
     if (set.routing) Object.assign(rrs, route53Routing(set.routing));
-    const item = { change: { Action: 'UPSERT', ResourceRecordSet: rrs }, records: 1, chars: 0, alias: false };
+    const item = { change: { Action: 'UPSERT', ResourceRecordSet: rrs }, records: 1, chars: 0, alias: null, name: canonicalName(set.name) };
     if (set.steps[0].action === 'alias') {
       const a = first.alias;
       if (!a.zoneId) pits.flag('alias-zone-id', first);
       rrs.AliasTarget = { HostedZoneId: a.zoneId || ALIAS_ZONE_PLACEHOLDER, DNSName: route53Name(a.target), EvaluateTargetHealth: !!a.evaluateTargetHealth };
-      item.alias = true;
+      item.alias = canonicalName(a.target);
     } else {
       const values = [...new Set(set.steps.map((s) => route53Value(s.r)))];
       rrs.TTL = set.ttl;
@@ -773,11 +773,11 @@ function route53Text(zone, steps, sets, pits, about) {
     Comment: `${zone.origin}, written by DomainScope from ${about}${part}`.slice(0, 256), Changes: list.map((x) => x.change)
   }, null, 2)}\n`;
   if (fits(written, items.reduce((n, x) => n + x.chars, 0))) return { files: [{ text: doc(items), written }], written };
-  // Several batches, sent one after another: whole record sets in each, and the aliases last (a
-  // same-zone alias needs its target to exist).
+  // Several batches, sent one after another: whole record sets in each, the aliases last (a
+  // same-zone alias needs its target to exist), an alias after any alias it targets.
   const parts = [];
   let cur = null;
-  for (const x of [...items.filter((i) => !i.alias), ...items.filter((i) => i.alias)]) {
+  for (const x of [...items.filter((i) => i.alias === null), ...aliasOrder(items.filter((i) => i.alias !== null))]) {
     if (!cur || (cur.items.length && !fits(cur.records + x.records, cur.chars + x.chars))) {
       cur = { items: [], records: 0, chars: 0 };
       parts.push(cur);
@@ -786,8 +786,33 @@ function route53Text(zone, steps, sets, pits, about) {
     cur.records += x.records;
     cur.chars += x.chars;
   }
+  // One set too big for any batch alone (batch-size) is no reason to split.
+  if (parts.length === 1) return { files: [{ text: doc(items), written }], written };
   pits.flag('batch-split', null, { records: written, files: parts.length, max: L.records / L.upsert, maxChars: L.chars / L.upsert });
   return { files: parts.map((part, i) => ({ text: doc(part.items, `, part ${i + 1} of ${parts.length}`), written: part.records })), written };
+}
+
+/**
+ * Alias changes in an order Route 53 takes them: one that targets another alias of the batch after
+ * it (its depth in the chain, then file order; a loop keeps file order).
+ */
+function aliasOrder(aliases) {
+  const byName = new Map();
+  for (const x of aliases) {
+    if (!byName.has(x.name)) byName.set(x.name, []);
+    byName.get(x.name).push(x);
+  }
+  const depth = new Map();
+  const depthOf = (x, seen) => {
+    if (depth.has(x)) return depth.get(x);
+    if (seen.has(x)) return 0;
+    seen.add(x);
+    const targets = byName.get(x.alias) || [];
+    const d = targets.length ? 1 + Math.max(...targets.map((t) => depthOf(t, seen))) : 0;
+    depth.set(x, d);
+    return d;
+  };
+  return aliases.map((x, i) => ({ x, i, d: depthOf(x, new Set()) })).sort((p, q) => p.d - q.d || p.i - q.i).map((p) => p.x);
 }
 
 /* ------------------------------------------------------------------------ */

@@ -663,6 +663,34 @@ async function main() {
       await shot(page, opts, 'retire-compare-desktop-light-en');
     });
 
+    await run.step('the origin map: off, the card says so; switched on, Remember puts the new server in it', async () => {
+      const mapOf = () => page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.workspaceData('origins')));
+      // The new server answered with a certificate for the name, but remembering is off (the default):
+      // no button, a note that links to the switch, nothing written.
+      const off = await page.evaluate(() => ({
+        button: !!document.querySelector('[data-action="oc-remember"]'),
+        note: !!document.querySelector('[data-role="oc-remember"] [data-role="om-off"]'),
+        href: document.querySelector('[data-role="oc-remember"] a')?.getAttribute('href') || ''
+      }));
+      assertEqual([off.button, off.note, /#\/inventory\?tab=origins$/.test(off.href)], [false, true, true], `off (${off.href})`);
+      assertEqual(await mapOf(), null, 'nothing written');
+      // Switched on (Servers › Origin map), the comparison shown again offers to remember the new server.
+      await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.setWorkspaceData('origins', { v: 1, remember: true, entries: [] })));
+      await gotoRoute(page, 'about');
+      await gotoRoute(page, 'retire');
+      const label = await page.waitFor(() => document.querySelector('[data-action="oc-remember"]')?.textContent || false, { message: 'Remember button' });
+      assertEqual(label, `Remember ${NEW_IP} as the origin of www.example.com`, 'button');
+      await page.click('[data-action="oc-remember"]');
+      const said = await page.waitFor(() => document.querySelector('[data-role="oc-remember"] .alert')?.textContent || false, { message: 'what it did' });
+      assert(/Origin map: 1 added, 0 confirmed, 0 marked stale\./.test(said), said);
+      const map = await mapOf();
+      assertEqual(map.entries.map((e) => `${e.name} ${e.ip}:${e.port} ${e.source} ${e.stale}`), [`www.example.com ${NEW_IP}:443 compare null`], 'remembered');
+      assertEqual(external, [], 'no external request');
+      // Back to the default (off, no map) for the steps that follow.
+      await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.setWorkspaceData('origins', null)));
+      assertEqual(await mapOf(), null, 'origin map forgotten');
+    });
+
     await run.step('a new server whose certificate names another host: broken, no second dialog', async () => {
       await page.evaluate(() => { window.__compareScenario = 'broken'; });
       await page.click('[data-action="oc-run"]');

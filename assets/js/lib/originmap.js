@@ -5,7 +5,7 @@
  */
 
 import { normalizeHostname } from './domain.js';
-import { normalizeIP } from './netinfo.js';
+import { normalizeIP } from './ip.js';
 
 /** Where an entry was last confirmed. */
 export const ORIGIN_SOURCES = Object.freeze(['cli-json', 'zone', 'verify', 'compare', 'manual']);

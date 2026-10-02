@@ -27,7 +27,7 @@
  */
 
 import { readEstateReport, ESTATE_MAX_REPORTS } from './estate.js';
-import { normalizeIP } from './netinfo.js';
+import { normalizeIP } from './ip.js';
 import {
   sanitizeOriginMap, originName, originPort, originKey, originServer, originNow, originTime, originWildcard,
   ORIGIN_SOURCES, ORIGIN_MAP_LIMITS, ORIGIN_DEFAULT_PORT

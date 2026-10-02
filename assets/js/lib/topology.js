@@ -46,8 +46,8 @@ export function topologyTokens(server, cliName = (n) => n) {
   return out;
 }
 
-/** How strongly a name ties to a server (lib/scanner.js, lib/certsets.js): DNS, the zone file, an origin hint. */
-const VIA_RANK = { dns: 0, zone: 1, hint: 2 };
+/** How strongly a name ties to a server (lib/scanner.js): DNS, a remembered origin, the zone file, an origin hint. */
+const VIA_RANK = { dns: 0, known: 1, zone: 2, hint: 3 };
 
 /**
  * The topology an inventory describes: load balancers with their backends, shared addresses
@@ -201,7 +201,7 @@ export function applyTopology(groups, servers) {
   // The inventory and DNS disagree: a terminates_tls=no server forwarding to no backend that a
   // covered name reaches directly (its own address, a VIP or NAT address it holds), and every
   // server DNS reaches directly for a name that would terminate TLS nowhere, get the certificate.
-  const covered = (e) => (e.via === 'dns' || e.via === 'zone') && e.covered !== false;
+  const covered = (e) => (e.via === 'dns' || e.via === 'known' || e.via === 'zone') && e.covered !== false;
   const suspect = new Set(out.filter((g) => !terminatesTls(g.server) && !(lbsOf.get(g.server) || []).length
     && g.hosts.some((e) => covered(e) && !e.lbs)));
   const reach = new Map(); // name → { tls: it terminates somewhere, direct: the groups DNS sends it to }

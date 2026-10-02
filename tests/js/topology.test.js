@@ -150,6 +150,24 @@ describe('applyTopology / orderByLoadBalancer', () => {
     assert.deepEqual(orderByLoadBalancer([by.lb01, by.web02, by.web01, by.lb02]).map((g) => g.server.name), ['lb01', 'lb02', 'web01', 'web02']);
   });
 
+  test('a remembered origin (via known) ties stronger than the zone file and a hint, and reaching a terminates_tls=no server directly keeps its certificate', () => {
+    const { servers } = parseInventory([
+      'lb01 203.0.113.2 backends=web01', 'lb02 203.0.113.3 backends=web01', 'web01 10.0.0.21 terminates_tls=no', 'solo 203.0.113.30 terminates_tls=no'
+    ].join('\n'));
+    const [l1, l2, , solo] = servers;
+    const groups = applyTopology([
+      { server: l1, hosts: [entry(`api.${D}`, '203.0.113.2', { via: 'hint' }), entry(`shop.${D}`, '203.0.113.2', { via: 'known', port: 8443 })] },
+      { server: l2, hosts: [entry(`api.${D}`, '203.0.113.3', { via: 'known', port: 8443 }), entry(`shop.${D}`, '203.0.113.3', { via: 'zone' })] },
+      { server: solo, hosts: [entry(`app.${D}`, '203.0.113.30', { via: 'known', port: 8443 })] }
+    ], servers);
+    const by = Object.fromEntries(groups.map((g) => [g.server.name, g]));
+    // api: the remembered origin through lb02 over the hint through lb01; shop: through lb01 over the zone file's through lb02
+    assert.deepEqual(by.web01.hosts.map((e) => [e.name, e.via, e.lbs]), [[`api.${D}`, 'known', ['lb02']], [`shop.${D}`, 'known', ['lb01']]]);
+    // a plain-HTTP server a remembered origin points at is no plain-HTTP server: the inventory is wrong, the certificate goes there
+    assert.equal(by.solo.topology.suspect, true);
+    assert.equal(by.web01.topology.suspect, false, 'behind a load balancer it stays plain HTTP');
+  });
+
   test('without a topology key the groups are untouched', () => {
     const { servers } = parseInventory('web01 203.0.113.10\nweb02 203.0.113.13');
     const groups = [{ server: servers[0], hosts: [entry(`www.${D}`, '203.0.113.10')], needsCert: true }];

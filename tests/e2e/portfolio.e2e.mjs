@@ -20,8 +20,9 @@
  * the alarms 30 and 7 days before); the policy: a preset, the rule controls and the JSON kept in
  * step and in the workspace, a rule that does not exist said and left out, the matrix with the
  * evidence of each cell and its CSV; Copy summary; Esc stops a run (rows not looked up offer
- * "Look up"); 375 / 320 px without horizontal scroll, TR / EN × light / dark; zero console errors
- * / CSP violations / missing i18n keys, nothing sent outside the page.
+ * "Look up"); 375 / 320 px without horizontal scroll, TR / EN × light / dark; offline, the shell's
+ * note and Check portfolio sending nothing; zero console errors / CSP violations / missing i18n
+ * keys, nothing sent outside the page.
  *
  * Data is documentation space only (example.com / .net / .org, example-test.com.tr, 192.0.2.0/24,
  * 198.51.100.0/24, 203.0.113.0/24).
@@ -510,6 +511,31 @@ async function main() {
         return { wide: scroll.scrollWidth > scroll.clientWidth, moved: Math.round(after - before) };
       });
       assertEqual(sticky.moved, 0, `the domain column stays put while the table scrolls: ${JSON.stringify(sticky)}`);
+    });
+
+    run.group('Offline');
+    await run.step('offline: the page says the portfolio needs the network; Check portfolio sends nothing and the rows stay', async () => {
+      const setOnline = async (on) => {
+        await page.send('Network.emulateNetworkConditions', { offline: !on, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+        await page.waitFor((o) => navigator.onLine === o, { args: [on], message: `navigator.onLine ${on}` });
+      };
+      await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
+      const before = await counts(page);
+      const rows = () => page.evaluate(() => document.querySelectorAll('.pf-table tbody tr.dt-row').length);
+      const shown = await rows();
+      await setOnline(false);
+      try {
+        await page.waitFor(() => document.querySelector('#page-offline')?.hidden === false, { message: 'the offline note' });
+        assert(/^Domain portfolio needs the network/.test(await text(page, '#page-offline .alert-message, #page-offline p')), await text(page, '#page-offline'));
+        await page.click('[data-action="pf-run"]');
+        await page.waitFor(() => [...document.querySelectorAll('.toast')].some((x) => /this needs the network/.test(x.textContent)), { message: 'the offline toast' });
+        assertEqual(await counts(page), before, 'nothing sent');
+        assertEqual(await rows(), shown, 'the rows on screen stay');
+        assert(await page.evaluate(() => document.querySelector('[data-action="pf-stop"]').hidden), 'nothing running');
+      } finally {
+        await setOnline(true);
+      }
+      await page.waitFor(() => document.querySelector('#page-offline')?.hidden === true, { message: 'the note goes once online' });
     });
 
     run.group('Quality');

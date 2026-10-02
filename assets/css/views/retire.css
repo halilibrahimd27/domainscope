@@ -430,8 +430,9 @@
   align-items: center;
 }
 
-/* a long label (Linux fonts, Turkish) wraps inside the button on a phone instead of widening the page */
-.oc-actions .btn {
+/* a long label (Linux fonts, Turkish, a long host name) wraps inside the button on a phone instead of widening the page */
+.oc-actions .btn,
+.oc-remember .btn {
   max-width: 100%;
   height: auto;
   min-height: 36px;

@@ -831,6 +831,32 @@ async function main() {
       await page.evaluate(() => window.scrollTo(0, 0));
     });
 
+    await run.step('"Remember … as the origin of …" with a long name at 320 and 375 px, TR / EN: the button wraps, no horizontal scroll', async () => {
+      await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.setWorkspaceData('origins', { v: 1, remember: true, entries: [] })));
+      await typeInto(page, 'oc-host', 'very-long-shop-name.example.com');
+      await page.click('[data-action="oc-run"]');
+      await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'differs'
+        && /very-long-shop-name/.test(document.querySelector('[data-action="oc-remember"]')?.textContent || ''), { timeout: 20000, message: 'compared, Remember offered' });
+      for (const [width, lang, scheme] of [[320, 'tr', 'dark'], [375, 'en', 'light'], [320, 'en', 'light'], [375, 'tr', 'dark']]) {
+        await setLangUi(page, lang);
+        await page.emulateMedia({ 'prefers-color-scheme': scheme });
+        await page.setViewport({ width, height: 700, mobile: true });
+        await page.waitFor(() => !!document.querySelector('[data-action="oc-remember"]'), { message: 'Remember after the language switch' });
+        await assertNoHorizontalScroll(page, `remember ${width} ${lang} ${scheme}`);
+        const box = await page.evaluate(() => {
+          const r = document.querySelector('[data-action="oc-remember"]').getBoundingClientRect();
+          return { right: Math.round(r.right), vw: document.documentElement.clientWidth, lines: Math.round(r.height / 18) };
+        });
+        assert(box.right <= box.vw, `the button fits: ${JSON.stringify(box)}`);
+      }
+      await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.setWorkspaceData('origins', null)));
+      await typeInto(page, 'oc-host', 'www.example.com');
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await page.setViewport({ width: 1440, height: 900 });
+      await setLangUi(page, 'en');
+      await page.evaluate(() => window.scrollTo(0, 0));
+    });
+
     run.group('Phone 375×667, Turkish / English, light / dark');
     await run.step('the form and the change list at 375 px: labelled cards, no horizontal scroll', async () => {
       await page.click('[data-action="retire-run"]');

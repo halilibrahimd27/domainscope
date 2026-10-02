@@ -415,7 +415,7 @@ multi:
     lenient: true
   ttl: 300
   type: TXT
-  value: 'octal — escapes in TXT'
+  value: "octal \u2014 escapes in TXT"
 ## octodns pitfalls
 warn r53-alias ×5: @ api static gw www
 warn txt-lenient ×1: name\032with\032space

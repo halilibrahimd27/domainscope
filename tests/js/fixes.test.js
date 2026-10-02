@@ -359,7 +359,7 @@ describe('formats', () => {
 
   test('octoDNS: keys in its natural order (ttl, type, values; the names too), TXT as raw text, lenient where its own check refuses the text', () => {
     const y = renderFix(buildChange('record', { name: 'www.example.com', type: 'TXT', values: 'café a\\b' }), 'octodns');
-    assert.match(y, /^www:\n {2}# octoDNS's check refuses this text [^\n]+\n {2}- octodns:\n {6}lenient: true\n {4}ttl: 3600\n {4}type: TXT\n {4}values:\n {6}- 'café a\\b'$/m);
+    assert.match(y, /^www:\n {2}# octoDNS's check refuses this text [^\n]+\n {2}- octodns:\n {6}lenient: true\n {4}ttl: 3600\n {4}type: TXT\n {4}values:\n {6}- "caf\\xe9 a\\\\b"$/m, 'ASCII only: the é escaped');
     const plain = renderFix(buildChange('record', { name: 'www.example.com', type: 'A', values: '192.0.2.10' }), 'octodns');
     assert.match(plain, /^www:\n {2}- ttl: 3600\n {4}type: A\n {4}values:\n {6}- '192\.0\.2\.10'$/m);
     const names = renderFix(buildChange('m365', { domain: 'example.com', tenant: 'example' }), 'octodns').split('\n').filter((l) => /^\S.*:$/.test(l));

@@ -248,7 +248,7 @@ describe('strings', () => {
     ].join('\n'));
     const res = convertZone(z, 'octodns');
     assert.deepEqual([pit(res, 'txt-lenient').names, pit(res, 'name-lenient').names, pit(res, 'name-lenient').params.types], [['cafe', 'semi'], ['sip', 'u'], ['SRV', 'URI']]);
-    assert.match(res.text, /^cafe:\n {2}octodns:\n {4}lenient: true\n {2}ttl: 3600\n {2}type: TXT\n {2}value: 'café'$/m);
+    assert.match(res.text, /^cafe:\n {2}octodns:\n {4}lenient: true\n {2}ttl: 3600\n {2}type: TXT\n {2}value: "caf\\xe9"$/m);
     assert.match(res.text, /^semi:\n {2}octodns:\n {4}lenient: true\n {2}ttl: 3600\n {2}type: TXT\n {2}value: 'a\\\\;b'$/m);
     assert.match(res.text, /^plain:\n {2}ttl: 3600\n/m);
     assert.match(res.text, /^_sip\._tcp:\n {2}ttl: 3600\n/m);

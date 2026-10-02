@@ -33,23 +33,42 @@ export function route53String(s) {
  */
 const YAML_NOT_A_STRING = /^(?:true|false|yes|no|on|off|null|~|0b[01_]+|0x[0-9a-f_]+|\d[\d._e+-]*)$/i;
 
+/** Is every character printable ASCII (U+0020 to U+007E)? */
+function printableAscii(v) {
+  for (let i = 0; i < v.length; i += 1) {
+    const c = v.charCodeAt(i);
+    if (c < 0x20 || c > 0x7e) return false;
+  }
+  return true;
+}
+
+/** One character as a YAML double-quoted escape: `\xHH`, `\uHHHH` or `\UHHHHHHHH`. */
+function yamlEscape(cp) {
+  if (cp < 0x100) return `\\x${cp.toString(16).padStart(2, '0')}`;
+  if (cp < 0x10000) return `\\u${cp.toString(16).padStart(4, '0')}`;
+  return `\\U${cp.toString(16).padStart(8, '0')}`;
+}
+
 /**
  * A YAML scalar: plain when it is a plain name or word that YAML cannot read as anything else,
- * single-quoted otherwise, double-quoted with escapes when it holds a control character.
+ * single-quoted otherwise, and double-quoted with every character outside printable ASCII
+ * escaped when it holds one \u2014 PyYAML (octoDNS) refuses a whole file over a C1 control, U+FFFE or
+ * U+FFFF written raw and folds a raw NEL, LS or PS, and octoDNS reads its files in the system's
+ * code page on Windows: what this writes is ASCII only.
  * @param {string} s
  * @returns {string}
  */
 export function yamlString(s) {
   const v = String(s ?? '');
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f\u2028\u2029]/.test(v)) {
-    return `"${[...v].map((ch) => {
+  if (!printableAscii(v)) {
+    let out = '"';
+    for (const ch of v) {
       const cp = ch.codePointAt(0);
-      if (ch === '"' || ch === '\\') return `\\${ch}`;
-      if (cp < 0x20 || cp === 0x7f) return `\\x${cp.toString(16).padStart(2, '0')}`;
-      if (cp === 0x2028 || cp === 0x2029) return `\\u${cp.toString(16)}`;
-      return ch;
-    }).join('')}"`;
+      if (ch === '"' || ch === '\\') out += `\\${ch}`;
+      else if (cp >= 0x20 && cp <= 0x7e) out += ch;
+      else out += yamlEscape(cp);
+    }
+    return `${out}"`;
   }
   return /^[a-z0-9_][a-z0-9._-]*$/i.test(v) && !YAML_NOT_A_STRING.test(v) ? v : `'${v.replace(/'/g, "''")}'`;
 }

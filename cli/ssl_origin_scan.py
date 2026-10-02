@@ -2164,7 +2164,8 @@ def _terminates_behind(server: Server, by_name: Dict[str, Server]) -> bool:
 def topology_checks(servers: Sequence[Server]) -> List[InventoryWarning]:
     """Checks over the linked inventory (lib/inventory.js topologyChecks alike): a load balancer
     that passes TLS through (terminates_tls=no) with no backend terminating it is a
-    'noTermination' TOPOLOGY warning."""
+    'noTermination' TOPOLOGY warning; the holders of one VIP that disagree on terminates_tls a
+    'vipMixed' one (on the first holder saying no)."""
     by_name = {server.name.lower(): server for server in servers}
     warnings = []  # type: List[InventoryWarning]
     for server in servers:
@@ -2174,6 +2175,18 @@ def topology_checks(servers: Sequence[Server]) -> List[InventoryWarning]:
                 server.line, 'TOPOLOGY', '%s passes TLS through (terminates_tls=no), but no backend '
                 'behind it terminates TLS - check the inventory' % server.name, server.source,
                 'noTermination'))
+    holders = {}  # type: Dict[str, List[Server]]
+    for server in servers:
+        for vip in server.vips:
+            holders.setdefault(vip, []).append(server)
+    for vip, held in holders.items():
+        off = [server for server in held if not server.gets_certificate]
+        if off and len(off) < len(held):
+            warnings.append(InventoryWarning(
+                off[0].line, 'TOPOLOGY', 'vip=%s: %s say terminates_tls=no, %s do not - the holders '
+                'of one VIP disagree: check the inventory' % (
+                    vip, ', '.join(s.name for s in off),
+                    ', '.join(s.name for s in held if s.gets_certificate)), off[0].source, 'vipMixed'))
     return warnings
 
 
@@ -4646,16 +4659,24 @@ def render_topology(report: ScanReport, summaries: Sequence[ServerSummary], styl
                                              _plain_state(backend, skipped, status))
                 lines.extend(_wrap(prefix, len(plain), what, width))
         lines.append('')
-    holders = {}  # type: Dict[str, List[str]]
+    holders = {}  # type: Dict[str, List[Server]]
     for server in servers:
         for vip in server.vips:
-            holders.setdefault(vip, []).append(server.name)
-    for vip, names in holders.items():
-        action = ('install the certificate on both' if len(names) == 2 else
-                  'install the certificate on all %d' % len(names) if len(names) > 2 else
-                  'held by %s only' % names[0])
-        lines.extend(_wrap('Shared address (VIP) %s: ' % vip, 2, display_text(
-            '%s - %s' % (', '.join(names), action)), width))
+            holders.setdefault(vip, []).append(server)
+    for vip, held in holders.items():
+        # install on the holders that terminate TLS; say when the inventory disagrees with itself
+        names = [server.name for server in held if server.gets_certificate]
+        plain = [server.name for server in held if not server.gets_certificate]
+        if names and plain:
+            text = 'install the certificate on %s; %s %s terminates_tls=no - check the inventory' % (
+                ', '.join(names), ', '.join(plain), 'says' if len(plain) == 1 else 'say')
+        elif plain:
+            text = '%s - plain HTTP (terminates_tls=no), no certificate' % ', '.join(plain)
+        else:
+            text = '%s - %s' % (', '.join(names), 'install the certificate on both' if len(names) == 2
+                                else 'install the certificate on all %d' % len(names)
+                                if len(names) > 2 else 'held by %s only' % names[0])
+        lines.extend(_wrap('Shared address (VIP) %s: ' % vip, 2, display_text(text), width))
     for server in servers:
         for nat in server.nats:
             lines.append(display_text('NAT %s -> %s (%s)' % (nat, server.name, ', '.join(server.ips))))

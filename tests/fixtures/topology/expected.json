@@ -58,9 +58,11 @@
         "pool01": { "endpoints": ["10.0.0.61"], "tlsPorts": [], "terminatesTls": false, "vips": [], "nats": [], "backends": [] },
         "edge02": { "endpoints": ["203.0.113.61"], "tlsPorts": [], "terminatesTls": false, "vips": [], "nats": [], "backends": ["mid01"] },
         "mid01": { "endpoints": ["10.0.0.62"], "tlsPorts": [], "terminatesTls": false, "vips": [], "nats": [], "backends": ["app03"] },
-        "app03": { "endpoints": ["10.0.0.63"], "tlsPorts": [], "terminatesTls": null, "vips": [], "nats": [], "backends": [] }
+        "app03": { "endpoints": ["10.0.0.63"], "tlsPorts": [], "terminatesTls": null, "vips": [], "nats": [], "backends": [] },
+        "db02": { "endpoints": ["10.0.0.72"], "tlsPorts": [], "terminatesTls": null, "vips": ["203.0.113.70"], "nats": [], "backends": [] },
+        "db03": { "endpoints": ["10.0.0.73"], "tlsPorts": [], "terminatesTls": false, "vips": ["203.0.113.70"], "nats": [], "backends": [] }
       },
-      "warnings": [[4, "TOPOLOGY", "noTermination"]]
+      "warnings": [[4, "TOPOLOGY", "noTermination"], [10, "TOPOLOGY", "vipMixed"]]
     }
   }
 }

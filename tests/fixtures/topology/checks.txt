@@ -6,3 +6,5 @@ pool01 10.0.0.61 terminates_tls=no
 edge02 203.0.113.61 terminates_tls=no backends=mid01
 mid01 10.0.0.62 terminates_tls=no backends=app03
 app03 10.0.0.63
+db02 10.0.0.72 vip=203.0.113.70
+db03 10.0.0.73 vip=203.0.113.70 terminates_tls=no

@@ -173,6 +173,11 @@
   overflow-wrap: break-word;
 }
 
+.topo-item-warn > span:last-child {
+  font-weight: 600;
+  color: var(--warn);
+}
+
 .topo-warn .icon {
   flex: none;
   margin-top: 2px;

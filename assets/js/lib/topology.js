@@ -57,8 +57,8 @@ const VIA_RANK = { dns: 0, zone: 1, hint: 2 };
  * topology key (nothing changes then).
  * @param {Server[]} servers
  * @returns {{ any: boolean, lbs: Array<{ server: Server, backends: Server[] }>, backendOf: Map<Server, Server[]>,
- *   vips: Array<{ ip: string, servers: Server[] }>, nats: Array<{ ip: string, server: Server }>,
- *   plain: Server[], ported: Server[], nowhere: Set<Server> }}
+ *   vips: Array<{ ip: string, servers: Server[], plain: Server[] }>, nats: Array<{ ip: string, server: Server }>,
+ *   plain: Server[], ported: Server[], nowhere: Set<Server> }} (a VIP's `plain`: its holders saying terminates_tls=no)
  */
 export function inventoryTopology(servers) {
   const list = (Array.isArray(servers) ? servers : []).filter((s) => s && Array.isArray(s.ips));
@@ -81,7 +81,7 @@ export function inventoryTopology(servers) {
       if (!vipMap.get(ip).includes(s)) vipMap.get(ip).push(s);
     }
   }
-  const vips = [...vipMap].map(([ip, holders]) => ({ ip, servers: holders }));
+  const vips = [...vipMap].map(([ip, holders]) => ({ ip, servers: holders, plain: holders.filter((h) => !terminatesTls(h)) }));
   const nats = list.flatMap((s) => (Array.isArray(s.nats) ? s.nats : []).map((ip) => ({ ip, server: s })));
   const plain = list.filter((s) => !terminatesTls(s));
   const ported = list.filter((s) => Array.isArray(s.tlsPorts) && s.tlsPorts.length);
@@ -109,8 +109,9 @@ export function inventoryTopology(servers) {
  * @property {boolean} terminatesTls false: plain HTTP, no certificate needed here
  * @property {Array<{ id: string, name: string, terminatesTls: boolean }>} backends its `backends=` (a load balancer)
  * @property {string[]} behind the load balancers of the scan it was reached through
- * @property {Array<{ ip: string, servers: string[] }>} vips the shared addresses a scanned name answered with, and
- *   every server holding each (install the certificate on all of them)
+ * @property {Array<{ ip: string, servers: string[], plain: string[] }>} vips the shared addresses a scanned name
+ *   answered with, every server holding each (install the certificate on all of them: DNS reaches each) and
+ *   those of them the inventory says terminates_tls=no for (the holders disagree: check it)
  * @property {Array<{ ip: string, addresses: string[] }>} nats the public addresses a scanned name answered with,
  *   and the server's own addresses behind them
  * @property {number[]} tlsPorts its `ports=` ([] without)
@@ -208,7 +209,7 @@ export function applyTopology(groups, servers) {
       nowhere.set(g, [...(nowhere.get(g) || []), name]);
     }
   }
-  const vipHolders = new Map(topo.vips.map((v) => [v.ip, v.servers.map((s) => s.name)]));
+  const vipHolders = new Map(topo.vips.map((v) => [v.ip, v]));
   for (const g of out) {
     const s = g.server || {};
     const vipIps = [...new Set(g.hosts.filter((e) => e.through === 'vip').map((e) => normalizeIP(e.ip) || e.ip))];
@@ -218,7 +219,10 @@ export function applyTopology(groups, servers) {
       terminatesTls: terminatesTls(s),
       backends,
       behind: behind.get(g) || [],
-      vips: vipIps.map((ip) => ({ ip, servers: vipHolders.get(ip) || [s.name] })),
+      vips: vipIps.map((ip) => {
+        const v = vipHolders.get(ip);
+        return v ? { ip, servers: v.servers.map((x) => x.name), plain: v.plain.map((x) => x.name) } : { ip, servers: [s.name], plain: [] };
+      }),
       nats: natIps.map((ip) => ({ ip, addresses: [...(s.ips || [])] })),
       tlsPorts: Array.isArray(s.tlsPorts) ? [...s.tlsPorts] : [],
       suspect: suspect.has(g),
@@ -247,7 +251,7 @@ export function topologyNotes(t) {
   if (t.behind && t.behind.length) {
     out.push(`behind ${t.behind.join(', ')}${t.suspect ? '' : ` (${t.terminatesTls ? 're-encrypts' : 'plain HTTP, no certificate'})`}`);
   } else if (!t.terminatesTls && !t.suspect && !(t.backends && t.backends.length)) out.push('terminates_tls=no (no certificate)');
-  for (const v of t.vips || []) out.push(`VIP ${v.ip} (${v.servers.join(', ')})`);
+  for (const v of t.vips || []) out.push(`VIP ${v.ip} (${v.servers.join(', ')}${v.plain && v.plain.length ? `; terminates_tls=no: ${v.plain.join(', ')}` : ''})`);
   for (const n of t.nats || []) out.push(`NAT ${n.ip} -> ${n.addresses.join(', ')}`);
   if (t.tlsPorts && t.tlsPorts.length) out.push(`TLS ports ${t.tlsPorts.join(',')}`);
   return out;

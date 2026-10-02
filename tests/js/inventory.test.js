@@ -968,6 +968,9 @@ test('lookupServers: DNS answers match through nat= and vip= and say so', () => 
 test('inventoryTopology: a passthrough load balancer with TLS terminating nowhere behind it (through every tier)', () => {
   const { servers } = parseInventory(readFileSync(new URL('checks.txt', TOPOLOGY_DIR), 'utf8'));
   assert.deepEqual([...inventoryTopology(servers).nowhere].map((s) => s.name), ['edge01']);
+  // the holders of one VIP that disagree: the card lists only those that terminate TLS
+  const vip = inventoryTopology(servers).vips.find((v) => v.ip === '203.0.113.70');
+  assert.deepEqual([vip.servers.map((s) => s.name), vip.plain.map((s) => s.name)], [['db02', 'db03'], ['db03']]);
 });
 
 test('inventoryTopology: load balancers with their backends, VIP holders, NAT pairs, plain servers', () => {

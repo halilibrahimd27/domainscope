@@ -87,7 +87,7 @@ describe('applyTopology / orderByLoadBalancer', () => {
     assert.deepEqual(by.lb01.topology, {
       terminatesTls: true,
       backends: [{ id: 'web01', name: 'web01', terminatesTls: false }, { id: 'web02', name: 'web02', terminatesTls: true }],
-      behind: [], vips: [{ ip: '203.0.113.50', servers: ['lb01', 'lb02'] }], nats: [], tlsPorts: [443, 8443], suspect: false, nowhere: []
+      behind: [], vips: [{ ip: '203.0.113.50', servers: ['lb01', 'lb02'], plain: [] }], nats: [], tlsPorts: [443, 8443], suspect: false, nowhere: []
     });
     assert.deepEqual([by.web01.topology.terminatesTls, by.web01.topology.behind], [false, ['lb01']]);
     assert.deepEqual([by.web02.topology.terminatesTls, by.web02.topology.behind, by.web02.topology.tlsPorts], [true, ['lb01'], [8443]]);
@@ -179,7 +179,7 @@ describe('a scan with load balancers, a VIP pair and a NAT address', () => {
       ['app01', true], ['lb01', true], ['lb02', true], ['web01', false], ['web02', true]
     ]);
     const g = groupsByName(scan);
-    assert.deepEqual(g.lb02.topology.vips, [{ ip: '203.0.113.50', servers: ['lb01', 'lb02'] }]);
+    assert.deepEqual(g.lb02.topology.vips, [{ ip: '203.0.113.50', servers: ['lb01', 'lb02'], plain: [] }]);
     assert.deepEqual([g.web01.topology.terminatesTls, g.web01.topology.behind, g.web01.maybeNeedsCert], [false, ['lb01', 'lb02'], false]);
     // shop answers with lb01's own address, www with the VIP both hold
     assert.deepEqual(g.web01.hosts.map((e) => [e.name, e.ip, e.lbs]), [
@@ -272,6 +272,14 @@ describe('when the inventory and DNS disagree, the certificate is still planned 
     assert.deepEqual(scan.servers.map((x) => [x.server.name, x.needsCert]), [['web01', true]]);
     assert.equal(g.web01.topology.suspect, true);
     assert.deepEqual(planRenewal(scan, [SET_A]).plain, []);
+  });
+
+  test('VIP holders that disagree: both need it (DNS reaches both), the note says the inventory disagrees', async () => {
+    const scan = await scanOf('db01 10.0.0.71 vip=203.0.113.70\ndb02 10.0.0.72 vip=203.0.113.70 terminates_tls=no', { [`db.${D}`]: ['203.0.113.70'] });
+    const g = groupsByName(scan);
+    assert.deepEqual(scan.servers.map((x) => [x.server.name, x.needsCert]), [['db01', true], ['db02', true]]);
+    assert.deepEqual([g.db01.topology.vips, g.db02.topology.suspect], [[{ ip: '203.0.113.70', servers: ['db01', 'db02'], plain: ['db02'] }], true]);
+    assert.ok(topologyNotes(g.db01.topology).includes('VIP 203.0.113.70 (db01, db02; terminates_tls=no: db02)'), topologyNotes(g.db01.topology).join(' | '));
   });
 
   test('a VIP held only by terminates_tls=no servers: both holders need the certificate', async () => {

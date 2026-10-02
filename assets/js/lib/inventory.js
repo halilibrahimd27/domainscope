@@ -267,7 +267,7 @@ const TOPOLOGY_KEY_SET = new Set(TOPOLOGY_KEYS);
 
 /** The `reason` of a TOPOLOGY warning: a malformed value of each key, then the other causes. */
 export const TOPOLOGY_REASONS = Object.freeze(['ports', 'terminatesTls', 'vip', 'nat', 'backends', 'plainPorts',
-  'unknownBackend', 'selfBackend', 'conflict', 'noServer', 'groupVars', 'noTermination']);
+  'unknownBackend', 'selfBackend', 'conflict', 'noServer', 'groupVars', 'noTermination', 'vipMixed']);
 const MALFORMED_REASON = { ports: 'ports', tls_ports: 'ports', terminates_tls: 'terminatesTls', vip: 'vip', nat: 'nat', backends: 'backends' };
 /** Ports that usually carry no TLS (plain or STARTTLS protocols): in a ports= list they are kept, with a warning. */
 const PLAIN_PORTS = new Set([20, 21, 22, 23, 25, 53, 80, 110, 119, 143, 389, 3306, 3389, 5432, 6379, 8080, 27017]);
@@ -576,7 +576,8 @@ function linkBackends(drafts, ctx) {
 /**
  * Checks over the linked inventory (cli/ssl_origin_scan.py topology_checks alike): a load balancer
  * that passes TLS through (terminates_tls=no) with no backend terminating it, through every
- * passthrough tier, is a 'noTermination' warning.
+ * passthrough tier, is a 'noTermination' warning; the holders of one VIP that disagree on
+ * terminates_tls a 'vipMixed' one (on the first holder saying no).
  */
 function topologyChecks(drafts, ctx) {
   const byName = new Map(drafts.map((d) => [d.name, d]));
@@ -595,6 +596,12 @@ function topologyChecks(drafts, ctx) {
       }
     }
     if (!ends) ctx.warn(d.line, 'TOPOLOGY', undefined, d.name, 'noTermination');
+  }
+  const holders = new Map();
+  for (const d of drafts) for (const ip of d.topo.vips) holders.set(ip, [...(holders.get(ip) || []), d]);
+  for (const [ip, list] of holders) {
+    const off = list.filter(plain);
+    if (off.length && off.length < list.length) ctx.warn(off[0].line, 'TOPOLOGY', undefined, `vip=${ip}`, 'vipMixed');
   }
 }
 

@@ -178,6 +178,19 @@ class TopologySweep(unittest.TestCase):
         self.assertIn('  edge01  not scanned  passes TLS through (terminates_tls=no), but no backend '
                       'behind it terminates TLS: TLS terminates nowhere - check the inventory', text)
 
+    def test_vip_holders_that_disagree_list_only_the_tls_holders_and_warn(self):
+        inventory = sos.parse_inventory('db01 10.0.0.71 vip=203.0.113.70\ndb02 10.0.0.72 vip=203.0.113.70 '
+                                        'terminates_tls=no\n', 'x.txt')
+        self.assertEqual([(w.line, w.code, w.reason) for w in inventory.warnings],
+                         [(2, 'TOPOLOGY', 'vipMixed')])
+        network = Network()
+        report = sos.run_scan(inventory.servers, sos.build_probe_names([NAME]), [443], timeout=1,
+                              workers=2, connect_fn=network.connect_fn, tls_fn=network.tls_fn)
+        text = sos.render_summary(report, color=False, width=200)
+        self.assertIn('Shared address (VIP) 203.0.113.70: install the certificate on db01; db02 says '
+                      'terminates_tls=no - check the inventory', text)
+        self.assertNotIn('install the certificate on both', text)
+
     def test_the_json_report_says_where_tls_terminates(self):
         report, _network = scan()
         doc = sos.report_to_dict(report)

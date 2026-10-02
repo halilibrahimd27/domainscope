@@ -208,6 +208,22 @@ describe('more cases', () => {
     assert.equal(hasDifferences(diffZones(r53(10), r53(10))), false);
   });
 
+  test('routing variants keep their own values: values swapped between SetIdentifiers is a change of routing', () => {
+    const r53 = (sets) => parseZone(JSON.stringify({ ResourceRecordSets: sets }), { origin: 'example.com' });
+    const set = (name, id, extra, ip) => ({ Name: `${name}.example.com.`, Type: 'A', SetIdentifier: id, TTL: 60, ...extra, ResourceRecords: [{ Value: ip }] });
+    const pair = (name, [ida, xa], [idb, xb], ips) => r53([set(name, ida, xa, ips[0]), set(name, idb, xb, ips[1])]);
+    for (const [name, a, b] of [
+      ['w', ['a', { Weight: 10 }], ['b', { Weight: 90 }]],
+      ['f', ['p', { Failover: 'PRIMARY' }], ['s', { Failover: 'SECONDARY' }]],
+      ['l', ['eu', { Region: 'eu-west-1' }], ['us', { Region: 'us-east-1' }]]
+    ]) {
+      const before = pair(name, a, b, ['192.0.2.1', '192.0.2.2']);
+      assert.deepEqual(lines(diffZones(before, pair(name, a, b, ['192.0.2.2', '192.0.2.1']))), [`changed ${name} A routing|`], `${name}: swapped`);
+      assert.deepEqual(lines(diffZones(before, pair(name, a, b, ['192.0.2.1', '192.0.2.3']))), [`changed ${name} A values|`], `${name}: one value changed`);
+      assert.equal(hasDifferences(diffZones(before, pair(name, a, b, ['192.0.2.1', '192.0.2.2']))), false, `${name}: the same`);
+    }
+  });
+
   test('a fatal zone is refused', () => {
     assert.throws(() => diffZones(parseZone(''), bind('@ A 192.0.2.1')), TypeError);
     assert.throws(() => diffZones(null, null), TypeError);

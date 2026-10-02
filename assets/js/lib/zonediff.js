@@ -192,7 +192,8 @@ function routingKey(r) {
  * @param {object} zone
  * @param {{ joinTxt?: boolean, ignoreSoa?: boolean }} [opts]
  * @returns {Map<string, { key: string, rel: string, name: string, type: string, values: Map<string, { text: string, stricts: string[], records: object[] }>,
- *   ttls: number[], proxied: boolean[], routing: string[], soa: object|null, records: object[] }>}
+ *   ttls: number[], proxied: boolean[], routing: string[], routed: string[], soa: object|null, records: object[] }>}
+ *   `routing`: the variants (policy, id, weight …); `routed`: each variant with the value it holds
  */
 export function recordSets(zone, { joinTxt = DIFF_DEFAULTS.joinTxt, ignoreSoa = DIFF_DEFAULTS.ignoreSoa } = {}) {
   const origin = zone && zone.origin ? zone.origin : null;
@@ -203,7 +204,7 @@ export function recordSets(zone, { joinTxt = DIFF_DEFAULTS.joinTxt, ignoreSoa = 
     const key = `${rel}|${type}`;
     let set = sets.get(key);
     if (!set) {
-      set = { key, rel, name: canonicalName(r.name), type, values: new Map(), ttls: [], proxied: [], routing: [], soa: null, records: [] };
+      set = { key, rel, name: canonicalName(r.name), type, values: new Map(), ttls: [], proxied: [], routing: [], routed: [], soa: null, records: [] };
       sets.set(key, set);
     }
     set.records.push(r);
@@ -222,12 +223,16 @@ export function recordSets(zone, { joinTxt = DIFF_DEFAULTS.joinTxt, ignoreSoa = 
     }
     const rk = routingKey(r);
     if (rk && !set.routing.includes(rk)) set.routing.push(rk);
+    // Which value each variant holds: values swapped between variants change the routing.
+    const pair = rk ? JSON.stringify([rk, vk]) : '';
+    if (pair && !set.routed.includes(pair)) set.routed.push(pair);
     if (type === 'SOA' && !set.soa && r.data && typeof r.data === 'object') set.soa = relativeData('SOA', r.data, origin);
   }
   for (const set of sets.values()) {
     set.ttls.sort((x, y) => x - y);
     set.proxied.sort();
     set.routing.sort();
+    set.routed.sort();
   }
   return sets;
 }
@@ -290,7 +295,10 @@ function compareSets(sa, sb, opts) {
     else reasons.push('ttl');
   }
   if (sa.proxied.length && sb.proxied.length && !sameList(sa.proxied, sb.proxied)) reasons.push('proxied');
-  if ((sa.routing.length || sb.routing.length) && !sameList(sa.routing, sb.routing)) reasons.push('routing');
+  const variantsDiffer = (sa.routing.length || sb.routing.length) && !sameList(sa.routing, sb.routing);
+  const pairsDiffer = (sa.routed.length || sb.routed.length) && !sameList(sa.routed, sb.routed);
+  // A value changed inside a variant is 'values'; the same values in other variants is 'routing'.
+  if (variantsDiffer || (valuesSame && pairsDiffer)) reasons.push('routing');
   return { status: reasons.length ? 'changed' : 'same', reasons, notes };
 }
 

@@ -894,7 +894,8 @@ export function exportRow(f) {
     spf: f.spf ? f.spf.state : null,
     spfAll: f.spf && f.spf.all ? `${f.spf.all}all` : null,
     spfLookups: f.spf && Number.isFinite(f.spf.lookups) ? f.spf.lookups : null,
-    dmarc: f.dmarc ? (f.dmarc.state === 'ok' ? f.dmarc.policy : f.dmarc.state) : null,
+    // p=none and no record at all never read alike: 'p=none' / 'missing' (or 'many', 'invalid')
+    dmarc: f.dmarc ? (f.dmarc.state === 'ok' ? (f.dmarc.policy ? `p=${f.dmarc.policy}` : 'invalid') : f.dmarc.state === 'none' ? 'missing' : f.dmarc.state) : null,
     dkim: f.dkim ? (f.dkim.state === 'found' ? f.dkim.selectors.join(' ') : f.dkim.state) : null,
     mtaSts: f.mtaSts ? f.mtaSts.state : null,
     tlsRpt: f.tlsRpt ? f.tlsRpt.state : null,

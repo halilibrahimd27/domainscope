@@ -400,10 +400,14 @@ describe('the calendar and the exports', () => {
       domain: 'example.com', registration: 'ok', registrar: 'Example Registrar, Inc.', expires: iso(400).slice(0, 10), daysLeft: 400, risk: 'ns-expiring',
       statuses: 'client transfer prohibited', transferLock: true, critical: '', dnssec: 'validated', delegationSigned: false,
       nameServers: 'ns1.example.net ns2.example.net', nsDomains: 'example.net:12', nsMinDaysLeft: 12, caa: 'present', caaIssuers: 'letsencrypt.org sectigo.com',
-      mx: 'some', spf: 'ok', spfAll: '-all', spfLookups: 3, dmarc: 'reject', dkim: 'google', mtaSts: 'present', tlsRpt: 'present', parked: 'receives-mail', failed: ''
+      mx: 'some', spf: 'ok', spfAll: '-all', spfLookups: 3, dmarc: 'p=reject', dkim: 'google', mtaSts: 'present', tlsRpt: 'present', parked: 'receives-mail', failed: ''
     });
     assert.equal(rows[2].failed, 'caa');
     assert.equal(rows[1].parked, 'locked');
+    // the DMARC column never says "none" for two things: p=none is "p=none", no record "missing"
+    assert.equal(rows[3].dmarc, 'missing', 'example-test.com.tr publishes no DMARC record');
+    const txt = (v) => ({ ok: true, rcode: 'NOERROR', answers: v ? [{ type: 'TXT', data: [v] }] : [], flags: {} });
+    assert.equal(exportRow(portfolioFacts({ domain: 'example.com', dmarc: txt('v=DMARC1; p=none; rua=mailto:d@example.com') })).dmarc, 'p=none');
   });
 
   test('20 domains of one registry that answers one request per window and 429 to the rest: every one is read, rdap.org never blamed', async () => {

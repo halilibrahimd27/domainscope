@@ -21,6 +21,9 @@
  *   with `joinTxt`.
  * - octoDNS refuses a file whose keys are out of order (YamlProvider `enforce_order`, natural
  *   order by default): every mapping is written in that order ({@link naturalCompare}).
+ * - Route 53 takes 1,000 values and 32,000 characters of values in one change batch, an UPSERT
+ *   counting each twice ({@link ROUTE53_BATCH_LIMITS}): a zone over that is written as several
+ *   change batches (`files`), whole record sets in each, aliases last.
  *
  * Pure, synchronous and DOM-free; nothing is sent or stored. Runs in browsers and Node 22.
  */
@@ -95,8 +98,12 @@ const SVC_KEY_NUMBERS = Object.freeze({
 });
 /** Route 53 routing policies a change batch can carry (the parser reads them back). */
 export const ROUTE53_ROUTING = Object.freeze(['weighted', 'latency', 'failover', 'geolocation', 'multivalue']);
-/** Route 53 takes at most this many records in one change batch. */
-export const ROUTE53_BATCH_MAX = 1000;
+/**
+ * What Route 53 takes in one ChangeResourceRecordSets request: 1,000 ResourceRecord elements (an
+ * alias counts as one) and 32,000 characters in all Value elements, an UPSERT counting each
+ * element and each character twice (`upsert`); and 400 values in one record set (its quotas).
+ */
+export const ROUTE53_BATCH_LIMITS = Object.freeze({ records: 1000, chars: 32000, upsert: 2, setValues: 400 });
 /**
  * CAA tags every provider knows (the IANA registry's, less the reserved ones); another tag may be
  * refused. DNSControl accepts exactly these: `dnscontrol check` refuses the file over any other.
@@ -148,7 +155,8 @@ export const PITFALL_SEVERITY = Object.freeze({
   duplicate: { bind: 'info', route53: 'info', octodns: 'info', dnscontrol: 'info' },
   'ttl-mixed': { route53: 'info', octodns: 'info', dnscontrol: 'info' },
   'ttl-default': { route53: 'info', octodns: 'info', dnscontrol: 'info' },
-  'batch-size': { route53: 'info' }
+  'batch-size': { route53: 'error' },
+  'batch-split': { route53: 'info' }
 });
 
 /** Every pitfall code, in the order a list shows codes of one severity. */
@@ -701,28 +709,53 @@ function route53Routing(rt) {
 }
 
 function route53Text(zone, steps, sets, pits, about) {
-  const changes = [];
-  let records = 0;
+  const L = ROUTE53_BATCH_LIMITS;
+  // Each change with what Route 53 counts of it: its values (an alias is one) and their characters.
+  const items = [];
   for (const set of sets) {
     const first = set.steps[0].r;
     const rrs = { Name: route53Name(set.name), Type: set.type };
     if (set.routing) Object.assign(rrs, route53Routing(set.routing));
+    const item = { change: { Action: 'UPSERT', ResourceRecordSet: rrs }, records: 1, chars: 0, alias: false };
     if (set.steps[0].action === 'alias') {
       const a = first.alias;
       if (!a.zoneId) pits.flag('alias-zone-id', first);
       rrs.AliasTarget = { HostedZoneId: a.zoneId || ALIAS_ZONE_PLACEHOLDER, DNSName: route53Name(a.target), EvaluateTargetHealth: !!a.evaluateTargetHealth };
-      records += 1;
+      item.alias = true;
     } else {
       const values = [...new Set(set.steps.map((s) => route53Value(s.r)))];
       rrs.TTL = set.ttl;
       rrs.ResourceRecords = values.map((Value) => ({ Value }));
-      records += values.length;
+      item.records = values.length;
+      item.chars = values.reduce((n, v) => n + v.length, 0);
+      // No change batch takes it: more values than a set holds, or more characters than one UPSERT.
+      if (values.length > L.setValues || item.chars * L.upsert > L.chars) {
+        pits.flag('batch-size', first, { values: L.setValues, chars: L.chars / L.upsert });
+      }
     }
-    changes.push({ Action: 'UPSERT', ResourceRecordSet: rrs });
+    items.push(item);
   }
-  if (records > ROUTE53_BATCH_MAX) pits.flag('batch-size', null, { max: ROUTE53_BATCH_MAX, records });
-  const doc = { Comment: `${zone.origin}, written by DomainScope from ${about}`.slice(0, 256), Changes: changes };
-  return { text: `${JSON.stringify(doc, null, 2)}\n`, written: records };
+  const written = items.reduce((n, x) => n + x.records, 0);
+  const fits = (records, chars) => records * L.upsert <= L.records && chars * L.upsert <= L.chars;
+  const doc = (list, part = '') => `${JSON.stringify({
+    Comment: `${zone.origin}, written by DomainScope from ${about}${part}`.slice(0, 256), Changes: list.map((x) => x.change)
+  }, null, 2)}\n`;
+  if (fits(written, items.reduce((n, x) => n + x.chars, 0))) return { files: [{ text: doc(items), written }], written };
+  // Several batches, sent one after another: whole record sets in each, and the aliases last (a
+  // same-zone alias needs its target to exist).
+  const parts = [];
+  let cur = null;
+  for (const x of [...items.filter((i) => !i.alias), ...items.filter((i) => i.alias)]) {
+    if (!cur || (cur.items.length && !fits(cur.records + x.records, cur.chars + x.chars))) {
+      cur = { items: [], records: 0, chars: 0 };
+      parts.push(cur);
+    }
+    cur.items.push(x);
+    cur.records += x.records;
+    cur.chars += x.chars;
+  }
+  pits.flag('batch-split', null, { records: written, files: parts.length, max: L.records / L.upsert, maxChars: L.chars / L.upsert });
+  return { files: parts.map((part, i) => ({ text: doc(part.items, `, part ${i + 1} of ${parts.length}`), written: part.records })), written };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -979,14 +1012,17 @@ function dnscontrolText(zone, steps, sets, pits, about) {
 const WRITERS = { bind: bindText, route53: route53Text, octodns: octodnsText, dnscontrol: dnscontrolText };
 
 /**
- * The file name of a target's output: `<zone>.zone`, `<zone>.route53.json`, `<zone>.yaml`
- * (octoDNS names a zone file after the zone), `dnsconfig.js`.
+ * The file name of a target's output: `<zone>.zone`, `<zone>.route53.json` (`<zone>.route53.<n>.json`
+ * for the n-th of several change batches), `<zone>.yaml` (octoDNS names a zone file after the
+ * zone), `dnsconfig.js`.
  * @param {string} origin
  * @param {string} target
+ * @param {number} [part] 1, 2 … for one of several files
  * @returns {string}
  */
-export function convertFilename(origin, target) {
+export function convertFilename(origin, target, part = 0) {
   const o = canonicalName(origin) || 'zone';
+  if (target === 'route53' && Number.isInteger(part) && part > 0) return `${o}.route53.${part}.json`;
   return { bind: `${o}.zone`, route53: `${o}.route53.json`, octodns: `${o}.yaml`, dnscontrol: 'dnsconfig.js' }[target] || `${o}.txt`;
 }
 
@@ -1004,11 +1040,13 @@ function sourceLabel(zone) {
  * @param {object} zone lib/zoneparse.js Zone, with an origin and no fatal issue
  * @param {string} target one of {@link CONVERT_TARGETS}
  * @returns {{ target: string, text: string, filename: string, mime: string, written: number,
+ *   files: Array<{ filename: string, text: string, written: number }>,
  *   pitfalls: Array<{ code: string, severity: 'error'|'warn'|'info', count: number, names: string[], params: object }>,
  *   omitted: Array<{ id: number, code: string }>, changed: Array<{ id: number, code: string }> }}
- *   `written`: the records (values) in the file; `names`: the record names concerned, relative
- *   to the zone; `omitted`: records left out (or commented out); `changed`: records written as
- *   another type (an apex CNAME as ALIAS)
+ *   `files`: the output, one file (several change batches for a Route 53 zone over its limits,
+ *   `batch-split`); `text` / `filename`: the first file; `written`: the records (values) in all of
+ *   them; `names`: the record names concerned, relative to the zone; `omitted`: records left out
+ *   (or commented out); `changed`: records written as another type (an apex CNAME as ALIAS)
  */
 export function convertZone(zone, target) {
   if (!CONVERT_TARGETS.includes(target)) throw new RangeError(`zoneconvert: unknown target "${target}"`);
@@ -1034,13 +1072,16 @@ export function convertZone(zone, target) {
       }
     }
   }
-  const { text, written } = WRITERS[target](zone, steps, sets, pits, sourceLabel(zone));
+  const out = WRITERS[target](zone, steps, sets, pits, sourceLabel(zone));
+  const parts = out.files || [{ text: out.text, written: out.written }];
+  const files = parts.map((f, i) => ({ filename: convertFilename(zone.origin, target, parts.length > 1 ? i + 1 : 0), text: f.text, written: f.written }));
   return {
     target,
-    text,
-    filename: convertFilename(zone.origin, target),
+    text: files[0].text,
+    filename: files[0].filename,
     mime: CONVERT_MIME[target],
-    written,
+    written: out.written,
+    files,
     pitfalls: pits.list(),
     omitted,
     changed

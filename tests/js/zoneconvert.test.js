@@ -8,12 +8,12 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseZone, presentCharString } from '../../assets/js/lib/zoneparse.js';
+import { parseZone, mergeZones, presentCharString } from '../../assets/js/lib/zoneparse.js';
 import { txtBytes, split255 } from '../../assets/js/lib/zonetext.js';
 import { diffZones } from '../../assets/js/lib/zonediff.js';
 import {
   convertZone, convertFilename, pitfallKey, pitfallKeys, route53String, route53Name, yamlString, octodnsTxt, naturalCompare,
-  CONVERT_TARGETS, TARGET_TYPES, TARGET_BY_HAND, TARGET_NAMES, CONVERT_MIME, PITFALL_CODES, PITFALL_SEVERITY, PITFALL_VARIANTS, ROUTE53_BATCH_MAX,
+  CONVERT_TARGETS, TARGET_TYPES, TARGET_BY_HAND, TARGET_NAMES, CONVERT_MIME, PITFALL_CODES, PITFALL_SEVERITY, PITFALL_VARIANTS, ROUTE53_BATCH_LIMITS,
   ROUTE53_ROUTING, DNSSEC_TYPES, PSEUDO_TYPES, CAA_COMMON_TAGS, OCTODNS_SVC_KEYS
 } from '../../assets/js/lib/zoneconvert.js';
 import { CASES, caseGolden, caseZone, goldenPath, CONVERT_DIR } from '../fixtures/zoneconvert/gen-convert-golden.mjs';
@@ -172,6 +172,7 @@ describe('vocabulary', () => {
     assert.deepEqual(TARGET_NAMES, { bind: 'BIND', route53: 'Route 53', octodns: 'octoDNS', dnscontrol: 'DNSControl' });
     for (const t of CONVERT_TARGETS) assert.ok(CONVERT_MIME[t].endsWith('charset=utf-8'), t);
     assert.deepEqual(CONVERT_TARGETS.map((t) => convertFilename('Example.COM.', t)), ['example.com.zone', 'example.com.route53.json', 'example.com.yaml', 'dnsconfig.js']);
+    assert.equal(convertFilename('example.com', 'route53', 2), 'example.com.route53.2.json', 'one of several change batches');
   });
 
   test('record types per target: CAA, SRV, TLSA, HTTPS and SVCB everywhere; what each has besides; DNSSEC and pseudo types nowhere', () => {
@@ -573,9 +574,64 @@ describe('pitfalls', () => {
       assert.deepEqual(pit(res, 'ttl-default').params.ttl, 3600);
       assert.ok(JSON.parse(res.text).Changes.every((c) => Number.isInteger(c.ResourceRecordSet.TTL)));
     }
-    const many = bind(Array.from({ length: ROUTE53_BATCH_MAX + 1 }, (_, i) => `h${i} A 192.0.2.${i % 250}`).join('\n'));
+    const many = bind(Array.from({ length: 1001 }, (_, i) => `h${i} A 192.0.2.${i % 250}`).join('\n'));
     const res = convertZone(many, 'route53');
-    assert.deepEqual(pit(res, 'batch-size').params, { target: 'Route 53', max: ROUTE53_BATCH_MAX, records: ROUTE53_BATCH_MAX + 1 });
+    assert.deepEqual(pit(res, 'batch-split').params, { target: 'Route 53', records: 1001, files: 3, max: 500, maxChars: 16000 });
+  });
+
+  test('Route 53: a batch AWS would refuse is split into files it takes, an UPSERT counting each value and character twice; aliases last', () => {
+    const L = ROUTE53_BATCH_LIMITS;
+    assert.deepEqual(L, { records: 1000, chars: 32000, upsert: 2, setValues: 400 });
+    assert.ok(Object.isFrozen(L));
+    const count = (text) => {
+      const sets = JSON.parse(text).Changes.map((c) => c.ResourceRecordSet);
+      return {
+        records: sets.reduce((n, x) => n + (x.AliasTarget ? 1 : x.ResourceRecords.length), 0),
+        chars: sets.reduce((n, x) => n + (x.ResourceRecords || []).reduce((m, v) => m + v.Value.length, 0), 0)
+      };
+    };
+    const fits = (f) => {
+      const c = count(f.text);
+      return c.records * L.upsert <= L.records && c.chars * L.upsert <= L.chars;
+    };
+    // 600 A records count 1,200: two batches of at most 500.
+    const many = bind(Array.from({ length: 600 }, (_, i) => `h${i} A 192.0.2.${i % 250}`).join('\n'));
+    const res = convertZone(many, 'route53');
+    assert.deepEqual(res.files.map((f) => [f.filename, f.written]), [['example.com.route53.1.json', 500], ['example.com.route53.2.json', 100]]);
+    assert.ok(res.files.every(fits));
+    assert.deepEqual([res.filename, res.text, res.written], [res.files[0].filename, res.files[0].text, 600], 'filename and text: the first file; written: all');
+    assert.deepEqual(JSON.parse(res.files[1].text).Comment, 'example.com, written by DomainScope from bind, part 2 of 2');
+    assert.deepEqual([pit(res, 'batch-split').severity, pit(res, 'batch-split').params], ['info', { target: 'Route 53', records: 600, files: 2, max: 500, maxChars: 16000 }]);
+    // Read back together, the files are the zone.
+    const back = mergeZones(res.files.map((f) => parseZone(f.text, { origin: 'example.com', filename: f.filename })));
+    assert.deepEqual(diffZones(many, back).rows.filter((r) => r.status !== 'same').map((r) => r.key), []);
+    // 40 DKIM keys of 410 bytes: 80 values, but 16,600 characters, counted 33,200.
+    const dkim = bind(Array.from({ length: 40 }, (_, i) => `s${i}._domainkey TXT "v=DKIM1; k=rsa; p=${'A'.repeat(392)}"`).join('\n'));
+    const two = convertZone(dkim, 'route53');
+    assert.deepEqual([two.files.length, two.files.every(fits)], [2, true]);
+    // A same-zone alias goes after the records it may point at, in the last batch.
+    const sets = [{ Name: 'www.example.com.', Type: 'A', AliasTarget: { HostedZoneId: 'Z0EXAMPLE', DNSName: 'h599.example.com.', EvaluateTargetHealth: false } },
+      ...Array.from({ length: 600 }, (_, i) => ({ Name: `h${i}.example.com.`, Type: 'A', TTL: 300, ResourceRecords: [{ Value: `192.0.2.${i % 250}` }] }))];
+    const aliased = convertZone(parseZone(JSON.stringify({ ResourceRecordSets: sets }), { format: 'route53', origin: 'example.com' }), 'route53');
+    const last = JSON.parse(aliased.files[aliased.files.length - 1].text).Changes;
+    assert.deepEqual(last[last.length - 1].ResourceRecordSet.Name, 'www.example.com.');
+    assert.ok(!JSON.parse(aliased.files[0].text).Changes.some((c) => c.ResourceRecordSet.AliasTarget), 'no alias in the first batch');
+    // One file when it fits: as before, no note; the other targets always write one file.
+    const small = convertZone(bind('www A 192.0.2.1'), 'route53');
+    assert.deepEqual(small.files, [{ filename: 'example.com.route53.json', text: small.text, written: 1 }]);
+    assert.equal(pit(small, 'batch-split'), null);
+    assert.equal(JSON.parse(small.text).Comment, 'example.com, written by DomainScope from bind');
+    for (const t of ['bind', 'octodns', 'dnscontrol']) assert.deepEqual(convertZone(many, t).files.map((f) => f.filename), [convertFilename('example.com', t)], t);
+  });
+
+  test('Route 53: a record set no change batch takes (over 400 values, or 16,000 characters of values) is an error', () => {
+    const prefixes = ['192.0.2', '198.51.100', '203.0.113'];
+    const wide = bind(Array.from({ length: 401 }, (_, i) => `rr A ${prefixes[i % 3]}.${Math.floor(i / 3)}`).join('\n'));
+    const res = convertZone(wide, 'route53');
+    assert.deepEqual([pit(res, 'batch-size').severity, pit(res, 'batch-size').names, pit(res, 'batch-size').params], ['error', ['rr'], { target: 'Route 53', values: 400, chars: 16000 }]);
+    const long = bind(Array.from({ length: 9 }, (_, i) => `t TXT "${String(i).repeat(255)}" "${'x'.repeat(255)}" "${'y'.repeat(255)}" "${'z'.repeat(255)}" "${'w'.repeat(255)}" "${'v'.repeat(255)}" "${'u'.repeat(255)}"`).join('\n'));
+    assert.deepEqual(pit(convertZone(long, 'route53'), 'batch-size').names, ['t'], '9 values of about 1,800 characters: over 16,000');
+    assert.equal(pit(convertZone(bind('rr A 192.0.2.1'), 'route53'), 'batch-size'), null);
   });
 
   test('BIND: an owner that looks like a whole domain name is written absolute; $TTL is the zone\'s', () => {

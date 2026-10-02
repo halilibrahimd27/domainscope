@@ -160,6 +160,12 @@ describe('evaluatePolicy', () => {
     assert.deepEqual([partial.status, evidenceText(partial, t)], ['unknown', 'the expiry of name server domain example.org is not known']);
     assert.equal(cellOf(p, facts({ ns: { state: 'failed', domains: [] } }), 'nsExpiryDays').status, 'unknown');
     assert.equal(evidenceText(cellOf(p, ns([{ domain: 'example.net', state: 'ok', daysLeft: -2 }]), 'nsExpiryDays'), t), 'name server domain example.net expired 2 days ago');
+    // Name servers under the domain itself expire with it: expiryDays says that, this rule reads the others.
+    const own = { domain: 'example.com', own: true, state: 'ok', daysLeft: 12 };
+    const mixed = cellOf(p, ns([own, { domain: 'example.net', own: false, state: 'ok', daysLeft: 300 }]), 'nsExpiryDays');
+    assert.deepEqual([mixed.status, mixed.actual, evidenceText(mixed, t)], ['pass', 300, 'name server domain example.net: 300 days left']);
+    const ownOnly = cellOf(p, ns([own]), 'nsExpiryDays');
+    assert.deepEqual([ownOnly.status, evidenceText(ownOnly, t)], ['pass', 'the name servers are under the domain itself: they expire with it']);
   });
 
   test('DNSSEC as levels; DS with keys that could not be read', () => {
@@ -264,7 +270,7 @@ describe('the matrix', () => {
   test('from real facts (lib/portfolio.js): nothing landed yet is "not known" everywhere', () => {
     const empty = auditPortfolio(presetPolicy('baseline'), [portfolioFacts({ domain: 'example.com' })]);
     assert.ok(empty.rows[0].cells.every((c) => c.status === 'unknown'), JSON.stringify(empty.rows[0].cells.map((c) => c.status)));
-    assert.equal(requirementText({ id: 'caa.issuers', op: 'in', value: ['a', 'b'] }), 'a, b');
+    assert.equal(requirementText({ id: 'registrar', op: 'in', value: ['Example Registrar, Inc.', 'b'] }), 'Example Registrar, Inc.; b', 'a list between semicolons: a name has commas');
   });
 
   test('Turkish texts: the same placeholders as English, never empty', () => {

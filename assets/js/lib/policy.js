@@ -263,10 +263,13 @@ export function presetPolicy(id) {
   return parsePolicy({ name: p.name, rules: p.rules }).policy;
 }
 
-/** The requirement of a rule as a short code text (">= 30", "true", "letsencrypt.org, sectigo.com"). */
+/**
+ * The requirement of a rule as a short code text (">= 30", "true", "letsencrypt.org; sectigo.com"):
+ * a list's entries between semicolons, since a registrar's name has commas ("Example Registrar, Inc.").
+ */
 export function requirementText(entry) {
   const v = ruleValueText(entry);
-  return Array.isArray(v) ? v.join(', ') : String(v);
+  return Array.isArray(v) ? v.join('; ') : String(v);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -319,7 +322,8 @@ function boolCell(entry, value, evidence) {
 
 function registrationUnknown(reg) {
   if (!reg || reg.state === 'pending' || reg.state === undefined) return ev('pol.ev.pending');
-  if (reg.state === 'unsupported') return ev('pol.ev.noRdap', { tld: reg.tld || '' });
+  // `tld` with its dot ('.tr'): one value, quoted whole where the evidence quotes values
+  if (reg.state === 'unsupported') return ev('pol.ev.noRdap', { tld: reg.tld ? `.${reg.tld}` : '' });
   if (reg.state === 'invalid') return ev('pol.ev.invalid');
   return ev('pol.ev.failed', { what: 'RDAP' });
 }
@@ -358,13 +362,16 @@ const RULE_EVAL = {
     if (!ns || ns.state === 'failed' || ns.state === 'pending' || ns.state === undefined) return cell(entry, 'unknown', null, unknownWhy(ns, 'NS'));
     if (ns.state === 'nxdomain') return cell(entry, 'fail', null, ev('pol.ev.nxdomain'));
     if (!ns.domains || !ns.domains.length) return cell(entry, 'unknown', null, ev('pol.ev.noNs'));
-    const known = ns.domains.filter((d) => d.state === 'ok' && Number.isFinite(d.daysLeft));
+    // Name servers under the domain itself expire with it: expiryDays reads that date.
+    const others = ns.domains.filter((d) => !d.own);
+    if (!others.length) return cell(entry, 'pass', null, ev('pol.ev.nsOwnOnly'));
+    const known = others.filter((d) => d.state === 'ok' && Number.isFinite(d.daysLeft));
     const failing = known.filter((d) => !compare(entry.op, d.daysLeft, entry.value)).sort((a, b) => a.daysLeft - b.daysLeft);
     const soonest = [...known].sort((a, b) => a.daysLeft - b.daysLeft)[0] || null;
     const evidenceOf = (d) => (d.daysLeft < 0 ? ev('pol.ev.nsExpired', { domain: d.domain, count: -d.daysLeft })
       : ev('pol.ev.nsDays', { domain: d.domain, count: d.daysLeft }));
     if (failing.length) return cell(entry, 'fail', failing[0].daysLeft, evidenceOf(failing[0]));
-    const notKnown = ns.domains.find((d) => !(d.state === 'ok' && Number.isFinite(d.daysLeft)));
+    const notKnown = others.find((d) => !(d.state === 'ok' && Number.isFinite(d.daysLeft)));
     if (notKnown) return cell(entry, 'unknown', soonest ? soonest.daysLeft : null, ev('pol.ev.nsUnknown', { domain: notKnown.domain }));
     return cell(entry, 'pass', soonest.daysLeft, evidenceOf(soonest));
   },
@@ -616,7 +623,7 @@ const STRINGS = [
   ['pol.ev.off', ['not checked (turned off)', 'kontrol edilmedi (kapalı)']],
   ['pol.ev.failed', ['{what} lookup failed', '{what} sorgusu başarısız']],
   ['pol.ev.invalid', ['not a domain a registry holds', 'bir kayıt kuruluşunun tuttuğu bir alan adı değil']],
-  ['pol.ev.noRdap', ['the .{tld} registry publishes no RDAP: see its WHOIS', '.{tld} kayıt kuruluşu RDAP sunmuyor: WHOIS hizmetine bakın']],
+  ['pol.ev.noRdap', ['the {tld} registry publishes no RDAP: see its WHOIS', '{tld} kayıt kuruluşu RDAP sunmuyor: WHOIS hizmetine bakın']],
   ['pol.ev.notRegistered', ['not registered: the registry has no record of it', 'kayıtlı değil: kayıt kuruluşunda kaydı yok']],
   ['pol.ev.noExpiry', ['the registry gives no expiry date', 'kayıt kuruluşu bitiş tarihi vermiyor']],
   ['pol.ev.daysLeft', [{ zero: 'expires today ({date})', one: '{count} day left ({date})', other: '{count} days left ({date})' }, { zero: 'bugün sona eriyor ({date})', other: '{count} gün kaldı ({date})' }]],
@@ -634,6 +641,7 @@ const STRINGS = [
     'ad sunucusu alan adı {domain} {count} gün önce sona erdi']],
   ['pol.ev.nsUnknown', ['the expiry of name server domain {domain} is not known', 'ad sunucusu alan adı {domain} için bitiş tarihi bilinmiyor']],
   ['pol.ev.noNs', ['no name servers to check', 'kontrol edilecek ad sunucusu yok']],
+  ['pol.ev.nsOwnOnly', ['the name servers are under the domain itself: they expire with it', 'ad sunucuları alan adının kendi altında: onunla birlikte sona erer']],
   ['pol.ev.nxdomain', ['the domain does not exist in DNS (NXDOMAIN)', 'alan adı DNS’te yok (NXDOMAIN)']],
   ['pol.ev.dnssec.validated', ['signed (DS) and validated', 'imzalı (DS) ve doğrulanıyor']],
   ['pol.ev.dnssec.signed', ['signed (DS), not validated by the resolver', 'imzalı (DS), çözümleyici doğrulamıyor']],

@@ -76,7 +76,7 @@
  */
 
 import {
-  TYPES, typeToName, typeToNumber, encodeMessage, encodeName, decodeMessage, base64Decode, hexDecode, DNSSEC_ALGORITHMS
+  TYPES, typeToName, typeToNumber, encodeMessage, encodeName, decodeMessage, base64Decode, base64Encode, hexDecode, DNSSEC_ALGORITHMS
 } from './dnswire.js';
 import { normalizeIP } from './netinfo.js';
 import { normalizeHostname, registrableDomain, isPublicSuffix, isSubdomainOf, sortHostnames } from './domain.js';
@@ -1544,6 +1544,54 @@ function splitValueList(s) {
   return items;
 }
 
+/** Two bytes as a 16-bit number (network order). */
+const u16 = (bytes, i) => (bytes[i] << 8) | bytes[i + 1];
+
+/**
+ * The value of a SvcParamKey written by number (`key1`, `key5` …): its wire bytes (RFC 9460
+ * §2.1: "the decoded value SHALL be used as its wire-format encoding", as dnspython reads it), in
+ * the shape the key's name gives it.
+ */
+function svcWireValue(key, bytes) {
+  const list = (size, why, item) => {
+    if (!bytes.length || bytes.length % size) throw new RdataError(why);
+    const out = [];
+    for (let i = 0; i < bytes.length; i += size) out.push(item(i));
+    return out;
+  };
+  switch (key) {
+    case 'mandatory': return list(2, 'svc-mandatory', (i) => (u16(bytes, i) < SVC_KEYS.length ? SVC_KEYS[u16(bytes, i)] : `key${u16(bytes, i)}`));
+    case 'alpn': {
+      const out = [];
+      for (let i = 0; i < bytes.length;) {
+        const len = bytes[i];
+        if (!len || i + 1 + len > bytes.length) throw new RdataError('svc-alpn');
+        out.push(decodeUtf8Lenient(bytes.subarray(i + 1, i + 1 + len)));
+        i += 1 + len;
+      }
+      if (!out.length) throw new RdataError('svc-alpn');
+      return out;
+    }
+    case 'no-default-alpn':
+    case 'ohttp':
+      if (bytes.length) throw new RdataError('svc-value-not-allowed');
+      return true;
+    case 'port':
+      if (bytes.length !== 2) throw new RdataError('svc-port');
+      return u16(bytes, 0);
+    case 'ipv4hint': return list(4, 'svc-ipv4hint', (i) => [...bytes.subarray(i, i + 4)].join('.'));
+    case 'ipv6hint': return list(16, 'svc-ipv6hint', (i) => normalizeIP(Array.from({ length: 8 }, (_, j) => u16(bytes, i + 2 * j).toString(16)).join(':')));
+    case 'ech': return base64Encode(bytes);
+    case 'dohpath': return decodeUtf8Lenient(bytes);
+    case 'tls-supported-groups': return list(2, 'svc-groups', (i) => u16(bytes, i));
+    default: {
+      let hex = '';
+      for (const b of bytes) hex += b.toString(16).padStart(2, '0');
+      return hex;
+    }
+  }
+}
+
 function parseSvcParams(toks, base) {
   const params = {};
   for (const tok of toks) {
@@ -1555,6 +1603,11 @@ function parseSvcParams(toks, base) {
     const hasValue = eq >= 0;
     const dec = hasValue ? decodeEscapes(tok.t.slice(eq + 1), { base }) : { bytes: new Uint8Array(0), ok: true };
     if (!dec.ok) throw new RdataError('bad-escape');
+    // A key with a name written by its number holds wire bytes, not the named key's text.
+    if (/^key\d+$/i.test(keyRaw) && SVC_KEYS.includes(key)) {
+      params[key] = svcWireValue(key, dec.bytes);
+      continue;
+    }
     const str = decodeUtf8Lenient(dec.bytes);
     switch (key) {
       case 'mandatory': {

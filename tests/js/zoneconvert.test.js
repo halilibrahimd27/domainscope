@@ -331,7 +331,7 @@ describe('round trips: every file reads back to the same record sets', () => {
     }
   });
 
-  test('octoDNS HTTPS / SVCB, URI and OPENPGPKEY read back; parameters octoDNS has no name for go by number', () => {
+  test('octoDNS HTTPS / SVCB, URI and OPENPGPKEY read back; parameters octoDNS has no name for go by number, as their wire bytes', () => {
     const z = bind([
       'svc HTTPS 1 svc.example.net. mandatory=alpn,port alpn=h2,h3 no-default-alpn port=8443 ipv4hint=192.0.2.10 ipv6hint=2001:db8::10 ech=AEX+/w==',
       'doh SVCB 1 doh.example.net. mandatory=dohpath alpn=h2 dohpath=/dns-query{?dns} ohttp tls-supported-groups=29,23 key65000=a\\032b',
@@ -341,9 +341,9 @@ describe('round trips: every file reads back to the same record sets', () => {
     ].join('\n'));
     assert.deepEqual(z.records.map((r) => !!r.invalid), [false, false, false, false, false]);
     const res = convertZone(z, 'octodns');
-    assert.match(res.text, /^doh:\n {2}ttl: 3600\n {2}type: SVCB\n {2}value:\n {4}svcparams:\n {6}alpn:\n {8}- h2\n {6}key7: '\/dns-query\{\?dns\}'\n {6}key8: null\n {6}key9: '29,23'\n {6}key65000: 'a\\032b'\n {6}mandatory:\n {8}- key7\n {4}svcpriority: 1\n {4}targetname: doh\.example\.net\.$/m);
-    assert.match(res.text, /^ {6}ipv6hint:\n {8}- '2001:db8::10'\n {6}key5: 'AEX\+\/w=='\n {6}mandatory:\n {8}- alpn\n {8}- port\n {6}no-default-alpn: null\n {6}port: 8443\n {4}svcpriority: 1\n {4}targetname: svc\.example\.net\.$/m,
-      'ech by number: octoDNS\'s check of a valid ech value fails');
+    assert.match(res.text, /^doh:\n {2}ttl: 3600\n {2}type: SVCB\n {2}value:\n {4}svcparams:\n {6}alpn:\n {8}- h2\n {6}key7: '\/dns-query\{\?dns\}'\n {6}key8: null\n {6}key9: '\\000\\029\\000\\023'\n {6}key65000: 'a\\032b'\n {6}mandatory:\n {8}- key7\n {4}svcpriority: 1\n {4}targetname: doh\.example\.net\.$/m);
+    assert.match(res.text, /^ {6}ipv6hint:\n {8}- '2001:db8::10'\n {6}key5: '\\000E\\254\\255'\n {6}mandatory:\n {8}- alpn\n {8}- port\n {6}no-default-alpn: null\n {6}port: 8443\n {4}svcpriority: 1\n {4}targetname: svc\.example\.net\.$/m,
+      'ech by number, as its wire bytes: octoDNS\'s check of a valid ech value fails');
     assert.match(res.text, /^alias:\n {2}ttl: 3600\n {2}type: HTTPS\n {2}value:\n {4}svcpriority: 0\n {4}targetname: svc\.example\.net\.$/m, 'AliasMode: no svcparams');
     assert.match(res.text, /^uri:\n {2}octodns:\n {4}lenient: true\n {2}ttl: 3600\n {2}type: URI\n {2}value:\n {4}priority: 10\n {4}target: 'https:\/\/www\.example\.com\/'\n {4}weight: 1$/m);
     assert.deepEqual([pit(res, 'svc-key').names, pit(res, 'svc-key').params.keys], [['svc', 'doh'], ['ech', 'dohpath', 'ohttp', 'tls-supported-groups']]);
@@ -658,6 +658,43 @@ describe('pitfalls', () => {
       const other = convertZone(z, t);
       assert.deepEqual([pit(other, 'txt-quote'), pit(other, 'txt-quote-start')], [null, null], t);
     }
+  });
+
+  test('octoDNS: ech and tls-supported-groups go by number as their wire bytes (RFC 9460 §2.1), and read back the same', () => {
+    const z = bind('svc HTTPS 1 . alpn=h2 ech=AAECAwQFBgcICQoL tls-supported-groups=29,23\ndoh SVCB 1 doh.example.net. dohpath=/q{?dns} ohttp');
+    const res = convertZone(z, 'octodns');
+    assert.ok(res.text.includes("      key5: '\\000\\001\\002\\003\\004\\005\\006\\007\\008\\009\\010\\011'"), res.text);
+    assert.ok(res.text.includes("      key9: '\\000\\029\\000\\023'"), res.text);
+    assert.ok(res.text.includes("      key7: '/q{?dns}'") && res.text.includes('      key8: null'), res.text);
+    const back = parseZone(res.text, { origin: 'example.com', filename: res.filename });
+    for (const name of ['svc.example.com', 'doh.example.com']) {
+      assert.deepEqual(back.records.find((r) => r.name === name).data.params, z.records.find((r) => r.name === name).data.params, name);
+    }
+    assert.deepEqual(pit(res, 'svc-key').params.keys, ['ech', 'tls-supported-groups', 'dohpath', 'ohttp']);
+  });
+
+  test('BIND, Route 53 and DNSControl: tls-supported-groups by number as its wire bytes (dnspython and DNSControl have no name for it)', () => {
+    const z = bind('svc HTTPS 1 . mandatory=alpn,tls-supported-groups alpn=h2 tls-supported-groups=29,23\nold HTTPS 1 . alpn=h2 dohpath=/q{?dns}');
+    const params = 'mandatory=alpn,key9 alpn="h2" key9=\\000\\029\\000\\023';
+    assert.ok(convertZone(z, 'bind').text.includes(`IN HTTPS 1 . ${params}\n`), convertZone(z, 'bind').text);
+    const r53 = JSON.parse(convertZone(z, 'route53').text).Changes.find((c) => c.ResourceRecordSet.Name === 'svc.example.com.');
+    assert.equal(r53.ResourceRecordSet.ResourceRecords[0].Value, '1 . mandatory=alpn,key9 alpn="h2" key9=\\000\\035\\000\\027', 'octal, as Route 53 writes bytes');
+    assert.ok(convertZone(z, 'dnscontrol').text.includes(`HTTPS("svc", 1, ".", ${JSON.stringify(params)})`));
+    for (const t of ['bind', 'route53', 'dnscontrol']) {
+      const res = convertZone(z, t);
+      assert.deepEqual([pit(res, 'svc-key').severity, pit(res, 'svc-key').names, pit(res, 'svc-key').params.keys], ['info', ['svc'], ['tls-supported-groups']], t);
+      assert.ok(res.text.includes('dohpath='), `${t}: a key the tools know keeps its name`);
+    }
+    for (const t of ['bind', 'route53']) {
+      const back = parseZone(convertZone(z, t).text, { origin: 'example.com', filename: convertFilename('example.com', t) });
+      assert.deepEqual(back.records.find((r) => r.name === 'svc.example.com').data.params, z.records[0].data.params, t);
+    }
+  });
+
+  test('DNSControl: a space inside a SvcParam value is written as \\032 (DNSControl refuses the file over a raw one)', () => {
+    const z = bind('k SVCB 2 k.example.net. key65000="a b" alpn=h2');
+    assert.ok(convertZone(z, 'dnscontrol').text.includes(`SVCB("k", 2, "k.example.net.", ${JSON.stringify('alpn="h2" key65000="a\\032b"')})`), convertZone(z, 'dnscontrol').text);
+    assert.ok(convertZone(z, 'bind').text.includes('key65000="a b"'), 'BIND keeps it quoted');
   });
 
   test('octoDNS: a CAA value with a quote or a backslash is flagged (octoDNS writes it between quotes as it is)', () => {

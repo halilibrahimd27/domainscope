@@ -60,7 +60,7 @@ describe('zone-tools', () => {
     assert.equal(text('route53', 'caa-flags'), 'CAA flags other than 0 or 128 (1): many providers accept only these two.');
     assert.match(text('dnscontrol', 'caa-tag'), /^CAA tag policy: DNSControl accepts only issue, .* kept as a comment\.$/);
     assert.equal(text('octodns', 'by-hand'), 'LOC records: octoDNS has them, but DomainScope cannot write them from this file; left out, add them by hand.');
-    assert.match(text('octodns', 'svc-key'), /^HTTPS \/ SVCB parameters written by number \(dohpath, ohttp: key5 for ech, key7 for dohpath …\): /);
+    assert.match(text('octodns', 'svc-key'), /^HTTPS \/ SVCB parameters written by number, each value as its wire bytes \(dohpath, ohttp: key5 for ech, key7 for dohpath …\): .* The records are the same on the wire\.$/);
     assert.match(text('dnscontrol', 'txt-split'), /: DNSControl keeps the joined text and splits it again/);
     assert.match(text('dnscontrol', 'alias-record'), /^ALIAS \/ ANAME records: written as ALIAS\(…\)/);
     i18n.setLang('tr');

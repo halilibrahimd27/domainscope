@@ -29,6 +29,7 @@
  */
 
 import { bindComment, presentCharString, GTLDS } from './zoneparse.js';
+import { base64Decode } from './dnswire.js';
 import { relativeName, canonicalName } from './zonediff.js';
 import {
   route53String, yamlString, octodnsTxt, octodnsTxtValue, octodnsTxtRefused, naturalCompare, txtBytes, joinBytes, utf8Text, split255
@@ -87,7 +88,7 @@ const PSEUDO_ALIAS = Object.freeze(['ALIAS', 'ANAME']);
 /**
  * SvcParamKeys octoDNS takes by name (its SUPPORTED_PARAMS, less `ech`: its check of a valid ech
  * value fails with a TypeError, octoDNS 1.8–1.22); the others go by number, `key<N>`, which
- * octoDNS passes on unchecked and which mean the same on the wire.
+ * octoDNS passes on unchecked, their value as its wire bytes (RFC 9460 §2.1): the same on the wire.
  */
 export const OCTODNS_SVC_KEYS = Object.freeze(['mandatory', 'alpn', 'no-default-alpn', 'port', 'ipv4hint', 'ipv6hint']);
 /** Owner names octoDNS accepts for SRV and URI records (its srv-name / uri-name checks: `_service._proto` or a wildcard). */
@@ -96,6 +97,11 @@ const OCTODNS_SERVICE_NAME = /^(\*|_[^.]+)\.[^.]+/;
 const SVC_KEY_NUMBERS = Object.freeze({
   mandatory: 0, alpn: 1, 'no-default-alpn': 2, port: 3, ipv4hint: 4, ech: 5, ipv6hint: 6, dohpath: 7, ohttp: 8, 'tls-supported-groups': 9
 });
+/**
+ * SvcParamKeys BIND, Route 53 and DNSControl files write by number, their value as wire bytes:
+ * the ones dnspython 2.8 and DNSControl 5.3 have no name for (DNSControl refuses the whole file).
+ */
+const SVC_BY_NUMBER = Object.freeze(['tls-supported-groups']);
 /** Route 53 routing policies a change batch can carry (the parser reads them back). */
 export const ROUTE53_ROUTING = Object.freeze(['weighted', 'latency', 'failover', 'geolocation', 'multivalue']);
 /**
@@ -140,7 +146,7 @@ export const PITFALL_SEVERITY = Object.freeze({
   'caa-flags': { route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
   'caa-tag': { route53: 'info', octodns: 'info', dnscontrol: 'warn' },
   'caa-quote': { octodns: 'warn' },
-  'svc-key': { octodns: 'info' },
+  'svc-key': { bind: 'info', route53: 'info', octodns: 'info', dnscontrol: 'info' },
   'txt-lenient': { octodns: 'warn' },
   'name-lenient': { octodns: 'warn' },
   'unsupported-type': { bind: 'warn', route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
@@ -182,6 +188,7 @@ export const PITFALL_VARIANTS = Object.freeze({
   'caa-flags': ['dnscontrol'],
   'caa-tag': ['dnscontrol'],
   'escaped-target': ['dnscontrol'],
+  'svc-key': ['octodns'],
   wildcard: ['route53']
 });
 
@@ -539,8 +546,9 @@ function plan(zone, target, pits) {
       const tag = String(r.data.tag || '').toLowerCase();
       if (!CAA_COMMON_TAGS.includes(tag)) pits.flag('caa-tag', r, { tags: tag });
     }
-    if (target === 'octodns' && (type === 'HTTPS' || type === 'SVCB') && r.data && r.data.params) {
-      const byNumber = Object.keys(r.data.params).filter((k) => !OCTODNS_SVC_KEYS.includes(k) && SVC_KEY_NUMBERS[k] !== undefined);
+    if ((type === 'HTTPS' || type === 'SVCB') && r.data && r.data.params) {
+      const byNumber = Object.keys(r.data.params).filter((k) => (target === 'octodns' ? !OCTODNS_SVC_KEYS.includes(k) : SVC_BY_NUMBER.includes(k))
+        && SVC_KEY_NUMBERS[k] !== undefined);
       if (byNumber.length) pits.flag('svc-key', r, { keys: byNumber });
     }
     // What octoDNS's own checks refuse is written with `octodns: lenient: true`: loaded, with a warning.
@@ -671,7 +679,7 @@ function bindText(zone, steps, sets, pits, about) {
   const line = (r) => {
     const ttl = Number.isFinite(r.ttl) ? String(r.ttl) : '';
     const type = String(r.type).toUpperCase();
-    const rdata = (type === 'TXT' || type === 'SPF') && r.data !== null && r.data !== undefined ? bindTxt(r) : r.text;
+    const rdata = (type === 'TXT' || type === 'SPF') && r.data !== null && r.data !== undefined ? bindTxt(r) : svcText(r);
     return `${owner(r).padEnd(width)} ${ttl.padStart(6)} IN ${String(r.type).padEnd(5)} ${rdata}`;
   };
   const out = [
@@ -711,7 +719,7 @@ function route53Value(r) {
   if (type === 'TXT' || type === 'SPF') return txtStrings255(r).map((b) => route53String(b)).join(' ');
   if (type === 'CAA') return `${r.data.flags} ${String(r.data.tag).toLowerCase()} ${route53String(r.data.value)}`;
   if (type === 'A' || type === 'AAAA') return String(r.data);
-  return octalEscapes(r.text);
+  return octalEscapes(svcText(r));
 }
 
 /** The routing fields of a record set (the policies {@link ROUTE53_ROUTING} lists). */
@@ -799,8 +807,54 @@ function charStringText(bytes) {
   return out;
 }
 
+/** The bytes of a base64 text (an ech value, as lib/zoneparse.js checked it), none when it is not base64. */
+function base64Bytes(text) {
+  try {
+    return [...base64Decode(String(text ?? ''))];
+  } catch {
+    return [];
+  }
+}
+
 /** The bytes of a hex string (the parser keeps a SvcParam it has no name for as hex). */
 const hexBytes = (hex) => (String(hex ?? '').match(/[0-9a-f]{2}/gi) || []).map((x) => parseInt(x, 16));
+
+/**
+ * The wire bytes of a SvcParam value (lib/zoneparse.js data `params`) for a key written by number:
+ * ech decoded from base64, tls-supported-groups as 16-bit numbers, dohpath as UTF-8, a key the
+ * parser has no name for from its hex.
+ */
+function svcWireBytes(k, v) {
+  if (k === 'ech') return base64Bytes(v);
+  if (k === 'tls-supported-groups') return (Array.isArray(v) ? v : [v]).flatMap((g) => [(Number(g) >> 8) & 0xff, Number(g) & 0xff]);
+  if (k === 'dohpath') return [...utf8.encode(String(v))];
+  return hexBytes(v);
+}
+
+/**
+ * An HTTPS / SVCB record's text (lib/zoneparse.js `text`) with the keys of {@link SVC_BY_NUMBER}
+ * written by number, their value as wire bytes (RFC 9460 §2.1), and `mandatory` naming them so;
+ * any other record's text as it is.
+ */
+function svcText(r) {
+  const params = r.data && typeof r.data === 'object' ? r.data.params : null;
+  const type = String(r.type || '').toUpperCase();
+  if ((type !== 'HTTPS' && type !== 'SVCB') || !params || !SVC_BY_NUMBER.some((k) => HAS(params, k))) return r.text;
+  const byNumber = (k) => (SVC_BY_NUMBER.includes(k) ? `key${SVC_KEY_NUMBERS[k]}` : k);
+  const tokens = String(r.text).match(/(?:[^\s"\\]|\\.|"(?:[^"\\]|\\.)*")+/g) || [];
+  return tokens.map((tok, i) => {
+    if (i < 2) return tok;
+    const eq = tok.indexOf('=');
+    const name = eq < 0 ? tok : tok.slice(0, eq);
+    if (name === 'mandatory' && eq > 0) return `mandatory=${tok.slice(eq + 1).split(',').map(byNumber).join(',')}`;
+    if (!SVC_BY_NUMBER.includes(name)) return tok;
+    const bytes = svcWireBytes(name, params[name]);
+    return `${byNumber(name)}${bytes.length ? `=${charStringText(bytes)}` : ''}`;
+  }).join(' ');
+}
+
+/** Own property test. */
+const HAS = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
 /** A SvcParamKey as octoDNS writes it: its own name, or `key<N>`. */
 const octodnsSvcKey = (k) => (OCTODNS_SVC_KEYS.includes(k) || SVC_KEY_NUMBERS[k] === undefined ? k : `key${SVC_KEY_NUMBERS[k]}`);
@@ -808,7 +862,8 @@ const octodnsSvcKey = (k) => (OCTODNS_SVC_KEYS.includes(k) || SVC_KEY_NUMBERS[k]
 /**
  * The `svcparams` mapping of an HTTPS / SVCB value (lib/zoneparse.js data `params`) as octoDNS
  * keeps it: lists for mandatory, alpn and the address hints, null for a key without a value,
- * the port as a number, any other value as the text after `key=` in a zone file.
+ * the port as a number; a key written by number (`key<N>`) as its wire bytes in `\DDD` escapes:
+ * ech decoded from base64, tls-supported-groups as 16-bit numbers, dohpath as UTF-8.
  */
 function octodnsSvcParams(params) {
   const out = {};
@@ -819,10 +874,7 @@ function octodnsSvcParams(params) {
     else if (k === 'alpn' || k === 'ipv4hint' || k === 'ipv6hint') out[key] = list(v);
     else if (v === true) out[key] = null;
     else if (k === 'port') out[key] = Number(v);
-    else if (k === 'ech') out[key] = String(v);
-    else if (k === 'tls-supported-groups') out[key] = list(v).join(',');
-    else if (k === 'dohpath') out[key] = charStringText(utf8.encode(String(v)));
-    else out[key] = charStringText(hexBytes(v));
+    else out[key] = charStringText(svcWireBytes(k, v));
   }
   return out;
 }
@@ -958,7 +1010,8 @@ function dnscontrolCall(type, name, r) {
     case 'SSHFP': return `SSHFP(${n}, ${d.algorithm}, ${d.fpType}, ${js(d.fingerprint)}`;
     case 'DS': return `DS(${n}, ${d.keyTag}, ${d.algorithm}, ${d.digestType}, ${js(d.digest)}`;
     case 'NAPTR': return `NAPTR(${n}, ${d.order}, ${d.preference}, ${js(d.flags)}, ${js(d.services)}, ${js(d.regexp)}, ${js(fqdn(d.replacement))}`;
-    case 'HTTPS': case 'SVCB': return `${type}(${n}, ${d.priority}, ${js(fqdn(d.target))}, ${js(svcParams(r.text))}`;
+    // DNSControl splits the parameters at every space, quoted or not: a space in a value is \032.
+    case 'HTTPS': case 'SVCB': return `${type}(${n}, ${d.priority}, ${js(fqdn(d.target))}, ${js(svcParams(svcText(r)).replace(/"(?:[^"\\]|\\.)*"/g, (q) => q.replace(/ /g, '\\032')))}`;
     case 'RP': return `RP(${n}, ${js(fqdn(d.mbox))}, ${js(fqdn(d.txt))}`;
     case 'OPENPGPKEY': return `OPENPGPKEY(${n}, ${js(String(d))}`;
     default: return null;

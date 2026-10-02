@@ -658,11 +658,29 @@ describe('RDATA → dnswire data shapes', () => {
       ipv6hint: ['2001:db8::1', '2001:db8::2'], key65000: '616263'
     });
     assert.deepEqual(s.targets, ['svc.example.net']);
-    assert.equal(one('svc HTTPS 1 . key1=h2').r.data.params.alpn[0], 'h2');
+    assert.equal(one('svc HTTPS 1 . key1=\\002h2').r.data.params.alpn[0], 'h2', 'key1 is alpn, its value wire bytes');
     assert.equal(invalid('svc HTTPS 1 . port=1 port=2'), 'svc-duplicate-key');
     assert.equal(invalid('svc HTTPS 1 . foo=bar'), 'svc-unknown-key');
     assert.equal(invalid('svc HTTPS 1 . ipv4hint=2001:db8::1'), 'svc-ipv4hint');
     assert.equal(invalid('svc HTTPS 1 . port=99999'), 'svc-port');
+  });
+
+  test('SVCB / HTTPS: a key written by number (keyNNNNN) holds its wire bytes, a named key too (RFC 9460 §2.1, as dnspython reads it)', () => {
+    const wire = (bytes) => bytes.map((b) => `\\${String(b).padStart(3, '0')}`).join('');
+    const params = (p) => one(`svc HTTPS 1 . ${p}`).r.data.params;
+    const ech = Buffer.from([...Array(12).keys()]).toString('base64');
+    assert.deepEqual(params(`key5=${wire([...Array(12).keys()])}`), { ech });
+    assert.deepEqual(params(`key9=${wire([0, 29, 0, 23])}`), { 'tls-supported-groups': [29, 23] });
+    assert.deepEqual(params(`key3=${wire([1, 187])}`), { port: 443 });
+    assert.deepEqual(params(`key0=${wire([0, 1, 0, 3])}`), { mandatory: ['alpn', 'port'] });
+    assert.deepEqual(params(`key1=${wire([2, 104, 50, 2, 104, 51])}`), { alpn: ['h2', 'h3'] });
+    assert.deepEqual(params(`key4=${wire([192, 0, 2, 1, 192, 0, 2, 2])}`), { ipv4hint: ['192.0.2.1', '192.0.2.2'] });
+    assert.deepEqual(params(`key6=${wire([32, 1, 13, 184, ...Array(11).fill(0), 1])}`), { ipv6hint: ['2001:db8::1'] });
+    assert.deepEqual(params('key7=/q{?dns} key8 key2'), { dohpath: '/q{?dns}', ohttp: true, 'no-default-alpn': true });
+    assert.equal(params('key5=AAECAwQFBgcICQoL').ech, 'QUFFQ0F3UUZCZ2NJQ1FvTA==', 'the text of a key5 is its bytes, as dnspython takes it');
+    for (const bad of [`key9=${wire([0, 29, 0])}`, `key3=${wire([1])}`, 'key1=h2', `key4=${wire([192, 0, 2])}`, 'key8=x']) {
+      assert.match(invalid(`svc HTTPS 1 . ${bad}`), /^svc-/, bad);
+    }
   });
 
   test('NAPTR, URI, HINFO, RP, AFSDB, KX, OPENPGPKEY', () => {

@@ -25,9 +25,11 @@
  * Pure, synchronous and DOM-free; nothing is sent or stored. Runs in browsers and Node 22.
  */
 
-import { bindComment, GTLDS } from './zoneparse.js';
+import { bindComment, presentCharString, GTLDS } from './zoneparse.js';
 import { relativeName, canonicalName } from './zonediff.js';
-import { route53String, yamlString, octodnsTxt, octodnsTxtRefused, naturalCompare } from './zonetext.js';
+import {
+  route53String, yamlString, octodnsTxt, octodnsTxtRefused, naturalCompare, txtBytes, joinBytes, utf8Text, split255
+} from './zonetext.js';
 
 // The escapes, checks and orders of the formats live in lib/zonetext.js; they stay exported here too.
 export { route53String, yamlString, octodnsTxt, octodnsTxtRefused, naturalCompare };
@@ -124,6 +126,7 @@ export const PITFALL_SEVERITY = Object.freeze({
   'cname-flatten': { bind: 'info', route53: 'info', octodns: 'info', dnscontrol: 'info' },
   'txt-long': { bind: 'info', route53: 'info', octodns: 'info', dnscontrol: 'info' },
   'txt-split': { octodns: 'info', dnscontrol: 'info' },
+  'txt-bytes': { octodns: 'warn', dnscontrol: 'warn' },
   'caa-flags': { route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
   'caa-tag': { route53: 'info', octodns: 'info', dnscontrol: 'warn' },
   'svc-key': { octodns: 'info' },
@@ -242,15 +245,26 @@ function octalEscapes(text) {
   });
 }
 
-/** The text of a TXT data list as one string. */
-const txtJoined = (data) => (Array.isArray(data) ? data : [data]).map((x) => String(x ?? '')).join('');
-const byteLength = (s) => utf8.encode(String(s ?? '')).length;
+/**
+ * A TXT / SPF record's text: its character-strings' bytes joined, as UTF-8 (null when they are
+ * not UTF-8 — a character split across two strings is joined first). What octoDNS and DNSControl
+ * keep: one text, split again every 255 bytes.
+ */
+const txtText = (r) => utf8Text(joinBytes(txtBytes(r)));
 
-/** Character-strings that are not the 255-byte split of their joined text (octoDNS re-splits them). */
-function customChunks(data) {
-  const list = Array.isArray(data) ? data : [data];
-  if (list.length < 2) return false;
-  return list.slice(0, -1).some((s) => byteLength(s) !== 255);
+/** Character-strings that are not the 255-byte split of their joined text (octoDNS and DNSControl re-split them). */
+function customChunks(strings) {
+  if (strings.length < 2) return false;
+  return strings.slice(0, -1).some((b) => b.length !== 255);
+}
+
+/** A record's character-strings with any longer than 255 bytes cut at 255 (RFC 1035 §3.3; the parser reads a longer one). */
+const txtStrings255 = (r) => txtBytes(r).flatMap((b) => split255(b));
+
+/** The TXT / SPF RDATA of a BIND line: the record's own text, re-split where a string is over 255 bytes. */
+function bindTxt(r) {
+  const strings = txtBytes(r);
+  return strings.every((b) => b.length <= 255) ? r.text : strings.flatMap((b) => split255(b)).map((b) => presentCharString(b)).join(' ');
 }
 
 /** RDATA text a BIND server reads back (no bare `;`, `(`, `)`, balanced quotes, no controls). */
@@ -288,6 +302,7 @@ const COMMENT_REASON = Object.freeze({
   'unsupported-type': 'not a record type this format holds',
   'by-hand': 'DomainScope cannot write this record type for this format: add it by hand',
   'caa-tag': 'a CAA tag DNSControl refuses',
+  'txt-bytes': 'TXT that is not UTF-8 text',
   dnssec: 'DNSSEC record: the new provider signs the zone itself',
   'out-of-zone': 'outside the zone',
   soa: 'SOA: the provider writes its own',
@@ -468,6 +483,11 @@ function plan(zone, target, pits) {
       leave('unsupported-type', target === 'dnscontrol' ? 'comment' : 'omit');
       continue;
     }
+    // octoDNS and DNSControl keep a TXT value as text: bytes that are not UTF-8 have no place there.
+    if ((target === 'octodns' || target === 'dnscontrol') && (type === 'TXT' || type === 'SPF') && txtText(r) === null) {
+      leave('txt-bytes', target === 'dnscontrol' ? 'comment' : 'omit');
+      continue;
+    }
     // DNSControl refuses the whole file over a CAA tag it does not know: that record stays a comment.
     if (target === 'dnscontrol' && type === 'CAA' && !CAA_COMMON_TAGS.includes(String(r.data.tag || '').toLowerCase())) {
       leave('caa-tag', 'comment', { tags: String(r.data.tag || '').toLowerCase() });
@@ -484,9 +504,9 @@ function plan(zone, target, pits) {
     if (r.proxied === true) pits.flag('proxied', r);
     if (r.flattenCname && s.action === 'write') pits.flag('cname-flatten', r);
     if ((type === 'TXT' || type === 'SPF') && Array.isArray(r.data)) {
-      if (byteLength(txtJoined(r.data)) > 255) pits.flag('txt-long', r);
+      if (joinBytes(txtBytes(r)).length > 255) pits.flag('txt-long', r);
       // octoDNS and DNSControl keep one text and split it again every 255 bytes.
-      if ((target === 'octodns' || target === 'dnscontrol') && customChunks(r.data)) pits.flag('txt-split', r);
+      if ((target === 'octodns' || target === 'dnscontrol') && customChunks(txtBytes(r))) pits.flag('txt-split', r);
     }
     if (type === 'CAA' && r.data && target !== 'bind') {
       const flags = Number(r.data.flags);
@@ -499,7 +519,7 @@ function plan(zone, target, pits) {
       if (byNumber.length) pits.flag('svc-key', r, { keys: byNumber });
     }
     // What octoDNS's own checks refuse is written with `octodns: lenient: true`: loaded, with a warning.
-    if (target === 'octodns' && (type === 'TXT' || type === 'SPF') && octodnsTxtRefused(octodnsTxt(r.data))) {
+    if (target === 'octodns' && (type === 'TXT' || type === 'SPF') && octodnsTxtRefused(octodnsTxt(txtText(r)))) {
       pits.flag('txt-lenient', r);
       s.lenient = true;
     }
@@ -618,7 +638,9 @@ function bindText(zone, steps, sets, pits, about) {
   const width = Math.min(40, Math.max(1, ...written.map((s) => owner(s.r).length)));
   const line = (r) => {
     const ttl = Number.isFinite(r.ttl) ? String(r.ttl) : '';
-    return `${owner(r).padEnd(width)} ${ttl.padStart(6)} IN ${String(r.type).padEnd(5)} ${r.text}`;
+    const type = String(r.type).toUpperCase();
+    const rdata = (type === 'TXT' || type === 'SPF') && r.data !== null && r.data !== undefined ? bindTxt(r) : r.text;
+    return `${owner(r).padEnd(width)} ${ttl.padStart(6)} IN ${String(r.type).padEnd(5)} ${rdata}`;
   };
   const out = [
     `; ${origin} as an RFC 1035 zone file (BIND), written by DomainScope from ${about}.`,
@@ -654,7 +676,7 @@ function bindText(zone, steps, sets, pits, about) {
 /** One value of a Route 53 record set. */
 function route53Value(r) {
   const type = String(r.type).toUpperCase();
-  if (type === 'TXT' || type === 'SPF') return (Array.isArray(r.data) ? r.data : [r.data]).map(route53String).join(' ');
+  if (type === 'TXT' || type === 'SPF') return txtStrings255(r).map((b) => route53String(b)).join(' ');
   if (type === 'CAA') return `${r.data.flags} ${String(r.data.tag).toLowerCase()} ${route53String(r.data.value)}`;
   if (type === 'A' || type === 'AAAA') return String(r.data);
   return octalEscapes(r.text);
@@ -758,7 +780,7 @@ function octodnsValue(type, r) {
     case 'MX': return { exchange: fqdn(d.exchange), preference: d.preference };
     case 'SRV': return { port: d.port, priority: d.priority, target: fqdn(d.target), weight: d.weight };
     case 'CAA': return { flags: d.flags, tag: String(d.tag).toLowerCase(), value: String(d.value) };
-    case 'TXT': case 'SPF': return octodnsTxt(d);
+    case 'TXT': case 'SPF': return octodnsTxt(txtText(r));
     case 'TLSA': return { certificate_association_data: d.data, certificate_usage: d.usage, matching_type: d.matchingType, selector: d.selector };
     case 'SSHFP': return { algorithm: d.algorithm, fingerprint: d.fingerprint, fingerprint_type: d.fpType };
     case 'DS': return { algorithm: d.algorithm, digest: d.digest, digest_type: d.digestType, key_tag: d.keyTag };
@@ -873,7 +895,7 @@ function dnscontrolCall(type, name, r) {
     case 'SRV': return `SRV(${n}, ${d.priority}, ${d.weight}, ${d.port}, ${js(fqdn(d.target))}`;
     case 'CAA': return `CAA(${n}, ${js(String(d.tag).toLowerCase())}, ${js(d.value)}`;
     // DNSControl joins a list of strings into one text and splits it again every 255 bytes.
-    case 'TXT': return `TXT(${n}, ${js(txtJoined(d))}`;
+    case 'TXT': return `TXT(${n}, ${js(txtText(r))}`;
     case 'TLSA': case 'SMIMEA': return `${type}(${n}, ${d.usage}, ${d.selector}, ${d.matchingType}, ${js(d.data)}`;
     case 'SSHFP': return `SSHFP(${n}, ${d.algorithm}, ${d.fpType}, ${js(d.fingerprint)}`;
     case 'DS': return `DS(${n}, ${d.keyTag}, ${d.algorithm}, ${d.digestType}, ${js(d.digest)}`;

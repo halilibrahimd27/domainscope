@@ -8,7 +8,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseZone } from '../../assets/js/lib/zoneparse.js';
+import { parseZone, presentCharString } from '../../assets/js/lib/zoneparse.js';
+import { txtBytes, split255 } from '../../assets/js/lib/zonetext.js';
 import { diffZones } from '../../assets/js/lib/zonediff.js';
 import {
   convertZone, convertFilename, pitfallKey, pitfallKeys, route53String, route53Name, yamlString, octodnsTxt, naturalCompare,
@@ -58,6 +59,8 @@ function expected(zone, res, target) {
     if (r.routing && !keeps.includes(r.routing.policy)) delete x.routing;
     if (mixed.has(r.id)) x.proxied = true;
     if (target === 'dnscontrol' && r.type === 'CAA' && r.data && ![0, 128].includes(r.data.flags)) x.data = { ...r.data, flags: 0 };
+    // A string over 255 bytes (read, though RFC 1035 forbids it) is split at 255 bytes.
+    if ((r.type === 'TXT' || r.type === 'SPF') && r.data && txtBytes(r).some((b) => b.length > 255)) x.text = txtBytes(r).flatMap((b) => split255(b)).map((b) => presentCharString(b)).join(' ');
     return x;
   });
   // One TTL per record set outside BIND: the lowest of its values.
@@ -388,6 +391,31 @@ describe('pitfalls', () => {
     assert.ok(out.octodns.text.includes(`value: '${long.replace(';', '\\;')}'`));
     assert.ok(out.dnscontrol.text.includes(`TXT("k._domainkey", "${long}")`), 'DNSControl joins a list anyway and splits it again');
     for (const t of CONVERT_TARGETS) assert.equal(pit(out[t], 'txt-split'), null, `${t}: split every 255 bytes, as the targets split it`);
+  });
+
+  test('TXT from its bytes: a character split across strings and a byte that is not UTF-8 written exactly; octoDNS and DNSControl leave non-UTF-8 text out', () => {
+    const BS = '\\';
+    const z = bind([`split TXT "a${BS}195" "${BS}188b"`, `bin TXT "${BS}255x"`, `ok TXT "${BS}195${BS}188"`].join('\n'));
+    const out = Object.fromEntries(CONVERT_TARGETS.map((t) => [t, convertZone(z, t)]));
+    assert.ok(out.bind.text.split('\n').some((l) => /^split +3600 IN TXT +/.test(l) && l.endsWith(`"a${BS}195" "${BS}188b"`)), 'BIND keeps the strings exactly');
+    const values = Object.fromEntries(JSON.parse(out.route53.text).Changes.map((c) => [c.ResourceRecordSet.Name, c.ResourceRecordSet.ResourceRecords[0].Value]));
+    assert.deepEqual(values, { 'split.example.com.': `"a${BS}303" "${BS}274b"`, 'bin.example.com.': `"${BS}377x"`, 'ok.example.com.': `"${BS}303${BS}274"` });
+    assert.ok(out.octodns.text.includes(`split:\n  octodns:\n    lenient: true\n  ttl: 3600\n  type: TXT\n  value: "a${BS}xfcb"\n`), 'the strings joined, then decoded');
+    assert.ok(!/^bin:/m.test(out.octodns.text));
+    assert.ok(out.dnscontrol.text.includes(`TXT("split", "a${String.fromCodePoint(0xfc)}b")`));
+    assert.match(out.dnscontrol.text, /^ {4}\/\/ not written \(TXT that is not UTF-8 text\): bin TXT /m);
+    for (const t of ['octodns', 'dnscontrol']) assert.deepEqual([pit(out[t], 'txt-bytes').severity, pit(out[t], 'txt-bytes').names], ['warn', ['bin']], t);
+    for (const t of ['bind', 'route53']) assert.equal(pit(out[t], 'txt-bytes'), null, t);
+  });
+
+  test('a TXT string over 255 bytes (read, though RFC 1035 forbids it) is split at 255 bytes in BIND and Route 53', () => {
+    const long = 'v=DKIM1; k=rsa; p='.padEnd(400, 'A');
+    const z = bind(`x TXT "${long}"`);
+    const bindText = convertZone(z, 'bind').text;
+    assert.ok(bindText.split('\n').find((l) => l.startsWith('x ')).endsWith(`"${long.slice(0, 255)}" "${long.slice(255)}"`));
+    assert.equal(JSON.parse(convertZone(z, 'route53').text).Changes[0].ResourceRecordSet.ResourceRecords[0].Value, `"${long.slice(0, 255)}" "${long.slice(255)}"`);
+    assert.deepEqual(parseZone(bindText, { format: 'bind' }).warnings.filter((w) => w.severity !== 'info').map((w) => w.code), [], 'the file reads back without a too-long string');
+    assert.equal(pit(convertZone(z, 'bind'), 'txt-long').severity, 'info');
   });
 
   test('TXT split elsewhere than every 255 bytes: octoDNS and DNSControl split the text again (the strings change, not the text)', () => {

@@ -20,12 +20,7 @@
  * on the host pattern, the first token (`203.0.113.10:2222`, `badwolf.example.com:5309`), is
  * Ansible's SSH port: the host stays on `-p` and a PARSE warning (reason 'sshPort') says so.
  *
- * Topology keys say where TLS terminates, in every format (`key=value` on a line, a CSV column,
- * an Ansible host variable, a JSON / YAML key of a machine record), as the CLI reads them:
- * `ports=443,8443`, `terminates_tls=yes|no`, `vip=`, `backends=web01,web02`, `nat=` (see
- * Server). DNS answers match through `vip` and `nat` ({@link lookupServers}); lib/topology.js
- * reads the rest (off the start route). A malformed value is a TOPOLOGY warning; without the
- * keys nothing changes.
+ * Topology keys (TOPOLOGY_KEYS) say where TLS terminates, in every format, as the CLI reads them.
  */
 
 import { normalizeIP, parseCidr, ipInCidr } from './netinfo.js';
@@ -41,15 +36,11 @@ import { normalizeIP, parseCidr, ipInCidr } from './netinfo.js';
  * @property {Object<string, Array<number|null>>} [ports] Extension, present only when an address
  *   was written with a port: address → its ports, `null` standing for the CLI's `-p` ports (the
  *   address was also given without one). An address missing here is scanned on `-p` only.
- * @property {number[]} [tlsPorts] Topology (`ports=`), present only when given: the TLS ports of
- *   the server's addresses written without a port (the `null` / missing entries of `ports`), in
- *   place of `-p`. An address written with its own port keeps exactly that port.
- * @property {boolean} [terminatesTls] Topology (`terminates_tls=`), present only when given;
- *   absent means true. false: the server never gets the certificate (a plain-HTTP backend).
- * @property {string[]} [vips] Topology (`vip=`): shared addresses this server holds (an HA pair).
- * @property {string[]} [nats] Topology (`nat=`): public addresses this server is reachable at.
- * @property {string[]} [backends] Topology (`backends=`): the names of the inventory servers this
- *   one (a load balancer) forwards to, as their `name`.
+ * @property {number[]} [tlsPorts] `ports=`: for the addresses written without a port, not `-p`.
+ * @property {boolean} [terminatesTls] `terminates_tls=` (absent: true).
+ * @property {string[]} [vips] `vip=`: shared addresses it holds.
+ * @property {string[]} [nats] `nat=`: public addresses it is reached at.
+ * @property {string[]} [backends] `backends=`: the servers (`name`) it forwards to.
  */
 
 /**
@@ -64,10 +55,7 @@ import { normalizeIP, parseCidr, ipInCidr } from './netinfo.js';
  *   for a host name with a port (`web01.example.net:8443`), which the CLI can resolve but a server
  *   here is only matched by address; 'sshPort' — a PARSE for the port on an Ansible host pattern
  *   (`203.0.113.10:2222` under `[web]`), Ansible's SSH port: the address is kept, on `-p`.
- *   TOPOLOGY ({@link TOPOLOGY_REASONS}): a malformed value — 'ports', 'terminatesTls', 'vip',
- *   'nat', 'backends' —, 'unknownBackend' (names no server here), 'selfBackend', 'conflict'
- *   (terminates_tls given both ways: yes is kept), 'noServer' (a line or record with
- *   topology keys but no server) and 'groupVars' (Ansible group vars are not read: set it per host).
+ *   TOPOLOGY: see {@link TOPOLOGY_REASONS}.
  */
 
 const MAX_INPUT = 10 * 1024 * 1024;
@@ -258,39 +246,34 @@ const FIELD_LABELS = new Set(['name', 'host', 'hostname', 'ip', 'ips', 'ipv4', '
 /* Topology keys (cli/ssl_origin_scan.py reads them alike)                  */
 /* ------------------------------------------------------------------------ */
 
-/**
- * The topology keys as {@link normalizeKey} writes them (`Terminates-TLS`, `terminatesTls` → terminates_tls).
- * In JSON / YAML only `tls_ports` gives TLS ports: a `ports` key there (Shodan, an Ansible var) is read as before.
- */
+/** Topology keys, normalised; in JSON / YAML only `tls_ports` gives TLS ports (`ports` is Shodan's). */
 export const TOPOLOGY_KEYS = Object.freeze(['ports', 'tls_ports', 'terminates_tls', 'vip', 'backends', 'nat']);
 const TOPOLOGY_KEY_SET = new Set(TOPOLOGY_KEYS);
 
-/** The `reason` of a TOPOLOGY warning: a malformed value of each key, then the other causes. */
+/** TOPOLOGY warning reasons: a malformed value of a key, then the other causes. */
 export const TOPOLOGY_REASONS = Object.freeze(['ports', 'terminatesTls', 'vip', 'nat', 'backends', 'plainPorts',
-  'unknownBackend', 'selfBackend', 'conflict', 'noServer', 'groupVars', 'noTermination', 'vipMixed']);
+  'unknownBackend', 'selfBackend', 'conflict', 'noServer', 'groupVars', 'noTermination', 'vipMixed', 'cycle',
+  'ownedAddress', 'nearMiss']);
 const MALFORMED_REASON = { ports: 'ports', tls_ports: 'ports', terminates_tls: 'terminatesTls', vip: 'vip', nat: 'nat', backends: 'backends' };
-/** Ports that usually carry no TLS (plain or STARTTLS protocols): in a ports= list they are kept, with a warning. */
+/** Ports that usually carry no TLS: kept in a ports= list, with a warning. */
 const PLAIN_PORTS = new Set([20, 21, 22, 23, 25, 53, 80, 110, 119, 143, 389, 3306, 3389, 5432, 6379, 8080, 27017]);
 const isPortsKey = (k) => k === 'ports' || k === 'tls_ports';
+/** Keys a letter off one (on a line, a CSV header): warned about, not read. */
+const NEAR_MISS = new Map(Object.entries({ backend: 'backends', port: 'ports', tls_port: 'tls_ports', vips: 'vip',
+  nats: 'nat', terminate_tls: 'terminates_tls', terminatestls: 'terminates_tls', terminates_ssl: 'terminates_tls',
+  terminate_ssl: 'terminates_tls' }));
 
 const TLS_YES = new Set(['yes', 'true', 'on', '1']);
 const TLS_NO = new Set(['no', 'false', 'off', '0']);
 
-/** The topology key `key` is (normalised), or null; `structured` (JSON / YAML): `ports` is none there. */
 function topologyKey(key, structured = false) {
   const k = normalizeKey(key);
   return TOPOLOGY_KEY_SET.has(k) && !(structured && k === 'ports') ? k : null;
 }
 
-/** A value without the quotes around it (`"web01, web02"`). */
 const unquote = (s) => String(s).trim().replace(/^(["'])(.*)\1$/s, '$2').trim();
 
-/**
- * The items of a topology value (a string, a number, a boolean, a list of those); null for an
- * object or a list holding one (`ports: [{ containerPort: 80 }]`), read as before. A line's
- * value splits on spaces, ',', ';' and '|'; a `structured` one (JSON / YAML, a CSV cell) on ','
- * and ';' only, so a name may hold spaces (an AWS Name tag).
- */
+/** A value's items, null for an object; a line's split on spaces , ; |, a `structured` one on , ; only. */
 function topologyItems(value, structured = false) {
   if (value === null || value === undefined) return [];
   if (typeof value === 'string') return unquote(value).split(structured ? /[,;]+/ : /[\s,;|]+/).map((v) => unquote(v)).filter(Boolean);
@@ -305,17 +288,14 @@ function topologyItems(value, structured = false) {
   return out;
 }
 
-/** An address of `vip=` / `nat=` / `backends=`: bare (a /32 or /128 is fine), never with a port. */
+/** A bare address (a /32 or /128 too), never one with a port. */
 function topologyAddress(item) {
   if (/^\d{1,3}(?:\.\d{1,3}){3}:|\]:/.test(item)) return null;
   const hit = parseIpToken(item);
   return hit && hit.port === null ? hit.ip : null;
 }
 
-/**
- * The value of `key` from its items; undefined when malformed: no item, a port not 1–65535, not
- * one yes/no/true/false/on/off/1/0, a vip / nat that is no bare address, a backend address that is none.
- */
+/** The value of `key` from its items; undefined when malformed. */
 function topologyValue(key, items) {
   if (!items.length) return undefined;
   if (key === 'terminates_tls') {
@@ -341,7 +321,7 @@ function topologyValue(key, items) {
   return out;
 }
 
-/** One topology key read: `{ key, value, raw, line }`, or null after a TOPOLOGY warning (detail `key=raw`). */
+/** One key read: `{ key, value, raw, line }`, or null after a warning. */
 function readTopology(ctx, key, items, raw, line) {
   const value = topologyValue(key, items);
   if (value === undefined) {
@@ -352,25 +332,24 @@ function readTopology(ctx, key, items, raw, line) {
   return { key, value, raw, line };
 }
 
-/**
- * `key=value` with a topology key on a line. The value runs to the next space; a ';' or '|' in
- * it continues it (`ports=443;8443`) unless the next `key=` follows (`ports=443;terminates_tls=no`).
- */
+/** `key=value` on a line: a ; or | continues the value unless a key= follows. */
 const TOPOLOGY_TOKEN_RE = /(^|[\s,;|])([A-Za-z][A-Za-z0-9_.-]*)=("[^"]*"|'[^']*'|(?:[^\s;|"']|[;|](?![A-Za-z][A-Za-z0-9_.-]*=)(?=[^\s;|"']))*)/g;
 
-/** The topology `key=value` tokens taken out of a line before it is split on commas: `{ rest, found: [{ key, raw }] }`. */
+/** A line's topology tokens taken out (their values hold commas): `{ rest, found, near }`. */
 function splitTopology(line) {
   const found = [];
+  const near = [];
   const rest = line.replace(TOPOLOGY_TOKEN_RE, (all, sep, key, value) => {
     const k = topologyKey(key);
+    const m = !k && NEAR_MISS.get(normalizeKey(key));
+    if (m) near.push(`${key}=${unquote(value)} (${m}=?)`);
     if (!k) return all;
     found.push({ key: k, raw: value });
     return `${sep} `;
   });
-  return { rest: found.length ? rest : line, found };
+  return { rest: found.length ? rest : line, found, near };
 }
 
-/** The topology of one line or CSV row (`structured`): the values read, malformed ones warned about. */
 function lineTopology(ctx, found, line, structured = false) {
   const out = [];
   for (const { key, raw } of found) {
@@ -426,9 +405,8 @@ function createCollector(text, lines) {
     },
     /**
      * @param {{ name: string|null, ips: string[], ports?: Object<string, Array<number|null>>,
-     *   groups?: string[], aliases?: string[], line: number, quiet?: boolean,
-     *   topology?: Array<{ key: string, value: unknown, raw: string, line: number }> }} e
-     *   ports: {@link portsOf}; quiet: never emit NO_IP for this entry alone; topology: {@link readTopology}.
+     *   groups?: string[], aliases?: string[], line: number, quiet?: boolean, topology?: object[] }} e
+     *   ports: {@link portsOf}; quiet: never emit NO_IP for this entry alone.
      */
     add(e) {
       const all = e.ips || [];
@@ -522,13 +500,9 @@ function addAddress(d, ip, port) {
 /** The port list of `ip` in an entry: its own ports, or `[null]` (the `-p` ports). */
 const entryPorts = (e, ip) => (e.ports && e.ports[ip] ? e.ports[ip] : [null]);
 
-/** A server draft's topology so far (see {@link mergeTopology}). */
 const emptyTopology = () => ({ tlsPorts: [], terminatesTls: undefined, vips: [], nats: [], backendRefs: [] });
 
-/**
- * Merge an entry's topology into a server draft, in line order: ports, VIPs, NAT addresses and
- * backends add up; terminates_tls given both ways is a 'conflict' and yes, the safe value.
- */
+/** Merge an entry's topology into a draft; terminates_tls both ways: a 'conflict', yes kept. */
 function mergeTopology(d, list, ctx) {
   const push = (arr, values) => {
     for (const v of values) if (!arr.includes(v)) arr.push(v);
@@ -547,11 +521,7 @@ function mergeTopology(d, list, ctx) {
   }
 }
 
-/**
- * Each draft's `backends=` names resolved to inventory servers: by name (case-insensitive, a
- * server without an address included), else an address one of them has. A name no server has is
- * an 'unknownBackend', the server itself a 'selfBackend' warning.
- */
+/** `backends=` resolved to server names: by name, else by address. */
 function linkBackends(drafts, ctx) {
   const byName = new Map(drafts.map((d) => [d.name.toLowerCase(), d]));
   for (const d of drafts) {
@@ -573,12 +543,7 @@ function linkBackends(drafts, ctx) {
   }
 }
 
-/**
- * Checks over the linked inventory (cli/ssl_origin_scan.py topology_checks alike): a load balancer
- * that passes TLS through (terminates_tls=no) with no backend terminating it, through every
- * passthrough tier, is a 'noTermination' warning; the holders of one VIP that disagree on
- * terminates_tls a 'vipMixed' one (on the first holder saying no).
- */
+/** Checks over the linked inventory, as the CLI's topology_checks. */
 function topologyChecks(drafts, ctx) {
   const byName = new Map(drafts.map((d) => [d.name, d]));
   const plain = (d) => d.topo.terminatesTls === false;
@@ -602,6 +567,30 @@ function topologyChecks(drafts, ctx) {
   for (const [ip, list] of holders) {
     const off = list.filter(plain);
     if (off.length && off.length < list.length) ctx.warn(off[0].line, 'TOPOLOGY', undefined, `vip=${ip}`, 'vipMixed');
+  }
+  const own = new Map();
+  for (const d of drafts) {
+    for (const ip of d.ips) if (!own.has(ip)) own.set(ip, d.name);
+    const prev = new Map();
+    const queue = [d.name];
+    while (queue.length && !prev.has(d.name)) {
+      const n = queue.shift();
+      for (const b of byName.get(n)?.topo.backends || []) {
+        if (!prev.has(b)) {
+          prev.set(b, n);
+          queue.push(b);
+        }
+      }
+    }
+    if (!prev.has(d.name)) continue;
+    const loop = [d.name];
+    for (let n = prev.get(d.name); n !== d.name; n = prev.get(n)) loop.unshift(n);
+    ctx.warn(d.line, 'TOPOLOGY', undefined, [d.name, ...loop].join(' → '), 'cycle');
+  }
+  for (const d of drafts) {
+    for (const [k, ips] of [['vip', d.topo.vips], ['nat', d.topo.nats]]) {
+      for (const ip of ips) if (own.has(ip)) ctx.warn(d.line, 'TOPOLOGY', undefined, `${k}=${ip} (${own.get(ip)})`, 'ownedAddress');
+    }
   }
 }
 
@@ -675,8 +664,7 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
     d.groups = expand(own);
   }
 
-  // 4) Servers without IPs → NO_IP (unless only referenced quietly). The topology keys appear
-  //    only when given, so an inventory without them parses to the same shape as before.
+  // 4) Servers without IPs → NO_IP (unless only referenced quietly).
   linkBackends(drafts, ctx);
   topologyChecks(drafts, ctx);
   const servers = [];
@@ -859,12 +847,10 @@ function withoutHostPort(groups) {
  * (named, holding an address key, or an Ansible vars map) gateway / DNS / NTP /
  * iLO / version attributes are skipped.
  * Returns groups of { ip, raw } not claimed by any name.
- * A topology key of a machine record (`nat`, `vip`, `ports`, `terminates_tls`, `backends` with a
- * scalar or a list of scalars) is an item `{ topo, items, raw }` that travels with its record's
- * addresses; in a group's `vars` it is a 'groupVars' warning; anywhere else it is read as before.
+ * A machine record's topology key is an item `{ topo, items, raw }` (in a group's vars: a warning).
  * @param {Set<string>} [hosts] host names listed in Ansible groups or `_meta.hostvars`
  * @param {boolean} [isVars] `node` is a vars map: one of those hosts' (hostvars) or a group's `vars`
- * @param {boolean} [groupVars] `node` is a group's `vars` map (not a host's)
+ * @param {boolean} [groupVars] `node` is a group's `vars` map
  */
 function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false, groupVars = false) {
   if (depth > MAX_DEPTH || node === null || node === undefined) return [];
@@ -921,8 +907,6 @@ function visitStructured(node, depth, found, hosts = NO_HOSTS, isVars = false, g
   const record = strong || entries.some((e) => e.kind === 'field' && e.groups.length && isAddressKey(e.key));
   const own = [];
   const pass = [];
-  // Topology keys belong to a machine record (named, holding an address, or a host's vars); a
-  // group's vars cannot set them (a warning), and anywhere else they are ordinary values.
   for (const t of topology) {
     if (!record) entries.push(visit(t.key, t.value));
     else own.push(groupVars ? { bad: 'groupVars', raw: t.item.topo } : t.item);
@@ -1006,8 +990,7 @@ function extractStructured(root, ctx, fixedLine = null) {
   for (const items of leftovers) found.push({ name: null, items });
   for (const f of found) {
     // Values that cannot be used ({ bad, raw }): an INVALID_IP for a bad port or a zone id, a
-    // PARSE for a host name with a port, as on a line (the CLI warns about the first two too);
-    // a TOPOLOGY warning for a topology key in a group's vars.
+    // PARSE for a host name with a port, as on a line (the CLI warns about the first two too).
     const good = f.items.filter((i) => i.ip);
     const bad = f.items.filter((i) => i.bad);
     for (const b of bad) {
@@ -1364,6 +1347,7 @@ function parseCsv(text, csv, ctx) {
     .map((c, i) => ({ ...c, i }))
     .filter((c) => c.role === 'name')
     .sort((a, b) => a.rank - b.rank);
+  for (const { key } of columns) if (NEAR_MISS.has(key)) ctx.warn(csv.headerLine + 1, 'TOPOLOGY', undefined, `${key} (${NEAR_MISS.get(key)}?)`, 'nearMiss');
 
   for (const rec of records) {
     const cells = rec.cells.map((c) => unwrap(c).trim());
@@ -1459,7 +1443,6 @@ function parseLines(lines, ctx) {
       }
     }
     if (section === 'vars') {
-      // Group variables are not read for the topology: say so rather than ignore it.
       for (const t of splitTopology(stripInlineComment(line)).found) ctx.warn(lineNo, 'TOPOLOGY', undefined, t.key, 'groupVars');
       continue;
     }
@@ -1483,18 +1466,15 @@ function parseLines(lines, ctx) {
 
     line = stripInlineComment(line).replace(/^(?:[-*\u2022+]|\d{1,4}[.)])\s+/u, '');
     if (!line) continue;
-    // Topology keys first: their values hold commas (`ports=443,8443`), which split a line.
-    const { rest, found } = splitTopology(line);
+    const { rest, found, near } = splitTopology(line);
+    for (const n of near) ctx.warn(lineNo, 'TOPOLOGY', undefined, n, 'nearMiss');
     const topology = lineTopology(ctx, found, lineNo);
     const added = rest.trim() ? parseHostLine(rest.trim(), lineNo, group, ctx, topology) : false;
     if (!added && found.length) ctx.warn(lineNo, 'TOPOLOGY', undefined, found[0].key, 'noServer');
   }
 }
 
-/**
- * One line of a plain list, a hosts file or an Ansible INI inventory. True when it added an
- * entry (a server, or a name whose address was mistyped), which then carries `topology`.
- */
+/** One line; true when it added an entry, which carries `topology`. */
 function parseHostLine(line, lineNo, group, ctx, topology = []) {
   const tokens = line.split(/[\s,;|]+/).filter(Boolean);
   const ips = [];
@@ -1583,8 +1563,7 @@ function parseHostLine(line, lineNo, group, ctx, topology = []) {
 
   if (ips.length === 0) {
     if (invalid.length) {
-      // The IP was mistyped: keep group membership but do not double-warn (the line's
-      // topology goes with that server: the INVALID_IP warning already names the line).
+      // The IP was mistyped: keep group membership but do not double-warn.
       if (names.length) ctx.add({ name: hostish[0] || names[0], ips: [], groups, line: lineNo, quiet: true, topology });
       return true;
     }
@@ -1739,10 +1718,7 @@ export function formatEndpoint(ip, port = null) {
 /**
  * The `-t` tokens of address `ip` of `server`, as the CLI reads them back: the bare address, or
  * one `ip:port` per port it was written with (`Server.ports`; `null` there keeps the bare
- * address as well). [] when `ip` is not an IP address. Precedence of the ports: an address
- * written with its own port keeps exactly that port; one written without (the `null` entries,
- * or none) is scanned on the server's `ports=` (`Server.tlsPorts`, one token each) when it has
- * them, else on the CLI's `-p` (the bare address).
+ * address as well). [] when `ip` is not an IP address. Without a port: `tlsPorts`, else `-p`.
  * @param {{ ports?: Object<string, Array<number|null>>, tlsPorts?: number[] }|null} server
  * @param {string} ip canonical, as in `Server.ips`
  * @returns {string[]}
@@ -1773,8 +1749,7 @@ export function serverTargets(server) {
 }
 
 /**
- * Index servers by canonical IP: their own addresses, and the shared (`vip=`) and public
- * (`nat=`) addresses they are reached at.
+ * Index servers by canonical IP (their own, `vip=` and `nat=` addresses).
  * @param {Server[]} servers
  * @returns {Map<string, Server[]>}
  */
@@ -1795,7 +1770,6 @@ export function buildIpIndex(servers) {
   return index;
 }
 
-/** How `server` answers at `key`: its own address (null), a shared one ('vip') or its public NAT address ('nat'). */
 function reachedThrough(server, key) {
   if (server.ips.some((ip) => normalizeIP(ip) === key)) return null;
   if ((server.vips || []).some((ip) => normalizeIP(ip) === key)) return 'vip';
@@ -1803,8 +1777,7 @@ function reachedThrough(server, key) {
 }
 
 /**
- * Servers owning any of `ips`: their own address, or a shared (`vip=`) or public (`nat=`)
- * address they are reached at — then the pair says so in `through`. IPv4-mapped IPv6
+ * Servers owning any of `ips` (a `vip=` / `nat=` one: `through`). IPv4-mapped IPv6
  * (`::ffff:1.2.3.4`) also matches servers listed with the plain IPv4.
  * @param {string[]|string} ips
  * @param {Map<string, Server[]>} index From {@link buildIpIndex}.

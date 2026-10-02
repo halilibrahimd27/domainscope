@@ -8,3 +8,9 @@ mid01 10.0.0.62 terminates_tls=no backends=app03
 app03 10.0.0.63
 db02 10.0.0.72 vip=203.0.113.70
 db03 10.0.0.73 vip=203.0.113.70 terminates_tls=no
+lb03 203.0.113.4 backends=lb04
+lb04 203.0.113.5 backends=lb03
+app02 10.0.0.31 nat=10.0.0.32
+app04 10.0.0.32
+lb05 203.0.113.6 vip=203.0.113.6
+bad07 10.0.0.56 backend=pool01 port=8443 vips=203.0.113.71 terminate_tls=no terminates.tls=no

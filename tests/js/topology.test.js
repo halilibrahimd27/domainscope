@@ -282,6 +282,12 @@ describe('when the inventory and DNS disagree, the certificate is still planned 
     assert.ok(topologyNotes(g.db01.topology).includes('VIP 203.0.113.70 (db01, db02; terminates_tls=no: db02)'), topologyNotes(g.db01.topology).join(' | '));
   });
 
+  test('backends that loop end the scan: the load balancer DNS reaches keeps the certificate', async () => {
+    const scan = await scanOf('lb03 203.0.113.4 backends=lb04 terminates_tls=no\nlb04 203.0.113.5 backends=lb03 terminates_tls=no', { [`www.${D}`]: ['203.0.113.4'] });
+    const g = groupsByName(scan);
+    assert.deepEqual([g.lb03.needsCert, g.lb03.topology.suspect, scan.tlsNowhere], [true, true, [`www.${D}`]]);
+  });
+
   test('a VIP held only by terminates_tls=no servers: both holders need the certificate', async () => {
     const scan = await scanOf('web01 10.0.0.21 vip=203.0.113.50 terminates_tls=no\nweb02 10.0.0.22 vip=203.0.113.50 terminates_tls=no',
       { [`www.${D}`]: ['203.0.113.50'] });

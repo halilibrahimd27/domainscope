@@ -1439,8 +1439,9 @@ class InventoryWarning:
     text: str
     source: str = ''
     # TOPOLOGY: the cause, as lib/inventory.js names it (TOPOLOGY_REASONS): ports,
-    # terminatesTls, vip, nat, backends (a malformed value), unknownBackend, selfBackend,
-    # conflict, noServer, groupVars
+    # terminatesTls, vip, nat, backends (a malformed value), plainPorts, unknownBackend,
+    # selfBackend, conflict, noServer, groupVars, noTermination, vipMixed, cycle,
+    # ownedAddress, nearMiss
     reason: str = ''
 
     def __str__(self) -> str:
@@ -1566,6 +1567,10 @@ _TOPOLOGY_HELP = {
     'nat': 'nat= takes IP addresses without a port',
     'backends': 'backends= takes server names (or their addresses), comma separated',
 }
+# Keys a letter off one, on a line or as a CSV header: a 'nearMiss' warning, never read
+_NEAR_MISS = {'backend': 'backends', 'port': 'ports', 'tls_port': 'tls_ports', 'vips': 'vip',
+              'nats': 'nat', 'terminate_tls': 'terminates_tls', 'terminatestls': 'terminates_tls',
+              'terminates_ssl': 'terminates_tls', 'terminate_ssl': 'terminates_tls'}
 _TLS_YES = ('yes', 'true', 'on', '1')
 _TLS_NO = ('no', 'false', 'off', '0')
 # key=value on a line: the value runs to the next space; a ';' or '|' in it continues it
@@ -1667,20 +1672,26 @@ def _topology_value(key: str, items: Sequence[str]) -> Any:
     return out
 
 
-def _split_topology(line: str) -> Tuple[str, List[Tuple[str, str]]]:
+def _split_topology(line: str) -> Tuple[str, List[Tuple[str, str]], List[str]]:
     """Take the topology ``key=value`` tokens out of a line before it is split on commas
-    (``ports=443,8443`` is one value): the rest of the line and each (key, raw value)."""
+    (``ports=443,8443`` is one value): the rest of the line, each (key, raw value) and the
+    warning text of each key a letter off one (``backend=``), which is left in the line."""
     found = []  # type: List[Tuple[str, str]]
+    near = []  # type: List[str]
 
     def take(match: Any) -> str:
         key = _topology_key(match.group(2))
         if key is None:
+            guess = _NEAR_MISS.get(_normalize_header(match.group(2)))
+            if guess:
+                near.append('%s=%s is no topology key - did you mean %s=? It is not read'
+                            % (match.group(2), _unquote(match.group(3)), guess))
             return match.group(0)
         found.append((key, match.group(3)))
         return match.group(1) + ' '
 
     rest = _TOPOLOGY_TOKEN_RE.sub(take, line)
-    return (rest if found else line), found
+    return (rest if found else line), found, near
 
 
 def is_ip_block(token: str) -> bool:
@@ -2168,7 +2179,8 @@ def topology_checks(servers: Sequence[Server]) -> List[InventoryWarning]:
     """Checks over the linked inventory (lib/inventory.js topologyChecks alike): a load balancer
     that passes TLS through (terminates_tls=no) with no backend terminating it is a
     'noTermination' TOPOLOGY warning; the holders of one VIP that disagree on terminates_tls a
-    'vipMixed' one (on the first holder saying no)."""
+    'vipMixed' one (on the first holder saying no); a server its backends lead back to a
+    'cycle'; a vip= / nat= that is a server's own address an 'ownedAddress' one."""
     by_name = {server.name.lower(): server for server in servers}
     warnings = []  # type: List[InventoryWarning]
     for server in servers:
@@ -2190,6 +2202,36 @@ def topology_checks(servers: Sequence[Server]) -> List[InventoryWarning]:
                 'of one VIP disagree: check the inventory' % (
                     vip, ', '.join(s.name for s in off),
                     ', '.join(s.name for s in held if s.gets_certificate)), off[0].source, 'vipMixed'))
+    owner = {}  # type: Dict[str, str]
+    for server in servers:
+        for ip in server.ips:
+            owner.setdefault(ip, server.name)
+        start = server.name.lower()
+        prev = {}  # type: Dict[str, str]
+        queue = [start]
+        while queue and start not in prev:
+            name = queue.pop(0)
+            for backend in (by_name[name].backends if name in by_name else []):
+                if backend.lower() not in prev:
+                    prev[backend.lower()] = name
+                    queue.append(backend.lower())
+        if start in prev:
+            loop, name = [start], prev[start]
+            while name != start:
+                loop.insert(0, name)
+                name = prev[name]
+            warnings.append(InventoryWarning(
+                server.line, 'TOPOLOGY', '%s: its backends lead back to it (%s) - a load balancer '
+                'cannot sit behind itself: check the inventory' % (server.name, ' -> '.join(
+                    by_name[n].name for n in [start] + loop)), server.source, 'cycle'))
+    for server in servers:
+        for key, ips in (('vip', server.vips), ('nat', server.nats)):
+            for ip in ips:
+                if ip in owner:
+                    warnings.append(InventoryWarning(
+                        server.line, 'TOPOLOGY', '%s=%s on %s is also the own address of %s - which '
+                        'server answers there is unclear: check the inventory'
+                        % (key, ip, server.name, owner[ip]), server.source, 'ownedAddress'))
     return warnings
 
 
@@ -2269,6 +2311,10 @@ def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder) -> 
     ip_idx = [i for i, h in enumerate(header)
               if _is_ip_header(h) and i != name_idx and i not in topology_idx]
     group_idx = [i for i, h in enumerate(header) if h in _GROUP_HEADERS]
+    for h in header:
+        if h in _NEAR_MISS:
+            builder.warn(content[0][0], 'TOPOLOGY', 'column %s is no topology key - did you mean '
+                         '%s? It is not read' % (h, _NEAR_MISS[h]), 'nearMiss')
     rows = csv.reader([line for _, line in content[1:]], delimiter=delimiter)
     for (number, _line), row in zip(content[1:], rows):
         cells = [cell.strip() for cell in row]
@@ -2423,7 +2469,9 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
                                  'groupVars')
             continue
         # Topology keys first: their values hold commas (ports=443,8443), which split a line.
-        line, found = _split_topology(line)
+        line, found, near = _split_topology(line)
+        for text in near:
+            builder.warn(number, 'TOPOLOGY', text, 'nearMiss')
         topology = builder.line_topology(found, number)
         touched = []  # type: List[Server]
         added = False

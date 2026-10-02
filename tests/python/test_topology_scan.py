@@ -180,6 +180,18 @@ class TopologySweep(unittest.TestCase):
         self.assertIn('  edge01  not scanned  passes TLS through (terminates_tls=no), but no backend '
                       'behind it terminates TLS: TLS terminates nowhere - check the inventory', text)
 
+    def test_backends_that_loop_are_warned_and_the_summary_ends(self):
+        inventory = sos.parse_inventory('lb03 203.0.113.4 backends=lb04\nlb04 203.0.113.5 backends=lb03\n',
+                                        'x.txt')
+        self.assertEqual([(w.line, w.reason) for w in inventory.warnings], [(1, 'cycle'), (2, 'cycle')])
+        self.assertIn('its backends lead back to it (lb03 -> lb04 -> lb03)', str(inventory.warnings[0]))
+        network = Network()
+        report = sos.run_scan(inventory.servers, sos.build_probe_names([NAME]), [443], timeout=1,
+                              workers=2, connect_fn=network.connect_fn, tls_fn=network.tls_fn)
+        text = sos.render_summary(report, color=False, width=200)
+        self.assertIn('  lb03  NEEDS_UPDATE  terminates TLS: install the certificate here', text)
+        self.assertIn('    -> lb03  NEEDS_UPDATE  re-encrypts: needs the certificate too', text)
+
     def test_vip_holders_that_disagree_list_only_the_tls_holders_and_warn(self):
         inventory = sos.parse_inventory('db01 10.0.0.71 vip=203.0.113.70\ndb02 10.0.0.72 vip=203.0.113.70 '
                                         'terminates_tls=no\n', 'x.txt')

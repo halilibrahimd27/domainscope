@@ -877,6 +877,19 @@ test('back-compat: a JSON / YAML `ports` key (Shodan, Ansible host vars) parses 
   assert.deepEqual(parseInventory('name,ip,TLS Ports\nweb01,10.0.0.1,8443').servers[0].tlsPorts, [8443]);
 });
 
+test('topology keys: a key a letter off is never read silently; a CSV header too', () => {
+  const r = parseInventory('bad07 10.0.0.56 backend=pool01 port=8443 vips=203.0.113.71 terminate_tls=no terminates.tls=no');
+  assert.deepEqual(r.warnings.map((w) => [w.reason, w.detail]), [
+    ['nearMiss', 'backend=pool01 (backends=?)'], ['nearMiss', 'port=8443 (ports=?)'], ['nearMiss', 'vips=203.0.113.71 (vip=?)'],
+    ['nearMiss', 'terminate_tls=no (terminates_tls=?)']
+  ]);
+  assert.equal(r.servers[0].terminatesTls, false, 'terminates.tls is the key itself, written with a dot');
+  const csv = parseInventory('name,ip,backend\nlb01,203.0.113.2,web01');
+  assert.deepEqual(csv.warnings.map((w) => [w.line, w.reason, w.detail]), [[1, 'nearMiss', 'backend (backends?)']]);
+  // Ansible variables that only end like a key (ansible_port, http_port) are none
+  assert.deepEqual(parseInventory('[web]\nweb01 ansible_host=10.0.0.1 ansible_port=2222 http_port=80').warnings, []);
+});
+
 test('topology keys: on a line, ; and | continue a value unless a key= follows', () => {
   const r = parseInventory([
     'web01 10.0.0.1 ports=443;8443', 'web02 10.0.0.2 ports=443|8443', 'lb01;203.0.113.2;ports=443;terminates_tls=no',

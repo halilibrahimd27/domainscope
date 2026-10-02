@@ -60,9 +60,26 @@
         "mid01": { "endpoints": ["10.0.0.62"], "tlsPorts": [], "terminatesTls": false, "vips": [], "nats": [], "backends": ["app03"] },
         "app03": { "endpoints": ["10.0.0.63"], "tlsPorts": [], "terminatesTls": null, "vips": [], "nats": [], "backends": [] },
         "db02": { "endpoints": ["10.0.0.72"], "tlsPorts": [], "terminatesTls": null, "vips": ["203.0.113.70"], "nats": [], "backends": [] },
-        "db03": { "endpoints": ["10.0.0.73"], "tlsPorts": [], "terminatesTls": false, "vips": ["203.0.113.70"], "nats": [], "backends": [] }
+        "db03": { "endpoints": ["10.0.0.73"], "tlsPorts": [], "terminatesTls": false, "vips": ["203.0.113.70"], "nats": [], "backends": [] },
+        "lb03": { "endpoints": ["203.0.113.4"], "tlsPorts": [], "terminatesTls": null, "vips": [], "nats": [], "backends": ["lb04"] },
+        "lb04": { "endpoints": ["203.0.113.5"], "tlsPorts": [], "terminatesTls": null, "vips": [], "nats": [], "backends": ["lb03"] },
+        "app02": { "endpoints": ["10.0.0.31"], "tlsPorts": [], "terminatesTls": null, "vips": [], "nats": ["10.0.0.32"], "backends": [] },
+        "app04": { "endpoints": ["10.0.0.32"], "tlsPorts": [], "terminatesTls": null, "vips": [], "nats": [], "backends": [] },
+        "lb05": { "endpoints": ["203.0.113.6"], "tlsPorts": [], "terminatesTls": null, "vips": ["203.0.113.6"], "nats": [], "backends": [] },
+        "bad07": { "endpoints": ["10.0.0.56"], "tlsPorts": [], "terminatesTls": false, "vips": [], "nats": [], "backends": [] }
       },
-      "warnings": [[4, "TOPOLOGY", "noTermination"], [10, "TOPOLOGY", "vipMixed"]]
+      "warnings": [
+        [4, "TOPOLOGY", "noTermination"],
+        [10, "TOPOLOGY", "vipMixed"],
+        [11, "TOPOLOGY", "cycle"],
+        [12, "TOPOLOGY", "cycle"],
+        [13, "TOPOLOGY", "ownedAddress"],
+        [15, "TOPOLOGY", "ownedAddress"],
+        [16, "TOPOLOGY", "nearMiss"],
+        [16, "TOPOLOGY", "nearMiss"],
+        [16, "TOPOLOGY", "nearMiss"],
+        [16, "TOPOLOGY", "nearMiss"]
+      ]
     }
   }
 }

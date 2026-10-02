@@ -343,6 +343,18 @@ class InventoryTopologyParity(unittest.TestCase):
         self.assertEqual(sos.parse_inventory('name,ip,TLS Ports\nweb01,10.0.0.1,8443', 'x')
                          .servers[0].tls_ports, [8443])
 
+    def test_a_key_a_letter_off_is_never_read_silently(self):
+        inventory = sos.parse_inventory('bad07 10.0.0.56 backend=pool01 port=8443 vips=203.0.113.71 '
+                                        'terminate_tls=no terminates.tls=no', 'x.txt')
+        self.assertEqual([(w.line, w.reason) for w in inventory.warnings], [(1, 'nearMiss')] * 4)
+        self.assertEqual(str(inventory.warnings[0]), 'x.txt:1: TOPOLOGY backend=pool01 is no topology '
+                         'key - did you mean backends=? It is not read')
+        self.assertEqual(inventory.servers[0].terminates_tls, False)
+        csv_inventory = sos.parse_inventory('name,ip,backend\nlb01,203.0.113.2,web01', 'x.csv')
+        self.assertEqual([(w.line, w.reason) for w in csv_inventory.warnings], [(1, 'nearMiss')])
+        self.assertEqual(sos.parse_inventory('[web]\nweb01 ansible_host=10.0.0.1 ansible_port=2222 '
+                                             'http_port=80', 'x').warnings, [])
+
     def test_on_a_line_a_semicolon_or_bar_continues_a_value_unless_a_key_follows(self):
         inventory = sos.parse_inventory('\n'.join([
             'web01 10.0.0.1 ports=443;8443', 'web02 10.0.0.2 ports=443|8443',

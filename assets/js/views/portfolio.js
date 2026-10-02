@@ -529,7 +529,9 @@ export function calendarEvents(factsList, t) {
       t('pf.ics.renew'),
       e.nsOf.length ? t('pf.ics.ns', { list }) : null
     ].filter(Boolean).join('\n');
-    return { uid: expiryUid(e.domain), date: e.expires, summary, description, alarm: t('pf.ics.alarm', { domain: e.domain, date: e.expires.toISOString().slice(0, 10) }) };
+    // the local day, as the event (lib/ics.js) and the table show it
+    const day = `${e.expires.getFullYear()}-${String(e.expires.getMonth() + 1).padStart(2, '0')}-${String(e.expires.getDate()).padStart(2, '0')}`;
+    return { uid: expiryUid(e.domain), date: e.expires, summary, description, alarm: t('pf.ics.alarm', { domain: e.domain, date: day }) };
   });
 }
 

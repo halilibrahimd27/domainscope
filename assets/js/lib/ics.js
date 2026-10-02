@@ -10,6 +10,8 @@
  *   (a renewal moves the expiry later: calendars take the later revision).
  * - DTSTAMP is the time the file was made (injected: `now`), the only part that differs between
  *   two files of the same dates.
+ * - The event's day is the expiry's local day, the one the table shows (in the browser: the
+ *   user's time zone); no METHOD (a METHOD:PUBLISH object would need an ORGANIZER, RFC 5546).
  *
  * Pure: no DOM, network or clock of its own. Runs in browsers and Node 22.
  */
@@ -68,9 +70,9 @@ export function foldIcsLine(line) {
   return out.join('\r\n');
 }
 
-/** 'YYYYMMDD' of a date (UTC). */
+/** 'YYYYMMDD' of a day (its local date parts: see {@link dayOf}). */
 function icsDate(d) {
-  return d.toISOString().slice(0, 10).replace(/-/g, '');
+  return `${String(d.getFullYear()).padStart(4, '0')}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
 }
 
 /** 'YYYYMMDDTHHMMSSZ' (UTC). */
@@ -78,11 +80,22 @@ function icsDateTime(d) {
   return `${d.toISOString().slice(0, 19).replace(/[-:]/g, '')}Z`;
 }
 
-/** The day (UTC) of a date as a Date at 00:00 UTC, or null. */
+/**
+ * The calendar day of an event as a local midnight, or null: a Date (an expiry with its time) gives
+ * its local day — the day the table shows, in the time zone the file is made in —, a 'YYYY-MM-DD'
+ * value is that day as written.
+ */
 function dayOf(value) {
+  const ymd = typeof value === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim()) : null;
+  if (ymd) return new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]));
   const d = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(d.getTime())) return null;
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/** Days since 2000-01-01 of a local day (whole, whatever daylight saving does to its length). */
+function dayNumber(day) {
+  return Math.round((Date.UTC(day.getFullYear(), day.getMonth(), day.getDate()) - Date.UTC(2000, 0, 1)) / DAY_MS);
 }
 
 /** A UID as RFC 5545 takes it: printable ASCII without spaces (anything else becomes '-'). */
@@ -101,18 +114,19 @@ function cleanUid(uid) {
  */
 export function buildCalendar(events, { now = new Date(), name = null, prodId = ICS_PRODID } = {}) {
   const stamp = icsDateTime(now instanceof Date ? now : new Date(now));
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', `PRODID:${prodId}`, 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH'];
+  // No METHOD: a METHOD:PUBLISH object must carry an ORGANIZER (RFC 5546 §3.2.1); a plain calendar file needs neither.
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', `PRODID:${prodId}`, 'CALSCALE:GREGORIAN'];
   if (name) lines.push(`X-WR-CALNAME:${icsEscape(name)}`);
   for (const e of events || []) {
     const day = dayOf(e && e.date);
     if (!day) continue;
-    const next = new Date(day.getTime() + DAY_MS);
+    const next = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1);
     lines.push(
       'BEGIN:VEVENT',
       `UID:${cleanUid(e.uid)}`,
       `DTSTAMP:${stamp}`,
       // a later expiry (a renewal) is a later revision of the same event
-      `SEQUENCE:${Math.max(0, Math.floor(day.getTime() / DAY_MS) - 10957)}`,
+      `SEQUENCE:${Math.max(0, dayNumber(day))}`,
       `DTSTART;VALUE=DATE:${icsDate(day)}`,
       `DTEND;VALUE=DATE:${icsDate(next)}`,
       `SUMMARY:${icsEscape(e.summary)}`,

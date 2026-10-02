@@ -6,6 +6,9 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCalendar, foldIcsLine, icsEscape, ICS_FOLD_OCTETS, ICS_ALARM_DAYS, ICS_PRODID } from '../../assets/js/lib/ics.js';
 
+// The event's day is the local day the table shows: a time zone east of UTC tells it from the UTC day.
+process.env.TZ = 'Europe/Istanbul';
+
 const NOW = new Date('2026-10-02T12:34:56Z');
 const octets = (s) => new TextEncoder().encode(s).length;
 const unfold = (text) => text.replace(/\r\n /g, '');
@@ -27,7 +30,6 @@ const GOLDEN = [
   'VERSION:2.0',
   'PRODID:-//DomainScope//Domain portfolio//EN',
   'CALSCALE:GREGORIAN',
-  'METHOD:PUBLISH',
   'X-WR-CALNAME:DomainScope: example.com\\, example.org',
   'BEGIN:VEVENT',
   'UID:expiry-example.com@domainscope',
@@ -123,7 +125,21 @@ describe('buildCalendar', () => {
     assert.match(t, /\r\nUID:bad-uid--@domainscope\r\n|UID:bad-uid-/);
     assert.doesNotMatch(t, /X-WR-CALNAME/);
     assert.match(t, new RegExp(`PRODID:${ICS_PRODID.replace(/[/.]/g, '\\$&')}`));
-    assert.equal(buildCalendar([], { now: NOW }), ['BEGIN:VCALENDAR', 'VERSION:2.0', `PRODID:${ICS_PRODID}`, 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'END:VCALENDAR', ''].join('\r\n'));
+    assert.equal(buildCalendar([], { now: NOW }), ['BEGIN:VCALENDAR', 'VERSION:2.0', `PRODID:${ICS_PRODID}`, 'CALSCALE:GREGORIAN', 'END:VCALENDAR', ''].join('\r\n'));
+  });
+});
+
+describe('the day and the method', () => {
+  test('the local day, as the table shows it; a date-only value is that calendar day', () => {
+    // 22:30 UTC is 01:30 the next day in Istanbul: the day the table's countdown shows.
+    const late = buildCalendar([{ uid: 'a@domainscope', date: new Date('2027-01-15T22:30:00Z'), summary: 'x' }], { now: NOW });
+    assert.match(late, /\r\nDTSTART;VALUE=DATE:20270116\r\nDTEND;VALUE=DATE:20270117\r\n/);
+    const day = buildCalendar([{ uid: 'b@domainscope', date: '2026-11-30', summary: 'y' }], { now: NOW });
+    assert.match(day, /\r\nDTSTART;VALUE=DATE:20261130\r\n/);
+  });
+
+  test('no METHOD: a calendar with METHOD:PUBLISH would need an ORGANIZER (RFC 5546 §3.2.1)', () => {
+    assert.doesNotMatch(buildCalendar([{ uid: 'a@domainscope', date: '2027-01-15', summary: 'x' }], { now: NOW }), /METHOD:/);
   });
 });
 

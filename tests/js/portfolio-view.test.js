@@ -114,7 +114,7 @@ describe('Domain portfolio view helpers', () => {
       uid: 'expiry-example.net@domainscope', date: day(12),
       summary: 'example.net expires (name servers of example.com, example.org, example-test.com.tr)',
       description: 'Registrar: Example Registrar, Inc.\nRenew it before this date.\nThe name servers of example.com, example.org, example-test.com.tr are under this domain: if it lapses, whoever registers it answers for those zones.',
-      alarm: `example.net expires on ${day(12).toISOString().slice(0, 10)}`
+      alarm: `example.net expires on ${[day(12).getFullYear(), String(day(12).getMonth() + 1).padStart(2, '0'), String(day(12).getDate()).padStart(2, '0')].join('-')}`
     });
     assert.deepEqual([events[1].summary, events[1].description], ['example.org expires', 'Renew it before this date.'], 'no registrar, no line for it');
     const ics = buildCalendar(events, { now: NOW, name: t('pf.ics.name') });
@@ -122,10 +122,18 @@ describe('Domain portfolio view helpers', () => {
     assert.match(unfolded, /\r\nX-WR-CALNAME:DomainScope: domain expiry\r\n/);
     assert.match(unfolded, /\r\nSUMMARY:example\.net expires \(name servers of example\.com\\, example\.org\\, example-test\.com\.tr\)\r\n/);
     assert.equal((ics.match(/BEGIN:VEVENT/g) || []).length, 3);
+    // The alarm names the local day, as the event and the table do (22:30 UTC is the next day in Istanbul).
+    const prevTz = process.env.TZ;
+    process.env.TZ = 'Europe/Istanbul';
+    const late = calendarEvents([facts('example.com', { registration: { expires: new Date('2026-10-14T22:30:00Z'), daysLeft: 12 } })], t);
+    assert.equal(late[0].alarm, 'example.com expires on 2026-10-15');
+    if (prevTz === undefined) delete process.env.TZ;
+    else process.env.TZ = prevTz;
     setLang('tr');
     const tr = calendarEvents(list, t);
     assert.equal(tr[0].summary, 'example.net alan adının süresi doluyor (example.com, example.org, example-test.com.tr ad sunucuları)');
-    assert.equal(tr[1].alarm, `example.org alan adının süresi ${day(20).toISOString().slice(0, 10)} tarihinde doluyor`);
+    const local = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    assert.equal(tr[1].alarm, `example.org alan adının süresi ${local(day(20))} tarihinde doluyor`);
     setLang('en');
   });
 

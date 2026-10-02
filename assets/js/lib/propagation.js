@@ -534,7 +534,7 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  *   chain enters; the top-level list holds the managed ones of the judged groups (the answers, or
  *   with `noRecords` the chains) with their `members`, most sources first.
  */
-export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
+export function propagationVerdict(items, { type = 'A', ipInfo = null, controls = null } = {}) {
   const qtype = typeToName(type ?? 'A');
   const address = ADDRESS_TYPES.has(qtype);
   const infoOf = (ip) => {
@@ -548,19 +548,32 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
   // A location asked through a resolver of its own (mainland China: AliDNS), not Google's ECS.
   const isRegional = (it) => isGeo(it) && !!(it.vantage && it.vantage.resolver);
   const isFiltering = (it) => !isGeo(it) && !!(it.resolver && it.resolver.filtering);
+  // Does the source validate DNSSEC? Google, which asks for the other locations, does; AliDNS does not.
+  const validates = (it) => {
+    const r = isRegional(it) ? getAnyResolver(it.vantage.resolver) : (isGeo(it) ? null : it.resolver);
+    return !(r && r.dnssecValidating === false);
+  };
   const baseline = usable.some((it) => !isFiltering(it));
+  // The controls: a regional resolver's answer on behalf of a subnet outside its region, by resolver id.
+  const controlOf = new Map();
+  for (const c of Array.isArray(controls) ? controls : []) {
+    const id = c && (typeof c.resolver === 'string' ? c.resolver : c.resolver && c.resolver.id);
+    if (id && Array.isArray(c.values)) controlOf.set(id, c.values);
+  }
 
   const byKey = new Map();
   usable.forEach((it, order) => {
     const key = it.values.join('\n');
     let g = byKey.get(key);
     if (!g) {
-      g = { key, values: [...it.values], members: [], order, geo: true, regional: true, filteringOnly: baseline };
+      g = { key, values: [...it.values], members: [], order, geo: true, regional: true, via: new Set(), unvalidated: true, filteringOnly: baseline };
       byKey.set(key, g);
     }
     g.members.push(String(it.key ?? `#${order}`));
     if (!isGeo(it)) g.geo = false;
     if (!isRegional(it)) g.regional = false;
+    else g.via.add(it.vantage.resolver);
+    if (validates(it)) g.unvalidated = false;
     if (!isFiltering(it)) g.filteringOnly = false;
   });
   const groups = [...byKey.values()]
@@ -579,11 +592,11 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
 
   // A SafeSearch rewrite only filtering resolvers give is their policy: judged without it.
   const policy = groups.filter((g) => g.rewrite);
-  const { state, operators, findings, resolversAgree, managed, noRecords, steering, geoSplits } = judgeGroups(groups.filter((g) => !g.rewrite), address);
+  const { state, operators, findings, resolversAgree, managed, noRecords, steering, geoSplits } = judgeGroups(groups.filter((g) => !g.rewrite), address, controlOf);
   return {
     state: usable.length ? state : 'none',
     type: qtype,
-    groups: groups.map(({ perIp, geo, regional, filteringOnly, rewrite, ...g }) => ({ ...g, rewritten: !!rewrite })),
+    groups: groups.map(({ perIp, geo, regional, via, unvalidated, filteringOnly, rewrite, ...g }) => ({ ...g, rewritten: !!rewrite })),
     operators,
     findings: state === 'differ' || state === 'unresolved' ? findings : [],
     resolversAgree,
@@ -602,7 +615,7 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null } = {}) {
  * `geo`: only ECS locations gave it, `regional`: only locations asked through a resolver of
  * their own, and `filteringOnly`): managed operators, findings and the state.
  */
-function judgeGroups(groups, address) {
+function judgeGroups(groups, address, controls = new Map()) {
   const answers = groups.filter((g) => g.status === 'answer');
   const resolved = groups.filter((g) => g.status !== 'rcode');
   // Nobody has records of the type (AAAA of an IPv4-only CDN name): only the chains can differ.
@@ -626,7 +639,8 @@ function judgeGroups(groups, address) {
     if (list.length) findings.push({ code, groups: list.map((g) => g.key), members: membersOf(list), ...extra });
   };
   const filtering = (list) => list.every((g) => g.filteringOnly);
-  for (const g of groups.filter((x) => x.status === 'rcode')) add('rcode', [g], { rcode: g.values[0], filtering: filtering([g]) });
+  // `noDnssec`: only sources that do not validate DNSSEC (AliDNS) give it, so a SERVFAIL is no signature problem.
+  for (const g of groups.filter((x) => x.status === 'rcode')) add('rcode', [g], { rcode: g.values[0], filtering: filtering([g]), noDnssec: g.unvalidated });
   // NXDOMAIN / NODATA differ only from another kind of answer — not from failures alone, and
   // an empty answer everywhere leaves only its CNAME chains to compare (below).
   if (new Set(resolved.map((g) => g.status)).size > 1) {
@@ -652,7 +666,7 @@ function judgeGroups(groups, address) {
       for (const code of ['cname', 'operators']) {
         for (const c of conflicts.filter((x) => x.code === code)) {
           const extra = { operators: c.move ? operatorsOf(c.groups) : [] };
-          const split = code === 'cname' ? locationSplit(c) : null;
+          const split = code === 'cname' ? locationSplit(c, controls) : null;
           if (split) geoSplits.push(split);
           add(code, c.groups, code === 'cname' ? { owner: c.owner, targets: c.targets, ...extra, byLocation: split } : extra);
         }
@@ -682,7 +696,12 @@ function judgeGroups(groups, address) {
   // China's resolvers with a CDN there, a line of its own, and the rest of the world with another
   // one), and — while the resolvers agree — direct addresses next to edges only those locations
   // get (a CDN in mainland China in front of an origin the rest of the world reaches directly).
-  const edgesOnlyRegional = answers.filter((g) => g.operators.some((op) => op.managed)).every((g) => g.regional);
+  // Those edges must be reached through the CDN's CNAME, as every mainland CDN is (an address in
+  // a CDN's range with no name in front, only there, is the shape of a forged answer), and the
+  // control must not get them too (then they are the resolver's own answer, not the line's).
+  const edgeGroups = answers.filter((g) => g.operators.some((op) => op.managed));
+  const edgesOnlyRegional = edgeGroups.length > 0 && edgeGroups.every((g) => g.regional
+    && g.chain.some((n) => matchProviderByCname(n)) && !controlEnters(g, controls));
   const locationOnly = (f) => !!f.byLocation
     || (resolversAgree && (chainFinding(f) || edgeNodata(f) || (f.code === 'mixed' && edgesOnlyRegional)));
   const serious = findings.filter((f) => f.code !== 'direct' && f.code !== 'records' && !locationOnly(f));
@@ -700,15 +719,32 @@ function judgeGroups(groups, address) {
   };
 }
 
+/** A control's answer when it is one (addresses or a chain): null for a failure, NXDOMAIN or NODATA. */
+const controlAnswer = (values) => (Array.isArray(values) && !isErrorValues(values) && valuesStatus(values) === 'answer' ? values : null);
+
+/** Does a regional resolver's control (its answer outside the region) enter the CDN name a group enters? */
+function controlEnters(g, controls) {
+  const dest = entryOf(g)?.dest;
+  return !!dest && [...g.via].some((id) => {
+    const values = controlAnswer(controls.get(id));
+    return !!values && splitChain(values).chain.some((n) => n.replace(DUALSTACK_RE, '') === dest);
+  });
+}
+
 /**
  * A CNAME conflict only the locations asked through a resolver of their own show (mainland China
  * through AliDNS): every other answer involved — the resolvers' and the Google ECS locations' —
- * takes one branch there (or none is involved) and some of those locations take another, as a
+ * takes one branch there (or none is involved) and some of those locations take another name, as a
  * name's DNS does that answers mainland China's resolvers from a line of its own. `{ owner,
- * targets, members }`: the names those locations get instead (null: address records) and their
- * sources; null when the other answers take different branches too.
+ * targets, members, line }`: the names those locations get instead, their sources and whether the
+ * control — the same resolver asked on behalf of a subnet outside the region — lands on the other
+ * answers' branch (true: the region's line) or could not tell (null: no control, or another
+ * branch). Null when the other answers take different branches too, when those locations get
+ * addresses there instead of a name, or when the control gets their branch as well: then it is
+ * that resolver's own answer whatever the subnet (an older one it still holds, or a line by the
+ * resolver's own address), not the region's.
  */
-function locationSplit(c) {
+function locationSplit(c, controls) {
   const sideOf = (g) => [...g.chain, null][c.depth];
   const home = [];
   for (const g of c.groups) {
@@ -716,8 +752,18 @@ function locationSplit(c) {
   }
   if (home.length > 1) return null;
   const away = c.groups.filter((g) => g.regional && !home.some((x) => sameName(x, sideOf(g))));
-  if (!away.length) return null;
-  return { owner: c.owner, targets: uniqueList(away.map(sideOf).filter((x) => x !== undefined)), members: membersOf(away) };
+  if (!away.length || away.some((g) => typeof sideOf(g) !== 'string')) return null;
+  const targets = uniqueList(away.map(sideOf));
+  let line = home.length > 0;
+  for (const id of new Set(away.flatMap((g) => [...g.via]))) {
+    const values = controlAnswer(controls.get(id));
+    const seq = values ? [...splitChain(values).chain, null] : [];
+    const onTheWay = values && (c.depth === 0 || sameName(seq[c.depth - 1], c.owner));
+    const side = onTheWay && c.depth < seq.length ? seq[c.depth] : undefined;
+    if (side !== undefined && targets.some((x) => sameName(x, side))) return null;
+    if (side === undefined || !home.some((x) => sameName(x, side))) line = false;
+  }
+  return { owner: c.owner, targets, members: membersOf(away), line: line || null };
 }
 
 /**
@@ -790,9 +836,40 @@ export async function checkPropagation(name, type = 'A', {
     safeCall(onResult, { kind: 'resolver', ...item });
   });
 
+  // A resolver that is asked only for some types (AliDNS: its JSON API cuts a large answer short
+  // without TC) is not asked for the others: its rows say so instead of showing a cut answer.
+  const asks = (r) => !Array.isArray(r.types) || r.types.includes(qtype);
+  const controls = [];
+  const controlled = new Set();
+  const controlTasks = [];
+
   const geoTasks = vantageList.map(async (vantage, i) => {
     // A vantage may name its own resolver (mainland China: AliDNS); the others use `geoResolver`.
     const via = vantage.resolver ? resolverInfo(vantage.resolver) : geo;
+    if (!asks(via)) {
+      const item = {
+        vantage, resolver: via, response: null, values: [], scopePrefix: null, key: `geo:${vantage.id}`, filtered: false, addresses: [],
+        notAsked: true
+      };
+      geoResults[i] = item;
+      safeCall(onResult, { kind: 'geo', ...item });
+      return;
+    }
+    // Once per such resolver, the same question on behalf of a subnet outside its region (the
+    // control): a branch only its rows take is the region's line when the control is the world's.
+    const control = vantage.resolver && via.control ? getVantage(via.control) : null;
+    if (control && !controlled.has(via.id)) {
+      controlled.add(via.id);
+      controlTasks.push((async () => {
+        const res = await dns.query(name, qtype, { resolver: via.id, ecs: control.subnet, signal, noCache, dnssec });
+        const item = {
+          kind: 'control', key: `control:${via.id}`, resolver: via, vantage: control, response: res, values: answerValues(res, qtype),
+          filtered: false, addresses: answerAddresses(res)
+        };
+        controls.push(item);
+        safeCall(onResult, item);
+      })().catch(() => {})); // no control is an unsure split, never a failed check (an abort is checked below)
+    }
     const response = await dns.query(name, qtype, {
       resolver: via.id, ecs: vantage.subnet, signal, noCache, dnssec
     });
@@ -809,9 +886,11 @@ export async function checkPropagation(name, type = 'A', {
   });
 
   await Promise.all([...resolverTasks, ...geoTasks]);
+  await Promise.all(controlTasks);
   checkAbort(signal);
 
-  const all = [...resolverResults, ...geoResults];
+  // Rows that were not asked (their resolver does not take this type) are not answers.
+  const all = [...resolverResults, ...geoResults].filter((item) => !item.notAsked);
   const byKey = new Map();
   all.forEach((item, order) => {
     const key = item.values.join('\n');
@@ -847,7 +926,8 @@ export async function checkPropagation(name, type = 'A', {
     resolversConsistent: consistentOver(resolverResults),
     geoConsistent: consistentOver(geoResults),
     addresses: summarizeAddresses(all),
-    verdict: propagationVerdict(all, { type: qtype }),
+    controls,
+    verdict: propagationVerdict(all, { type: qtype, controls }),
     startedAt,
     finishedAt: new Date()
   };

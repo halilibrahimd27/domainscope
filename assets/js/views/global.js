@@ -97,7 +97,8 @@ registerStrings('en', {
   'glb.sum.designTitle': 'Differs by design: CDN / GeoDNS edges ({operators})',
   'glb.sum.designBody': 'Every answer is an edge of a known CDN, platform or DNS steering service, and the CNAME chains agree up to it. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
   'glb.sum.designSteered': 'Every answer is an edge of a known CDN, platform or DNS steering service. On the way, {owner} sends sources to different names ({targets}), but they lead to the same CDN names: weighted or load-balanced records in the name’s own DNS, not a change. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
-  'glb.sum.designGeo': 'Every answer is an edge of a known CDN, platform or DNS steering service. {owner} sends {sources} to {targets}, unlike every other source: the name’s own DNS answers the resolvers there from a line of its own (typically for a CDN inside mainland China), not a change. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
+  'glb.sum.designGeo': 'Every answer is an edge of a known CDN, platform or DNS steering service. {owner} sends {sources} to {targets}, unlike every other source. Asked on behalf of a subnet outside China, AliDNS gives the rest of the world’s answer: the name’s own DNS answers the resolvers in mainland China from a line of its own (typically for a CDN there), not a change. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
+  'glb.sum.designGeoUnsure': 'Every answer is an edge of a known CDN, platform or DNS steering service. {owner} sends {sources} to {targets}, unlike every other source: either the name’s own DNS answers the resolvers in mainland China from a line of its own (typically for a CDN there), or AliDNS still holds an older answer — that would expire within {ttl}. AliDNS asked on behalf of a subnet outside China could not tell the two apart.',
   'glb.sum.nodataTitle': 'No {type} records anywhere — the CNAME chains differ by design ({operators})',
   'glb.sum.nodataBody': 'No source returns {type} records for this name. The CNAME chains differ only by steering (CDN / GeoDNS, weighted or load-balanced records) and all lead to {operators} — this is not propagation.',
   'glb.sum.designMulti': 'More than one operator answers (multi-CDN steering). If you are moving from one to the other, answers that point to the old one stay cached until their TTL expires.',
@@ -111,9 +112,11 @@ registerStrings('en', {
   'glb.sum.blocked': { one: '{count} answer was blocked by a filtering resolver.', other: '{count} answers were blocked by filtering resolvers.' },
   'glb.sum.rewritten': '{names}: a SafeSearch rewrite ({targets}), the policy of these filtering resolvers — not counted as a difference.',
   'glb.sum.unavailable': '{names}: not readable from a browser (HTTP/3 without a CORS header) — not counted as a failure.',
+  'glb.sum.notAsked': '{names}: not asked for {type} — AliDNS’s JSON API cuts large answers short without saying so, so the mainland China rows ask only for A, AAAA, CNAME and HTTPS.',
 
   'glb.find.rcode': '{sources}: {rcode} — the question was refused or could not be answered. Not a propagation delay.',
   'glb.find.servfail': '{sources}: SERVFAIL — no answer at all, typically a DNSSEC validation failure or name servers that cannot be reached. A fault, not a propagation delay.',
+  'glb.find.servfailNoDnssec': '{sources}: SERVFAIL — no answer at all. AliDNS does not validate DNSSEC, so this is no signature problem: from there, the name servers could not be reached or did not answer in time. A fault, not a propagation delay.',
   'glb.find.filtering': 'Only filtering resolvers give this answer, so they may also be blocking the name.',
   'glb.find.nxdomain': '{sources}: NXDOMAIN (the name does not exist), unlike the other answers. The name was created or deleted recently — each answer stays cached until its TTL expires (for NXDOMAIN, the zone’s SOA minimum) — or its name servers disagree.',
   'glb.find.nodata': '{sources}: an empty answer (no {type} records). A record added or removed recently (the empty answer stays cached for the zone’s SOA minimum), or a CNAME target without {type} records there.',
@@ -124,7 +127,8 @@ registerStrings('en', {
   },
   'glb.find.cname': 'The record at {owner} differs between sources: {targets}. Either it changed recently and the old answer stays cached until its TTL expires, or its DNS sends sources to different names on purpose (GeoDNS, weighted or load-balanced records), or its name servers disagree.',
   'glb.find.cnameMove': 'The record at {owner} points to different providers depending on the source ({operators}): {targets}. A move between them that is still propagating — the old answer stays cached until its TTL expires — unless you steer between providers on purpose.',
-  'glb.find.cnameGeo': '{owner} sends {sources} to {targets}, unlike every other source: the name’s own DNS answers the resolvers there from a line of its own (typically for a CDN inside mainland China) — by design, not a change.',
+  'glb.find.cnameGeo': '{owner} sends {sources} to {targets}, unlike every other source. Asked on behalf of a subnet outside China, AliDNS gives the rest of the world’s answer: the name’s own DNS answers the resolvers in mainland China from a line of its own (typically for a CDN there) — by design, not a change.',
+  'glb.find.cnameGeoUnsure': '{owner} sends {sources} to {targets}, unlike every other source: either a line of its own for the resolvers in mainland China (typically for a CDN there), or an older answer AliDNS still holds — that would expire within {ttl}. AliDNS asked on behalf of a subnet outside China could not tell the two apart.',
   'glb.find.operators': 'The {type} records of {name} point to different providers depending on the source ({operators}). A move between them that is still propagating — the old answer stays cached until its TTL expires — unless you steer between providers on purpose.',
   'glb.find.addressRecords': '{type} records',
   'glb.find.noRecords': 'no CNAME and no {type} records',
@@ -135,6 +139,7 @@ registerStrings('en', {
   'glb.stat.answered': 'Answered',
   'glb.stat.failed': '{count} failed',
   'glb.stat.unavailable': '{count} not readable in browsers',
+  'glb.stat.notAsked': '{count} not asked',
   'glb.stat.groups': 'Distinct answers',
   'glb.stat.ips': 'IP addresses',
   'glb.stat.latency': 'Median latency',
@@ -168,7 +173,7 @@ registerStrings('en', {
   'glb.geo.title': 'Locations — GeoDNS via EDNS Client Subnet',
   'glb.geo.desc': 'Google Public DNS asked on behalf of a home-internet subnet in {count} locations: roughly what users there get.',
   'glb.cn.title': 'Mainland China',
-  'glb.cn.desc': 'AliDNS (Alibaba Cloud) asked on behalf of one home-internet subnet of each of {count} mainland ISPs, in Beijing, Shanghai and Guangzhou: roughly what users there get, also for names whose GeoDNS ignores Google’s subnet. AliDNS reports no ECS scope and does not validate DNSSEC.',
+  'glb.cn.desc': 'AliDNS (Alibaba Cloud) asked on behalf of {count} mainland ISPs, each with the /24 of its own DNS servers in Beijing, Shanghai and Guangzhou: roughly what their users get, also for names whose GeoDNS ignores Google’s subnet. Only A, AAAA, CNAME and HTTPS are asked: AliDNS’s JSON API cuts larger answers short without saying so. AliDNS reports no ECS scope and does not validate DNSSEC.',
   'glb.col.resolver': 'Resolver',
   'glb.col.location': 'Location',
   'glb.col.filtering': 'Filtering',
@@ -197,6 +202,8 @@ registerStrings('en', {
   'glb.value.unavailable': 'Not readable in browsers',
   'glb.value.unavailableShort': 'HTTP/3 without CORS',
   'glb.value.unavailableTitle': '{name} answers browsers over HTTP/3 without a CORS header, so the browser discards the reply. This says nothing about the name — ask {name} from a terminal to see its answer.',
+  'glb.value.notAsked': 'Not asked',
+  'glb.value.notAskedShort': 'AliDNS’s JSON API cuts large answers short without saying so: only A, AAAA, CNAME and HTTPS are asked.',
   'glb.value.terminal': 'In a terminal:',
   'glb.value.aliasOf': 'alias',
   'glb.scopeTitle': 'ECS scope returned by the authoritative server: /24 means the answer is specific to this subnet, /0 means everyone gets the same answer.',
@@ -237,7 +244,8 @@ registerStrings('tr', {
   'glb.sum.designTitle': 'Tasarım gereği farklı: CDN / GeoDNS uç sunucuları ({operators})',
   'glb.sum.designBody': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu ve CNAME zincirleri ona kadar aynı. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
   'glb.sum.designSteered': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu. Yol üzerinde {owner} kaynakları farklı adlara gönderiyor ({targets}), ama bunlar aynı CDN adlarına çıkıyor: adın kendi DNS’indeki ağırlıklı ya da yük dengeleyen kayıtlar, bir değişiklik değil. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
-  'glb.sum.designGeo': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu. {owner}, {sources} konumlarını diğer tüm kaynaklardan farklı bir yere ({targets}) gönderiyor: adın kendi DNS’i oradaki çözümleyicilere ayrı bir hattan yanıt veriyor (genellikle anakara Çin içindeki bir CDN için), bu bir değişiklik değil. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
+  'glb.sum.designGeo': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu. {owner}, {sources} konumlarını diğer tüm kaynaklardan farklı bir yere ({targets}) gönderiyor. Anakara Çin dışındaki bir alt ağ adına sorulduğunda AliDNS dünyanın geri kalanının yanıtını veriyor: adın kendi DNS’i anakara Çin’deki çözümleyicilere ayrı bir hattan yanıt veriyor (genellikle oradaki bir CDN için), bu bir değişiklik değil. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
+  'glb.sum.designGeoUnsure': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu. {owner}, {sources} konumlarını diğer tüm kaynaklardan farklı bir yere ({targets}) gönderiyor: ya adın kendi DNS’i anakara Çin’deki çözümleyicilere ayrı bir hattan yanıt veriyor (genellikle oradaki bir CDN için) ya da AliDNS hâlâ eski bir yanıtı tutuyor — o yanıt en geç {ttl} içinde sona erer. Anakara Çin dışındaki bir alt ağ adına AliDNS’e sormak bu ikisini ayırt edemedi.',
   'glb.sum.nodataTitle': 'Hiçbir kaynakta {type} kaydı yok — CNAME zincirleri tasarım gereği farklı ({operators})',
   'glb.sum.nodataBody': 'Hiçbir kaynak bu ad için {type} kaydı döndürmüyor. CNAME zincirleri yalnızca yönlendirme (CDN / GeoDNS, ağırlıklı ya da yük dengeleyen kayıtlar) yüzünden farklı ve hepsi {operators} adlarına çıkıyor — bu bir yayılma (propagation) sorunu değil.',
   'glb.sum.designMulti': 'Birden fazla sağlayıcı yanıt veriyor (çoklu CDN yönlendirmesi). Birinden diğerine geçiyorsanız, eskisini gösteren yanıtlar TTL süresi dolana kadar önbellekte kalır.',
@@ -251,9 +259,11 @@ registerStrings('tr', {
   'glb.sum.blocked': '{count} yanıt filtreleyen çözümleyiciler tarafından engellendi.',
   'glb.sum.rewritten': '{names}: SafeSearch yönlendirmesi ({targets}); bu filtreleyen çözümleyicilerin politikası — farklılık sayılmadı.',
   'glb.sum.unavailable': '{names}: tarayıcıdan okunamıyor (HTTP/3’te CORS başlığı yok) — başarısız sayılmadı.',
+  'glb.sum.notAsked': '{names}: {type} için sorulmadı — AliDNS’in JSON API’si büyük yanıtları haber vermeden kırpıyor; bu yüzden anakara Çin satırları yalnızca A, AAAA, CNAME ve HTTPS sorar.',
 
   'glb.find.rcode': '{sources}: {rcode} — soru reddedildi ya da yanıtlanamadı. Bu bir yayılma gecikmesi değil.',
   'glb.find.servfail': '{sources}: SERVFAIL — hiç yanıt yok; genellikle DNSSEC doğrulama hatası ya da ulaşılamayan ad sunucuları. Bu bir arıza, yayılma gecikmesi değil.',
+  'glb.find.servfailNoDnssec': '{sources}: SERVFAIL — hiç yanıt yok. AliDNS DNSSEC doğrulaması yapmadığı için bu bir imza sorunu değil: oradan ad sunucularına ulaşılamadı ya da zamanında yanıt vermediler. Bu bir arıza, yayılma gecikmesi değil.',
   'glb.find.filtering': 'Bu yanıtı yalnızca filtreleyen çözümleyiciler veriyor; adı engelliyor da olabilirler.',
   'glb.find.nxdomain': '{sources}: NXDOMAIN (ad mevcut değil), diğer yanıtlardan farklı olarak. Ad yakın zamanda oluşturuldu ya da silindi — her yanıt TTL süresi dolana kadar önbellekte kalır (NXDOMAIN için bölgenin SOA minimum değeri) — ya da ad sunucuları birbiriyle çelişiyor.',
   'glb.find.nodata': '{sources}: boş yanıt ({type} kaydı yok). Yakın zamanda eklenen ya da silinen bir kayıt (boş yanıt, bölgenin SOA minimum süresi boyunca önbellekte kalır) ya da orada {type} kaydı olmayan bir CNAME hedefi.',
@@ -264,7 +274,8 @@ registerStrings('tr', {
   },
   'glb.find.cname': '{owner} kaydı kaynaklara göre farklı: {targets}. Ya kayıt yakın zamanda değişti ve eski yanıt TTL süresi dolana kadar önbellekte kalıyor, ya adın DNS’i kaynakları bilerek farklı adlara gönderiyor (GeoDNS, ağırlıklı ya da yük dengeleyen kayıtlar), ya da ad sunucuları birbiriyle çelişiyor.',
   'glb.find.cnameMove': '{owner} kaydı kaynağa göre farklı sağlayıcıları gösteriyor ({operators}): {targets}. Sağlayıcılar arasında bilerek yönlendirme yapmıyorsanız bu, hâlâ yayılmakta olan bir taşıma — eski yanıt TTL süresi dolana kadar önbellekte kalır.',
-  'glb.find.cnameGeo': '{owner}, {sources} konumlarını diğer tüm kaynaklardan farklı bir yere ({targets}) gönderiyor: adın kendi DNS’i oradaki çözümleyicilere ayrı bir hattan yanıt veriyor (genellikle anakara Çin içindeki bir CDN için) — tasarım gereği, bir değişiklik değil.',
+  'glb.find.cnameGeo': '{owner}, {sources} konumlarını diğer tüm kaynaklardan farklı bir yere ({targets}) gönderiyor. Anakara Çin dışındaki bir alt ağ adına sorulduğunda AliDNS dünyanın geri kalanının yanıtını veriyor: adın kendi DNS’i anakara Çin’deki çözümleyicilere ayrı bir hattan yanıt veriyor (genellikle oradaki bir CDN için) — tasarım gereği, bir değişiklik değil.',
+  'glb.find.cnameGeoUnsure': '{owner}, {sources} konumlarını diğer tüm kaynaklardan farklı bir yere ({targets}) gönderiyor: ya anakara Çin’deki çözümleyiciler için ayrı bir hat (genellikle oradaki bir CDN için) ya da AliDNS’in hâlâ tuttuğu eski bir yanıt — o yanıt en geç {ttl} içinde sona erer. Anakara Çin dışındaki bir alt ağ adına AliDNS’e sormak bu ikisini ayırt edemedi.',
   'glb.find.operators': '{name} adının {type} kayıtları kaynağa göre farklı sağlayıcıları gösteriyor ({operators}). Sağlayıcılar arasında bilerek yönlendirme yapmıyorsanız bu, hâlâ yayılmakta olan bir taşıma — eski yanıt TTL süresi dolana kadar önbellekte kalır.',
   'glb.find.addressRecords': '{type} kayıtları',
   'glb.find.noRecords': 'CNAME ve {type} kaydı yok',
@@ -275,6 +286,7 @@ registerStrings('tr', {
   'glb.stat.answered': 'Yanıtlanan',
   'glb.stat.failed': '{count} başarısız',
   'glb.stat.unavailable': '{count} tanesi tarayıcıda okunamıyor',
+  'glb.stat.notAsked': '{count} tanesi sorulmadı',
   'glb.stat.groups': 'Farklı yanıt',
   'glb.stat.ips': 'IP adresi',
   'glb.stat.latency': 'Ortanca gecikme',
@@ -308,7 +320,7 @@ registerStrings('tr', {
   'glb.geo.title': 'Konumlar — EDNS Client Subnet ile GeoDNS',
   'glb.geo.desc': 'Google Public DNS’e {count} konumdaki bir ev interneti alt ağı adına soruldu: oradaki kullanıcıların aldığı yanıta yakındır.',
   'glb.cn.title': 'Anakara Çin',
-  'glb.cn.desc': 'AliDNS’e (Alibaba Cloud) Pekin, Şanghay ve Guangzhou’daki {count} anakara Çin internet sağlayıcısının birer ev interneti alt ağı adına soruldu: oradaki kullanıcıların aldığı yanıta yakındır — GeoDNS’i Google’ın gönderdiği alt ağı dikkate almayan adlarda da. AliDNS ECS kapsamı bildirmez ve DNSSEC doğrulaması yapmaz.',
+  'glb.cn.desc': 'AliDNS’e (Alibaba Cloud) {count} anakara Çin internet sağlayıcısı adına, her birinin Pekin, Şanghay ve Guangzhou’daki kendi DNS sunucularının /24’üyle soruldu: o sağlayıcıların kullanıcılarının aldığı yanıta yakındır — GeoDNS’i Google’ın gönderdiği alt ağı dikkate almayan adlarda da. Yalnızca A, AAAA, CNAME ve HTTPS sorulur: AliDNS’in JSON API’si daha büyük yanıtları haber vermeden kırpıyor. AliDNS ECS kapsamı bildirmez ve DNSSEC doğrulaması yapmaz.',
   'glb.col.resolver': 'Çözümleyici',
   'glb.col.location': 'Konum',
   'glb.col.filtering': 'Filtreleme',
@@ -337,6 +349,8 @@ registerStrings('tr', {
   'glb.value.unavailable': 'Tarayıcıda okunamıyor',
   'glb.value.unavailableShort': 'HTTP/3’te CORS yok',
   'glb.value.unavailableTitle': '{name}, tarayıcılara HTTP/3 üzerinden CORS başlığı olmadan yanıt veriyor; tarayıcı da bu yüzden yanıtı atıyor. Bu, sorgulanan adla ilgili bir sorun değil — {name} yanıtını görmek için terminalden sorun.',
+  'glb.value.notAsked': 'Sorulmadı',
+  'glb.value.notAskedShort': 'AliDNS’in JSON API’si büyük yanıtları haber vermeden kırpıyor: yalnızca A, AAAA, CNAME ve HTTPS sorulur.',
   'glb.value.terminal': 'Terminalde:',
   'glb.value.aliasOf': 'takma ad',
   'glb.scopeTitle': 'Yetkili sunucunun döndürdüğü ECS kapsamı: /24 yanıtın bu alt ağa özel olduğunu, /0 herkesin aynı yanıtı aldığını gösterir.',
@@ -382,6 +396,21 @@ export function isBrowserBlocked(row) {
   return !!row && !row.pending && row.kind !== 'geo' && !!row.resolver
     && row.resolver.browserReliable === false && isErrorValues(row.values);
 }
+
+/**
+ * Is a finished row a location that was not asked for this record type (lib/propagation.js
+ * `notAsked`: the mainland China rows' AliDNS cuts large answers short, so it is asked only for A,
+ * AAAA, CNAME and HTTPS)? Such rows are shown muted with the reason, get no answer group and are
+ * neither answers nor failures.
+ * @param {{ pending?: boolean, notAsked?: boolean }|null} row
+ * @returns {boolean}
+ */
+export function isNotAsked(row) {
+  return !!row && !row.pending && !!row.notAsked;
+}
+
+/** A row that is no answer to compare: unreadable in browsers, or not asked. */
+const isSkipped = (row) => isBrowserBlocked(row) || isNotAsked(row);
 
 /**
  * `dig` command that asks a browser-unreadable resolver over classic DNS (null when unknown).
@@ -582,9 +611,9 @@ export function mount(container, ctx) {
     if (g.filtered) return 'glb-gblk';
     return `glb-g${g.color}`;
   };
-  const unavailableMark = () => h('span', { class: 'glb-mark-wrap', title: t('glb.value.unavailable') },
+  const unavailableMark = (key = 'glb.value.unavailable') => h('span', { class: 'glb-mark-wrap', title: t(key) },
     h('span', { class: 'glb-mark glb-mark-pending', attrs: { 'aria-hidden': 'true' } }, '–'),
-    h('span', { class: 'sr-only' }, t('glb.value.unavailable')));
+    h('span', { class: 'sr-only' }, t(key)));
   const groupMark = (g, { withLabel = false } = {}) => {
     if (!g) return h('span', { class: 'glb-mark glb-mark-pending', attrs: { 'aria-hidden': 'true' } }, '·');
     const text = g.letter || (g.error ? '!' : '⊘');
@@ -593,7 +622,7 @@ export function mount(container, ctx) {
       h('span', { class: 'glb-mark', attrs: { 'aria-hidden': 'true' } }, text),
       withLabel ? h('span', { class: 'glb-mark-label' }, label) : h('span', { class: 'sr-only' }, label));
   };
-  const rowGroup = (row) => (row.pending || isBrowserBlocked(row) ? null : groupByKey.get(row.values.join('\n')) || null);
+  const rowGroup = (row) => (row.pending || isSkipped(row) ? null : groupByKey.get(row.values.join('\n')) || null);
   const operatorName = (op) => op.name || t(`kind.${op.kind}`);
   /** Who operates an answer group's addresses ("Amazon CloudFront", "Direct" …), at most two labels. */
   function operatorLabels(ops) {
@@ -638,6 +667,12 @@ export function mount(container, ctx) {
       return h('span', { class: 'glb-pending' }, h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }), t('glb.pending'));
     }
     const v = row.values;
+    if (isNotAsked(row)) {
+      // Not a failure: AliDNS is asked only for the types it answers whole.
+      return h('div', { class: 'glb-skip' },
+        h('span', { class: 'cluster' }, Badge(t('glb.value.notAsked'), { variant: 'neutral', icon: 'minus-circle' })),
+        h('span', { class: 'muted text-xs' }, t('glb.value.notAskedShort')));
+    }
     if (isBrowserBlocked(row)) {
       // Not an error: the browser cannot read this resolver (HTTP/3 without CORS). Say so calmly
       // and give a way to get its answer anyway.
@@ -691,7 +726,7 @@ export function mount(container, ctx) {
   }
 
   function renderLatency(row) {
-    if (row.pending || !row.response || isBrowserBlocked(row)) return null;
+    if (row.pending || !row.response || isSkipped(row)) return null;
     const v = row.response.ok ? row.response.elapsedMs : row.response.totalMs;
     if (!Number.isFinite(v)) return null;
     const speed = v < 120 ? 'fast' : v < 400 ? 'ok' : v < 1500 ? 'slow' : 'very-slow';
@@ -713,13 +748,13 @@ export function mount(container, ctx) {
   };
   const latencyValue = (row) => (row.pending || !row.response ? null : (row.response.ok ? row.response.elapsedMs : row.response.totalMs));
   const groupSort = (row) => {
-    if (isBrowserBlocked(row)) return '3';
+    if (isSkipped(row)) return '3';
     const g = rowGroup(row);
     if (!g) return null;
     return g.letter ? `0${g.letter.padStart(3, ' ')}` : g.filtered ? '1' : '2';
   };
-  const answerText = (row) => (row.pending ? '' : isBrowserBlocked(row) ? 'UNAVAILABLE' : row.values.join(' '));
-  const rowClass = (row) => ['glb-row', groupClass(rowGroup(row)), { 'is-pending': row.pending, 'is-unavailable': isBrowserBlocked(row) }];
+  const answerText = (row) => (row.pending ? '' : isNotAsked(row) ? 'NOT ASKED' : isBrowserBlocked(row) ? 'UNAVAILABLE' : row.values.join(' '));
+  const rowClass = (row) => ['glb-row', groupClass(rowGroup(row)), { 'is-pending': row.pending, 'is-unavailable': isSkipped(row) }];
 
   /* --- resolvers table ------------------------------------------------------ */
   const resolverTable = DataTable({
@@ -769,7 +804,8 @@ export function mount(container, ctx) {
   const geoColumns = ({ withResolver = false } = {}) => [
     {
       key: 'group', label: t('glb.col.group'), sortable: true, sortValue: groupSort, width: '4rem',
-      render: (r) => groupMark(rowGroup(r)), exportValue: (r) => rowGroup(r)?.letter || ''
+      render: (r) => (isNotAsked(r) ? unavailableMark('glb.value.notAsked') : groupMark(rowGroup(r))),
+      exportValue: (r) => (isNotAsked(r) ? 'NOT ASKED' : rowGroup(r)?.letter || '')
     },
     {
       key: 'location', label: t('glb.col.location'), sortable: true,
@@ -792,7 +828,7 @@ export function mount(container, ctx) {
       title: t('glb.scopeTitle'),
       sortValue: (r) => (r.pending ? null : r.scopePrefix),
       exportValue: (r) => (Number.isFinite(r.scopePrefix) ? `/${r.scopePrefix}` : ''),
-      render: (r) => (r.pending ? null : Number.isFinite(r.scopePrefix)
+      render: (r) => (r.pending || isNotAsked(r) ? null : Number.isFinite(r.scopePrefix)
         ? h('span', { class: ['mono', { muted: r.scopePrefix === 0 }], title: t('glb.scopeTitle') }, `/${r.scopePrefix}`)
         : h('span', { class: 'dt-null', title: t('glb.scopeNone') }, '—'))
     },
@@ -951,14 +987,14 @@ export function mount(container, ctx) {
   // "Copy summary": the verdict, the answer groups and their operators, the findings (lib/summary.js).
   const summaryFacts = () => {
     if (!current || (!current.done && !current.cancelled)) return null;
-    const finished = current.rows.filter((r) => !r.pending);
+    const finished = current.rows.filter((r) => !r.pending && !isNotAsked(r));
     const unavailable = finished.filter(isBrowserBlocked).length;
     const failed = finished.filter((r) => isErrorValues(r.values)).length - unavailable;
     return {
       name: current.name,
       type: current.type,
       verdict,
-      total: current.rows.length,
+      total: current.rows.filter((r) => !isNotAsked(r)).length,
       answered: finished.length - failed - unavailable,
       failed,
       cancelled: !current.done,
@@ -986,7 +1022,7 @@ export function mount(container, ctx) {
   let renderTimer = null;
 
   function answeredCount() {
-    return current ? current.rows.filter((r) => !r.pending && !isErrorValues(r.values)).length : 0;
+    return current ? current.rows.filter((r) => !r.pending && !isNotAsked(r) && !isErrorValues(r.values)).length : 0;
   }
 
   function makeRows(geo) {
@@ -997,9 +1033,16 @@ export function mount(container, ctx) {
 
   function applyItem(item) {
     if (!current) return;
+    if (item.kind === 'control') {
+      // AliDNS asked on behalf of a subnet outside China: no row, only the verdict reads it.
+      current.controls = [...current.controls.filter((c) => c.key !== item.key), { kind: 'control', key: item.key, resolver: item.resolver, values: item.values }];
+      scheduleRender();
+      return;
+    }
     const row = current.rowByKey.get(item.key);
     if (!row) return;
     row.pending = false;
+    row.notAsked = !!item.notAsked;
     row.response = item.response;
     row.values = item.values;
     row.filtered = !!item.filtered;
@@ -1043,10 +1086,10 @@ export function mount(container, ctx) {
   /** Recompute groups and refresh every derived piece of UI (cheap: ≤ 43 rows). */
   function renderAll() {
     if (!current) return;
-    const readable = current.rows.filter((r) => !isBrowserBlocked(r));
+    const readable = current.rows.filter((r) => !isSkipped(r));
     groups = groupAnswers(readable);
     groupByKey = new Map(groups.map((g) => [g.key, g]));
-    verdict = propagationVerdict(readable, { type: current.type });
+    verdict = propagationVerdict(readable, { type: current.type, controls: current.controls });
     verdictByKey = new Map(verdict.groups.map((g) => [g.key, g]));
     if (filterKey && !groupByKey.has(filterKey)) setFilter(null);
     resolverTable.refresh();
@@ -1089,7 +1132,7 @@ export function mount(container, ctx) {
   function setFilter(key) {
     filterKey = key;
     const g = key ? groupByKey.get(key) : null;
-    const fn = g ? (row) => !row.pending && !isBrowserBlocked(row) && row.values.join('\n') === key : null;
+    const fn = g ? (row) => !row.pending && !isSkipped(row) && row.values.join('\n') === key : null;
     resolverTable.setFilter(fn);
     geoTable.setFilter(fn);
     chinaTable.setFilter(fn);
@@ -1111,14 +1154,16 @@ export function mount(container, ctx) {
 
   function renderStats() {
     const rows = current.rows;
-    const finished = rows.filter((r) => !r.pending);
+    const notAsked = rows.filter(isNotAsked).length;
+    const finished = rows.filter((r) => !r.pending && !isNotAsked(r));
     const unavailable = finished.filter(isBrowserBlocked).length;
     const failed = finished.filter((r) => isErrorValues(r.values)).length - unavailable;
     stats.answered.set({
-      value: `${formatNumber(finished.length - failed - unavailable)} / ${formatNumber(rows.length)}`,
+      value: `${formatNumber(finished.length - failed - unavailable)} / ${formatNumber(rows.length - notAsked)}`,
       hint: [
         failed ? t('glb.stat.failed', { count: failed }) : null,
-        unavailable ? t('glb.stat.unavailable', { count: unavailable }) : null
+        unavailable ? t('glb.stat.unavailable', { count: unavailable }) : null,
+        notAsked ? t('glb.stat.notAsked', { count: notAsked }) : null
       ].filter(Boolean).join(' · ') || null,
       variant: failed && failed + unavailable === finished.length && current.done ? 'error' : 'accent'
     });
@@ -1150,15 +1195,17 @@ export function mount(container, ctx) {
       if (!finished.length) return;
     }
     const unavailable = finished.filter(isBrowserBlocked);
+    const notAsked = finished.filter(isNotAsked);
     const failed = finished.filter((r) => isErrorValues(r.values)).length - unavailable.length;
     const blocked = finished.filter((r) => r.filtered).length;
-    const usable = finished.filter((r) => !r.filtered && !isErrorValues(r.values));
+    const usable = finished.filter((r) => !r.filtered && !isNotAsked(r) && !isErrorValues(r.values));
     const distinct = (list) => new Set(list.map((r) => r.values.join('\n'))).size;
     const extra = [
       failed ? t('glb.sum.errors', { count: failed }) : null,
       blocked ? t('glb.sum.blocked', { count: blocked }) : null,
       verdict.rewritten.length ? t('glb.sum.rewritten', { names: sourceNames(verdict.rewritten), targets: verdict.rewriteTargets.join(', ') }) : null,
       unavailable.length ? t('glb.sum.unavailable', { names: unavailable.map((r) => r.resolver.name).join(', ') }) : null,
+      notAsked.length ? t('glb.sum.notAsked', { names: sourceNames(notAsked.map((r) => r.key)), type: current.type }) : null,
       current.cancelled ? t('glb.cancelled') : null
     ].filter(Boolean).join(' ');
     const state = !current.done && !current.cancelled ? 'running'
@@ -1194,7 +1241,7 @@ export function mount(container, ctx) {
       // Only the locations asked through a resolver of their own (mainland China) take another branch.
       const split = verdict.geoSplits[0];
       const body = verdict.noRecords ? t('glb.sum.nodataBody', { type, operators })
-        : split ? t('glb.sum.designGeo', { owner: split.owner || current.name, sources: sourceNames(split.members), targets: splitTargets(split) })
+        : split ? t(split.line ? 'glb.sum.designGeo' : 'glb.sum.designGeoUnsure', splitParams(split))
           : steered ? t('glb.sum.designSteered', { owner: steered.owner || current.name, targets: shortList(steered.targets) })
             : t('glb.sum.designBody');
       // An operator only those locations get is explained above: "multi-CDN" only for the others.
@@ -1236,6 +1283,30 @@ export function mount(container, ctx) {
   /** Where a location split sends its locations: "CNAME x", or the address records (null). */
   const splitTargets = (split) => shortList(split.targets.map((x) => (x === null ? t('glb.find.addressRecords', { type: current.type }) : `CNAME ${x}`)), 3, ' · ');
 
+  const canonicalOwner = (n) => String(n || '').toLowerCase().replace(/\.$/, '');
+
+  /**
+   * The longest an older answer could still be held for the locations of a split: the TTL of the
+   * CNAME record they got at the split's owner (else their answers' shortest TTL).
+   */
+  function splitTtl(split) {
+    const owner = canonicalOwner(split.owner || current.name);
+    let ttl = null;
+    for (const key of split.members) {
+      const res = current.rowByKey.get(key)?.response;
+      const answers = res && Array.isArray(res.answers) ? res.answers : [];
+      const rr = answers.find((x) => x && x.type === 'CNAME' && canonicalOwner(x.name) === owner);
+      const v = rr && Number.isFinite(rr.ttl) ? rr.ttl : minAnswerTtl(res);
+      if (Number.isFinite(v) && (ttl === null || v > ttl)) ttl = v;
+    }
+    return ttl;
+  }
+
+  /** The words of a split (lib/propagation.js geoSplits): who goes where, and the TTL when it is unsure. */
+  const splitParams = (split) => ({
+    owner: split.owner || current.name, sources: sourceNames(split.members), targets: splitTargets(split), ttl: humanTtl(splitTtl(split))
+  });
+
   /**
    * Display names of answer sources (resolver names, location names), de-duplicated. Joined
    * with "; ": a location name has a comma of its own ("Istanbul, Türkiye").
@@ -1262,7 +1333,9 @@ export function mount(container, ctx) {
     switch (f.code) {
       case 'rcode':
         // SERVFAIL is a failure to resolve; REFUSED and the rest a resolver's own choice.
-        text = f.rcode === 'SERVFAIL' ? t('glb.find.servfail', { sources }) : t('glb.find.rcode', { sources, rcode: f.rcode });
+        // Only sources that do not validate DNSSEC (AliDNS) give it: no signature problem then.
+        text = f.rcode === 'SERVFAIL' ? t(f.noDnssec ? 'glb.find.servfailNoDnssec' : 'glb.find.servfail', { sources })
+          : t('glb.find.rcode', { sources, rcode: f.rcode });
         break;
       case 'nxdomain': text = t('glb.find.nxdomain', { sources }); break;
       case 'nodata': text = t('glb.find.nodata', { sources, type: current.type }); break;
@@ -1274,7 +1347,7 @@ export function mount(container, ctx) {
         const owner = f.owner || current.name;
         if (f.byLocation) {
           // Only the locations asked through a resolver of their own take this branch: by design.
-          text = t('glb.find.cnameGeo', { owner, sources: sourceNames(f.byLocation.members), targets: splitTargets(f.byLocation) });
+          text = t(f.byLocation.line ? 'glb.find.cnameGeo' : 'glb.find.cnameGeoUnsure', splitParams(f.byLocation));
           break;
         }
         // null: the chain ends there — in address records, or with no records at all.
@@ -1410,7 +1483,8 @@ export function mount(container, ctx) {
     const rows = makeRows(geo);
     current = {
       name, type, geo, rows, rowByKey: new Map(rows.map((r) => [r.key, r])), ips: new Map(), controller: null, done: false, cancelled: false,
-      finishedAt: null // when the check ended (the summary's time, the kept result's age)
+      finishedAt: null, // when the check ended (the summary's time, the kept result's age)
+      controls: [] // AliDNS's answers on behalf of a subnet outside China (lib/propagation.js)
     };
     filterKey = null;
     groups = [];
@@ -1488,7 +1562,7 @@ export function mount(container, ctx) {
   /** Re-render a finished run kept across a language re-mount (no network). */
   function restore(snap) {
     prepare(snap.name, snap.type, snap.geo);
-    for (const item of snap.items) applyItem(item);
+    for (const item of [...snap.items, ...(Array.isArray(snap.controls) ? snap.controls : [])]) applyItem(item);
     current.done = !!snap.done;
     current.cancelled = !snap.done;
     current.finishedAt = snap.at ? new Date(snap.at) : new Date();
@@ -1520,10 +1594,10 @@ export function mount(container, ctx) {
     snapshot() {
       if (!current) return { name: nameField.value, type: typeField.value, geo: geoField.checked, carried };
       const items = current.rows.filter((r) => !r.pending).map((r) => ({
-        key: r.key, response: r.response, values: r.values, filtered: r.filtered, addresses: r.addresses, scopePrefix: r.scopePrefix
+        key: r.key, response: r.response, values: r.values, filtered: r.filtered, addresses: r.addresses, scopePrefix: r.scopePrefix, notAsked: !!r.notAsked
       }));
       return {
-        name: current.name, type: current.type, geo: current.geo, items, done: current.done, at: current.finishedAt,
+        name: current.name, type: current.type, geo: current.geo, items, controls: current.controls, done: current.done, at: current.finishedAt,
         draft: nameField.value, carried
       };
     },

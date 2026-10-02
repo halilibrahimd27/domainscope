@@ -578,6 +578,24 @@ describe('propagationVerdict', () => {
     assert.deepEqual([viaGoogle.state, codes(viaGoogle)], ['differ', ['mixed']]);
   });
 
+  test('mainland China: an edge only the China rows get counts as their CDN only when reached through its CNAME', () => {
+    const china = (id, ...values) => ({ key: `geo:${id}`, kind: 'geo', vantage: { id, resolver: 'alidns' }, values });
+    const origin = [item('resolver:cloudflare', '192.0.2.10'), item('resolver:google', '192.0.2.10'), item('geo:de-ham', '192.0.2.10')];
+    // A Cloudflare-range address with no CNAME, only in China: the shape of a forged answer, not a mainland CDN.
+    const bare = propagationVerdict([...origin, china('cn-bjs-cu', '104.16.1.1'), china('cn-sha-ct', '104.16.1.1')]);
+    assert.deepEqual([bare.state, codes(bare), bare.findings[0].ips], ['differ', ['mixed'], ['192.0.2.10']]);
+    // The same address behind the CDN's CNAME is the mainland CDN in front of the origin.
+    const viaName = propagationVerdict([...origin, china('cn-bjs-cu', '104.16.1.1', ...cname('www.example.com.cdn.cloudflare.net'))]);
+    assert.deepEqual([viaName.state, viaName.findings], ['geo', []]);
+    // The control (AliDNS on behalf of a subnet outside China) gets that CDN too: AliDNS's own answer.
+    const ALI = 'www.example.com.w.kunluncan.com';
+    const cn = [china('cn-bjs-cu', '198.51.100.17', ...cname(ALI)), china('cn-sha-ct', '198.51.100.18', ...cname(ALI))];
+    const own = propagationVerdict([...origin, ...cn], { controls: [{ resolver: 'alidns', values: ['198.51.100.17', `CNAME ${ALI}`] }] });
+    assert.deepEqual([own.state, codes(own)], ['differ', ['mixed']]);
+    const world = propagationVerdict([...origin, ...cn], { controls: [{ resolver: 'alidns', values: ['192.0.2.10'] }] });
+    assert.deepEqual([world.state, world.findings], ['geo', []]);
+  });
+
   test('entry names: a dualstack variant is the same service, a Traffic Manager profile is not regional', () => {
     const reddit = propagationVerdict([
       item('resolver:cloudflare', '151.101.1.140', ...cname('example.map.fastly.net')),

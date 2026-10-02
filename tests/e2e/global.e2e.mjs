@@ -192,6 +192,8 @@ const RESOLVER_URLS = RESOLVERS.map((r) => [r.url, r.id]);
 const JSON_URLS = ECS_RESOLVERS.map((r) => [r.url, r.id]);
 /** The mainland China locations (asked through AliDNS) and what the China group shows for them. */
 const CHINA = GEO_VANTAGES.filter((v) => v.group === 'cn');
+/** The vantage whose /24 asks AliDNS once from outside China (the control). */
+const CONTROL = GEO_VANTAGES.find((v) => v.id === ECS_RESOLVERS.find((r) => r.id === 'alidns').control);
 /** Locations whose ECS queries get a SERVFAIL for mixed.example.com (Istanbul, Ankara). */
 const SERVFAIL_SUBNETS = [GEO_VANTAGES[0].subnet, GEO_VANTAGES[1].subnet];
 
@@ -217,9 +219,16 @@ const SERVFAIL_SUBNETS = [GEO_VANTAGES[0].subnet, GEO_VANTAGES[1].subnet];
  * - nov6.example.com: a shared name steers to Fastly or Cloudflare; for AAAA every answer is
  *   empty (A records only), so only the CNAME chains are judged — by design;
  * - broken.example.com: SERVFAIL everywhere — nobody resolves it, never "agree";
- * - china.example.com: its DNS answers mainland China's resolver (AliDNS, the China rows) from a
- *   line of its own — a CNAME to Alibaba Cloud CDN — and everyone else with one CloudFront
- *   distribution: by design, the China rows' operator named.
+ * - china.example.com: its DNS answers the mainland China subnets from a line of its own — a CNAME
+ *   to Alibaba Cloud CDN — and everyone else, AliDNS on behalf of a subnet outside China (the
+ *   control) included, with one CloudFront distribution: by design, the China rows' operator named;
+ * - china-stale.example.com: AliDNS gives the Alibaba name whatever the subnet, the control too:
+ *   its own answer, not China's line — a move between providers, as from any resolver;
+ * - china-nocontrol.example.com: as china.example.com, but the control gets no answer: the China
+ *   branch is told with a doubt and the TTL;
+ * - china-servfail.example.com: AliDNS SERVFAILs for Shanghai: a failure, never "DNSSEC";
+ * - txt.example.com TXT: eight records; AliDNS would give three of them (it cuts large answers short
+ *   without TC), so the China rows are not asked for TXT at all.
  * The China rows' questions reach AliDNS in its JSON form and are answered in it (recorded in
  * window.__jsonQueries); every other name answers them like the other locations.
  * An AAAA query gets the same answers without their A records.
@@ -229,6 +238,8 @@ const fakeGlobalDnsScript = () => `(() => {
   const RESOLVER_URLS = ${JSON.stringify(RESOLVER_URLS)};
   const JSON_URLS = ${JSON.stringify(JSON_URLS)};
   const SERVFAIL_SUBNETS = ${JSON.stringify(SERVFAIL_SUBNETS)};
+  const CN_SUBNETS = ${JSON.stringify(CHINA.map((v) => v.subnet))};
+  const SHANGHAI = ${JSON.stringify(CHINA.find((v) => v.id === 'cn-sha-ct').subnet)};
   const OLD = '192.0.2.10';
   const NEW = '198.51.100.20';
   const CLOUDFRONT = ['13.32.0.10', '13.32.1.20', '13.33.2.30', '13.35.3.40'];
@@ -282,17 +293,26 @@ const fakeGlobalDnsScript = () => `(() => {
       return { answers: [cn(qname, glb), cn(glb, target), a(target, ip)] };
     }
     if (qname === 'broken.example.com') return { rcode: 'SERVFAIL', answers: [] };
-    if (qname === 'china.example.com') {
-      if (resolver === 'alidns') {
-        const edge = 'china.example.com.w.kunluncan.com';
-        return { answers: [cn(qname, edge), a(edge, h % 2 ? '198.51.100.17' : '198.51.100.18')] };
-      }
-      return { answers: [cn(qname, 'd333333abcdef8.cloudfront.net'), a('d333333abcdef8.cloudfront.net', CLOUDFRONT[h % 4])] };
+    if (/^china(-stale|-nocontrol|-servfail)?\.example\.com$/.test(qname)) {
+      const world = { answers: [cn(qname, 'd333333abcdef8.cloudfront.net'), a('d333333abcdef8.cloudfront.net', CLOUDFRONT[h % 4])] };
+      if (resolver !== 'alidns') return world;
+      if (qname === 'china-servfail.example.com') return ecs === SHANGHAI ? { rcode: 'SERVFAIL', answers: [] } : world;
+      const inChina = CN_SUBNETS.includes(ecs);
+      if (!inChina && qname === 'china-nocontrol.example.com') return { rcode: 'SERVFAIL', answers: [] };
+      if (!inChina && qname !== 'china-stale.example.com') return world;
+      const edge = qname + '.w.kunluncan.com';
+      return { answers: [{ ...cn(qname, edge), ttl: 600 }, a(edge, h % 2 ? '198.51.100.17' : '198.51.100.18')] };
+    }
+    if (qname === 'txt.example.com') {
+      const all = ['example-verification=aaaa0001', 'example-verification=aaaa0002', 'example-verification=aaaa0003', 'example-verification=aaaa0004',
+        'example-verification=aaaa0005', 'example-verification=aaaa0006', 'example-verification=aaaa0007', 'v=spf1 -all'];
+      const list = resolver === 'alidns' ? all.slice(0, 3) : all;
+      return { answers: list.map((v) => ({ name: qname, type: 'TXT', ttl: 300, data: [v] })) };
     }
     return { rcode: 'NXDOMAIN', answers: [] };
   };
   // The JSON form (AliDNS /resolve): the same answers, as AliDNS writes them.
-  const JSON_TYPES = { A: 1, CNAME: 5, AAAA: 28 };
+  const JSON_TYPES = { A: 1, CNAME: 5, TXT: 16, AAAA: 28 };
   const RCODES = { NOERROR: 0, SERVFAIL: 2, NXDOMAIN: 3, REFUSED: 5 };
   window.__jsonQueries = [];
   const jsonAnswer = (url, resolver, init) => {
@@ -304,7 +324,10 @@ const fakeGlobalDnsScript = () => `(() => {
     window.__jsonQueries.push({ resolver, name: qname, type, ecs, accept: typeof headers.get === 'function' ? headers.get('accept') : headers.accept });
     const out = answer(qname, resolver, ecs);
     if (type === 28) out.answers = out.answers.filter((rr) => rr.type !== 'A');
-    const rr = (x) => ({ name: x.name + '.', TTL: x.ttl, type: JSON_TYPES[x.type], data: x.type === 'CNAME' ? x.data + '.' : x.data });
+    const rr = (x) => ({
+      name: x.name + '.', TTL: x.ttl, type: JSON_TYPES[x.type],
+      data: x.type === 'CNAME' ? x.data + '.' : x.type === 'TXT' ? x.data.map((v) => JSON.stringify(v)).join(' ') : x.data
+    });
     return new Response(JSON.stringify({
       Status: RCODES[out.rcode || 'NOERROR'], TC: false, RD: true, RA: true, AD: false, CD: false,
       Question: { name: qname + '.', type }, ...(out.answers.length ? { Answer: out.answers.map(rr) } : {}),
@@ -516,7 +539,7 @@ async function offlineVerdicts(browser, server) {
     const info = await page.evaluate(verdictInfo);
     assertEqual(info.state, 'by-design', `state (${info.title}: ${info.message})`);
     assertEqual(info.title, 'Differs by design: CDN / GeoDNS edges (Amazon CloudFront, Alibaba Cloud CDN)', 'title');
-    assert(/^Every answer is an edge .* china\.example\.com sends Beijing, China; Shanghai, China; Guangzhou, China to CNAME china\.example\.com\.w\.kunluncan\.com, unlike every other source: .*mainland China/.test(info.message),
+    assert(/^Every answer is an edge .* china\.example\.com sends Beijing, China; Shanghai, China; Guangzhou, China to CNAME china\.example\.com\.w\.kunluncan\.com, unlike every other source\. Asked on behalf of a subnet outside China, AliDNS gives the rest of the world.s answer: .*mainland China/.test(info.message),
       `body: ${info.message}`);
     assert(!/multi-CDN/.test(info.message), `a CDN only mainland China gets is not called multi-CDN steering: ${info.message}`);
     assertEqual(info.findings, [], 'no findings');
@@ -547,8 +570,8 @@ async function offlineVerdicts(browser, server) {
     assert(['Beijing', 'Shanghai', 'Guangzhou'].every((c) => cn.rows.some((r) => r.text.includes(c))), 'the three cities');
     const bySubnet = (a, b) => (a[3] < b[3] ? -1 : a[3] > b[3] ? 1 : 0);
     assertEqual(cn.queries.map((q) => [q.resolver, q.name, q.type, q.ecs, q.accept]).sort(bySubnet),
-      CHINA.map((v) => ['alidns', 'china.example.com', 1, v.subnet, 'application/dns-json']).sort(bySubnet),
-      'one JSON question to AliDNS per China row, with its subnet');
+      [...CHINA.map((v) => v.subnet), CONTROL.subnet].map((subnet) => ['alidns', 'china.example.com', 1, subnet, 'application/dns-json']).sort(bySubnet),
+      'one JSON question to AliDNS per China row, with its subnet, and one on behalf of a subnet outside China');
     await assertNoHorizontalScroll(page, 'china');
     await shot(page, 'global-offline-desktop-light-en-china');
     await setLangUi(page, 'tr');
@@ -560,6 +583,55 @@ async function offlineVerdicts(browser, server) {
     assertEqual(tr.title, 'Anakara Çin', 'TR group title');
     assert(/Pekin, Çin; Şanghay, Çin; Guangzhou, Çin konumlarını diğer tüm kaynaklardan farklı bir yere \(CNAME china\.example\.com\.w\.kunluncan\.com\) gönderiyor/.test(tr.message), `TR body: ${tr.message}`);
     await setLangUi(page, 'en');
+  });
+
+  await step('mainland China: a branch AliDNS gives outside China too is its own answer, a move as from any resolver; no control answer: told with a doubt and the TTL', async () => {
+    await gotoHash(page, '#/global?name=china-stale.example.com&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
+    const stale = await page.evaluate(verdictInfo);
+    assertEqual(stale.state, 'differ', `stale: state (${stale.title}: ${stale.message})`);
+    assertEqual(stale.findings.map((f) => f.code), ['cname'], 'stale: finding codes');
+    assert(/points to different providers depending on the source \(Amazon CloudFront, Alibaba Cloud CDN\)/.test(stale.findings[0].text), `stale: the move: ${stale.findings[0].text}`);
+    await gotoHash(page, '#/global?name=china-nocontrol.example.com&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
+    const unsure = await page.evaluate(verdictInfo);
+    assertEqual(unsure.state, 'by-design', `unsure: state (${unsure.title}: ${unsure.message})`);
+    assert(/sends Beijing, China; Shanghai, China; Guangzhou, China to CNAME china-nocontrol\.example\.com\.w\.kunluncan\.com, unlike every other source: either .* a line of its own .*, or AliDNS still holds an older answer — that would expire within 10 min\. AliDNS asked on behalf of a subnet outside China could not tell the two apart\./.test(unsure.message),
+      `unsure: the doubt and the TTL: ${unsure.message}`);
+    await setLangUi(page, 'tr');
+    await page.waitFor(() => /eski bir yanıt/.test(document.querySelector('.glb-summary .alert-message')?.textContent || ''), { message: 'TR doubt' });
+    await setLangUi(page, 'en');
+    assertEqual([stale.external, unsure.external], [[], []], 'nothing left the page');
+  });
+
+  await step('mainland China: an AliDNS SERVFAIL is a failure there, never a DNSSEC validation failure', async () => {
+    await gotoHash(page, '#/global?name=china-servfail.example.com&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
+    const info = await page.evaluate(verdictInfo);
+    const f = info.findings.find((x) => x.code === 'rcode');
+    assert(f && /^Shanghai, China: SERVFAIL/.test(f.text), `the SERVFAIL finding: ${JSON.stringify(info.findings)}`);
+    assert(!/DNSSEC validation failure/.test(f.text) && /AliDNS does not validate DNSSEC/.test(f.text), `no DNSSEC blame: ${f.text}`);
+  });
+
+  await step('TXT: the China rows are not asked — AliDNS cuts large answers short without saying so — and nothing is sent to it', async () => {
+    await page.evaluate(() => { window.__jsonQueries.length = 0; });
+    await gotoHash(page, '#/global?name=txt.example.com&type=TXT', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
+    const info = await page.evaluate(verdictInfo);
+    const rows = await page.evaluate(() => [...document.querySelectorAll('.glb-geo-group[data-group="cn"] tbody tr.dt-row')].map((tr) => ({
+      muted: tr.classList.contains('is-unavailable'), text: tr.querySelector('.glb-skip')?.textContent || '', mark: tr.querySelector('.glb-mark')?.textContent
+    })));
+    assertEqual(info.state, 'agree', `state (${info.title}: ${info.message})`);
+    assert(/Beijing, China; Shanghai, China; Guangzhou, China: not asked for TXT/.test(info.message), `the summary says why: ${info.message}`);
+    assertEqual(rows.length, 3, 'three China rows');
+    assert(rows.every((r) => r.muted && /Not asked/.test(r.text) && /cuts large answers short/.test(r.text)), `muted, with the reason: ${JSON.stringify(rows)}`);
+    assertEqual(await page.evaluate(() => window.__jsonQueries.length), 0, 'no question to AliDNS, not even the control');
+    const answered = await page.evaluate(() => document.querySelector('.glb-stats .stat')?.textContent || '');
+    assert(/43 \/ 43/.test(answered) && /3 not asked/.test(answered), `the answered stat leaves them out and says so: ${answered}`);
+    await setLangUi(page, 'tr');
+    await page.waitFor(() => /Sorulmadı/.test(document.querySelector('.glb-geo-group[data-group="cn"] .glb-skip')?.textContent || ''), { message: 'TR not asked' });
+    await setLangUi(page, 'en');
+    await assertNoHorizontalScroll(page, 'txt');
   });
 
   await step('SERVFAIL everywhere: an error, never "All answers agree" (EN / TR)', async () => {

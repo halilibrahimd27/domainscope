@@ -280,7 +280,11 @@ export const RESOLVERS = Object.freeze([
  * Google's ECS it answers what mainland users get (a mainland CDN where Google's ECS answer is an
  * overseas edge). It echoes the subnet without a scope prefix (`ecsEcho: false`), does not validate
  * DNSSEC (a broken signature still resolves), and ignores `do` / `cd`.
- * @type {ReadonlyArray<Resolver & { format: 'json' }>}
+ *
+ * Extensions: `types`, the only types it is asked for (its JSON API cuts a large answer short
+ * without TC: docs/RESEARCH.md); `control`, the vantage whose /24, outside China, it is asked for
+ * once per check, to tell a mainland line from AliDNS's own answer.
+ * @type {ReadonlyArray<Resolver & { format: 'json', types: ReadonlyArray<string>, control: string }>}
  */
 export const ECS_RESOLVERS = Object.freeze([
   {
@@ -289,6 +293,8 @@ export const ECS_RESOLVERS = Object.freeze([
     operator: 'Alibaba Cloud',
     url: 'https://dns.alidns.com/resolve',
     format: 'json',
+    types: Object.freeze(['A', 'AAAA', 'CNAME', 'HTTPS']),
+    control: 'us-east',
     location: 'Anycast',
     countryCode: null,
     ecs: true,

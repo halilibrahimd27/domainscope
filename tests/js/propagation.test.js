@@ -160,9 +160,11 @@ describe('checkPropagation', () => {
 
     assert.equal(r.resolverResults.length, RESOLVERS.length);
     assert.equal(r.geoResults.length, GEO_VANTAGES.length);
-    assert.equal(calls.length, RESOLVERS.length + GEO_VANTAGES.length);
+    // …and AliDNS once more, on behalf of a subnet outside China (the control).
+    assert.equal(calls.length, RESOLVERS.length + GEO_VANTAGES.length + 1);
     assert.equal(streamed.length, calls.length);
-    assert.ok(streamed.every((s) => (s.kind === 'resolver' ? s.key.startsWith('resolver:') : s.key.startsWith('geo:'))));
+    assert.ok(streamed.every((s) => s.key.startsWith(`${s.kind}:`)));
+    assert.deepEqual(streamed.filter((s) => s.kind === 'control').map((s) => [s.key, s.vantage.id]), [['control:alidns', 'us-east']]);
 
     // input order preserved, definitions attached
     assert.deepEqual(r.resolverResults.map((x) => x.resolver.id), RESOLVERS.map((x) => x.id));
@@ -172,7 +174,8 @@ describe('checkPropagation', () => {
     const china = r.geoResults.filter((x) => x.vantage.group === 'cn');
     assert.deepEqual(china.map((x) => [x.vantage.id, x.resolver.id, x.resolver.name]), [
       ['cn-bjs-cu', 'alidns', 'AliDNS (ECS)'], ['cn-sha-ct', 'alidns', 'AliDNS (ECS)'], ['cn-can-cm', 'alidns', 'AliDNS (ECS)']]);
-    assert.deepEqual(calls.filter((c) => c.json).map((c) => [c.resolver, c.ecs]), china.map((x) => ['alidns', x.vantage.subnet]));
+    assert.deepEqual(calls.filter((c) => c.json).map((c) => [c.resolver, c.ecs]).sort(),
+      [...china.map((x) => ['alidns', x.vantage.subnet]), ['alidns', GEO_VANTAGES.find((v) => v.id === 'us-east').subnet]].sort());
     assert.ok(china.every((x) => x.response.ok && x.scopePrefix === null && x.values.join() === '192.0.2.49'));
     const ist = r.geoResults.find((x) => x.vantage.id === 'tr-ist-tt');
     assert.deepEqual(ist.values, ['192.0.2.34']);
@@ -321,5 +324,102 @@ describe('checkPropagation', () => {
     const p = checkPropagation('example.com', 'A', { dns: hang, signal: c2.signal });
     setTimeout(() => c2.abort(), 10);
     await assert.rejects(p, (e) => e instanceof AbortError);
+  });
+});
+
+describe('checkPropagation: the mainland China rows (AliDNS)', () => {
+  const JSON_FIX = JSON.parse(readFileSync(new URL('../fixtures/dns-json/alidns.json', import.meta.url), 'utf8'));
+  const ALIDNS = ECS_RESOLVERS.find((r) => r.id === 'alidns');
+  const CHINA = GEO_VANTAGES.filter((v) => v.group === 'cn').map((v) => v.id);
+  const CONTROL = GEO_VANTAGES.find((v) => v.id === ALIDNS.control);
+  const TXT = ['example-verification=aaaa0001', 'example-verification=aaaa0002', 'example-verification=aaaa0003', 'example-verification=aaaa0004',
+    'example-verification=aaaa0005', 'example-verification=aaaa0006', 'example-verification=aaaa0007', 'v=spf1 -all'];
+  const txt = (name, list) => list.map((s) => ({ name, type: 'TXT', ttl: 300, data: [s] }));
+
+  test('AliDNS is asked only for A, AAAA, CNAME and HTTPS: its JSON API cuts large answers short without TC', async () => {
+    assert.deepEqual(ALIDNS.types, ['A', 'AAAA', 'CNAME', 'HTTPS']);
+    // What AliDNS would give for TXT: 3 of the 8 records, nothing in the answer says so.
+    const cut = JSON_FIX['txt-truncated'];
+    assert.equal(cut.TC, false);
+    const { fetchImpl, calls } = mockFetch(({ name, json }) => {
+      if (json) return { answers: cut.Answer.map((rr) => ({ name, type: 'TXT', ttl: rr.TTL, data: rr.data.slice(1, -1) })) };
+      return { answers: txt(name, TXT) };
+    });
+    const streamed = [];
+    const r = await checkPropagation('example.com', 'TXT', {
+      dns: client(fetchImpl), resolvers: ['cloudflare', 'google'], vantages: ['de-ham', ...CHINA], onResult: (it) => streamed.push(it)
+    });
+    assert.deepEqual(calls.filter((c) => c.json), [], 'no question to AliDNS, not even the control');
+    const china = r.geoResults.filter((x) => x.vantage.group === 'cn');
+    assert.deepEqual(china.map((x) => [x.key, x.notAsked, x.values, x.response, x.resolver.id]), CHINA.map((id) => [`geo:${id}`, true, [], null, 'alidns']));
+    assert.equal(streamed.filter((it) => it.notAsked).length, 3, 'streamed like the others, so the rows leave "pending"');
+    assert.deepEqual([r.consistent, r.groups.length, r.verdict.state], [true, 1, 'agree'], 'the rows that were asked agree');
+    assert.deepEqual(r.groups[0].members, ['resolver:cloudflare', 'resolver:google', 'geo:de-ham']);
+    assert.deepEqual(r.controls, []);
+    // An A check asks them as before.
+    const { fetchImpl: f2, calls: c2 } = mockFetch(({ name }) => ({ answers: A(name, '192.0.2.1') }));
+    const a = await checkPropagation('example.com', 'A', { dns: client(f2), resolvers: [], vantages: CHINA });
+    assert.ok(a.geoResults.every((x) => !x.notAsked && x.values.join() === '192.0.2.1'));
+    assert.ok(c2.filter((c) => c.json).length >= 3);
+  });
+
+  /** World: one CloudFront distribution; China: `china` for the China /24s, `control` for the control /24. */
+  const splitCheck = async ({ control, controlFails = false }) => {
+    const D = 'd333333abcdef8.cloudfront.net';
+    const ALI = 'www.example.com.w.kunluncan.com';
+    const edges = { cloudflare: '13.32.0.1', google: '13.32.0.2', iij: '13.32.0.3' };
+    const { fetchImpl, calls } = mockFetch(({ resolver, name, ecs, json }) => {
+      const world = (ip) => ({ answers: [{ name, type: 'CNAME', ttl: 600, data: D }, ...A(D, ip)] });
+      const china = { answers: [{ name, type: 'CNAME', ttl: 600, data: ALI }, ...A(ALI, '198.51.100.17')] };
+      if (!json) return world(edges[resolver] || '13.32.0.9');
+      if (ecs === CONTROL.subnet) {
+        if (controlFails) return { rcode: 'SERVFAIL' };
+        return control === 'world' ? world('13.32.0.8') : china;
+      }
+      return china;
+    });
+    const r = await checkPropagation('www.example.com', 'A', {
+      dns: client(fetchImpl), resolvers: ['cloudflare', 'google', 'iij'], vantages: ['de-ham', ...CHINA]
+    });
+    return { r, calls };
+  };
+
+  test('one control question to AliDNS on behalf of a subnet outside China; it lands on the world\'s branch: a line of its own', async () => {
+    assert.equal(CONTROL.countryCode !== 'CN' && !CONTROL.resolver, true, 'the control /24 is outside China, a Google-asked vantage of its own');
+    const { r, calls } = await splitCheck({ control: 'world' });
+    assert.deepEqual(calls.filter((c) => c.json).map((c) => c.ecs).sort(),
+      [...GEO_VANTAGES.filter((v) => v.group === 'cn').map((v) => v.subnet), CONTROL.subnet].sort(), 'the three China /24s and one control');
+    assert.deepEqual(r.controls.map((c) => [c.key, c.resolver.id, c.vantage.id, c.values]), [
+      ['control:alidns', 'alidns', CONTROL.id, ['13.32.0.8', 'CNAME d333333abcdef8.cloudfront.net']]]);
+    assert.ok(!r.geoResults.some((x) => x.key.startsWith('control:')), 'the control is no location row');
+    assert.equal(r.verdict.state, 'by-design');
+    assert.deepEqual(r.verdict.geoSplits.map((s) => [s.owner, s.targets, s.line]), [[null, ['www.example.com.w.kunluncan.com'], true]]);
+  });
+
+  test('the control lands on China\'s branch too: AliDNS\'s own answer (an older one cached, or a line by its address), not a China line', async () => {
+    const { r } = await splitCheck({ control: 'china' });
+    assert.equal(r.verdict.state, 'differ');
+    assert.deepEqual(r.verdict.geoSplits, []);
+    const f = r.verdict.findings.find((x) => x.code === 'cname');
+    assert.deepEqual([f.owner, f.byLocation, f.operators.map((op) => op.id)], [null, null, ['cloudfront', 'alibaba-cdn']], 'the move, as from any resolver');
+  });
+
+  test('no answer to the control: still the location\'s branch, but unsure (line: null)', async () => {
+    const { r } = await splitCheck({ controlFails: true });
+    assert.equal(r.verdict.state, 'by-design');
+    assert.deepEqual(r.verdict.geoSplits.map((s) => s.line), [null]);
+    assert.deepEqual(r.controls.map((c) => c.values), [['SERVFAIL']]);
+  });
+
+  test('a SERVFAIL from AliDNS is never taken for a DNSSEC failure: it does not validate', async () => {
+    const servfail = async (failing) => {
+      const subnets = failing.map((id) => GEO_VANTAGES.find((v) => v.id === id).subnet);
+      const { fetchImpl } = mockFetch(({ name, ecs }) => (subnets.includes(ecs) ? { rcode: 'SERVFAIL' } : { answers: A(name, '192.0.2.1') }));
+      const r = await checkPropagation('www.example.com', 'A', { dns: client(fetchImpl), resolvers: ['cloudflare'], vantages: ['de-ham', ...CHINA] });
+      return r.verdict.findings.filter((f) => f.code === 'rcode').map((f) => [f.members, f.rcode, f.noDnssec]);
+    };
+    assert.deepEqual(await servfail(['cn-sha-ct']), [[['geo:cn-sha-ct'], 'SERVFAIL', true]], 'AliDNS alone');
+    assert.deepEqual(await servfail(['de-ham']), [[['geo:de-ham'], 'SERVFAIL', false]], 'Google, which validates');
+    assert.deepEqual(await servfail(['de-ham', 'cn-sha-ct']), [[['geo:de-ham', 'geo:cn-sha-ct'], 'SERVFAIL', false]], 'both: it may be DNSSEC');
   });
 });

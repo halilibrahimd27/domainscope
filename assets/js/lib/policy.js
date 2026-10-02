@@ -215,15 +215,12 @@ export function parsePolicy(input) {
   const map = nested ? obj.rules : Object.fromEntries(Object.entries(obj).filter(([k]) => !RESERVED_KEYS.has(k)));
   const name = typeof obj.name === 'string' && obj.name.trim() ? obj.name.trim().replace(/\s+/g, ' ').slice(0, 60) : null;
   const keys = Object.keys(map);
-  if (keys.length > POLICY_MAX_RULES) return { policy: null, errors: [{ code: 'too-many', value: String(POLICY_MAX_RULES) }] };
-  const parsed = new Map();
   // Beside a nested "rules" object, a key is never dropped silently: a rule id there is said to be
-  // outside "rules", anything else (a typo) an unknown rule.
-  if (nested) {
-    for (const key of Object.keys(obj).filter((k) => !RESERVED_KEYS.has(k))) {
-      errors.push({ code: policyRule(key) ? 'outside-rules' : 'unknown-rule', rule: key.slice(0, 60) });
-    }
-  }
+  // outside "rules", anything else (a typo) an unknown rule. They count toward the limit too.
+  const beside = nested ? Object.keys(obj).filter((k) => !RESERVED_KEYS.has(k)) : [];
+  if (keys.length + beside.length > POLICY_MAX_RULES) return { policy: null, errors: [{ code: 'too-many', value: String(POLICY_MAX_RULES) }] };
+  const parsed = new Map();
+  for (const key of beside) errors.push({ code: policyRule(key) ? 'outside-rules' : 'unknown-rule', rule: key.slice(0, 60) });
   for (const key of keys) {
     const r = policyRule(key);
     if (!r) {

@@ -93,6 +93,10 @@ describe('parsePolicy', () => {
     assert.equal(parsePolicy(`{"x":"${'a'.repeat(20000)}"}`).errors[0].code, 'too-large');
     const many = Object.fromEntries(Array.from({ length: POLICY_MAX_RULES + 1 }, (_, i) => [`r${i}`, 1]));
     assert.equal(parsePolicy(many).errors[0].code, 'too-many');
+    // keys beside a nested "rules" count too: a file of thousands is one error, never thousands
+    const beside = { rules: { dkim: true }, ...Object.fromEntries(Array.from({ length: POLICY_MAX_RULES }, (_, i) => [`r${i}`, 1])) };
+    assert.deepEqual(parsePolicy(beside), { policy: null, errors: [{ code: 'too-many', value: String(POLICY_MAX_RULES) }] });
+    assert.equal(parsePolicy({ rules: { dkim: true }, ...Object.fromEntries(Array.from({ length: POLICY_MAX_RULES - 1 }, (_, i) => [`r${i}`, 1])) }).errors.length, POLICY_MAX_RULES - 1, 'at the limit: each said');
     const { policy, errors } = parsePolicy({ expiryDays: '>= thirty', dnsec: 'signed', transferLock: 'yes', caa: 'maybe', 'spf.lookups': 101, 'dmarc.policy': '>= strict', dkim: true });
     assert.deepEqual(policy.rules.map((r) => r.id), ['dkim']);
     assert.deepEqual(errors.map((e) => [e.code, e.rule]), [

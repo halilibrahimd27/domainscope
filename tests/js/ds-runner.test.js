@@ -1453,6 +1453,16 @@ describe('offline runs (fake DoH)', () => {
     }
   });
 
+  test('audit: a name server domain nobody has registered fails nsExpiryDays and is warned about by name', async () => {
+    const zone = portfolioZone({ now: NOW.getTime() });
+    zone.table['example.com'].NS = ['ns1.example.net', 'ns2.example-gone.org'];
+    zone.rdap['example.net'].events[1].eventDate = new Date(NOW.getTime() + 300 * 86400000).toISOString();
+    const res = await runMain(['audit', '--preset', 'baseline', 'example.com', '--no-dkim'], { fetchImpl: createPortfolioFetch(zone) });
+    assert.equal(res.code, EXIT.CHANGED, res.out);
+    assert.match(res.out, /- FAIL nsExpiryDays >= 30: name server domain example-gone\.org is not registered — anyone can register it and take over DNS\n/);
+    assert.match(res.err, /ds: warning: the name server domain example-gone\.org \(of example\.com\) is not registered: anyone can register it and take over DNS\n/);
+  });
+
   test('audit: a policy file the app exported (every rule met: exit 0), DKIM off, and a file with a typo refused before anything is sent', async () => {
     const dir = tmp();
     try {

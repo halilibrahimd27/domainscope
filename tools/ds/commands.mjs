@@ -827,6 +827,16 @@ export function auditWarnings(facts, { cellFailures, cells }) {
   if (noRdap.length) out.push(`no RDAP for ${list(noRdap)} (the registry publishes none): the registration rules could not be checked; the registry's WHOIS has the dates`);
   const rdapFailed = facts.filter((f) => f.registration.state === 'failed').map((f) => f.domain);
   if (rdapFailed.length) out.push(`RDAP could not be read for ${list(rdapFailed)}: the registration rules could not be checked`);
+  // A name server domain nobody has registered: whoever registers it answers DNS for the zone.
+  const gone = new Map();
+  for (const f of facts) {
+    for (const d of (f.ns && f.ns.domains) || []) {
+      if (d.own || d.state !== 'not-found') continue;
+      if (!gone.has(d.domain)) gone.set(d.domain, []);
+      gone.get(d.domain).push(f.domain);
+    }
+  }
+  for (const [ns, of] of gone) out.push(`the name server domain ${ns} (of ${list(of)}) is not registered: anyone can register it and take over DNS`);
   const nsFailed = new Map();
   for (const f of facts) {
     for (const x of cellFailures(f, 'ns')) {

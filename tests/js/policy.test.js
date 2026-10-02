@@ -170,6 +170,11 @@ describe('evaluatePolicy', () => {
     assert.deepEqual([mixed.status, mixed.actual, evidenceText(mixed, t)], ['pass', 300, 'name server domain example.net: 300 days left']);
     const ownOnly = cellOf(p, ns([own]), 'nsExpiryDays');
     assert.deepEqual([ownOnly.status, evidenceText(ownOnly, t)], ['pass', 'the name servers are under the domain itself: they expire with it']);
+    // A name server domain the registry says is not registered: the classic takeover, a fail before any count of days.
+    const gone = cellOf(p, ns([{ domain: 'example.net', state: 'ok', daysLeft: 10 }, { domain: 'example.org', state: 'not-found', daysLeft: null }]), 'nsExpiryDays');
+    assert.deepEqual([gone.status, gone.evidence.key, evidenceText(gone, t)],
+      ['fail', 'pol.ev.nsNotRegistered', 'name server domain example.org is not registered — anyone can register it and take over DNS']);
+    assert.equal(cellOf(p, ns([{ domain: 'example.org', state: 'not-found', daysLeft: null }]), 'nsExpiryDays').status, 'fail', 'never "not known"');
   });
 
   test('DNSSEC as levels; DS with keys that could not be read', () => {

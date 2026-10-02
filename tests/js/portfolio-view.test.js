@@ -90,6 +90,12 @@ describe('Domain portfolio view helpers', () => {
     assert.ok(!matchesFilter(fine, 'attention') && !matchesFilter(noRdap, 'attention'), 'no RDAP alone needs no look: the row says it is partial');
     assert.ok(matchesFilter(fine, 'attention', { policyFails: () => true }), 'failing the policy needs a look');
     assert.equal(matchesFilter(null, 'all'), false);
+    // A name server domain the registry does not know: anyone can register it and take over DNS.
+    const nsGone = facts('example.com', { ns: nsOn([nsDomain('example.net', 300), { domain: 'example-gone.org', own: false, state: 'not-found', expires: null, daysLeft: null, expiry: null, registrar: null, failure: null }]) });
+    assert.ok(matchesFilter(nsGone, 'ns'), 'the name server domain tile and filter count it');
+    assert.ok(matchesFilter(nsGone, 'attention'), 'it needs a look');
+    assert.ok(!matchesFilter(nsGone, 'failed'), 'an answer, not a failed lookup');
+    assert.ok(RISK_BADGES.includes('ns-unregistered'));
   });
 
   test('calendar events: one per domain, the name servers\' domains too, worded in the language; the .ics they make', () => {

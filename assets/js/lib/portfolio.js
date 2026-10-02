@@ -776,9 +776,22 @@ export function cellFailures(facts, column) {
 }
 
 /**
- * The headline risk of a row, worst first: 'critical' (a critical registry status), 'expired',
- * 'expiring' (< 30 days), 'ns-expiring' (a name server domain < 30 days), 'hijack' (no transfer
- * lock), 'warn' (< 60 days), 'ok', or null while nothing is known.
+ * The name server domains of a row the registry says are not registered (RDAP 404): anyone can
+ * register one and answer DNS for the zone — the classic name server takeover.
+ * @param {object} facts {@link portfolioFacts}
+ * @returns {string[]}
+ */
+export function unregisteredNsDomains(facts) {
+  return facts && facts.ns && Array.isArray(facts.ns.domains)
+    ? facts.ns.domains.filter((d) => !d.own && d.state === 'not-found').map((d) => d.domain)
+    : [];
+}
+
+/**
+ * The headline risk of a row, worst first: 'critical' (a critical registry status),
+ * 'ns-unregistered' (a name server domain nobody has registered: as urgent), 'expired', 'expiring'
+ * (< 30 days), 'ns-expiring' (a name server domain < 30 days), 'hijack' (no transfer lock), 'warn'
+ * (< 60 days), 'ok', or null while nothing is known.
  * @param {object} facts
  * @returns {string|null}
  */
@@ -786,6 +799,7 @@ export function rowRisk(facts) {
   const reg = facts && facts.registration;
   const nsMin = facts && facts.ns ? facts.ns.domains.filter((d) => !d.own && Number.isFinite(d.daysLeft)).map((d) => d.daysLeft) : [];
   if (reg && reg.risk === 'critical') return 'critical';
+  if (unregisteredNsDomains(facts).length) return 'ns-unregistered';
   if (reg && reg.expiry === 'expired') return 'expired';
   if (reg && reg.expiry === 'error') return 'expiring';
   if (nsMin.length && Math.min(...nsMin) < 30) return 'ns-expiring';
@@ -796,7 +810,7 @@ export function rowRisk(facts) {
 }
 
 /** Severity rank of {@link rowRisk} (sorting: worst first). */
-export const RISK_RANK = Object.freeze({ critical: 0, expired: 1, expiring: 2, 'ns-expiring': 3, hijack: 4, warn: 5, ok: 6 });
+export const RISK_RANK = Object.freeze({ critical: 0, 'ns-unregistered': 0, expired: 1, expiring: 2, 'ns-expiring': 3, hijack: 4, warn: 5, ok: 6 });
 
 /* ------------------------------------------------------------------------ */
 /* Calendar and exports                                                     */
@@ -903,6 +917,13 @@ export function portfolioSummaryFacts(factsList, { at = null, stopped = false, n
   const expiring = list.filter((f) => reg(f).state === 'ok' && Number.isFinite(reg(f).daysLeft) && reg(f).daysLeft < 30)
     .map((f) => ({ domain: f.domain, daysLeft: reg(f).daysLeft })).sort(byDays);
   const nsExpiring = expiryEvents(list).filter((e) => !e.portfolio && e.daysLeft < 30).map((e) => ({ domain: e.domain, daysLeft: e.daysLeft, of: e.nsOf })).sort(byDays);
+  const gone = new Map();
+  for (const f of list) {
+    for (const d of unregisteredNsDomains(f)) {
+      if (!gone.has(d)) gone.set(d, []);
+      gone.get(d).push(f.domain);
+    }
+  }
   const count = (fn) => list.filter(fn).length;
   const failedLookups = list.reduce((n, f) => n + PORTFOLIO_CELLS.reduce((m, c) => m + cellFailures(f, c).length, 0), 0);
   return {
@@ -916,6 +937,7 @@ export function portfolioSummaryFacts(factsList, { at = null, stopped = false, n
     noRdap: count((f) => reg(f).state === 'unsupported'),
     notRegistered: list.filter((f) => reg(f).state === 'not-found').map((f) => f.domain),
     nsExpiring,
+    nsUnregistered: [...gone].map(([domain, of]) => ({ domain, of })).sort((a, b) => a.domain.localeCompare(b.domain, 'en')),
     dnssec: { validated: count((f) => f.dnssec && f.dnssec.state === 'validated'), signed: count((f) => f.dnssec && (f.dnssec.state === 'signed' || f.dnssec.state === 'failing')), unsigned: count((f) => f.dnssec && f.dnssec.state === 'unsigned') },
     caaNone: count((f) => f.caa && (f.caa.state === 'none' || f.caa.state === 'unrestricted')),
     spfOver: list.filter((f) => f.spf && f.spf.over).map((f) => f.domain),

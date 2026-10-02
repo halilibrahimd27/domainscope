@@ -27,7 +27,7 @@ import {
 import { registerStrings, formatBytes, formatNumber, formatDate, formatDateTime, formatRelative, t as translate } from '../i18n.js';
 import {
   PORTFOLIO_CELLS, CELL_LOOKUPS, LOOKUP_SOURCES, PORTFOLIO_MAX_DOMAINS, PORTFOLIO_DKIM_SELECTORS, PORTFOLIO_LOOKUPS, CRITICAL_STATUSES,
-  parsePortfolioInput, createPortfolio, cellFailures, rowRisk, expiryEvents, expiryUid, exportRow, EXPORT_COLUMNS, portfolioSummaryFacts
+  parsePortfolioInput, createPortfolio, cellFailures, rowRisk, unregisteredNsDomains, expiryEvents, expiryUid, exportRow, EXPORT_COLUMNS, portfolioSummaryFacts
 } from '../lib/portfolio.js';
 import {
   POLICY_RULES, POLICY_PRESET_IDS, POLICY_OPS, POLICY_I18N, POLICY_MAX_CHARS, parsePolicy, policyText, presetPolicy, auditPortfolio, auditCsv,
@@ -58,7 +58,7 @@ export const PORTFOLIO_FILTERS = Object.freeze(['all', 'attention', 'expiring', 
 /** The tiles above the table: each one a filter. */
 export const PORTFOLIO_TILES = Object.freeze(['expiring', 'critical', 'unlocked', 'ns', 'failed']);
 /** The risks a domain cell names (lib/portfolio.js rowRisk), 'ok' left out. */
-export const RISK_BADGES = Object.freeze(['critical', 'expired', 'expiring', 'ns-expiring', 'hijack', 'warn']);
+export const RISK_BADGES = Object.freeze(['critical', 'ns-unregistered', 'expired', 'expiring', 'ns-expiring', 'hijack', 'warn']);
 /** A link carries the list only up to this many domains (a summary's link too). */
 export const MAX_LINK_DOMAINS = 50;
 /** The views' tabs. */
@@ -105,7 +105,7 @@ registerStrings('en', {
   'pf.tile.expiring': 'Expire ≤ 30 days',
   'pf.tile.critical': 'Critical status',
   'pf.tile.unlocked': 'No transfer lock',
-  'pf.tile.ns': 'Name server domain ≤ 30 days',
+  'pf.tile.ns': 'Name server domain at risk',
   'pf.tile.failed': 'Lookups failed',
   'pf.tile.filterHint': 'Show only these',
 
@@ -115,7 +115,7 @@ registerStrings('en', {
   'pf.filter.expiring': 'Expire within 30 days ({count})',
   'pf.filter.critical': 'Critical registry status ({count})',
   'pf.filter.unlocked': 'No transfer lock ({count})',
-  'pf.filter.ns': 'Name server domain expiring ({count})',
+  'pf.filter.ns': 'Name server domain expiring or not registered ({count})',
   'pf.filter.nordap': 'No RDAP ({count})',
   'pf.filter.failed': 'A lookup failed ({count})',
   'pf.filter.policy': 'Fail the policy ({count})',
@@ -136,6 +136,7 @@ registerStrings('en', {
   'pf.col.policy': 'Policy',
 
   'pf.risk.critical': 'Critical status',
+  'pf.risk.ns-unregistered': 'NS domain not registered',
   'pf.risk.expired': 'Expired',
   'pf.risk.expiring': 'Expires soon',
   'pf.risk.ns-expiring': 'NS domain expires soon',
@@ -173,6 +174,8 @@ registerStrings('en', {
   'pf.ns.own': 'own',
   'pf.ns.ownTitle': 'Name servers under the domain itself: their domain expires with it.',
   'pf.ns.none': 'no NS records',
+  'pf.ns.notRegistered': 'Not registered',
+  'pf.ns.notRegisteredTitle': 'The registry has no record of this domain: anyone can register it and answer DNS for every zone on these name servers.',
   'pf.nxdomain': 'Does not exist (NXDOMAIN)',
   'pf.caa.none': 'None: any CA',
   'pf.caa.unrestricted': 'No issue property: any CA',
@@ -285,7 +288,7 @@ registerStrings('tr', {
   'pf.tile.expiring': '≤ 30 günde doluyor',
   'pf.tile.critical': 'Kritik durum',
   'pf.tile.unlocked': 'Transfer kilidi yok',
-  'pf.tile.ns': 'Ad sunucusu alan adı ≤ 30 gün',
+  'pf.tile.ns': 'Riskli ad sunucusu alan adı',
   'pf.tile.failed': 'Başarısız sorgu',
   'pf.tile.filterHint': 'Yalnızca bunları göster',
 
@@ -295,7 +298,7 @@ registerStrings('tr', {
   'pf.filter.expiring': '30 gün içinde süresi dolanlar ({count})',
   'pf.filter.critical': 'Kritik kayıt durumu ({count})',
   'pf.filter.unlocked': 'Transfer kilidi olmayanlar ({count})',
-  'pf.filter.ns': 'Ad sunucusu alan adının süresi dolanlar ({count})',
+  'pf.filter.ns': 'Ad sunucusu alan adının süresi dolan ya da kayıtlı olmayanlar ({count})',
   'pf.filter.nordap': 'RDAP’ı olmayanlar ({count})',
   'pf.filter.failed': 'Sorgusu başarısız olanlar ({count})',
   'pf.filter.policy': 'Politikayı karşılamayanlar ({count})',
@@ -316,6 +319,7 @@ registerStrings('tr', {
   'pf.col.policy': 'Politika',
 
   'pf.risk.critical': 'Kritik durum',
+  'pf.risk.ns-unregistered': 'NS alan adı kayıtlı değil',
   'pf.risk.expired': 'Süresi doldu',
   'pf.risk.expiring': 'Süresi yakında doluyor',
   'pf.risk.ns-expiring': 'NS alan adının süresi doluyor',
@@ -353,6 +357,8 @@ registerStrings('tr', {
   'pf.ns.own': 'kendisi',
   'pf.ns.ownTitle': 'Ad sunucuları alan adının kendi altında: alan adı ne zaman biterse onlarınki de o zaman biter.',
   'pf.ns.none': 'NS kaydı yok',
+  'pf.ns.notRegistered': 'Kayıtlı değil',
+  'pf.ns.notRegisteredTitle': 'Kayıt kuruluşunda bu alan adının kaydı yok: herkes onu kaydedip bu ad sunucularındaki bütün zone’lar adına DNS yanıtı verebilir.',
   'pf.nxdomain': 'Mevcut değil (NXDOMAIN)',
   'pf.caa.none': 'Yok: her CA',
   'pf.caa.unrestricted': 'issue özelliği yok: her CA',
@@ -467,7 +473,8 @@ export function matchesFilter(facts, filter, { policyFails = () => false } = {})
   if (!facts) return false;
   const reg = facts.registration || {};
   const failed = PORTFOLIO_CELLS.some((c) => cellFailures(facts, c).length);
-  const nsSoon = !!facts.ns && facts.ns.domains.some((d) => !d.own && Number.isFinite(d.daysLeft) && d.daysLeft < 30);
+  // a name server domain that expires within 30 days, or that nobody has registered at all
+  const nsSoon = (!!facts.ns && facts.ns.domains.some((d) => !d.own && Number.isFinite(d.daysLeft) && d.daysLeft < 30)) || unregisteredNsDomains(facts).length > 0;
   switch (filter) {
     case 'all': return true;
     case 'expiring': return reg.state === 'ok' && Number.isFinite(reg.daysLeft) && reg.daysLeft < 30;
@@ -866,7 +873,8 @@ export function mount(container, ctx) {
     return h('span', { class: 'pf-cell pf-ns' }, ns.domains.map((d) => h('span', { class: 'pf-ns-domain', dataset: { ns: d.domain, own: String(d.own), days: d.daysLeft ?? '' }, title: d.hosts.join('\n') },
       mono(d.domain), ' ',
       d.own ? h('span', { title: t('pf.ns.ownTitle') }, Badge(t('pf.ns.own'))) : Number.isFinite(d.daysLeft) ? daysBadge(d.daysLeft, d.expiry)
-        : d.state === 'unsupported' ? Badge(t('pf.noRdap')) : d.state === 'pending' ? nsPending(row, d.domain) : null)));
+        : d.state === 'not-found' ? h('span', { title: t('pf.ns.notRegisteredTitle'), dataset: { nsState: 'not-found' } }, Badge(t('pf.ns.notRegistered'), { variant: 'error', icon: 'alert' }))
+          : d.state === 'unsupported' ? Badge(t('pf.noRdap')) : d.state === 'pending' ? nsPending(row, d.domain) : null)));
   }
 
   function caaCell(f) {
@@ -940,7 +948,7 @@ export function mount(container, ctx) {
     status: (r) => (r.facts.registration.risk ? { critical: 0, hijack: 1, ok: 2 }[r.facts.registration.risk] : null),
     registrar: (r) => r.facts.registration.registrar || null,
     dnssec: (r) => ({ failing: 0, unsigned: 1, signed: 2, validated: 3 }[r.facts.dnssec.state] ?? null),
-    ns: (r) => (Number.isFinite(r.facts.ns.minDaysLeft) ? r.facts.ns.minDaysLeft : null),
+    ns: (r) => (unregisteredNsDomains(r.facts).length ? -Infinity : Number.isFinite(r.facts.ns.minDaysLeft) ? r.facts.ns.minDaysLeft : null),
     caa: (r) => r.facts.caa.state,
     spf: (r) => (Number.isFinite(r.facts.spf.lookups) ? r.facts.spf.lookups : r.facts.spf.state),
     dmarc: (r) => ({ none: 0, quarantine: 1, reject: 2 }[r.facts.dmarc.policy] ?? (r.facts.dmarc.state ? -1 : null)),

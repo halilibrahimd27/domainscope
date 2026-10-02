@@ -15,7 +15,7 @@ const MAX_NAMED = 3;
 
 /**
  * Domain portfolio: what expires within 30 days (the portfolio's domains and the name servers'
- * domains), critical registry statuses, domains without a transfer lock, DNSSEC, the mail posture
+ * domains), name server domains nobody has registered, critical registry statuses, domains without a transfer lock, DNSSEC, the mail posture
  * that needs a look, parked domains not locked down, the policy audit's result, and what could not
  * be read (no RDAP, failed lookups, a stopped run). Domain names are code spans; never a record value.
  * @param {object} facts lib/portfolio.js portfolioSummaryFacts()
@@ -43,6 +43,9 @@ export function portfolioSummary(facts, opts) {
 
   if ((f.expiring || []).length) lines.push([strong(`${t('sum.pf.expiring')}:`), ' ', ...named(f.expiring, days)]);
   else lines.push([t(f.noRdap || f.stopped ? 'sum.pf.noneExpiringKnown' : 'sum.pf.noneExpiring')]);
+  if ((f.nsUnregistered || []).length) {
+    lines.push([strong(`${t('sum.pf.nsUnregistered')}:`), ' ', ...named(f.nsUnregistered, (x) => t('sum.pf.nsOf', { count: x.of.length }))]);
+  }
   if ((f.nsExpiring || []).length) {
     lines.push([strong(`${t('sum.pf.nsExpiring')}:`), ' ', ...named(f.nsExpiring, (x) => `${days(x)}; ${t('sum.pf.nsOf', { count: x.of.length })}`)]);
   }
@@ -84,6 +87,7 @@ const STRINGS = [
   ['sum.pf.daysLeft', [{ zero: 'today', one: '{count} day', other: '{count} days' }, { zero: 'bugün', other: '{count} gün' }]],
   ['sum.pf.expiredAgo', [{ one: 'expired {count} day ago', other: 'expired {count} days ago' }, '{count} gün önce doldu']],
   ['sum.pf.nsExpiring', ['Name server domains expiring within 30 days', '30 gün içinde süresi dolan ad sunucusu alan adları']],
+  ['sum.pf.nsUnregistered', ['Name server domains not registered (anyone can register them and take over DNS)', 'Kayıtlı olmayan ad sunucusu alan adları (herkes kaydedip DNS’i ele geçirebilir)']],
   ['sum.pf.nsOf', [{ one: 'name servers of {count} domain', other: 'name servers of {count} domains' }, '{count} alan adının ad sunucuları']],
   ['sum.pf.critical', ['Critical registry status', 'Kritik kayıt durumu']],
   ['sum.pf.notRegistered', ['Not registered', 'Kayıtlı değil']],

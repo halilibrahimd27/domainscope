@@ -368,6 +368,9 @@ const RULE_EVAL = {
     // Name servers under the domain itself expire with it: expiryDays reads that date.
     const others = ns.domains.filter((d) => !d.own);
     if (!others.length) return cell(entry, 'pass', null, ev('pol.ev.nsOwnOnly'));
+    // Not registered at all (RDAP 404): anyone can register it and answer for the zone — a fail first.
+    const gone = others.find((d) => d.state === 'not-found');
+    if (gone) return cell(entry, 'fail', null, ev('pol.ev.nsNotRegistered', { domain: gone.domain }));
     const known = others.filter((d) => d.state === 'ok' && Number.isFinite(d.daysLeft));
     const failing = known.filter((d) => !compare(entry.op, d.daysLeft, entry.value)).sort((a, b) => a.daysLeft - b.daysLeft);
     const soonest = [...known].sort((a, b) => a.daysLeft - b.daysLeft)[0] || null;
@@ -644,6 +647,8 @@ const STRINGS = [
   ['pol.ev.nsExpired', [{ one: 'name server domain {domain} expired {count} day ago', other: 'name server domain {domain} expired {count} days ago' },
     'ad sunucusu alan adı {domain} {count} gün önce sona erdi']],
   ['pol.ev.nsUnknown', ['the expiry of name server domain {domain} is not known', 'ad sunucusu alan adı {domain} için bitiş tarihi bilinmiyor']],
+  ['pol.ev.nsNotRegistered', ['name server domain {domain} is not registered — anyone can register it and take over DNS',
+    'ad sunucusu alan adı {domain} kayıtlı değil — herkes kaydedip DNS’i ele geçirebilir']],
   ['pol.ev.noNs', ['no name servers to check', 'kontrol edilecek ad sunucusu yok']],
   ['pol.ev.nsOwnOnly', ['the name servers are under the domain itself: they expire with it', 'ad sunucuları alan adının kendi altında: onunla birlikte sona erer']],
   ['pol.ev.nxdomain', ['the domain does not exist in DNS (NXDOMAIN)', 'alan adı DNS’te yok (NXDOMAIN)']],

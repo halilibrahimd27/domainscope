@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {
   PORTFOLIO_LOOKUPS, PORTFOLIO_CELLS, CELL_LOOKUPS, CRITICAL_STATUSES, PORTFOLIO_MAX_DOMAINS, PORTFOLIO_DKIM_SELECTORS,
   parsePortfolioInput, statusRisk, nsDomainsOf, plannedNsDomains, createPortfolio, restorePortfolio, portfolioFacts, cellFailures,
-  rowRisk, expiryBand, expiryEvents, expiryUid, exportRow, EXPORT_COLUMNS, portfolioSummaryFacts
+  rowRisk, RISK_RANK, expiryBand, expiryEvents, expiryUid, exportRow, EXPORT_COLUMNS, portfolioSummaryFacts
 } from '../../assets/js/lib/portfolio.js';
 import { clearRdapCache } from '../../assets/js/lib/rdap.js';
 import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
@@ -393,6 +393,22 @@ describe('the calendar and the exports', () => {
     });
     assert.equal(rows[2].failed, 'caa');
     assert.equal(rows[1].parked, 'locked');
+  });
+
+  test('a name server domain the registry does not know (RDAP 404): the takeover is flagged — the row\'s risk, the summary, never "no data"', async () => {
+    const zone = { ...ZONE, 'example.com': { ...ZONE['example.com'], NS: ['ns1.example.net', 'ns2.example-gone.org'] } };
+    const dns = fakeDns(zone, { signed: ['example.com'] });
+    const fetchImpl = rdapFetch({ ...RDAP, 'example.net': rdapJson('example.net', { days: 300 }) });
+    const run = createPortfolio({ domains: ['example.com'], dns, fetchImpl, rdapOptions: { rdapOrgIntervalMs: 0 } });
+    await run.start();
+    const f = run.facts('example.com', { now: NOW });
+    assert.deepEqual(f.ns.domains.map((d) => [d.domain, d.state]), [['example-gone.org', 'not-found'], ['example.net', 'ok']]);
+    assert.equal(rowRisk(f), 'ns-unregistered');
+    assert.equal(RISK_RANK['ns-unregistered'], RISK_RANK.critical, 'as urgent as a critical registry status');
+    assert.deepEqual(cellFailures(f, 'ns'), [], 'an answer, not a failure');
+    const s = portfolioSummaryFacts([f], { at: NOW });
+    assert.deepEqual(s.nsUnregistered, [{ domain: 'example-gone.org', of: ['example.com'] }]);
+    assert.equal(exportRow(f).risk, 'ns-unregistered');
   });
 
   test('the summary facts: what needs a look, by domain', async () => {

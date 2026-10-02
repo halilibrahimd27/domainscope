@@ -67,8 +67,9 @@ const ZONE = {
     TXT: [['v=spf1 -all']]
   },
   '_dmarc.example.org': { TXT: [['v=DMARC1; p=reject']] },
+  // its second name server sits under a domain nobody has registered (the classic takeover)
   'example-test.com.tr': {
-    NS: ['ns1.example.net'],
+    NS: ['ns1.example.net', 'ns1.example.test'],
     MX: [{ preference: 10, exchange: 'mx.example-test.com.tr' }],
     TXT: [['v=spf1 ~all']]
   },
@@ -110,7 +111,7 @@ export const fakeScript = () => `(() => {
   });
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
-    if (url.startsWith('https://data.iana.org/rdap/')) return json({ services: [[['com', 'net', 'org'], ['https://rdap.example.net/']]] });
+    if (url.startsWith('https://data.iana.org/rdap/')) return json({ services: [[['com', 'net', 'org', 'test'], ['https://rdap.example.net/']]] });
     if (url.startsWith('https://rdap.example.net/') || url.startsWith('https://rdap.org/')) {
       const name = decodeURIComponent(url.split('/domain/')[1] || '');
       window.__rdapLog.push(name);
@@ -241,6 +242,7 @@ async function main() {
       assertEqual(rdap.filter((d) => d === 'example.net').length, 1, 'the name servers\' domain asked once for all three');
       assertEqual(rdap.filter((d) => d === 'example.com').length, 1, 'example.com once');
       assert(!rdap.includes('example-test.com.tr'), 'no RDAP request for .tr');
+      assertEqual(rdap.filter((d) => d === 'example.test').length, 1, 'the unregistered name server domain asked once');
 
       const com = await rowOf(page, 'example.com');
       assert(/400 days left/.test(com.expiry) && com.days === '400', `expiry: ${com.expiry}`);
@@ -264,6 +266,8 @@ async function main() {
       assert(!/Partial/.test(com.domain), 'only the row without RDAP');
       assertEqual(await page.evaluate(() => [...document.querySelectorAll('.pf-whois')].map((a) => a.getAttribute('href'))), ['https://www.trabis.gov.tr/whois'], 'WHOIS link');
       assertEqual(tr.failed, ['caa'], 'CAA SERVFAIL: n/a');
+      assertEqual(tr.risk, 'pf-risk-ns-unregistered', 'a name server domain nobody registered: the row says so first');
+      assert(/example\.test\s*Not registered/.test(tr.ns) && /NS domain not registered/.test(tr.domain), `${tr.ns} | ${tr.domain}`);
       assert(/No DMARC/.test(tr.dmarc) && /~all/.test(tr.spf), JSON.stringify(tr));
       await shot(page, opts, 'portfolio-results-desktop-light-en');
     });
@@ -402,6 +406,7 @@ async function main() {
       assert(ls.includes('- **Expire within 30 days:** `example.org` (20 days)'), out);
       assert(ls.some((l) => l.startsWith('- **Name server domains expiring within 30 days:** `example.net` (12 days; name servers of 3 domains)')), out);
       assert(ls.includes('- **No transfer lock:** `example.org`'), out);
+      assert(ls.includes('- **Name server domains not registered (anyone can register them and take over DNS):** `example.test` (name servers of 1 domain)'), out);
       assert(ls.some((l) => /^- \*\*Policy\*\* `e2e`: 2 of 3 domains fail/.test(l)), out);
       assert(/#\/portfolio\?domains=example\.com(%2C|,)example\.org(%2C|,)example-test\.com\.tr$/.test(ls[ls.length - 1]), ls[ls.length - 1]);
     });

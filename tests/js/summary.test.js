@@ -1040,6 +1040,12 @@ describe('portfolio (Domain portfolio)', () => {
     assert.equal(lines(md(partial))[3], '- **Policy** `@team *strict*`: no domain fails a rule; 1 could not be checked in full');
     const stopped = PF.portfolioSummary({ ...quiet, stopped: true, notLooked: 2 }, opts());
     assert.match(md(stopped), /\n- stopped: 2 domains not looked up in full\n/);
+    // A name server domain nobody has registered: right after the expiry line, by name.
+    const gone = PF.portfolioSummary({ ...quiet, nsUnregistered: [{ domain: 'example-gone.org', of: ['example.com', 'example.net'] }] }, opts());
+    assert.equal(lines(md(gone))[2], '- **Name server domains not registered (anyone can register them and take over DNS):** `example-gone.org` (name servers of 2 domains)');
+    assert.equal(lines(md(PF.portfolioSummary({ ...quiet, nsUnregistered: [{ domain: 'example-gone.org', of: ['example.com'] }] }, opts('tr'))))[2],
+      '- **Kayıtlı olmayan ad sunucusu alan adları (herkes kaydedip DNS’i ele geçirebilir):** `example-gone.org` (1 alan adının ad sunucuları)');
+    i18n.setLang('en');
     assert.throws(() => S.buildSummary('portfolio', facts(), opts()), RangeError, 'not before its view registers it');
     S.registerSummaryBuilder('portfolio', PF.portfolioSummary);
     assert.equal(S.buildSummary('portfolio', facts(), opts()).kind, 'portfolio');

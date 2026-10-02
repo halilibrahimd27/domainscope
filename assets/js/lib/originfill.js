@@ -11,8 +11,9 @@
  *   name's other entries stale).
  * - {@link cliReportObservations}: the CLI's `--json` reports, read with lib/estate.js
  *   readEstateReport (the Certificate estate view's reader): per name asked and endpoint,
- *   UPDATED / NEEDS_UPDATE / ORIGIN_CERT = it serves the name, NOT_HOSTED = it does not, anything
- *   else (PRIVATE_CERT, TLS_ERROR, TIMEOUT, CLOSED) = asked, no answer. Source 'cli-json'.
+ *   UPDATED / NEEDS_UPDATE / ORIGIN_CERT / PRIVATE_CERT (a covering certificate) = it serves the
+ *   name, NOT_HOSTED = it does not, anything else (TLS_ERROR, TIMEOUT, CLOSED) = asked, no answer.
+ *   Source 'cli-json'.
  * - {@link verifyObservations}: SSL Targets › Verify — the checks of exact origins (a proxied name
  *   on an inventory origin the origin map or the zone file names, `via` known / zone) with a
  *   verdict, read the same way. A hint's candidate is never one. Source 'verify'.
@@ -220,8 +221,12 @@ export function removeOrigins(map, keys) {
 /* What each source observes                                                */
 /* ------------------------------------------------------------------------ */
 
-/** The CLI / Verify statuses that say a server serves the name. */
-export const HOSTED_STATUSES = Object.freeze(['UPDATED', 'NEEDS_UPDATE', 'ORIGIN_CERT']);
+/**
+ * The CLI / Verify statuses that say a server serves the name: every covering certificate, the new
+ * one or not — a Cloudflare Origin CA certificate (ORIGIN_CERT) and a self-signed or private-CA one
+ * (PRIVATE_CERT: a Cloudflare "Full" origin, an internal host) included.
+ */
+export const HOSTED_STATUSES = Object.freeze(['UPDATED', 'NEEDS_UPDATE', 'ORIGIN_CERT', 'PRIVATE_CERT']);
 /** The status that says it does not. */
 export const NOT_HOSTED_STATUS = 'NOT_HOSTED';
 /**

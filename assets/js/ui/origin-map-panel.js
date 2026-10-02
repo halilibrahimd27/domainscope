@@ -14,9 +14,9 @@
  *   stale ones, forget them all.
  * - Add or change one by hand.
  * - Import the CLI's `--json` reports (lib/originfill.js readCliReports, the Certificate estate's
- *   reader): a server answering UPDATED, NEEDS_UPDATE or ORIGIN_CERT for a proxied name is
- *   remembered; a report that finds a remembered name elsewhere, or no longer at its address,
- *   marks that entry stale. A name counts as proxied when the map has it, the imported zone file
+ *   reader): a server answering UPDATED, NEEDS_UPDATE, ORIGIN_CERT or PRIVATE_CERT (a covering
+ *   certificate) for a proxied name is remembered; a report that asked a remembered origin and did
+ *   not find the name there marks that entry stale (one it did not ask stays as it is). A name counts as proxied when the map has it, the imported zone file
  *   or the last scan of this page session says so, or a server answered it with a Cloudflare
  *   Origin CA certificate; "Also names not known to be behind a CDN" takes every name.
  *
@@ -86,7 +86,7 @@ registerStrings('en', {
   'omp.importTitle': 'Import CLI reports',
   'omp.importSubtitle': 'The --json reports of ssl_origin_scan.py, read in this browser',
   'omp.importDrop': 'Drop the report.json files here',
-  'omp.importHint': 'A server that answers UPDATED, NEEDS_UPDATE or ORIGIN_CERT for a name behind a CDN is remembered. A report that asked a remembered origin and did not find the name there marks that entry stale; an origin the report did not ask stays as it is.',
+  'omp.importHint': 'A server that answers UPDATED, NEEDS_UPDATE, ORIGIN_CERT or PRIVATE_CERT (a certificate covering the name) for a name behind a CDN is remembered. A report that asked a remembered origin and did not find the name there marks that entry stale; an origin the report did not ask stays as it is.',
   'omp.importAll': 'Also names not known to be behind a CDN',
   'omp.importAllHint': 'Otherwise only names the origin map, the imported zone file or the last scan in this tab show behind a CDN are added (and those a server answered with a Cloudflare Origin CA certificate).',
   'omp.importFile': '{file}: {text}',
@@ -147,7 +147,7 @@ registerStrings('tr', {
   'omp.importTitle': 'CLI raporlarını içe aktar',
   'omp.importSubtitle': 'ssl_origin_scan.py’nin --json raporları, bu tarayıcıda okunur',
   'omp.importDrop': 'report.json dosyalarını buraya bırakın',
-  'omp.importHint': 'CDN arkasındaki bir ad için UPDATED, NEEDS_UPDATE ya da ORIGIN_CERT yanıtı veren sunucu hatırlanır. Hatırlanan bir origin’i sorup adı orada bulamayan rapor, o kaydı eskimiş olarak işaretler; raporun sormadığı bir origin olduğu gibi kalır.',
+  'omp.importHint': 'CDN arkasındaki bir ad için UPDATED, NEEDS_UPDATE, ORIGIN_CERT ya da PRIVATE_CERT (adı kapsayan bir sertifika) yanıtı veren sunucu hatırlanır. Hatırlanan bir origin’i sorup adı orada bulamayan rapor, o kaydı eskimiş olarak işaretler; raporun sormadığı bir origin olduğu gibi kalır.',
   'omp.importAll': 'CDN arkasında olduğu bilinmeyen adlar da eklensin',
   'omp.importAllHint': 'Aksi halde yalnızca origin haritasının, içe aktarılan zone dosyasının ya da bu sekmedeki son taramanın CDN arkasında gösterdiği adlar eklenir (bir sunucunun Cloudflare Origin CA sertifikasıyla yanıt verdiği adlar da).',
   'omp.importFile': '{file}: {text}',

@@ -31,10 +31,19 @@ function report({ finishedAt = AT, rows }) {
 }
 
 describe('outcomes', () => {
-  test('UPDATED, NEEDS_UPDATE and ORIGIN_CERT serve the name; NOT_HOSTED does not; the rest says nothing', () => {
-    assert.deepEqual([...HOSTED_STATUSES], ['UPDATED', 'NEEDS_UPDATE', 'ORIGIN_CERT']);
-    assert.deepEqual(['UPDATED', 'NEEDS_UPDATE', 'ORIGIN_CERT', 'NOT_HOSTED', 'PRIVATE_CERT', 'TLS_ERROR', 'TIMEOUT', 'CLOSED', null].map(outcomeOf),
-      ['hosted', 'hosted', 'hosted', 'not-hosted', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown']);
+  test('every covering certificate serves the name (PRIVATE_CERT too: a self-signed or private-CA one); NOT_HOSTED does not; the rest is no answer', () => {
+    assert.deepEqual([...HOSTED_STATUSES], ['UPDATED', 'NEEDS_UPDATE', 'ORIGIN_CERT', 'PRIVATE_CERT']);
+    assert.deepEqual(['UPDATED', 'NEEDS_UPDATE', 'ORIGIN_CERT', 'PRIVATE_CERT', 'NOT_HOSTED', 'TLS_ERROR', 'TIMEOUT', 'CLOSED', null].map(outcomeOf),
+      ['hosted', 'hosted', 'hosted', 'hosted', 'not-hosted', 'unknown', 'unknown', 'unknown', 'unknown']);
+  });
+
+  test('a Cloudflare "Full" origin with a self-signed certificate is remembered from a report and from Verify', () => {
+    const doc = report({ rows: [{ name: 'shop.example.com', ip: '203.0.113.10', status: 'PRIVATE_CERT', server: 'web03' }] });
+    let res = applyObservations(ON, cliReportObservations(doc).observations, { source: 'cli-json', at: AT });
+    assert.deepEqual(res.added, ['shop.example.com|203.0.113.10|443']);
+    const rows = [{ state: 'done', stale: false, proxied: true, via: 'known', ip: '203.0.113.10', port: 443, name: 'shop.example.com', server: { id: 's1', name: 'web03' }, status: 'PRIVATE_CERT' }];
+    res = applyObservations(res.map, verifyObservations(rows), { source: 'verify', at: '2026-10-01T09:00:00.000Z' });
+    assert.deepEqual(res.confirmed, ['shop.example.com|203.0.113.10|443']);
   });
 });
 
@@ -56,7 +65,7 @@ describe('Zone File › Origins & servers', () => {
 });
 
 describe('the CLI --json reports', () => {
-  test('a report of the estate fixture: hosted, not hosted and Origin CA names', async () => {
+  test('a report of the estate fixture: hosted (private certificates too), not hosted and Origin CA names', async () => {
     const { reports, errors } = readCliReports([{ name: 'report-a.json', text: await fixture('report-a.json') }]);
     assert.deepEqual(errors, []);
     const [r] = reports;
@@ -64,10 +73,13 @@ describe('the CLI --json reports', () => {
     assert.deepEqual(r.originCertNames, ['a.wild.example.net']);
     const hosted = r.observations.filter((o) => o.outcome === 'hosted').map((o) => `${o.name} ${o.ip} ${o.server}`).sort();
     assert.deepEqual(hosted, [
+      'a.wild.example.net 192.0.2.10 web01',
+      'a.wild.example.net 192.0.2.11 web02',
       'a.wild.example.net 198.51.100.20 origin',
       'www.example-test.com.tr 192.0.2.10 web01',
-      'www.example-test.com.tr 192.0.2.11 web02'
-    ]);
+      'www.example-test.com.tr 192.0.2.11 web02',
+      'www.example-test.com.tr 2001:db8::13 web03'
+    ], 'PRIVATE_CERT on web01, web02 and web03 is a covering certificate');
     assert.ok(r.observations.some((o) => o.outcome === 'not-hosted' && o.ip === '198.51.100.20' && o.name === 'www.example-test.com.tr'));
     assert.ok(!r.observations.some((o) => o.ip === '198.51.100.21'), 'a closed port (a connect row) is no observation');
   });
@@ -77,9 +89,9 @@ describe('the CLI --json reports', () => {
     const [r] = reports;
     const origin = new Set(r.originCertNames);
     const res = applyObservations(ON, r.observations, { source: 'cli-json', at: r.at, proxied: (n) => origin.has(n) });
-    assert.deepEqual(res.added, ['a.wild.example.net|198.51.100.20|443']);
+    assert.deepEqual(res.added, ['a.wild.example.net|192.0.2.10|443', 'a.wild.example.net|192.0.2.11|443', 'a.wild.example.net|198.51.100.20|443']);
     assert.deepEqual(res.skipped, ['www.example-test.com.tr']);
-    assert.equal(res.map.entries[0].server, 'origin', 'the CLI\'s server name');
+    assert.equal(res.map.entries.find((e) => e.ip === '198.51.100.20').server, 'origin', 'the CLI\'s server name');
   });
 
   test('a later report that finds the name on another server marks the remembered origin stale', () => {

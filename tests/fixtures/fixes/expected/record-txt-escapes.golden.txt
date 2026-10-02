@@ -58,7 +58,7 @@ quote:
   - type: TXT
     ttl: 3600
     values:
-      - 'a "quoted" \\ back|slash ^ caret\; semi ''single'' café'
+      - 'a "quoted" \ back|slash ^ caret\; semi ''single'' café'
 ## terraform-cloudflare
 # DNS change request for example.com (DomainScope)
 # terraform-provider-cloudflare v4 (cloudflare_record; v5 names it cloudflare_dns_record).

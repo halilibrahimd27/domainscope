@@ -1,5 +1,5 @@
-# pitfalls: 41 records, origin example.com
-## bind (example.com.zone, text/plain;charset=utf-8, 38 written)
+# pitfalls: 47 records, origin example.com
+## bind (example.com.zone, text/plain;charset=utf-8, 44 written)
 ; example.com as an RFC 1035 zone file (BIND), written by DomainScope from bind.
 ; Records that cannot be served as they are stay here as comments, with the reason.
 $ORIGIN example.com.
@@ -36,12 +36,18 @@ _sip._tcp            3600 IN SRV   10 60 5060 sip.example.com.
 _443._tcp.www        3600 IN TLSA  3 1 1 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF
 svc                  3600 IN HTTPS 1 . alpn="h2,h3" ipv4hint=192.0.2.10
 _svc                 3600 IN SVCB  1 svc.example.net. port=8443
+svc2                 3600 IN HTTPS 1 svc.example.net. mandatory=alpn,port alpn="h2" no-default-alpn port=8443 ipv6hint=2001:db8::10
+doh                  3600 IN SVCB  1 doh.example.net. alpn="h2" dohpath="/dns-query{?dns}"
 host                 3600 IN SSHFP 4 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF
 sub                  3600 IN NS    ns1.example.net.
 sub                  3600 IN DS    12345 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF
 old                  3600 IN DNAME new.example.net.
 spf                  3600 IN SPF   "v=spf1 -all"
 uri                  3600 IN URI   10 1 "https://www.example.com/"
+rp                   3600 IN RP    hostmaster.example.com. info.example.com.
+smime._smimecert     3600 IN SMIMEA 3 1 1 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF
+pgp._openpgpkey      3600 IN OPENPGPKEY AQIDBAUGBwgJCgsMDQ4PEA==
+dhcp                 3600 IN DHCID AAIBY2/AuCccgoJbsaxcQc9TUapptP69lOjxfNuVAA2kjEA=
 geo                  3600 IN LOC   52 22 23.000 N 4 53 32.000 E -2.00m 0.00m 10000m 10m
 ; not a record type this format holds:
 ; alias                3600 IN ALIAS target.example.net.
@@ -60,8 +66,8 @@ info duplicate ×1: dup
 ## bind left out
 7 example.com CNAME cname-apex
 25 dup.example.com A duplicate
-43 alias.example.com ALIAS unsupported-type
-## route53 (example.com.route53.json, application/json;charset=utf-8, 30 written)
+49 alias.example.com ALIAS unsupported-type
+## route53 (example.com.route53.json, application/json;charset=utf-8, 32 written)
 {
   "Comment": "example.com, written by DomainScope from bind",
   "Changes": [
@@ -356,6 +362,32 @@ info duplicate ×1: dup
     {
       "Action": "UPSERT",
       "ResourceRecordSet": {
+        "Name": "svc2.example.com.",
+        "Type": "HTTPS",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "1 svc.example.net. mandatory=alpn,port alpn=\"h2\" no-default-alpn port=8443 ipv6hint=2001:db8::10"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "doh.example.com.",
+        "Type": "SVCB",
+        "TTL": 3600,
+        "ResourceRecords": [
+          {
+            "Value": "1 doh.example.net. alpn=\"h2\" dohpath=\"/dns-query{?dns}\""
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
         "Name": "host.example.com.",
         "Type": "SSHFP",
         "TTL": 3600,
@@ -411,7 +443,7 @@ info duplicate ×1: dup
 error cname-apex ×1: @
 warn proxied ×2: www mixed
 warn caa-flags ×1: @ [flags=1]
-warn unsupported-type ×4: old uri geo alias [types=DNAME,URI,LOC,ALIAS]
+warn unsupported-type ×8: old uri rp smime._smimecert pgp._openpgpkey dhcp geo alias [types=DNAME,URI,RP,SMIMEA,OPENPGPKEY,DHCID,LOC,ALIAS]
 warn dnssec ×1: @
 warn out-of-zone ×1: other.example.net.
 warn wildcard-inner ×1: a.*.inner
@@ -431,12 +463,16 @@ info ttl-mixed ×1: ttls
 7 example.com CNAME cname-apex
 8 example.com DNSKEY dnssec
 25 dup.example.com A duplicate
-39 old.example.com DNAME unsupported-type
-41 uri.example.com URI unsupported-type
-42 geo.example.com LOC unsupported-type
-43 alias.example.com ALIAS unsupported-type
-44 other.example.net A out-of-zone
-## octodns (example.com.yaml, application/yaml;charset=utf-8, 30 written)
+41 old.example.com DNAME unsupported-type
+43 uri.example.com URI unsupported-type
+44 rp.example.com RP unsupported-type
+45 smime._smimecert.example.com SMIMEA unsupported-type
+46 pgp._openpgpkey.example.com OPENPGPKEY unsupported-type
+47 dhcp.example.com DHCID unsupported-type
+48 geo.example.com LOC unsupported-type
+49 alias.example.com ALIAS unsupported-type
+50 other.example.net A out-of-zone
+## octodns (example.com.yaml, application/yaml;charset=utf-8, 36 written)
 # example.com as an octoDNS zone (example.com.yaml), written by DomainScope from bind.
 # Keys are in octoDNS order; the SOA, the apex NS and what octoDNS cannot hold are left out (see the notes).
 ---
@@ -491,6 +527,14 @@ _sip._tcp:
     priority: 10
     target: sip.example.com.
     weight: 60
+_svc:
+  ttl: 3600
+  type: SVCB
+  value:
+    svcparams:
+      port: 8443
+    svcpriority: 1
+    targetname: svc.example.net.
 'a.*.inner':
   ttl: 3600
   type: A
@@ -499,6 +543,16 @@ _sip._tcp:
   ttl: 3600
   type: TXT
   value: 'a name with a space'
+doh:
+  ttl: 3600
+  type: SVCB
+  value:
+    svcparams:
+      alpn:
+        - h2
+      key7: '/dns-query{?dns}'
+    svcpriority: 1
+    targetname: doh.example.net.
 dup:
   ttl: 3600
   type: A
@@ -544,10 +598,14 @@ old:
   ttl: 3600
   type: DNAME
   value: new.example.net.
+pgp._openpgpkey:
+  ttl: 3600
+  type: OPENPGPKEY
+  value: 'AQIDBAUGBwgJCgsMDQ4PEA=='
 quoted:
   ttl: 3600
   type: TXT
-  value: 'say "hi"\; a back\\slash'
+  value: 'say "hi"\; a back\slash'
 spf:
   ttl: 3600
   type: SPF
@@ -574,12 +632,49 @@ sub:
   - ttl: 3600
     type: NS
     value: ns1.example.net.
+svc:
+  ttl: 3600
+  type: HTTPS
+  value:
+    svcparams:
+      alpn:
+        - h2
+        - h3
+      ipv4hint:
+        - '192.0.2.10'
+    svcpriority: 1
+    targetname: '.'
+svc2:
+  ttl: 3600
+  type: HTTPS
+  value:
+    svcparams:
+      alpn:
+        - h2
+      ipv6hint:
+        - '2001:db8::10'
+      mandatory:
+        - alpn
+        - port
+      no-default-alpn: null
+      port: 8443
+    svcpriority: 1
+    targetname: svc.example.net.
 ttls:
   ttl: 300
   type: A
   values:
     - '198.51.100.1'
     - '198.51.100.2'
+uri:
+  octodns:
+    lenient: true
+  ttl: 3600
+  type: URI
+  value:
+    priority: 10
+    target: 'https://www.example.com/'
+    weight: 1
 www:
   octodns:
     cloudflare:
@@ -590,7 +685,9 @@ www:
 ## octodns pitfalls
 warn proxied-mixed ×1: mixed
 warn caa-flags ×1: @ [flags=1]
-warn unsupported-type ×5: svc _svc uri geo alias [types=HTTPS,SVCB,URI,LOC,ALIAS]
+warn name-lenient ×1: uri [types=URI]
+warn unsupported-type ×4: rp smime._smimecert dhcp alias [types=RP,SMIMEA,DHCID,ALIAS]
+warn by-hand ×1: geo [types=LOC]
 warn dnssec ×1: @
 warn out-of-zone ×1: other.example.net.
 warn wildcard-inner ×1: a.*.inner
@@ -601,6 +698,7 @@ info cname-flatten ×1: status
 info txt-long ×1: google._domainkey
 info txt-split ×1: split
 info caa-tag ×1: @ [tags=policy]
+info svc-key ×1: doh [keys=dohpath]
 info soa ×1: @
 info apex-ns ×2: @
 info wildcard ×1: *.apps
@@ -612,16 +710,16 @@ info ttl-mixed ×1: ttls
 6 example.com NS apex-ns
 8 example.com DNSKEY dnssec
 25 dup.example.com A duplicate
-34 svc.example.com HTTPS unsupported-type
-35 _svc.example.com SVCB unsupported-type
-41 uri.example.com URI unsupported-type
-42 geo.example.com LOC unsupported-type
-43 alias.example.com ALIAS unsupported-type
-44 other.example.net A out-of-zone
+44 rp.example.com RP unsupported-type
+45 smime._smimecert.example.com SMIMEA unsupported-type
+47 dhcp.example.com DHCID unsupported-type
+48 geo.example.com LOC by-hand
+49 alias.example.com ALIAS unsupported-type
+50 other.example.net A out-of-zone
 ## octodns changed
 7 example.com CNAME cname-apex
 16 mixed.example.com A proxied-mixed
-## dnscontrol (dnsconfig.js, text/javascript;charset=utf-8, 30 written)
+## dnscontrol (dnsconfig.js, text/javascript;charset=utf-8, 36 written)
 // example.com as DNSControl's dnsconfig.js, written by DomainScope from bind.
 // Read the notes DomainScope listed, then run `dnscontrol preview` before `dnscontrol push`.
 var REG_NONE = NewRegistrar("none");
@@ -633,7 +731,7 @@ D("example.com", REG_NONE, DnsProvider(DSP_MAIN),
     CAA("@", "issue", "letsencrypt.org"),
     CAA("@", "issuewild", ";", CAA_CRITICAL),
     CAA("@", "iodef", "mailto:security@example.com"),
-    CAA("@", "policy", "strict"),
+    // not written (a CAA tag DNSControl refuses): @ CAA 0 policy "strict"
     NAPTR("@", 100, 10, "S", "SIP+D2U", "", "_sip._udp.example.com."),
     A("www", "192.0.2.10", TTL(300), CF_PROXY_ON),
     A("mixed", "192.0.2.30", TTL(300), CF_PROXY_ON),
@@ -649,34 +747,43 @@ D("example.com", REG_NONE, DnsProvider(DSP_MAIN),
     A("*.apps", "203.0.113.20"),
     A("a.*.inner", "203.0.113.21"),
     TXT("a\\032b", "a name with a space"),
-    TXT("google._domainkey", ["v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0mat", "erialx0example0key0materialx0example0key0mate"]),
-    TXT("split", ["v=spf1 ", "include:_spf.example.net ", "-all"]),
+    TXT("google._domainkey", "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0mate"),
+    TXT("split", "v=spf1 include:_spf.example.net -all"),
     TXT("quoted", "say \"hi\"; a back\\slash"),
     SRV("_sip._tcp", 10, 60, 5060, "sip.example.com."),
     TLSA("_443._tcp.www", 3, 1, 1, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
     HTTPS("svc", 1, ".", "alpn=\"h2,h3\" ipv4hint=192.0.2.10"),
     SVCB("_svc", 1, "svc.example.net.", "port=8443"),
+    HTTPS("svc2", 1, "svc.example.net.", "mandatory=alpn,port alpn=\"h2\" no-default-alpn port=8443 ipv6hint=2001:db8::10"),
+    SVCB("doh", 1, "doh.example.net.", "alpn=\"h2\" dohpath=\"/dns-query{?dns}\""),
     SSHFP("host", 4, 2, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
     NS("sub", "ns1.example.net."),
     DS("sub", 12345, 13, 2, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-    // not written (not a record type this format holds): old DNAME new.example.net.
+    DNAME("old", "new.example.net."),
     // not written (not a record type this format holds): spf SPF "v=spf1 -all"
     // not written (not a record type this format holds): uri URI 10 1 "https://www.example.com/"
-    // not written (not a record type this format holds): geo LOC 52 22 23.000 N 4 53 32.000 E -2.00m 0.00m 10000m 10m
-    // not written (not a record type this format holds): alias ALIAS target.example.net.
+    RP("rp", "hostmaster.example.com.", "info.example.com."),
+    SMIMEA("smime._smimecert", 3, 1, 1, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+    OPENPGPKEY("pgp._openpgpkey", "AQIDBAUGBwgJCgsMDQ4PEA=="),
+    // not written (DomainScope cannot write this record type for this format: add it by hand): dhcp DHCID AAIBY2/AuCccgoJbsaxcQc9TUapptP69lOjxfNuVAA2kjEA=
+    // not written (DomainScope cannot write this record type for this format: add it by hand): geo LOC 52 22 23.000 N 4 53 32.000 E -2.00m 0.00m 10000m 10m
+    ALIAS("alias", "target.example.net."),
 END);
 ## dnscontrol pitfalls
 warn caa-flags ×1: @ [flags=1]
-warn unsupported-type ×5: old spf uri geo alias [types=DNAME,SPF,URI,LOC,ALIAS]
+warn caa-tag ×1: @ [tags=policy]
+warn unsupported-type ×2: spf uri [types=SPF,URI]
+warn by-hand ×2: dhcp geo [types=DHCID,LOC]
 warn dnssec ×1: @
 warn out-of-zone ×1: other.example.net.
 warn wildcard-inner ×1: a.*.inner
 warn escaped-name ×1: a\032b
 info cname-apex ×1: @
+info alias-record ×1: alias
 info proxied ×3: @ www mixed
 info cname-flatten ×1: status
 info txt-long ×1: google._domainkey
-info caa-tag ×1: @ [tags=policy]
+info txt-split ×1: split
 info soa ×1: @
 info apex-ns ×2: @
 info wildcard ×1: *.apps
@@ -687,12 +794,12 @@ info ttl-mixed ×1: ttls
 5 example.com NS apex-ns
 6 example.com NS apex-ns
 8 example.com DNSKEY dnssec
+12 example.com CAA caa-tag
 25 dup.example.com A duplicate
-39 old.example.com DNAME unsupported-type
-40 spf.example.com SPF unsupported-type
-41 uri.example.com URI unsupported-type
-42 geo.example.com LOC unsupported-type
-43 alias.example.com ALIAS unsupported-type
-44 other.example.net A out-of-zone
+42 spf.example.com SPF unsupported-type
+43 uri.example.com URI unsupported-type
+47 dhcp.example.com DHCID by-hand
+48 geo.example.com LOC by-hand
+50 other.example.net A out-of-zone
 ## dnscontrol changed
 7 example.com CNAME cname-apex

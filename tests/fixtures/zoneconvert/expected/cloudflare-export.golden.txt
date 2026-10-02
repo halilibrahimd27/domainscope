@@ -805,7 +805,7 @@ D("example.com", REG_NONE, DnsProvider(DSP_MAIN),
     TXT("@", "v=spf1 ip4:198.51.100.25 ip4:192.0.2.8/29 include:_spf.example.net ~all"),
     TXT("@", "google-site-verification=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"),
     TXT("_dmarc", "v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com; adkim=s; aspf=s"),
-    TXT("google._domainkey", ["v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0mat", "erialx0example0key0materialx0example0key0mateIDAQAB"]),
+    TXT("google._domainkey", "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0materialx0example0key0mateIDAQAB"),
 END);
 ## dnscontrol pitfalls
 info proxied ×10: @ www api *.apps mixed tagged shop app tunnel

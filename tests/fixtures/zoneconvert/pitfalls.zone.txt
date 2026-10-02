@@ -33,12 +33,18 @@ _sip._tcp        IN SRV    10 60 5060 sip.example.com.
 _443._tcp.www    IN TLSA   3 1 1 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 svc              IN HTTPS  1 . alpn="h2,h3" ipv4hint=192.0.2.10
 _svc             IN SVCB   1 svc.example.net. port=8443
+svc2             IN HTTPS  1 svc.example.net. mandatory=alpn,port alpn=h2 no-default-alpn port=8443 ipv6hint=2001:db8::10
+doh              IN SVCB   1 doh.example.net. alpn=h2 dohpath=/dns-query{?dns}
 host             IN SSHFP  4 2 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 sub              IN NS     ns1.example.net.
 sub              IN DS     12345 13 2 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 old              IN DNAME  new.example.net.
 spf              IN SPF    "v=spf1 -all"
 uri              IN URI    10 1 "https://www.example.com/"
+rp               IN RP     hostmaster.example.com. info.example.com.
+smime._smimecert IN SMIMEA 3 1 1 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+pgp._openpgpkey  IN OPENPGPKEY AQIDBAUGBwgJCgsMDQ4PEA==
+dhcp             IN DHCID  AAIBY2/AuCccgoJbsaxcQc9TUapptP69lOjxfNuVAA2kjEA=
 geo              IN LOC    52 22 23.000 N 4 53 32.000 E -2.00m 0.00m 10000m 10m
 alias            IN ALIAS  target.example.net.
 other.example.net. IN A    198.51.100.80

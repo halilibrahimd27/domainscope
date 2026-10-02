@@ -1114,10 +1114,30 @@ describe('octoDNS YAML', () => {
     assert.deepEqual(parseYamlSubset('').value, null);
   });
 
-  test('a TXT value escaped as a zone file escapes it: \\; and \\\\ (what lib/zoneconvert.js writes)', () => {
-    const z = P("txt:\n  type: TXT\n  value: 'a\\\\b\\; c'\n", { filename: 'example.com.yaml' });
-    assert.deepEqual(find(z, 'txt.example.com').data, ['a\\b; c']);
+  test('a TXT value is its raw text with \\; for ; and nothing else escaped (octoDNS 1.22 to_raw_text; what lib/zoneconvert.js writes)', () => {
+    const z = P("txt:\n  type: TXT\n  value: 'a\\b\\; c'\n", { filename: 'example.com.yaml' });
+    assert.deepEqual(find(z, 'txt.example.com').data, ['a\\b; c'], 'a backslash is a backslash');
     assert.deepEqual(z.warnings.filter((w) => w.severity !== 'info'), []);
+  });
+
+  test('HTTPS / SVCB (svcpriority, targetname, svcparams; key<N> by number), URI and OPENPGPKEY values', () => {
+    const y = [
+      'doh:', '  type: SVCB', '  value:', '    svcparams:', '      alpn: [h2, \'a,b\']', '      key7: /dns-query{?dns}', '      key8: null', '      mandatory:',
+      '        - key7', '    svcpriority: 1', '    targetname: doh.example.net.',
+      'svc:', '  type: HTTPS', '  values:', '    - svcparams:', '        no-default-alpn:', '        port: 8443', '        ipv6hint:', "          - '2001:db8::10'",
+      '      svcpriority: 1', "      targetname: '.'", '    - svcpriority: 0', '      targetname: svc.example.net.',
+      'uri:', '  type: URI', '  value:', '    priority: 10', "    target: 'https://www.example.com/'", '    weight: 1',
+      'pgp._openpgpkey:', '  type: OPENPGPKEY', "  value: 'AQIDBAUGBwgJCgsMDQ4PEA=='",
+      'bad:', '  type: HTTPS', '  value:', '    svcparams:', '      nonsense: 1', '    svcpriority: 1', '    targetname: x.example.net.'
+    ].join('\n');
+    const z = P(`${y}\n`, { filename: 'example.com.yaml' });
+    const doh = find(z, 'doh.example.com');
+    assert.deepEqual(doh.data, { priority: 1, target: 'doh.example.net', params: { mandatory: ['dohpath'], alpn: ['h2', 'a,b'], dohpath: '/dns-query{?dns}', ohttp: true } });
+    assert.deepEqual(findAll(z, 'svc.example.com').map((r) => r.text), ['1 . no-default-alpn port=8443 ipv6hint=2001:db8::10', '0 svc.example.net.']);
+    assert.deepEqual(find(z, 'uri.example.com').data, { priority: 10, weight: 1, target: 'https://www.example.com/' });
+    assert.equal(find(z, 'pgp._openpgpkey.example.com').data, 'AQIDBAUGBwgJCgsMDQ4PEA==');
+    assert.equal(find(z, 'bad.example.com').invalid, true);
+    assert.deepEqual(z.warnings.filter((w) => w.severity !== 'info').map((w) => [w.code, w.params.reason]), [['BAD_RDATA', 'svc-unknown-key']]);
   });
 
   test('without a zone name from the file name → ORIGIN_REQUIRED; not a mapping → NOT_A_ZONE', () => {

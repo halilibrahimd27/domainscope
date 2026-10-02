@@ -4,21 +4,23 @@
  * every record set, for `aws route53 change-resource-record-sets`), an octoDNS zone YAML and a
  * DNSControl `dnsconfig.js` (`D("example.com", REG_NONE, DnsProvider(…), A(…), …)`).
  *
- * - Nothing is dropped silently: a record a target cannot hold is left out (a BIND file keeps it
- *   as a comment with the reason) and every such case, and every change of meaning, is a
+ * - Nothing is dropped silently: a record a target cannot hold is left out (BIND and DNSControl
+ *   keep it as a comment with the reason) and every such case, and every change of meaning, is a
  *   pitfall ({@link PITFALL_CODES}, severity per target): a CNAME at the apex (BIND and Route 53
  *   cannot serve it; octoDNS and DNSControl write ALIAS), TXT over 255 bytes (how each format
  *   splits it), Route 53 aliases (no BIND or octoDNS equivalent; DNSControl's R53_ALIAS),
  *   Cloudflare's proxy flag (a cf_tags comment in BIND, lost in Route 53,
  *   `octodns.cloudflare.proxied`, `CF_PROXY_ON`), CAA flags and tags, the record types each
- *   target supports ({@link TARGET_TYPES}), wildcards, duplicates, routing policies, DNSSEC
- *   records, the SOA and the apex NS (the new provider writes its own), names outside the zone.
+ *   target supports ({@link TARGET_TYPES}) or has but this module cannot write
+ *   ({@link TARGET_BY_HAND}), wildcards, duplicates, routing policies, DNSSEC records, the SOA
+ *   and the apex NS (the new provider writes its own), names outside the zone.
  * - Every file reads back: lib/zoneparse.js parses the BIND, Route 53 and octoDNS outputs into
  *   the same record sets (lib/zonediff.js finds no difference), less what the pitfalls say was
- *   left out (`omitted`) or written differently (`changed`: an apex CNAME as ALIAS). octoDNS keeps
- *   a TXT value as one text (the provider splits it again), so it compares with `joinTxt`.
- * - octoDNS refuses a file whose keys are out of order (YamlProvider `enforce_order`): every
- *   mapping is written in its natural sort order ({@link naturalCompare}).
+ *   left out (`omitted`) or written differently (`changed`: an apex CNAME as ALIAS). octoDNS and
+ *   DNSControl keep a TXT value as one text (both split it again at 255 bytes), so they compare
+ *   with `joinTxt`.
+ * - octoDNS refuses a file whose keys are out of order (YamlProvider `enforce_order`, natural
+ *   order by default): every mapping is written in that order ({@link naturalCompare}).
  *
  * Pure, synchronous and DOM-free; nothing is sent or stored. Runs in browsers and Node 22.
  */
@@ -42,26 +44,57 @@ export const CONVERT_MIME = Object.freeze({
 });
 
 /**
- * Record types each target can hold (BIND: every type the parser could read). Route 53: its
- * supported types (HTTPS, SVCB, SSHFP and TLSA since 2024); octoDNS: the types its YAML has a
- * value form for that lib/zoneparse.js reads back; DNSControl: the record functions it has.
+ * Record types this module writes for each target (BIND: every type the parser could read).
+ * Route 53: its supported types (HTTPS, SVCB, SSHFP and TLSA since 2024); octoDNS: its record
+ * types (HTTPS and SVCB since 1.8) that lib/zoneparse.js reads back from its YAML; DNSControl:
+ * the record functions it has. The apex SOA and NS, DNSSEC records and provider pseudo-types
+ * (ALIAS / ANAME, {@link PSEUDO_TYPES}) are handled on their own.
  */
 export const TARGET_TYPES = Object.freeze({
   bind: null,
   route53: Object.freeze(['A', 'AAAA', 'CAA', 'CNAME', 'DS', 'HTTPS', 'MX', 'NAPTR', 'NS', 'PTR', 'SPF', 'SRV', 'SSHFP', 'SVCB', 'TLSA', 'TXT']),
-  octodns: Object.freeze(['A', 'AAAA', 'CAA', 'CNAME', 'DNAME', 'DS', 'MX', 'NAPTR', 'NS', 'PTR', 'SPF', 'SRV', 'SSHFP', 'TLSA', 'TXT']),
-  dnscontrol: Object.freeze(['A', 'AAAA', 'CAA', 'CNAME', 'DS', 'HTTPS', 'MX', 'NAPTR', 'NS', 'PTR', 'SRV', 'SSHFP', 'SVCB', 'TLSA', 'TXT'])
+  octodns: Object.freeze(['A', 'AAAA', 'CAA', 'CNAME', 'DNAME', 'DS', 'HTTPS', 'MX', 'NAPTR', 'NS', 'OPENPGPKEY', 'PTR', 'SPF', 'SRV', 'SSHFP', 'SVCB', 'TLSA', 'TXT', 'URI']),
+  dnscontrol: Object.freeze(['A', 'AAAA', 'CAA', 'CNAME', 'DNAME', 'DS', 'HTTPS', 'MX', 'NAPTR', 'NS', 'OPENPGPKEY', 'PTR', 'RP', 'SMIMEA', 'SRV', 'SSHFP', 'SVCB', 'TLSA', 'TXT'])
+});
+
+/**
+ * Record types a target has but this module cannot write from a zone file (lib/zoneparse.js
+ * keeps their value as text, or the target's form needs more than the file says): left out with
+ * the pitfall `by-hand`, never called unsupported.
+ */
+export const TARGET_BY_HAND = Object.freeze({
+  bind: Object.freeze([]),
+  route53: Object.freeze([]),
+  octodns: Object.freeze(['LOC', 'URLFWD']),
+  dnscontrol: Object.freeze(['DHCID', 'LOC'])
 });
 
 /** Records a DNSSEC signer makes: the new provider signs the zone itself. */
 export const DNSSEC_TYPES = Object.freeze(['DNSKEY', 'RRSIG', 'NSEC', 'NSEC3', 'NSEC3PARAM', 'CDS', 'CDNSKEY']);
 /** Provider pseudo-types a BIND server does not serve. */
 export const PSEUDO_TYPES = Object.freeze(['ALIAS', 'ANAME', 'URLFWD']);
+/** Pseudo-types that name one target host: DNSControl writes them as ALIAS(…), octoDNS at the apex as an ALIAS record. */
+const PSEUDO_ALIAS = Object.freeze(['ALIAS', 'ANAME']);
+/**
+ * SvcParamKeys octoDNS takes by name (its SUPPORTED_PARAMS, less `ech`: its check of a valid ech
+ * value fails with a TypeError, octoDNS 1.8–1.22); the others go by number, `key<N>`, which
+ * octoDNS passes on unchecked and which mean the same on the wire.
+ */
+export const OCTODNS_SVC_KEYS = Object.freeze(['mandatory', 'alpn', 'no-default-alpn', 'port', 'ipv4hint', 'ipv6hint']);
+/** Owner names octoDNS accepts for SRV and URI records (its srv-name / uri-name checks: `_service._proto` or a wildcard). */
+const OCTODNS_SERVICE_NAME = /^(\*|_[^.]+)\.[^.]+/;
+/** The numbers of the named SvcParamKeys (RFC 9460 and the IANA registry; lib/zoneparse.js reads `key<N>` back by them). */
+const SVC_KEY_NUMBERS = Object.freeze({
+  mandatory: 0, alpn: 1, 'no-default-alpn': 2, port: 3, ipv4hint: 4, ech: 5, ipv6hint: 6, dohpath: 7, ohttp: 8, 'tls-supported-groups': 9
+});
 /** Route 53 routing policies a change batch can carry (the parser reads them back). */
 export const ROUTE53_ROUTING = Object.freeze(['weighted', 'latency', 'failover', 'geolocation', 'multivalue']);
 /** Route 53 takes at most this many records in one change batch. */
 export const ROUTE53_BATCH_MAX = 1000;
-/** CAA tags every provider knows; another tag may be refused. */
+/**
+ * CAA tags every provider knows (the IANA registry's, less the reserved ones); another tag may be
+ * refused. DNSControl accepts exactly these: `dnscontrol check` refuses the file over any other.
+ */
 export const CAA_COMMON_TAGS = Object.freeze(['issue', 'issuewild', 'iodef', 'issuemail', 'issuevmc', 'contactemail', 'contactphone']);
 /** The TTL of a record without one where the target needs one (unless the zone has a `$TTL`). */
 export const CONVERT_DEFAULT_TTL = 3600;
@@ -78,22 +111,29 @@ export const DNSCONTROL_PROVIDER = 'main';
  */
 export const PITFALL_SEVERITY = Object.freeze({
   'cname-apex': { bind: 'warn', route53: 'error', octodns: 'info', dnscontrol: 'info' },
+  'cname-alone': { bind: 'error', route53: 'error', octodns: 'error', dnscontrol: 'error' },
   'r53-alias': { bind: 'warn', octodns: 'warn', dnscontrol: 'info' },
   'alias-zone-id': { route53: 'warn' },
+  'alias-record': { octodns: 'info', dnscontrol: 'info' },
   proxied: { bind: 'info', route53: 'warn', octodns: 'info', dnscontrol: 'info' },
   'proxied-mixed': { octodns: 'warn' },
   'cname-flatten': { bind: 'info', route53: 'info', octodns: 'info', dnscontrol: 'info' },
   'txt-long': { bind: 'info', route53: 'info', octodns: 'info', dnscontrol: 'info' },
-  'txt-split': { octodns: 'info' },
+  'txt-split': { octodns: 'info', dnscontrol: 'info' },
   'caa-flags': { route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
-  'caa-tag': { route53: 'info', octodns: 'info', dnscontrol: 'info' },
+  'caa-tag': { route53: 'info', octodns: 'info', dnscontrol: 'warn' },
+  'svc-key': { octodns: 'info' },
+  'txt-lenient': { octodns: 'warn' },
+  'name-lenient': { octodns: 'warn' },
   'unsupported-type': { bind: 'warn', route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
+  'by-hand': { octodns: 'warn', dnscontrol: 'warn' },
   unreadable: { bind: 'warn', route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
   dnssec: { bind: 'warn', route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
   routing: { bind: 'warn', route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
   'out-of-zone': { bind: 'warn', route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
   'wildcard-inner': { bind: 'warn', route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
   'escaped-name': { route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
+  'repeated-domain': { dnscontrol: 'warn' },
   'no-soa': { bind: 'warn' },
   soa: { route53: 'info', octodns: 'info', dnscontrol: 'info' },
   'apex-ns': { route53: 'info', octodns: 'info', dnscontrol: 'info' },
@@ -111,6 +151,7 @@ export const PITFALL_CODES = Object.freeze(Object.keys(PITFALL_SEVERITY));
 export const PITFALL_VARIANTS = Object.freeze({
   'cname-apex': ['bind', 'route53', 'octodns', 'dnscontrol'],
   'r53-alias': ['bind', 'octodns', 'dnscontrol'],
+  'alias-record': ['octodns', 'dnscontrol'],
   proxied: ['bind', 'route53', 'octodns', 'dnscontrol'],
   'txt-long': ['bind', 'route53', 'octodns', 'dnscontrol'],
   routing: ['bind', 'route53', 'octodns', 'dnscontrol'],
@@ -119,6 +160,7 @@ export const PITFALL_VARIANTS = Object.freeze({
   dnssec: ['bind'],
   'out-of-zone': ['bind'],
   'caa-flags': ['dnscontrol'],
+  'caa-tag': ['dnscontrol'],
   wildcard: ['route53']
 });
 
@@ -166,6 +208,13 @@ export function route53String(s) {
 }
 
 /**
+ * Plain scalars YAML 1.1 (PyYAML, which octoDNS reads with) takes for something other than a
+ * string: booleans, null, and the numbers and dates it resolves: `0x1f`, `0b101`, `1_000`,
+ * `017`, `1.5e3`, `2026-10-02` and the like (digits, dots, underscores, signs and `e`).
+ */
+const YAML_NOT_A_STRING = /^(?:true|false|yes|no|on|off|null|~|0b[01_]+|0x[0-9a-f_]+|\d[\d._e+-]*)$/i;
+
+/**
  * A YAML scalar: plain when it is a plain name or word that YAML cannot read as anything else,
  * single-quoted otherwise, double-quoted with escapes when it holds a control character.
  * @param {string} s
@@ -183,22 +232,35 @@ export function yamlString(s) {
       return ch;
     }).join('')}"`;
   }
-  return /^[a-z0-9_][a-z0-9._-]*$/i.test(v) && !/^(?:true|false|yes|no|on|off|null|~|\d[\d.e+-]*)$/i.test(v) ? v : `'${v.replace(/'/g, "''")}'`;
+  return /^[a-z0-9_][a-z0-9._-]*$/i.test(v) && !YAML_NOT_A_STRING.test(v) ? v : `'${v.replace(/'/g, "''")}'`;
 }
 
 /**
- * The text of a TXT value as octoDNS keeps it: the character-strings joined, `\` and `;`
- * escaped (octoDNS refuses a bare `;`).
+ * The text of a TXT value as octoDNS keeps it: the character-strings joined, the raw text with
+ * every `;` escaped as `\;` and nothing else (octoDNS refuses a bare `;`; a `\` is a backslash).
  * @param {string[]|string} data
  * @returns {string}
  */
 export function octodnsTxt(data) {
-  return (Array.isArray(data) ? data : [data]).map((x) => String(x ?? '')).join('').replace(/\\/g, '\\\\').replace(/;/g, '\\;');
+  return (Array.isArray(data) ? data : [data]).map((x) => String(x ?? '')).join('').replace(/;/g, '\\;');
 }
 
 /**
- * Natural order of two strings as octoDNS checks its keys (Python natsort: runs of digits
- * compared as numbers, the rest by code point; a shorter key that is a prefix sorts first).
+ * Does octoDNS's check of TXT values (chunked-value-rfc) refuse this text: a character outside
+ * ASCII, or a `\` before a `;` (which it takes for a `;` escaped twice)? Such a record is written
+ * with `octodns: lenient: true` (lib/fixes.js too): octoDNS then loads it with a warning.
+ * @param {string} escaped the text as {@link octodnsTxt} writes it
+ * @returns {boolean}
+ */
+// eslint-disable-next-line no-control-regex
+export const octodnsTxtRefused = (escaped) => /[^\x00-\x7f]/.test(escaped) || String(escaped).includes('\\\\;');
+
+/**
+ * Natural order of two strings as octoDNS checks its keys (YamlProvider's default `order_mode`,
+ * Python's `natsort_keygen()`): the key is a tuple of text and numbers taking turns, always text
+ * first ('' when the string starts with a digit), runs of digits compared as whole numbers of any
+ * size ('007' = '7': equal keys keep their order), the text by code point; a tuple that is a
+ * prefix of the other sorts first.
  * @param {string} a
  * @param {string} b
  * @returns {number}
@@ -208,7 +270,7 @@ export function naturalCompare(a, b) {
     const parts = String(s).split(/(\d+)/);
     if (parts.length > 1 && parts[parts.length - 1] === '') parts.pop();
     if (parts.length === 1 && parts[0] === '') return [];
-    return parts.map((p, i) => (i % 2 ? Number(p) : p));
+    return parts.map((p, i) => (i % 2 ? BigInt(p) : p));
   };
   const ka = key(a);
   const kb = key(b);
@@ -216,8 +278,7 @@ export function naturalCompare(a, b) {
     const x = ka[i];
     const y = kb[i];
     if (x === y) continue;
-    if (typeof x === 'number' && typeof y === 'number') return x - y;
-    return String(x) < String(y) ? -1 : 1;
+    return x < y ? -1 : 1;
   }
   return ka.length - kb.length;
 }
@@ -312,12 +373,17 @@ const COMMENT_REASON = Object.freeze({
   'r53-alias': 'Route 53 alias, no equivalent here: resolve the target and add its A / AAAA records, or keep this name at Route 53',
   unreadable: 'the value could not be read',
   'unsupported-type': 'not a record type this format holds',
+  'by-hand': 'DomainScope cannot write this record type for this format: add it by hand',
+  'caa-tag': 'a CAA tag DNSControl refuses',
   dnssec: 'DNSSEC record: the new provider signs the zone itself',
   'out-of-zone': 'outside the zone',
   soa: 'SOA: the provider writes its own',
   'apex-ns': 'NS at the apex: the provider serves its own name servers',
   routing: 'another routing variant of a CNAME: one CNAME per name'
 });
+
+/** Pitfall params that collect a list of values (types, flags …) over the records flagged. */
+const LIST_PARAMS = Object.freeze(['types', 'flags', 'tags', 'keys']);
 
 /** A pitfall collector for one conversion. */
 function collector(target, origin) {
@@ -337,10 +403,9 @@ function collector(target, origin) {
         if (!p.names.includes(rel)) p.names.push(rel);
       }
       for (const [k, v] of Object.entries(extra)) {
-        if (Array.isArray(p.params[k])) {
-          if (!p.params[k].includes(v)) p.params[k].push(v);
-        } else if (k === 'types' || k === 'flags' || k === 'tags') {
-          p.params[k] = [v];
+        if (LIST_PARAMS.includes(k)) {
+          if (!Array.isArray(p.params[k])) p.params[k] = [];
+          for (const x of [].concat(v)) if (!p.params[k].includes(x)) p.params[k].push(x);
         } else {
           p.params[k] = v;
         }
@@ -378,9 +443,21 @@ function labelsOf(name) {
 }
 
 /**
+ * The host a provider's ALIAS / ANAME record names, with its root dot: its text is one name
+ * (relative to the zone without a final dot, `@` for the apex). Null when the text is not one name.
+ */
+function pseudoTarget(r, origin) {
+  const t = String(r.text ?? '').trim();
+  if (!/^[^\s"';()]+$/.test(t)) return null;
+  if (t === '@') return fqdn(origin);
+  return fqdn(t.endsWith('.') && !t.endsWith('\\.') ? t : `${t}.${canonicalName(origin)}`);
+}
+
+/**
  * What happens to each record for a target: `write` (as it is), `alias` (a Route 53 alias the
- * target writes as one), `apex-alias` (an apex CNAME written as ALIAS), `comment` (BIND /
- * DNSControl: a comment line with the reason) or `omit` (left out), with the pitfalls it raises.
+ * target writes as one), `apex-alias` (an apex CNAME written as ALIAS), `pseudo-alias` (a
+ * provider's ALIAS / ANAME written as ALIAS, its host in `to`), `comment` (BIND / DNSControl: a
+ * comment line with the reason) or `omit` (left out), with the pitfalls it raises.
  */
 function plan(zone, target, pits) {
   const origin = zone.origin;
@@ -396,8 +473,8 @@ function plan(zone, target, pits) {
     }
     const type = String(r.type || '').toUpperCase();
     const apex = canonicalName(r.name) === canonicalName(origin);
-    const leave = (code, keep = target === 'bind' ? 'comment' : 'omit') => {
-      pits.flag(code, r, code === 'unsupported-type' ? { types: type } : {});
+    const leave = (code, keep = target === 'bind' ? 'comment' : 'omit', extra = code === 'unsupported-type' ? { types: type } : {}) => {
+      pits.flag(code, r, extra);
       omitted.push({ id: r.id, code });
       steps.push({ r, action: keep, code });
     };
@@ -443,6 +520,21 @@ function plan(zone, target, pits) {
       } else leave('cname-apex', target === 'bind' ? 'comment' : 'omit');
       continue;
     }
+    // A provider's ALIAS / ANAME: DNSControl has ALIAS(…) at any name, octoDNS an ALIAS record at the apex.
+    if (PSEUDO_ALIAS.includes(type) && (target === 'dnscontrol' || (target === 'octodns' && apex))) {
+      const to = pseudoTarget(r, origin);
+      if (to === null) leave('unreadable', target === 'dnscontrol' ? 'comment' : 'omit');
+      else {
+        pits.flag('alias-record', r);
+        if (type !== 'ALIAS') changed.push({ id: r.id, code: 'alias-record' });
+        steps.push({ r, action: 'pseudo-alias', to });
+      }
+      continue;
+    }
+    if (TARGET_BY_HAND[target].includes(type)) {
+      leave('by-hand', target === 'dnscontrol' ? 'comment' : 'omit', { types: type });
+      continue;
+    }
     if (r.data === null || r.data === undefined) {
       if (target === 'bind') {
         if (PSEUDO_TYPES.includes(type)) leave('unsupported-type');
@@ -457,6 +549,11 @@ function plan(zone, target, pits) {
       leave('unsupported-type', target === 'dnscontrol' ? 'comment' : 'omit');
       continue;
     }
+    // DNSControl refuses the whole file over a CAA tag it does not know: that record stays a comment.
+    if (target === 'dnscontrol' && type === 'CAA' && !CAA_COMMON_TAGS.includes(String(r.data.tag || '').toLowerCase())) {
+      leave('caa-tag', 'comment', { tags: String(r.data.tag || '').toLowerCase() });
+      continue;
+    }
     steps.push({ r, action: 'write' });
   }
 
@@ -469,13 +566,27 @@ function plan(zone, target, pits) {
     if (r.flattenCname && s.action === 'write') pits.flag('cname-flatten', r);
     if ((type === 'TXT' || type === 'SPF') && Array.isArray(r.data)) {
       if (byteLength(txtJoined(r.data)) > 255) pits.flag('txt-long', r);
-      if (target === 'octodns' && customChunks(r.data)) pits.flag('txt-split', r);
+      // octoDNS and DNSControl keep one text and split it again every 255 bytes.
+      if ((target === 'octodns' || target === 'dnscontrol') && customChunks(r.data)) pits.flag('txt-split', r);
     }
     if (type === 'CAA' && r.data && target !== 'bind') {
       const flags = Number(r.data.flags);
       if (flags !== 0 && flags !== 128) pits.flag('caa-flags', r, { flags });
       const tag = String(r.data.tag || '').toLowerCase();
       if (!CAA_COMMON_TAGS.includes(tag)) pits.flag('caa-tag', r, { tags: tag });
+    }
+    if (target === 'octodns' && (type === 'HTTPS' || type === 'SVCB') && r.data && r.data.params) {
+      const byNumber = Object.keys(r.data.params).filter((k) => !OCTODNS_SVC_KEYS.includes(k) && SVC_KEY_NUMBERS[k] !== undefined);
+      if (byNumber.length) pits.flag('svc-key', r, { keys: byNumber });
+    }
+    // What octoDNS's own checks refuse is written with `octodns: lenient: true`: loaded, with a warning.
+    if (target === 'octodns' && (type === 'TXT' || type === 'SPF') && octodnsTxtRefused(octodnsTxt(r.data))) {
+      pits.flag('txt-lenient', r);
+      s.lenient = true;
+    }
+    if (target === 'octodns' && (type === 'SRV' || type === 'URI') && !OCTODNS_SERVICE_NAME.test(relativeName(r.name, origin))) {
+      pits.flag('name-lenient', r, { types: type });
+      s.lenient = true;
     }
     const labels = labelsOf(canonicalName(r.name));
     if (labels[0] === '*') pits.flag('wildcard', r);
@@ -509,7 +620,7 @@ function groupSets(steps, zone, pits, { routing = false } = {}) {
   const sets = new Map();
   for (const s of steps) {
     if (s.action === 'omit' || s.action === 'comment') continue;
-    const type = s.action === 'apex-alias' ? 'ALIAS' : String(s.r.type || '').toUpperCase();
+    const type = s.action === 'apex-alias' || s.action === 'pseudo-alias' ? 'ALIAS' : String(s.r.type || '').toUpperCase();
     const rk = routing && s.r.routing && ROUTE53_ROUTING.includes(s.r.routing.policy) ? JSON.stringify([s.r.routing.policy, s.r.routing.id ?? null]) : '';
     const key = `${canonicalName(s.r.name)}|${type}|${rk}`;
     let set = sets.get(key);
@@ -526,6 +637,28 @@ function groupSets(steps, zone, pits, { routing = false } = {}) {
     if (ttls.length > 1) pits.flag('ttl-mixed', set.steps[0].r);
   }
   return [...sets.values()];
+}
+
+/** Records that may sit next to a CNAME: its own DNSSEC records (RFC 4035 §2.5). */
+const CNAME_COMPANIONS = Object.freeze(['RRSIG', 'NSEC', 'NSEC3']);
+
+/**
+ * A CNAME must be alone at its name (RFC 1034 §3.6.2, RFC 2181 §10.1): every target refuses a
+ * CNAME next to other records, or several CNAMEs (Zone File › Problems lists them too).
+ */
+function flagCnameAlone(sets, pits) {
+  const byName = new Map();
+  for (const set of sets) {
+    if (!byName.has(set.name)) byName.set(set.name, []);
+    byName.get(set.name).push(set);
+  }
+  for (const list of byName.values()) {
+    const cnames = list.filter((s) => s.type === 'CNAME');
+    if (!cnames.length) continue;
+    const others = list.some((s) => s.type !== 'CNAME' && !CNAME_COMPANIONS.includes(s.type));
+    const several = cnames.some((s) => new Set(s.steps.map((st) => canonicalName(st.r.data))).size > 1);
+    if (others || several) pits.flag('cname-alone', cnames[0].steps[0].r);
+  }
 }
 
 /** Routing variants a target has no place for: flagged, and a CNAME keeps its first value only. */
@@ -655,6 +788,47 @@ function route53Text(zone, steps, sets, pits, about) {
 /* octoDNS                                                                  */
 /* ------------------------------------------------------------------------ */
 
+/**
+ * Bytes as the text of a zone file character-string without quotes: printable ASCII as it is,
+ * every other byte (and a space, `"`, `;`, `(`, `)`, `\`) as a `\DDD` decimal escape.
+ */
+function charStringText(bytes) {
+  let out = '';
+  for (const b of bytes) {
+    if (b > 0x20 && b < 0x7f && ![0x22, 0x28, 0x29, 0x3b, 0x5c].includes(b)) out += String.fromCharCode(b);
+    else out += `\\${String(b).padStart(3, '0')}`;
+  }
+  return out;
+}
+
+/** The bytes of a hex string (the parser keeps a SvcParam it has no name for as hex). */
+const hexBytes = (hex) => (String(hex ?? '').match(/[0-9a-f]{2}/gi) || []).map((x) => parseInt(x, 16));
+
+/** A SvcParamKey as octoDNS writes it: its own name, or `key<N>`. */
+const octodnsSvcKey = (k) => (OCTODNS_SVC_KEYS.includes(k) || SVC_KEY_NUMBERS[k] === undefined ? k : `key${SVC_KEY_NUMBERS[k]}`);
+
+/**
+ * The `svcparams` mapping of an HTTPS / SVCB value (lib/zoneparse.js data `params`) as octoDNS
+ * keeps it: lists for mandatory, alpn and the address hints, null for a key without a value,
+ * the port as a number, any other value as the text after `key=` in a zone file.
+ */
+function octodnsSvcParams(params) {
+  const out = {};
+  const list = (v) => (Array.isArray(v) ? v : [v]).map((x) => String(x));
+  for (const [k, v] of Object.entries(params || {})) {
+    const key = octodnsSvcKey(k);
+    if (k === 'mandatory') out[key] = list(v).map(octodnsSvcKey);
+    else if (k === 'alpn' || k === 'ipv4hint' || k === 'ipv6hint') out[key] = list(v);
+    else if (v === true) out[key] = null;
+    else if (k === 'port') out[key] = Number(v);
+    else if (k === 'ech') out[key] = String(v);
+    else if (k === 'tls-supported-groups') out[key] = list(v).join(',');
+    else if (k === 'dohpath') out[key] = charStringText(utf8.encode(String(v)));
+    else out[key] = charStringText(hexBytes(v));
+  }
+  return out;
+}
+
 /** One octoDNS value (a scalar or a mapping) of a record. */
 function octodnsValue(type, r) {
   const d = r.data;
@@ -670,12 +844,20 @@ function octodnsValue(type, r) {
     case 'SSHFP': return { algorithm: d.algorithm, fingerprint: d.fingerprint, fingerprint_type: d.fpType };
     case 'DS': return { algorithm: d.algorithm, digest: d.digest, digest_type: d.digestType, key_tag: d.keyTag };
     case 'NAPTR': return { flags: d.flags, order: d.order, preference: d.preference, regexp: d.regexp, replacement: fqdn(d.replacement), service: d.services };
+    case 'HTTPS': case 'SVCB': {
+      const v = { svcpriority: d.priority, targetname: fqdn(d.target) };
+      const params = octodnsSvcParams(d.params);
+      if (Object.keys(params).length) v.svcparams = params;
+      return v;
+    }
+    case 'URI': return { priority: d.priority, target: String(d.target), weight: d.weight };
+    case 'OPENPGPKEY': return String(d);
     default: return String(r.text);
   }
 }
 
-/** A YAML scalar of a number, a boolean or a string. */
-const yamlScalar = (v) => (typeof v === 'number' || typeof v === 'boolean' ? String(v) : yamlString(v));
+/** A YAML scalar of a number, a boolean, null (a key without a value) or a string. */
+const yamlScalar = (v) => (v === null ? 'null' : typeof v === 'number' || typeof v === 'boolean' ? String(v) : yamlString(v));
 
 /** Block YAML of a value at an indent, every mapping in natural key order. */
 function yamlLines(value, indent) {
@@ -712,7 +894,7 @@ function octodnsText(zone, steps, sets, pits, about) {
     const values = [];
     const seen = new Set();
     for (const s of set.steps) {
-      const v = octodnsValue(set.type, { ...s.r, data: s.r.data });
+      const v = octodnsValue(set.type, s.action === 'pseudo-alias' ? { ...s.r, data: s.to } : s.r);
       const k = JSON.stringify(v);
       if (seen.has(k)) continue;
       seen.add(k);
@@ -726,7 +908,10 @@ function octodnsText(zone, steps, sets, pits, about) {
     const cf = {};
     if (flags.length && ['A', 'AAAA', 'CNAME', 'ALIAS'].includes(set.type)) cf.proxied = flags.includes(true);
     if (set.steps.every((s) => s.r.ttlAuto)) cf['auto-ttl'] = true;
-    if (Object.keys(cf).length) rec.octodns = { cloudflare: cf };
+    const octo = {};
+    if (Object.keys(cf).length) octo.cloudflare = cf;
+    if (set.steps.some((s) => s.lenient)) octo.lenient = true;
+    if (Object.keys(octo).length) rec.octodns = octo;
     if (!byName.has(key)) byName.set(key, []);
     byName.get(key).push(rec);
   }
@@ -763,32 +948,40 @@ function dnscontrolCall(type, name, r) {
   const n = js(name);
   switch (type) {
     case 'A': case 'AAAA': return `${type}(${n}, ${js(d)}`;
-    case 'CNAME': case 'NS': case 'PTR': return `${type}(${n}, ${js(fqdn(d))}`;
+    case 'CNAME': case 'NS': case 'PTR': case 'DNAME': return `${type}(${n}, ${js(fqdn(d))}`;
     case 'ALIAS': return `ALIAS(${n}, ${js(fqdn(d))}`;
     case 'MX': return `MX(${n}, ${d.preference}, ${js(fqdn(d.exchange))}`;
     case 'SRV': return `SRV(${n}, ${d.priority}, ${d.weight}, ${d.port}, ${js(fqdn(d.target))}`;
     case 'CAA': return `CAA(${n}, ${js(String(d.tag).toLowerCase())}, ${js(d.value)}`;
-    case 'TXT': {
-      const list = Array.isArray(d) ? d : [d];
-      return `TXT(${n}, ${list.length === 1 ? js(list[0]) : `[${list.map(js).join(', ')}]`}`;
-    }
-    case 'TLSA': return `TLSA(${n}, ${d.usage}, ${d.selector}, ${d.matchingType}, ${js(d.data)}`;
+    // DNSControl joins a list of strings into one text and splits it again every 255 bytes.
+    case 'TXT': return `TXT(${n}, ${js(txtJoined(d))}`;
+    case 'TLSA': case 'SMIMEA': return `${type}(${n}, ${d.usage}, ${d.selector}, ${d.matchingType}, ${js(d.data)}`;
     case 'SSHFP': return `SSHFP(${n}, ${d.algorithm}, ${d.fpType}, ${js(d.fingerprint)}`;
     case 'DS': return `DS(${n}, ${d.keyTag}, ${d.algorithm}, ${d.digestType}, ${js(d.digest)}`;
     case 'NAPTR': return `NAPTR(${n}, ${d.order}, ${d.preference}, ${js(d.flags)}, ${js(d.services)}, ${js(d.regexp)}, ${js(fqdn(d.replacement))}`;
     case 'HTTPS': case 'SVCB': return `${type}(${n}, ${d.priority}, ${js(fqdn(d.target))}, ${js(svcParams(r.text))}`;
+    case 'RP': return `RP(${n}, ${js(fqdn(d.mbox))}, ${js(fqdn(d.txt))}`;
+    case 'OPENPGPKEY': return `OPENPGPKEY(${n}, ${js(String(d))}`;
     default: return null;
   }
 }
 
 function dnscontrolText(zone, steps, sets, pits, about) {
   const origin = zone.origin;
+  const zoneName = canonicalName(origin);
   const ttlDefault = commonTtl(sets.filter((s) => s.steps[0].action !== 'alias').map((s) => s.ttl)) ?? CONVERT_DEFAULT_TTL;
   const lines = [];
   const emitted = new Set();
   let records = 0;
   const setOf = new Map();
   for (const set of sets) for (const s of set.steps) setOf.set(s, set);
+  // DNSControl refuses a label that repeats the domain ('example.com', 'www.example.com' under
+  // example.com: often a final dot the source left out) unless the record says it is meant.
+  const repeats = (rel, r) => {
+    if (rel !== zoneName && !rel.endsWith(`.${zoneName}`)) return [];
+    pits.flag('repeated-domain', r, { zone: zoneName });
+    return ['DISABLE_REPEATED_DOMAIN_CHECK'];
+  };
   for (const s of steps) {
     const { r } = s;
     const rel = relativeName(r.name, origin);
@@ -804,17 +997,19 @@ function dnscontrolText(zone, steps, sets, pits, about) {
       const mods = [];
       if (a.zoneId) mods.push(`R53_ZONE(${js(a.zoneId)})`);
       if (a.evaluateTargetHealth) mods.push('R53_EVALUATE_TARGET_HEALTH(true)');
+      mods.push(...repeats(rel, r));
       lines.push(`    R53_ALIAS(${js(rel)}, ${js(r.type)}, ${js(fqdn(a.target))}${mods.map((m) => `, ${m}`).join('')}),`);
       records += 1;
       continue;
     }
-    const type = s.action === 'apex-alias' ? 'ALIAS' : String(r.type).toUpperCase();
-    const call = dnscontrolCall(type, rel, r);
+    const type = s.action === 'apex-alias' || s.action === 'pseudo-alias' ? 'ALIAS' : String(r.type).toUpperCase();
+    const call = dnscontrolCall(type, rel, s.action === 'pseudo-alias' ? { ...r, data: s.to } : r);
     if (!call) continue;
     const mods = [];
     if (set.ttl !== ttlDefault) mods.push(`TTL(${set.ttl})`);
     if (type === 'CAA' && Number(r.data.flags) === 128) mods.push('CAA_CRITICAL');
     if (r.proxied === true && ['A', 'AAAA', 'CNAME', 'ALIAS'].includes(type)) mods.push('CF_PROXY_ON');
+    mods.push(...repeats(rel, r));
     const text = `    ${call}${mods.map((m) => `, ${m}`).join('')}),`;
     // Two routing variants with one value are one record here: DNSControl refuses a duplicate.
     if (emitted.has(text)) continue;
@@ -884,6 +1079,7 @@ export function convertZone(zone, target) {
   // Routing variants with no place in the target (any in BIND, octoDNS and DNSControl; a policy
   // a change batch cannot write in Route 53) are merged into one set, and said so.
   mergeRouting(sets, pits, target, omitted);
+  flagCnameAlone(sets, pits);
   if (target === 'octodns') {
     // octoDNS has one proxy flag per record set: a set with both gets "proxied" (Cloudflare's own
     // rule for the name), and its DNS-only records change.

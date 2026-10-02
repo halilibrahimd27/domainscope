@@ -39,18 +39,33 @@ describe('zone-tools', () => {
     i18n.setLang('en');
   });
 
-  test('a pitfall\'s text names the target, the types, flags and tags it is about', () => {
-    const z = bind('@ CAA 1 policy "x"\nu URI 10 1 "https://www.example.com/"');
+  test('a pitfall\'s text names the target, the types, flags, tags and keys it is about', () => {
+    const z = bind([
+      '@ CAA 1 policy "x"', 'u URI 10 1 "https://www.example.com/"', 'geo LOC 52 22 23.000 N 4 53 32.000 E -2.00m 0.00m 10000m 10m',
+      'doh SVCB 1 doh.example.net. alpn=h2 dohpath=/dns-query{?dns} ohttp', 'split TXT "v=spf1 " "-all"', 'www ANAME lb.example.net.'
+    ].join('\n'));
     for (const target of CONVERT_TARGETS) {
       for (const p of convertZone(z, target).pitfalls) {
-        const text = Z.pitfallText(p, target);
-        assert.ok(text && !text.startsWith('zconv.'), `${target} ${p.code}: ${text}`);
-        assert.ok(!/\{\w+\}/.test(text), `${target} ${p.code}: a placeholder left: ${text}`);
+        for (const lang of ['en', 'tr']) {
+          i18n.setLang(lang);
+          const text = Z.pitfallText(p, target);
+          assert.ok(text && !text.startsWith('zconv.'), `${lang} ${target} ${p.code}: ${text}`);
+          assert.ok(!/\{\w+\}/.test(text), `${lang} ${target} ${p.code}: a placeholder left: ${text}`);
+        }
+        i18n.setLang('en');
       }
     }
-    const r53 = convertZone(z, 'route53');
-    assert.equal(Z.pitfallText(r53.pitfalls.find((p) => p.code === 'unsupported-type'), 'route53'), 'URI: Route 53 does not support this record type; left out.');
-    assert.equal(Z.pitfallText(r53.pitfalls.find((p) => p.code === 'caa-flags'), 'route53'), 'CAA flags other than 0 or 128 (1): many providers accept only these two.');
+    const text = (target, code) => Z.pitfallText(convertZone(z, target).pitfalls.find((p) => p.code === code), target);
+    assert.equal(text('route53', 'unsupported-type'), 'URI, LOC, ANAME: Route 53 does not support this record type; left out.');
+    assert.equal(text('route53', 'caa-flags'), 'CAA flags other than 0 or 128 (1): many providers accept only these two.');
+    assert.match(text('dnscontrol', 'caa-tag'), /^CAA tag policy: DNSControl accepts only issue, .* kept as a comment\.$/);
+    assert.equal(text('octodns', 'by-hand'), 'LOC: octoDNS has this record type, but DomainScope cannot write it from this file; left out, add it by hand.');
+    assert.match(text('octodns', 'svc-key'), /^HTTPS \/ SVCB parameters written by number \(dohpath, ohttp: key5 for ech, key7 for dohpath …\): /);
+    assert.match(text('dnscontrol', 'txt-split'), /: DNSControl keeps the joined text and splits it again/);
+    assert.match(text('dnscontrol', 'alias-record'), /^ALIAS \/ ANAME records: written as ALIAS\(…\)/);
+    i18n.setLang('tr');
+    assert.equal(text('octodns', 'by-hand'), 'LOC: octoDNS bu kayıt türünü destekler, ama DomainScope onu bu dosyadan yazamıyor; dışarıda bırakıldı, elle ekleyin.');
+    i18n.setLang('en');
     assert.match(Z.pitfallText({ code: 'alias-zone-id', params: {} }, 'route53'), /replace HOSTED_ZONE_ID_OF_THE_TARGET with it/);
   });
 

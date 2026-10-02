@@ -3578,9 +3578,41 @@ function octoTokens(type, v) {
       if (!isPlainMap(v)) throw new RdataError('missing-field');
       return [num(field(v, 'order')), num(field(v, 'preference')), rawToken(String(field(v, 'flags') ?? '')),
         rawToken(String(field(v, 'service') ?? '')), rawToken(String(field(v, 'regexp') ?? '')), str(field(v, 'replacement'))];
+    case 'SVCB':
+    case 'HTTPS':
+      if (!isPlainMap(v)) throw new RdataError('missing-field');
+      return [num(field(v, 'svcpriority')), str(field(v, 'targetname')), ...octoSvcParams(own(v, 'svcparams'))];
+    case 'URI': {
+      if (!isPlainMap(v)) throw new RdataError('missing-field');
+      const target = field(v, 'target');
+      if (typeof target !== 'string') throw new RdataError('missing-field');
+      return [num(field(v, 'priority')), num(field(v, 'weight')), rawToken(target)];
+    }
+    case 'OPENPGPKEY':
+      return [str(v)];
     default:
       return null;
   }
+}
+
+/**
+ * octoDNS `svcparams` (key → null, a value or a list) as the `key[=value]` tokens of a zone file:
+ * a list joined with commas, a comma or backslash inside an item escaped twice (RFC 9460
+ * value-list, then character-string); any other value is already zone file text.
+ */
+function octoSvcParams(params) {
+  if (params === undefined || params === null) return [];
+  if (!isPlainMap(params)) throw new RdataError('missing-field');
+  return Object.keys(params).map((k) => {
+    const v = params[k];
+    if (v === null || v === true) return { t: k, q: false };
+    if (Array.isArray(v)) {
+      const items = v.map((x) => String(x).replace(/[\\,]/g, (m) => `\\${m}`).replace(/\\/g, '\\\\'));
+      return { t: `${k}=${items.join(',')}`, q: false };
+    }
+    if (typeof v === 'object') throw new RdataError('missing-field');
+    return { t: `${k}=${String(v)}`, q: false };
+  });
 }
 
 function parseOctodns(text, zone, b, opts) {
@@ -3686,8 +3718,9 @@ function parseOctodns(text, zone, b, opts) {
         if (type === 'TXT' || type === 'SPF') {
           const s = typeof v === 'string' || typeof v === 'number' ? String(v) : '';
           if (/(^|[^\\]);/.test(s)) issues.add('OCTODNS_UNESCAPED_SEMICOLON', line, { name: nr.name }, 'bare ";" in an octoDNS TXT value (write \\;)', { name: nr.name, type });
-          // octoDNS keeps a TXT value escaped as a zone file would: `\;` and `\\` (lib/zoneconvert.js octodnsTxt).
-          b.fillTxt(rec, split255(utf8Encoder.encode(s.replace(/\\([\\;])/g, '$1'))));
+          // octoDNS keeps a TXT value as its raw text with every `;` escaped as `\;` and nothing else
+          // (its _ChunkedValue.to_raw_text; lib/zoneconvert.js octodnsTxt writes it so).
+          b.fillTxt(rec, split255(utf8Encoder.encode(s.replace(/\\;/g, ';'))));
         } else {
           let toks;
           try {

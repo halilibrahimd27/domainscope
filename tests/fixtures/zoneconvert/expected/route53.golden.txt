@@ -411,11 +411,14 @@ multi:
   type: A
   value: '192.0.2.61'
 'name\032with\032space':
+  octodns:
+    lenient: true
   ttl: 300
   type: TXT
   value: 'octal — escapes in TXT'
 ## octodns pitfalls
 warn r53-alias ×5: @ api static gw www
+warn txt-lenient ×1: name\032with\032space
 warn routing ×8: app geo lat ha multi
 warn escaped-name ×1: name\032with\032space
 info txt-split ×1: @
@@ -445,7 +448,7 @@ D("example.com", REG_NONE, DnsProvider(DSP_MAIN),
     MX("@", 10, "mail.example.com."),
     MX("@", 20, "mx2.example.net."),
     TXT("@", "v=spf1 ip4:198.51.100.25 include:amazonses.com ~all"),
-    TXT("@", ["part-one-of-a-long-value-", "part-two"]),
+    TXT("@", "part-one-of-a-long-value-part-two"),
     CAA("@", "issue", "amazon.com"),
     CNAME("*", "example.com."),
     R53_ALIAS("api", "A", "dualstack.my-alb-1234567890.us-east-1.elb.amazonaws.com.", R53_ZONE("Z35SXDOTRQ7X7K"), R53_EVALUATE_TARGET_HEALTH(true)),
@@ -468,6 +471,7 @@ END);
 warn routing ×8: app geo lat ha multi
 warn escaped-name ×1: name\032with\032space
 info r53-alias ×5: @ api static gw www
+info txt-split ×1: @
 info soa ×1: @
 info apex-ns ×4: @
 info wildcard ×1: *

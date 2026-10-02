@@ -21,6 +21,10 @@
  * - The first zone is the starting point: `added` is only in the second one, `removed` only in
  *   the first, `changed` in both with different values, TTL, Cloudflare proxy flag or Route 53
  *   routing ({@link DIFF_REASONS}).
+ * - A Route 53 change batch (lib/zoneparse.js `changeBatch`) is not a zone but changes to one: a
+ *   set it does not name is `ignored` ('not-in-batch'), never removed or added; a set it deletes
+ *   is compared as gone ('batch-delete'). A set an incomplete export (`partial`) lacks may be in the
+ *   part that is missing: its row says so ('partial').
  *
  * Pure, synchronous and DOM-free; nothing is sent or stored. Runs in browsers and Node 22.
  */
@@ -35,8 +39,12 @@ export const DIFF_STATUSES = Object.freeze(['added', 'removed', 'changed', 'same
 /** Why a set present in both zones changed. */
 export const DIFF_REASONS = Object.freeze(['values', 'ttl', 'proxied', 'routing', 'soa-names', 'soa-serial', 'soa-timers']);
 
-/** What an option kept from counting (the row says so) — or why a set was left out. */
-export const DIFF_NOTES = Object.freeze(['ttl-ignored', 'txt-split', 'soa-ignored', 'soa-one-side', 'apex-ns']);
+/**
+ * What an option kept from counting (the row says so), why a set was left out, or why a set on
+ * one side only may not be a difference: 'not-in-batch' (a change batch does not name it),
+ * 'batch-delete' (a change batch deletes it), 'partial' (the file without it is incomplete).
+ */
+export const DIFF_NOTES = Object.freeze(['ttl-ignored', 'txt-split', 'soa-ignored', 'soa-one-side', 'apex-ns', 'not-in-batch', 'batch-delete', 'partial']);
 
 /** Comparison options and their defaults. */
 export const DIFF_DEFAULTS = Object.freeze({ ignoreTtl: false, joinTxt: true, ignoreSoa: false, ignoreApexNs: false });
@@ -318,13 +326,39 @@ function rowOrder(x, y) {
   return x.type < y.type ? -1 : x.type > y.type ? 1 : 0;
 }
 
+/** The keys of the sets a change batch deletes (lib/zoneparse.js `changeBatch`), or null: not a change batch. */
+function batchDeletes(zone) {
+  if (!zone.changeBatch) return null;
+  const origin = zone.origin || null;
+  return new Set((zone.changeBatch.deletes || []).map((d) => `${relativeName(d.name, origin)}|${String(d.type || '').toUpperCase()}`));
+}
+
+/** Parse issues `partial` stands for (lib/zoneparse.js): not counted again among the problems. */
+const PARTIAL_CODES = new Set(['PARTIAL_EXPORT', 'RECORDS_TRUNCATED']);
+
+/** What a result says about one zone: its name and format, sizes, and how far it is a whole zone. */
+function about(z, sets) {
+  const warnings = (Array.isArray(z.warnings) ? z.warnings : []).filter((w) => !PARTIAL_CODES.has(w.code));
+  return {
+    origin: z.origin || null, format: z.format || null, dialect: z.dialect || null,
+    records: (z.records || []).filter((r) => r.duplicateOf === undefined).length, rrsets: sets.size,
+    partial: !!z.partial,
+    changeBatch: z.changeBatch ? { upserts: z.changeBatch.upserts, deletes: (z.changeBatch.deletes || []).length } : null,
+    guessed: !!z.origin && z.originConfidence === 'low',
+    problems: { errors: warnings.filter((w) => w.severity === 'error').length, warnings: warnings.filter((w) => w.severity === 'warn').length }
+  };
+}
+
 /**
  * Compare two parsed zones (neither with a fatal issue).
  * @param {object} a the first zone (the starting point)
  * @param {object} b the second zone
  * @param {{ ignoreTtl?: boolean, joinTxt?: boolean, ignoreSoa?: boolean, ignoreApexNs?: boolean }} [options]
- * @returns {{ a: object, b: object, relative: boolean, options: object, rows: DiffRow[],
+ * @returns {{ a: About, b: About, relative: boolean, options: object, rows: DiffRow[],
  *   counts: { added: number, removed: number, changed: number, same: number, ignored: number, total: number } }}
+ *   About = { origin, format, dialect, records, rrsets, partial: boolean, changeBatch: { upserts, deletes: number }|null,
+ *   guessed: boolean (the origin is a low-confidence guess), problems: { errors, warnings } (parse issues but the
+ *   incomplete export `partial` says) };
  *   `relative`: the zones have different origins (names compared relative to each);
  *   DiffRow = { key, rel, name, type, status, reasons: string[], notes: string[], a: Side|null, b: Side|null,
  *   added: string[], removed: string[] } — `added` / `removed`: the values only in b / only in a;
@@ -336,6 +370,8 @@ export function diffZones(a, b, options = {}) {
   for (const k of DIFF_OPTIONS) if (options && typeof options[k] === 'boolean') opts[k] = options[k];
   const setsA = recordSets(a, opts);
   const setsB = recordSets(b, opts);
+  const deletesA = batchDeletes(a);
+  const deletesB = batchDeletes(b);
   const rows = [];
   const keys = [...setsA.keys(), ...[...setsB.keys()].filter((k) => !setsA.has(k))];
   for (const key of keys) {
@@ -353,12 +389,20 @@ export function diffZones(a, b, options = {}) {
       // A provider's export (Cloudflare, Route 53 lists, octoDNS) has no SOA: nothing to compare.
       row.status = 'ignored';
       row.notes.push('soa-one-side');
+    } else if ((!sa && deletesA && !deletesA.has(key)) || (!sb && deletesB && !deletesB.has(key))) {
+      // A change batch says nothing of the sets it does not name: they are not removed.
+      row.status = 'ignored';
+      row.notes.push('not-in-batch');
     } else if (!sa) {
       row.status = 'added';
       row.added = [...sb.values.values()].map((v) => v.text);
+      if (deletesA) row.notes.push('batch-delete');
+      if (a.partial) row.notes.push('partial');
     } else if (!sb) {
       row.status = 'removed';
       row.removed = [...sa.values.values()].map((v) => v.text);
+      if (deletesB) row.notes.push('batch-delete');
+      if (b.partial) row.notes.push('partial');
     } else {
       Object.assign(row, compareSets(sa, sb, opts));
       row.added = [...sb.values.entries()].filter(([k]) => !sa.values.has(k)).map(([, v]) => v.text);
@@ -369,10 +413,6 @@ export function diffZones(a, b, options = {}) {
   rows.sort(rowOrder);
   const counts = { added: 0, removed: 0, changed: 0, same: 0, ignored: 0, total: rows.length };
   for (const r of rows) counts[r.status] += 1;
-  const about = (z, sets) => ({
-    origin: z.origin || null, format: z.format || null, dialect: z.dialect || null,
-    records: (z.records || []).filter((r) => r.duplicateOf === undefined).length, rrsets: sets.size
-  });
   return {
     a: about(a, setsA), b: about(b, setsB),
     relative: !!(a.origin && b.origin && canonicalName(a.origin) !== canonicalName(b.origin)),
@@ -455,19 +495,26 @@ export function diffJson(result, rows = result.rows, { redact = (v) => [...v] } 
 }
 
 /**
- * What Copy summary says (lib/summary.js zoneSummary with `compare`): both zones, the counts,
- * the options that are on, and the first differences by name and type — never a value.
+ * What Copy summary says (lib/summary.js zoneSummary with `compare`): both zones (with what makes
+ * one less than a whole zone: a change batch, an incomplete export, a guessed name, problems
+ * reading it), the counts, the options that are on, and the first differences by name and type —
+ * never a value.
  * @param {object} result {@link diffZones}
  * @param {{ max?: number, formatA?: string, formatB?: string }} [opts] `formatA` / `formatB`: the
  *   format labels the view shows
- * @returns {{ a: { origin, format }, b: { origin, format }, relative: boolean, counts: object, options: string[],
+ * @returns {{ a: Side, b: Side, relative: boolean, counts: object, options: string[],
  *   differences: Array<{ status: string, name: string, type: string, reasons: string[] }>, more: number }}
+ *   Side = { origin, format, partial, changeBatch: { upserts, deletes }|null, guessed, problems: { errors, warnings } }
  */
 export function diffSummaryFacts(result, { max = 5, formatA = null, formatB = null } = {}) {
   const diffs = result.rows.filter((r) => diffFilter(r, 'diff'));
+  const sideOf = (z, format) => ({
+    origin: z.origin, format: format || z.format, partial: !!z.partial, changeBatch: z.changeBatch ? { ...z.changeBatch } : null,
+    guessed: !!z.guessed, problems: z.problems ? { ...z.problems } : { errors: 0, warnings: 0 }
+  });
   return {
-    a: { origin: result.a.origin, format: formatA || result.a.format },
-    b: { origin: result.b.origin, format: formatB || result.b.format },
+    a: sideOf(result.a, formatA),
+    b: sideOf(result.b, formatB),
     relative: result.relative,
     counts: { ...result.counts },
     options: DIFF_OPTIONS.filter((k) => result.options[k]),

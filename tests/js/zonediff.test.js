@@ -25,7 +25,7 @@ describe('vocabulary', () => {
   test('statuses, reasons, notes, options and filters', () => {
     assert.deepEqual(DIFF_STATUSES, ['added', 'removed', 'changed', 'same', 'ignored']);
     assert.deepEqual(DIFF_REASONS, ['values', 'ttl', 'proxied', 'routing', 'soa-names', 'soa-serial', 'soa-timers']);
-    assert.deepEqual(DIFF_NOTES, ['ttl-ignored', 'txt-split', 'soa-ignored', 'soa-one-side', 'apex-ns']);
+    assert.deepEqual(DIFF_NOTES, ['ttl-ignored', 'txt-split', 'soa-ignored', 'soa-one-side', 'apex-ns', 'not-in-batch', 'batch-delete', 'partial']);
     assert.deepEqual(DIFF_DEFAULTS, { ignoreTtl: false, joinTxt: true, ignoreSoa: false, ignoreApexNs: false });
     assert.deepEqual(DIFF_OPTIONS, ['ignoreTtl', 'joinTxt', 'ignoreSoa', 'ignoreApexNs']);
     assert.deepEqual(DIFF_FILTERS, ['diff', 'added', 'removed', 'changed', 'same', 'ignored', 'all']);
@@ -136,7 +136,8 @@ describe('golden: a zone moved from BIND to Route 53 (tests/fixtures/zonediff)',
     assert.deepEqual([api.added, api.removed, api.a.values, api.b.values], [['192.0.2.16'], ['192.0.2.15'], ['192.0.2.14', '192.0.2.15'], ['192.0.2.14', '192.0.2.16']]);
     const ttl = res.rows.find((r) => r.key === 'ttl|A');
     assert.deepEqual([ttl.a.ttl, ttl.b.ttl, ttl.added, ttl.removed], [300, 3600, [], []]);
-    assert.deepEqual(res.a, { origin: 'example.com', format: 'bind', dialect: 'generic', records: 15, rrsets: 13 });
+    assert.deepEqual(res.a, { origin: 'example.com', format: 'bind', dialect: 'generic', records: 15, rrsets: 13, partial: false, changeBatch: null, guessed: false,
+      problems: { errors: 0, warnings: 0 } });
     assert.equal(res.b.format, 'route53');
     assert.equal(res.relative, false);
     assert.equal(hasDifferences(res), true);
@@ -239,6 +240,53 @@ describe('more cases', () => {
   });
 });
 
+describe('a change batch or an incomplete export on one side', () => {
+  const r53 = (doc) => parseZone(JSON.stringify(doc), { format: 'route53', origin: 'example.com' });
+  const set = (name, type, value) => ({ Name: `${name}.`, Type: type, TTL: 300, ResourceRecords: [{ Value: value }] });
+  const zone = () => bind('@ A 192.0.2.1\nwww A 192.0.2.10\nold A 192.0.2.50\nmail A 192.0.2.25');
+  const batch = () => r53({ Changes: [
+    { Action: 'UPSERT', ResourceRecordSet: set('www.example.com', 'A', '192.0.2.11') },
+    { Action: 'CREATE', ResourceRecordSet: set('new.example.com', 'A', '192.0.2.70') },
+    { Action: 'UPSERT', ResourceRecordSet: set('mail.example.com', 'A', '192.0.2.25') },
+    { Action: 'DELETE', ResourceRecordSet: set('old.example.com', 'A', '192.0.2.50') }
+  ] });
+
+  test('a change batch: only the sets it changes are compared, the others are not in the batch (never removed), a DELETE removes', () => {
+    const res = diffZones(zone(), batch());
+    assert.deepEqual(lines(res), ['ignored @ A |not-in-batch', 'same mail A |', 'added new A |', 'removed old A |batch-delete', 'changed www A values|']);
+    assert.deepEqual([res.a.changeBatch, res.b.changeBatch], [null, { upserts: 3, deletes: 1 }]);
+    assert.deepEqual(res.counts, { added: 1, removed: 1, changed: 1, same: 1, ignored: 1, total: 5 });
+    // The batch as the starting point: the same rows, the other way round.
+    assert.deepEqual(lines(diffZones(batch(), zone())), ['ignored @ A |not-in-batch', 'same mail A |', 'removed new A |', 'added old A |batch-delete', 'changed www A values|']);
+    assert.ok(DIFF_NOTES.includes('not-in-batch') && DIFF_NOTES.includes('batch-delete'));
+  });
+
+  test('an incomplete export: a set it lacks may be in the part that is missing, and the row says so', () => {
+    const zz = bind('@ A 192.0.2.1\nwww A 192.0.2.10\nzz A 192.0.2.99');
+    const page = r53({ ResourceRecordSets: [set('example.com', 'A', '192.0.2.1'), set('www.example.com', 'A', '192.0.2.10')], IsTruncated: true, NextRecordName: 'zz.example.com.', NextRecordType: 'A' });
+    assert.equal(page.partial, true);
+    const res = diffZones(zz, page);
+    assert.deepEqual(lines(res), ['same @ A |', 'same www A |', 'removed zz A |partial']);
+    assert.deepEqual([res.a.partial, res.b.partial], [false, true]);
+    assert.deepEqual(res.b.problems, { errors: 0, warnings: 0 }, 'said once as partial, not counted as a problem too');
+    assert.deepEqual(lines(diffZones(page, zz)), ['same @ A |', 'same www A |', 'added zz A |partial']);
+    assert.ok(DIFF_NOTES.includes('partial'));
+  });
+
+  test('summary facts and the JSON say which file is a change batch, incomplete or named by a guess, and what reading it found', () => {
+    const guessed = parseZone(JSON.stringify({ ResourceRecordSets: [set('www.example.com', 'A', '192.0.2.10'), { Name: 'bad.example.com.', Type: 'A', TTL: 300 }] }), { format: 'route53' });
+    assert.equal(guessed.originConfidence, 'low');
+    const facts = diffSummaryFacts(diffZones(zone(), batch(), {}), { formatA: 'BIND zone file', formatB: 'AWS Route 53 (JSON)' });
+    assert.deepEqual(facts.a, { origin: 'example.com', format: 'BIND zone file', partial: false, changeBatch: null, guessed: false, problems: { errors: 0, warnings: 0 } });
+    assert.deepEqual(facts.b, { origin: 'example.com', format: 'AWS Route 53 (JSON)', partial: false, changeBatch: { upserts: 3, deletes: 1 }, guessed: false, problems: { errors: 0, warnings: 0 } });
+    const other = diffSummaryFacts(diffZones(zone(), guessed)).b;
+    assert.deepEqual([other.guessed, other.problems], [true, { errors: 1, warnings: 0 }]);
+    const doc = JSON.parse(diffJson(diffZones(zone(), batch())));
+    assert.deepEqual(doc.b.changeBatch, { upserts: 3, deletes: 1 });
+    assert.equal(doc.b.partial, false);
+  });
+});
+
 describe('filters and exports', () => {
   test('filters: diff = added + removed + changed; all; one status', () => {
     const res = diffZones(before(), after(), { ignoreApexNs: true });
@@ -271,7 +319,8 @@ describe('filters and exports', () => {
     const res = diffZones(before(), after(), { ignoreTtl: true });
     const facts = diffSummaryFacts(res, { max: 2, formatA: 'BIND zone file', formatB: 'AWS Route 53 (JSON)' });
     assert.deepEqual(facts, {
-      a: { origin: 'example.com', format: 'BIND zone file' }, b: { origin: 'example.com', format: 'AWS Route 53 (JSON)' }, relative: false,
+      a: { origin: 'example.com', format: 'BIND zone file', partial: false, changeBatch: null, guessed: false, problems: { errors: 0, warnings: 0 } },
+      b: { origin: 'example.com', format: 'AWS Route 53 (JSON)', partial: false, changeBatch: null, guessed: false, problems: { errors: 0, warnings: 0 } }, relative: false,
       counts: { added: 1, removed: 1, changed: 3, same: 9, ignored: 0, total: 14 }, options: ['ignoreTtl', 'joinTxt'],
       differences: [{ status: 'changed', name: '@', type: 'SOA', reasons: ['soa-names', 'soa-serial', 'soa-timers'] }, { status: 'changed', name: '@', type: 'NS', reasons: ['values'] }],
       more: 3

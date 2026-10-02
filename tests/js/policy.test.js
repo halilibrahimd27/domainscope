@@ -203,6 +203,20 @@ describe('evaluatePolicy', () => {
     assert.equal(cellOf(atLeast, facts({ dnssec: { state: null, failure: {} } }), 'dnssec').status, 'unknown');
   });
 
+  test('DS published, the DNSKEY answer not read (its lookup failed, or has not landed): signed is known, validated is not — "not known" where the two would differ', () => {
+    const keys = (extra) => facts({ dnssec: { state: 'signed', dsCount: 1, failure: null, dnskeyFailure: null, pending: false, ...extra } });
+    const failedKeys = keys({ dnskeyFailure: { kind: 'error', service: 'doh', reason: 'error' } });
+    const pendingKeys = keys({ pending: true });
+    const reqs = ['signed', '>= validated', '== validated', '== unsigned', '!= unsigned', '<= signed'];
+    for (const [label, f] of [['failed', failedKeys], ['pending', pendingKeys]]) {
+      assert.deepEqual(reqs.map((req) => cellOf(one({ dnssec: req }), f, 'dnssec').status), ['pass', 'unknown', 'unknown', 'fail', 'pass', 'unknown'], label);
+    }
+    assert.equal(evidenceText(cellOf(one({ dnssec: 'validated' }), failedKeys, 'dnssec'), t), 'signed (DS); whether it validates is not known: the DNSKEY lookup failed');
+    assert.equal(evidenceText(cellOf(one({ dnssec: 'validated' }), pendingKeys, 'dnssec'), t), 'signed (DS); whether it validates is not known yet: the DNSKEY lookup has not finished');
+    assert.equal(evidenceText(cellOf(one({ dnssec: 'validated' }), failedKeys, 'dnssec'), makeT('tr')), 'imzalı (DS); doğrulanıp doğrulanmadığı bilinmiyor: DNSKEY sorgusu başarısız oldu');
+    assert.equal(cellOf(one({ dnssec: 'validated' }), keys({}), 'dnssec').status, 'fail', 'the keys read and not validated: a fail');
+  });
+
   test('a list rule written as one string takes its entries between semicolons, as the editor does (the JSON, the runner and the controls agree)', () => {
     const p = parsePolicy('{"caa.issuers": "letsencrypt.org; sectigo.com"}').policy;
     assert.deepEqual(p.rules[0].value, ['letsencrypt.org', 'sectigo.com']);

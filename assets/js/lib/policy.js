@@ -400,6 +400,16 @@ const RULE_EVAL = {
     // validating resolver's SERVFAIL): Domain Health's dnssec.broken — validating resolvers refuse
     // the domain. It fails every dnssec requirement, whatever its level or operator.
     if (d.state === 'failing') return cell(entry, 'fail', 'failing', ev('pol.ev.dnssec.failing'));
+    // DS at the parent, the DNSKEY answer not read (its lookup failed, or has not landed): signed is
+    // known, validated is not — the requirement is met or missed only when both would agree.
+    if (d.state === 'signed' && (d.dnskeyFailure || d.pending)) {
+      const levels = policyRule('dnssec').levels;
+      const want = levels.indexOf(entry.value);
+      const asSigned = compare(entry.op, levels.indexOf('signed'), want);
+      const asValidated = compare(entry.op, levels.indexOf('validated'), want);
+      const status = asSigned && asValidated ? 'pass' : !asSigned && !asValidated ? 'fail' : 'unknown';
+      return cell(entry, status, status === 'unknown' ? null : 'signed', ev(d.dnskeyFailure ? 'pol.ev.dnssec.keysFailed' : 'pol.ev.dnssec.keysPending'));
+    }
     return orderedCell(entry, d.state, ev(`pol.ev.dnssec.${d.state}`));
   },
   caa(entry, f) {
@@ -666,6 +676,10 @@ const STRINGS = [
   ['pol.ev.dnssec.failing', ['DS published, but the keys cannot be validated: DNSSEC is broken (validating resolvers refuse the domain)',
     'DS yayımlanmış ama anahtarlar doğrulanamıyor: DNSSEC bozuk (doğrulama yapan çözümleyiciler alan adını reddeder)']],
   ['pol.ev.dnssec.unsigned', ['not signed: no DS record', 'imzasız: DS kaydı yok']],
+  ['pol.ev.dnssec.keysFailed', ['signed (DS); whether it validates is not known: the DNSKEY lookup failed',
+    'imzalı (DS); doğrulanıp doğrulanmadığı bilinmiyor: DNSKEY sorgusu başarısız oldu']],
+  ['pol.ev.dnssec.keysPending', ['signed (DS); whether it validates is not known yet: the DNSKEY lookup has not finished',
+    'imzalı (DS); doğrulanıp doğrulanmadığı henüz bilinmiyor: DNSKEY sorgusu bitmedi']],
   ['pol.ev.caa.present', ['CAA allows {list}', 'CAA şunlara izin veriyor: {list}']],
   ['pol.ev.caa.none', ['no CAA record: any CA may issue', 'CAA kaydı yok: her CA sertifika verebilir']],
   ['pol.ev.caa.unrestricted', ['CAA has no issue property: any CA may issue', 'CAA’da issue özelliği yok: her CA sertifika verebilir']],

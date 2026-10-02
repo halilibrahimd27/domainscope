@@ -5,7 +5,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   FIX_TYPES, FIX_FORMATS, FIX_LIMITS, FIX_CAS, FIX_FIELDS, FIX_I18N, CHANGE_TEMPLATES, TEMPLATE_IDS, CLOUDFLARE_VARS, CHANGE_LINT_CODES,
   HEALTH_FIX_IDS, LINT_FIX_CODES, ACME_TOKEN_RE,
@@ -34,6 +35,28 @@ function fakeDns(table, log = []) {
     }
   };
 }
+
+/** Files reached from `entry` through static imports (as tests/js/start-route.test.js reads them). */
+function staticGraph(entry) {
+  const seen = new Set();
+  const queue = [entry];
+  while (queue.length) {
+    const file = queue.shift();
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const src = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+    for (const m of src.matchAll(/(?:^|[;\n])\s*(?:import|export)\s[^;'"]*?\bfrom\s*(['"])([^'"]+)\1/g)) queue.push(resolve(dirname(file), m[2]));
+  }
+  return [...seen].map((f) => f.split(/[\\/]/).slice(-2).join('/'));
+}
+
+describe('what lib/fixes.js loads', () => {
+  test('the shared string helpers come from lib/zonetext.js: never the zone converter, the diff or the export library', () => {
+    const graph = staticGraph(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'assets', 'js', 'lib', 'fixes.js'));
+    assert.ok(graph.includes('lib/zonetext.js'), graph.join(' '));
+    assert.deepEqual(graph.filter((f) => ['lib/zoneconvert.js', 'lib/zonediff.js', 'lib/export.js'].includes(f)), []);
+  });
+});
 
 describe('goldens: every template in every format and both languages', () => {
   test('each case matches its golden (node tests/fixtures/fixes/gen-fixes-golden.mjs --write after a deliberate change)', () => {

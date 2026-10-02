@@ -124,7 +124,7 @@ export const VIEWS = Object.freeze([
   // (ui/zone-tools.js, loaded on their first use, modulepreloaded when idle) by views/zonetools.css
   {
     id: 'zone', group: 'discover', icon: 'file-text', css: ['views/fix.css', 'views/zone.css', 'views/zonetools.css'], offline: true,
-    preload: ['ui/zone-tools.js', 'lib/zonediff.js', 'lib/zoneconvert.js'], load: () => import('./views/zone.js')
+    preload: ['ui/zone-tools.js', 'lib/zonediff.js', 'lib/zoneconvert.js', 'lib/zonetext.js'], load: () => import('./views/zone.js')
   },
   {
     id: 'scan', group: 'ssl', icon: 'target', preload: ENGINE_MODULES, load: () => import('./views/scan.js'),

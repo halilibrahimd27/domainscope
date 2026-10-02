@@ -39,8 +39,8 @@ import { parseSpf, parseDmarc, parseCaaIssueValue, spfLookupCount, CAA_ISSUERS, 
 import { quoteArg } from './cmdline.js';
 import { parseZone, rdataKey, txtJoinedKey, presentCharString } from './zoneparse.js';
 import { lintZone } from './zonelint.js';
-// The Route 53 string escapes, the YAML quoting, the octoDNS TXT escapes and key order, shared with the zone converter.
-import { route53String, yamlString as yamlStr, octodnsTxt, octodnsTxtRefused, naturalCompare } from './zoneconvert.js';
+// The Route 53 string escapes, the YAML quoting, the octoDNS TXT escapes and key order (lib/zonetext.js, the zone converter's too).
+import { route53String, yamlString as yamlStr, octodnsTxt, octodnsTxtRefused, naturalCompare } from './zonetext.js';
 
 /* ------------------------------------------------------------------------ */
 /* Vocabulary                                                               */

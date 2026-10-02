@@ -26,7 +26,9 @@
  *   is compared as gone ('batch-delete'). A set an incomplete export (`partial`) lacks may be in the
  *   part that is missing: its row says so ('partial').
  *
- * Pure, synchronous and DOM-free; nothing is sent or stored. Runs in browsers and Node 22.
+ * Pure, synchronous and DOM-free; nothing is sent or stored (the record sets of a zone are kept
+ * per option while the zone object lives, in a WeakMap: toggling an option compares again without
+ * reading 20,000 records twice). Runs in browsers and Node 22.
  */
 
 import { rdataKey } from './zoneparse.js';
@@ -245,6 +247,27 @@ export function recordSets(zone, { joinTxt = DIFF_DEFAULTS.joinTxt, ignoreSoa = 
   return sets;
 }
 
+/**
+ * The record sets of each zone object, per the options that shape them (`joinTxt`, `ignoreSoa`):
+ * made again when the zone's records or origin are other ones. Never modified once made.
+ */
+const SETS = new WeakMap();
+
+function setsOf(zone, opts) {
+  let entry = SETS.get(zone);
+  if (!entry || entry.records !== zone.records || entry.origin !== zone.origin) {
+    entry = { records: zone.records, origin: zone.origin, byOptions: new Map() };
+    SETS.set(zone, entry);
+  }
+  const key = `${opts.joinTxt ? 1 : 0}${opts.ignoreSoa ? 1 : 0}`;
+  let sets = entry.byOptions.get(key);
+  if (!sets) {
+    sets = recordSets(zone, opts);
+    entry.byOptions.set(key, sets);
+  }
+  return sets;
+}
+
 /* ------------------------------------------------------------------------ */
 /* The diff                                                                 */
 /* ------------------------------------------------------------------------ */
@@ -310,20 +333,27 @@ function compareSets(sa, sb, opts) {
   return { status: reasons.length ? 'changed' : 'same', reasons, notes };
 }
 
+/** What a row sorts by: outside the zone last, its labels from the right, its type's place. */
+function orderKey(row) {
+  return {
+    row,
+    outside: row.rel.endsWith('.') ? 1 : 0,
+    labels: row.rel === '@' ? [] : row.rel.replace(/\.$/, '').split('.').reverse(),
+    type: TYPE_ORDER.includes(row.type) ? TYPE_ORDER.indexOf(row.type) : 99
+  };
+}
+
 /** Row order: the apex first, then names by their labels from the right, then TYPE_ORDER. */
 function rowOrder(x, y) {
-  const lx = x.rel === '@' ? [] : x.rel.replace(/\.$/, '').split('.').reverse();
-  const ly = y.rel === '@' ? [] : y.rel.replace(/\.$/, '').split('.').reverse();
-  const outside = (r) => (r.rel.endsWith('.') ? 1 : 0);
-  if (outside(x) !== outside(y)) return outside(x) - outside(y);
+  if (x.outside !== y.outside) return x.outside - y.outside;
+  const lx = x.labels;
+  const ly = y.labels;
   for (let i = 0; i < Math.min(lx.length, ly.length); i += 1) {
     if (lx[i] !== ly[i]) return lx[i] < ly[i] ? -1 : 1;
   }
   if (lx.length !== ly.length) return lx.length - ly.length;
-  const tx = TYPE_ORDER.indexOf(x.type);
-  const ty = TYPE_ORDER.indexOf(y.type);
-  if (tx !== ty) return (tx < 0 ? 99 : tx) - (ty < 0 ? 99 : ty) || (x.type < y.type ? -1 : 1);
-  return x.type < y.type ? -1 : x.type > y.type ? 1 : 0;
+  if (x.type !== y.type) return x.type - y.type;
+  return x.row.type < y.row.type ? -1 : x.row.type > y.row.type ? 1 : 0;
 }
 
 /** The keys of the sets a change batch deletes (lib/zoneparse.js `changeBatch`), or null: not a change batch. */
@@ -368,8 +398,8 @@ export function diffZones(a, b, options = {}) {
   if (!a || !b || a.fatal || b.fatal) throw new TypeError('zonediff: two zones without a fatal issue are needed');
   const opts = { ...DIFF_DEFAULTS };
   for (const k of DIFF_OPTIONS) if (options && typeof options[k] === 'boolean') opts[k] = options[k];
-  const setsA = recordSets(a, opts);
-  const setsB = recordSets(b, opts);
+  const setsA = setsOf(a, opts);
+  const setsB = setsOf(b, opts);
   const deletesA = batchDeletes(a);
   const deletesB = batchDeletes(b);
   const rows = [];
@@ -410,7 +440,9 @@ export function diffZones(a, b, options = {}) {
     }
     rows.push(row);
   }
-  rows.sort(rowOrder);
+  const sorted = rows.map(orderKey).sort(rowOrder).map((x) => x.row);
+  rows.length = 0;
+  rows.push(...sorted);
   const counts = { added: 0, removed: 0, changed: 0, same: 0, ignored: 0, total: rows.length };
   for (const r of rows) counts[r.status] += 1;
   return {

@@ -234,6 +234,29 @@ describe('more cases', () => {
     assert.ok(DIFF_NOTES.includes('soa-one-side'));
   });
 
+  test('a zone\'s record sets are made once per joinTxt / ignoreSoa: toggling the other options, or the same ones back, reuses them', () => {
+    const z = bind('www A 192.0.2.1\nmail A 192.0.2.2\n@ TXT "a" "b"');
+    let walks = 0;
+    const records = new Proxy(z.records, {
+      get(t, k, rcv) {
+        if (k === Symbol.iterator) walks += 1;
+        return Reflect.get(t, k, rcv);
+      }
+    });
+    const zone = { ...z, records };
+    const other = bind('www A 192.0.2.9');
+    const want = [];
+    for (const [options, n] of [[{}, 1], [{ ignoreTtl: true }, 1], [{ ignoreApexNs: true }, 1], [{ joinTxt: false }, 2], [{ joinTxt: false, ignoreTtl: true }, 2],
+      [{ ignoreSoa: true }, 3], [{}, 3], [{ joinTxt: false }, 3]]) {
+      const res = diffZones(zone, other, options);
+      want.push(lines(res).join(';') === lines(diffZones(z, other, options)).join(';'));
+      assert.equal(walks, n, JSON.stringify(options));
+    }
+    assert.deepEqual(want, Array(8).fill(true), 'the same rows as without the cache');
+    diffZones({ ...zone, records }, other);
+    assert.equal(walks, 4, 'another zone object: made again');
+  });
+
   test('a fatal zone is refused', () => {
     assert.throws(() => diffZones(parseZone(''), bind('@ A 192.0.2.1')), TypeError);
     assert.throws(() => diffZones(null, null), TypeError);

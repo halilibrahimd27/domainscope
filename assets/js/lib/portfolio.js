@@ -118,21 +118,40 @@ export function parsePortfolioInput(text, { max = PORTFOLIO_MAX_DOMAINS } = {}) 
 /* ------------------------------------------------------------------------ */
 
 /**
+ * The RDAP status values (RFC 8056's mapping of the EPP statuses, RFC 9083's own): a registry that
+ * writes EPP's spelling ('clientTransferProhibited', lower-cased by lib/rdap.js) is said in this one.
+ */
+const RDAP_STATUS_NAMES = new Map([
+  'active', 'inactive', 'associated', 'validated', 'locked', 'proxy', 'private', 'removed', 'obscured',
+  'add period', 'auto renew period', 'renew period', 'transfer period', 'redemption period',
+  'pending create', 'pending delete', 'pending renew', 'pending restore', 'pending transfer', 'pending update',
+  'client delete prohibited', 'client hold', 'client renew prohibited', 'client transfer prohibited', 'client update prohibited',
+  'server delete prohibited', 'server hold', 'server renew prohibited', 'server transfer prohibited', 'server update prohibited',
+  'delete prohibited', 'renew prohibited', 'transfer prohibited', 'update prohibited'
+].map((name) => [name.replace(/ /g, ''), name]));
+
+/** A status in its RDAP spelling when it is a known one (any case or spacing), else as written. */
+function statusName(status) {
+  return RDAP_STATUS_NAMES.get(squash(status)) || status;
+}
+
+/**
  * The registry statuses read for risk: the flags as lib/passport.js orders them, the critical ones
  * ({@link CRITICAL_STATUSES}), whether transfers are prohibited — clientTransferProhibited (the
  * registrar's lock), serverTransferProhibited (the registry's: RFC 5731 says transfer requests MUST
  * be rejected) or RFC 9083's plain "transfer prohibited", as Domain overview and Domain Health read
- * it (null when the registry reports no status at all) —, the statuses that say so, the registry
- * lock alone, and the risk: 'critical' (a critical status), 'hijack' (no transfer prohibition at
- * all: anyone with the transfer code can move the domain to another registrar), 'ok', or null
- * without statuses; 'pending-transfer' (a transfer under way: a hijack in progress if nobody here
- * asked for it) comes right after 'critical'.
+ * it (null when the registry reports no status at all) —, the statuses that say so (in their RDAP
+ * spelling, as every status here), the registry lock alone, and the risk: 'critical' (a critical
+ * status), 'hijack' (no transfer prohibition at all: anyone with the transfer code can move the
+ * domain to another registrar), 'ok', or null without statuses; 'pending-transfer' (a transfer
+ * under way: a hijack in progress if nobody here asked for it) comes right after 'critical'.
  * @param {string[]} statuses as RDAP lists them ('client transfer prohibited' or 'clientTransferProhibited')
  * @returns {{ flags: Array<{ code: string, kind: string }>, critical: string[], transferLock: boolean|null,
  *   registryLock: boolean|null, transferCodes: string[], risk: 'critical'|'pending-transfer'|'hijack'|'ok'|null }}
  */
 export function statusRisk(statuses) {
-  const list = (Array.isArray(statuses) ? statuses : []).map((s) => String(s ?? '').trim()).filter(Boolean);
+  // each status once, in its RDAP spelling: EPP's clientTransferProhibited arrives lower-cased from lib/rdap.js
+  const list = uniq((Array.isArray(statuses) ? statuses : []).map((s) => statusName(String(s ?? '').trim())).filter(Boolean));
   const keys = new Set(list.map(squash));
   const critical = CRITICAL_STATUSES.filter((c) => keys.has(c.toLowerCase()));
   const known = list.length > 0;
@@ -521,7 +540,8 @@ function registrationFacts(r, now) {
     expires: valid ? expires : null,
     daysLeft,
     expiry: expiryBand(daysLeft),
-    statuses: Array.isArray(r.status) ? [...r.status] : [],
+    // each once, in its RDAP spelling (as statusRisk says them)
+    statuses: uniq((Array.isArray(r.status) ? r.status : []).map((x) => statusName(String(x ?? '').trim())).filter(Boolean)),
     ...risk,
     delegationSigned: typeof r.dnssecSigned === 'boolean' ? r.dnssecSigned : null,
     server: r.rdapServer || null
@@ -829,7 +849,7 @@ export function exportRow(f) {
     expires: iso(reg.expires),
     daysLeft: Number.isFinite(reg.daysLeft) ? reg.daysLeft : null,
     risk: rowRisk(f),
-    statuses: (reg.statuses || []).join(' '),
+    statuses: (reg.statuses || []).join(', '),
     transferLock: reg.transferLock ?? null,
     critical: (reg.critical || []).join(' '),
     dnssec: f.dnssec ? f.dnssec.state : null,

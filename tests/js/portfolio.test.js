@@ -238,6 +238,18 @@ describe('RDAP statuses read for risk', () => {
     ], ['critical', 'pending-transfer', 'expired', 'expiring', 'hijack', 'warn', 'ok']);
   });
 
+  test('statuses said in their RFC 8056 spelling, whatever the registry wrote (lib/rdap.js lower-cases EPP\'s clientTransferProhibited)', () => {
+    const r = statusRisk(['clienttransferprohibited', 'servertransferprohibited', 'client transfer prohibited', 'clientdeleteprohibited', 'pendingtransfer', 'active', 'a status of its own']);
+    assert.deepEqual(r.transferCodes, ['client transfer prohibited', 'server transfer prohibited'], 'each once');
+    assert.deepEqual(r.flags.map((x) => x.code).sort(),
+      ['a status of its own', 'active', 'client delete prohibited', 'client transfer prohibited', 'pending transfer', 'server transfer prohibited']);
+    assert.equal(r.risk, 'pending-transfer');
+    // the facts and the export say them so too, one cell a status apart (a status has spaces)
+    const f = portfolioFacts({ domain: 'example.com', rdap: { ok: true, domain: 'example.com', tld: 'com', registrar: 'Example Registrar, Inc.', status: ['clienttransferprohibited', 'client delete prohibited', 'client transfer prohibited'], expires: new Date(NOW.getTime() + 400 * DAY) } }, { now: NOW });
+    assert.deepEqual(f.registration.statuses, ['client transfer prohibited', 'client delete prohibited']);
+    assert.equal(exportRow(f).statuses, 'client transfer prohibited, client delete prohibited');
+  });
+
   test('no status at all: nothing can be said', () => {
     assert.deepEqual(statusRisk([]), { flags: [], critical: [], transferLock: null, registryLock: null, transferCodes: [], risk: null });
     assert.deepEqual(statusRisk(undefined).risk, null);

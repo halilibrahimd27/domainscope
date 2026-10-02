@@ -155,6 +155,9 @@ describe('evaluatePolicy', () => {
     // A registry lock alone is a transfer lock (RFC 5731: transfer requests MUST be rejected).
     const registry = cellOf(p, facts({ registration: { ...facts().registration, statuses: ['server transfer prohibited'], transferLock: true, registryLock: true } }), 'transferLock');
     assert.deepEqual([registry.status, evidenceText(registry, t)], ['pass', 'transfers are prohibited: server transfer prohibited']);
+    // EPP's spelling, lower-cased by lib/rdap.js, is said as RFC 8056 spells it
+    const epp = cellOf(p, facts({ registration: { ...facts().registration, statuses: ['clienttransferprohibited', 'servertransferprohibited'], transferLock: true, registryLock: true } }), 'transferLock');
+    assert.equal(evidenceText(epp, t), 'transfers are prohibited: client transfer prohibited, server transfer prohibited');
     const bad = evaluatePolicy(p, facts({ registration: { ...facts().registration, statuses: ['active'], transferLock: false, critical: ['serverHold'], registrar: 'Elsewhere Ltd' } }));
     assert.deepEqual(bad.map((c) => [c.status, evidenceText(c, t)]), [
       ['fail', 'no transfer prohibition (clientTransferProhibited or serverTransferProhibited): the domain can be transferred away'],

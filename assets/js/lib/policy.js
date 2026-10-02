@@ -340,6 +340,11 @@ function registrationUnknown(reg) {
   return ev('pol.ev.failed', { what: 'RDAP' });
 }
 
+/** The transfer prohibitions in their RDAP spelling (RFC 8056, RFC 9083), by their squashed form. */
+const TRANSFER_CODE_NAMES = Object.freeze({
+  clienttransferprohibited: 'client transfer prohibited', servertransferprohibited: 'server transfer prohibited', transferprohibited: 'transfer prohibited'
+});
+
 const RULE_EVAL = {
   expiryDays(entry, f) {
     const reg = f.registration;
@@ -353,9 +358,11 @@ const RULE_EVAL = {
     const reg = f.registration;
     if (!reg || reg.state !== 'ok') return cell(entry, 'unknown', null, registrationUnknown(reg));
     if (reg.transferLock === null || reg.transferLock === undefined) return cell(entry, 'unknown', null, ev('pol.ev.noStatus'));
-    // Any transfer prohibition locks: the registrar's, the registry's (RFC 5731) or RFC 9083's plain one.
+    // Any transfer prohibition locks: the registrar's, the registry's (RFC 5731) or RFC 9083's plain one,
+    // said as RFC 8056 spells them (lib/portfolio.js statusRisk; EPP's spelling arrives lower-cased).
     const codes = Array.isArray(reg.transferCodes) ? reg.transferCodes
-      : (reg.statuses || []).filter((x) => String(x).toLowerCase().replace(/[\s_-]+/g, '').includes('transferprohibited'));
+      : [...new Set((reg.statuses || []).map((x) => String(x).toLowerCase().replace(/[\s_-]+/g, ''))
+        .filter((x) => x.includes('transferprohibited')).map((x) => TRANSFER_CODE_NAMES[x] || x))];
     return boolCell(entry, reg.transferLock, reg.transferLock ? ev('pol.ev.lockOn', { codes: codes.join(', ') }) : ev('pol.ev.lockOff'));
   },
   'status.critical'(entry, f) {

@@ -46,7 +46,8 @@ registerStrings('en', {
   'zone.fetch.err.provider': 'Choose a provider.',
   'zone.fetch.err.domain': 'Enter the zone name, for example example.com.',
   'zone.fetch.err.token': 'Paste the API token: one line without spaces, 16 to 512 characters.',
-  'zone.fetch.err.auth': '{provider} did not accept the token (HTTP 401): it is wrong, expired or revoked — at deSEC it may also be limited to other IP networks. Create a new one and paste it again.',
+  'zone.fetch.err.auth.desec': '{provider} did not accept the token (HTTP 401): it is wrong, expired or revoked, or limited to other IP networks. Create a new one and paste it again.',
+  'zone.fetch.err.auth.digitalocean': '{provider} did not accept the token (HTTP 401): it is wrong, expired or revoked. Create a new one and paste it again.',
   'zone.fetch.err.forbidden.desec': 'deSEC refused the token (HTTP 403). A login token of the web interface needs multi-factor authentication: create an API token instead.',
   'zone.fetch.err.forbidden.digitalocean': 'DigitalOcean refused the token (HTTP 403): it does not have the domain: read scope. Create a token with Custom scopes › domain › read.',
   'zone.fetch.err.not-found': '{provider} has no zone {domain} in the account of this token (HTTP 404). Check the spelling and that the domain is in this account.',
@@ -65,7 +66,7 @@ registerStrings('tr', {
   'zone.fetch.provider': 'Sağlayıcı',
   'zone.fetch.domain': 'Zone',
   'zone.fetch.token': 'API anahtarı',
-  'zone.fetch.privacy': 'Anahtarınız yalnızca {host} adresine, bir istek başlığında ve yalnızca bu okuma için gönderilir. Yalnızca o istek süresince bu sekmenin belleğinde durur: hiçbir yere kaydedilmez (ne tarayıcıya ne bir çalışma alanına), hiçbir yerde günlüğe yazılmaz ve Zone’u getir’e bastığınız anda bu alan boşaltılır.',
+  'zone.fetch.privacy': 'Anahtarınız bir istek başlığında, bu tek okuma için yalnızca {host} adresine gönderilir. Okuma sürdükçe bu sekmenin belleğinde durur: hiçbir yere kaydedilmez (ne tarayıcıya ne bir çalışma alanına), günlüğe yazılmaz ve Zone’u getir’e bastığınız anda bu alan boşaltılır.',
   'zone.fetch.how.desec': 'Anahtarı deSEC’te Token management bölümünde oluşturun. deSEC anahtarları her zaman okuyabilir; birini salt okunur yapmak için ona yazma izni olmayan bir varsayılan politika verin ve “manage tokens”, “create domains”, “delete domains” izinlerini kapalı bırakın. Bir günlük geçerlilik süresi (max age) yeterli.',
   'zone.fetch.how.digitalocean': 'Anahtarı DigitalOcean’da API › Tokens bölümünde Custom scopes seçip yalnızca domain: read izniyle oluşturun (Read Only bir anahtar da olur). Bir günlük geçerlilik süresi yeterli.',
   'zone.fetch.link.desec.token': 'deSEC anahtar yönetimi',
@@ -86,7 +87,8 @@ registerStrings('tr', {
   'zone.fetch.err.provider': 'Bir sağlayıcı seçin.',
   'zone.fetch.err.domain': 'Zone adını girin, örneğin example.com.',
   'zone.fetch.err.token': 'API anahtarını yapıştırın: boşluksuz tek satır, 16 ile 512 karakter arası.',
-  'zone.fetch.err.auth': '{provider} anahtarı kabul etmedi (HTTP 401): anahtar yanlış, süresi dolmuş ya da iptal edilmiş — deSEC’te başka IP ağlarıyla da sınırlanmış olabilir. Yeni bir anahtar oluşturup yeniden yapıştırın.',
+  'zone.fetch.err.auth.desec': '{provider} anahtarı kabul etmedi (HTTP 401): anahtar yanlış, süresi dolmuş, iptal edilmiş ya da başka IP ağlarıyla sınırlanmış. Yeni bir anahtar oluşturup yeniden yapıştırın.',
+  'zone.fetch.err.auth.digitalocean': '{provider} anahtarı kabul etmedi (HTTP 401): anahtar yanlış, süresi dolmuş ya da iptal edilmiş. Yeni bir anahtar oluşturup yeniden yapıştırın.',
   'zone.fetch.err.forbidden.desec': 'deSEC anahtarı reddetti (HTTP 403). Web arayüzünün oturum anahtarı çok adımlı doğrulama ister: bunun yerine bir API anahtarı oluşturun.',
   'zone.fetch.err.forbidden.digitalocean': 'DigitalOcean anahtarı reddetti (HTTP 403): anahtarda domain: read izni yok. Custom scopes › domain › read ile bir anahtar oluşturun.',
   'zone.fetch.err.not-found': '{provider}, bu anahtarın hesabında {domain} adlı bir zone bulamadı (HTTP 404). Yazımı ve alan adının bu hesapta olduğunu kontrol edin.',
@@ -96,11 +98,11 @@ registerStrings('tr', {
   'zone.fetch.err.timeout': '{provider} zamanında yanıt vermedi. Yeniden deneyin.',
   'zone.fetch.err.response': '{provider} kayıt listesi olmayan bir yanıt gönderdi.',
   'zone.fetch.err.detail': '{provider} yanıtı: “{detail}”',
-  'zone.fetch.err.again': 'Anahtar alanı boşaltıldı: yeniden denemek için anahtarı yeniden yapıştırın.'
+  'zone.fetch.err.again': 'Anahtar alanı boşaltıldı: tekrar denemek için anahtarı yeniden yapıştırın.'
 });
 
 /** Error codes whose text depends on the provider (`zone.fetch.err.<code>.<provider>`). */
-const PER_PROVIDER = new Set(['forbidden']);
+const PER_PROVIDER = new Set(['auth', 'forbidden']);
 
 /**
  * The i18n key of a fetch error.
@@ -131,7 +133,7 @@ const hostOf = (url) => new URL(url).host;
  * Page-session memory: the provider picked and the zone typed (never the token), the running job and
  * the last outcome. `paint` redraws the panel that is on the page now.
  */
-const memo = { provider: ZONE_PROVIDERS[0].id, domain: '', job: null, error: null, notice: null, paint: null };
+const memo = { provider: ZONE_PROVIDERS[0].id, domain: '', job: null, error: null, notice: null, paint: null, status: null };
 
 /** Stop a running fetch (Forget, another workspace, "Delete all local data", leaving the view). */
 export function stopZoneFetch() {
@@ -162,7 +164,25 @@ export function ZoneFetchPanel({ domainHint = '', open = false, onZone }) {
     children: body
   });
 
-  function paint() {
+  /** The control that has the keyboard focus in the panel, as a selector that finds it again after a repaint. */
+  const focusKey = () => {
+    const el = document.activeElement;
+    if (!el || !body.contains(el)) return null;
+    if (el.dataset.role) return `[data-role="${el.dataset.role}"]`;
+    if (el.dataset.action) return `[data-action="${el.dataset.action}"]`;
+    if (el.classList.contains('seg-btn') && el.dataset.value) return `.seg-btn[data-value="${el.dataset.value}"]`;
+    return null;
+  };
+  /** Is the focus in the panel, or nowhere (a click on a button that is gone)? Then the panel may move it. */
+  const focusHere = () => !document.activeElement || document.activeElement === document.body || body.contains(document.activeElement);
+  let statusEl = null;
+
+  /**
+   * Rebuild the panel. The keyboard focus goes back to the control that had it (the provider, a
+   * field, a button) or to `focus` (a selector); Stop, gone once a fetch ends, hands it to Fetch zone.
+   */
+  function paint({ focus = null } = {}) {
+    const keep = focus || focusKey();
     clear(body);
     const provider = getZoneProvider(memo.provider) || ZONE_PROVIDERS[0];
     const running = !!memo.job;
@@ -215,7 +235,7 @@ export function ZoneFetchPanel({ domainHint = '', open = false, onZone }) {
       onClick: () => {
         stopZoneFetch();
         memo.notice = t('zone.fetch.stopped');
-        paint();
+        paint({ focus: '[data-action="zone-fetch"]' });
       }
     }) : null;
 
@@ -224,29 +244,33 @@ export function ZoneFetchPanel({ domainHint = '', open = false, onZone }) {
       if (memo.job) return;
       const raw = tokenField.value;
       tokenField.value = '';
+      // `cleared`: a token had been pasted, and is gone now: the error says to paste it again.
+      const cleared = raw.length > 0;
       memo.domain = domainField.value.trim();
       memo.error = null;
       memo.notice = null;
       const zone = zoneName(memo.domain);
       if (!zone) {
-        memo.error = { code: 'domain', provider: provider.id, params: {} };
-        paint();
+        memo.error = { code: 'domain', provider: provider.id, params: {}, cleared };
+        paint({ focus: '[data-role="zone-fetch-domain"]' });
         return;
       }
       if (!cleanToken(raw)) {
-        memo.error = { code: 'token', provider: provider.id, params: {} };
-        paint();
+        memo.error = { code: 'token', provider: provider.id, params: {}, cleared };
+        paint({ focus: '[data-role="zone-fetch-token"]' });
         return;
       }
       const controller = new AbortController();
       const job = { controller, provider: provider.id, domain: zone, progress: null };
       memo.job = job;
-      paint();
+      paint({ focus: '[data-action="zone-fetch-stop"]' });
+      announce(t('zone.fetch.running', { provider: provider.name }));
       fetchZone(provider.id, zone, raw, {
         signal: controller.signal,
         onProgress: (p) => {
           job.progress = p;
-          if (memo.job === job && memo.paint) memo.paint();
+          // Only the status line: a rebuild would take the focus from Stop.
+          if (memo.job === job && memo.status) memo.status();
         }
       }).then((out) => {
         if (memo.job !== job) return;
@@ -258,8 +282,8 @@ export function ZoneFetchPanel({ domainHint = '', open = false, onZone }) {
         if (memo.job !== job) return;
         memo.job = null;
         if (err && err.name === 'AbortError') return;
-        memo.error = { code: err && err.code ? err.code : 'network', provider: provider.id, domain: zone, params: (err && err.params) || {} };
-        if (memo.paint) memo.paint();
+        memo.error = { code: err && err.code ? err.code : 'network', provider: provider.id, domain: zone, params: (err && err.params) || {}, cleared: true };
+        if (memo.paint) memo.paint(focusHere() ? { focus: '[data-role="zone-fetch-token"]' } : {});
         announce(t('zone.fetch.err.title'));
       });
     }
@@ -276,13 +300,21 @@ export function ZoneFetchPanel({ domainHint = '', open = false, onZone }) {
       h('div', { class: 'zone-fetch-privacy' },
         Alert({ variant: 'info', icon: 'lock', compact: true, message: t('zone.fetch.privacy', { host: hostOf(provider.api) }) })),
       h('div', { class: 'cluster' }, go, stop),
-      status(provider));
+      statusEl = h('div', { class: 'zone-fetch-status' }));
+    fillStatus(provider);
     if (running) domainField.input.disabled = true;
     if (running) tokenField.input.disabled = true;
+    const again = keep ? body.querySelector(keep) : null;
+    if (again && !again.disabled) again.focus();
   }
 
-  /** Progress, the last error or notice. */
-  function status(provider) {
+  /** Progress, the last error or notice, in the status element (filled in place). */
+  function fillStatus(provider) {
+    const el = statusEl;
+    clear(el);
+    el.className = 'zone-fetch-status';
+    el.hidden = false;
+    delete el.dataset.code;
     const job = memo.job;
     if (job) {
       const p = job.progress;
@@ -293,8 +325,9 @@ export function ZoneFetchPanel({ domainHint = '', open = false, onZone }) {
         const records = p.total !== null && p.total !== undefined ? `${formatNumber(p.records)} / ${formatNumber(p.total)}` : formatNumber(p.records);
         lines.push(h('span', { class: 'muted' }, t(`zone.fetch.progress.${provider.id}`, { records, count: p.requests })));
       }
-      return h('div', { class: 'zone-fetch-status', dataset: { state: 'running' }, attrs: { 'aria-live': 'polite' } },
-        Spinner({ label: t('zone.fetch.running', { provider: provider.name }) }), h('div', { class: 'stack-xs' }, lines));
+      el.dataset.state = 'running';
+      el.append(Spinner({ label: t('zone.fetch.running', { provider: provider.name }) }), h('div', { class: 'stack-xs' }, lines));
+      return;
     }
     if (memo.error) {
       const e = memo.error;
@@ -303,20 +336,32 @@ export function ZoneFetchPanel({ domainHint = '', open = false, onZone }) {
       const params = { provider: name, host, domain: e.domain || memo.domain, status: e.params.status ?? '', seconds: formatNumber(e.params.retryAfterS ?? 60) };
       const extra = [];
       if (e.params.detail) extra.push(h('p', { class: 'text-sm' }, t('zone.fetch.err.detail', { provider: name, detail: e.params.detail })));
-      if (e.code !== 'domain') extra.push(h('p', { class: 'text-sm muted' }, t('zone.fetch.err.again')));
-      return h('div', { class: 'zone-fetch-status', dataset: { state: 'error', code: e.code } }, Alert({
+      if (e.cleared) extra.push(h('p', { class: 'text-sm muted' }, t('zone.fetch.err.again')));
+      el.dataset.state = 'error';
+      el.dataset.code = e.code;
+      el.append(Alert({
         variant: 'error',
         title: t('zone.fetch.err.title'),
         message: t(fetchErrorKey(e.code, e.provider), params),
         children: extra.length ? h('div', { class: 'stack-xs' }, extra) : null
       }));
+      return;
     }
-    if (memo.notice) return h('div', { class: 'zone-fetch-status muted text-sm', dataset: { state: 'notice' } }, memo.notice);
-    return h('div', { class: 'zone-fetch-status', hidden: true });
+    if (memo.notice) {
+      el.dataset.state = 'notice';
+      el.classList.add('muted', 'text-sm');
+      el.append(memo.notice);
+      return;
+    }
+    el.dataset.state = '';
+    el.hidden = true;
   }
 
-  memo.paint = () => {
-    if (body.isConnected) paint();
+  memo.paint = (opts) => {
+    if (body.isConnected) paint(opts);
+  };
+  memo.status = () => {
+    if (body.isConnected && statusEl) fillStatus(getZoneProvider(memo.provider) || ZONE_PROVIDERS[0]);
   };
   paint();
   return panel;

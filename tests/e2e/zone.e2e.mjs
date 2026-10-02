@@ -1192,6 +1192,61 @@ async function main() {
       await page.evaluate(() => { window.__prov.delayMs = 0; });
     });
 
+    await run.step('keyboard: the focus survives every repaint — the provider, the token field after an error, Stop through progress, Fetch after Stop', async () => {
+      const active = () => page.evaluate(() => {
+        const el = document.activeElement;
+        if (!el) return null;
+        return el.dataset.action || el.dataset.role || (el.classList.contains('seg-btn') ? `seg:${el.dataset.value}` : el.tagName.toLowerCase());
+      });
+      await openFetch(page);
+      // The provider, picked from the keyboard: the focus stays on it.
+      await page.evaluate(() => document.querySelector('.zone-fetch .seg-btn[data-value="digitalocean"]').focus());
+      await page.press('Enter');
+      await page.waitFor(() => /api\.digitalocean\.com/.test(document.querySelector('.zone-fetch-privacy')?.textContent || ''), { message: 'DigitalOcean picked' });
+      assertEqual(await active(), 'seg:digitalocean', 'the focus stays on the provider');
+      // DigitalOcean refuses a token (401): its own words, nothing about deSEC; the focus is back in the token field.
+      await page.type('[data-role="zone-fetch-domain"]', 'example.com');
+      await page.type('[data-role="zone-fetch-token"]', `wrong-${FETCH_TOKEN}`);
+      await page.press('Enter');
+      await page.waitFor(() => document.querySelector('.zone-fetch-status')?.dataset.code === 'auth', { message: 'auth error' });
+      const auth = await fetchState();
+      assert(/DigitalOcean did not accept the token \(HTTP 401\)/.test(auth.text) && !/deSEC/.test(auth.text), `DigitalOcean's 401 says nothing of deSEC: ${auth.text}`);
+      assertEqual([auth.token, await active()], ['', 'zone-fetch-token'], 'emptied, and the focus there to paste it again');
+      // A bad zone name with a token pasted: the token field was emptied too, and the message says so.
+      await page.type('[data-role="zone-fetch-domain"]', 'not a zone');
+      await page.type('[data-role="zone-fetch-token"]', FETCH_TOKEN);
+      await page.press('Enter');
+      await page.waitFor(() => document.querySelector('.zone-fetch-status')?.dataset.code === 'domain', { message: 'domain error' });
+      const bad = await fetchState();
+      assert(/Enter the zone name/.test(bad.text) && /The token field was emptied/.test(bad.text), `the token's fate is said: ${bad.text}`);
+      assertEqual([bad.token, await active()], ['', 'zone-fetch-domain'], 'the focus on the field to fix');
+      // A slow deSEC fetch started with Enter: the focus goes to Stop and stays there through the progress.
+      await page.evaluate(() => document.querySelector('.zone-fetch .seg-btn[data-value="desec"]').click());
+      await page.evaluate(() => { window.__prov.mode.desec = 'paged'; window.__prov.delayMs = 600; window.__prov.calls = []; });
+      await page.type('[data-role="zone-fetch-domain"]', 'example.com');
+      await page.type('[data-role="zone-fetch-token"]', FETCH_TOKEN);
+      await page.press('Enter');
+      await page.waitFor(() => document.activeElement?.dataset.action === 'zone-fetch-stop', { message: 'the focus on Stop' });
+      await page.waitFor(() => window.__prov.calls.length >= 3 && /requests/.test(document.querySelector('.zone-fetch-status')?.textContent || ''), { timeout: 15000, message: 'progress shown' });
+      assertEqual(await active(), 'zone-fetch-stop', 'still on Stop after the progress updates');
+      await page.press('Enter');
+      await page.waitFor(() => /Stopped\. Nothing was imported\./.test(document.querySelector('.zone-fetch-status')?.textContent || ''), { message: 'stopped' });
+      assertEqual(await active(), 'zone-fetch', 'the focus on Fetch zone again');
+      await page.evaluate(() => { window.__prov.delayMs = 0; window.__prov.mode.desec = 'ok'; });
+      // Turkish: one "yeniden" when the token must be pasted again; the privacy line says "yalnızca" once.
+      await setLangUi(page, 'tr');
+      await openFetch(page);
+      const privacy = await text(page, '.zone-fetch-privacy');
+      assertEqual((privacy.match(/yalnızca/g) || []).length, 1, `TR privacy: ${privacy}`);
+      await page.type('[data-role="zone-fetch-domain"]', 'example.com');
+      await page.type('[data-role="zone-fetch-token"]', `wrong-${FETCH_TOKEN}`);
+      await page.press('Enter');
+      await page.waitFor(() => document.querySelector('.zone-fetch-status')?.dataset.state === 'error', { message: 'TR error' });
+      const tr = await fetchState();
+      assert(/tekrar denemek için anahtarı yeniden yapıştırın/.test(tr.text), `TR again: ${tr.text}`);
+      await setLangUi(page, 'en');
+    });
+
     await run.step('the fetch panel at 320 and 375 px, TR/EN × light/dark: no horizontal scroll', async () => {
       await page.click('[data-action="zone-forget"]');
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'empty' });

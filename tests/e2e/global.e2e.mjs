@@ -530,7 +530,6 @@ async function offlineVerdicts(browser, server) {
       return {
         title: group ? group.querySelector('.glb-geo-group-title > span:not(.flag)').textContent.trim() : null,
         flagHidden: group ? group.querySelector('.glb-geo-group-title .flag').getAttribute('aria-hidden') : null,
-        caption: group ? group.querySelector('caption')?.textContent.trim() : null,
         rows: rows.map((tr) => ({
           via: tr.querySelector('.glb-via')?.textContent,
           scope: tr.querySelector('.dt-null')?.getAttribute('title') || null,
@@ -544,8 +543,8 @@ async function offlineVerdicts(browser, server) {
     assertEqual([cn.title, cn.flagHidden], ['Mainland China', 'true'], 'group title, its flag decorative');
     assertEqual(cn.rows.length, 3, 'three China rows');
     assertEqual(cn.mainCn, 0, 'no China row in the main location table');
-    assert(cn.rows.every((r) => r.via === 'AliDNS (ECS)' && r.ops.some((o) => /Alibaba Cloud CDN/.test(o))), `AliDNS, Alibaba Cloud CDN on each row: ${JSON.stringify(cn.rows.map(({ text, ...r }) => r))}`);
-    assert(['Beijing', 'Shanghai', 'Guangzhou'].every((c, i) => cn.rows.some((r) => r.text.includes(c))), 'the three cities');
+    assert(cn.rows.every((r) => r.via === 'AliDNS (ECS)' && r.scope === 'Not reported' && r.ops.some((o) => /Alibaba Cloud CDN/.test(o))), `AliDNS, no ECS scope, Alibaba Cloud CDN on each row: ${JSON.stringify(cn.rows.map(({ text, ...r }) => r))}`);
+    assert(['Beijing', 'Shanghai', 'Guangzhou'].every((c) => cn.rows.some((r) => r.text.includes(c))), 'the three cities');
     const bySubnet = (a, b) => (a[3] < b[3] ? -1 : a[3] > b[3] ? 1 : 0);
     assertEqual(cn.queries.map((q) => [q.resolver, q.name, q.type, q.ecs, q.accept]).sort(bySubnet),
       CHINA.map((v) => ['alidns', 'china.example.com', 1, v.subnet, 'application/dns-json']).sort(bySubnet),

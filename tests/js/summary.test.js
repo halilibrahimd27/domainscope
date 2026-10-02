@@ -1023,6 +1023,25 @@ describe('portfolio (Domain portfolio)', () => {
     ]);
   });
 
+  test('everything at once: what needs a look by name, the policy and what could not be read are kept; mail and parked lines give way first', () => {
+    const doc = PF.portfolioSummary(facts({
+      nsUnregistered: [{ domain: 'example-gone.org', of: ['example.com'] }], pendingTransfer: ['example.com'], notRegistered: ['example-gone.net']
+    }), opts());
+    assertShape(doc);
+    assert.deepEqual(lines(md(doc)).slice(1, -2).map((l) => l.replace(/:\*\*.*|:.*/, '')), [
+      '- **Expire within 30 days',
+      '- **Name server domains not registered (anyone can register them and take over DNS)',
+      '- **Name server domains expiring within 30 days',
+      '- **Critical registry status',
+      '- **Transfer pending (a hijack in progress if nobody here asked for it)',
+      '- **Not registered',
+      '- **No transfer lock',
+      '- DNSSEC',
+      '- **Policy** `baseline`',
+      '- 1 domain without RDAP (registry WHOIS only) · 2 lookups failed'
+    ]);
+  });
+
   test('nothing to say: no expiry within 30 days (only of the known ones when RDAP is missing or the check stopped); the policy met; the name as a code span', () => {
     const quiet = facts({
       expiring: [], critical: [], unlocked: [], nsExpiring: [], spfOver: [], dmarcWeak: [], parkedOpen: [], failedLookups: 0, noRdap: 0,

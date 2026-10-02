@@ -12,12 +12,16 @@ const { kit, doc, code, strong, whenText } = BUILDER_KIT;
 
 /** Domains a line names before "+N more". */
 const MAX_NAMED = 3;
+/** Lines between the title and the footer (12 in all, as every summary): past it the mail and parked lines give way. */
+const MAX_LINES = 10;
 
 /**
  * Domain portfolio: what expires within 30 days (the portfolio's domains and the name servers'
  * domains), name server domains nobody has registered, critical registry statuses, domains without a transfer lock, DNSSEC, the mail posture
  * that needs a look, parked domains not locked down, the policy audit's result, and what could not
- * be read (no RDAP, failed lookups, a stopped run). Domain names are code spans; never a record value.
+ * be read (no RDAP, failed lookups, a stopped run). Past {@link MAX_LINES} the last lines before the
+ * policy give way (parked, then mail): what needs a look by name, the policy's result and what
+ * could not be read always stay. Domain names are code spans; never a record value.
  * @param {object} facts lib/portfolio.js portfolioSummaryFacts()
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {import('./summarycore.js').SummaryDoc}
@@ -60,13 +64,15 @@ export function portfolioSummary(facts, opts) {
   if ((f.dmarcWeak || []).length) mail.push([t('sum.pf.dmarcWeak', { count: f.dmarcWeak.length }), ': ', ...named(f.dmarcWeak)]);
   for (const m of mail) lines.push([strong(`${t('sum.pf.mail')}:`), ' ', ...m]);
   if ((f.parkedOpen || []).length) lines.push([strong(`${t('sum.pf.parkedOpen')}:`), ' ', ...named(f.parkedOpen)]);
+  // the policy's result and what could not be read: kept whatever comes before them
+  const tail = [];
   if (f.policy) {
     const c = f.policy.counts;
     const name = f.policy.name ? [' ', code(f.policy.name)] : [];
     const head = [strong(`${t('sum.pf.policy')}`), ...name, ': '];
-    if (!c.failing) lines.push([...head, t(c.unknown ? 'sum.pf.policyPassKnown' : 'sum.pf.policyPass', { count: c.domains, unknown: c.unknown })]);
+    if (!c.failing) tail.push([...head, t(c.unknown ? 'sum.pf.policyPassKnown' : 'sum.pf.policyPass', { count: c.domains, unknown: c.unknown })]);
     else {
-      lines.push([...head, t('sum.pf.policyFail', { count: c.failing, total: c.domains }), ' — ',
+      tail.push([...head, t('sum.pf.policyFail', { count: c.failing, total: c.domains }), ' — ',
         ...named(f.policy.failing, (x) => x.rules.slice(0, 3).join(', ') + (x.rules.length > 3 ? ' …' : ''))]);
     }
   }
@@ -75,8 +81,8 @@ export function portfolioSummary(facts, opts) {
     f.failedLookups ? t('sum.pf.failed', { count: f.failedLookups }) : null,
     f.stopped ? t('sum.pf.stopped', { count: f.notLooked || 0 }) : null
   ].filter(Boolean);
-  if (gaps.length) lines.push([gaps.join(' · ')]);
-  return doc('portfolio', k.title('portfolio', [t('sum.pf.domains', { count: f.domains || 0 })]), lines.slice(0, 11),
+  if (gaps.length) tail.push([gaps.join(' · ')]);
+  return doc('portfolio', k.title('portfolio', [t('sum.pf.domains', { count: f.domains || 0 })]), [...lines.slice(0, MAX_LINES - tail.length), ...tail],
     { when: whenText(t, 'sum.at.checked', f.at, opts.now || new Date()), url: opts.url });
 }
 

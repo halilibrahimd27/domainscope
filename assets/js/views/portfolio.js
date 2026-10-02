@@ -931,7 +931,9 @@ export function mount(container, ctx) {
     if (p.complete) return h('span', { dataset: { parked: 'locked' }, title: t('pf.parked.title') }, Badge(t('pf.parked.locked'), { variant: 'ok', icon: 'lock' }));
     const missing = [p.nullMx ? null : 'null MX', p.spfFail === false ? '-all' : null, p.dmarcReject === false ? 'p=reject' : null].filter(Boolean);
     if (!missing.length) return null;
-    return h('span', { dataset: { parked: 'open' }, title: t('pf.parked.title') }, Badge(t('pf.parked.open', { list: missing.join(', ') }), { variant: 'warn', icon: 'unlock' }));
+    // each value whole: a narrow card would break "-all" after its hyphen
+    return h('span', { dataset: { parked: 'open' }, title: t('pf.parked.title') },
+      Badge(keepWhole(t('pf.parked.open', { list: missing.join(', ') }), /(null MX|-all|p=reject)/), { variant: 'warn', icon: 'unlock' }));
   }
 
   function policyCell(row) {
@@ -943,8 +945,10 @@ export function mount(container, ctx) {
       r.unknown ? Badge(t('pf.policy.unknown', { count: r.unknown })) : null);
   }
 
+  /** A text with what `re` matches (one capture group) kept on one line, each match in a .pf-nowrap. */
+  const keepWhole = (text, re) => String(text).split(re).map((part, i) => (i % 2 ? h('span', { class: 'pf-nowrap' }, part) : part)).filter((x) => x !== '');
   /** A text with its ISO dates kept on one line (a narrow card would break one at its hyphens). */
-  const keepDates = (text) => String(text).split(/(\d{4}-\d{2}-\d{2})/).map((part, i) => (i % 2 ? h('span', { class: 'pf-nowrap' }, part) : part)).filter((x) => x !== '');
+  const keepDates = (text) => keepWhole(text, /(\d{4}-\d{2}-\d{2})/);
 
   /** Sort values: what a column orders by (empty last in both directions). */
   const sortOf = {

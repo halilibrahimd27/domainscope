@@ -373,8 +373,9 @@
   max-width: 16rem;
   color: var(--text-2);
   white-space: normal;
-  /* a date or a value moves to the next line whole; only one longer than the line breaks */
-  overflow-wrap: break-word;
+  /* a date stays whole in its .pf-nowrap; a word longer than the line breaks where it must, and the
+     cell may be that narrow (break-word would size it to the longest word and spill on a phone) */
+  overflow-wrap: anywhere;
 }
 
 /* ---- a phone: every row a card of labelled lines (the headers come from data-label) ------- */
@@ -488,10 +489,13 @@
     box-shadow: inset 3px 0 0 var(--warn-solid);
   }
 
-  .pf-evidence,
   .pf-flags {
     max-width: none;
     overflow-wrap: break-word;
+  }
+
+  .pf-evidence {
+    max-width: none;
   }
 
   .pf-caa-issuer {

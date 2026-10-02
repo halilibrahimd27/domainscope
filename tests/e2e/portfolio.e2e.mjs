@@ -64,7 +64,8 @@ const ZONE = {
   'example.org': {
     NS: ['ns1.example.net', 'ns.example.org'],
     MX: [{ preference: 0, exchange: '.' }],
-    TXT: [['v=spf1 -all']]
+    // takes no mail but ends its SPF with ~all: the lock-down is missing -all
+    TXT: [['v=spf1 ~all']]
   },
   '_dmarc.example.org': { TXT: [['v=DMARC1; p=reject']] },
   // its second name server sits under a domain nobody has registered (the classic takeover)
@@ -257,7 +258,7 @@ async function main() {
       const org = await rowOf(page, 'example.org');
       assertEqual(org.failed, ['rdap', 'rdap', 'rdap'], 'expiry, status and registrar: n/a with a Retry');
       assert(/RDAP: answered HTTP 503/.test(await page.evaluate(() => [...document.querySelectorAll('.pf-table .na-mark')].map((m) => m.title).join('\n'))), 'the reason');
-      assert(/Locked down/.test(org.parked), `parked: ${org.parked}`);
+      assert(/Missing: -all/.test(org.parked), `parked: ${org.parked}`);
       assert(/example\.org\s*own/.test(org.ns) && /example\.net\s*12 days left/.test(org.ns), org.ns);
 
       const tr = await rowOf(page, 'example-test.com.tr');
@@ -432,6 +433,9 @@ async function main() {
       await page.click('[data-action="pf-run"]');
       await waitDone(page, 'checked again');
       const tab = async (id) => {
+        // a toast closes itself after a few seconds, longer than these steps take: one left over from the
+        // runs above could sit over the tabs at 320 px
+        await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
         await page.click(`.pf-results .tab[data-tab="${id}"]`);
         await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
         await page.evaluate(() => window.scrollTo(0, 0));
@@ -455,7 +459,28 @@ async function main() {
       assertEqual(fit, 0, 'every card fits at 375 px');
       await page.setViewport({ width: 320, height: 640, mobile: true });
       await tab('policy');
+      // the baseline's long evidence ("…(clientTransferProhibited or serverTransferProhibited)…") on the narrowest phone
+      await page.evaluate(() => document.querySelector('[data-preset="baseline"]').click());
+      await page.waitFor(() => document.querySelectorAll('.pf-matrix thead th').length === 9, { message: 'the seven rules of the baseline' });
       await assertNoHorizontalScroll(page, 'policy 320 tr dark');
+      const spill = () => page.evaluate(() => [...document.querySelectorAll('.pf-matrix .pf-evidence')].filter((el) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        return range.getBoundingClientRect().right > el.closest('td').getBoundingClientRect().right + 0.5;
+      }).map((el) => el.textContent));
+      assertEqual(await spill(), [], 'every evidence stays inside its card at 320 px (Turkish)');
+      await setLangUi(page, 'en');
+      await page.waitFor(() => !!document.querySelector('.pf-head'), { message: 'kept after the language switch' });
+      await tab('policy');
+      await page.waitFor(() => !!document.querySelector('.pf-matrix tbody tr'), { message: 'the matrix again' });
+      assertEqual(await spill(), [], 'every evidence stays inside its card at 320 px (English)');
+      await setLangUi(page, 'tr');
+      await page.waitFor(() => !!document.querySelector('.pf-head'), { message: 'kept after the language switch' });
+      await tab('policy');
+      await tab('domains');
+      const parkedWhole = await page.evaluate(() => [...document.querySelectorAll('.pf-table [data-parked="open"] .pf-nowrap')].map((e) => e.textContent));
+      assertEqual(parkedWhole, ['-all'], '"-all" never breaks after its hyphen');
+      await tab('policy');
       await shot(page, opts, 'portfolio-policy-mobile320-dark-tr');
       await tab('domains');
       await assertNoHorizontalScroll(page, 'portfolio 320 tr dark');

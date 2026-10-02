@@ -34,7 +34,10 @@
  *    one request is in flight per registry server at a time, and a registry's 429 is waited out
  *    (its Retry-After, else {@link RDAP_REGISTRY_RETRY_MS} doubled each time) and asked again, at
  *    most {@link RDAP_REGISTRY_429_RETRIES} times, never through rdap.org (it would only forward to
- *    the same registry).
+ *    the same registry). Nothing waits longer than {@link RDAP_REGISTRY_WAIT_MAX_MS}: a longer
+ *    Retry-After (RFC 6585's example is an hour), or a registry still answering 429 once a lookup
+ *    has used up its retries, blocks that registry until the wait ends — every lookup queued or
+ *    asked meanwhile fails at once as rate limited, with the time left, as rdap.org's pause does.
  *  - An {@link RDAP_OVERRIDES} server answers 404 for a TLD it does not serve as well as for a
  *    domain not registered (rdap.identitydigital.services does for a .de name): its 404 is not
  *    conclusive, never "not registered".
@@ -117,7 +120,8 @@ function isAbort(err) {
 
 function describe(err) {
   if (!err) return 'Unknown error';
-  if (err instanceof HttpError) return /not conclusive/.test(err.message) ? err.message : `HTTP ${err.status}${err.statusText ? ` ${err.statusText}` : ''}`;
+  // "HTTP 429 Too Many Requests", or what this module adds (a 404 not conclusive, a registry blocked)
+  if (err instanceof HttpError) return err.message;
   if (err instanceof TypeError) return `Network error (the RDAP server may not allow browser access): ${err.message}`;
   return String(err.message || err);
 }
@@ -171,7 +175,7 @@ function serviceCandidates(urls) {
 
 let bootstrapCaches = new WeakMap(); // fetchImpl → Map(kind → { promise, at })
 let rdapOrgGates = new WeakMap(); // fetchImpl → { next, coolUntil }
-let registryGates = new WeakMap(); // fetchImpl → Map(host → { tail, coolUntil })
+let registryGates = new WeakMap(); // fetchImpl → Map(host → { tail, coolUntil, blockedUntil })
 
 /** Drop the cached IANA bootstrap files and the pacing of rdap.org and the registries (all fetch implementations). */
 export function clearRdapCache() {
@@ -197,7 +201,11 @@ class RdapOrgPausedError extends Error {
   }
 }
 
-/** One registry server's pacing for one fetch implementation: a queue of one request at a time, and its 429 wait. */
+/**
+ * One registry server's pacing for one fetch implementation: a queue of one request at a time,
+ * the wait after its 429 (`coolUntil`, waited out) and a pause longer than a lookup waits
+ * (`blockedUntil`: every lookup fails at once until then).
+ */
 function registryGate(fetchImpl, host) {
   const key = typeof fetchImpl === 'function' ? fetchImpl : registryGate;
   let hosts = registryGates.get(key);
@@ -207,17 +215,28 @@ function registryGate(fetchImpl, host) {
   }
   let gate = hosts.get(host);
   if (!gate) {
-    gate = { tail: Promise.resolve(), coolUntil: 0 };
+    gate = { tail: Promise.resolve(), coolUntil: 0, blockedUntil: 0 };
     hosts.set(host, gate);
   }
   return gate;
 }
 
+/** The answer of a lookup a blocked registry does not get: its 429 again, with the time left. */
+function blockedError(gate, url) {
+  const left = Math.max(0, gate.blockedUntil - Date.now());
+  const err = new HttpError(429, url, '', { statusText: 'Too Many Requests', retryAfterMs: left });
+  err.message = 'HTTP 429 Too Many Requests (an earlier answer of this registry): not asked again before its wait ends';
+  return err;
+}
+
 /**
- * Wait for a registry server's turn: one request in flight per server, after its 429 wait.
+ * Wait for a registry server's turn: one request in flight per server, after its 429 wait (never
+ * longer than `registryWaitMaxMs`). A registry blocked until later fails the lookup at once
+ * (an HttpError 429 with the time left), when it comes and again when its turn comes.
  * Resolves with the function that frees the server for the next request (call it once done).
  */
-async function registryTurn(gate, signal) {
+async function registryTurn(gate, url, { signal, registryWaitMaxMs }) {
+  if (gate.blockedUntil > Date.now()) throw blockedError(gate, url);
   const prev = gate.tail;
   let release;
   const mine = new Promise((resolve) => {
@@ -226,8 +245,9 @@ async function registryTurn(gate, signal) {
   gate.tail = prev.then(() => mine);
   try {
     await withSignal(prev, signal);
+    if (gate.blockedUntil > Date.now()) throw blockedError(gate, url);
     const wait = gate.coolUntil - Date.now();
-    if (wait > 0) await sleep(wait, signal);
+    if (wait > 0) await sleep(Math.min(wait, registryWaitMaxMs), signal);
   } catch (err) {
     release();
     throw err;
@@ -235,11 +255,16 @@ async function registryTurn(gate, signal) {
   return release;
 }
 
-/** Wait a registry server out after its 429: its Retry-After, else `baseMs` (the caller doubles it). */
-function registryCoolDown(fetchImpl, host, err, baseMs) {
+/**
+ * After a registry server's 429: its Retry-After, else `baseMs` (the caller doubles it). A wait
+ * the lookups behind may take (at most `registryWaitMaxMs`) is waited out; a longer one blocks the
+ * registry until it ends. Returns the wait asked for.
+ */
+function registryCoolDown(gate, err, baseMs, { registryWaitMaxMs }) {
   const wait = Number.isFinite(err && err.retryAfterMs) ? err.retryAfterMs : baseMs;
-  const gate = registryGate(fetchImpl, host);
-  gate.coolUntil = Math.max(gate.coolUntil, Date.now() + wait);
+  const now = Date.now();
+  if (wait > registryWaitMaxMs) gate.blockedUntil = Math.max(gate.blockedUntil, now + wait);
+  else gate.coolUntil = Math.max(gate.coolUntil, now + wait);
   return wait;
 }
 
@@ -279,7 +304,7 @@ function noteRdapOrgFailure(gate, err, opts) {
   if (err instanceof HttpError && err.status === 429) {
     const host = hostOf(err.url);
     if (host && host !== RDAP_ORG_HOST) {
-      registryCoolDown(opts.fetchImpl, host, err, opts.registryRetryMs);
+      registryCoolDown(registryGate(opts.fetchImpl, host), err, opts.registryRetryMs, opts);
       return err;
     }
     gate.coolUntil = Date.now() + Math.max(opts.rdapOrgCooldownMs, Number.isFinite(err.retryAfterMs) ? err.retryAfterMs : 0);
@@ -538,7 +563,7 @@ function failureFields(err) {
   };
 }
 
-async function fetchRdap(url, { fetchImpl, signal, timeoutMs, gate = null, intervalMs = RDAP_ORG_INTERVAL_MS }) {
+async function fetchRdap(url, { fetchImpl, signal, timeoutMs, gate = null, intervalMs = RDAP_ORG_INTERVAL_MS, limit = null }) {
   // About › What this page sent: this host is a registry's RDAP server (the bootstrap named it, or
   // it is rdap.org, whose redirect takes the note along) — not a host whose path merely looks like one.
   noteRequest(url, 'rdap');
@@ -546,7 +571,10 @@ async function fetchRdap(url, { fetchImpl, signal, timeoutMs, gate = null, inter
     async () => {
       // rdap.org (the fallback): one request a second at most, every attempt in turn.
       if (gate) await rdapOrgTurn(gate, intervalMs, signal);
-      return fetchJson(url, { fetchImpl, signal, timeoutMs, headers: { accept: ACCEPT } });
+      const send = () => fetchJson(url, { fetchImpl, signal, timeoutMs, headers: { accept: ACCEPT } });
+      // the caller's bound on requests in flight (lib/portfolio.js): taken for the request alone,
+      // never while a lookup waits for its registry's turn or a 429's wait
+      return typeof limit === 'function' ? limit(send) : send();
     },
     // Retry timeouts / 5xx once; never 4xx (404 = not found is an answer) and not network
     // TypeErrors, which in browsers are almost always a missing CORS header (the rdap.org fallback
@@ -563,21 +591,26 @@ async function fetchRdap(url, { fetchImpl, signal, timeoutMs, gate = null, inter
  * Ask a registry server: one request in flight per server; its 429 is waited out (Retry-After, else
  * `registryRetryMs` doubled each time) and the same request asked again first — the requests
  * queued behind it wait —, at most `registry429Retries` times; then the 429 is the answer (rate
- * limited).
+ * limited) and the registry is blocked until its next wait ends: the lookups queued behind fail at
+ * once rather than each spending its own retries. A Retry-After past `registryWaitMaxMs` is not
+ * waited: it blocks the registry until it ends.
  */
 async function askRegistry(url, opts) {
-  const host = hostOf(url);
-  const gate = registryGate(opts.fetchImpl, host);
-  const release = await registryTurn(gate, opts.signal);
+  const gate = registryGate(opts.fetchImpl, hostOf(url));
+  const release = await registryTurn(gate, url, opts);
   try {
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await fetchRdap(url, opts);
       } catch (err) {
         if (isAbort(err) || !(err instanceof HttpError && err.status === 429)) throw err;
-        const wait = registryCoolDown(opts.fetchImpl, host, err, opts.registryRetryMs * 2 ** attempt);
-        if (attempt >= opts.registry429Retries || wait > opts.registryWaitMaxMs) throw err;
-        await sleep(wait, opts.signal);
+        const wait = registryCoolDown(gate, err, opts.registryRetryMs * 2 ** attempt, opts);
+        if (wait > opts.registryWaitMaxMs) throw err;
+        if (attempt >= opts.registry429Retries) {
+          gate.blockedUntil = Math.max(gate.blockedUntil, Date.now() + wait);
+          throw Number.isFinite(err.retryAfterMs) ? err : new HttpError(429, err.url, err.body, { statusText: err.statusText, retryAfterMs: wait });
+        }
+        await sleep(Math.min(wait, opts.registryWaitMaxMs), opts.signal);
       }
     }
   } finally {
@@ -593,7 +626,7 @@ async function askRdap(base, url, opts) {
   if (base !== RDAP_ORG) return askRegistry(url, opts);
   const gate = rdapOrgGate(opts.fetchImpl);
   try {
-    return await fetchRdap(url, { ...opts, gate, intervalMs: opts.rdapOrgIntervalMs });
+    return await fetchRdap(url, { ...opts, gate, intervalMs: opts.rdapOrgIntervalMs, limit: null });
   } catch (err) {
     if (isAbort(err) || err instanceof RdapOrgPausedError) throw err;
     throw noteRdapOrgFailure(gate, err, opts);
@@ -622,17 +655,22 @@ function isNoServiceBody(err) {
  * A TLD the bootstrap does not list but {@link RDAP_OVERRIDES} does goes to that registry server
  * (also when the bootstrap cannot be read); its 404 is not conclusive (a failure, never notFound).
  * One request is in flight per registry server, and its 429 is waited out and asked again, never
- * through rdap.org. rdap.org, the fallback, is paced to {@link RDAP_ORG_INTERVAL_MS} and paused
- * after its own 429 or an unreadable answer (`rdapOrgPaused` in the result when it was skipped
- * for that).
+ * through rdap.org; a registry that asked for a longer pause than {@link RDAP_REGISTRY_WAIT_MAX_MS},
+ * or kept answering 429 through a lookup's retries, is not asked until that wait ends (the lookup
+ * fails at once, rate limited, `retryAfterMs` the time left). rdap.org, the fallback, is paced to
+ * {@link RDAP_ORG_INTERVAL_MS} and paused after its own 429 or an unreadable answer
+ * (`rdapOrgPaused` in the result when it was skipped for that).
  *
  * @param {string} domain
  * @param {{ fetchImpl?: typeof fetch, signal?: AbortSignal, timeoutMs?: number, fallback?: boolean,
  *   rdapOrgIntervalMs?: number, rdapOrgCooldownMs?: number, registryRetryMs?: number,
- *   registry429Retries?: number, registryWaitMaxMs?: number }} [opts]
+ *   registry429Retries?: number, registryWaitMaxMs?: number,
+ *   limit?: (send: () => Promise<any>) => Promise<any> }} [opts]
  *   Extensions: timeoutMs (per request), fallback (false = never use rdap.org), rdapOrgIntervalMs /
  *   rdapOrgCooldownMs (rdap.org's pacing and pause), registryRetryMs / registry429Retries /
- *   registryWaitMaxMs (a registry's 429; tests).
+ *   registryWaitMaxMs (a registry's 429; tests), limit (the caller's bound on requests in flight,
+ *   e.g. a createLimiter's run: it wraps each request to a registry server, never the wait for its
+ *   turn or its 429).
  * @returns {Promise<{ ok: boolean, domain: string, registrar: string|null, registrarIanaId: string|null,
  *   created: Date|null, updated: Date|null, expires: Date|null, status: string[], nameservers: string[],
  *   dnssecSigned: boolean|null, rdapServer: string|null, unsupportedTld: boolean, error: string|null,
@@ -645,7 +683,8 @@ function isNoServiceBody(err) {
 export async function rdapDomain(domain, {
   fetchImpl = globalThis.fetch, signal, timeoutMs = DEFAULT_TIMEOUT_MS, fallback = true,
   rdapOrgIntervalMs = RDAP_ORG_INTERVAL_MS, rdapOrgCooldownMs = RDAP_ORG_COOLDOWN_MS,
-  registryRetryMs = RDAP_REGISTRY_RETRY_MS, registry429Retries = RDAP_REGISTRY_429_RETRIES, registryWaitMaxMs = RDAP_REGISTRY_WAIT_MAX_MS
+  registryRetryMs = RDAP_REGISTRY_RETRY_MS, registry429Retries = RDAP_REGISTRY_429_RETRIES, registryWaitMaxMs = RDAP_REGISTRY_WAIT_MAX_MS,
+  limit = null
 } = {}) {
   throwIfAborted(signal);
   const host = normalizeHostname(typeof domain === 'string' ? domain.replace(/^\*\./, '') : '');
@@ -660,7 +699,7 @@ export async function rdapDomain(domain, {
   const out = domainResult(name);
   out.input = input;
   out.tld = name.slice(name.lastIndexOf('.') + 1);
-  const opts = { fetchImpl, signal, timeoutMs, rdapOrgIntervalMs, rdapOrgCooldownMs, registryRetryMs, registry429Retries, registryWaitMaxMs };
+  const opts = { fetchImpl, signal, timeoutMs, rdapOrgIntervalMs, rdapOrgCooldownMs, registryRetryMs, registry429Retries, registryWaitMaxMs, limit };
   const override = Object.hasOwn(RDAP_OVERRIDES, out.tld) ? RDAP_OVERRIDES[out.tld] : null;
 
   let candidates = [];

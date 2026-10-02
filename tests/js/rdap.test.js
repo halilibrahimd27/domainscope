@@ -715,3 +715,86 @@ test('RDAP_OVERRIDES: a 404 from an override server is not conclusive (it answer
   assert.match(r.error, /not conclusive/);
   assert.equal(orgCalls, 0, 'rdap.org does not serve the TLD either');
 });
+
+/** A registry's 429 with this Retry-After header value. */
+function tooMany(retryAfter) {
+  const res = jsonResponse({ errorCode: 429 }, 429);
+  if (retryAfter !== null) res.headers.set('retry-after', retryAfter);
+  return res;
+}
+
+test('registries: a Retry-After past the wait a lookup takes (an hour, in seconds or as a date; one past setTimeout\'s range) fails that lookup and every one queued or asked after it at once, with the time left; nothing sleeps', async () => {
+  const cases = [
+    ['3600 s', () => '3600', 3500e3],
+    ['an HTTP date an hour ahead', () => new Date(Date.now() + 3600e3).toUTCString(), 3500e3],
+    ['99999999 s (past 2^31 ms)', () => '99999999', 2 ** 31]
+  ];
+  for (const [label, header, atLeast] of cases) {
+    clearRdapCache();
+    let calls = 0;
+    let orgCalls = 0;
+    const f = mockFetch({
+      ...BOOT,
+      'https://tld.registry.test/': () => { calls += 1; return tooMany(header()); },
+      [RDAP_ORG]: () => { orgCalls += 1; return GITHUB_COM; }
+    });
+    const warnings = [];
+    const onWarning = (w) => warnings.push(w.name);
+    process.on('warning', onWarning);
+    const t0 = Date.now();
+    // bounded: a lookup that sleeps is cut short (AbortError) instead of holding the test for an hour
+    const signal = AbortSignal.timeout(3000);
+    try {
+      const queued = await Promise.all(['a.test', 'b.test', 'c.test'].map((d) => rdapDomain(d, { fetchImpl: f, signal })));
+      const later = await rdapDomain('d.test', { fetchImpl: f, signal });
+      await new Promise((r) => setImmediate(r));
+      assert.ok(Date.now() - t0 < 1500, `${label}: nobody waited (${Date.now() - t0} ms)`);
+      assert.deepEqual([calls, orgCalls], [1, 0], `${label}: the registry asked once, rdap.org never`);
+      for (const r of [...queued, later]) {
+        assert.deepEqual([r.ok, r.errorKind, r.httpStatus], [false, 'rate-limit', 429], `${label}: ${r.domain}`);
+        assert.ok(r.retryAfterMs >= atLeast, `${label}: ${r.domain} says how long is left (${r.retryAfterMs})`);
+      }
+      assert.deepEqual(warnings, [], `${label}: no timer past its range`);
+    } finally {
+      process.off('warning', onWarning);
+    }
+  }
+});
+
+test('registries: rdap.org\'s redirect to a registry that asks for an hour blocks that registry the same way, without a sleep', async () => {
+  let calls = 0;
+  let orgCalls = 0;
+  const f = mockFetch({
+    ...BOOT,
+    'https://tld.registry.test/': () => { calls += 1; return new TypeError('Failed to fetch'); },
+    [RDAP_ORG]: (u) => {
+      orgCalls += 1;
+      const res = tooMany('3600');
+      Object.defineProperty(res, 'url', { value: `https://tld.registry.test/domain/${u.split('/').pop()}` });
+      return res;
+    }
+  });
+  const t0 = Date.now();
+  const signal = AbortSignal.timeout(3000);
+  const first = await rdapDomain('a.test', { fetchImpl: f, rdapOrgIntervalMs: 0, signal });
+  const rest = await Promise.all(['b.test', 'c.test'].map((d) => rdapDomain(d, { fetchImpl: f, rdapOrgIntervalMs: 0, signal })));
+  assert.ok(Date.now() - t0 < 1500, `nobody waited (${Date.now() - t0} ms)`);
+  assert.deepEqual([calls, orgCalls], [1, 1], 'neither asked again within the hour');
+  for (const r of [first, ...rest]) assert.deepEqual([r.ok, r.errorKind, r.httpStatus], [false, 'rate-limit', 429], r.domain);
+  assert.ok(rest.every((r) => r.retryAfterMs > 3500e3), 'the time left');
+});
+
+test('registries: one that answers 429 to everything costs one lookup\'s retries; the lookups queued behind it fail at once until its wait ends, then it is asked again', async () => {
+  let calls = 0;
+  const f = mockFetch({ ...BOOT, 'https://tld.registry.test/': () => { calls += 1; return tooMany(null); } });
+  const t0 = Date.now();
+  const signal = AbortSignal.timeout(3000);
+  const rs = await Promise.all(['a.test', 'b.test', 'c.test', 'd.test'].map((d) => rdapDomain(d, { fetchImpl: f, registryRetryMs: 20, signal })));
+  assert.equal(calls, 4, 'a.test: once and three retries (20, 40, 80 ms); the others are not sent');
+  assert.ok(rs.every((r) => !r.ok && r.errorKind === 'rate-limit' && r.httpStatus === 429), rs.map((r) => r.error).join(' | '));
+  assert.ok(rs.every((r) => r.retryAfterMs > 0 && r.retryAfterMs <= 160), `the wait left, at most 160 ms: ${rs.map((r) => r.retryAfterMs)}`);
+  assert.ok(Date.now() - t0 < 1000, `the queue did not wait its turn (${Date.now() - t0} ms)`);
+  await new Promise((r) => setTimeout(r, 220));
+  await rdapDomain('e.test', { fetchImpl: f, registryRetryMs: 20 });
+  assert.equal(calls, 8, 'after the wait the next lookup is sent again');
+});

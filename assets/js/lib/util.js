@@ -207,7 +207,8 @@ export function sleep(ms, signal) {
       reject(abortReasonToError(signal.reason));
       return;
     }
-    const delay = Number.isFinite(ms) && ms > 0 ? ms : 0;
+    // a timer holds at most 2^31 - 1 ms: past that, setTimeout warns and fires at once
+    const delay = Number.isFinite(ms) && ms > 0 ? Math.min(ms, 2147483647) : 0;
     let timer = null;
     const onAbort = () => {
       clearTimeout(timer);

@@ -69,6 +69,25 @@ test('sleep surfaces a timeout reason as TimeoutError', async () => {
   await assert.rejects(p, (e) => e.name === 'TimeoutError');
 });
 
+test('sleep past a timer\'s range (2^31 ms, a Retry-After of years) waits the longest a timer can, never wakes at once or warns', async () => {
+  const warnings = [];
+  const onWarning = (w) => warnings.push(w.name);
+  process.on('warning', onWarning);
+  const ctl = new AbortController();
+  try {
+    const p = sleep(99999999 * 1000, ctl.signal).then(() => 'woke', () => 'stopped');
+    const first = await Promise.race([p, new Promise((r) => setTimeout(() => r('still asleep'), 50))]);
+    ctl.abort();
+    assert.equal(first, 'still asleep');
+    assert.equal(await p, 'stopped');
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(warnings, []);
+  } finally {
+    ctl.abort();
+    process.off('warning', onWarning);
+  }
+});
+
 /* -------------------------------------------------------------------- */
 /* createLimiter                                                        */
 /* -------------------------------------------------------------------- */

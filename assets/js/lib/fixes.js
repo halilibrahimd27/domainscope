@@ -40,7 +40,7 @@ import { quoteArg } from './cmdline.js';
 import { parseZone, rdataKey, txtJoinedKey, presentCharString } from './zoneparse.js';
 import { lintZone } from './zonelint.js';
 // The Route 53 string escapes, the YAML quoting, the octoDNS TXT escapes and key order (lib/zonetext.js, the zone converter's too).
-import { route53String, yamlString as yamlStr, octodnsTxt, octodnsTxtRefused, naturalCompare } from './zonetext.js';
+import { route53String, yamlString as yamlStr, octodnsTxt, octodnsTxtValue, octodnsTxtRefused, naturalCompare } from './zonetext.js';
 
 /* ------------------------------------------------------------------------ */
 /* Vocabulary                                                               */
@@ -854,8 +854,13 @@ function cloudflareText(req) {
   return `${out.join('\n')}\n`;
 }
 
-/** octoDNS: a TXT value's raw text with `;` escaped (octoDNS refuses a bare one); lib/zoneconvert.js writes whole zones the same way. */
-const octoTxt = (v) => octodnsTxt(txtText(v));
+/**
+ * octoDNS: a TXT value's raw text with `;` escaped (octoDNS refuses a bare one), in one more pair of
+ * quotes when it starts with one (octoDNS strips them as it loads it); lib/zoneconvert.js writes whole
+ * zones the same way.
+ */
+const octoRaw = (v) => octodnsTxt(txtText(v));
+const octoTxt = (v) => octodnsTxtValue(txtText(v)) ?? octoRaw(v);
 
 function octoValue(type, v, indent) {
   const pad = ' '.repeat(indent);
@@ -868,7 +873,13 @@ function octoValue(type, v, indent) {
 
 /** octoDNS: the zone file's entries for the changed names (a record list per name). */
 function octodnsText(req) {
-  const out = [`# ${HEADER(req.zone)}`, `# In the zone's YAML (${req.zone}.yaml): set these entries; the other names stay as they are.`, '---'];
+  const out = [`# ${HEADER(req.zone)}`, `# In the zone's YAML (${req.zone}.yaml): set these entries; the other names stay as they are.`];
+  // A `;` is written `\;`: the YamlProvider must read it so (octoDNS's default until 2.0, deprecated).
+  const written = (r) => (r.mode === 'none' ? [] : rrsetPlan(r).full || rrsetPlan(r).after || r.values);
+  if (req.rrsets.some((r) => r.type === 'TXT' && written(r).some((v) => txtText(v).includes(';')))) {
+    out.push('# TXT values write ; as \\; : the YamlProvider needs escaped_semicolons: true (octoDNS refuses them with false, its default from 2.0).');
+  }
+  out.push('---');
   const byName = new Map();
   for (const r of req.rrsets) {
     const key = r.name === req.zone ? '' : relativeName(r.name, req.zone);
@@ -892,7 +903,7 @@ function octodnsText(req) {
       }
       // In octoDNS's key order (YamlProvider enforce_order): octodns, ttl, type, value(s). A TXT value
       // octoDNS's own check refuses (outside ASCII, a \ before a ;) loads only as lenient.
-      if (r.type === 'TXT' && values.some((v) => octodnsTxtRefused(octoTxt(v)))) {
+      if (r.type === 'TXT' && values.some((v) => octodnsTxtRefused(octoRaw(v)))) {
         out.push("  # octoDNS's check refuses this text (characters outside ASCII, or a \\ before a ;): lenient loads it with a warning",
           '  - octodns:', '      lenient: true', `    ttl: ${r.ttl}`);
       } else {

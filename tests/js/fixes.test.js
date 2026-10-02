@@ -357,6 +357,13 @@ describe('formats', () => {
     assert.match(y, /- 'v=DMARC1\\; p=none\\; it''s'$/m);
   });
 
+  test('octoDNS: a TXT value with ; says to load it with escaped_semicolons: true; one that starts with a quote goes in one more pair', () => {
+    const y = renderFix(buildChange('record', { name: 'example.com', type: 'TXT', values: 'v=DMARC1; p=none' }), 'octodns');
+    assert.match(y, /^# TXT values write ; as \\; : the YamlProvider needs escaped_semicolons: true/m);
+    assert.ok(!/escaped_semicolons/.test(renderFix(buildChange('record', { name: 'example.com', type: 'TXT', values: 'v=spf1 -all' }), 'octodns')), 'no ; no line');
+    assert.match(renderFix(buildChange('record', { name: 'q.example.com', type: 'TXT', values: '"\\"quoted\\""' }), 'octodns'), /^ {6}- '""quoted""'$/m, 'the text "quoted", quotes and all');
+  });
+
   test('octoDNS: keys in its natural order (ttl, type, values; the names too), TXT as raw text, lenient where its own check refuses the text', () => {
     const y = renderFix(buildChange('record', { name: 'www.example.com', type: 'TXT', values: 'café a\\b' }), 'octodns');
     assert.match(y, /^www:\n {2}# octoDNS's check refuses this text [^\n]+\n {2}- octodns:\n {6}lenient: true\n {4}ttl: 3600\n {4}type: TXT\n {4}values:\n {6}- "caf\\xe9 a\\\\b"$/m, 'ASCII only: the é escaped');

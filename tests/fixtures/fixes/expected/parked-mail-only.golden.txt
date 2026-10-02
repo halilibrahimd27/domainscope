@@ -102,6 +102,7 @@ fix.fn.cloudflare-ids {}
 ## octodns
 # DNS change request for example.com (DomainScope)
 # In the zone's YAML (example.com.yaml): set these entries; the other names stay as they are.
+# TXT values write ; as \; : the YamlProvider needs escaped_semicolons: true (octoDNS refuses them with false, its default from 2.0).
 ---
 '':
   - ttl: 3600

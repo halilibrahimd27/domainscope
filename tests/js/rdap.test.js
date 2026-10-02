@@ -618,7 +618,8 @@ test('rdap.org: a 429 pauses the lookups already waiting for their turn too; the
     'https://rdap.verisign.com/': () => new TypeError('Failed to fetch'),
     [RDAP_ORG]: () => { orgCalls += 1; return jsonResponse('slow down', 429); }
   });
-  const rs = await Promise.all(['a.com', 'b.com', 'c.com', 'd.com'].map((d) => rdapDomain(d, { fetchImpl: f, rdapOrgIntervalMs: 40 })));
+  // a slot of 250 ms: the first answer lands long before the next turn, even on a busy test machine
+  const rs = await Promise.all(['a.com', 'b.com', 'c.com', 'd.com'].map((d) => rdapDomain(d, { fetchImpl: f, rdapOrgIntervalMs: 250 })));
   assert.equal(orgCalls, 1, 'only the first one reaches rdap.org');
   assert.equal(rs.filter((r) => r.rdapOrgPaused).length, 3);
   assert.ok(rs.filter((r) => r.rdapOrgPaused).every((r) => !r.ok && r.errorKind === 'network'), 'the registry\'s own failure is the one reported');

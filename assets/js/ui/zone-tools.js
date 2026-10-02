@@ -116,7 +116,7 @@ const STRINGS = [
   ['zcmp.note.apex-ns', ['NS at the apex, ignored.', 'Zone kökündeki (apex) NS, yok sayıldı.']],
   ['zcmp.note.not-in-batch', ['Not in the change batch: it does not change this set, so this is no difference.', 'Değişiklik paketinde yok: paket bu kümeyi değiştirmiyor, yani bu bir fark değil.']],
   ['zcmp.note.batch-delete', ['The change batch deletes this set.', 'Değişiklik paketi bu kümeyi siliyor.']],
-  ['zcmp.note.partial', ['The file without this set is incomplete: the set may be in the part that is missing.', 'Bu kümenin olmadığı dosya eksik: küme, dosyanın eksik kısmında olabilir.']],
+  ['zcmp.note.partial', ['The file that lacks these records is incomplete: they may be in the part that is missing.', 'Bu kayıtların olmadığı dosya eksik: kayıtlar, dosyanın eksik kısmında olabilir.']],
   ['zcmp.note.other-variants', ['The change batch names only some routing variants of this set: the others are left out of the comparison.',
     'Değişiklik paketi bu kümenin yalnızca bazı yönlendirme varyantlarını içeriyor: diğerleri karşılaştırmaya alınmadı.']],
   ['zcmp.batch.title', ['A change batch, not a zone', 'Bir zone değil, bir değişiklik paketi']],

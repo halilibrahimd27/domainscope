@@ -90,10 +90,10 @@ describe('zone-tools', () => {
   test('the notes of a change batch and an incomplete export, in English and Turkish', () => {
     const row = (notes) => ({ reasons: [], notes, a: null, b: null });
     assert.equal(Z.rowNote(row(['not-in-batch'])), 'Not in the change batch: it does not change this set, so this is no difference.');
-    assert.equal(Z.rowNote(row(['batch-delete', 'partial'])), 'The change batch deletes this set. The file without this set is incomplete: the set may be in the part that is missing.');
+    assert.equal(Z.rowNote(row(['batch-delete', 'partial'])), 'The change batch deletes this set. The file that lacks these records is incomplete: they may be in the part that is missing.');
     i18n.setLang('tr');
     assert.equal(Z.rowNote(row(['not-in-batch'])), 'Değişiklik paketinde yok: paket bu kümeyi değiştirmiyor, yani bu bir fark değil.');
-    assert.equal(Z.rowNote(row(['batch-delete', 'partial'])), 'Değişiklik paketi bu kümeyi siliyor. Bu kümenin olmadığı dosya eksik: küme, dosyanın eksik kısmında olabilir.');
+    assert.equal(Z.rowNote(row(['batch-delete', 'partial'])), 'Değişiklik paketi bu kümeyi siliyor. Bu kayıtların olmadığı dosya eksik: kayıtlar, dosyanın eksik kısmında olabilir.');
     i18n.setLang('en');
   });
 

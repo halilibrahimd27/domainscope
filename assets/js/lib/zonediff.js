@@ -491,6 +491,8 @@ export function diffZones(a, b, options = {}) {
       Object.assign(row, compareSets(sa, sb, opts));
       row.added = [...sb.values.entries()].filter(([k]) => !sa.values.has(k)).map(([, v]) => v.text);
       row.removed = [...sa.values.entries()].filter(([k]) => !sb.values.has(k)).map(([, v]) => v.text);
+      // Values an incomplete export lacks (a page boundary that cuts a set) may be in its missing part.
+      if ((b.partial && row.removed.length) || (a.partial && row.added.length)) row.notes.push('partial');
     }
     if (others && row.status !== 'ignored') row.notes.push('other-variants');
     rows.push(row);

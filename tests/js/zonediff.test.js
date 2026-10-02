@@ -319,6 +319,12 @@ describe('a change batch or an incomplete export on one side', () => {
     assert.deepEqual(res.b.problems, { errors: 0, warnings: 0 }, 'said once as partial, not counted as a problem too');
     assert.deepEqual(lines(diffZones(page, zz)), ['same @ A |', 'same www A |', 'added zz A |partial']);
     assert.ok(DIFF_NOTES.includes('partial'));
+    // A page boundary that cuts a set: the values it lacks may be on the next page too.
+    const two = bind('www A 192.0.2.1\nwww A 192.0.2.2\nttl 600 A 192.0.2.5');
+    const cut = r53({ ResourceRecordSets: [set('www.example.com', 'A', '192.0.2.1'), set('ttl.example.com', 'A', '192.0.2.5')], IsTruncated: true, NextRecordName: 'zz.example.com.' });
+    assert.deepEqual(lines(diffZones(two, cut)), ['changed ttl A ttl|', 'changed www A values|partial'], 'a TTL is no missing value');
+    assert.deepEqual(lines(diffZones(cut, two)), ['changed ttl A ttl|', 'changed www A values|partial']);
+    assert.deepEqual(lines(diffZones(two, bind('www A 192.0.2.1\nwww A 192.0.2.2\nwww A 192.0.2.3\nttl 300 A 192.0.2.5'))).slice(1), ['changed www A values|'], 'a whole file: no note');
   });
 
   test('summary facts and the JSON say which file is a change batch, incomplete or named by a guess, and what reading it found', () => {

@@ -7,7 +7,7 @@
  *       Only `text` + `updatedAt` are stored; servers/warnings are re-derived with
  *       lib/inventory.parseInventory on load, so a parser upgrade never meets stale data.
  *   - the active workspace's other parts (lib/workspace.js WORKSPACE_PARTS: learned names, custom
- *       wordlist, expected CAs, notes, recent domains): `workspaceData(part)` / `setWorkspaceData()`;
+ *       wordlist, expected CAs, notes, recent domains, the origin map): `workspaceData(part)` / `setWorkspaceData()`;
  *       the learned names also through `learnedStorage`, a Storage-like view for lib/learned.js.
  *   - settings (localStorage, the same in every workspace): { lang, theme, chain, concurrency, startTasks }
  *   - session (memory only): free-form key/value for handing data between views,

@@ -23,7 +23,7 @@ import { isPrivateIP, normalizeIP } from './netinfo.js';
 
 /** Views with a summary, in navigation order. */
 export const SUMMARY_KINDS = Object.freeze(['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'change', 'ip', 'retire',
-  'health', 'reports']);
+  'health', 'reports', 'portfolio']);
 
 /** Output formats of {@link renderSummary}. */
 export const SUMMARY_FORMATS = Object.freeze(['markdown', 'text']);
@@ -52,7 +52,8 @@ export const PERMALINK_PARAMS = Object.freeze({
   ip: Object.freeze(['ips']),
   retire: Object.freeze(['ips', 'domains']),
   health: Object.freeze(['domain', 'selectors']),
-  reports: Object.freeze([])
+  reports: Object.freeze([]),
+  portfolio: Object.freeze(['domains'])
 });
 
 /* ------------------------------------------------------------------------ */
@@ -344,8 +345,9 @@ export const BUILDER_KIT = Object.freeze({ kit, doc, code, strong, isoDay, whenT
 
 /**
  * Add the builder of a view whose summary loads with the view instead of the start route: every
- * view but Subdomains (lib/summary.js registers them when it loads) and DMARC & TLS reports
- * (lib/reportsummary.js, registered by views/reports.js with its strings).
+ * view but Subdomains (lib/summary.js registers them when it loads), DMARC & TLS reports
+ * (lib/reportsummary.js, registered by views/reports.js with its strings) and the Domain portfolio
+ * (lib/portfoliosummary.js, registered by views/portfolio.js).
  * @param {string} kind one of {@link SUMMARY_KINDS}
  * @param {(facts: object, opts: object) => SummaryDoc} build
  */

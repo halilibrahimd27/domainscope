@@ -1,0 +1,535 @@
+/*
+ * views/portfolio.css — "Domain portfolio" view (.pf-*): the list, the head with its exports, the
+ * tiles, the table of domains (labelled cards on a phone), the policy editor and the matrix.
+ */
+
+.pf-view {
+  min-width: 0;
+}
+
+/* ---- the list ------------------------------------------------------------------- */
+
+.pf-box .textarea {
+  min-height: 7.5rem;
+}
+
+.pf-box-status p {
+  margin: 0;
+}
+
+.pf-box-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+.pf-invalid {
+  color: var(--warn);
+}
+
+.pf-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pf-sends {
+  margin: 0;
+}
+
+.pf-prompt:empty {
+  display: none;
+}
+
+/* the progress bar, and "Notify me when done" under it once the check has run 30 s */
+.pf-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pf-notify {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.pf-notify:empty,
+.pf-notify:has(> .job-notify[hidden]) {
+  display: none;
+}
+
+/* ---- the head ------------------------------------------------------------------- */
+
+.pf-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 12px 16px;
+}
+
+.pf-head-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pf-head-title {
+  margin: 0;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.pf-head-actions,
+.pf-exports {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+/* ---- tiles and the table ------------------------------------------------------------ */
+
+.pf-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 10px;
+}
+
+.pf-tiles .stat-label {
+  white-space: normal;
+}
+
+.pf-domains {
+  min-width: 0;
+}
+
+.pf-filter.field {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pf-filter .field-label {
+  margin: 0;
+}
+
+.pf-filter .select {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pf-table .dt-tools,
+.pf-matrix .dt-tools {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pf-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.pf-col-domain .pf-cell {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+/* Text that wraps rather than widening the table: a long domain, a registrar's name, the flags. */
+.pf-table td.pf-col-domain,
+.pf-table td.pf-col-status,
+.pf-table td.pf-col-registrar,
+.pf-table td.pf-col-caa {
+  white-space: normal;
+}
+
+.pf-table td.pf-col-domain {
+  min-width: 10rem;
+  max-width: 16rem;
+}
+
+.pf-table td.pf-col-status {
+  min-width: 9rem;
+}
+
+.pf-table td.pf-col-registrar {
+  min-width: 8rem;
+  max-width: 12rem;
+  overflow-wrap: anywhere;
+}
+
+.pf-table td.pf-col-caa {
+  min-width: 8rem;
+}
+
+.pf-caa {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.pf-caa-issuer {
+  white-space: nowrap;
+}
+
+.pf-domain {
+  font-size: 13px;
+}
+
+
+.pf-break {
+  overflow-wrap: anywhere;
+}
+
+.pf-expiry {
+  white-space: nowrap;
+}
+
+.pf-ns {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.pf-ns-domain {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.pf-na {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.pf-pending {
+  white-space: nowrap;
+}
+
+.pf-flags {
+  max-width: 14rem;
+  overflow-wrap: anywhere;
+}
+
+.pf-rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* A risky row is marked at its start (the colour is never the only signal: the badge says it). */
+.pf-table tr.pf-risk-critical td:first-child,
+.pf-table tr.pf-risk-expired td:first-child,
+.pf-table tr.pf-risk-expiring td:first-child,
+.pf-table tr.pf-risk-ns-expiring td:first-child {
+  box-shadow: inset 3px 0 0 var(--error-solid);
+}
+
+.pf-table tr.pf-risk-hijack td:first-child,
+.pf-table tr.pf-risk-warn td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn-solid);
+}
+
+/* ---- the policy ------------------------------------------------------------------- */
+
+/* The card's title never shrinks under its buttons: they move to a row of their own instead. */
+.pf-pol-card .card-head {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.pf-pol-card .card-titles {
+  flex: 1 0 auto;
+  max-width: 100%;
+}
+
+.pf-presets {
+  gap: 6px 8px;
+}
+
+.pf-pol-rules {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: 6px 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.pf-pol-rules > legend {
+  margin-bottom: 4px;
+}
+
+/* One tile per rule: its name on top, the comparison and the value under it (aligned with the name). */
+.pf-pol-rule {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.pf-pol-rule.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.pf-pol-rule .check {
+  min-width: 0;
+}
+
+.pf-pol-rule .check-text {
+  overflow-wrap: anywhere;
+}
+
+.pf-pol-id {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.pf-pol-value {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  /* the checkbox (16 px) and its gap (8 px): the value lines up with the rule's name */
+  padding-left: 24px;
+}
+
+.pf-pol-value .select {
+  width: auto;
+}
+
+.pf-pol-num {
+  width: 5.5rem;
+}
+
+.pf-pol-list {
+  flex: 1 1 12rem;
+  width: auto;
+  min-width: 0;
+}
+
+.pf-pol-json .textarea {
+  min-height: 9rem;
+  font-size: 12.5px;
+}
+
+.pf-pol-status p {
+  margin: 0;
+}
+
+.pf-pol-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pf-pol-errors {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+.pf-pol-actions {
+  gap: 6px;
+}
+
+.pf-matrix-counts {
+  margin: 0 0 8px;
+}
+
+.pf-mx-cell .pf-cell {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.pf-evidence {
+  max-width: 16rem;
+  color: var(--text-2);
+  white-space: normal;
+  /* a date or a value moves to the next line whole; only one longer than the line breaks */
+  overflow-wrap: break-word;
+}
+
+/* ---- a phone: every row a card of labelled lines (the headers come from data-label) ------- */
+
+@media (max-width: 640px) {
+  .pf-table .dt-tools,
+  .pf-matrix .dt-tools,
+  .pf-filter.field {
+    flex: 1 1 100%;
+  }
+
+  .pf-filter .select {
+    flex: 1 1 0;
+  }
+
+  .pf-table .dt-table,
+  .pf-table .dt-table tbody,
+  .pf-matrix .dt-table,
+  .pf-matrix .dt-table tbody {
+    display: block;
+  }
+
+  .pf-table .dt-table thead,
+  .pf-matrix .dt-table thead {
+    display: none;
+  }
+
+  .pf-table .dt-table tbody tr.dt-row,
+  .pf-matrix .dt-table tbody tr.dt-row {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 6px 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .pf-table .dt-table td,
+  .pf-matrix .dt-table td {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    justify-items: start;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    box-shadow: none !important;
+  }
+
+  .pf-table .dt-table td::before,
+  .pf-matrix .dt-table td::before {
+    content: attr(data-label);
+    max-width: 8.5rem;
+    color: var(--text-3);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .pf-table .dt-table td:has(> .dt-null) {
+    display: none;
+  }
+
+  /* a badge in a card wraps rather than widening it (and grows with its lines) */
+  .pf-table .badge,
+  .pf-matrix .badge {
+    max-width: 100%;
+    height: auto;
+    min-height: 21px;
+    padding-block: 3px;
+    border-radius: 11px;
+    line-height: 1.25;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  /* the risk mark: on the whole card */
+  .pf-table tr.pf-risk-critical,
+  .pf-table tr.pf-risk-expired,
+  .pf-table tr.pf-risk-expiring,
+  .pf-table tr.pf-risk-ns-expiring {
+    box-shadow: inset 3px 0 0 var(--error-solid);
+  }
+
+  .pf-table tr.pf-risk-hijack,
+  .pf-table tr.pf-risk-warn {
+    box-shadow: inset 3px 0 0 var(--warn-solid);
+  }
+
+  .pf-evidence,
+  .pf-flags {
+    max-width: none;
+    overflow-wrap: break-word;
+  }
+
+  .pf-caa-issuer {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .pf-head-actions,
+  .pf-exports {
+    width: 100%;
+  }
+
+  .pf-pol-card .card-actions {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+
+  .pf-table td.pf-col-domain,
+  .pf-table td.pf-col-status,
+  .pf-table td.pf-col-registrar,
+  .pf-table td.pf-col-caa {
+    min-width: 0;
+    max-width: none;
+  }
+}
+
+/* ---- wider screens: the domain column stays in view while the table scrolls sideways ---- */
+
+@media (min-width: 640.02px) {
+  .pf-table .dt-table th.pf-col-domain,
+  .pf-table .dt-table td.pf-col-domain {
+    position: sticky;
+    left: 0;
+    border-right: 1px solid var(--border);
+  }
+
+  .pf-table .dt-table td.pf-col-domain {
+    z-index: 1;
+    background: var(--surface);
+  }
+
+  .pf-table .dt-table th.pf-col-domain {
+    z-index: 2;
+  }
+
+  .pf-table .dt-table tbody .dt-row:hover td.pf-col-domain {
+    background: var(--surface-hover);
+  }
+}
+
+@media (max-width: 360px) {
+  .pf-table .dt-table td::before,
+  .pf-matrix .dt-table td::before {
+    max-width: 6.5rem;
+  }
+}
+
+/* ---- print -------------------------------------------------------------------------- */
+
+@media print {
+  .pf-form-card,
+  .pf-exports,
+  .pf-pol-card,
+  .pf-tiles,
+  .pf-na [data-action="retry-source"],
+  .pf-col-domain [data-action="retry-source"] {
+    display: none !important;
+  }
+}

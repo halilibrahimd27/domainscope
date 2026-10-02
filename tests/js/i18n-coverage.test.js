@@ -362,6 +362,27 @@ describe('i18n coverage', () => {
     for (const p of tlsrpt.TLS_POLICY_TYPES) add(`rpt.tls.policy.${p}`);
     for (const tool of views.reports.TLS_TOOLS) add(`rpt.tls.tool.${tool}`);
     for (const k of ['rpt.domainOption', 'rpt.tls.domainOption', 'rpt.kept']) add(k);
+    // Domain portfolio (lib/portfolio.js, lib/policy.js through views/portfolio.js): every column,
+    // filter, tile and risk, every state a cell words from the facts, every rule, status, preset,
+    // parse error and evidence of the policy, and the summary's texts (lib/portfoliosummary.js).
+    const [portfolio, policy, pfsum] = await Promise.all([imp('assets/js/lib/portfolio.js'), imp('assets/js/lib/policy.js'), imp('assets/js/lib/portfoliosummary.js')]);
+    const pf = views.portfolio;
+    for (const c of portfolio.PORTFOLIO_CELLS) add(`pf.col.${c}`);
+    for (const k of ['domain', 'policy']) add(`pf.col.${k}`);
+    for (const f of pf.PORTFOLIO_FILTERS) add(`pf.filter.${f}`);
+    for (const k of ['domains', ...pf.PORTFOLIO_TILES]) add(`pf.tile.${k}`);
+    for (const r of pf.RISK_BADGES) add(`pf.risk.${r}`);
+    for (const tab of pf.PORTFOLIO_TABS) add(`pf.tab.${tab}`);
+    for (const d of ['validated', 'signed', 'failing', 'unsigned']) add(`pf.dnssec.${d}`);
+    for (const c of ['none', 'unrestricted', 'deny-all', 'critical']) add(`pf.caa.${c}`);
+    for (const s of ['none', 'many', 'invalid']) { add(`pf.spf.${s}`); add(`pf.dmarc.${s}`); }
+    for (const s of ['present', 'none', 'invalid']) add(`pf.rec.${s}`);
+    for (const r of policy.POLICY_RULES) add(`pol.rule.${r.id}`);
+    for (const s of policy.POLICY_STATUSES) add(`pol.st.${s}`);
+    for (const p of policy.POLICY_PRESET_IDS) add(`pol.preset.${p}`);
+    for (const e of policy.POLICY_ERRORS) add(`pol.err.${e}`);
+    for (const k of Object.keys(policy.POLICY_I18N.en)) add(k);
+    for (const k of Object.keys(pfsum.PORTFOLIO_SUMMARY_I18N.en)) add(k);
     assert.deepEqual(missingIn(keys), []);
   });
 

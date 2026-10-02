@@ -15,6 +15,7 @@ const imp = (rel) => import(pathToFileURL(join(ROOT, rel)).href);
 
 let S;
 let R;
+let PF;
 let i18n;
 const NOW = new Date('2026-09-27T14:03:30Z');
 const URL_BASE = 'https://example.github.io/domainscope/';
@@ -28,6 +29,8 @@ before(async () => {
   S = await imp('assets/js/lib/summary.js');
   // DMARC & TLS reports: its builder and texts load with the view (lib/reportsummary.js).
   R = await imp('assets/js/lib/reportsummary.js');
+  // Domain portfolio: the same, lib/portfoliosummary.js (registered by views/portfolio.js).
+  PF = await imp('assets/js/lib/portfoliosummary.js');
   const { HEALTH_I18N } = await imp('assets/js/lib/health.js');
   // The Verify headline keys a scan summary quotes (registered by the panel, as in the app).
   await imp('assets/js/ui/verify-panel.js');
@@ -36,6 +39,7 @@ before(async () => {
   for (const lang of ['en', 'tr']) {
     i18n.registerStrings(lang, S.SUMMARY_I18N[lang]);
     i18n.registerStrings(lang, R.REPORTS_SUMMARY_I18N[lang]);
+    i18n.registerStrings(lang, PF.PORTFOLIO_SUMMARY_I18N[lang]);
     i18n.registerStrings(lang, HEALTH_I18N[lang]);
   }
   i18n.setLang('en');
@@ -975,6 +979,74 @@ describe('reports (DMARC & TLS reports)', () => {
 });
 
 /* ------------------------------------------------------------------------ */
+describe('portfolio (Domain portfolio)', () => {
+  const facts = (over = {}) => ({
+    domains: 4, at: new Date('2026-09-27T13:50:00Z'), stopped: false, notLooked: 0,
+    expiring: [{ domain: 'example.net', daysLeft: -2 }, { domain: 'example.org', daysLeft: 20 }],
+    critical: [{ domain: 'example.net', codes: ['serverHold', 'redemptionPeriod'] }],
+    unlocked: ['example.org'], noRdap: 1, notRegistered: [],
+    nsExpiring: [{ domain: 'example.net', daysLeft: 12, of: ['example.com', 'example.org'] }],
+    dnssec: { validated: 1, signed: 0, unsigned: 2 }, caaNone: 2,
+    spfOver: ['example-test.com.tr'], spfBad: [], dmarcWeak: ['example-test.com.tr', 'example.com'], parkedOpen: ['example.org'], failedLookups: 2,
+    policy: {
+      name: 'baseline', counts: { domains: 4, failing: 2, passing: 1, unknown: 1 },
+      failing: [{ domain: 'example.org', rules: ['expiryDays', 'transferLock'] }, { domain: 'example-test.com.tr', rules: ['dmarc.policy', 'nsExpiryDays', 'spf.lookups', 'dkim'] }]
+    },
+    ...over
+  });
+
+  test('what expires (the name servers\' domains too), critical statuses, locks, DNSSEC, mail, parked domains, the policy and what could not be read; domains as code', () => {
+    const url = `${URL_BASE}#/portfolio?domains=example.com,example.org`;
+    const doc = PF.portfolioSummary(facts(), opts('en', url));
+    assertShape(doc);
+    assert.deepEqual(lines(md(doc)), [
+      '**Domain portfolio · 4 domains**',
+      '- **Expire within 30 days:** `example.net` (expired 2 days ago), `example.org` (20 days)',
+      '- **Name server domains expiring within 30 days:** `example.net` (12 days; name servers of 2 domains)',
+      '- **Critical registry status:** `example.net` (serverHold, redemptionPeriod)',
+      '- **No transfer lock (clientTransferProhibited):** `example.org`',
+      '- DNSSEC: 1 validated · 2 not signed',
+      '- **Mail:** SPF over 10 lookups on 1 domain: `example-test.com.tr`',
+      '- **Mail:** no enforcing DMARC policy on 2 domains: `example-test.com.tr`, `example.com`',
+      '- **Take no mail but not locked down (null MX, -all, p=reject):** `example.org`',
+      '- **Policy** `baseline`: 2 of 4 domains fail — `example.org` (expiryDays, transferLock), `example-test.com.tr` (dmarc.policy, nsExpiryDays, spf.lookups …)',
+      '- 1 domain without RDAP (registry WHOIS only) · 2 lookups failed',
+      '',
+      `DomainScope · checked 2026-09-27 13:50 UTC · ${url}`
+    ]);
+    const tr = PF.portfolioSummary(facts(), opts('tr'));
+    assertShape(tr);
+    assert.deepEqual(lines(md(tr)).slice(0, 3), [
+      '**Alan adı portföyü · 4 alan adı**',
+      '- **30 gün içinde süresi dolanlar:** `example.net` (2 gün önce doldu), `example.org` (20 gün)',
+      '- **30 gün içinde süresi dolan ad sunucusu alan adları:** `example.net` (12 gün; 2 alan adının ad sunucuları)'
+    ]);
+  });
+
+  test('nothing to say: no expiry within 30 days (only of the known ones when RDAP is missing or the check stopped); the policy met; the name as a code span', () => {
+    const quiet = facts({
+      expiring: [], critical: [], unlocked: [], nsExpiring: [], spfOver: [], dmarcWeak: [], parkedOpen: [], failedLookups: 0, noRdap: 0,
+      policy: { name: '@team *strict*', counts: { domains: 4, failing: 0, passing: 4, unknown: 0 }, failing: [] }
+    });
+    const doc = PF.portfolioSummary(quiet, opts());
+    assertShape(doc, { min: 4 });
+    assert.deepEqual(lines(md(doc)).slice(1, 4), [
+      '- No domain expires within 30 days',
+      '- DNSSEC: 1 validated · 2 not signed',
+      '- **Policy** `@team *strict*`: all 4 domains meet every rule'
+    ]);
+    const partial = PF.portfolioSummary({ ...quiet, noRdap: 1, policy: { ...quiet.policy, counts: { domains: 4, failing: 0, passing: 3, unknown: 1 } } }, opts());
+    assert.equal(lines(md(partial))[1], '- No domain whose expiry is known expires within 30 days');
+    assert.equal(lines(md(partial))[3], '- **Policy** `@team *strict*`: no domain fails a rule; 1 could not be checked in full');
+    const stopped = PF.portfolioSummary({ ...quiet, stopped: true, notLooked: 2 }, opts());
+    assert.match(md(stopped), /\n- stopped: 2 domains not looked up in full\n/);
+    assert.throws(() => S.buildSummary('portfolio', facts(), opts()), RangeError, 'not before its view registers it');
+    S.registerSummaryBuilder('portfolio', PF.portfolioSummary);
+    assert.equal(S.buildSummary('portfolio', facts(), opts()).kind, 'portfolio');
+    assert.deepEqual(S.permalinkParams('portfolio', { domains: 'example.com,example.org', tab: 'policy' }), { domains: 'example.com,example.org' }, 'the list, never the policy');
+  });
+});
+
 describe('domain (overview)', () => {
   /** passportSummaryFacts() of a healthy domain (lib/passport.js). */
   const facts = (over = {}) => ({
@@ -1316,7 +1388,7 @@ describe('i18n', () => {
   };
 
   test('EN and TR have the same keys and placeholders, never an empty text (the reports summary texts too)', () => {
-    for (const { en, tr } of [S.SUMMARY_I18N, R.REPORTS_SUMMARY_I18N]) {
+    for (const { en, tr } of [S.SUMMARY_I18N, R.REPORTS_SUMMARY_I18N, PF.PORTFOLIO_SUMMARY_I18N]) {
       const other = (v) => (typeof v === 'string' ? v : v.other);
       // A plural form may leave {count} out ("in your server list"); every other placeholder is in both.
       const named = (v) => placeholders(v).split(',').filter((p) => p && p !== 'count').join(',');
@@ -1327,7 +1399,7 @@ describe('i18n', () => {
         assert.equal(placeholders(other(tr[k])), placeholders(other(en[k])), `${k} {placeholders} of the 'other' form`);
       }
     }
-    const shared = Object.keys(R.REPORTS_SUMMARY_I18N.en).filter((k) => k in S.SUMMARY_I18N.en);
+    const shared = [...Object.keys(R.REPORTS_SUMMARY_I18N.en), ...Object.keys(PF.PORTFOLIO_SUMMARY_I18N.en)].filter((k) => k in S.SUMMARY_I18N.en);
     assert.deepEqual(shared, [], 'no key in both tables');
   });
 

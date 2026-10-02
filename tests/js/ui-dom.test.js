@@ -31,7 +31,7 @@ import { clearedMessage } from '../../assets/js/ui/workspace-ui.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SPEC_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
-const VIEW_IDS = ['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'reports', 'inventory', 'about'];
+const VIEW_IDS = ['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'reports', 'portfolio', 'inventory', 'about'];
 
 /* ------------------------------------------------------------------------ */
 /* Minimal fake DOM (just enough for dom.js)                                */

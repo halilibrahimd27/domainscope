@@ -45,7 +45,7 @@ const SAVE_DELAY_MS = 400;
 
 registerStrings('en', {
   'ws.title': 'Workspaces',
-  'ws.intro': 'Each workspace keeps its own servers, learned names, custom wordlist, expected CAs, notes and recent domains, so one customer’s data never mixes with another’s. Theme, language, resolvers and parallelism are the same in every workspace. Everything stays in this browser (IndexedDB).',
+  'ws.intro': 'Each workspace keeps its own servers, learned names, custom wordlist, expected CAs, notes, recent domains and domain policy, so one customer’s data never mixes with another’s. Theme, language, resolvers and parallelism are the same in every workspace. Everything stays in this browser (IndexedDB).',
   'ws.memoryOnly': 'Browser storage is unavailable: the workspaces last until you close this tab.',
   'ws.listTitle': 'Your workspaces',
   'ws.active': 'Active',
@@ -57,7 +57,7 @@ registerStrings('en', {
   'ws.save': 'Save',
   'ws.cancel': 'Cancel',
   'ws.delete': 'Delete “{name}”',
-  'ws.deleteConfirm': 'Delete the workspace “{name}” and everything in it: its servers, learned names, custom wordlist, expected CAs, notes and recent domains? This cannot be undone. Export it first to keep a copy.',
+  'ws.deleteConfirm': 'Delete the workspace “{name}” and everything in it: its servers, learned names, custom wordlist, expected CAs, notes, recent domains and domain policy? This cannot be undone. Export it first to keep a copy.',
   'ws.deleted': 'Workspace “{name}” deleted.',
   'ws.deleteNotSaved': '“{name}” is deleted here, but not in this browser’s storage: {reason}. It comes back when the page is loaded again.',
   'ws.gone': '“{name}” was deleted in another tab.',
@@ -115,10 +115,11 @@ registerStrings('en', {
   'ws.sum.recent': { zero: 'no recent domains', one: '{count} recent domain', other: '{count} recent domains' },
   'ws.sum.wordlist': 'a custom wordlist',
   'ws.sum.notes': 'notes',
+  'ws.sum.policy': 'a domain policy',
   'ws.sum.encrypted': 'was encrypted',
   'ws.importNew': 'Import as a new workspace',
   'ws.importReplace': 'Replace “{name}”',
-  'ws.replaceConfirm': 'Replace everything in “{name}” — its servers, learned names, custom wordlist, expected CAs, notes and recent domains — with the file’s? This cannot be undone.',
+  'ws.replaceConfirm': 'Replace everything in “{name}” — its servers, learned names, custom wordlist, expected CAs, notes, recent domains and domain policy — with the file’s? This cannot be undone.',
   'ws.imported': 'Imported as the new workspace “{name}”.',
   'ws.replaced': '“{name}” replaced with the file’s contents.',
   'ws.err.too-large': 'The file is too large (at most {size}).',
@@ -134,7 +135,7 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'ws.title': 'Çalışma alanları',
-  'ws.intro': 'Her çalışma alanı kendi sunucularını, öğrenilen adlarını, özel kelime listesini, beklenen CA’larını, notlarını ve son alan adlarını tutar; böylece bir müşterinin verisi diğerininkine karışmaz. Tema, dil, çözümleyiciler ve paralellik her çalışma alanında aynıdır. Hepsi bu tarayıcıda kalır (IndexedDB).',
+  'ws.intro': 'Her çalışma alanı kendi sunucularını, öğrenilen adlarını, özel kelime listesini, beklenen CA’larını, notlarını, son alan adlarını ve alan adı politikasını tutar; böylece bir müşterinin verisi diğerininkine karışmaz. Tema, dil, çözümleyiciler ve paralellik her çalışma alanında aynıdır. Hepsi bu tarayıcıda kalır (IndexedDB).',
   'ws.memoryOnly': 'Tarayıcı depolaması kullanılamıyor: çalışma alanları bu sekmeyi kapatana kadar tutulur.',
   'ws.listTitle': 'Çalışma alanlarınız',
   'ws.active': 'Etkin',
@@ -146,7 +147,7 @@ registerStrings('tr', {
   'ws.save': 'Kaydet',
   'ws.cancel': 'Vazgeç',
   'ws.delete': '“{name}” alanını sil',
-  'ws.deleteConfirm': '“{name}” çalışma alanı ve içindeki her şey silinsin mi: sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları ve son alan adları? Bu işlem geri alınamaz. Bir kopyasını saklamak için önce dışa aktarın.',
+  'ws.deleteConfirm': '“{name}” çalışma alanı ve içindeki her şey silinsin mi: sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları ve alan adı politikası? Bu işlem geri alınamaz. Bir kopyasını saklamak için önce dışa aktarın.',
   'ws.deleted': '“{name}” çalışma alanı silindi.',
   'ws.deleteNotSaved': '“{name}” burada silindi ama bu tarayıcının depolamasından silinemedi: {reason}. Sayfa yeniden yüklendiğinde geri gelir.',
   'ws.gone': '“{name}” başka bir sekmede silindi.',
@@ -204,10 +205,11 @@ registerStrings('tr', {
   'ws.sum.recent': { zero: 'son alan adı yok', other: '{count} son alan adı' },
   'ws.sum.wordlist': 'bir özel kelime listesi',
   'ws.sum.notes': 'notlar',
+  'ws.sum.policy': 'bir alan adı politikası',
   'ws.sum.encrypted': 'şifreliydi',
   'ws.importNew': 'Yeni çalışma alanı olarak içe aktar',
   'ws.importReplace': '“{name}” alanının yerine koy',
-  'ws.replaceConfirm': '“{name}” içindeki her şey — sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları ve son alan adları — dosyadakilerle değiştirilsin mi? Bu işlem geri alınamaz.',
+  'ws.replaceConfirm': '“{name}” içindeki her şey — sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları ve alan adı politikası — dosyadakilerle değiştirilsin mi? Bu işlem geri alınamaz.',
   'ws.imported': '“{name}” adlı yeni çalışma alanı olarak içe aktarıldı.',
   'ws.replaced': '“{name}” dosyanın içeriğiyle değiştirildi.',
   'ws.err.too-large': 'Dosya çok büyük (en fazla {size}).',
@@ -272,7 +274,7 @@ export function exportFileName(name, { encrypted = false, date = new Date() } = 
 
 /**
  * What an imported workspace holds, in one line: servers, learned names, expected CAs, recent
- * domains, and whether it has a custom wordlist and notes.
+ * domains, and whether it has a custom wordlist, notes and a domain policy (the portfolio audit's).
  * @param {{ data: object, encrypted?: boolean }} ws
  * @returns {string}
  */
@@ -287,6 +289,7 @@ export function importSummary(ws) {
   ];
   if (d.wordlist.trim()) parts.push(t('ws.sum.wordlist'));
   if (d.notes.trim()) parts.push(t('ws.sum.notes'));
+  if ((d.policy || '').trim()) parts.push(t('ws.sum.policy'));
   if (ws.encrypted) parts.push(t('ws.sum.encrypted'));
   return parts.join(' · ');
 }

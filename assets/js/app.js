@@ -97,7 +97,7 @@ const WORKSPACE_WAIT_MS = 8000;
 export const VIEW_CSS_ORDER = Object.freeze([
   'views/subdomains.css', 'views/domain.css', 'views/fix.css', 'views/zone.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css',
   'views/renew.css', 'views/estate.css', 'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/change.css', 'views/ip.css', 'views/ptr.css', 'views/retire.css',
-  'views/health.css', 'views/reports.css', 'views/inventory.css', 'views/about.css'
+  'views/health.css', 'views/reports.css', 'views/portfolio.css', 'views/inventory.css', 'views/about.css'
 ]);
 
 /**
@@ -142,6 +142,8 @@ export const VIEWS = Object.freeze([
   { id: 'retire', group: 'ip', icon: 'unlink', css: ['views/retire.css'], load: () => import('./views/retire.js') },
   { id: 'health', group: 'mail', icon: 'activity', css: ['views/fix.css', 'views/health.css'], load: () => import('./views/health.js') },
   { id: 'reports', group: 'mail', icon: 'inbox', css: ['views/reports.css'], offline: true, load: () => import('./views/reports.js') },
+  // many domains, one row each, and the workspace's policy audit (RDAP and DoH: needs the network)
+  { id: 'portfolio', group: 'mail', icon: 'box', css: ['views/portfolio.css'], load: () => import('./views/portfolio.js') },
   { id: 'inventory', group: 'data', icon: 'server', css: ['views/inventory.css'], offline: true, load: () => import('./views/inventory.js') },
   { id: 'about', group: 'data', icon: 'info', css: ['views/about.css'], offline: true, load: () => import('./views/about.js') }
 ].map((v) => Object.freeze({

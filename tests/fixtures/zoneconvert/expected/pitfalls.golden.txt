@@ -475,6 +475,7 @@ info ttl-mixed ×1: ttls
 ## octodns (example.com.yaml, application/yaml;charset=utf-8, 36 written)
 # example.com as an octoDNS zone (example.com.yaml), written by DomainScope from bind.
 # Keys are in octoDNS order; the SOA, the apex NS and what octoDNS cannot hold are left out (see the notes).
+# TXT values write ; as \; : load this file with escaped_semicolons: true on the YamlProvider (octoDNS refuses them with false, its default from 2.0).
 ---
 '':
   - octodns:
@@ -697,6 +698,7 @@ info proxied ×3: @ www mixed
 info cname-flatten ×1: status
 info txt-long ×1: google._domainkey
 info txt-split ×1: split
+info semicolons ×2: google._domainkey quoted
 info caa-tag ×1: @ [tags=policy]
 info svc-key ×1: doh [keys=dohpath]
 info soa ×1: @

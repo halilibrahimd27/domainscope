@@ -1141,6 +1141,13 @@ describe('octoDNS YAML', () => {
     assert.deepEqual(z.warnings.filter((w) => w.severity !== 'info'), []);
   });
 
+  test('a TXT value as octoDNS loads it: one that starts with a quote loses its first and last character, a " " inside goes (its _ChunkedValue.process)', () => {
+    const y = [['a', `'"quoted"'`], ['b', `'a" "b'`], ['c', `'""quoted""'`], ['d', `'x"'`], ['e', `'"'`], ['f', `'"""'`]]
+      .map(([name, value]) => `${name}:\n  type: TXT\n  value: ${value}\n`).join('');
+    const z = P(y, { filename: 'example.com.yaml' });
+    assert.deepEqual(['a', 'b', 'c', 'd', 'e', 'f'].map((n) => find(z, `${n}.example.com`).data.join('')), ['quoted', 'ab', '"quoted"', 'x"', '', '"']);
+  });
+
   test('HTTPS / SVCB (svcpriority, targetname, svcparams; key<N> by number), URI and OPENPGPKEY values', () => {
     const y = [
       'doh:', '  type: SVCB', '  value:', '    svcparams:', '      alpn: [h2, \'a,b\']', '      key7: /dns-query{?dns}', '      key8: null', '      mandatory:',

@@ -3760,8 +3760,11 @@ function parseOctodns(text, zone, b, opts) {
           const s = typeof v === 'string' || typeof v === 'number' ? String(v) : '';
           if (/(^|[^\\]);/.test(s)) issues.add('OCTODNS_UNESCAPED_SEMICOLON', line, { name: nr.name }, 'bare ";" in an octoDNS TXT value (write \\;)', { name: nr.name, type });
           // octoDNS keeps a TXT value as its raw text with every `;` escaped as `\;` and nothing else
-          // (its _ChunkedValue.to_raw_text; lib/zoneconvert.js octodnsTxt writes it so).
-          b.fillTxt(rec, split255(utf8Encoder.encode(s.replace(/\\;/g, ';'))));
+          // (its _ChunkedValue.to_raw_text; lib/zoneconvert.js octodnsTxt writes it so). As it loads a
+          // value it strips the first and last character of one that starts with `"` and deletes every
+          // `" "` (its _ChunkedValue.process, for values written as quoted strings).
+          const raw = (s.startsWith('"') ? s.slice(1, -1) : s).split('" "').join('');
+          b.fillTxt(rec, split255(utf8Encoder.encode(raw.replace(/\\;/g, ';'))));
         } else {
           let toks;
           try {

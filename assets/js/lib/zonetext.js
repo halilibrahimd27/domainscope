@@ -194,6 +194,20 @@ export function octodnsTxt(data) {
 }
 
 /**
+ * A TXT text as octoDNS's YAML holds it so that octoDNS loads it as written: {@link octodnsTxt},
+ * inside one more pair of quotes when it starts with `"` (octoDNS strips the first and last
+ * character of a value that starts with a quote: its _ChunkedValue.process); null when it holds
+ * `" "` (a quote, a space, a quote), which octoDNS deletes, taking it for a break between strings.
+ * @param {string[]|string} data
+ * @returns {string|null}
+ */
+export function octodnsTxtValue(data) {
+  const v = octodnsTxt(data);
+  if (v.includes('" "')) return null;
+  return v.startsWith('"') ? `"${v}"` : v;
+}
+
+/**
  * Does octoDNS's check of TXT values (chunked-value-rfc) refuse this text: a character outside
  * ASCII, or a `\` before a `;` (which it takes for a `;` escaped twice)? Such a record is written
  * with `octodns: lenient: true` (lib/zoneconvert.js and lib/fixes.js): octoDNS then loads it

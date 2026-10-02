@@ -31,11 +31,11 @@
 import { bindComment, presentCharString, GTLDS } from './zoneparse.js';
 import { relativeName, canonicalName } from './zonediff.js';
 import {
-  route53String, yamlString, octodnsTxt, octodnsTxtRefused, naturalCompare, txtBytes, joinBytes, utf8Text, split255
+  route53String, yamlString, octodnsTxt, octodnsTxtValue, octodnsTxtRefused, naturalCompare, txtBytes, joinBytes, utf8Text, split255
 } from './zonetext.js';
 
 // The escapes, checks and orders of the formats live in lib/zonetext.js; they stay exported here too.
-export { route53String, yamlString, octodnsTxt, octodnsTxtRefused, naturalCompare };
+export { route53String, yamlString, octodnsTxt, octodnsTxtValue, octodnsTxtRefused, naturalCompare };
 
 /* ------------------------------------------------------------------------ */
 /* Vocabulary                                                               */
@@ -134,8 +134,12 @@ export const PITFALL_SEVERITY = Object.freeze({
   'txt-long': { bind: 'info', route53: 'info', octodns: 'info', dnscontrol: 'info' },
   'txt-split': { octodns: 'info', dnscontrol: 'info' },
   'txt-bytes': { octodns: 'warn', dnscontrol: 'warn' },
+  'txt-quote': { octodns: 'warn' },
+  'txt-quote-start': { octodns: 'info' },
+  semicolons: { octodns: 'info' },
   'caa-flags': { route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
   'caa-tag': { route53: 'info', octodns: 'info', dnscontrol: 'warn' },
+  'caa-quote': { octodns: 'warn' },
   'svc-key': { octodns: 'info' },
   'txt-lenient': { octodns: 'warn' },
   'name-lenient': { octodns: 'warn' },
@@ -147,6 +151,7 @@ export const PITFALL_SEVERITY = Object.freeze({
   'out-of-zone': { bind: 'warn', route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
   'wildcard-inner': { bind: 'warn', route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
   'escaped-name': { route53: 'warn', octodns: 'warn', dnscontrol: 'warn' },
+  'escaped-target': { octodns: 'warn', dnscontrol: 'warn' },
   'repeated-domain': { dnscontrol: 'warn' },
   'no-soa': { bind: 'warn' },
   soa: { route53: 'info', octodns: 'info', dnscontrol: 'info' },
@@ -176,6 +181,7 @@ export const PITFALL_VARIANTS = Object.freeze({
   'out-of-zone': ['bind'],
   'caa-flags': ['dnscontrol'],
   'caa-tag': ['dnscontrol'],
+  'escaped-target': ['dnscontrol'],
   wildcard: ['route53']
 });
 
@@ -311,6 +317,7 @@ const COMMENT_REASON = Object.freeze({
   'by-hand': 'DomainScope cannot write this record type for this format: add it by hand',
   'caa-tag': 'a CAA tag DNSControl refuses',
   'txt-bytes': 'TXT that is not UTF-8 text',
+  'escaped-target': 'a target name with characters DNSControl refuses (it refuses the whole file over them)',
   dnssec: 'DNSSEC record: the new provider signs the zone itself',
   'out-of-zone': 'outside the zone',
   soa: 'SOA: the provider writes its own',
@@ -496,6 +503,16 @@ function plan(zone, target, pits) {
       leave('txt-bytes', target === 'dnscontrol' ? 'comment' : 'omit');
       continue;
     }
+    // octoDNS deletes a `" "` inside a TXT value as it loads it: no way to write one.
+    if (target === 'octodns' && (type === 'TXT' || type === 'SPF') && octodnsTxtValue(txtText(r)) === null) {
+      leave('txt-quote', 'omit');
+      continue;
+    }
+    // octoDNS and DNSControl refuse the whole file over a target name with escapes (a space, a quote …).
+    if ((target === 'octodns' || target === 'dnscontrol') && (r.targets || []).some((x) => String(x).includes('\\'))) {
+      leave('escaped-target', target === 'dnscontrol' ? 'comment' : 'omit');
+      continue;
+    }
     // DNSControl refuses the whole file over a CAA tag it does not know: that record stays a comment.
     if (target === 'dnscontrol' && type === 'CAA' && !CAA_COMMON_TAGS.includes(String(r.data.tag || '').toLowerCase())) {
       leave('caa-tag', 'comment', { tags: String(r.data.tag || '').toLowerCase() });
@@ -527,10 +544,17 @@ function plan(zone, target, pits) {
       if (byNumber.length) pits.flag('svc-key', r, { keys: byNumber });
     }
     // What octoDNS's own checks refuse is written with `octodns: lenient: true`: loaded, with a warning.
-    if (target === 'octodns' && (type === 'TXT' || type === 'SPF') && octodnsTxtRefused(octodnsTxt(txtText(r)))) {
-      pits.flag('txt-lenient', r);
-      s.lenient = true;
+    if (target === 'octodns' && (type === 'TXT' || type === 'SPF')) {
+      const text = txtText(r);
+      if (octodnsTxtRefused(octodnsTxt(text))) {
+        pits.flag('txt-lenient', r);
+        s.lenient = true;
+      }
+      if (text.startsWith('"')) pits.flag('txt-quote-start', r);
+      if (text.includes(';')) pits.flag('semicolons', r);
     }
+    // octoDNS writes a CAA value between quotes as it is (CaaValue.to_rdata_text): a quote or a backslash in it is not escaped.
+    if (target === 'octodns' && type === 'CAA' && r.data && /["\\]/.test(String(r.data.value))) pits.flag('caa-quote', r);
     if (target === 'octodns' && (type === 'SRV' || type === 'URI') && !OCTODNS_SERVICE_NAME.test(relativeName(r.name, origin))) {
       pits.flag('name-lenient', r, { types: type });
       s.lenient = true;
@@ -813,7 +837,7 @@ function octodnsValue(type, r) {
     case 'MX': return { exchange: fqdn(d.exchange), preference: d.preference };
     case 'SRV': return { port: d.port, priority: d.priority, target: fqdn(d.target), weight: d.weight };
     case 'CAA': return { flags: d.flags, tag: String(d.tag).toLowerCase(), value: String(d.value) };
-    case 'TXT': case 'SPF': return octodnsTxt(txtText(r));
+    case 'TXT': case 'SPF': return octodnsTxtValue(txtText(r));
     case 'TLSA': return { certificate_association_data: d.data, certificate_usage: d.usage, matching_type: d.matchingType, selector: d.selector };
     case 'SSHFP': return { algorithm: d.algorithm, fingerprint: d.fingerprint, fingerprint_type: d.fpType };
     case 'DS': return { algorithm: d.algorithm, digest: d.digest, digest_type: d.digestType, key_tag: d.keyTag };
@@ -897,6 +921,7 @@ function octodnsText(zone, steps, sets, pits, about) {
   const out = [
     `# ${origin} as an octoDNS zone (${origin}.yaml), written by DomainScope from ${about}.`,
     '# Keys are in octoDNS order; the SOA, the apex NS and what octoDNS cannot hold are left out (see the notes).',
+    '# TXT values write ; as \\; : load this file with escaped_semicolons: true on the YamlProvider (octoDNS refuses them with false, its default from 2.0).',
     '---'
   ];
   for (const key of Object.keys(doc).sort(naturalCompare)) {

@@ -2,7 +2,7 @@
 // character-string, a YAML scalar octoDNS reads back, octoDNS's TXT form and key order). No network.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { yamlString, route53String, charStringBytes, joinBytes, utf8Text, split255 } from '../../assets/js/lib/zonetext.js';
+import { yamlString, route53String, charStringBytes, joinBytes, utf8Text, split255, octodnsTxtValue } from '../../assets/js/lib/zonetext.js';
 import { parseYamlSubset } from '../../assets/js/lib/zoneparse.js';
 
 const ch = (...cps) => String.fromCodePoint(...cps);
@@ -63,5 +63,10 @@ describe('TXT character-strings as bytes', () => {
     assert.equal(route53String(Uint8Array.from([0x61, 0xc3])), `"a${BS}303"`);
     assert.equal(route53String(Uint8Array.from([0xff, 0x22, 0x5c])), `"${BS}377${BS}"${BS}${BS}"`);
     assert.equal(route53String(`k${ch(0xe4)}se`), `"k${BS}303${BS}244se"`, 'a string as its UTF-8 bytes');
+  });
+
+  test('octodnsTxtValue: in one more pair of quotes when it starts with one (octoDNS strips them), null with " " inside', () => {
+    const cases = [['"q"', '""q""'], ['a" "b', null], ['x;y', `x${BS};y`], ['"', '"""'], ['x"', 'x"'], [['"a', 'b"'], '""ab""']];
+    for (const [input, want] of cases) assert.equal(octodnsTxtValue(input), want, JSON.stringify(input));
   });
 });

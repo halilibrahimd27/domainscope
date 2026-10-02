@@ -273,6 +273,7 @@ info wildcard ×1: *
 ## octodns (example.com.yaml, application/yaml;charset=utf-8, 21 written)
 # example.com as an octoDNS zone (example.com.yaml), written by DomainScope from octodns.
 # Keys are in octoDNS order; the SOA, the apex NS and what octoDNS cannot hold are left out (see the notes).
+# TXT values write ; as \; : load this file with escaped_semicolons: true on the YamlProvider (octoDNS refuses them with false, its default from 2.0).
 ---
 '':
   - octodns:
@@ -370,6 +371,7 @@ www:
 ## octodns pitfalls
 warn routing ×4: geo
 info proxied ×5: @ api app www
+info semicolons ×2: _dmarc google._domainkey
 info apex-ns ×2: @
 info wildcard ×1: *
 ## octodns left out

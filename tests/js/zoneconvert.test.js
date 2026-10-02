@@ -643,6 +643,52 @@ describe('pitfalls', () => {
     assert.deepEqual(parseZone(res.text, { format: 'bind' }).warnings.map((w) => w.code), []);
   });
 
+  test('octoDNS: a TXT value that starts with a quote goes in one more pair, which octoDNS strips as it loads; one with " " inside is left out', () => {
+    const z = bind(['q TXT "\\"quoted\\""', 'p TXT "a\\" \\"b"', 'x TXT "x\\""', 'one TXT "\\""', 'ok TXT "plain"'].join('\n'));
+    const res = convertZone(z, 'octodns');
+    const value = (name) => new RegExp(`^${name}:\\n {2}ttl: 3600\\n {2}type: TXT\\n {2}value: (.*)$`, 'm').exec(res.text)?.[1] ?? null;
+    assert.deepEqual(['q', 'p', 'x', 'one', 'ok'].map(value), [`'""quoted""'`, null, `'x"'`, `'"""'`, 'plain']);
+    assert.deepEqual([pit(res, 'txt-quote').severity, pit(res, 'txt-quote').names], ['warn', ['p']]);
+    assert.deepEqual([pit(res, 'txt-quote-start').severity, pit(res, 'txt-quote-start').names], ['info', ['q', 'one']]);
+    assert.deepEqual(res.omitted.filter((x) => x.code === 'txt-quote').length, 1);
+    // Read back as octoDNS reads it (lib/zoneparse.js does what octoDNS does): the source, less the value left out.
+    const back = parseZone(res.text, { origin: 'example.com', filename: res.filename });
+    assert.deepEqual(diffZones(expected(z, res, 'octodns'), back).rows.filter((r) => r.status !== 'same').map((r) => r.key), []);
+    for (const t of ['bind', 'route53', 'dnscontrol']) {
+      const other = convertZone(z, t);
+      assert.deepEqual([pit(other, 'txt-quote'), pit(other, 'txt-quote-start')], [null, null], t);
+    }
+  });
+
+  test('octoDNS: a CAA value with a quote or a backslash is flagged (octoDNS writes it between quotes as it is)', () => {
+    const z = bind(['q CAA 0 issue "ca.example.net; account=\\"a b\\""', 'b CAA 0 issue "ca.example.net; x=a\\\\b"', 'ok CAA 0 issue "ca.example.net"'].join('\n'));
+    const res = convertZone(z, 'octodns');
+    assert.deepEqual([pit(res, 'caa-quote').severity, pit(res, 'caa-quote').names], ['warn', ['q', 'b']]);
+    assert.ok(res.text.includes(`value: 'ca.example.net; account="a b"'`), 'still written');
+    assert.equal(pit(convertZone(z, 'route53'), 'caa-quote'), null);
+  });
+
+  test('octoDNS and DNSControl: a record whose target needs escapes is left out (each refuses the whole file over it); BIND and Route 53 keep it', () => {
+    const z = bind(['mx MX 10 a\\"b.example.net.', 'cn CNAME we\\ ird.example.net.', 'ns NS ns\\.one.example.net.', 'ok CNAME www.example.net.'].join('\n'));
+    for (const [t, action] of [['octodns', 'omit'], ['dnscontrol', 'comment']]) {
+      const res = convertZone(z, t);
+      assert.deepEqual([pit(res, 'escaped-target').severity, pit(res, 'escaped-target').names], ['warn', ['mx', 'cn', 'ns']], t);
+      assert.equal(res.omitted.filter((x) => x.code === 'escaped-target').length, 3, t);
+      assert.ok(!/we\\032ird|a\\"b/.test(res.text.split('\n').filter((l) => !l.trimStart().startsWith('//')).join('\n')), `${t}: not written (${action})`);
+    }
+    assert.match(convertZone(z, 'dnscontrol').text, /^ {4}\/\/ .*target/m, 'DNSControl keeps it as a comment');
+    for (const t of ['bind', 'route53']) assert.equal(pit(convertZone(z, t), 'escaped-target'), null, t);
+  });
+
+  test('octoDNS: TXT values with ; are written with \\; and the file and a note say to load it with escaped_semicolons: true', () => {
+    const z = bind('_dmarc TXT "v=DMARC1; p=none"\nspf TXT "v=spf1 -all"');
+    const res = convertZone(z, 'octodns');
+    assert.match(res.text, /^# TXT values write ; as \\; : load this file with escaped_semicolons: true/m);
+    assert.ok(res.text.includes("value: 'v=DMARC1\\; p=none'"));
+    assert.deepEqual([pit(res, 'semicolons').severity, pit(res, 'semicolons').names], ['info', ['_dmarc']]);
+    assert.equal(pit(convertZone(bind('spf TXT "v=spf1 -all"'), 'octodns'), 'semicolons'), null, 'no ; no note');
+  });
+
   test('every pitfall a conversion raises has a text key in both languages\' table of keys', () => {
     const z = caseZone(CASES[0]);
     const all = new Set(pitfallKeys());

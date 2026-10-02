@@ -486,6 +486,7 @@ info wildcard ×1: *.apps
 ## octodns (example.com.yaml, application/yaml;charset=utf-8, 36 written)
 # example.com as an octoDNS zone (example.com.yaml), written by DomainScope from bind (cloudflare).
 # Keys are in octoDNS order; the SOA, the apex NS and what octoDNS cannot hold are left out (see the notes).
+# TXT values write ; as \; : load this file with escaped_semicolons: true on the YamlProvider (octoDNS refuses them with false, its default from 2.0).
 ---
 '':
   - octodns:
@@ -753,6 +754,7 @@ warn proxied-mixed ×1: mixed
 info proxied ×10: @ www api *.apps mixed tagged shop app tunnel
 info cname-flatten ×1: status
 info txt-long ×1: google._domainkey
+info semicolons ×2: _dmarc google._domainkey
 info soa ×1: @
 info apex-ns ×2: @
 info wildcard ×1: *.apps

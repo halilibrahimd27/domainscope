@@ -387,7 +387,8 @@ const OTHER_PROBLEMS = 20;
  * @param {{ ctx: object, zone: object, C: object, parse: (files: object[], opts: { origin: string|null }) => object,
  *   samples: Array<{ id: string, file: string, text: string }>, formatLabel: (zone: object) => string,
  *   redact: (values: string[], include: boolean) => string[], issue: (w: object) => { text: string, where: string } }} opts
- *   `C`: the view's holder ({ files, zone, originInput, options, filter, includeOrigins, cache }); `parse`:
+ *   `C`: the view's holder ({ files, zone, readWith, originInput, options, filter, includeOrigins, cache }; `readWith`: the
+ *   first zone's name the second was read with); `parse`:
  *   views/zone.js parseFiles; `redact`: the origin addresses of both zones hidden unless `include`; `issue`: a parse
  *   issue worded as the Problems tab words it, and where it is
  * @returns {HTMLElement}
@@ -395,6 +396,12 @@ const OTHER_PROBLEMS = 20;
 export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact, issue }) {
   ensureCompare(C);
   const box = h('div', { class: 'stack zcmp', dataset: { role: 'zcmp' } });
+  // A new first zone (another import) can name the kept second file otherwise: read it again.
+  if (C.files && C.readWith !== (zone.origin || null)) {
+    C.zone = readOther(C.files, { zone, typed: C.originInput, parse });
+    C.readWith = zone.origin || null;
+    C.cache = null;
+  }
 
   function result() {
     if (!C.zone || C.zone.fatal) return null;
@@ -416,6 +423,7 @@ export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact, 
   /** Parse the second zone (readOther: a file that names no zone is read under this zone's name). */
   function read({ focus = false } = {}) {
     C.zone = readOther(C.files, { zone, typed: C.originInput, parse });
+    C.readWith = zone.origin || null;
     C.cache = null;
     C.filter = 'diff';
     render();
@@ -428,7 +436,7 @@ export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact, 
   }
 
   function forgetOther() {
-    Object.assign(C, { files: null, zone: null, originInput: '', cache: null, filter: 'diff' });
+    Object.assign(C, { files: null, zone: null, originInput: '', cache: null, filter: 'diff', readWith: null });
     toast(t('zcmp.forgotten'), { type: 'info' });
     render();
     const drop = box.querySelector('.zcmp-drop');

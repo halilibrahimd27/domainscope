@@ -1318,6 +1318,35 @@ async function main() {
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'forgotten' });
     });
 
+    await run.step('Compare: a new first zone reads the kept second file again — a one-record batch then takes the new zone\'s name', async () => {
+      const pasteZone = async (value) => {
+        await page.evaluate((v) => {
+          document.querySelectorAll('.zone-import-folded, .zone-paste').forEach((d) => { d.open = true; });
+          const el = document.querySelector('[data-role="zone-paste"]');
+          const ta = el.tagName === 'TEXTAREA' ? el : el.querySelector('textarea');
+          ta.value = v;
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+        }, value);
+        await page.click('[data-action="zone-paste-import"]');
+      };
+      const title = () => page.evaluate(() => document.querySelector('.zcmp-other-title')?.textContent.trim() || '');
+      await pasteZone('$ORIGIN example.org.\n$TTL 300\n@ 300 IN A 192.0.2.10\nwww 300 IN A 192.0.2.10\n');
+      await page.waitFor(() => document.querySelector('.zone-summary-title')?.textContent === 'Zone example.org', { message: 'example.org' });
+      await clickTab(page, 'compare');
+      await page.waitFor(() => !!document.querySelector('.zcmp-drop'), { message: 'the second zone\'s importer', timeout: 10000 });
+      await pasteOther(JSON.stringify({ Changes: [{ Action: 'UPSERT', ResourceRecordSet: { Name: 'www.example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.99' }] } }] }));
+      await page.waitFor(() => document.querySelector('.zcmp-other-title')?.textContent.trim() === 'Compared with www.example.com', { message: 'no name of example.org fits: the guess stays' });
+      await pasteZone('$ORIGIN example.com.\n$TTL 300\n@ 300 IN A 192.0.2.10\nwww 300 IN A 192.0.2.10\n');
+      await page.waitFor(() => document.querySelector('.zone-summary-title')?.textContent === 'Zone example.com', { message: 'example.com' });
+      await clickTab(page, 'compare');
+      await page.waitFor(() => !!document.querySelector('[data-role="zcmp-results"]'), { message: 'the comparison kept', timeout: 10000 });
+      assertEqual(await title(), 'Compared with example.com', 'read again under the new first zone\'s name');
+      const rows = await cmpRows();
+      assert(rows.includes('changed www A') && !rows.some((r) => r.includes(' @ ')), `www compared with www, never with the apex: ${rows}`);
+      await page.click('[data-action="zone-forget"]');
+      await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'forgotten' });
+    });
+
     await run.step('"Delete all local data" drops a loaded zone; a reload forgets it', async () => {
       await page.click('[data-sample="cloudflare"]');
       await page.waitFor(() => !!document.querySelector('.zone-summary'));

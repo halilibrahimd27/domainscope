@@ -1214,7 +1214,7 @@ function freshSession() {
     parity: freshParity(),
     // The Compare tab (ui/zone-tools.js): the second zone, in memory only like the first. A new
     // import or analysis of the first keeps it (the comparison is made again); Forget drops both.
-    compare: { files: null, zone: null, originInput: '', options: null, filter: 'diff', includeOrigins: false, cache: null },
+    compare: { files: null, zone: null, readWith: null, originInput: '', options: null, filter: 'diff', includeOrigins: false, cache: null },
     // The Convert tab: the chosen format and the files made for this zone.
     convert: { target: 'bind', cache: null }
   };

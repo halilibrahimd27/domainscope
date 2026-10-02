@@ -374,6 +374,9 @@ function createCollector(text, lines) {
 
   return {
     lines,
+    get warned() {
+      return warnings.length;
+    },
     warn(line, code, textOverride, detail, reason) {
       const w = { line, code, text: textOverride !== undefined ? String(textOverride).slice(0, 200) : lineText(line) };
       if (detail !== undefined) w.detail = String(detail).slice(0, 200);
@@ -1259,7 +1262,9 @@ function detectCsv(lines) {
     if (cells.some((c) => c.length > 40 || c.split(/\s+/).length > 4 || /[:.!?]$/.test(c)
       || !/^[\p{L}\p{N} _\-./()#]*$/u.test(c))) continue;
     const columns = classifyHeader(cells);
-    if (!columns.some((c) => c.role === 'ip')) continue;
+    // an IP column, or a name and a topology one (`name,where,terminates_tls`, as the CLI reads it)
+    const has = (role) => columns.some((c) => c.role === role);
+    if (!has('ip') && !(has('name') && has('topology'))) continue;
     // At least one following data line must use the same delimiter.
     const following = lines.slice(i + 1, i + 8).filter((l) => l.trim() && !/^(#|\/\/)/.test(l.trim()));
     if (following.length && !following.some((l) => countOutsideQuotes(l, best.d) > 0)) continue;
@@ -1466,11 +1471,13 @@ function parseLines(lines, ctx) {
 
     line = stripInlineComment(line).replace(/^(?:[-*\u2022+]|\d{1,4}[.)])\s+/u, '');
     if (!line) continue;
+    const warned = ctx.warned;
     const { rest, found, near } = splitTopology(line);
     for (const n of near) ctx.warn(lineNo, 'TOPOLOGY', undefined, n, 'nearMiss');
     const topology = lineTopology(ctx, found, lineNo);
     const added = rest.trim() ? parseHostLine(rest.trim(), lineNo, group, ctx, topology) : false;
-    if (!added && found.length) ctx.warn(lineNo, 'TOPOLOGY', undefined, found[0].key, 'noServer');
+    // keys without a server, when nothing else was said about the line
+    if (!added && found.length && ctx.warned === warned) ctx.warn(lineNo, 'TOPOLOGY', undefined, found[0].key, 'noServer');
   }
 }
 

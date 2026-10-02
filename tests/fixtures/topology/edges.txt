@@ -1,0 +1,10 @@
+# Keys at the edges of the line format, read alike by lib/inventory.js and the CLI:
+# an address-only line gives its keys to the named server with that address (either order),
+# and a line with keys but no server is noServer only when nothing else was said about it.
+10.0.0.81 terminates_tls=no
+web21 10.0.0.81
+web22 10.0.0.82
+10.0.0.82 ports=8443
+ports=443
+ports=99999
+backend=web21 tls_ports=443

@@ -877,6 +877,13 @@ test('back-compat: a JSON / YAML `ports` key (Shodan, Ansible host vars) parses 
   assert.deepEqual(parseInventory('name,ip,TLS Ports\nweb01,10.0.0.1,8443').servers[0].tlsPorts, [8443]);
 });
 
+test('topology keys on a line with no server: noServer only when nothing else was said about the line', () => {
+  const said = (text) => parseInventory(text).warnings.map((w) => [w.line, w.code, w.reason ?? null]);
+  assert.deepEqual(said('web01.example.net:8443 ports=443'), [[1, 'PARSE', 'hostPort']], 'a host name with a port: PARSE says it');
+  assert.deepEqual(said('[web] ports=443\nweb01 10.0.0.1'), [[1, 'PARSE', null]]);
+  assert.deepEqual(said('ports=443'), [[1, 'TOPOLOGY', 'noServer']]);
+});
+
 test('topology keys: a key a letter off is never read silently; a CSV header too', () => {
   const r = parseInventory('bad07 10.0.0.56 backend=pool01 port=8443 vips=203.0.113.71 terminate_tls=no terminates.tls=no');
   assert.deepEqual(r.warnings.map((w) => [w.reason, w.detail]), [

@@ -1904,6 +1904,7 @@ class _InventoryBuilder:
         self.allow_large = allow_large
         self.servers = {}  # type: Dict[str, Server]
         self.warnings = []  # type: List[InventoryWarning]
+        self.unnamed = set()  # type: Set[str]  # servers an address-only line named
 
     def warn(self, line: int, code: str, text: str, reason: str = '') -> None:
         """Record an :class:`InventoryWarning` for ``line``."""
@@ -1976,12 +1977,15 @@ class _InventoryBuilder:
                 return None
             self.warn(line, 'NO_IP', name or '')
             return None
-        name = (name or '').strip() or (usable[0][0] if usable else hosts[0][0])
+        given = (name or '').strip()
+        name = given or (usable[0][0] if usable else hosts[0][0])
         key = name.lower()
         server = self.servers.get(key)
         if server is None:
             server = Server(name=name, line=line, source=self.source)
             self.servers[key] = server
+            if not given:
+                self.unnamed.add(key)
         for ip, port in usable:
             server.add_ip(ip, port)
         for group in groups:
@@ -2097,6 +2101,41 @@ class _InventoryBuilder:
                 touched.append(server)
         return touched
 
+    def merge_unnamed(self) -> None:
+        """An address-only line with topology keys whose addresses all belong to named servers
+        (``10.0.0.1 terminates_tls=no`` next to ``web01 10.0.0.1``, in either order) gives its
+        keys and ports to those servers, as lib/inventory.js does, rather than standing as a
+        second server with a DUPLICATE_IP warning. Without keys it stays as before."""
+        owners = {}  # type: Dict[str, List[Server]]
+        for key, server in self.servers.items():
+            if key not in self.unnamed:
+                for ip in server.ips:
+                    owners.setdefault(ip, []).append(server)
+        for key in sorted(self.unnamed, key=lambda k: self.servers[k].line):
+            server = self.servers[key]
+            if not server.has_topology() or not server.ips or server.hostnames \
+                    or not all(ip in owners for ip in server.ips):
+                continue
+            for owner in {id(o): o for ip in server.ips for o in owners[ip]}.values():
+                for ip in server.ips:
+                    if ip in owner.ips:
+                        for port in server.port_spec(ip):
+                            owner.add_ip(ip, port)
+                if server.terminates_tls is not None:
+                    if owner.terminates_tls is not None and owner.terminates_tls != server.terminates_tls:
+                        self.warn(server.line, 'TOPOLOGY', _conflict_text(
+                            'yes' if server.terminates_tls else 'no', owner.name, owner.terminates_tls),
+                            'conflict')
+                        owner.terminates_tls = True
+                    else:
+                        owner.terminates_tls = server.terminates_tls
+                for mine, theirs in ((server.tls_ports, owner.tls_ports), (server.vips, owner.vips),
+                                     (server.nats, owner.nats)):
+                    theirs.extend(item for item in mine if item not in theirs)
+                owner.backend_refs.extend(server.backend_refs)
+            del self.servers[key]
+        self.unnamed = set()
+
     def result(self, line_count: int, link: bool = True) -> Inventory:
         """Finish: resolve ``backends=`` (unless ``link`` is False: :func:`load_targets` does
         it over every source), flag endpoints shared by several servers and compute stats.
@@ -2106,6 +2145,7 @@ class _InventoryBuilder:
         ``web02 203.0.113.10:9443``, a NAT forwarding each port to another machine) is no
         duplicate, as in lib/inventory.js. A shared address in ``vip=`` is none either.
         """
+        self.merge_unnamed()
         servers = list(self.servers.values())
         if link:
             self.warnings.extend(link_backends(servers))
@@ -2469,6 +2509,7 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
                                  'groupVars')
             continue
         # Topology keys first: their values hold commas (ports=443,8443), which split a line.
+        said = len(builder.warnings)
         line, found, near = _split_topology(line)
         for text in near:
             builder.warn(number, 'TOPOLOGY', text, 'nearMiss')
@@ -2554,7 +2595,7 @@ def _parse_lines(lines: List[str], builder: _InventoryBuilder) -> None:
             touched, added = builder.add_hostname(name, number, groups, line), True
         for server in touched:
             builder.apply_topology(server, topology)
-        if found and not added:
+        if found and not added and len(builder.warnings) == said:  # nothing else said about it
             builder.warn(number, 'TOPOLOGY', '%s: no server on this line - write the keys after '
                          'the server\'s name and address' % ', '.join(k for k, _ in found),
                          'noServer')

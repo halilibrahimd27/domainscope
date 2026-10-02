@@ -924,6 +924,9 @@ export function mount(container, ctx) {
       r.unknown ? Badge(t('pf.policy.unknown', { count: r.unknown })) : null);
   }
 
+  /** A text with its ISO dates kept on one line (a narrow card would break one at its hyphens). */
+  const keepDates = (text) => String(text).split(/(\d{4}-\d{2}-\d{2})/).map((part, i) => (i % 2 ? h('span', { class: 'pf-nowrap' }, part) : part)).filter((x) => x !== '');
+
   /** Sort values: what a column orders by (empty last in both directions). */
   const sortOf = {
     expiry: (r) => (r.facts.registration.state === 'ok' && Number.isFinite(r.facts.registration.daysLeft) ? r.facts.registration.daysLeft : null),
@@ -1566,7 +1569,7 @@ export function mount(container, ctx) {
 
   function matrixColumns() {
     const cols = [
-      { key: 'domain', label: t('pf.col.domain'), sortable: true, sortValue: (r) => r.domain, render: (r) => h('strong', { class: 'mono pf-break' }, r.domain) },
+      { key: 'domain', label: t('pf.col.domain'), sortable: true, sortValue: (r) => r.domain, render: (r) => h('strong', { class: 'mono pf-break' }, r.domain), className: 'pf-mx-domain' },
       {
         key: 'result', label: t('pf.matrix.result'), sortable: true, sortValue: (r) => -(r.fail * 100 + r.unknown),
         render: (r) => h('span', { class: 'pf-cell', dataset: { result: r.fail ? 'fail' : r.unknown ? 'unknown' : 'pass' } },
@@ -1589,7 +1592,7 @@ export function mount(container, ctx) {
         const variant = c.status === 'pass' ? 'ok' : c.status === 'fail' ? 'error' : 'neutral';
         return h('span', { class: 'pf-cell', dataset: { status: c.status, rule: c.id } },
           Badge(t(`pol.st.${c.status}`), { variant, icon: c.status === 'pass' ? 'check' : c.status === 'fail' ? 'x-circle' : 'help' }),
-          h('span', { class: 'text-xs pf-evidence' }, evidenceText(c, t)));
+          h('span', { class: 'text-xs pf-evidence' }, keepDates(evidenceText(c, t))));
       }
     }));
     return cols;

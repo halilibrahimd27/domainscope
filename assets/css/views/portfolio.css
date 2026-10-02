@@ -193,6 +193,10 @@
   overflow-wrap: anywhere;
 }
 
+.pf-nowrap {
+  white-space: nowrap;
+}
+
 .pf-expiry {
   white-space: nowrap;
 }
@@ -432,6 +436,26 @@
 
   .pf-table .dt-table td:has(> .dt-null) {
     display: none;
+  }
+
+  /* the domain heads its card: the whole width, no label, its badges in a row under it */
+  .pf-table .dt-table td.pf-col-domain,
+  .pf-matrix .dt-table td.pf-mx-domain {
+    display: block;
+    padding-bottom: 2px;
+  }
+
+  .pf-table .dt-table td.pf-col-domain::before,
+  .pf-matrix .dt-table td.pf-mx-domain::before {
+    content: none;
+  }
+
+  .pf-table td.pf-col-domain .pf-cell {
+    flex-direction: row;
+  }
+
+  .pf-table td.pf-col-domain .pf-domain {
+    flex-basis: 100%;
   }
 
   /* a badge in a card wraps rather than widening it (and grows with its lines) */

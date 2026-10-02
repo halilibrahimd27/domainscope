@@ -480,7 +480,9 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  *   resolver of their own (a vantage with `resolver`: mainland China through AliDNS) take another
  *   branch while every other answer takes the same one (www.example.com → a CloudFront
  *   distribution for the world, → *.w.kunluncan.com, Alibaba Cloud CDN, for mainland China: the
- *   name's DNS answers China's resolvers from a line of its own; listed in `geoSplits`) and the
+ *   name's DNS answers China's resolvers from a line of its own; listed in `geoSplits`; their
+ *   edges must be the CDN their last CNAME names, and the control — that resolver asked on behalf
+ *   of a subnet outside the region — must not take their branch too) and the
  *   resolvers do not all agree anyway; no NXDOMAIN / NODATA / rcode / private address
  *   anywhere, except empty answers whose chain enters the provider through the entry name the
  *   addresses come through while the resolvers agree (only some locations get its dual-stack
@@ -493,7 +495,10 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  *   that differs only between locations (GeoDNS by CNAME, e.g. geolocation records) is GeoDNS
  *   too, and so are empty answers through another entry name than the addresses', and edges
  *   only locations asked through a resolver of their own get next to the direct addresses
- *   everyone else gets (a CDN in mainland China in front of an origin the world reaches directly);
+ *   everyone else gets (a CDN in mainland China in front of an origin the world reaches directly;
+ *   the CDN their last CNAME names, which the control does not get). A branch only those
+ *   locations take is GeoDNS only with a `geoSplits` entry, even when the resolvers agree (an
+ *   anycast CDN gives them all the same answer): one without (`regionalOnly`) stays a finding;
  * - 'differ': everything else; `findings` say which part looks like propagation or a
  *   misconfiguration, and `designPart` whether the rest are edge differences.
  * An answer that only filtering resolvers (resolver `filtering`, not ECS locations) return
@@ -512,22 +517,29 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  * CNAME) ('cname') and `operators` ('cname', 'operators': the managed operators of the answers
  * involved when they enter different ones — a move between providers — else []), `byLocation`
  * ('cname': its `geoSplits` entry when only locations asked through a resolver of their own take
- * another branch, else null). NXDOMAIN and NODATA are findings only next to another kind of
- * answer, not next to failures alone. `geoSplits` (any state): `{ owner, targets, members }` per
- * such CNAME — the names those locations get instead (null: address records) and their sources.
+ * another branch, else null), `regionalOnly` ('cname', 'operators': only those locations take
+ * another branch, yet with no `geoSplits` entry — addresses with no name in front, edges that are
+ * not the CDN their last CNAME names, or the control on their branch too; 'nodata', when set: only
+ * those locations get the empty answer, and it is not their CDN's by the same rules). NXDOMAIN
+ * and NODATA are findings only next to another kind of answer, not next to failures alone.
+ * `geoSplits` (any state): `{ owner, targets, members, line }` per such CNAME — the names those
+ * locations get instead (null: address records), their sources and whether the control confirms
+ * the region's line (true) or could not tell (null).
  *
  * @param {Array<{ key?: string, kind?: 'resolver'|'geo', values?: string[], filtered?: boolean,
  *   pending?: boolean, resolver?: { filtering?: string|null }|null, vantage?: { resolver?: string }|null }>} items
  *   resolver / geo results (checkPropagation items or streamed rows; 'geo:' keys or kind 'geo' mark
  *   locations, a `vantage` with its own `resolver` one asked through a resolver of its own)
- * @param {{ type?: string|number, ipInfo?: Map<string, object>|Record<string, object>|null }} [opts]
- *   `ipInfo`: already fetched ipintel IpInfo (or `{ ptr, asn, asns }`) per canonical address
+ * @param {{ type?: string|number, ipInfo?: Map<string, object>|Record<string, object>|null,
+ *   controls?: Array<{ resolver: string|{ id: string }, values: string[] }>|null }} [opts]
+ *   `ipInfo`: already fetched ipintel IpInfo (or `{ ptr, asn, asns }`) per canonical address;
+ *   `controls`: a regional resolver's answer on behalf of a subnet outside its region (checkPropagation `controls`)
  * @returns {{ state: 'none'|'unresolved'|'agree'|'by-design'|'geo'|'differ', type: string,
  *   groups: Array<{ key: string, values: string[], members: string[], status: 'answer'|'nxdomain'|'nodata'|'rcode',
  *     chain: string[], addresses: string[], operators: object[], managed: boolean, rewritten: boolean }>,
  *   operators: object[], findings: object[], resolversAgree: boolean, designPart: boolean, multiOperator: boolean,
  *   noRecords: boolean, steering: Array<{ owner: string|null, targets: string[] }>,
- *   geoSplits: Array<{ owner: string|null, targets: Array<string|null>, members: string[] }>,
+ *   geoSplits: Array<{ owner: string|null, targets: Array<string|null>, members: string[], line: true|null }>,
  *   rewritten: string[], rewriteTargets: string[] }}
  *   Operators: `{ id, name, kind (netinfo kind), provider, via: 'ip'|'cname'|'ptr'|'asn'|null, reasonKey,
  *   managed, steering }` — of a group's addresses, or for a NODATA group of the provider its CNAME
@@ -665,9 +677,9 @@ function judgeGroups(groups, address, controls = new Map()) {
       steering = steered;
       for (const code of ['cname', 'operators']) {
         for (const c of conflicts.filter((x) => x.code === code)) {
-          const extra = { operators: c.move ? operatorsOf(c.groups) : [] };
           const split = code === 'cname' ? locationSplit(c, controls) : null;
           if (split) geoSplits.push(split);
+          const extra = { operators: c.move ? operatorsOf(c.groups) : [], regionalOnly: !split && regionalBranch(c) };
           add(code, c.groups, code === 'cname' ? { owner: c.owner, targets: c.targets, ...extra, byLocation: split } : extra);
         }
       }
@@ -683,6 +695,13 @@ function judgeGroups(groups, address, controls = new Map()) {
   const resolversAgree = groups.filter((g) => !g.geo).length <= 1;
   const chainFinding = (f) => f.code === 'cname' || f.code === 'operators';
   const groupOf = new Map(groups.map((g) => [g.key, g]));
+  // An empty answer only the locations asked through a resolver of their own get (an IPv4-only
+  // mainland CDN name for AAAA) is their CDN's under the rules their edges follow (below), or it
+  // is marked `regionalOnly` like a branch without a split.
+  for (const f of findings.filter((x) => x.code === 'nodata')) {
+    const list = f.groups.map((k) => groupOf.get(k));
+    if (list.every((g) => g.regional) && list.some((g) => !ownEdge(g) || controlEnters(g, controls))) f.regionalOnly = true;
+  }
   const answerEntries = new Set(answers.map((g) => entryOf(g)?.dest).filter(Boolean));
   // Empty answers whose chains enter a provider (an IPv4-only edge name) next to addresses other
   // locations get through a name of it (Reddit's dualstack.x.map.fastly.net): GeoDNS by CNAME.
@@ -696,14 +715,17 @@ function judgeGroups(groups, address, controls = new Map()) {
   // China's resolvers with a CDN there, a line of its own, and the rest of the world with another
   // one), and — while the resolvers agree — direct addresses next to edges only those locations
   // get (a CDN in mainland China in front of an origin the rest of the world reaches directly).
-  // Those edges must be reached through the CDN's CNAME, as every mainland CDN is (an address in
-  // a CDN's range with no name in front, only there, is the shape of a forged answer), and the
-  // control must not get them too (then they are the resolver's own answer, not the line's).
+  // Those edges must be the CDN their last CNAME names, as every mainland CDN's are (an address
+  // in a CDN's range with no name in front, only there, is the shape of a forged answer, and so
+  // is another operator's address or a name nobody operates behind it), and the control must not
+  // get them too (then they are the resolver's own answer, not the line's). A branch only those
+  // locations take with no such split (`regionalOnly`) stays serious even when the resolvers
+  // agree: an anycast CDN gives every resolver the same answer, so their agreement says nothing
+  // about the region.
   const edgeGroups = answers.filter((g) => g.operators.some((op) => op.managed));
-  const edgesOnlyRegional = edgeGroups.length > 0 && edgeGroups.every((g) => g.regional
-    && g.chain.some((n) => matchProviderByCname(n)) && !controlEnters(g, controls));
+  const edgesOnlyRegional = edgeGroups.length > 0 && edgeGroups.every((g) => g.regional && ownEdge(g) && !controlEnters(g, controls));
   const locationOnly = (f) => !!f.byLocation
-    || (resolversAgree && (chainFinding(f) || edgeNodata(f) || (f.code === 'mixed' && edgesOnlyRegional)));
+    || (resolversAgree && !f.regionalOnly && (chainFinding(f) || edgeNodata(f) || (f.code === 'mixed' && edgesOnlyRegional)));
   const serious = findings.filter((f) => f.code !== 'direct' && f.code !== 'records' && !locationOnly(f));
   const edges = address && judged.length > 0 && (noRecords ? judged.every((g) => entryOf(g)) : judged.every((g) => g.managed));
   // Edges everywhere with such a branch on the way are by design too — unless the resolvers
@@ -717,6 +739,31 @@ function judgeGroups(groups, address, controls = new Map()) {
   return {
     state, operators, findings, resolversAgree, managed: answers.filter((g) => g.managed).length, noRecords, steering, geoSplits
   };
+}
+
+/**
+ * Is a regional answer's edge the CDN its last CNAME names (…w.kunluncan.com → an Alibaba Cloud
+ * CDN edge)? A mainland CDN is always reached through a name of its own last. Another operator's
+ * address behind that name, a name nobody operates after it, or DNS-level steering (a Traffic
+ * Manager profile) is not one.
+ */
+function ownEdge(g) {
+  const last = g.chain.length ? matchProviderByCname(g.chain[g.chain.length - 1]) : null;
+  const managed = g.operators.filter((op) => op.managed);
+  return !!last && !last.dnsOnly && managed.length > 0 && managed.every((op) => op.id === last.id);
+}
+
+/**
+ * Does only a location asked through a resolver of its own take another branch in a chain
+ * conflict — every other answer involved takes one side there (the same name at that depth, or
+ * for 'operators' the same operator)?
+ */
+function regionalBranch(c) {
+  const side = (g) => {
+    const x = c.code === 'cname' ? [...g.chain, null][c.depth] : entryOf(g)?.id;
+    return typeof x === 'string' ? x.replace(DUALSTACK_RE, '') : x;
+  };
+  return c.groups.some((g) => g.regional) && new Set(c.groups.filter((g) => !g.regional).map(side)).size <= 1;
 }
 
 /** A control's answer when it is one (addresses or a chain): null for a failure, NXDOMAIN or NODATA. */
@@ -740,9 +787,10 @@ function controlEnters(g, controls) {
  * control — the same resolver asked on behalf of a subnet outside the region — lands on the other
  * answers' branch (true: the region's line) or could not tell (null: no control, or another
  * branch). Null when the other answers take different branches too, when those locations get
- * addresses there instead of a name, or when the control gets their branch as well: then it is
- * that resolver's own answer whatever the subnet (an older one it still holds, or a line by the
- * resolver's own address), not the region's.
+ * addresses there instead of a name, when their edges are not the CDN their last CNAME names
+ * (ownEdge), or when the control gets their branch as well: then it is that resolver's own answer
+ * whatever the subnet (an older one it still holds, or a line by the resolver's own address), not
+ * the region's.
  */
 function locationSplit(c, controls) {
   const sideOf = (g) => [...g.chain, null][c.depth];
@@ -752,7 +800,7 @@ function locationSplit(c, controls) {
   }
   if (home.length > 1) return null;
   const away = c.groups.filter((g) => g.regional && !home.some((x) => sameName(x, sideOf(g))));
-  if (!away.length || away.some((g) => typeof sideOf(g) !== 'string')) return null;
+  if (!away.length || away.some((g) => typeof sideOf(g) !== 'string' || !ownEdge(g))) return null;
   const targets = uniqueList(away.map(sideOf));
   let line = home.length > 0;
   for (const id of new Set(away.flatMap((g) => [...g.via]))) {

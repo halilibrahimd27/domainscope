@@ -578,6 +578,73 @@ describe('propagationVerdict', () => {
     assert.deepEqual([viaGoogle.state, codes(viaGoogle)], ['differ', ['mixed']]);
   });
 
+  test('mainland China: when the resolvers agree (anycast CDNs), a branch only the China rows take still needs the control', () => {
+    const china = (id, ...values) => ({ key: `geo:${id}`, kind: 'geo', vantage: { id, resolver: 'alidns' }, values });
+    const ALI = 'www.example.com.w.kunluncan.com';
+    const CF = 'www.example.com.cdn.cloudflare.net';
+    // Cloudflare anycast: every resolver and Google location gets the same address through its CNAME.
+    const world = [item('resolver:cloudflare', '104.16.1.1', ...cname(CF)), item('resolver:google', '104.16.1.1', ...cname(CF)), item('geo:de-ham', '104.16.1.1', ...cname(CF))];
+    const cn = [china('cn-bjs-cu', '198.51.100.17', ...cname(ALI)), china('cn-sha-ct', '198.51.100.18', ...cname(ALI))];
+    const control = (values) => ({ controls: [{ resolver: 'alidns', values }] });
+    // The control gets China's branch too: an older answer AliDNS still holds (a move to Cloudflare), never "GeoDNS".
+    const stale = propagationVerdict([...world, ...cn], control(['198.51.100.17', `CNAME ${ALI}`]));
+    assert.equal(stale.resolversAgree, true);
+    assert.deepEqual([stale.state, codes(stale), stale.findings[0].regionalOnly, ids(stale.findings[0].operators)],
+      ['differ', ['cname'], true, ['cloudflare', 'alibaba-cdn']]);
+    // The control lands on the world's branch: the mainland line, GeoDNS as before; no control: the same, unsure.
+    const line = propagationVerdict([...world, ...cn], control(['104.16.1.1', `CNAME ${CF}`]));
+    assert.deepEqual([line.state, line.findings, line.geoSplits.map((s) => s.line)], ['geo', [], [true]]);
+    const unsure = propagationVerdict([...world, ...cn]);
+    assert.deepEqual([unsure.state, unsure.geoSplits.map((s) => s.line)], ['geo', [null]]);
+    // A bare CDN address only in China, no name in front — the shape of a forged answer — whatever the control says.
+    const fastly = [item('resolver:cloudflare', '151.101.1.1'), item('resolver:google', '151.101.1.1'), item('geo:de-ham', '151.101.1.1')];
+    for (const ctl of [null, ['151.101.1.1'], ['104.16.5.5']]) {
+      const bare = propagationVerdict([...fastly, china('cn-bjs-cu', '104.16.5.5'), china('cn-sha-ct', '104.16.5.5')], ctl ? control(ctl) : {});
+      assert.deepEqual([bare.state, codes(bare), bare.findings[0].regionalOnly], ['differ', ['operators'], true], `bare address, control ${ctl}`);
+    }
+    const behindName = propagationVerdict([...world, china('cn-bjs-cu', '13.32.9.9'), china('cn-sha-ct', '13.32.9.9')], control(['104.16.1.1', `CNAME ${CF}`]));
+    assert.deepEqual([behindName.state, codes(behindName)], ['differ', ['cname']], 'a bare CloudFront address where the world has a CNAME');
+  });
+
+  test('mainland China: an empty AAAA answer only the China rows get through a CDN name needs the control too', () => {
+    const china = (id, ...values) => ({ key: `geo:${id}`, kind: 'geo', vantage: { id, resolver: 'alidns' }, values });
+    const ALI = 'www.example.com.w.kunluncan.com';
+    const CF = 'www.example.com.cdn.cloudflare.net';
+    const world = [item('resolver:cloudflare', '2606:4700::1', ...cname(CF)), item('resolver:google', '2606:4700::1', ...cname(CF)), item('geo:de-ham', '2606:4700::1', ...cname(CF))];
+    // Alibaba Cloud CDN's name has no AAAA: the China rows get an empty answer through it.
+    const cn = [china('cn-bjs-cu', ...cname(ALI)), china('cn-sha-ct', ...cname(ALI))];
+    const verdict = (controls) => propagationVerdict([...world, ...cn], { type: 'AAAA', ...(controls ? { controls: [{ resolver: 'alidns', values: controls }] } : {}) });
+    assert.deepEqual([verdict(null).state, verdict(['2606:4700::1', `CNAME ${CF}`]).state], ['geo', 'geo'], 'no control, or the world\'s answer');
+    const stale = verdict([`CNAME ${ALI}`]);
+    assert.deepEqual([stale.state, codes(stale)], ['differ', ['nodata']], 'the control gets the same empty answer: AliDNS\'s own');
+    // A name nobody operates after the CDN's: not the mainland CDN's own empty answer.
+    const other = propagationVerdict([...world, china('cn-bjs-cu', ...cname(ALI, 'edge.example.net'))], { type: 'AAAA' });
+    assert.deepEqual([other.state, codes(other)], ['differ', ['nodata']]);
+  });
+
+  test('mainland China: their CDN is the one their last CNAME names', () => {
+    const china = (id, ...values) => ({ key: `geo:${id}`, kind: 'geo', vantage: { id, resolver: 'alidns' }, values });
+    const ALI = 'www.example.com.w.kunluncan.com';
+    const D = 'd111111abcdef8.cloudfront.net';
+    const world = [item('resolver:cloudflare', CF_A[0], ...cname(D)), item('resolver:google', CF_A[1], ...cname(D)), item('geo:de-ham', CF_A[2], ...cname(D))];
+    const control = { controls: [{ resolver: 'alidns', values: [CF_A[3], `CNAME ${D}`] }] };
+    // An Alibaba name, then a Cloudflare address; an Alibaba name, then another name nobody operates.
+    for (const values of [['104.16.1.1', ...cname(ALI)], ['198.51.100.66', ...cname(ALI, 'edge.example.net')]]) {
+      const v = propagationVerdict([...world, china('cn-bjs-cu', ...values)], control);
+      assert.deepEqual([v.state, v.geoSplits], ['differ', []], values.join(' '));
+    }
+    // The world reaches the origin directly; only China gets an "edge" whose last name is no CDN's or another operator's.
+    const origin = [item('resolver:cloudflare', '192.0.2.10'), item('resolver:google', '192.0.2.10'), item('geo:de-ham', '192.0.2.10')];
+    for (const values of [['198.51.100.66', ...cname(ALI, 'edge.example.net')], ['104.16.1.1', ...cname('www.example.com.trafficmanager.net')],
+      ['104.16.1.1', ...cname('example.github.io')]]) {
+      const v = propagationVerdict([...origin, china('cn-bjs-cu', ...values)]);
+      assert.deepEqual([v.state, codes(v)], ['differ', ['mixed']], values.join(' '));
+    }
+    // The mainland CDN's own name last: its edge.
+    const v = propagationVerdict([...origin, china('cn-bjs-cu', '198.51.100.17', ...cname(ALI))]);
+    assert.deepEqual([v.state, v.findings], ['geo', []]);
+  });
+
   test('mainland China: an edge only the China rows get counts as their CDN only when reached through its CNAME', () => {
     const china = (id, ...values) => ({ key: `geo:${id}`, kind: 'geo', vantage: { id, resolver: 'alidns' }, values });
     const origin = [item('resolver:cloudflare', '192.0.2.10'), item('resolver:google', '192.0.2.10'), item('geo:de-ham', '192.0.2.10')];

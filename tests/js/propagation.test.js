@@ -411,6 +411,22 @@ describe('checkPropagation: the mainland China rows (AliDNS)', () => {
     assert.deepEqual(r.controls.map((c) => c.values), [['SERVFAIL']]);
   });
 
+  test('the control is asked only for A and AAAA, the types whose verdict reads it', async () => {
+    for (const [type, controlled] of [['A', true], ['AAAA', true], ['CNAME', false], ['HTTPS', false]]) {
+      const { fetchImpl, calls } = mockFetch(({ name }) => ({ answers: [{ name, type: 'CNAME', ttl: 60, data: 'edge.example.net' }] }));
+      const r = await checkPropagation('www.example.com', type, { dns: client(fetchImpl), resolvers: [], vantages: CHINA });
+      assert.equal(calls.filter((c) => c.json && c.ecs === CONTROL.subnet).length, controlled ? 1 : 0, type);
+      assert.equal(r.controls.length, controlled ? 1 : 0, type);
+      assert.equal(calls.filter((c) => c.json).length, controlled ? 4 : 3, `${type}: the three China rows are asked either way`);
+    }
+  });
+
+  test('rows not asked leave the locations\' consistency alone', async () => {
+    const { fetchImpl } = mockFetch(({ name }) => ({ answers: txt(name, TXT) }));
+    const r = await checkPropagation('example.com', 'TXT', { dns: client(fetchImpl), resolvers: ['cloudflare'], vantages: ['de-ham', 'tr-ist-tt', ...CHINA] });
+    assert.deepEqual([r.consistent, r.resolversConsistent, r.geoConsistent], [true, true, true]);
+  });
+
   test('a SERVFAIL from AliDNS is never taken for a DNSSEC failure: it does not validate', async () => {
     const servfail = async (failing) => {
       const subnets = failing.map((id) => GEO_VANTAGES.find((v) => v.id === id).subnet);

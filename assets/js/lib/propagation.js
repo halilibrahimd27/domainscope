@@ -822,7 +822,9 @@ function locationSplit(c, controls) {
  * and `geoResults[i] = { vantage, resolver, response, values, scopePrefix, key, filtered, addresses }`
  * where `resolver` / `vantage` are the definitions from resolvers.js,
  * `key` is 'resolver:<id>' / 'geo:<id>' and `addresses` (extension) the
- * canonical A/AAAA IPs of the answer. Both arrays keep input order.
+ * canonical A/AAAA IPs of the answer. Both arrays keep input order. A location whose resolver
+ * does not take the type (resolvers.js `types`) is not asked: `notAsked: true`, no values, and it
+ * is left out of the groups, the consistency and the verdict.
  * `onResult` streams `{ kind, key, response, values, addresses, resolver?, vantage?, scopePrefix?, filtered }`
  * as each answer arrives.
  *
@@ -830,11 +832,14 @@ function locationSplit(c, controls) {
  * carries extensions `error` (all members failed) and `filtered`.
  * `consistent` is true when all usable answers agree; transport errors and
  * filtered (blocked) answers are ignored, but when every result failed it is false.
- * Extensions: `resolversConsistent`, `geoConsistent`, `name`, `type`,
+ * Extensions: `resolversConsistent`, `geoConsistent` (rows not asked left out), `name`, `type`,
  * `startedAt`, `finishedAt`, `addresses`: every IP seen worldwide as
  * `{ ip, version, provider (netinfo provider|null), private, members: keys }`,
  * most widely returned first — the "which IPs does this name have around the
- * world, and whose are they" view — and `verdict` (propagationVerdict of all
+ * world, and whose are they" view — `controls` (for A / AAAA, once per resolver a vantage
+ * names with a `control`: its answer on behalf of that vantage's subnet outside the region,
+ * `{ kind: 'control', key: 'control:<id>', resolver, vantage, response, values, addresses }`,
+ * streamed too, never a row) and `verdict` (propagationVerdict of all
  * results): different by design (CDN / GeoDNS edges) or propagation / a mistake.
  *
  * @param {string} name
@@ -905,7 +910,8 @@ export async function checkPropagation(name, type = 'A', {
     }
     // Once per such resolver, the same question on behalf of a subnet outside its region (the
     // control): a branch only its rows take is the region's line when the control is the world's.
-    const control = vantage.resolver && via.control ? getVantage(via.control) : null;
+    // Only for the address types: the verdict reads no other.
+    const control = vantage.resolver && via.control && ADDRESS_TYPES.has(qtype) ? getVantage(via.control) : null;
     if (control && !controlled.has(via.id)) {
       controlled.add(via.id);
       controlTasks.push((async () => {
@@ -972,7 +978,7 @@ export async function checkPropagation(name, type = 'A', {
     groups,
     consistent: consistentOver(all),
     resolversConsistent: consistentOver(resolverResults),
-    geoConsistent: consistentOver(geoResults),
+    geoConsistent: consistentOver(geoResults.filter((item) => !item.notAsked)),
     addresses: summarizeAddresses(all),
     controls,
     verdict: propagationVerdict(all, { type: qtype, controls }),

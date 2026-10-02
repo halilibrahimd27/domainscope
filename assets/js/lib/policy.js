@@ -13,7 +13,8 @@
  * days left, `<=` for SPF lookups) or "OP N"; an ordered rule ("dnssec", "spf.all", "dmarc.policy")
  * takes a level, meaning "at least" it, or "OP level"; a yes / no rule takes true or false; an
  * enum rule ("caa", "spf") one of its values (true for its first); a list rule ("registrar",
- * "caa.issuers") a string or a list of them. OP is one of {@link POLICY_OPS}.
+ * "caa.issuers") a string or a list of them, entries between semicolons (a registrar's name has
+ * commas). OP is one of {@link POLICY_OPS}.
  *
  * {@link evaluatePolicy} reads the facts lib/portfolio.js portfolioFacts() derives from one
  * domain's lookups; {@link auditPortfolio} makes the matrix. A rule whose facts could not be read
@@ -155,14 +156,18 @@ function parseRuleValue(r, raw) {
       return r.values.includes(v) ? { op: '==', value: v } : null;
     }
     case 'list': {
+      // Entries between semicolons, in a string or in each item of an array: as the editor writes
+      // them (a registrar's name has commas), so the JSON, the runner and the controls agree.
       const list = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : null;
-      if (!list || !list.length || list.length > 30) return null;
+      if (!list || !list.length || list.length > 30 || list.some((x) => typeof x !== 'string' || x.length > 4000)) return null;
       const out = [];
-      for (const x of list) {
-        if (typeof x !== 'string' || !x.trim() || x.length > 120) return null;
-        const v = x.trim().replace(/\s+/g, ' ');
+      for (const part of list.flatMap((x) => x.split(';'))) {
+        const v = part.trim().replace(/\s+/g, ' ');
+        if (!v) continue;
+        if (v.length > 120) return null;
         if (!out.some((y) => y.toLowerCase() === v.toLowerCase())) out.push(v);
       }
+      if (!out.length || out.length > 30) return null;
       return { op: 'in', value: out };
     }
     default:

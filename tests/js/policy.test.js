@@ -199,6 +199,17 @@ describe('evaluatePolicy', () => {
     assert.equal(cellOf(atLeast, facts({ dnssec: { state: null, failure: {} } }), 'dnssec').status, 'unknown');
   });
 
+  test('a list rule written as one string takes its entries between semicolons, as the editor does (the JSON, the runner and the controls agree)', () => {
+    const p = parsePolicy('{"caa.issuers": "letsencrypt.org; sectigo.com"}').policy;
+    assert.deepEqual(p.rules[0].value, ['letsencrypt.org', 'sectigo.com']);
+    assert.equal(requirementText(p.rules[0]), 'letsencrypt.org; sectigo.com');
+    assert.equal(cellOf(p, facts({ caa: { state: 'present', issuers: ['letsencrypt.org'], wildIssuers: [] } }), 'caa.issuers').status, 'pass');
+    // a registrar's name keeps its commas; an array's entries are split the same way
+    assert.deepEqual(parsePolicy({ registrar: 'Example Registrar, Inc.; Other Registrar' }).policy.rules[0].value, ['Example Registrar, Inc.', 'Other Registrar']);
+    assert.deepEqual(parsePolicy({ 'caa.issuers': ['letsencrypt.org;  sectigo.com', 'LetsEncrypt.org'] }).policy.rules[0].value, ['letsencrypt.org', 'sectigo.com']);
+    assert.equal(parsePolicy({ 'caa.issuers': ' ; ' }).errors[0].code, 'bad-value', 'nothing between the semicolons');
+  });
+
   test('CAA: present, deny-all and the only CAs it may allow', () => {
     const present = one({ caa: 'present' });
     const deny = one({ caa: 'deny-all' });

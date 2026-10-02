@@ -42,15 +42,17 @@
   }
 }
 
-/* The notes that ask for work: install here too, install on every holder of the VIP. */
+/* The notes that ask for work: install here too, install on every holder of the VIP, check the inventory. */
 .topo-note[data-topo="behind-tls"],
-.topo-note[data-topo="vip"] {
+.topo-note[data-topo="vip"],
+.topo-note[data-topo="suspect"] {
   color: var(--warn);
   font-weight: 600;
 }
 
 .topo-note[data-topo="behind-tls"] .icon,
-.topo-note[data-topo="vip"] .icon {
+.topo-note[data-topo="vip"] .icon,
+.topo-note[data-topo="suspect"] .icon {
   color: var(--warn-solid);
 }
 

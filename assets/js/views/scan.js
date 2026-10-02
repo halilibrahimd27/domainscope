@@ -95,7 +95,7 @@ import { SummaryButton } from '../ui/summary-button.js';
 import { DanePanel, daneTabBadge, daneExport, cancelDane } from '../ui/dane-panel.js';
 // Where TLS terminates (the inventory's topology keys): the notes of a server, the CSV column.
 import { TopologyNotes, noCertStatus } from '../ui/topology.js';
-import { TOPOLOGY_CSV_COLUMN, topologyTokens } from '../lib/topology.js';
+import { TOPOLOGY_CSV_COLUMN, topologyTokens, scanTargetsKeys } from '../lib/topology.js';
 
 /**
  * The Servers CSV columns for these server groups: lib/export SERVER_COLUMNS, and the inventory
@@ -3218,7 +3218,8 @@ function buildRunUI(run, ctx, { onFinish }) {
     ...state.inventory.servers,
     ...(run.result ? run.result.originHints : []),
     ...(run.result ? run.result.unmatchedIps : [])
-  ], { keys: (s) => topologyTokens(s, cliServerName) });
+  // a server the scan found DNS pointing at directly keeps no terminates_tls=no: the CLI scans it
+  ], { keys: run.result ? scanTargetsKeys(run.result, cliServerName) : (s) => topologyTokens(s, cliServerName) });
   const lineCount = (text) => (text ? text.split('\n').filter(Boolean).length : 0);
   function downloadNames() {
     const file = downloadText('names.txt', namesText(), 'text/plain;charset=utf-8');
@@ -3260,6 +3261,13 @@ function buildRunUI(run, ctx, { onFinish }) {
         } else add('ok', t('scan.sum.needsNone'), 'check-circle', 'needs-none');
       } else if (st.matchedServers) {
         add('info', t('scan.sum.matched', { count: st.matchedServers }), 'server', 'matched');
+      }
+      // The inventory and DNS disagree (lib/topology.js): the certificate is planned anyway, and the summary says why.
+      const suspects = r.servers.filter((g) => g.topology && g.topology.suspect).length;
+      if (suspects) add('warn', t('topo.sum.suspect', { count: suspects }), 'alert', 'topology-suspect');
+      const nowhere = r.tlsNowhere || [];
+      if (nowhere.length) {
+        add('warn', t('topo.sum.nowhere', { count: nowhere.length, names: nowhere.slice(0, 3).join(', ') + (nowhere.length > 3 ? '…' : '') }), 'alert', 'topology-nowhere');
       }
     } else {
       add('info', t('scan.sum.noInventory'), 'server', 'no-inventory');

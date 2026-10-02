@@ -26,7 +26,7 @@ import {
   isSharedProvider
 } from './netinfo.js';
 import { buildIpIndex, lookupServers } from './inventory.js';
-import { applyTopology, orderByLoadBalancer, terminatesTls } from './topology.js';
+import { applyTopology, orderByLoadBalancer, terminatesTls, tlsNowhere } from './topology.js';
 import {
   getWordlist, loadWordlist, WORDLIST_SMALL, parseCustomWordlist, localesForDomain, LOCALE_PACK_CODES
 } from './wordlist.js';
@@ -2029,14 +2029,15 @@ export async function runScan(config = {}, hooks = {}) {
   }
   for (const hint of originHintList) delete hint.historyHosts; // internal only
   // The inventory topology (lib/topology.js): a load balancer's names reach its backends
-  // (entries with `lbs`), and a server with terminates_tls=no needs no certificate. Without a
-  // topology key in the inventory the groups are exactly as before.
+  // (entries with `lbs`), and a server with terminates_tls=no needs no certificate, unless the
+  // inventory and DNS disagree (topology.suspect). Without a topology key in the inventory the
+  // groups are exactly as before.
   let serverGroups = applyTopology([...groups.values()], servers);
   for (const g of serverGroups) {
     const order = new Map(sortHostnames([...new Set(g.hosts.map((e) => e.name))]).map((n, i) => [n, i]));
     g.hosts.sort((a, b) => (VIA_RANK[a.via] ?? 9) - (VIA_RANK[b.via] ?? 9)
       || order.get(a.name) - order.get(b.name) || compareIp(a.ip, b.ip));
-    const tls = terminatesTls(g.server);
+    const tls = terminatesTls(g.server) || !!(g.topology && g.topology.suspect);
     g.needsCert = tls && g.hosts.some((e) => (e.via === 'dns' || e.via === 'zone') && e.covered !== false);
     g.maybeNeedsCert = tls && !g.needsCert && g.hosts.some((e) => e.via === 'hint' && e.covered !== false);
   }
@@ -2045,6 +2046,7 @@ export async function runScan(config = {}, hooks = {}) {
     || String(a.server.name ?? '').localeCompare(String(b.server.name ?? ''), undefined, { numeric: true, sensitivity: 'base' })
     || String(a.server.id ?? '').localeCompare(String(b.server.id ?? '')));
   serverGroups = orderByLoadBalancer(serverGroups);
+  const nowhereNames = tlsNowhere(serverGroups);
 
   /* ---- unmatched direct IPs --------------------------------------------- */
   const unmatched = new Map();
@@ -2085,7 +2087,8 @@ export async function runScan(config = {}, hooks = {}) {
     nxdomain: kindCount('nxdomain'),
     dangling: count((x) => x.classification.dangling),
     covered: count((x) => !!(x.cert && x.cert.covered)),
-    matchedServers: serverGroups.filter((g) => terminatesTls(g.server) && g.hosts.some((e) => e.via === 'dns' && !e.lbs)).length,
+    matchedServers: serverGroups.filter((g) => (terminatesTls(g.server) || (g.topology && g.topology.suspect))
+      && g.hosts.some((e) => e.via === 'dns' && !e.lbs)).length,
     wildcardSuspects: count((x) => x.wildcardSuspect),
     // extensions
     unresolved: kindCount('unresolved'),
@@ -2209,6 +2212,8 @@ export async function runScan(config = {}, hooks = {}) {
     unmatchedIps,
     ctCerts,
     stats,
+    // topology: the covered names that reach only terminates_tls=no servers (absent without any)
+    ...(nowhereNames.length ? { tlsNowhere: nowhereNames } : {}),
     // extensions
     sourceDomains,
     sourceHealth: sourceHealthSummary(sourceResults),

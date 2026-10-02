@@ -138,6 +138,21 @@ class TopologySweep(unittest.TestCase):
         self.assertIn('  app01  10.0.0.30  [NAT 203.0.113.10]', text)
         self.assertLess(start, text.index('Servers hosting the names'))
 
+    def test_a_backend_dns_reaches_directly_is_scanned_from_the_web_apps_targets(self):
+        # tests/fixtures/topology/targets-direct.txt is what SSL Targets writes when DNS points
+        # at web01 directly although the inventory says terminates_tls=no (tests/js/topology.test.js):
+        # the scan counts it as needing the certificate and writes no terminates_tls=no, so the CLI
+        # scans it too, never leaving it out as a plain-HTTP backend.
+        inventory = sos.parse_inventory((TOPOLOGY / 'targets-direct.txt').read_text(encoding='utf-8'),
+                                        'targets-direct.txt')
+        self.assertEqual(inventory.warnings, [])
+        network = Network()
+        report = sos.run_scan(inventory.servers, sos.build_probe_names([NAME]), [443], timeout=1,
+                              workers=2, connect_fn=network.connect_fn, tls_fn=network.tls_fn)
+        self.assertEqual(report.skipped_backends, [])
+        self.assertIn(('203.0.113.12', 443), network.calls)
+        self.assertEqual([(s.name, s.backends) for s in report.servers], [('lb01', ['web01']), ('web01', [])])
+
     def test_a_scan_without_topology_keys_reads_as_before(self):
         servers = [sos.Server('web01', ['10.0.0.21']), sos.Server('web02', ['10.0.0.22'])]
         network = Network()

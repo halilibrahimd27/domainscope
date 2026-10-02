@@ -98,6 +98,10 @@ export function inventoryTopology(servers) {
  * @property {Array<{ ip: string, addresses: string[] }>} nats the public addresses a scanned name answered with,
  *   and the server's own addresses behind them
  * @property {number[]} tlsPorts its `ports=` ([] without)
+ * @property {boolean} suspect the inventory and DNS disagree, so it is counted as getting the certificate:
+ *   terminates_tls=no, yet a covered name reaches it directly (and it forwards to no backend), or a name
+ *   that would terminate TLS nowhere reaches it directly
+ * @property {string[]} nowhere the covered names DNS sends here directly that reach only terminates_tls=no servers
  */
 
 /**
@@ -108,7 +112,8 @@ export function inventoryTopology(servers) {
  * `lbs`: every load balancer right in front that passed it (both of a VIP pair) — through every
  * tier of load balancers. A name that reaches the backend directly keeps its own entry. Every
  * group the topology says something about gets `topology` ({@link GroupTopology}); the caller
- * computes `needsCert` with {@link terminatesTls}. Without a topology key in the inventory the
+ * computes `needsCert` with {@link terminatesTls}, or `suspect`: where the inventory and DNS
+ * disagree it errs toward "needs the certificate". Without a topology key in the inventory the
  * groups are returned as they are.
  * @param {Array<object>} groups
  * @param {Server[]} servers the inventory
@@ -162,6 +167,31 @@ export function applyTopology(groups, servers) {
       if (added && lbsOf.has(backend) && queue.indexOf(g, i + 1) === -1) queue.push(g);
     }
   }
+  // The inventory and DNS disagree: a terminates_tls=no server forwarding to no backend that a
+  // covered name reaches directly (its own address, a VIP or NAT address it holds), and every
+  // server DNS reaches directly for a name that would terminate TLS nowhere, get the certificate.
+  const covered = (e) => (e.via === 'dns' || e.via === 'zone') && e.covered !== false;
+  const suspect = new Set(out.filter((g) => !terminatesTls(g.server) && !(lbsOf.get(g.server) || []).length
+    && g.hosts.some((e) => covered(e) && !e.lbs)));
+  const reach = new Map(); // name → { tls: it terminates somewhere, direct: the groups DNS sends it to }
+  for (const g of out) {
+    const tls = terminatesTls(g.server) || suspect.has(g);
+    for (const e of g.hosts) {
+      if (!covered(e)) continue;
+      let r = reach.get(e.name);
+      if (!r) reach.set(e.name, (r = { tls: false, direct: new Set() }));
+      r.tls = r.tls || tls;
+      if (!e.lbs) r.direct.add(g);
+    }
+  }
+  const nowhere = new Map();
+  for (const [name, r] of reach) {
+    if (r.tls) continue;
+    for (const g of r.direct) {
+      suspect.add(g);
+      nowhere.set(g, [...(nowhere.get(g) || []), name]);
+    }
+  }
   const vipHolders = new Map(topo.vips.map((v) => [v.ip, v.servers.map((s) => s.name)]));
   for (const g of out) {
     const s = g.server || {};
@@ -174,7 +204,9 @@ export function applyTopology(groups, servers) {
       behind: behind.get(g) || [],
       vips: vipIps.map((ip) => ({ ip, servers: vipHolders.get(ip) || [s.name] })),
       nats: natIps.map((ip) => ({ ip, addresses: [...(s.ips || [])] })),
-      tlsPorts: Array.isArray(s.tlsPorts) ? [...s.tlsPorts] : []
+      tlsPorts: Array.isArray(s.tlsPorts) ? [...s.tlsPorts] : [],
+      suspect: suspect.has(g),
+      nowhere: nowhere.get(g) || []
     };
     if (!t.terminatesTls || t.backends.length || t.behind.length || t.vips.length || t.nats.length || t.tlsPorts.length) g.topology = t;
   }
@@ -191,11 +223,14 @@ export function applyTopology(groups, servers) {
 export function topologyNotes(t) {
   if (!t) return [];
   const out = [];
+  // A suspect group gets the certificate: nothing here may claim it needs none.
+  if (t.suspect) out.push('terminates_tls=no, yet DNS points here directly (check the inventory)');
   if (t.backends && t.backends.length) {
-    out.push(`load balancer for ${t.backends.map((b) => b.name).join(', ')}${t.terminatesTls ? '' : ' (passes TLS through)'}`);
+    out.push(`load balancer for ${t.backends.map((b) => b.name).join(', ')}${t.terminatesTls || t.suspect ? '' : ' (passes TLS through)'}`);
   }
-  if (t.behind && t.behind.length) out.push(`behind ${t.behind.join(', ')} (${t.terminatesTls ? 're-encrypts' : 'plain HTTP, no certificate'})`);
-  else if (!t.terminatesTls && !(t.backends && t.backends.length)) out.push('terminates_tls=no (no certificate)');
+  if (t.behind && t.behind.length) {
+    out.push(`behind ${t.behind.join(', ')}${t.suspect ? '' : ` (${t.terminatesTls ? 're-encrypts' : 'plain HTTP, no certificate'})`}`);
+  } else if (!t.terminatesTls && !t.suspect && !(t.backends && t.backends.length)) out.push('terminates_tls=no (no certificate)');
   for (const v of t.vips || []) out.push(`VIP ${v.ip} (${v.servers.join(', ')})`);
   for (const n of t.nats || []) out.push(`NAT ${n.ip} -> ${n.addresses.join(', ')}`);
   if (t.tlsPorts && t.tlsPorts.length) out.push(`TLS ports ${t.tlsPorts.join(',')}`);
@@ -204,6 +239,31 @@ export function topologyNotes(t) {
 
 /** A `Topology` CSV column (lib/export toCsv) over rows carrying a {@link GroupTopology} as `topology`. */
 export const TOPOLOGY_CSV_COLUMN = Object.freeze({ key: 'topology', header: 'Topology', get: (row) => topologyNotes(row && row.topology).join('; ') });
+
+/**
+ * The covered names of a scan that reach only terminates_tls=no servers (GroupTopology.nowhere),
+ * in the order of the groups: TLS terminates nowhere the inventory says.
+ * @param {Array<{ topology?: GroupTopology }>} groups
+ * @returns {string[]}
+ */
+export function tlsNowhere(groups) {
+  return [...new Set((Array.isArray(groups) ? groups : []).flatMap((g) => (g && g.topology && g.topology.nowhere) || []))];
+}
+
+/**
+ * The `keys` writer of lib/export targetsForCli for a scan's targets.txt: {@link topologyTokens},
+ * without `terminates_tls=no` for a server the scan found DNS pointing at directly
+ * (GroupTopology.suspect), so the CLI scans it rather than skipping it.
+ * @param {{ servers?: Array<{ server: object, topology?: GroupTopology }> }|null} result ScanResult
+ * @param {(name: string) => string} [cliName]
+ * @returns {(server: object) => string[]}
+ */
+export function scanTargetsKeys(result, cliName) {
+  const id = (s) => String(s.id ?? s.name);
+  const direct = new Set((result && Array.isArray(result.servers) ? result.servers : [])
+    .filter((g) => g && g.server && g.topology && g.topology.suspect).map((g) => id(g.server)));
+  return (server) => topologyTokens(direct.has(id(server)) ? { ...server, terminatesTls: undefined } : server, cliName);
+}
 
 /**
  * Put each load balancer's backend groups right after it (keeping the order otherwise), so a

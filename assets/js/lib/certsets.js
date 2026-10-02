@@ -518,8 +518,9 @@ export function planRenewal(result, sets) {
   const plain = [];
   for (const g of Array.isArray(r.servers) ? r.servers : []) {
     if (!g || !g.server) continue;
-    if (g.topology && g.topology.terminatesTls === false) {
-      // terminates_tls=no: no set is installed here, whatever names reach it (lib/topology.js).
+    if (g.topology && g.topology.terminatesTls === false && !g.topology.suspect) {
+      // terminates_tls=no: no set is installed here, whatever names reach it (lib/topology.js),
+      // unless DNS points here directly (suspect): then it is a row like any server.
       const s = g.server;
       plain.push({
         server: { id: String(s.id ?? s.name ?? ''), name: String(s.name ?? s.id ?? ''), ips: [...(s.ips || [])] },

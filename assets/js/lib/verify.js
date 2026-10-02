@@ -876,7 +876,8 @@ function skipReason(ip, name, port) {
  * the CLI card scans it where the CLI reading the inventory would; a name that
  * reached a server through its public NAT address (`nat=`) carries the server's
  * own addresses, which the CLI scans from inside. A server that never gets the
- * certificate (`terminates_tls=no`, lib/topology.js) gives no pair.
+ * certificate (`terminates_tls=no`, lib/topology.js) gives no pair, unless the scan found DNS
+ * pointing at it directly (`topology.suspect`).
  * @param {object} result ScanResult
  * @param {{ port?: number, setOf?: ((name: string) => string|null)|null }} [opts] `setOf` (several
  *   certificate sets, lib/certsets.js setOfName): every pair gets the `setId` planned for its name
@@ -918,7 +919,8 @@ export function buildVerifyPairs(result, { port = VERIFY_PORT, setOf = null } = 
   };
 
   for (const g of Array.isArray(r.servers) ? r.servers : []) {
-    if (g?.topology && g.topology.terminatesTls === false) continue; // plain HTTP: no certificate to verify
+    // plain HTTP: no certificate to verify, unless DNS points here directly (lib/topology.js suspect)
+    if (g?.topology && g.topology.terminatesTls === false && !g.topology.suspect) continue;
     const server = g?.server ? { id: String(g.server.id ?? g.server.name ?? ''), name: String(g.server.name ?? g.server.id ?? '') } : null;
     const entries = (Array.isArray(g?.hosts) ? g.hosts : []).filter((e) => {
       if (!e || e.covered === false) return false;

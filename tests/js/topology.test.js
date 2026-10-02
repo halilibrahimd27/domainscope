@@ -8,7 +8,10 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parseInventory } from '../../assets/js/lib/inventory.js';
-import { applyTopology, orderByLoadBalancer, topologyNotes, topologyTokens, TOPOLOGY_CSV_COLUMN } from '../../assets/js/lib/topology.js';
+import {
+  applyTopology, orderByLoadBalancer, topologyNotes, topologyTokens, tlsNowhere, scanTargetsKeys, TOPOLOGY_CSV_COLUMN
+} from '../../assets/js/lib/topology.js';
+import { noCertStatus } from '../../assets/js/ui/topology.js';
 import { runScan } from '../../assets/js/lib/scanner.js';
 import { DohClient } from '../../assets/js/lib/doh.js';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
@@ -34,14 +37,14 @@ const ZONE = {
   [`mail.${D}`]: ['203.0.113.12']
 };
 
-function dohWorld() {
+function dohWorld(zone = ZONE) {
   const fetchImpl = async (url) => {
     const resolver = RESOLVERS.find((r) => url.startsWith(`${r.url}?`));
     if (!resolver) throw new TypeError(`unexpected URL ${url}`);
     const q = decodeMessage(base64UrlDecode(new URL(url).searchParams.get('dns'))).questions[0];
     const name = String(q.name).toLowerCase().replace(/\.$/, '');
-    const answers = q.type === 'A' ? (ZONE[name] || []).map((data) => ({ name, type: 'A', ttl: 300, data })) : [];
-    const rcode = ZONE[name] || name === D ? 'NOERROR' : 'NXDOMAIN';
+    const answers = q.type === 'A' ? (zone[name] || []).map((data) => ({ name, type: 'A', ttl: 300, data })) : [];
+    const rcode = zone[name] || name === D ? 'NOERROR' : 'NXDOMAIN';
     return new Response(encodeMessage({
       id: 0, flags: { qr: true, rd: true, ra: true }, rcode, questions: [{ name: q.name, type: q.type }],
       answers, authorities: answers.length ? [] : [{ name: D, type: 'SOA', ttl: 300, data: SOA }], edns: {}
@@ -53,10 +56,10 @@ function dohWorld() {
 /** A certificate set covering the zone (lib/certsets.js CertSet: only what the plan reads). */
 const SET_A = { id: 'A', names: [D, `*.${D}`], keyTypes: ['RSA 2048'], files: ['new-cert.pem'], expires: null, notAfter: null, leaves: [], certs: [] };
 
-async function topologyScan(inventory = CORE) {
-  const { fetchImpl, dns } = dohWorld();
+async function topologyScan(inventory = CORE, zone = ZONE) {
+  const { fetchImpl, dns } = dohWorld(zone);
   return runScan({
-    domains: [D], extraNames: Object.keys(ZONE), exact: true, sources: [], bruteforce: 'off', mine: false,
+    domains: [D], extraNames: Object.keys(zone), exact: true, sources: [], bruteforce: 'off', mine: false,
     permutationBudget: 0, recursive: false, originHints: false, certs: [{ hostnames: SET_A.names, serialHex: '01' }],
     inventory, dns, fetchImpl
   });
@@ -84,7 +87,7 @@ describe('applyTopology / orderByLoadBalancer', () => {
     assert.deepEqual(by.lb01.topology, {
       terminatesTls: true,
       backends: [{ id: 'web01', name: 'web01', terminatesTls: false }, { id: 'web02', name: 'web02', terminatesTls: true }],
-      behind: [], vips: [{ ip: '203.0.113.50', servers: ['lb01', 'lb02'] }], nats: [], tlsPorts: [443, 8443]
+      behind: [], vips: [{ ip: '203.0.113.50', servers: ['lb01', 'lb02'] }], nats: [], tlsPorts: [443, 8443], suspect: false, nowhere: []
     });
     assert.deepEqual([by.web01.topology.terminatesTls, by.web01.topology.behind], [false, ['lb01']]);
     assert.deepEqual([by.web02.topology.terminatesTls, by.web02.topology.behind, by.web02.topology.tlsPorts], [true, ['lb01'], [8443]]);
@@ -232,6 +235,72 @@ describe('a scan with load balancers, a VIP pair and a NAT address', () => {
     // (a documentation address is never sent to Globalping: 'reserved'; the CLI card scans app01 from inside)
     assert.deepEqual([nat.skip, nat.cliTargets], ['reserved', ['10.0.0.30']]);
     assert.equal(pairs.find((p) => p.server && p.server.name === 'web02').skip, 'private');
+  });
+});
+
+/* ---- the inventory and DNS disagree: err toward "needs the certificate" -------------------- */
+
+describe('when the inventory and DNS disagree, the certificate is still planned and the inventory flagged', () => {
+  const scanOf = (text, zone) => topologyScan(parseInventory(text).servers, zone);
+  const DIRECT = 'lb01 203.0.113.2 backends=web01\nweb01 203.0.113.12 terminates_tls=no';
+
+  test('a terminates_tls=no backend that a name reaches directly needs the certificate and says the inventory looks wrong', async () => {
+    const scan = await scanOf(DIRECT, { [`www.${D}`]: ['203.0.113.2'], [`direct.${D}`]: ['203.0.113.12'] });
+    const g = groupsByName(scan);
+    assert.deepEqual([g.lb01.needsCert, g.web01.needsCert, g.web01.topology.suspect, g.lb01.topology.suspect], [true, true, true, false]);
+    assert.equal(noCertStatus(g.web01), null, 'never "No certificate needed"');
+    assert.equal(scan.stats.needsCert, 2);
+    assert.equal('tlsNowhere' in scan, false, 'the name terminates somewhere: on web01, which the inventory gets wrong');
+    assert.ok(topologyNotes(g.web01.topology).includes('terminates_tls=no, yet DNS points here directly (check the inventory)'), topologyNotes(g.web01.topology).join(' | '));
+    assert.ok(!topologyNotes(g.web01.topology).some((n) => /no certificate/.test(n)), 'no "no certificate" claim on the CSV');
+    // the Renewal plan and its work list, Verify, and the CLI's targets keep it
+    const plan = planRenewal(scan, [SET_A]);
+    assert.deepEqual(plan.rows.map((r) => r.key), ['s:lb01', 's:web01']);
+    assert.deepEqual(plan.plain, []);
+    assert.deepEqual(workListRows(plan).map((r) => r.server), ['lb01', 'web01']);
+    const { pairs } = buildVerifyPairs(scan);
+    assert.ok(pairs.some((p) => p.server && p.server.name === 'web01' && p.name === `direct.${D}`), JSON.stringify(pairs.map((p) => [p.name, p.ip])));
+    // tests/python/test_topology_scan.py reads this file back: the CLI scans web01
+    const text = targetsForCli(parseInventory(DIRECT).servers, { keys: scanTargetsKeys(scan, cliServerName) });
+    assert.equal(text, readFileSync(new URL('targets-direct.txt', TOPOLOGY_DIR), 'utf8'));
+    assert.ok(!/terminates_tls=no/.test(text), text);
+  });
+
+  test('the same server reached only directly (no load balancer in the scan) needs it too', async () => {
+    const scan = await scanOf(DIRECT, { [`direct.${D}`]: ['203.0.113.12'] });
+    const g = groupsByName(scan);
+    assert.deepEqual(scan.servers.map((x) => [x.server.name, x.needsCert]), [['web01', true]]);
+    assert.equal(g.web01.topology.suspect, true);
+    assert.deepEqual(planRenewal(scan, [SET_A]).plain, []);
+  });
+
+  test('a VIP held only by terminates_tls=no servers: both holders need the certificate', async () => {
+    const scan = await scanOf('web01 10.0.0.21 vip=203.0.113.50 terminates_tls=no\nweb02 10.0.0.22 vip=203.0.113.50 terminates_tls=no',
+      { [`www.${D}`]: ['203.0.113.50'] });
+    assert.deepEqual(scan.servers.map((x) => [x.server.name, x.needsCert, x.topology.suspect]), [['web01', true, true], ['web02', true, true]]);
+    assert.equal(buildVerifyPairs(scan).pairs.filter((p) => p.ip === '203.0.113.50').length, 1, 'the VIP is checked once');
+  });
+
+  test('a passthrough load balancer in front of plain backends: TLS terminates nowhere — the load balancer DNS reaches needs it, and the scan says so', async () => {
+    const scan = await scanOf('lb01 203.0.113.2 terminates_tls=no backends=web01\nweb01 10.0.0.21 terminates_tls=no', { [`www.${D}`]: ['203.0.113.2'] });
+    const g = groupsByName(scan);
+    assert.deepEqual([g.lb01.needsCert, g.lb01.topology.suspect, g.web01.needsCert, g.web01.topology.suspect], [true, true, false, false]);
+    assert.deepEqual(scan.tlsNowhere, [`www.${D}`]);
+    assert.deepEqual(tlsNowhere(scan.servers), [`www.${D}`]);
+    assert.equal(noCertStatus(g.web01), 'plain', 'the backend behind it stays plain HTTP');
+    assert.deepEqual(planRenewal(scan, [SET_A]).plain.map((p) => p.server.name), ['web01']);
+  });
+
+  test('a passthrough load balancer with a backend that terminates TLS is no contradiction', async () => {
+    const scan = await scanOf('lb01 203.0.113.2 terminates_tls=no backends=web01,web02\nweb01 10.0.0.21\nweb02 10.0.0.22 terminates_tls=no',
+      { [`www.${D}`]: ['203.0.113.2'] });
+    assert.deepEqual(scan.servers.map((x) => [x.server.name, x.needsCert, x.topology.suspect]), [['lb01', false, false], ['web01', true, false], ['web02', false, false]]);
+    assert.equal('tlsNowhere' in scan, false);
+    assert.equal(noCertStatus(groupsByName(scan).lb01), 'passthrough');
+    // and the fixture's scan has no contradiction either
+    const core = await topologyScan();
+    assert.ok(core.servers.every((x) => !x.topology || !x.topology.suspect));
+    assert.equal('tlsNowhere' in core, false);
   });
 });
 

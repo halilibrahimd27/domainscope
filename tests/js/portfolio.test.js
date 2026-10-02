@@ -457,6 +457,45 @@ describe('the calendar and the exports', () => {
     assert.ok(res.every((r) => !r.rdapOrgPaused));
   });
 
+  test('8 domains on a registry that answers 429 to everything, 8 on a healthy one, interleaved: the healthy ones never wait on the storm, which costs one lookup\'s retries', async () => {
+    const t0 = Date.now();
+    const calls = { a: 0, b: 0 };
+    const reg = (name) => ({ objectClassName: 'domain', ldhName: name, status: ['client transfer prohibited'], events: [{ eventAction: 'expiration', eventDate: iso(300) }], entities: [] });
+    const fetchImpl = async (url) => {
+      const u = String(url);
+      if (u === 'https://data.iana.org/rdap/dns.json') return json({ services: [[['a'], ['https://rdap.a.test/']], [['b'], ['https://rdap.b.test/']]] });
+      await new Promise((r) => setTimeout(r, 5));
+      if (u.startsWith('https://rdap.a.test/')) {
+        calls.a += 1;
+        return json({ errorCode: 429 }, 429);
+      }
+      if (u.startsWith('https://rdap.b.test/')) {
+        calls.b += 1;
+        return json(reg(u.split('/domain/')[1]));
+      }
+      throw new TypeError(`unexpected fetch ${u}`);
+    };
+    const dns = { query: async (name, type) => ({ name, type, ok: true, rcode: 'NOERROR', answers: [], flags: {} }) };
+    const domains = [];
+    for (let i = 0; i < 8; i += 1) domains.push(`example${i}.a`, `example${i}.b`);
+    const at = {};
+    // the defaults scaled down 20 times: retries after 100, 200 and 400 ms
+    const run = createPortfolio({
+      domains, dns, fetchImpl, dkim: false, rdapOptions: { registryRetryMs: 100, rdapOrgIntervalMs: 0 },
+      onEvent: (e) => { if (e.type === 'rdap') at[e.domain] = Date.now() - t0; }
+    });
+    const signal = AbortSignal.timeout(8000);
+    await run.start({ signal });
+    const healthy = domains.filter((d) => d.endsWith('.b'));
+    const storm = domains.filter((d) => d.endsWith('.a'));
+    assert.ok(healthy.every((d) => run.row(d).raw.rdap.ok), 'every healthy one read');
+    assert.ok(Math.max(...healthy.map((d) => at[d])) < Math.min(...storm.map((d) => at[d])), `the healthy ones land before the storm's first answer: ${JSON.stringify(at)}`);
+    assert.ok(Math.max(...healthy.map((d) => at[d])) < 500, `fast: ${JSON.stringify(at)}`);
+    assert.ok(storm.every((d) => run.row(d).raw.rdap.errorKind === 'rate-limit'), 'the storm: rate limited, each said so');
+    assert.equal(calls.a, 4, 'one lookup\'s tries; the others fail at once until its wait ends');
+    assert.ok(Date.now() - t0 < 2000, `the run did not wait the storm out per domain (${Date.now() - t0} ms)`);
+  });
+
   test('a name server domain the registry does not know (RDAP 404): the takeover is flagged — the row\'s risk, the summary, never "no data"', async () => {
     const zone = { ...ZONE, 'example.com': { ...ZONE['example.com'], NS: ['ns1.example.net', 'ns2.example-gone.org'] } };
     const dns = fakeDns(zone, { signed: ['example.com'] });

@@ -12,7 +12,9 @@
  *   domain, lib/passport.js passportDns) and lib/rdap.js: straight to the registry's server from
  *   the IANA bootstrap, rdap.org only as its paced fallback. RDAP is asked once per distinct domain
  *   of the run — a portfolio domain and a name server domain alike — with at most
- *   {@link RDAP_CONCURRENCY} requests in flight; {@link PORTFOLIO_CONCURRENCY} domains run at once.
+ *   {@link RDAP_CONCURRENCY} requests in flight; {@link PORTFOLIO_CONCURRENCY} domains' DNS
+ *   questions run at once. A lookup waiting for its registry's turn or rate limit holds neither a
+ *   request's place nor its domain's: a registry that turns requests away never slows another.
  * - {@link createPortfolio} runs them, reports each lookup as it lands (rows fill progressively),
  *   stops with its signal, and asks one row's failed lookups (or one name server domain's RDAP)
  *   again past the DNS cache.
@@ -33,9 +35,9 @@ import { passportDomain, passportDns, runLookup, mailCard, certsCard, rdapStatus
 
 /** At most this many domains in one run (the rest are said and left out). */
 export const PORTFOLIO_MAX_DOMAINS = 300;
-/** Domains looked up at once (each one's DNS questions go through the DohClient's own limit). */
+/** Domains whose DNS questions run at once (each question goes through the DohClient's own limit); RDAP waits outside. */
 export const PORTFOLIO_CONCURRENCY = 4;
-/** RDAP requests in flight at once (registry servers; rdap.org is paced by lib/rdap.js). */
+/** RDAP requests in flight at once to registry servers (a lookup waiting for its registry's turn holds none; rdap.org is paced by lib/rdap.js). */
 export const RDAP_CONCURRENCY = 4;
 /** DKIM selectors asked when the DKIM option is on: the most common ones only (one TXT query each). */
 export const PORTFOLIO_DKIM_SELECTORS = Object.freeze(['google', 'selector1', 'selector2', 'default', 'k1', 's1', 'dkim', 'mail']);
@@ -311,7 +313,10 @@ export function createPortfolio({
     const hit = memo.get(d);
     if (hit && !noCache) return hit.promise;
     const entry = {};
-    entry.promise = rdapLimiter.run(() => rdapDomain(d, { fetchImpl, signal, ...rdapOptions }), { signal }).then((result) => {
+    // The run's bound on requests in flight is taken for each request alone (lib/rdap.js `limit`):
+    // a lookup queued behind its registry, or waiting out its 429, keeps no other registry waiting.
+    const limit = (send) => rdapLimiter.run(send, { signal });
+    entry.promise = rdapDomain(d, { fetchImpl, signal, ...rdapOptions, limit }).then((result) => {
       if (memo.get(d) === entry) rdap.set(d, result);
       emit({ type: 'rdap', domain: d });
       return result;
@@ -340,22 +345,27 @@ export function createPortfolio({
     })));
   }
 
-  async function runRow(row, { signal, lookups = PORTFOLIO_LOOKUPS, noCache = false }) {
+  /**
+   * A row's lookups. `defer` (a run's row): the RDAP lookups — the row's own and its name servers'
+   * domains' — are handed to it instead of awaited, so their wait holds no place of the run's rows.
+   */
+  async function runRow(row, { signal, lookups = PORTFOLIO_LOOKUPS, noCache = false, defer = null }) {
     const client = passportDns(dns, { signal, noCache });
     const land = (id, result) => {
       row.raw[id] = result;
       emit({ type: 'lookup', domain: row.domain, lookup: id });
     };
+    const later = (promise) => (defer ? defer(promise) : promise);
     const one = async (id) => {
       const result = await runPortfolioLookup(id, row.domain, { dns: client, fetchImpl, signal, raw: row.raw, rdapFor, dkim, noCache });
       throwIfAborted(signal);
       land(id, result);
-      if (id === 'ns') await nsDomains(row, { signal });
+      if (id === 'ns') await later(nsDomains(row, { signal }));
       return result;
     };
     const wantSpf = lookups.includes('spf');
     await Promise.all([
-      ...lookups.filter((id) => id !== 'spf' && id !== 'txt').map(one),
+      ...lookups.filter((id) => id !== 'spf' && id !== 'txt').map((id) => (id === 'rdap' ? later(one(id)) : one(id))),
       // SPF's lookup count reads the TXT answer: after it (or on the one already there).
       (async () => {
         if (lookups.includes('txt')) await one('txt');
@@ -365,23 +375,34 @@ export function createPortfolio({
   }
 
   /**
-   * Run every row (bounded: `concurrency` domains at once). Rejects with an AbortError when
-   * `signal` aborts; the rows not finished are 'stopped'.
+   * Run every row (bounded: `concurrency` domains' DNS questions at once; a row's RDAP is waited
+   * for outside that bound). Rejects with an AbortError when `signal` aborts; the rows not
+   * finished are 'stopped'.
    * @param {{ signal?: AbortSignal }} [opts]
    */
   run.start = async ({ signal } = {}) => {
     run.status = 'running';
     run.startedAt = new Date();
     const limiter = createLimiter(concurrency);
-    try {
-      await Promise.all(order.map((d) => limiter.run(async () => {
-        const row = rows.get(d);
+    const runOne = async (d) => {
+      const row = rows.get(d);
+      const waits = [];
+      // handled at once (a stop rejects them before they are awaited), awaited below
+      const defer = (promise) => {
+        promise.catch(() => {});
+        waits.push(promise);
+      };
+      await limiter.run(async () => {
         row.state = 'running';
         emit({ type: 'row', domain: d, state: 'running' });
-        await runRow(row, { signal });
-        row.state = 'done';
-        emit({ type: 'row', domain: d, state: 'done' });
-      }, { signal })));
+        await runRow(row, { signal, defer });
+      }, { signal });
+      await Promise.all(waits);
+      row.state = 'done';
+      emit({ type: 'row', domain: d, state: 'done' });
+    };
+    try {
+      await Promise.all(order.map(runOne));
       run.status = 'done';
     } catch (err) {
       if (!isAbort(err)) throw err;

@@ -8,6 +8,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 - **Wave 2 — shipped 2026-09-28** ([what shipped and where](#wave-2--shipped-2026-09-28)): the Reverse DNS sweep and FCrDNS of the MX addresses, a phone Tools menu with a first-visit task picker and keyboard shortcuts, the current target carried across the tools with each tool's kept result, Subdomains results in tabs, Copy summary and printing, the installable offline app with a lighter start route, and failed sources said as "n/a" with a retry of only that source, a denser DNS Lookup and IP Intel, and long-job progress outside the view.
 - **Wave 3 — shipped 2026-09-28** ([what shipped and where](#wave-3--shipped-2026-09-28)): customer workspaces with a hand-over file and expected CAs, several certificates at once in SSL Targets (a renewal week) with the CLI's repeated `--cert`, Renewal readiness, Retire an IP, the Domain overview, and PFX / PKCS#12 import.
 - **Wave 4 — shipped 2026-10-01** ([what shipped and where](#wave-4--shipped-2026-10-01)): the headless runner with a nightly GitHub Actions template, the CLI's certificate estate and `bundle-check` with a Certificate estate view and a CSR check, the missing intermediate from a bundled CCADB list with root-store warnings, DNS change requests with an "is it live?" link and fix-as-code, DNS provider moves (new name servers, `dns_parity.py`, the old and the new server side by side), a ledger of what the page sent with related domains and key continuity, and DMARC & TLS reports.
+- **Wave 5 — shipping feature by feature (2026-10-03)** ([what shipped and where](#wave-5--shipping-feature-by-feature-2026-10-03)): a zone fetched from deSEC or DigitalOcean, Global DNS's mainland China locations, and the Domain portfolio with a policy audit and the runner's `audit`.
 - **P0** — high value, verified feasible, next iteration
   - [P0.1 Verify the served certificate from the internet (Globalping SNI probe)](#p01-verify-the-served-certificate-from-the-internet-globalping-sni-probe)
   - [P0.2 Origin exposure audit for Cloudflare/CDN-proxied hosts](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts)
@@ -26,7 +27,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 - **Next up:** adaptive locale packs (see [P1.9](#p19-permutation-discovery-from-found-names-multi-level-wildcard-filtering): the library is ready but not wired in), then the P1.2 follow-ups listed under its status.
 - **P1** — next
   - [P1.1 Source status, quota meter and optional user keys](#p11-source-status-quota-meter-and-optional-user-keys) — **partly shipped**
-  - [P1.2 Zone import: exact seeds, proxied-origin map, lint and live drift](#p12-zone-import-exact-seeds-proxied-origin-map-lint-and-live-drift) — **MVP shipped**
+  - [P1.2 Zone import: exact seeds, proxied-origin map, lint and live drift](#p12-zone-import-exact-seeds-proxied-origin-map-lint-and-live-drift) — **MVP shipped; fetch from deSEC / DigitalOcean shipped**
   - [P1.3 Real-ISP DNS propagation in Global DNS (Globalping probes)](#p13-real-isp-dns-propagation-in-global-dns-globalping-probes)
   - [P1.4 Delegation &amp; authoritative consistency (serial drift, lame NS, Sitting Ducks, AXFR)](#p14-delegation--authoritative-consistency-serial-drift-lame-ns-sitting-ducks-axfr)
   - [P1.5 Readable records: TXT vendor chips, SPF plain-English + IP evaluator, HTTPS/SVCB/ECH decode](#p15-readable-records-txt-vendor-chips-spf-plain-english--ip-evaluator-httpssvcbech-decode) — **TXT vendor names shipped (Domain overview)**
@@ -45,7 +46,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
   - [P2.3 Monitoring/automation exports (web + CLI)](#p23-monitoringautomation-exports-web--cli) — **headless runner and nightly template shipped**
   - [P2.4 Export observed records as DNS-as-code (BIND, dnsconfig.js, octoDNS)](#p24-export-observed-records-as-dns-as-code-bind-dnsconfigjs-octodns) — **change requests as code shipped**
   - [P2.5 Reverse-DNS sweep of a prefix or ASN](#p25-reverse-dns-sweep-of-a-prefix-or-asn) — **shipped**
-  - [P2.6 Domain portfolio view: many domains, one row each](#p26-domain-portfolio-view-many-domains-one-row-each) — **one domain per page shipped (Domain overview)**
+  - [P2.6 Domain portfolio view: many domains, one row each](#p26-domain-portfolio-view-many-domains-one-row-each) — **shipped (Domain portfolio)**
   - [P2.7 Extra passive source: ip.thc.org (+ opt-in Common Crawl)](#p27-extra-passive-source-ipthcorg--opt-in-common-crawl)
   - [P2.8 Lookalike / typosquat watch (locale-aware dnstwist-lite)](#p28-lookalike--typosquat-watch-locale-aware-dnstwist-lite)
   - [P2.9 SCT / CT-policy panel in the Certificate view](#p29-sct--ct-policy-panel-in-the-certificate-view)
@@ -103,6 +104,15 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 | What this page sent: every request counted per host with what it carried, named by an endpoint registry a test keeps in step with the code, and the deploy's commit; related domains from the scan's CT certificates; key continuity, the public key looked up in CT | About, Subdomains › Sources, Certificate › CT logs | new |
 | DMARC aggregate and TLS-RPT reports read in the browser (zip, gzip, a mailbox folder), sources classified against the current SPF and the server list, whether `p=reject` can come and what to fix first, TLS failures by type and MX host | DMARC & TLS reports (new view, Mail & domain) | new, next to [P1.6](#p16-mail-identity-fcrdns-generic-ptr-policy-dmarc-external-report-authorisation-ruf) |
 | Integration: every new view in the navigation, the Tools menu and the shortcuts, the sidebar fitting 18 tools, the workspace switch naming a running Globalping comparison, Copy summary for the estate and the change check page, the ledger naming every new endpoint, the start route back under 370 KB (every view's Copy summary but the start view's loads with its view) | Shell, About | — |
+
+## Wave 5 — shipping feature by feature (2026-10-03)
+
+| Feature | Where | Roadmap item |
+| --- | --- | --- |
+| A zone fetched from deSEC or DigitalOcean with the user's read-only API token (sent to that provider only, in a header, for one fetch; never saved), deSEC read type by type past 500 record sets and DigitalOcean page by page, the listing imported like a dropped file; Cloudflare's API and the old Hetzner DNS API cannot be called from a page (no CORS), the Hetzner Cloud API is a candidate | Zone File › Fetch | follow-up of [P1.2](#p12-zone-import-exact-seeds-proxied-origin-map-lint-and-live-drift) |
+| Mainland China locations (Beijing, Shanghai, Guangzhou) asked through AliDNS's JSON API (A, AAAA, CNAME and HTTPS only) with a control question on behalf of a US subnet, in a row group of their own; Chinese CDNs and WAFs recognised by CNAME; a CNAME only China gets is by design only when the control confirms it | Global DNS | new |
+| Domain portfolio: many domains, one row each — expiry, registry status flags read for risk, registrar, DNSSEC, the name servers' own domains and their expiry (an unregistered one first), CAA and the mail posture — with RDAP paced per registry, CSV / JSON, an expiry calendar (.ics) and the workspace's policy audit; the runner's `audit` (exit 4 while a rule fails) | Domain portfolio (new view, Mail & domain), `tools/ds.mjs` | [P2.6](#p26-domain-portfolio-view-many-domains-one-row-each) |
+| Integration: the sidebar fitting 19 tools at 1366 × 768, the ledger naming deSEC, DigitalOcean, AliDNS and the registry RDAP server of .io / .sh / .ac / .me, the zone fetch saying offline that it needs the network, the start route at 376,219 bytes of its 370 KB budget | Shell, About, Zone File | — |
 
 ## P0 — next iteration
 
@@ -298,6 +308,8 @@ Behaviour (original plan): one panel + header chip showing each external API's r
 ### P1.2 Zone import: exact seeds, proxied-origin map, lint and live drift
 
 id `zone-import-drift` · where: **both** · effort: **M**
+
+**Status (2026-10-03): a zone can also be fetched from deSEC or DigitalOcean with a read-only API token (Zone File › Fetch, wave 5).** Cloudflare's API and the old Hetzner DNS API send no CORS header, so their zones still come as an export; the new Hetzner Cloud API is a candidate.
 
 **Status (2026-09-24): MVP shipped as the Zone File view (`#/zone`, Discover).** Before this, the remaining known names on a private customer domain ([RESEARCH.md › Measured results](RESEARCH.md#measured-results-2026-09-23)) were organisation-specific words that no wordlist, locale pack, permutation or passive source reaches; a zone export is the only complete list, and for Cloudflare it also holds the real origin of every proxied record.
 
@@ -534,6 +546,8 @@ Input a CIDR (cap /22) or ASN (list announced prefixes via RIPEstat, require the
 
 id `portfolio` · where: **browser**
 
+**Status (2026-10-03): shipped in wave 5 as the Domain portfolio (`#/portfolio`, Mail & domain)**: the many-domains table with every column below, the registry servers queried directly (one request at a time per registry, rdap.org paced as the fallback, the .io / .sh / .ac / .me override), sorting, CSV / JSON and .ics, plus a per-workspace policy audit and the runner's `audit`.
+
 **Status (2026-09-28): one domain per page shipped in wave 3 as the Domain overview (`#/domain`, Discover)**: registration (RDAP, transfer lock, WHOIS link where there is no RDAP), DNS hosting, mail, web, certificates, SaaS verifications and health. The many-domains table, sorting, CSV and .ics are still open.
 
 Paste many domains → one row each: RDAP expiry countdown + status flags (clientTransferProhibited missing = hijack risk; serverHold/redemptionPeriod/pendingDelete critical), registrar, delegationSigned, nameservers' own registrable-domain expiry, DNSSEC, CAA, mail posture (SPF valid ≤10 lookups, DKIM ≥1024 bits, DMARC policy, MTA-STS/TLS-RPT, null MX/-all/p=reject for parked). Sortable, CSV, .ics. RDAP: query registry servers directly from the IANA bootstrap (verified 100 domains/3.8s); rdap.org only as fallback at ≤1 req/s (429 no ACAO → TypeError); add a small ccTLD override map (io→identitydigital). PARTIAL for ccTLDs without RDAP (e.g. .de, .jp, .tr): expiry/status/registrar columns stay empty → registry whois link only (for .tr, TRABIS whois is POST+CSRF, so no prefill). DNS side (DNSSEC/CAA/SPF/DMARC/MTA-STS) works for every TLD.
@@ -593,6 +607,7 @@ Ideas that were checked and dropped, so nobody has to re-investigate them.
 | crt.sh as a primary/real-time source | 18-48s latency and intermittent 404/502 with no ACAO on errors (browser sees a CORS TypeError). Keep only as an optional, retrying fallback to certspotter. |
 | Uptime Kuma monitor export | Uptime Kuma v2.0 removed JSON backup/restore (only data-directory backup remains), so there is no stable import format to target. Drop it from toolchain-exports. |
 | Turkish (tr) language for the Zonemaster deep test | The Zonemaster API supports only da/en/es/fi/fr/nb/sl/sv ('tr' → -32602 Unknown language). Render English messages with TR labels for module/level and an optional per-testcase-id TR map. |
+| Fetch a zone from Cloudflare's API or the old Hetzner DNS API in the browser | `api.cloudflare.com/client/v4` sends no ACAO (a 400 to the preflight) and `dns.hetzner.com/api/v1` redirects to its console. Export the zone and drop the file; deSEC and DigitalOcean are fetched, and the new Hetzner Cloud API (`api.hetzner.cloud/v1/zones`, ACAO and a readable `Link`) is a candidate. |
 | .tr registry expiry/status + prefilled whois deep link in the portfolio view | No .tr RDAP in the IANA bootstrap and TRABIS whois is a POST form with a CSRF token → registrar/expiry columns stay empty and only a plain TRABIS link is possible. The DNS-side checks still work for .tr. |
 | Full 2.7MB AWS ip-ranges.json (and 2.4MB cdncheck) vendored at build time | Too large to bake into the static bundle. Vendor only a compact EC2 [prefix,region] snapshot (~60KB) via a weekly Action; fetch cdncheck/RIPEstat on demand at runtime. |
 | Elastic-IP / cloud-IP takeover auto-verdict | Very high false-positive rate (a legit A record in an EC2/GitHub range is normal). Keep it as an info-only 'confirm it is still yours' hint, never a takeover verdict. |

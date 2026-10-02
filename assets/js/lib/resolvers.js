@@ -274,8 +274,8 @@ export const RESOLVERS = Object.freeze([
  * AliDNS (Alibaba Cloud), verified live on 2026-10-02 (docs/RESEARCH.md › Mainland China vantage):
  * its RFC 8484 endpoint (/dns-query) sends no Access-Control-Allow-Origin, so it is asked in the JSON
  * form, `/resolve?name=&type=&edns_client_subnet=` (`format: 'json'`, lib/dohjson.js), which sends `*`
- * — on 400 and 401 answers too (real Chrome: 16/16 reads from two fresh profiles over HTTP/2; an
- * earlier run read it over HTTP/3 after Alt-Svc as well). It applies the subnet it is given: the
+ * — on 400 and 401 answers and over HTTP/3 too (real Chrome read it over HTTP/2 and, once Alt-Svc
+ * had offered h3, over HTTP/3; 2026-10-03). It applies the subnet it is given: the
  * three mainland ISP /24s below get edges inside their own ISP, and for names whose GeoDNS ignores
  * Google's ECS it answers what mainland users get (a mainland CDN where Google's ECS answer is an
  * overseas edge). It echoes the subnet without a scope prefix (`ecsEcho: false`), does not validate

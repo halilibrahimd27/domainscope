@@ -4,8 +4,9 @@
  * from the wire, so lib/doh.js answers the same `DnsResponse` whichever form a resolver speaks.
  *
  * Only resolvers whose wire endpoint a page cannot read use it: AliDNS sends no
- * Access-Control-Allow-Origin on /dns-query but `*` on /resolve (verified 2026-10-02, also over
- * HTTP/3 in Chrome). The record data is RFC 1035 presentation text; each record is turned into the
+ * Access-Control-Allow-Origin on /dns-query but `*` on /resolve, over HTTP/2 and over HTTP/3
+ * (2026-10-03: curl over HTTP/3 12/12, real Chrome 9/9 with QUIC forced and 9/9 after Alt-Svc;
+ * docs/RESEARCH.md). The record data is RFC 1035 presentation text; each record is turned into the
  * dnswire `data` shape (TXT, the generic `\# n hex` form and AliDNS's bare RDATA hex as raw bytes),
  * encoded and decoded again, so its `text` is exactly what a wire answer of the same record gives
  * and answers from both kinds of resolvers group together (lib/propagation.js compares `text`). A

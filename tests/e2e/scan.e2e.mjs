@@ -5,6 +5,7 @@
  *
  *   node tests/e2e/scan.e2e.mjs [--domain npmjs.com] [--sources crtsh,anubis,hackertarget]
  *                               [--bruteforce small] [--browser chrome|edge] [--headed] [--no-shots]
+ *                               [--offline]
  *
  * The default domain is a mid-size public site behind Cloudflare. Free source quotas are
  * small (Cert Spotter ≈ 10 requests/hour, HackerTarget ≈ 50/day), so the default source list
@@ -37,6 +38,17 @@
  *     by name, the inventory tooltip, a link with only the domain), one shell choice shared
  *     by the Behind CDN quick sweep, its step 3 and the Verify CLI card, and a rescan with crt.sh
  *     failing in the page (Copy summary says the host list may be incomplete)
+ *   - offline (emulated example.net, tests/fixtures/ec_wildcard.pem) with a topology inventory:
+ *     lb01 and lb02 on a shared VIP with a plain-HTTP and a re-encrypting backend, a NAT address —
+ *     the Servers view's load balancer → backends card (EN / TR, 375 and 320 px, light and
+ *     dark, a malformed key warned about), SSL Targets › Servers grouped by load balancer (the
+ *     VIP pair together) with "install on both" and "no certificate needed", keyboard details
+ *     naming both load balancers a name came through, the Servers CSV's Topology column and the
+ *     keys in targets.txt; then the Renewal plan of an RSA + ECDSA pair (renew_a_*.pem, an
+ *     emulated example.com): the matrix without the plain-HTTP backend, which is listed apart, the
+ *     work list's Topology column, Turkish at 375 px
+ *   - --offline skips the live scan (desktop and phone groups) and resolves no host name but the
+ *     local server's
  *   - zero console errors, exceptions and CSP violations; failures of the third-party APIs
  *     themselves (crt.sh 502 without CORS, 429s) are reported but do not fail the run.
  *
@@ -592,6 +604,302 @@ const dnsDelayScript = `(() => {
   };
 })();`;
 
+/**
+ * Topology (where TLS really terminates): lb01 and lb02 share the VIP 203.0.113.50 and forward to
+ * web01 (plain HTTP, terminates_tls=no) and web02 (re-encrypts, on 8443 only); app01 is reached
+ * at 203.0.113.10 through NAT. www answers with the VIP, api with the NAT address, the wildcard
+ * base itself with lb01's own address; mail is outside the inventory. Documentation ranges and
+ * RFC 1918 only; no last octet .11/.27/.28/.41.
+ */
+const TOPOLOGY_INVENTORY = [
+  'lb01  203.0.113.2  ports=443,8443 vip=203.0.113.50 backends=web01,web02',
+  'lb02  203.0.113.3  vip=203.0.113.50 backends=web01,web02',
+  'web01 10.0.0.21    terminates_tls=no',
+  'web02 10.0.0.22    ports=8443',
+  'app01 10.0.0.30    nat=203.0.113.10'
+].join('\n');
+const TOPOLOGY_DNS = {
+  'example.net': { A: ['203.0.113.9'] },
+  'wild.example.net': { A: ['203.0.113.2'] },
+  'www.wild.example.net': { A: ['203.0.113.50'] },
+  'api.wild.example.net': { A: ['203.0.113.10'] },
+  'mail.wild.example.net': { A: ['203.0.113.12'] }
+};
+/**
+ * The same topology under example.com for the Renewal plan of an RSA + ECDSA pair
+ * (tests/fixtures/renew_a_*.pem: example.com, *.example.com): the apex answers with lb01's own
+ * address, www with the VIP, api with the NAT address; mail is outside the inventory.
+ */
+const TOPOLOGY_RENEWAL_APEX = 'example.com';
+const TOPOLOGY_RENEWAL_DNS = {
+  'example.com': { A: ['203.0.113.2'] },
+  'www.example.com': { A: ['203.0.113.50'] },
+  'api.example.com': { A: ['203.0.113.10'] },
+  'mail.example.com': { A: ['203.0.113.12'] }
+};
+
+/**
+ * The topology steps: the Servers view's card, then SSL Targets' Servers tab, its exports, Turkish at
+ * 375 px, and the Renewal plan of a certificate pair.
+ */
+async function topologySteps(run, { browser, server, page, origin, opts }) {
+  const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+  await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+  const saved = await page.evaluate(storedSetup).catch(() => null);
+  const card = () => tab.evaluate(() => {
+    const root = document.querySelector('[data-role="inventory-topology"]');
+    if (!root) return null;
+    return {
+      lbs: [...root.querySelectorAll('.topo-lb')].map((lb) => [lb.dataset.server,
+        [...lb.querySelectorAll('.topo-backend')].map((b) => `${b.dataset.server}:${b.dataset.tls}`).join(' ')]),
+      vip: root.querySelector('[data-vip="203.0.113.50"]')?.textContent || '',
+      nat: root.querySelector('[data-nat="203.0.113.10"]')?.textContent || '',
+      warnings: !document.querySelector('.inv-warnings-card')?.hidden
+    };
+  });
+  const serversTab = () => tab.evaluate(() => [...document.querySelectorAll('.scan-servers-table tbody tr.dt-row')].map((tr) => ({
+    server: tr.querySelector('.scan-srv')?.dataset.server,
+    status: tr.querySelector('[data-status]')?.dataset.status,
+    behind: tr.classList.contains('scan-row-behind'),
+    notes: [...tr.querySelectorAll('.topo-note')].map((n) => n.textContent)
+  })));
+  try {
+    await run.step('Servers view: the topology card — lb01 / lb02 → web01 (no certificate) and web02 (re-encrypts), the VIP pair, the NAT pair; no warning', async () => {
+      await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(OFFLINE_APEX, TOPOLOGY_DNS) });
+      await installDownloadCapture(tab);
+      await tab.goto(`${server.url}#/about`);
+      await waitReady(tab);
+      await setLangUi(tab, 'en');
+      await tab.evaluate(saveInventoryIn, TOPOLOGY_INVENTORY);
+      await gotoRoute(tab, 'inventory');
+      const got = await card();
+      assert(got, 'the topology card is shown');
+      assertEqual(got.lbs, [['lb01', 'web01:false web02:true'], ['lb02', 'web01:false web02:true']], 'load balancer → backends tree');
+      assert(/install on both: lb01 and lb02/.test(got.vip), `VIP: ${got.vip}`);
+      assert(/203\.0\.113\.10.*app01.*10\.0\.0\.30/.test(got.nat), `NAT: ${got.nat}`);
+      assertEqual(got.warnings, false, 'no warnings');
+      const badges = await tab.evaluate(() => [...document.querySelectorAll('.inv-topo')].map((b) => b.closest('.inv-name').querySelector('.inv-name-main').textContent));
+      assertEqual(badges.sort(), ['lb01', 'lb02', 'web01'], 'the table marks the load balancers and the server with no certificate');
+      await assertNoHorizontalScroll(tab, 'servers topology desktop');
+      await shot(tab, opts, 'topology-servers-desktop-light-en');
+      await tab.emulateMedia({ 'prefers-color-scheme': 'dark' });
+      await shot(tab, opts, 'topology-servers-desktop-dark-en');
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+    });
+
+    await run.step('Servers view at 375 and 320 px in Turkish: the tree wraps without horizontal scroll (light, dark); a malformed key warns in words', async () => {
+      await tab.setViewport({ width: 375, height: 812, mobile: true });
+      await setLangUi(tab, 'tr');
+      const got = await card();
+      assert(/ikisine de kurun: lb01 ve lb02/.test(got.vip), `VIP (TR): ${got.vip}`);
+      for (const scheme of ['light', 'dark']) {
+        await tab.emulateMedia({ 'prefers-color-scheme': scheme });
+        await tab.evaluate(() => document.querySelector('[data-role="inventory-topology"]').scrollIntoView({ block: 'start' }));
+        await assertNoHorizontalScroll(tab, `servers topology 375 ${scheme}`);
+        await shot(tab, opts, `topology-servers-375-${scheme}-tr`);
+      }
+      await tab.setViewport({ width: 320, height: 640, mobile: true });
+      await assertNoHorizontalScroll(tab, 'servers topology 320');
+      // A malformed value: a TOPOLOGY warning naming the key, in Turkish (not saved).
+      await tab.evaluate((text) => {
+        const ta = document.querySelector('[data-role="inventory-text"]');
+        ta.value = text;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }, `${TOPOLOGY_INVENTORY}\nweb09 10.0.0.90 ports=99999`);
+      await tab.waitFor(() => document.querySelector('.inv-warning[data-code="TOPOLOGY"]'), { message: 'TOPOLOGY warning' });
+      const warning = await tab.evaluate(() => {
+        const w = document.querySelector('.inv-warning[data-code="TOPOLOGY"]');
+        return { reason: w.dataset.reason, text: w.querySelector('.inv-warning-code').textContent };
+      });
+      assertEqual(warning.reason, 'ports', 'reason');
+      assert(/Geçersiz ports=/.test(warning.text), `warning: ${warning.text}`);
+      await shot(tab, opts, 'topology-servers-320-light-tr-warning');
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await tab.evaluate((text) => {
+        const ta = document.querySelector('[data-role="inventory-text"]');
+        ta.value = text;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }, TOPOLOGY_INVENTORY);
+      await setLangUi(tab, 'en');
+      await tab.setViewport({ width: 1440, height: 900 });
+    });
+
+    await run.step('SSL Targets › Servers: install on lb01 and lb02 (the VIP pair), web02 too; web01 needs nothing; the VIP pair comes first, then what is behind it', async () => {
+      const known = LIB_SOURCES.map((x) => x.id);
+      await tab.evaluate((k) => {
+        localStorage.setItem('ssds.scan.options', JSON.stringify({ sources: [], knownSources: k, bruteforce: 'small', permutations: false, originHints: true }));
+      }, known);
+      await gotoRoute(tab, 'scan');
+      await tab.setFileInput('.scan-step-cert .filedrop-input', [path.join(FIXTURES, 'ec_wildcard.pem')]);
+      await tab.waitFor(() => document.querySelector('.scan-step-cert .cert-summary'), { message: 'certificate loaded' });
+      const before = await runStatus(tab);
+      await tab.evaluate(() => document.querySelector('[data-action="scan-run"]').click());
+      await tab.waitFor((prev) => {
+        const ui = document.querySelector('.scan-run-ui');
+        return ui && ui.dataset.run !== (prev && prev.id) && ui.querySelector('.scan-run').dataset.status === 'done';
+      }, { args: [before], timeout: 90000, message: 'topology scan done' });
+      await tab.evaluate(() => document.querySelector('.scan-tabs [data-tab="servers"]').click());
+      await tab.waitFor(() => document.querySelector('.scan-servers-table tbody tr.dt-row'), { message: 'servers rows' });
+      const rows = await serversTab();
+      assertEqual(rows.map((r) => [r.server, r.status, r.behind]), [
+        ['app01', 'needs', false], ['lb01', 'needs', false], ['lb02', 'needs', false], ['web01', 'plain', true], ['web02', 'needs', true]
+      ], 'statuses: the VIP pair, then the backends behind it');
+      const notes = Object.fromEntries(rows.map((r) => [r.server, r.notes]));
+      assert(notes.lb02.includes('VIP 203.0.113.50 — install on both: lb01 and lb02'), `lb02: ${notes.lb02}`);
+      assert(notes.lb01.includes('Load balancer → web01, web02'), `lb01: ${notes.lb01}`);
+      assert(notes.web01.includes('Behind lb01, lb02 — plain HTTP, no certificate needed'), `web01: ${notes.web01}`);
+      assert(notes.web02.includes('Behind lb01, lb02 — re-encrypts: install here too'), `web02: ${notes.web02}`);
+      assert(notes.app01.includes('Reached at 203.0.113.10 (NAT) → 10.0.0.30'), `app01: ${notes.app01}`);
+      assert(await tab.evaluate(() => !!document.querySelector('[data-role="scan-topology-intro"]')), 'the topology intro');
+      // keyboard: the backend's row opens with Enter and says which load balancers each name came
+      // through: wild answers with lb01's own address, www with the VIP both hold
+      await tab.evaluate(() => {
+        const row = [...document.querySelectorAll('.scan-servers-table tbody tr.dt-row')].find((tr) => tr.querySelector('.scan-srv')?.dataset.server === 'web01');
+        row.querySelector('.dt-expand-btn').focus();
+      });
+      await tab.press('Enter');
+      const through = await tab.waitFor(() => {
+        const rows = [...document.querySelectorAll('.scan-servers-table tr.dt-details tbody tr.dt-row')];
+        return rows.length ? rows.map((tr) => [tr.querySelector('td').textContent, [...tr.querySelectorAll('.scan-srv-via .badge')].map((b) => b.textContent.trim()).join(' + ')]) : false;
+      }, { message: 'web01 details' });
+      assertEqual(through, [['wild.example.net', 'DNS + Through lb01'], ['www.wild.example.net', 'DNS + Through lb01, lb02']], 'the load balancers each name came through');
+      assertEqual(await tab.evaluate(() => [...[...document.querySelectorAll('.scan-servers-table tbody tr.dt-row')]
+        .find((tr) => tr.querySelector('.scan-srv')?.dataset.server === 'web01').querySelectorAll('.scan-srv-host')].map((x) => x.textContent)),
+      ['wild.example.net · Through lb01', 'www.wild.example.net · Through lb01, lb02'], 'the Hostnames column says it too');
+      await assertNoHorizontalScroll(tab, 'scan servers topology desktop');
+      await shot(tab, opts, 'topology-scan-servers-desktop-light-en');
+      await tab.emulateMedia({ 'prefers-color-scheme': 'dark' });
+      await shot(tab, opts, 'topology-scan-servers-desktop-dark-en');
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+    });
+
+    await run.step('the Servers CSV has a Topology column and targets.txt carries the keys the CLI reads', async () => {
+      await takeDownloads(tab);
+      await tab.evaluate(() => {
+        document.querySelector('.scan-exports [data-export="servers-csv"]').click();
+        document.querySelector('.scan-exports [data-export="targets"]').click();
+      });
+      const files = await takeDownloads(tab);
+      const csv = files.find((f) => /^servers.*\.csv$/.test(f.name));
+      const targets = files.find((f) => f.name === 'targets.txt');
+      assert(csv && targets, `downloads: ${files.map((f) => f.name)}`);
+      assertEqual(csvHeader(csv.text).slice(-1), ['Topology'], 'last CSV column');
+      assert(/web01,10\.0\.0\.21,.*"behind lb01, lb02 \(plain HTTP, no certificate\)"/.test(csv.text), csv.text);
+      const lines = targets.text.split('\n');
+      for (const line of ['lb01 203.0.113.2:443 203.0.113.2:8443 backends=web01,web02 vip=203.0.113.50', 'web01 10.0.0.21 terminates_tls=no',
+        'web02 10.0.0.22:8443', 'app01 10.0.0.30 nat=203.0.113.10']) assert(lines.includes(line), `targets.txt has "${line}":\n${targets.text}`);
+    });
+
+    await run.step('375 px in Turkish: the Servers tab notes in Turkish, no horizontal scroll (light, dark)', async () => {
+      await tab.setViewport({ width: 375, height: 812, mobile: true });
+      await setLangUi(tab, 'tr');
+      await tab.waitFor(() => document.querySelector('.scan-servers-table tbody tr.dt-row .topo-note'), { message: 'notes after the re-mount' });
+      const notes = Object.fromEntries((await serversTab()).map((r) => [r.server, r.notes.join(' | ')]));
+      assert(/VIP 203\.0\.113\.50 — ikisine de kurun: lb01 ve lb02/.test(notes.lb02), `lb02 (TR): ${notes.lb02}`);
+      assert(/lb01, lb02 arkasında — düz HTTP, sertifika gerekmez/.test(notes.web01), `web01 (TR): ${notes.web01}`);
+      assertEqual((await serversTab()).find((r) => r.server === 'web01').status, 'plain', 'status kept');
+      // The table scrolls sideways on a phone; a note wraps inside the first screenful instead.
+      const cut = await tab.evaluate(() => [...document.querySelectorAll('.scan-servers-table .topo-note > span')]
+        .filter((n) => [...n.getClientRects()].some((r) => r.right > document.documentElement.clientWidth)).map((n) => n.textContent));
+      assertEqual(cut, [], 'notes past the right edge at 375 px');
+      for (const scheme of ['light', 'dark']) {
+        await tab.emulateMedia({ 'prefers-color-scheme': scheme });
+        await tab.evaluate(() => document.querySelector('.scan-servers-table').scrollIntoView({ block: 'start' }));
+        await assertNoHorizontalScroll(tab, `scan servers topology 375 ${scheme}`);
+        await shot(tab, opts, `topology-scan-servers-375-${scheme}-tr`);
+      }
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await setLangUi(tab, 'en');
+      await tab.setViewport({ width: 1440, height: 900 });
+      assertEqual(await tab.evaluate(() => window.__zoneBlocked), [], 'nothing but DNS for the zone left the page');
+      await assertClean(tab, 'topology', origin);
+    });
+
+    await run.step('Renewal plan of an RSA + ECDSA pair: the VIP pair, the re-encrypting backend and the NAT server need the set, the plain-HTTP backend is listed apart; the work list has a Topology column; TR at 375 px', async () => {
+      // A tab of its own: the zone is example.com here (the inventory and options stored above apply).
+      const pair = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      const plan = () => pair.evaluate(() => ({
+        rows: [...document.querySelectorAll('.rw-matrix tbody tr.dt-row')].map((tr) => [
+          tr.querySelector('.rw-srv-name')?.textContent || '',
+          [...tr.querySelectorAll('.rw-cell-name')].map((x) => x.firstChild.textContent).join(' '),
+          [...tr.querySelectorAll('.topo-note')].map((n) => n.textContent).join(' | ')
+        ]),
+        plain: [...document.querySelectorAll('[data-role="renewal-plain"] .topo-item')].map((li) => [li.dataset.server,
+          [...li.querySelectorAll('.topo-note')].map((n) => n.textContent).join(' | ')]),
+        plainTitle: document.querySelector('[data-role="renewal-plain"] h3')?.textContent || ''
+      }));
+      const openPlan = async () => {
+        await pair.evaluate(() => document.querySelector('.scan-tabs .tab[data-tab="plan"]').click());
+        await pair.waitFor(() => document.querySelector('.scan-tabs .tab[data-tab="plan"]')?.getAttribute('aria-selected') === 'true'
+          && document.querySelector('[data-role="renewal-plain"]'), { message: 'Renewal plan tab' });
+      };
+      try {
+        await pair.emulateMedia({ 'prefers-color-scheme': 'light' });
+        await pair.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(TOPOLOGY_RENEWAL_APEX, TOPOLOGY_RENEWAL_DNS) });
+        await installDownloadCapture(pair);
+        await pair.goto(`${server.url}#/about`);
+        await waitReady(pair);
+        await setLangUi(pair, 'en');
+        await gotoRoute(pair, 'scan');
+        await pair.setFileInput('.scan-step-cert .filedrop-input', [path.join(FIXTURES, 'renew_a_rsa.pem'), path.join(FIXTURES, 'renew_a_ecdsa.pem')]);
+        await pair.waitFor(() => document.querySelector('.scan-step-cert [data-role="renewal-sets"]')?.dataset.certs === '2', { message: 'the pair in step 1' });
+        assertEqual(await pair.evaluate(() => document.querySelector('[data-role="scan-domains"]').value), TOPOLOGY_RENEWAL_APEX, 'step 2 from the pair');
+        const before = await runStatus(pair);
+        await pair.evaluate(() => document.querySelector('[data-action="scan-run"]').click());
+        await pair.waitFor((prev) => {
+          const ui = document.querySelector('.scan-run-ui');
+          return ui && ui.dataset.run !== (prev && prev.id) && ui.querySelector('.scan-run').dataset.status === 'done';
+        }, { args: [before], timeout: 90000, message: 'pair scan done' });
+        const summary = await pair.waitFor(() => document.querySelector('[data-summary="renewal"] .alert-message')?.textContent || false, { message: 'the renewal line' });
+        assertEqual(summary, '1 certificate set (RSA 2048 + ECDSA P-256): 4 servers need it — see “Renewal plan”.', 'the summary does not count web01');
+        await openPlan();
+        const got = await plan();
+        assertEqual(got.rows, [
+          ['app01', 'api.example.com', 'Reached at 203.0.113.10 (NAT) → 10.0.0.30'],
+          ['lb01', 'example.com www.example.com', 'Load balancer → web01, web02 | VIP 203.0.113.50 — install on both: lb01 and lb02 | TLS ports 443, 8443'],
+          ['lb02', 'www.example.com', 'Load balancer → web01, web02 | VIP 203.0.113.50 — install on both: lb01 and lb02'],
+          ['web02', 'example.com www.example.com', 'Behind lb01, lb02 — re-encrypts: install here too | TLS ports 8443'],
+          ['203.0.113.12', 'mail.example.com', '']
+        ], 'the matrix: the VIP pair, the re-encrypting backend, the NAT server, the address outside the list');
+        assertEqual([got.plainTitle, got.plain], ['1 server the names reach needs no certificate',
+          [['web01', 'Behind lb01, lb02 — plain HTTP, no certificate needed']]], 'web01 under the matrix, not in it');
+        await takeDownloads(pair);
+        await pair.evaluate(() => document.querySelector('[data-export="worklist"]').click());
+        await pair.waitFor(() => (window.__downloads || []).length === 1, { message: 'work list download' });
+        const [csv] = await takeDownloads(pair);
+        assertEqual(csvHeader(csv.text).slice(-1), ['Topology'], 'the work list ends with a Topology column');
+        const lines = csv.text.trim().split(/\r\n/).slice(1);
+        assertEqual(lines.map((l) => l.split(',')[0]), ['app01', 'lb01', 'lb02', 'web02', ''], 'one line per server and address: no web01');
+        assert(lines[3].endsWith(',"behind lb01, lb02 (re-encrypts); TLS ports 8443"'), `web02: ${lines[3]}`);
+        assert(lines[2].endsWith(',"load balancer for web01, web02; VIP 203.0.113.50 (lb01, lb02)"'), `lb02: ${lines[2]}`);
+        await assertNoHorizontalScroll(pair, 'renewal plan desktop');
+        await shot(pair, opts, 'topology-renewal-plan-desktop-light-en');
+        // Turkish at 375 px: the matrix is labelled cards; the notes and the list apart fit
+        await pair.setViewport({ width: 375, height: 812, mobile: true });
+        await setLangUi(pair, 'tr');
+        await pair.waitFor(() => document.querySelector('.scan-tabs'), { message: 'results after the re-mount' });
+        await openPlan();
+        const tr = await plan();
+        assertEqual(tr.plainTitle, 'Adların ulaştığı 1 sunucuya sertifika gerekmiyor', 'the list apart, in Turkish');
+        assertEqual(tr.rows[3][2], 'lb01, lb02 arkasında — trafiği yeniden şifreliyor: buraya da kurun | TLS portları: 8443', 'web02 in Turkish');
+        for (const scheme of ['light', 'dark']) {
+          await pair.emulateMedia({ 'prefers-color-scheme': scheme });
+          await pair.evaluate(() => document.querySelector('.scan-tab-plan').scrollIntoView({ block: 'start' }));
+          await assertNoHorizontalScroll(pair, `renewal plan 375 ${scheme}`);
+          await shot(pair, opts, `topology-renewal-plan-375-${scheme}-tr`);
+        }
+        assertEqual(await pair.evaluate(() => window.__zoneBlocked), [], 'nothing but DNS for the zone left the page');
+        await assertClean(pair, 'topology renewal plan', origin);
+      } finally {
+        await pair.close();
+      }
+    });
+  } finally {
+    await tab.close();
+    if (saved) await page.evaluate(restoreSetup, saved);
+  }
+}
+
 const runStatus = (page) => page.evaluate(() => {
   const ui = document.querySelector('.scan-run-ui');
   return ui ? { id: ui.dataset.run, status: ui.querySelector('.scan-run').dataset.status } : null;
@@ -602,508 +910,522 @@ async function main() {
   const DOMAIN = opts.value('--domain', 'npmjs.com');
   const SOURCES = opts.value('--sources', DEFAULT_SOURCES.join(',')).split(',').map((s) => s.trim()).filter(Boolean);
   const BRUTE = opts.value('--bruteforce', 'small');
+  // --offline: only the groups that answer DNS in the page (the live scan is skipped), and no
+  // host name but the local server's resolves, so no step reaches a live service.
+  const OFFLINE = opts.has('--offline');
   const run = createRunner();
 
   await nodeChecks(run);
 
   const server = await startServer({ base: BASE });
   const origin = new URL(server.url).origin;
-  const browser = await launchBrowser({ browser: opts.browser, headless: !opts.headed });
+  const browser = await launchBrowser({
+    browser: opts.browser, headless: !opts.headed, args: OFFLINE ? ['--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1'] : []
+  });
   const version = await browser.version();
-  process.stdout.write(`\nServing ${server.url} — ${version.product}; live domain ${DOMAIN}, sources ${SOURCES.join(', ')}, brute force ${BRUTE}\n`);
+  process.stdout.write(OFFLINE
+    ? `\nServing ${server.url} — ${version.product}; offline: the live scan is skipped\n`
+    : `\nServing ${server.url} — ${version.product}; live domain ${DOMAIN}, sources ${SOURCES.join(', ')}, brute force ${BRUTE}\n`);
   let direct = null;
   try {
     const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
     await installDownloadCapture(page);
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
-    run.group('Desktop 1440×900 (English)');
-    await run.step('boots on #/scan with the four setup steps and an empty run bar', async () => {
-      await page.goto(`${server.url}#/scan`);
+    if (OFFLINE) {
+      // The live scan of DOMAIN needs the DoH resolvers and the passive sources: skipped.
+      process.stdout.write('\nDesktop 1440×900 (English), Phone 390×844 (Turkish)\n  SKIP  the live scan (--offline)\n');
+      await page.goto(`${server.url}#/about`);
       await waitReady(page);
-      await page.evaluate(() => localStorage.removeItem('ssds.scan.options'));
-      await page.evaluate(saveInventoryIn, '');
-      await page.reload();
-      await waitReady(page);
-      if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
-      const steps = await page.evaluate(() => [...document.querySelectorAll('.scan-step')].map((s) => s.dataset.step));
-      assertEqual(steps, ['cert', 'domains', 'inventory', 'options'], 'steps');
-      assert(await page.evaluate(() => !document.querySelector('.scan-run-ui')), 'no results yet');
-      // One requirement line instead of "optional" on every step; Options is one collapsed line.
-      const form = await page.evaluate(() => ({
-        req: document.querySelector('[data-role="scan-requirement"]').textContent,
-        reqState: document.querySelector('[data-role="scan-requirement"]').dataset.state,
-        heads: [...document.querySelectorAll('.scan-step-head')].map((x) => x.textContent).join(' | '),
-        done: [...document.querySelectorAll('.scan-step-num[data-done="true"]')].length,
-        optionsOpen: document.querySelector('.scan-options-box').open,
-        optSummary: document.querySelector('[data-role="scan-opt-summary"]').textContent
-      }));
-      assertEqual([form.req, form.reqState, form.done], ['A certificate or at least one domain is required', 'unmet', 0], 'requirement line');
-      assert(!/optional/i.test(form.heads), `no step is labelled optional: ${form.heads}`);
-      assertEqual([form.optionsOpen, form.optSummary], [false, 'recommended defaults'], 'Options collapsed, defaults');
-      await page.click('.scan-options-box > summary');
-      assert(await page.evaluate(() => document.querySelector('.scan-options-box').open), 'Options open on a click');
-      const bf = await page.waitFor(() => {
-        const smart = document.querySelector('.scan-bf [data-level="smart"]')?.textContent || '';
-        return /\d{1,3}(,\d{3})+|\d{4,}/.test(smart) ? {
-          values: [...document.querySelectorAll('input[name="scan-bruteforce"]')].map((i) => i.value),
-          checked: document.querySelector('input[name="scan-bruteforce"]:checked').value,
-          smart,
-          perm: document.querySelector('[data-role="scan-permutations"]').checked,
+    } else {
+      run.group('Desktop 1440×900 (English)');
+      await run.step('boots on #/scan with the four setup steps and an empty run bar', async () => {
+        await page.goto(`${server.url}#/scan`);
+        await waitReady(page);
+        await page.evaluate(() => localStorage.removeItem('ssds.scan.options'));
+        await page.evaluate(saveInventoryIn, '');
+        await page.reload();
+        await waitReady(page);
+        if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
+        const steps = await page.evaluate(() => [...document.querySelectorAll('.scan-step')].map((s) => s.dataset.step));
+        assertEqual(steps, ['cert', 'domains', 'inventory', 'options'], 'steps');
+        assert(await page.evaluate(() => !document.querySelector('.scan-run-ui')), 'no results yet');
+        // One requirement line instead of "optional" on every step; Options is one collapsed line.
+        const form = await page.evaluate(() => ({
+          req: document.querySelector('[data-role="scan-requirement"]').textContent,
+          reqState: document.querySelector('[data-role="scan-requirement"]').dataset.state,
+          heads: [...document.querySelectorAll('.scan-step-head')].map((x) => x.textContent).join(' | '),
+          done: [...document.querySelectorAll('.scan-step-num[data-done="true"]')].length,
+          optionsOpen: document.querySelector('.scan-options-box').open,
+          optSummary: document.querySelector('[data-role="scan-opt-summary"]').textContent
+        }));
+        assertEqual([form.req, form.reqState, form.done], ['A certificate or at least one domain is required', 'unmet', 0], 'requirement line');
+        assert(!/optional/i.test(form.heads), `no step is labelled optional: ${form.heads}`);
+        assertEqual([form.optionsOpen, form.optSummary], [false, 'recommended defaults'], 'Options collapsed, defaults');
+        await page.click('.scan-options-box > summary');
+        assert(await page.evaluate(() => document.querySelector('.scan-options-box').open), 'Options open on a click');
+        const bf = await page.waitFor(() => {
+          const smart = document.querySelector('.scan-bf [data-level="smart"]')?.textContent || '';
+          return /\d{1,3}(,\d{3})+|\d{4,}/.test(smart) ? {
+            values: [...document.querySelectorAll('input[name="scan-bruteforce"]')].map((i) => i.value),
+            checked: document.querySelector('input[name="scan-bruteforce"]:checked').value,
+            smart,
+            perm: document.querySelector('[data-role="scan-permutations"]').checked,
+            summary: document.querySelector('.scan-runbar-summary').textContent
+          } : false;
+        }, { message: 'wordlist levels' });
+        assertEqual([bf.values, bf.checked, bf.perm], [['off', 'small', 'smart', 'large', 'huge'], 'smart', true], 'wordlist levels + permutations');
+        assert(/smart wordlist\s*·\s*permutations/.test(bf.summary), `run summary: ${bf.summary}`);
+        // The parts left out (no zone, no variations) leave nothing behind — not even a "null".
+        assert(!/null|undefined/.test(bf.summary), `run summary without "null": ${bf.summary}`);
+        await page.click('[data-role="scan-permutations"]');
+        const noPerm = await page.evaluate(() => document.querySelector('.scan-runbar-summary').textContent);
+        assert(/smart wordlist\s*·\s*no certificate/.test(noPerm) && !/null|undefined|permutations/.test(noPerm), `run summary without variations: ${noPerm}`);
+        // The Options line lists what differs from the defaults.
+        assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-opt-summary"]').textContent), 'no permutations', 'Options summary');
+        await page.click('[data-role="scan-permutations"]');
+        assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-permutations"]').checked), true, 'variations back on');
+        assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-opt-summary"]').textContent), 'recommended defaults', 'Options summary back');
+        assertEqual(await page.evaluate(() => document.querySelectorAll('input[name="scan-sources"]:checked').length), DEFAULT_ENABLED, 'all sources on by default');
+        await assertNoHorizontalScroll(page, 'setup');
+        await shot(page, opts, 'scan-desktop-light-en-setup');
+      });
+
+      await run.step('seeds the inventory with a real direct IP of the domain (matching test)', async () => {
+        direct = await findDirectIp(page, DOMAIN);
+        const text = [`# e2e inventory`, direct ? `web-origin ${direct.ip}` : null, 'web02 10.20.30.40', 'db01 10.20.30.50'].filter(Boolean).join('\n');
+        await page.evaluate(async (tx) => (await import('./assets/js/state.js')).state.setInventory(tx), text);
+        await page.waitFor(() => document.querySelector('.scan-inv-count')?.dataset.servers >= 2, { message: 'inventory step updated' });
+        process.stdout.write(`        direct host: ${direct ? `${direct.name} → ${direct.ip}` : 'none found (server matching is not asserted)'}\n`);
+      });
+
+      await run.step('validation: nothing to scan, public suffix, invalid names', async () => {
+        await page.type('[data-role="scan-domains"]', '');
+        await page.click('[data-action="scan-run"]');
+        await page.waitFor(() => /least one domain/.test(document.querySelector('.scan-step-domains .field-error')?.textContent || ''));
+        await page.type('[data-role="scan-domains"]', 'com.tr');
+        await page.click('[data-action="scan-run"]');
+        await page.waitFor(() => /public suffix/.test(document.querySelector('.scan-step-domains .field-error')?.textContent || ''));
+        await page.type('[data-role="scan-domains"]', 'example.com bad..name');
+        await page.click('[data-action="scan-run"]');
+        await page.waitFor(() => /bad\.\.name/.test(document.querySelector('.scan-step-domains .field-error')?.textContent || ''));
+        assert(await page.evaluate(() => !document.querySelector('.scan-run-ui')), 'no run started');
+      });
+
+      await run.step('certificate upload (setFileInputFiles) auto-fills the registrable domain', async () => {
+        await page.type('[data-role="scan-domains"]', '');
+        await page.setFileInput('.scan-step-cert .filedrop-input', [path.join(FIXTURES, 'rsa_multi_san.pem')]);
+        await page.waitForSelector('.scan-step-cert .cert-summary');
+        const info = await page.evaluate(() => ({
+          cn: document.querySelector('.cert-summary-cn').textContent,
+          domains: document.querySelector('[data-role="scan-domains"]').value,
+          badge: document.querySelector('.scan-step-cert .scan-step-status').textContent,
+          done: [...document.querySelectorAll('.scan-step-num[data-done="true"]')].map((n) => n.closest('.scan-step').dataset.step),
+          req: document.querySelector('[data-role="scan-requirement"]').dataset.state,
           summary: document.querySelector('.scan-runbar-summary').textContent
-        } : false;
-      }, { message: 'wordlist levels' });
-      assertEqual([bf.values, bf.checked, bf.perm], [['off', 'small', 'smart', 'large', 'huge'], 'smart', true], 'wordlist levels + permutations');
-      assert(/smart wordlist\s*·\s*permutations/.test(bf.summary), `run summary: ${bf.summary}`);
-      // The parts left out (no zone, no variations) leave nothing behind — not even a "null".
-      assert(!/null|undefined/.test(bf.summary), `run summary without "null": ${bf.summary}`);
-      await page.click('[data-role="scan-permutations"]');
-      const noPerm = await page.evaluate(() => document.querySelector('.scan-runbar-summary').textContent);
-      assert(/smart wordlist\s*·\s*no certificate/.test(noPerm) && !/null|undefined|permutations/.test(noPerm), `run summary without variations: ${noPerm}`);
-      // The Options line lists what differs from the defaults.
-      assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-opt-summary"]').textContent), 'no permutations', 'Options summary');
-      await page.click('[data-role="scan-permutations"]');
-      assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-permutations"]').checked), true, 'variations back on');
-      assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-opt-summary"]').textContent), 'recommended defaults', 'Options summary back');
-      assertEqual(await page.evaluate(() => document.querySelectorAll('input[name="scan-sources"]:checked').length), DEFAULT_ENABLED, 'all sources on by default');
-      await assertNoHorizontalScroll(page, 'setup');
-      await shot(page, opts, 'scan-desktop-light-en-setup');
-    });
-
-    await run.step('seeds the inventory with a real direct IP of the domain (matching test)', async () => {
-      direct = await findDirectIp(page, DOMAIN);
-      const text = [`# e2e inventory`, direct ? `web-origin ${direct.ip}` : null, 'web02 10.20.30.40', 'db01 10.20.30.50'].filter(Boolean).join('\n');
-      await page.evaluate(async (tx) => (await import('./assets/js/state.js')).state.setInventory(tx), text);
-      await page.waitFor(() => document.querySelector('.scan-inv-count')?.dataset.servers >= 2, { message: 'inventory step updated' });
-      process.stdout.write(`        direct host: ${direct ? `${direct.name} → ${direct.ip}` : 'none found (server matching is not asserted)'}\n`);
-    });
-
-    await run.step('validation: nothing to scan, public suffix, invalid names', async () => {
-      await page.type('[data-role="scan-domains"]', '');
-      await page.click('[data-action="scan-run"]');
-      await page.waitFor(() => /least one domain/.test(document.querySelector('.scan-step-domains .field-error')?.textContent || ''));
-      await page.type('[data-role="scan-domains"]', 'com.tr');
-      await page.click('[data-action="scan-run"]');
-      await page.waitFor(() => /public suffix/.test(document.querySelector('.scan-step-domains .field-error')?.textContent || ''));
-      await page.type('[data-role="scan-domains"]', 'example.com bad..name');
-      await page.click('[data-action="scan-run"]');
-      await page.waitFor(() => /bad\.\.name/.test(document.querySelector('.scan-step-domains .field-error')?.textContent || ''));
-      assert(await page.evaluate(() => !document.querySelector('.scan-run-ui')), 'no run started');
-    });
-
-    await run.step('certificate upload (setFileInputFiles) auto-fills the registrable domain', async () => {
-      await page.type('[data-role="scan-domains"]', '');
-      await page.setFileInput('.scan-step-cert .filedrop-input', [path.join(FIXTURES, 'rsa_multi_san.pem')]);
-      await page.waitForSelector('.scan-step-cert .cert-summary');
-      const info = await page.evaluate(() => ({
-        cn: document.querySelector('.cert-summary-cn').textContent,
-        domains: document.querySelector('[data-role="scan-domains"]').value,
-        badge: document.querySelector('.scan-step-cert .scan-step-status').textContent,
-        done: [...document.querySelectorAll('.scan-step-num[data-done="true"]')].map((n) => n.closest('.scan-step').dataset.step),
-        req: document.querySelector('[data-role="scan-requirement"]').dataset.state,
-        summary: document.querySelector('.scan-runbar-summary').textContent
-      }));
-      assertEqual(info.cn, 'www.example-test.com.tr', 'CN');
-      assertEqual(info.domains, 'example-test.com.tr', 'auto-filled domains');
-      assert(/ready/.test(info.badge), 'step badge');
-      // The certificate and its domains complete steps 1 and 2 (the inventory was seeded above).
-      assertEqual([info.done, info.req], [['cert', 'domains', 'inventory'], 'met'], 'checked steps + requirement met');
-      assert(/with certificate/.test(info.summary), `run summary: ${info.summary}`);
-      await shot(page, opts, 'scan-desktop-light-en-cert');
-    });
-
-    await run.step('wordlist plan + shared vocabulary follow the certificate domain (.com.tr → Turkish pack)', async () => {
-      const info = await page.waitFor(() => {
-        const plan = document.querySelector('[data-role="scan-wl-plan"]')?.textContent || '';
-        const vocab = document.querySelector('[data-role="scan-vocab"]');
-        return /Turkish/.test(plan) && vocab && !vocab.hidden ? {
-          plan,
-          vocab: vocab.querySelector('.scan-vocab-text').textContent,
-          link: vocab.querySelector('[data-action="scan-vocab-change"]').getAttribute('href')
-        } : false;
-      }, { message: 'plan + vocabulary lines' });
-      // The fixture's *.cdn.example-test.com.tr SAN is a second wordlist base (the scanner runs the
-      // level list under cdn.example-test.com.tr too), so the plan counts 2 bases, not 1 domain.
-      assert(/^≈ [\d,]+(?:–[\d,]+)? DNS queries for 2 domains \(per domain: [\d,]+ smart, \+[\d,]+ Turkish\) · ≈ \d+ (s|min)$/.test(info.plan), `plan: ${info.plan}`);
-      // Learned names are opt-in (Subdomains › Advanced): off unless this browser switched them on.
-      assert(/^Languages \/ markets: Auto: Turkish \(\.com\.tr\) · (learned names off|no learned names yet|[\d,]+ learned names? first)$/.test(info.vocab), `vocabulary: ${info.vocab}`);
-      assertEqual(info.link, '#/subdomains', 'the vocabulary is changed in Subdomains › Advanced');
-      // The query estimate follows the variation budget and the origin hints at once.
-      const queries = () => page.evaluate(() => {
-        const d = document.querySelector('[data-role="scan-wl-plan"]').dataset;
-        return { min: Number(d.queriesMin), max: Number(d.queriesMax) };
+        }));
+        assertEqual(info.cn, 'www.example-test.com.tr', 'CN');
+        assertEqual(info.domains, 'example-test.com.tr', 'auto-filled domains');
+        assert(/ready/.test(info.badge), 'step badge');
+        // The certificate and its domains complete steps 1 and 2 (the inventory was seeded above).
+        assertEqual([info.done, info.req], [['cert', 'domains', 'inventory'], 'met'], 'checked steps + requirement met');
+        assert(/with certificate/.test(info.summary), `run summary: ${info.summary}`);
+        await shot(page, opts, 'scan-desktop-light-en-cert');
       });
-      const setBudget = (v) => page.evaluate((x) => {
-        const sel = document.querySelector('.scan-perm-budget select');
-        sel.value = x;
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
-      }, v);
-      const q1500 = await queries();
-      await setBudget('5000');
-      const q5000 = await queries();
-      assert(q5000.max > q1500.max, `budget 5,000 raises the estimate at once: ${JSON.stringify([q1500, q5000])}`);
-      await setBudget('1500');
-      assertEqual(await queries(), q1500, 'back to 1,500');
-      await page.click('[data-role="scan-origin-hints"]');
-      const noHints = await queries();
-      assert(noHints.max < q1500.max, `no origin hints lowers it at once: ${JSON.stringify([q1500, noHints])}`);
-      await page.click('[data-role="scan-origin-hints"]');
-      assertEqual(await queries(), q1500, 'origin hints back on');
-      // Off: no plan to count, no vocabulary line.
-      await page.click('input[name="scan-bruteforce"][value="off"]');
-      assert(await page.evaluate(() => document.querySelector('[data-role="scan-vocab"]').hidden && /No names are guessed/.test(document.querySelector('[data-role="scan-wl-plan"]').textContent)), 'off hides the vocabulary');
-      await page.click('input[name="scan-bruteforce"][value="smart"]');
-    });
 
-    await run.step('typing another domain offers the certificate domains again ("Use these")', async () => {
-      await page.type('[data-role="scan-domains"]', DOMAIN);
-      await page.waitForSelector('[data-action="use-cert-domains"]');
-      await page.click('[data-action="use-cert-domains"]');
-      assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-domains"]').value), 'example-test.com.tr', 'restored');
-      await page.type('[data-role="scan-domains"]', DOMAIN);
-    });
-
-    await run.step('Cancel stops a running scan and keeps the partial hosts', async () => {
-      await setOptions(page, { sources: [], bruteforce: 'smart' });
-      await page.type('[data-role="scan-domains"]', 'example.com');
-      // Start and cancel inside the page: a warm DoH cache can finish 1,300 lookups in ~2 s.
-      const seen = await page.evaluate(async () => {
-        const prev = document.querySelector('.scan-run-ui')?.dataset.run || '';
-        document.querySelector('[data-action="scan-run"]').click();
-        const t0 = performance.now();
-        while (document.querySelector('.scan-run-ui')?.dataset.run === prev || !document.querySelector('.scan-run-ui')) {
-          if (performance.now() - t0 > 5000) return { started: false };
-          await new Promise((r) => setTimeout(r, 20));
-        }
-        await new Promise((r) => setTimeout(r, 250));
-        const state = {
-          started: true,
-          status: document.querySelector('.scan-run').dataset.status,
-          cancelVisible: !document.querySelector('[data-action="scan-cancel"]').hidden,
-          busy: document.querySelector('#app-header').classList.contains('is-busy')
-        };
-        document.querySelector('[data-action="scan-cancel"]').click();
-        return state;
+      await run.step('wordlist plan + shared vocabulary follow the certificate domain (.com.tr → Turkish pack)', async () => {
+        const info = await page.waitFor(() => {
+          const plan = document.querySelector('[data-role="scan-wl-plan"]')?.textContent || '';
+          const vocab = document.querySelector('[data-role="scan-vocab"]');
+          return /Turkish/.test(plan) && vocab && !vocab.hidden ? {
+            plan,
+            vocab: vocab.querySelector('.scan-vocab-text').textContent,
+            link: vocab.querySelector('[data-action="scan-vocab-change"]').getAttribute('href')
+          } : false;
+        }, { message: 'plan + vocabulary lines' });
+        // The fixture's *.cdn.example-test.com.tr SAN is a second wordlist base (the scanner runs the
+        // level list under cdn.example-test.com.tr too), so the plan counts 2 bases, not 1 domain.
+        assert(/^≈ [\d,]+(?:–[\d,]+)? DNS queries for 2 domains \(per domain: [\d,]+ smart, \+[\d,]+ Turkish\) · ≈ \d+ (s|min)$/.test(info.plan), `plan: ${info.plan}`);
+        // Learned names are opt-in (Subdomains › Advanced): off unless this browser switched them on.
+        assert(/^Languages \/ markets: Auto: Turkish \(\.com\.tr\) · (learned names off|no learned names yet|[\d,]+ learned names? first)$/.test(info.vocab), `vocabulary: ${info.vocab}`);
+        assertEqual(info.link, '#/subdomains', 'the vocabulary is changed in Subdomains › Advanced');
+        // The query estimate follows the variation budget and the origin hints at once.
+        const queries = () => page.evaluate(() => {
+          const d = document.querySelector('[data-role="scan-wl-plan"]').dataset;
+          return { min: Number(d.queriesMin), max: Number(d.queriesMax) };
+        });
+        const setBudget = (v) => page.evaluate((x) => {
+          const sel = document.querySelector('.scan-perm-budget select');
+          sel.value = x;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }, v);
+        const q1500 = await queries();
+        await setBudget('5000');
+        const q5000 = await queries();
+        assert(q5000.max > q1500.max, `budget 5,000 raises the estimate at once: ${JSON.stringify([q1500, q5000])}`);
+        await setBudget('1500');
+        assertEqual(await queries(), q1500, 'back to 1,500');
+        await page.click('[data-role="scan-origin-hints"]');
+        const noHints = await queries();
+        assert(noHints.max < q1500.max, `no origin hints lowers it at once: ${JSON.stringify([q1500, noHints])}`);
+        await page.click('[data-role="scan-origin-hints"]');
+        assertEqual(await queries(), q1500, 'origin hints back on');
+        // Off: no plan to count, no vocabulary line.
+        await page.click('input[name="scan-bruteforce"][value="off"]');
+        assert(await page.evaluate(() => document.querySelector('[data-role="scan-vocab"]').hidden && /No names are guessed/.test(document.querySelector('[data-role="scan-wl-plan"]').textContent)), 'off hides the vocabulary');
+        await page.click('input[name="scan-bruteforce"][value="smart"]');
       });
-      assert(seen.started && seen.status === 'running', `run started: ${JSON.stringify(seen)}`);
-      assert(seen.cancelVisible && seen.busy, `cancel button and header busy bar while running: ${JSON.stringify(seen)}`);
-      await page.waitFor(() => document.querySelector('.scan-run')?.dataset.status === 'cancelled', { timeout: 15000 });
-      const info = await page.evaluate(() => ({
-        notice: document.querySelector('.scan-run-notice')?.textContent || '',
-        run: !document.querySelector('[data-action="scan-run"]').hidden,
-        busy: document.querySelector('#app-header').classList.contains('is-busy'),
-        ct: document.querySelector('.scan-tab-ct')?.textContent || ''
-      }));
-      assert(/Cancelled/.test(info.notice), `cancel notice: ${info.notice}`);
-      // Streamed partials never resolve once cancelled: no row may keep claiming "resolving…" (the
-      // table redraws on its next frame).
-      await page.waitFor(() => ![...document.querySelectorAll('.scan-mini-badge')].some((b) => /resolving/i.test(b.textContent)),
-        { timeout: 5000, message: 'no "resolving…" badge left after Cancel' });
-      assert(info.run && !info.busy, 'run button back, not busy');
-      // The export bar covers what the table keeps (the offline group checks the files).
-      const bar = await page.evaluate(() => ({
-        rows: document.querySelectorAll('.scan-hosts tbody tr.dt-row').length,
-        hosts: document.querySelector('.scan-exports [data-export="hosts-csv"]').disabled,
-        names: document.querySelector('.scan-exports [data-export="names"]').disabled
-      }));
-      if (bar.rows) assert(!bar.hosts && !bar.names, `export bar enabled for the ${bar.rows} kept rows: ${JSON.stringify(bar)}`);
-    });
 
-    await run.step('a scan keeps running on another page; the toast leads back to the results', async () => {
-      await setOptions(page, { sources: [], bruteforce: 'small' });
-      await page.type('[data-role="scan-domains"]', 'example.com');
-      // Start, then leave as soon as the run exists, so it is still running when the view unmounts.
-      const left = await page.evaluate(async () => {
-        const prev = document.querySelector('.scan-run-ui')?.dataset.run || '';
-        document.querySelector('[data-action="scan-run"]').click();
-        const t0 = performance.now();
-        while (document.querySelector('.scan-run-ui')?.dataset.run === prev) {
-          if (performance.now() - t0 > 5000) return false;
-          await new Promise((r) => setTimeout(r, 10));
-        }
-        const running = document.querySelector('.scan-run').dataset.status === 'running';
-        window.location.hash = '#/about';
-        return running;
+      await run.step('typing another domain offers the certificate domains again ("Use these")', async () => {
+        await page.type('[data-role="scan-domains"]', DOMAIN);
+        await page.waitForSelector('[data-action="use-cert-domains"]');
+        await page.click('[data-action="use-cert-domains"]');
+        assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-domains"]').value), 'example-test.com.tr', 'restored');
+        await page.type('[data-role="scan-domains"]', DOMAIN);
       });
-      assert(left, 'left while the scan was running');
-      await page.waitFor(() => document.documentElement.dataset.view === 'about', { message: 'left the scan view' });
-      await page.waitFor(() => [...document.querySelectorAll('.toast')].some((t) => /Scan finished/.test(t.textContent)),
-        { timeout: 60000, message: 'finish toast while away' });
-      await page.evaluate(() => [...document.querySelectorAll('.toast')].find((t) => /Scan finished/.test(t.textContent)).querySelector('.btn-ghost').click());
-      await page.waitFor(() => document.documentElement.dataset.view === 'scan' && document.querySelector('.scan-run')?.dataset.status === 'done');
-      const hosts = await page.evaluate(() => document.querySelectorAll('.scan-hosts tbody tr.dt-row').length);
-      assert(hosts >= 1, `hosts after background run: ${hosts}`);
-      await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
-    });
 
-    await run.step(`LIVE: full scan of ${DOMAIN} with the certificate and ${SOURCES.length} sources`, async () => {
-      await setOptions(page, { sources: SOURCES, bruteforce: BRUTE });
-      await page.type('[data-role="scan-domains"]', DOMAIN);
-      const before = await runStatus(page);
-      const t0 = Date.now();
-      await page.click('[data-action="scan-run"]');
-      await page.waitFor((prev) => document.querySelector('.scan-run-ui')?.dataset.run !== prev, { args: [before.id] });
-      // Progress UI while running.
-      await page.waitFor(() => document.querySelectorAll('.scan-chip').length > 0, { timeout: 20000, message: 'source chips' });
-      assertEqual((await page.evaluate(() => [...document.querySelectorAll('.scan-chip')].map((c) => c.dataset.source))).sort(), [...SOURCES].sort(), 'chips');
-      await page.evaluate(() => window.scrollTo(0, document.querySelector('.scan-run').getBoundingClientRect().top + window.scrollY - 70));
-      await shot(page, opts, 'scan-desktop-light-en-running');
-      await page.waitFor(() => ['done', 'error', 'cancelled'].includes(document.querySelector('.scan-run')?.dataset.status),
-        { timeout: 300000, interval: 500, message: 'scan finished' });
-      const status = await page.evaluate(() => document.querySelector('.scan-run').dataset.status);
-      assertEqual(status, 'done', 'final status');
-      process.stdout.write(`        finished in ${((Date.now() - t0) / 1000).toFixed(1)} s\n`);
-      assertEqual(await page.evaluate(() => new URLSearchParams(location.hash.split('?')[1]).get('domain')), DOMAIN, 'shareable URL');
-    });
-
-    await run.step('progress panel: all stages finished, every source chip settled', async () => {
-      const info = await page.evaluate(() => ({
-        stages: Object.fromEntries([...document.querySelectorAll('.scan-stage')].map((s) => [s.dataset.stage, s.dataset.state])),
-        chips: [...document.querySelectorAll('.scan-chip')].map((c) => ({ id: c.dataset.source, state: c.dataset.state, text: c.textContent })),
-        meta: document.querySelector('.scan-run-meta').textContent
-      }));
-      assert(Object.values(info.stages).every((s) => s === 'done' || s === 'skipped'), `stages ${JSON.stringify(info.stages)}`);
-      assert(info.chips.every((c) => c.state !== 'pending'), `chips ${JSON.stringify(info.chips)}`);
-      assert(/DNS queries/.test(info.meta), `meta: ${info.meta}`);
-      process.stdout.write(`        sources: ${info.chips.map((c) => `${c.id}=${c.state}`).join(', ')}\n`);
-    });
-
-    await run.step('results: hosts streamed, Cloudflare detected, stats and summary', async () => {
-      const info = await page.evaluate(() => ({
-        rows: document.querySelectorAll('.scan-hosts tbody tr.dt-row').length,
-        total: Number(document.querySelector('[data-stat="hosts"] .stat-value').textContent.replace(/\D/g, '')),
-        cloudflare: Number(document.querySelector('[data-stat="cloudflare"] .stat-value').textContent.replace(/\D/g, '')),
-        cfBadges: document.querySelectorAll('.scan-hosts [data-kind="cloudflare"]').length,
-        covered: document.querySelector('[data-stat="covered"] .stat-value')?.textContent,
-        summary: [...document.querySelectorAll('.scan-summary [data-summary]')].map((a) => a.dataset.summary),
-        hostBadge: document.querySelector('.scan-tabs [data-tab="hosts"] .tab-badge').textContent
-      }));
-      assert(info.total >= 3 && info.rows === Math.min(info.total, 200), `rows ${info.rows} / total ${info.total}`);
-      assert(info.cloudflare >= 1 && info.cfBadges >= 1, `cloudflare stat ${info.cloudflare}, badges ${info.cfBadges}`);
-      assert(info.summary.includes('hidden'), `summary: ${info.summary}`);
-      assert(info.summary.includes('needs') || info.summary.includes('needs-none'), `certificate summary present: ${info.summary}`);
-      const names = await page.evaluate(() => [...document.querySelectorAll('.scan-hosts .scan-host-name')].map((n) => n.textContent));
-      assert(names.includes(DOMAIN) || names.some((n) => n.endsWith(`.${DOMAIN}`)), 'hosts belong to the domain');
-      process.stdout.write(`        ${info.total} hosts, ${info.cloudflare} behind Cloudflare\n`);
-      await page.evaluate(() => window.scrollTo(0, 0));
-      await shot(page, opts, 'scan-desktop-light-en-results');
-    });
-
-    await run.step('inventory match: the seeded server is found through DNS', async () => {
-      if (!direct) return;
-      const info = await page.evaluate((ip) => ({
-        refs: [...document.querySelectorAll('.scan-hosts .scan-server-ref')].map((r) => `${r.textContent.trim()}@${r.title}`),
-        direct: document.querySelector('[data-stat="direct"] .stat-hint').textContent
-      }), direct.ip);
-      assert(info.refs.some((r) => r.startsWith('web-origin') && r.endsWith(direct.ip)), `server refs: ${info.refs}`);
-      assert(/on your servers/.test(info.direct), `direct hint: ${info.direct}`);
-    });
-
-    await run.step('Hosts tab: kind filter, stat-card filter, checkboxes and search', async () => {
-      await page.evaluate(() => {
-        const sel = document.querySelector('[data-role="scan-filter-kind"]');
-        sel.value = 'cloudflare';
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      await run.step('Cancel stops a running scan and keeps the partial hosts', async () => {
+        await setOptions(page, { sources: [], bruteforce: 'smart' });
+        await page.type('[data-role="scan-domains"]', 'example.com');
+        // Start and cancel inside the page: a warm DoH cache can finish 1,300 lookups in ~2 s.
+        const seen = await page.evaluate(async () => {
+          const prev = document.querySelector('.scan-run-ui')?.dataset.run || '';
+          document.querySelector('[data-action="scan-run"]').click();
+          const t0 = performance.now();
+          while (document.querySelector('.scan-run-ui')?.dataset.run === prev || !document.querySelector('.scan-run-ui')) {
+            if (performance.now() - t0 > 5000) return { started: false };
+            await new Promise((r) => setTimeout(r, 20));
+          }
+          await new Promise((r) => setTimeout(r, 250));
+          const state = {
+            started: true,
+            status: document.querySelector('.scan-run').dataset.status,
+            cancelVisible: !document.querySelector('[data-action="scan-cancel"]').hidden,
+            busy: document.querySelector('#app-header').classList.contains('is-busy')
+          };
+          document.querySelector('[data-action="scan-cancel"]').click();
+          return state;
+        });
+        assert(seen.started && seen.status === 'running', `run started: ${JSON.stringify(seen)}`);
+        assert(seen.cancelVisible && seen.busy, `cancel button and header busy bar while running: ${JSON.stringify(seen)}`);
+        await page.waitFor(() => document.querySelector('.scan-run')?.dataset.status === 'cancelled', { timeout: 15000 });
+        const info = await page.evaluate(() => ({
+          notice: document.querySelector('.scan-run-notice')?.textContent || '',
+          run: !document.querySelector('[data-action="scan-run"]').hidden,
+          busy: document.querySelector('#app-header').classList.contains('is-busy'),
+          ct: document.querySelector('.scan-tab-ct')?.textContent || ''
+        }));
+        assert(/Cancelled/.test(info.notice), `cancel notice: ${info.notice}`);
+        // Streamed partials never resolve once cancelled: no row may keep claiming "resolving…" (the
+        // table redraws on its next frame).
+        await page.waitFor(() => ![...document.querySelectorAll('.scan-mini-badge')].some((b) => /resolving/i.test(b.textContent)),
+          { timeout: 5000, message: 'no "resolving…" badge left after Cancel' });
+        assert(info.run && !info.busy, 'run button back, not busy');
+        // The export bar covers what the table keeps (the offline group checks the files).
+        const bar = await page.evaluate(() => ({
+          rows: document.querySelectorAll('.scan-hosts tbody tr.dt-row').length,
+          hosts: document.querySelector('.scan-exports [data-export="hosts-csv"]').disabled,
+          names: document.querySelector('.scan-exports [data-export="names"]').disabled
+        }));
+        if (bar.rows) assert(!bar.hosts && !bar.names, `export bar enabled for the ${bar.rows} kept rows: ${JSON.stringify(bar)}`);
       });
-      await page.waitFor(() => [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')].every((tr) => tr.querySelector('[data-kind]').dataset.kind === 'cloudflare'));
-      assert(await page.evaluate(() => document.querySelector('[data-stat="cloudflare"]').getAttribute('aria-pressed')) === 'true', 'stat pressed');
-      await page.click('[data-stat="unresolved"]');
-      await page.waitFor(() => [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')].every((tr) => ['nxdomain', 'unresolved', 'dangling'].includes(tr.querySelector('[data-kind]').dataset.kind)));
-      await page.click('[data-stat="hosts"]');
-      await page.click('.scan-hosts input[data-filter="covered"]');
-      const covered = await page.evaluate(() => [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')].map((tr) => tr.querySelector('.scan-host-name').textContent));
-      assert(covered.length >= 1 && covered.every((n) => n.endsWith('example-test.com.tr')), `covered: ${covered}`);
-      await page.click('.scan-hosts input[data-filter="covered"]');
-      await page.type('.scan-hosts .dt-search-input', 'example-test');
-      await page.waitFor(() => [...document.querySelectorAll('.scan-hosts .scan-host-name')].map((n) => n.textContent).includes('www.example-test.com.tr'),
-        { message: 'certificate names are always resolved' });
-      await page.type('.scan-hosts .dt-search-input', `www.${DOMAIN}`);
-      await page.waitFor((n) => {
-        const rows = [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')];
-        return rows.length >= 1 && rows.every((tr) => tr.textContent.includes(n));
-      }, { args: [`www.${DOMAIN}`] });
-      await page.type('.scan-hosts .dt-search-input', '');
-    });
 
-    await run.step('row details: DNS answer, reason and links to Global DNS / Lookup', async () => {
-      await page.click('.scan-hosts tbody tr.dt-row .dt-expand-btn');
-      await page.waitForSelector('.scan-hosts .dt-details .scan-host-details');
-      const links = await page.evaluate(() => [...document.querySelectorAll('.scan-hosts .dt-details a.btn')].map((a) => a.getAttribute('href')));
-      assert(links.some((l) => l.startsWith('#/global?name=')) && links.some((l) => l.startsWith('#/lookup?name=')), `links ${links}`);
-      await page.click('.scan-hosts tbody tr.dt-row .dt-expand-btn');
-    });
+      await run.step('a scan keeps running on another page; the toast leads back to the results', async () => {
+        await setOptions(page, { sources: [], bruteforce: 'small' });
+        await page.type('[data-role="scan-domains"]', 'example.com');
+        // Start, then leave as soon as the run exists, so it is still running when the view unmounts.
+        const left = await page.evaluate(async () => {
+          const prev = document.querySelector('.scan-run-ui')?.dataset.run || '';
+          document.querySelector('[data-action="scan-run"]').click();
+          const t0 = performance.now();
+          while (document.querySelector('.scan-run-ui')?.dataset.run === prev) {
+            if (performance.now() - t0 > 5000) return false;
+            await new Promise((r) => setTimeout(r, 10));
+          }
+          const running = document.querySelector('.scan-run').dataset.status === 'running';
+          window.location.hash = '#/about';
+          return running;
+        });
+        assert(left, 'left while the scan was running');
+        await page.waitFor(() => document.documentElement.dataset.view === 'about', { message: 'left the scan view' });
+        await page.waitFor(() => [...document.querySelectorAll('.toast')].some((t) => /Scan finished/.test(t.textContent)),
+          { timeout: 60000, message: 'finish toast while away' });
+        await page.evaluate(() => [...document.querySelectorAll('.toast')].find((t) => /Scan finished/.test(t.textContent)).querySelector('.btn-ghost').click());
+        await page.waitFor(() => document.documentElement.dataset.view === 'scan' && document.querySelector('.scan-run')?.dataset.status === 'done');
+        const hosts = await page.evaluate(() => document.querySelectorAll('.scan-hosts tbody tr.dt-row').length);
+        assert(hosts >= 1, `hosts after background run: ${hosts}`);
+        await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
+      });
 
-    await run.step('Servers tab lists the matched server and the IPs not in the inventory', async () => {
-      await page.click('.scan-tabs [data-tab="servers"]');
-      await page.waitForSelector('.scan-tab-servers .dt');
-      const info = await page.evaluate(() => ({
-        servers: [...document.querySelectorAll('.scan-servers-table tbody tr.dt-row')].map((tr) => ({
-          name: tr.querySelector('.scan-srv-name').textContent, status: tr.querySelector('[data-status]').dataset.status
-        })),
-        unmatched: document.querySelectorAll('.scan-unmatched-table tbody tr.dt-row').length
-      }));
-      if (direct) {
-        const s = info.servers.find((x) => x.name === 'web-origin');
-        assert(s, `web-origin listed: ${JSON.stringify(info.servers)}`);
-        assert(['none', 'needs', 'maybe'].includes(s.status), `status ${s.status}`);
-      }
-      await shot(page, opts, 'scan-desktop-light-en-servers');
-    });
+      await run.step(`LIVE: full scan of ${DOMAIN} with the certificate and ${SOURCES.length} sources`, async () => {
+        await setOptions(page, { sources: SOURCES, bruteforce: BRUTE });
+        await page.type('[data-role="scan-domains"]', DOMAIN);
+        const before = await runStatus(page);
+        const t0 = Date.now();
+        await page.click('[data-action="scan-run"]');
+        await page.waitFor((prev) => document.querySelector('.scan-run-ui')?.dataset.run !== prev, { args: [before.id] });
+        // Progress UI while running.
+        await page.waitFor(() => document.querySelectorAll('.scan-chip').length > 0, { timeout: 20000, message: 'source chips' });
+        assertEqual((await page.evaluate(() => [...document.querySelectorAll('.scan-chip')].map((c) => c.dataset.source))).sort(), [...SOURCES].sort(), 'chips');
+        await page.evaluate(() => window.scrollTo(0, document.querySelector('.scan-run').getBoundingClientRect().top + window.scrollY - 70));
+        await shot(page, opts, 'scan-desktop-light-en-running');
+        await page.waitFor(() => ['done', 'error', 'cancelled'].includes(document.querySelector('.scan-run')?.dataset.status),
+          { timeout: 300000, interval: 500, message: 'scan finished' });
+        const status = await page.evaluate(() => document.querySelector('.scan-run').dataset.status);
+        assertEqual(status, 'done', 'final status');
+        process.stdout.write(`        finished in ${((Date.now() - t0) / 1000).toFixed(1)} s\n`);
+        assertEqual(await page.evaluate(() => new URLSearchParams(location.hash.split('?')[1]).get('domain')), DOMAIN, 'shareable URL');
+      });
 
-    await run.step('Behind CDN tab: explanation, proxied hosts, origin hints and the CLI command', async () => {
-      await page.click('.scan-tabs [data-tab="cdn"]');
-      await page.waitForSelector('.scan-tab-cdn .scan-cli');
-      const info = await page.evaluate(() => ({
-        why: document.querySelector('.scan-tab-cdn .alert-title')?.textContent,
-        proxied: document.querySelectorAll('.scan-cdn-hosts tbody tr.dt-row').length,
-        hints: [...document.querySelectorAll('.scan-hints-table tbody tr.dt-row')].map((tr) => tr.querySelector('td').textContent),
-        command: document.querySelector('.scan-cli code').textContent,
-        cliHref: document.querySelector('.scan-cli a[download]').getAttribute('href'),
-        names: document.querySelector('[data-action="cli-names"]').dataset.count,
-        targets: document.querySelector('[data-action="cli-targets"]').dataset.count
-      }));
-      assertEqual(info.why, 'Why the real servers are hidden', 'explanation');
-      assert(info.proxied >= 1, `proxied rows ${info.proxied}`);
-      const nets = await page.evaluate(() => ({
-        table: !!document.querySelector('.scan-networks-table'),
-        rows: [...document.querySelectorAll('.scan-networks-table tbody tr.dt-row')].map((tr) => tr.querySelector('td').textContent),
-        quick: document.querySelector('.scan-cli-quick code')?.textContent || null
-      }));
-      process.stdout.write(`        origin networks: ${nets.rows.join(', ') || 'none'}; quick command: ${nets.quick || '-'}\n`);
-      assert(nets.table, 'origin networks table');
-      // An IPv4 /24 is swept whole when it clusters several origins, otherwise as its exact
-      // addresses; an IPv6 /48 (which the CLI refuses) always goes in as its known addresses.
-      if (nets.rows.length) {
-        const tokens = (nets.quick || '').split(/\s+/);
-        const sweeps = (raw) => {
-          const cidr = raw.trim();
-          return tokens.includes(cidr) || tokens.some((x) => x.startsWith(cidr.replace(/0\/24$/, '')));
-        };
-        assert(nets.quick && nets.quick.startsWith('python3 ssl_origin_scan.py -t ') && nets.rows.filter((c) => !c.includes(':')).every(sweeps)
-          && !/:\S*\/48\b/.test(nets.quick), `quick sweep command: ${nets.quick}`);
-        // PowerShell variant: the same validated tokens, launched with `python`.
-        await page.click('.scan-cli-shell .seg-btn[data-value="powershell"]');
-        const ps = await page.waitFor(() => {
-          const c = document.querySelector('.scan-cli-quick code')?.textContent || '';
-          return c.startsWith('python ssl_origin_scan.py') ? c : false;
-        }, { message: 'PowerShell sweep command' });
-        assertEqual(ps.replace(/^python /, 'python3 '), nets.quick, 'same tokens in both shells');
-        await page.click('.scan-cli-shell .seg-btn[data-value="posix"]');
-      }
-      assertEqual(info.command, 'python3 ssl_origin_scan.py -t targets.txt -n names.txt --cert new-cert.pem', 'CLI command');
-      assertEqual(info.cliHref, 'cli/ssl_origin_scan.py', 'CLI link');
-      if (direct) assert(info.hints.includes(direct.ip), `origin hints include the non-proxied sibling ${direct.ip}: ${info.hints}`);
-      assert(Number(info.targets) >= 3, `targets ${info.targets}`);
-      const res = await fetch(`${server.url}cli/ssl_origin_scan.py`);
-      assert(res.ok && (await res.text()).includes('ssl_origin_scan'), 'the CLI is served next to the page');
-      await shot(page, opts, 'scan-desktop-light-en-cdn');
-    });
+      await run.step('progress panel: all stages finished, every source chip settled', async () => {
+        const info = await page.evaluate(() => ({
+          stages: Object.fromEntries([...document.querySelectorAll('.scan-stage')].map((s) => [s.dataset.stage, s.dataset.state])),
+          chips: [...document.querySelectorAll('.scan-chip')].map((c) => ({ id: c.dataset.source, state: c.dataset.state, text: c.textContent })),
+          meta: document.querySelector('.scan-run-meta').textContent
+        }));
+        assert(Object.values(info.stages).every((s) => s === 'done' || s === 'skipped'), `stages ${JSON.stringify(info.stages)}`);
+        assert(info.chips.every((c) => c.state !== 'pending'), `chips ${JSON.stringify(info.chips)}`);
+        assert(/DNS queries/.test(info.meta), `meta: ${info.meta}`);
+        process.stdout.write(`        sources: ${info.chips.map((c) => `${c.id}=${c.state}`).join(', ')}\n`);
+      });
 
-    await run.step('Sources tab: one row per source with status and timing', async () => {
-      await page.click('.scan-tabs [data-tab="sources"]');
-      const rows = await page.evaluate(() => [...document.querySelectorAll('.scan-sources-table tbody tr.dt-row')].map((tr) => ({
-        status: tr.querySelector('[data-status]')?.dataset.status, text: tr.textContent
-      })));
-      assertEqual(rows.length, SOURCES.length, 'source rows');
-      assert(rows.every((r) => ['ok', 'partial', 'failed'].includes(r.status)), `status badges: ${JSON.stringify(rows.map((r) => r.status))}`);
-      const health = await page.evaluate(() => [...document.querySelectorAll('.scan-src-health-line')].map((l) => `${l.dataset.source}/${l.dataset.health}: ${l.textContent}`));
-      for (const line of health) process.stdout.write(`        note: ${line}\n`);
-      for (const r of rows.filter((x) => x.status === 'failed')) {
-        assert(!/Rate limited: this service/.test(r.text) || /quota/i.test(r.text), `a quota failure explains when it resets: ${r.text.slice(0, 160)}`);
-      }
-    });
-
-    await run.step('CT certificates tab: certificates with validity status (when a CT source answered)', async () => {
-      await page.click('.scan-tabs [data-tab="ct"]');
-      await page.waitForSelector('.scan-tab-ct .dt');
-      const info = await page.evaluate(() => ({
-        rows: document.querySelectorAll('.scan-ct-table tbody tr.dt-row').length,
-        match: document.querySelector('.scan-tab-ct [data-ct-match]')?.dataset.ctMatch ?? null,
-        ctOk: [...document.querySelectorAll('.scan-chip')].some((c) => ['crtsh', 'certspotter'].includes(c.dataset.source) && ['ok', 'partial'].includes(c.dataset.state) && c.dataset.health !== 'empty')
-      }));
-      if (info.ctOk) assert(info.rows >= 1, `CT rows ${info.rows}`);
-      if (info.rows) assertEqual(info.match, 'false', 'the private test certificate is not in CT');
-      await shot(page, opts, 'scan-desktop-light-en-ct');
-    });
-
-    await run.step('exports: hosts CSV, servers CSV, full JSON, names.txt, targets.txt, new-cert.pem', async () => {
-      await takeDownloads(page);
-      for (const kind of ['hosts-csv', 'servers-csv', 'json', 'names', 'targets']) await page.click(`[data-export="${kind}"]`);
-      await page.click('.scan-tabs [data-tab="cdn"]');
-      await page.click('[data-action="cli-cert"]');
-      const files = await takeDownloads(page);
-      const by = (re) => files.find((f) => re.test(f.name));
-      const hosts = by(/^hosts-.*\.csv$/);
-      assert(hosts, `hosts csv in ${files.map((f) => f.name)}`);
-      assertEqual(csvHeader(hosts.text).slice(0, 4), ['Hostname', 'DNS status', 'Classification', 'Provider'], 'hosts header');
-      assert(hosts.bom && hosts.text.includes(DOMAIN), 'UTF-8 BOM (Excel) + content');
-      const servers = by(/^servers-.*\.csv$/);
-      assertEqual(csvHeader(servers.text)[0], 'Server', 'servers header');
-      const json = JSON.parse(by(/^scan-.*\.json$/).text);
-      assert(json.scan && Array.isArray(json.scan.hosts) && json.scan.hosts.length >= 3 && json.certificate.serialHex, 'full JSON');
-      assert(!JSON.stringify(json).includes('"der"'), 'no DER bytes in the JSON');
-      const names = by(/^names\.txt$/).text.trim().split('\n');
-      assert(names.length >= 1, 'names.txt');
-      const targets = by(/^targets\.txt$/).text;
-      assert(targets.includes('web02 10.20.30.40'), `targets.txt has the inventory: ${targets}`);
-      if (direct) assert(targets.includes(direct.ip), 'targets.txt has the direct IP');
-      const pem = by(/^new-cert\.pem$/).text;
-      assert(pem.startsWith('-----BEGIN CERTIFICATE-----') && !/PRIVATE KEY/.test(pem), 'certificate only');
-    });
-
-    await run.step('results survive navigation and a language switch (Turkish), options persist', async () => {
-      const id = (await runStatus(page)).id;
-      await gotoRoute(page, 'inventory');
-      await gotoRoute(page, 'scan');
-      assertEqual((await runStatus(page)).id, id, 'same run after navigation');
-      await setLangUi(page, 'tr');
-      await page.waitForSelector('.scan-run-ui');
-      assertEqual((await runStatus(page)).id, id, 'same run after re-mount');
-      assertEqual(await page.evaluate(() => document.querySelector('.scan-results-title').textContent), 'Sonuçlar', 'Turkish');
-      assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-domains"]').value), DOMAIN, 'domains kept');
-      const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('ssds.scan.options')));
-      assertEqual([...stored.sources].sort(), [...SOURCES].sort(), 'options remembered');
-      await setLangUi(page, 'en');
-    });
-
-    await run.step('route params: #/scan?domain=… updates the domains without a re-mount', async () => {
-      const id = (await runStatus(page)).id;
-      await page.evaluate(() => { location.hash = '#/scan?domain=example.org,example.net'; });
-      await page.waitFor(() => document.querySelector('[data-role="scan-domains"]').value === 'example.org\nexample.net');
-      assertEqual((await runStatus(page)).id, id, 'results still shown');
-      await page.evaluate((d) => { location.hash = `#/scan?domain=${d}`; }, DOMAIN);
-      await page.waitFor((d) => document.querySelector('[data-role="scan-domains"]').value === d, { args: [DOMAIN] });
-    });
-
-    await run.step('dark theme renders the results without horizontal scroll', async () => {
-      await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
-      await page.click('.scan-tabs [data-tab="hosts"]');
-      await page.evaluate(() => window.scrollTo(0, 0));
-      await assertNoHorizontalScroll(page, 'dark');
-      await shot(page, opts, 'scan-desktop-dark-en-results');
-      await page.click('.scan-tabs [data-tab="cdn"]');
-      await shot(page, opts, 'scan-desktop-dark-en-cdn');
-      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
-    });
-
-    run.group('Phone 390×844 (Turkish)');
-    await run.step('phone layout: setup + results fit 390 px in light and dark', async () => {
-      await page.setViewport({ width: 390, height: 844, mobile: true });
-      await setLangUi(page, 'tr');
-      await page.click('.scan-tabs [data-tab="hosts"]');
-      for (const scheme of ['light', 'dark']) {
-        await page.emulateMedia({ 'prefers-color-scheme': scheme });
+      await run.step('results: hosts streamed, Cloudflare detected, stats and summary', async () => {
+        const info = await page.evaluate(() => ({
+          rows: document.querySelectorAll('.scan-hosts tbody tr.dt-row').length,
+          total: Number(document.querySelector('[data-stat="hosts"] .stat-value').textContent.replace(/\D/g, '')),
+          cloudflare: Number(document.querySelector('[data-stat="cloudflare"] .stat-value').textContent.replace(/\D/g, '')),
+          cfBadges: document.querySelectorAll('.scan-hosts [data-kind="cloudflare"]').length,
+          covered: document.querySelector('[data-stat="covered"] .stat-value')?.textContent,
+          summary: [...document.querySelectorAll('.scan-summary [data-summary]')].map((a) => a.dataset.summary),
+          hostBadge: document.querySelector('.scan-tabs [data-tab="hosts"] .tab-badge').textContent
+        }));
+        assert(info.total >= 3 && info.rows === Math.min(info.total, 200), `rows ${info.rows} / total ${info.total}`);
+        assert(info.cloudflare >= 1 && info.cfBadges >= 1, `cloudflare stat ${info.cloudflare}, badges ${info.cfBadges}`);
+        assert(info.summary.includes('hidden'), `summary: ${info.summary}`);
+        assert(info.summary.includes('needs') || info.summary.includes('needs-none'), `certificate summary present: ${info.summary}`);
+        const names = await page.evaluate(() => [...document.querySelectorAll('.scan-hosts .scan-host-name')].map((n) => n.textContent));
+        assert(names.includes(DOMAIN) || names.some((n) => n.endsWith(`.${DOMAIN}`)), 'hosts belong to the domain');
+        process.stdout.write(`        ${info.total} hosts, ${info.cloudflare} behind Cloudflare\n`);
         await page.evaluate(() => window.scrollTo(0, 0));
-        await assertNoHorizontalScroll(page, `phone ${scheme}`);
-        await shot(page, opts, `scan-mobile-${scheme}-tr-results`);
-      }
-      await page.click('.scan-tabs [data-tab="cdn"]');
-      await assertNoHorizontalScroll(page, 'phone cdn');
-      await shot(page, opts, 'scan-mobile-dark-tr-cdn');
-      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
-      await setLangUi(page, 'en');
-      await page.setViewport({ width: 1440, height: 900 });
-    });
+        await shot(page, opts, 'scan-desktop-light-en-results');
+      });
+
+      await run.step('inventory match: the seeded server is found through DNS', async () => {
+        if (!direct) return;
+        const info = await page.evaluate((ip) => ({
+          refs: [...document.querySelectorAll('.scan-hosts .scan-server-ref')].map((r) => `${r.textContent.trim()}@${r.title}`),
+          direct: document.querySelector('[data-stat="direct"] .stat-hint').textContent
+        }), direct.ip);
+        assert(info.refs.some((r) => r.startsWith('web-origin') && r.endsWith(direct.ip)), `server refs: ${info.refs}`);
+        assert(/on your servers/.test(info.direct), `direct hint: ${info.direct}`);
+      });
+
+      await run.step('Hosts tab: kind filter, stat-card filter, checkboxes and search', async () => {
+        await page.evaluate(() => {
+          const sel = document.querySelector('[data-role="scan-filter-kind"]');
+          sel.value = 'cloudflare';
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        await page.waitFor(() => [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')].every((tr) => tr.querySelector('[data-kind]').dataset.kind === 'cloudflare'));
+        assert(await page.evaluate(() => document.querySelector('[data-stat="cloudflare"]').getAttribute('aria-pressed')) === 'true', 'stat pressed');
+        await page.click('[data-stat="unresolved"]');
+        await page.waitFor(() => [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')].every((tr) => ['nxdomain', 'unresolved', 'dangling'].includes(tr.querySelector('[data-kind]').dataset.kind)));
+        await page.click('[data-stat="hosts"]');
+        await page.click('.scan-hosts input[data-filter="covered"]');
+        const covered = await page.evaluate(() => [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')].map((tr) => tr.querySelector('.scan-host-name').textContent));
+        assert(covered.length >= 1 && covered.every((n) => n.endsWith('example-test.com.tr')), `covered: ${covered}`);
+        await page.click('.scan-hosts input[data-filter="covered"]');
+        await page.type('.scan-hosts .dt-search-input', 'example-test');
+        await page.waitFor(() => [...document.querySelectorAll('.scan-hosts .scan-host-name')].map((n) => n.textContent).includes('www.example-test.com.tr'),
+          { message: 'certificate names are always resolved' });
+        await page.type('.scan-hosts .dt-search-input', `www.${DOMAIN}`);
+        await page.waitFor((n) => {
+          const rows = [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')];
+          return rows.length >= 1 && rows.every((tr) => tr.textContent.includes(n));
+        }, { args: [`www.${DOMAIN}`] });
+        await page.type('.scan-hosts .dt-search-input', '');
+      });
+
+      await run.step('row details: DNS answer, reason and links to Global DNS / Lookup', async () => {
+        await page.click('.scan-hosts tbody tr.dt-row .dt-expand-btn');
+        await page.waitForSelector('.scan-hosts .dt-details .scan-host-details');
+        const links = await page.evaluate(() => [...document.querySelectorAll('.scan-hosts .dt-details a.btn')].map((a) => a.getAttribute('href')));
+        assert(links.some((l) => l.startsWith('#/global?name=')) && links.some((l) => l.startsWith('#/lookup?name=')), `links ${links}`);
+        await page.click('.scan-hosts tbody tr.dt-row .dt-expand-btn');
+      });
+
+      await run.step('Servers tab lists the matched server and the IPs not in the inventory', async () => {
+        await page.click('.scan-tabs [data-tab="servers"]');
+        await page.waitForSelector('.scan-tab-servers .dt');
+        const info = await page.evaluate(() => ({
+          servers: [...document.querySelectorAll('.scan-servers-table tbody tr.dt-row')].map((tr) => ({
+            name: tr.querySelector('.scan-srv-name').textContent, status: tr.querySelector('[data-status]').dataset.status
+          })),
+          unmatched: document.querySelectorAll('.scan-unmatched-table tbody tr.dt-row').length
+        }));
+        if (direct) {
+          const s = info.servers.find((x) => x.name === 'web-origin');
+          assert(s, `web-origin listed: ${JSON.stringify(info.servers)}`);
+          assert(['none', 'needs', 'maybe'].includes(s.status), `status ${s.status}`);
+        }
+        await shot(page, opts, 'scan-desktop-light-en-servers');
+      });
+
+      await run.step('Behind CDN tab: explanation, proxied hosts, origin hints and the CLI command', async () => {
+        await page.click('.scan-tabs [data-tab="cdn"]');
+        await page.waitForSelector('.scan-tab-cdn .scan-cli');
+        const info = await page.evaluate(() => ({
+          why: document.querySelector('.scan-tab-cdn .alert-title')?.textContent,
+          proxied: document.querySelectorAll('.scan-cdn-hosts tbody tr.dt-row').length,
+          hints: [...document.querySelectorAll('.scan-hints-table tbody tr.dt-row')].map((tr) => tr.querySelector('td').textContent),
+          command: document.querySelector('.scan-cli code').textContent,
+          cliHref: document.querySelector('.scan-cli a[download]').getAttribute('href'),
+          names: document.querySelector('[data-action="cli-names"]').dataset.count,
+          targets: document.querySelector('[data-action="cli-targets"]').dataset.count
+        }));
+        assertEqual(info.why, 'Why the real servers are hidden', 'explanation');
+        assert(info.proxied >= 1, `proxied rows ${info.proxied}`);
+        const nets = await page.evaluate(() => ({
+          table: !!document.querySelector('.scan-networks-table'),
+          rows: [...document.querySelectorAll('.scan-networks-table tbody tr.dt-row')].map((tr) => tr.querySelector('td').textContent),
+          quick: document.querySelector('.scan-cli-quick code')?.textContent || null
+        }));
+        process.stdout.write(`        origin networks: ${nets.rows.join(', ') || 'none'}; quick command: ${nets.quick || '-'}\n`);
+        assert(nets.table, 'origin networks table');
+        // An IPv4 /24 is swept whole when it clusters several origins, otherwise as its exact
+        // addresses; an IPv6 /48 (which the CLI refuses) always goes in as its known addresses.
+        if (nets.rows.length) {
+          const tokens = (nets.quick || '').split(/\s+/);
+          const sweeps = (raw) => {
+            const cidr = raw.trim();
+            return tokens.includes(cidr) || tokens.some((x) => x.startsWith(cidr.replace(/0\/24$/, '')));
+          };
+          assert(nets.quick && nets.quick.startsWith('python3 ssl_origin_scan.py -t ') && nets.rows.filter((c) => !c.includes(':')).every(sweeps)
+            && !/:\S*\/48\b/.test(nets.quick), `quick sweep command: ${nets.quick}`);
+          // PowerShell variant: the same validated tokens, launched with `python`.
+          await page.click('.scan-cli-shell .seg-btn[data-value="powershell"]');
+          const ps = await page.waitFor(() => {
+            const c = document.querySelector('.scan-cli-quick code')?.textContent || '';
+            return c.startsWith('python ssl_origin_scan.py') ? c : false;
+          }, { message: 'PowerShell sweep command' });
+          assertEqual(ps.replace(/^python /, 'python3 '), nets.quick, 'same tokens in both shells');
+          await page.click('.scan-cli-shell .seg-btn[data-value="posix"]');
+        }
+        assertEqual(info.command, 'python3 ssl_origin_scan.py -t targets.txt -n names.txt --cert new-cert.pem', 'CLI command');
+        assertEqual(info.cliHref, 'cli/ssl_origin_scan.py', 'CLI link');
+        if (direct) assert(info.hints.includes(direct.ip), `origin hints include the non-proxied sibling ${direct.ip}: ${info.hints}`);
+        assert(Number(info.targets) >= 3, `targets ${info.targets}`);
+        const res = await fetch(`${server.url}cli/ssl_origin_scan.py`);
+        assert(res.ok && (await res.text()).includes('ssl_origin_scan'), 'the CLI is served next to the page');
+        await shot(page, opts, 'scan-desktop-light-en-cdn');
+      });
+
+      await run.step('Sources tab: one row per source with status and timing', async () => {
+        await page.click('.scan-tabs [data-tab="sources"]');
+        const rows = await page.evaluate(() => [...document.querySelectorAll('.scan-sources-table tbody tr.dt-row')].map((tr) => ({
+          status: tr.querySelector('[data-status]')?.dataset.status, text: tr.textContent
+        })));
+        assertEqual(rows.length, SOURCES.length, 'source rows');
+        assert(rows.every((r) => ['ok', 'partial', 'failed'].includes(r.status)), `status badges: ${JSON.stringify(rows.map((r) => r.status))}`);
+        const health = await page.evaluate(() => [...document.querySelectorAll('.scan-src-health-line')].map((l) => `${l.dataset.source}/${l.dataset.health}: ${l.textContent}`));
+        for (const line of health) process.stdout.write(`        note: ${line}\n`);
+        for (const r of rows.filter((x) => x.status === 'failed')) {
+          assert(!/Rate limited: this service/.test(r.text) || /quota/i.test(r.text), `a quota failure explains when it resets: ${r.text.slice(0, 160)}`);
+        }
+      });
+
+      await run.step('CT certificates tab: certificates with validity status (when a CT source answered)', async () => {
+        await page.click('.scan-tabs [data-tab="ct"]');
+        await page.waitForSelector('.scan-tab-ct .dt');
+        const info = await page.evaluate(() => ({
+          rows: document.querySelectorAll('.scan-ct-table tbody tr.dt-row').length,
+          match: document.querySelector('.scan-tab-ct [data-ct-match]')?.dataset.ctMatch ?? null,
+          ctOk: [...document.querySelectorAll('.scan-chip')].some((c) => ['crtsh', 'certspotter'].includes(c.dataset.source) && ['ok', 'partial'].includes(c.dataset.state) && c.dataset.health !== 'empty')
+        }));
+        if (info.ctOk) assert(info.rows >= 1, `CT rows ${info.rows}`);
+        if (info.rows) assertEqual(info.match, 'false', 'the private test certificate is not in CT');
+        await shot(page, opts, 'scan-desktop-light-en-ct');
+      });
+
+      await run.step('exports: hosts CSV, servers CSV, full JSON, names.txt, targets.txt, new-cert.pem', async () => {
+        await takeDownloads(page);
+        for (const kind of ['hosts-csv', 'servers-csv', 'json', 'names', 'targets']) await page.click(`[data-export="${kind}"]`);
+        await page.click('.scan-tabs [data-tab="cdn"]');
+        await page.click('[data-action="cli-cert"]');
+        const files = await takeDownloads(page);
+        const by = (re) => files.find((f) => re.test(f.name));
+        const hosts = by(/^hosts-.*\.csv$/);
+        assert(hosts, `hosts csv in ${files.map((f) => f.name)}`);
+        assertEqual(csvHeader(hosts.text).slice(0, 4), ['Hostname', 'DNS status', 'Classification', 'Provider'], 'hosts header');
+        assert(hosts.bom && hosts.text.includes(DOMAIN), 'UTF-8 BOM (Excel) + content');
+        const servers = by(/^servers-.*\.csv$/);
+        assertEqual(csvHeader(servers.text)[0], 'Server', 'servers header');
+        const json = JSON.parse(by(/^scan-.*\.json$/).text);
+        assert(json.scan && Array.isArray(json.scan.hosts) && json.scan.hosts.length >= 3 && json.certificate.serialHex, 'full JSON');
+        assert(!JSON.stringify(json).includes('"der"'), 'no DER bytes in the JSON');
+        const names = by(/^names\.txt$/).text.trim().split('\n');
+        assert(names.length >= 1, 'names.txt');
+        const targets = by(/^targets\.txt$/).text;
+        assert(targets.includes('web02 10.20.30.40'), `targets.txt has the inventory: ${targets}`);
+        if (direct) assert(targets.includes(direct.ip), 'targets.txt has the direct IP');
+        const pem = by(/^new-cert\.pem$/).text;
+        assert(pem.startsWith('-----BEGIN CERTIFICATE-----') && !/PRIVATE KEY/.test(pem), 'certificate only');
+      });
+
+      await run.step('results survive navigation and a language switch (Turkish), options persist', async () => {
+        const id = (await runStatus(page)).id;
+        await gotoRoute(page, 'inventory');
+        await gotoRoute(page, 'scan');
+        assertEqual((await runStatus(page)).id, id, 'same run after navigation');
+        await setLangUi(page, 'tr');
+        await page.waitForSelector('.scan-run-ui');
+        assertEqual((await runStatus(page)).id, id, 'same run after re-mount');
+        assertEqual(await page.evaluate(() => document.querySelector('.scan-results-title').textContent), 'Sonuçlar', 'Turkish');
+        assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-domains"]').value), DOMAIN, 'domains kept');
+        const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('ssds.scan.options')));
+        assertEqual([...stored.sources].sort(), [...SOURCES].sort(), 'options remembered');
+        await setLangUi(page, 'en');
+      });
+
+      await run.step('route params: #/scan?domain=… updates the domains without a re-mount', async () => {
+        const id = (await runStatus(page)).id;
+        await page.evaluate(() => { location.hash = '#/scan?domain=example.org,example.net'; });
+        await page.waitFor(() => document.querySelector('[data-role="scan-domains"]').value === 'example.org\nexample.net');
+        assertEqual((await runStatus(page)).id, id, 'results still shown');
+        await page.evaluate((d) => { location.hash = `#/scan?domain=${d}`; }, DOMAIN);
+        await page.waitFor((d) => document.querySelector('[data-role="scan-domains"]').value === d, { args: [DOMAIN] });
+      });
+
+      await run.step('dark theme renders the results without horizontal scroll', async () => {
+        await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
+        await page.click('.scan-tabs [data-tab="hosts"]');
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await assertNoHorizontalScroll(page, 'dark');
+        await shot(page, opts, 'scan-desktop-dark-en-results');
+        await page.click('.scan-tabs [data-tab="cdn"]');
+        await shot(page, opts, 'scan-desktop-dark-en-cdn');
+        await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      });
+
+      run.group('Phone 390×844 (Turkish)');
+      await run.step('phone layout: setup + results fit 390 px in light and dark', async () => {
+        await page.setViewport({ width: 390, height: 844, mobile: true });
+        await setLangUi(page, 'tr');
+        await page.click('.scan-tabs [data-tab="hosts"]');
+        for (const scheme of ['light', 'dark']) {
+          await page.emulateMedia({ 'prefers-color-scheme': scheme });
+          await page.evaluate(() => window.scrollTo(0, 0));
+          await assertNoHorizontalScroll(page, `phone ${scheme}`);
+          await shot(page, opts, `scan-mobile-${scheme}-tr-results`);
+        }
+        await page.click('.scan-tabs [data-tab="cdn"]');
+        await assertNoHorizontalScroll(page, 'phone cdn');
+        await shot(page, opts, 'scan-mobile-dark-tr-cdn');
+        await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+        await setLangUi(page, 'en');
+        await page.setViewport({ width: 1440, height: 900 });
+      });
+    }
 
     run.group('Zone File hand-off (emulated DNS, nothing else leaves the page)');
     await run.step('"Find certificate targets": step 2 pre-filled with an exact-mode chip and no auto-start; Run → zone origins on Behind CDN, via: zone on Servers, exact command', async () => {
@@ -1633,6 +1955,9 @@ async function main() {
         }
       }
     }
+
+    run.group('Topology: a load balancer pair on a VIP, two backends, a NAT address (emulated DNS, nothing else leaves the page)');
+    await topologySteps(run, { browser, server, page, origin, opts });
 
     run.group('Quality');
     await run.step('i18n: no missing keys, TR and EN key sets match', async () => {

@@ -72,8 +72,8 @@ describe('ci.yml', () => {
 
   test('the offline E2E script runs exactly the suites that need no network', () => {
     const cmd = pkg.scripts['test:e2e:offline'];
-    assert.match(cmd, /^node tests\/e2e\/run-all\.mjs --only shell,subdomains,zone,verify,renewal,dane,pfx,chainfix,renew,estate,global,ptr,retire,carry,ip,lookup,health,workspaces,domain,change,privacy,reports,portfolio --offline --no-shots$/);
-    for (const suite of ['shell', 'subdomains', 'zone', 'verify', 'renewal', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'ptr', 'retire', 'carry', 'ip', 'lookup', 'health', 'workspaces', 'domain', 'change', 'privacy', 'reports', 'portfolio']) assert.ok(existsSync(join(ROOT, 'tests', 'e2e', `${suite}.e2e.mjs`)), suite);
+    assert.match(cmd, /^node tests\/e2e\/run-all\.mjs --only shell,subdomains,zone,scan,verify,renewal,dane,pfx,chainfix,renew,estate,global,ptr,retire,carry,ip,lookup,health,workspaces,domain,change,privacy,reports,portfolio --offline --no-shots$/);
+    for (const suite of ['shell', 'subdomains', 'zone', 'scan', 'verify', 'renewal', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'ptr', 'retire', 'carry', 'ip', 'lookup', 'health', 'workspaces', 'domain', 'change', 'privacy', 'reports', 'portfolio']) assert.ok(existsSync(join(ROOT, 'tests', 'e2e', `${suite}.e2e.mjs`)), suite);
     // ci.yml's step names the same suites, in the same order.
     const only = cmd.match(/--only (\S+)/)[1].split(',');
     const named = ci.match(/- name: Offline E2E \(([^)]+)\)/);
@@ -85,6 +85,11 @@ describe('ci.yml', () => {
     const sub = readFileSync(join(ROOT, 'tests', 'e2e', 'subdomains.e2e.mjs'), 'utf8');
     assert.match(sub, /const liveStep = \(name, fn\) => \{\s*if \(!OFFLINE\) return run\.step\(name, fn\);/);
     assert.match(sub, /args: OFFLINE \? \['--host-resolver-rules=MAP \* ~NOTFOUND , EXCLUDE 127\.0\.0\.1'\] : \[\]/);
+    // scan too (its live desktop and phone groups): --offline skips them, only the local server resolves.
+    const scan = readFileSync(join(ROOT, 'tests', 'e2e', 'scan.e2e.mjs'), 'utf8');
+    assert.match(scan, /const OFFLINE = opts\.has\('--offline'\);/);
+    assert.match(scan, /if \(OFFLINE\) \{[^}]*SKIP {2}the live scan \(--offline\)[\s\S]*?\} else \{\s*run\.group\('Desktop 1440×900 \(English\)'\);/);
+    assert.match(scan, /args: OFFLINE \? \['--host-resolver-rules=MAP \* ~NOTFOUND , EXCLUDE 127\.0\.0\.1'\] : \[\]/);
     // ip, lookup and health have live API groups: --offline keeps them to their offline group.
     for (const suite of ['ip', 'lookup']) {
       assert.match(readFileSync(join(ROOT, 'tests', 'e2e', `${suite}.e2e.mjs`), 'utf8'), /if \(!OFFLINE\) await liveGroups\(/, suite);

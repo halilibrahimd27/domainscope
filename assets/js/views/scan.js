@@ -58,7 +58,7 @@ import { SOURCES, sourceHealthSummary } from '../lib/sourceinfo.js';
 import { SCAN_STAGES } from '../lib/scanplan.js';
 import { FORM_STEPS, formProgress, optionChanges, barStuck } from '../lib/scanform.js';
 import {
-  toCsv, toJson, scanHostRows, scanServerRows, namesForCli, targetsForCli, cliCommand, HOST_COLUMNS, SERVER_COLUMNS
+  toCsv, toJson, scanHostRows, scanServerRows, namesForCli, targetsForCli, cliCommand, cliServerName, HOST_COLUMNS, SERVER_COLUMNS
 } from '../lib/export.js';
 import { getResolver } from '../lib/resolvers.js';
 import { pemEncode } from '../lib/x509.js';
@@ -95,7 +95,7 @@ import { SummaryButton } from '../ui/summary-button.js';
 import { DanePanel, daneTabBadge, daneExport, cancelDane } from '../ui/dane-panel.js';
 // Where TLS terminates (the inventory's topology keys): the notes of a server, the CSV column.
 import { TopologyNotes, noCertStatus } from '../ui/topology.js';
-import { TOPOLOGY_CSV_COLUMN } from '../lib/topology.js';
+import { TOPOLOGY_CSV_COLUMN, topologyTokens } from '../lib/topology.js';
 
 /**
  * The Servers CSV columns for these server groups: lib/export SERVER_COLUMNS, and the inventory
@@ -3218,7 +3218,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     ...state.inventory.servers,
     ...(run.result ? run.result.originHints : []),
     ...(run.result ? run.result.unmatchedIps : [])
-  ]);
+  ], { keys: (s) => topologyTokens(s, cliServerName) });
   const lineCount = (text) => (text ? text.split('\n').filter(Boolean).length : 0);
   function downloadNames() {
     const file = downloadText('names.txt', namesText(), 'text/plain;charset=utf-8');

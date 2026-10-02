@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   parseInventory, buildIpIndex, lookupServers, formatEndpoint, addressTargets, serverTargets, inventoryFormat,
-  terminatesTls, topologyTokens, TOPOLOGY_KEYS, TOPOLOGY_REASONS
+  TOPOLOGY_KEYS, TOPOLOGY_REASONS
 } from '../../assets/js/lib/inventory.js';
-import { inventoryTopology } from '../../assets/js/lib/topology.js';
+import { inventoryTopology, terminatesTls, topologyTokens } from '../../assets/js/lib/topology.js';
 
 /** Map server id -> sorted ips for order-independent comparison. */
 function ipsById(result) {

@@ -8,13 +8,13 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parseInventory } from '../../assets/js/lib/inventory.js';
-import { applyTopology, orderByLoadBalancer, topologyNotes, TOPOLOGY_CSV_COLUMN } from '../../assets/js/lib/topology.js';
+import { applyTopology, orderByLoadBalancer, topologyNotes, topologyTokens, TOPOLOGY_CSV_COLUMN } from '../../assets/js/lib/topology.js';
 import { runScan } from '../../assets/js/lib/scanner.js';
 import { DohClient } from '../../assets/js/lib/doh.js';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/lib/dnswire.js';
 import { planRenewal, workListRows, workListColumns, WORKLIST_COLUMNS } from '../../assets/js/lib/certsets.js';
-import { toCsv, scanServerRows, targetsForCli, SERVER_COLUMNS } from '../../assets/js/lib/export.js';
+import { toCsv, scanServerRows, targetsForCli, cliServerName, SERVER_COLUMNS } from '../../assets/js/lib/export.js';
 import { buildVerifyPairs } from '../../assets/js/lib/verify.js';
 import { targetsText } from '../../assets/js/views/inventory.js';
 
@@ -241,7 +241,10 @@ test('targets.txt (Servers view and SSL Targets) writes the topology keys the CL
   // tests/python/test_inventory_targets.py reads this file back to the same model.
   const want = readFileSync(new URL('targets.txt', TOPOLOGY_DIR), 'utf8');
   assert.equal(targetsText(INVENTORY), want);
-  assert.deepEqual(targetsForCli(INVENTORY).split('\n').filter(Boolean), want.split('\n').filter(Boolean));
+  const keys = (s) => topologyTokens(s, cliServerName);
+  assert.deepEqual(targetsForCli(INVENTORY, { keys }).split('\n').filter(Boolean), want.split('\n').filter(Boolean));
+  // lib/export.js stays on the start route without lib/topology.js: no key writer, no keys
+  assert.equal(targetsForCli(INVENTORY).includes('terminates_tls'), false);
   // without topology keys a line is as before
   assert.equal(targetsText(parseInventory('web01 203.0.113.10').servers), 'web01 203.0.113.10\n');
 });

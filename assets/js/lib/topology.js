@@ -12,9 +12,39 @@
  */
 
 import { normalizeIP } from './netinfo.js';
-import { terminatesTls } from './inventory.js';
 
 /** @typedef {import('./inventory.js').Server} Server */
+
+/**
+ * Does the server get the certificate? `terminates_tls` is yes unless the inventory says no.
+ * @param {{ terminatesTls?: boolean }|null} server
+ * @returns {boolean}
+ */
+export function terminatesTls(server) {
+  return !(server && server.terminatesTls === false);
+}
+
+/**
+ * The topology of `server` as `key=value` tokens of a targets.txt line, the way
+ * cli/ssl_origin_scan.py reads them: `terminates_tls=no`, `backends=…` (each backend as the CLI
+ * names it: `cliName(name)`, or the name itself when that is an address), `vip=…`, `nat=…`.
+ * The TLS ports are not written: inventory.addressTargets already writes each address on them.
+ * @param {Server} server
+ * @param {(name: string) => string} [cliName] lib/export cliServerName
+ * @returns {string[]}
+ */
+export function topologyTokens(server, cliName = (n) => n) {
+  if (!server) return [];
+  const out = [];
+  if (server.terminatesTls === false) out.push('terminates_tls=no');
+  if (Array.isArray(server.backends) && server.backends.length) {
+    const names = server.backends.map((n) => cliName(n) || (normalizeIP(n) ? n : '')).filter(Boolean);
+    if (names.length) out.push(`backends=${names.join(',')}`);
+  }
+  if (Array.isArray(server.vips) && server.vips.length) out.push(`vip=${server.vips.join(',')}`);
+  if (Array.isArray(server.nats) && server.nats.length) out.push(`nat=${server.nats.join(',')}`);
+  return out;
+}
 
 /** How strongly a name ties to a server (lib/scanner.js, lib/certsets.js): DNS, the zone file, an origin hint. */
 const VIA_RANK = { dns: 0, zone: 1, hint: 2 };

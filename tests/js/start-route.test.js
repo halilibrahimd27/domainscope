@@ -63,7 +63,7 @@ const START_ROUTE_BUDGET = 370 * 1024;
 
 /** Modules that must never be part of the start route (lib/summary.js: every view's Copy summary but the start view's). */
 const HEAVY = ['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/zoneparse.js', 'lib/x509.js', 'lib/health.js',
-  'lib/propagation.js', 'lib/ipintel.js', 'lib/zonedrift.js', 'lib/summary.js'];
+  'lib/propagation.js', 'lib/ipintel.js', 'lib/zonedrift.js', 'lib/summary.js', 'lib/topology.js'];
 
 const rel = (file) => relative(ROOT, file).split(sep).join('/');
 const code = (file) => readFileSync(file, 'utf8')

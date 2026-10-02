@@ -5,7 +5,7 @@
  */
 
 import { sortHostnames } from './domain.js';
-import { addressTargets, topologyTokens } from './inventory.js';
+import { addressTargets } from './inventory.js';
 import { normalizeIP } from './netinfo.js';
 
 /* ------------------------------------------------------------------------ */
@@ -352,13 +352,15 @@ function isIpRangeToken(token) {
  * name wins), so another server on the same address with a port of its own
  * still gets its line ("web02 203.0.113.10" after "web01 203.0.113.10:8443",
  * as the CLI scans both reading the inventory); a hint or an unmatched IP is
- * left out when any line has its address. A server's topology keys follow its
- * addresses (inventory.topologyTokens: `terminates_tls=no`, `backends=`, `vip=`,
- * `nat=`), so the CLI skips a plain-HTTP backend and groups by load balancer.
+ * left out when any line has its address. `keys(server)` gives the `key=value` tokens
+ * written after a server's addresses (lib/topology.topologyTokens, which stays off the start
+ * route: `terminates_tls=no`, `backends=`, `vip=`, `nat=`), so the CLI skips a plain-HTTP
+ * backend and groups by load balancer; none without it.
  * @param {Array<object|string>} servers
+ * @param {{ keys?: ((server: object) => string[])|null }} [opts]
  * @returns {string}
  */
-export function targetsForCli(servers) {
+export function targetsForCli(servers, { keys = null } = {}) {
   const seenIps = new Set();
   const seenTargets = new Set();
   const lines = [];
@@ -381,8 +383,8 @@ export function targetsForCli(servers) {
     }
     const server = item.server && typeof item.server === 'object' ? item.server : item;
     if (Array.isArray(server.ips) && server.ips.length) {
-      const keys = topologyTokens(server, cliServerName);
-      for (const ip of server.ips) add(server.name ?? server.id, ip, server, keys);
+      const tokens = keys ? keys(server) : [];
+      for (const ip of server.ips) add(server.name ?? server.id, ip, server, tokens);
       continue;
     }
     if (item.ip) {

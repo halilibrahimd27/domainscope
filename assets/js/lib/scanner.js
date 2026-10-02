@@ -25,8 +25,8 @@ import {
   classifyResolution, matchProviderByIP, normalizeIP, parseCidr, parseIP, ipInCidr, isPrivateIP, formatIP,
   isSharedProvider
 } from './netinfo.js';
-import { buildIpIndex, lookupServers, terminatesTls } from './inventory.js';
-import { applyTopology, orderByLoadBalancer } from './topology.js';
+import { buildIpIndex, lookupServers } from './inventory.js';
+import { applyTopology, orderByLoadBalancer, terminatesTls } from './topology.js';
 import {
   getWordlist, loadWordlist, WORDLIST_SMALL, parseCustomWordlist, localesForDomain, LOCALE_PACK_CODES
 } from './wordlist.js';

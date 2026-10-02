@@ -16,7 +16,8 @@ import {
 } from '../ui/components.js';
 import { downloadText } from '../ui/download.js';
 import { formatNumber, formatRelative, registerStrings } from '../i18n.js';
-import { parseInventory, addressTargets, serverTargets, topologyTokens, terminatesTls } from '../lib/inventory.js';
+import { parseInventory, addressTargets, serverTargets } from '../lib/inventory.js';
+import { terminatesTls, topologyTokens } from '../lib/topology.js';
 import { TopologyCard } from '../ui/topology.js';
 import { cliServerName } from '../lib/export.js';
 import { isPrivateIP, ipVersion } from '../lib/netinfo.js';
@@ -249,7 +250,7 @@ let teardown = null;
  * (lib/export.cliServerName), so "Web Server 1" or "#bastion" is neither split, merged with
  * another server nor read as a comment. An address written with a port keeps it
  * (lib/inventory.serverTargets: "web01 203.0.113.10:8443"), so the CLI scans the same ip:port;
- * so does a server's `ports=`. Its other topology keys follow (lib/inventory.topologyTokens:
+ * so does a server's `ports=`. Its other topology keys follow (lib/topology.topologyTokens:
  * "web01 10.0.0.21 terminates_tls=no", "lb01 203.0.113.2 backends=web01,web02 vip=203.0.113.50").
  * @param {Array<{ name: string, ips: string[], ports?: object }>} servers
  * @returns {string}

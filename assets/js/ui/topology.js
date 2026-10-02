@@ -15,8 +15,7 @@
 import { h } from './dom.js';
 import { Badge, Card, Icon } from './components.js';
 import { t, registerStrings } from '../i18n.js';
-import { terminatesTls } from '../lib/inventory.js';
-import { inventoryTopology } from '../lib/topology.js';
+import { inventoryTopology, terminatesTls } from '../lib/topology.js';
 
 registerStrings('en', {
   'topo.title': 'Where TLS terminates',

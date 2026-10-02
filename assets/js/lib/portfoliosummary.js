@@ -87,7 +87,7 @@ const STRINGS = [
   ['sum.pf.nsOf', [{ one: 'name servers of {count} domain', other: 'name servers of {count} domains' }, '{count} alan adının ad sunucuları']],
   ['sum.pf.critical', ['Critical registry status', 'Kritik kayıt durumu']],
   ['sum.pf.notRegistered', ['Not registered', 'Kayıtlı değil']],
-  ['sum.pf.unlocked', ['No transfer lock (clientTransferProhibited)', 'Transfer kilidi yok (clientTransferProhibited)']],
+  ['sum.pf.unlocked', ['No transfer lock', 'Transfer kilidi yok']],
   ['sum.pf.validated', ['{count} validated', '{count} doğrulanıyor']],
   ['sum.pf.signed', ['{count} signed', '{count} imzalı']],
   ['sum.pf.unsigned', ['{count} not signed', '{count} imzasız']],

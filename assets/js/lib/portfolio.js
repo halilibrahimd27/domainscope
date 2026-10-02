@@ -1,8 +1,8 @@
 /**
  * portfolio.js — "Domain portfolio": many domains, one row each (ROADMAP P2.6). Per domain:
- * registration (RDAP: expiry with the days left, the status flags read for risk — a missing
- * clientTransferProhibited is a hijack risk, serverHold / clientHold / redemptionPeriod /
- * pendingDelete are critical —, the registrar), DNSSEC (DS at the parent, validated by the
+ * registration (RDAP: expiry with the days left, the status flags read for risk — no transfer
+ * prohibition at all (client, server or RFC 9083's plain one) is a hijack risk, serverHold /
+ * clientHold / redemptionPeriod / pendingDelete are critical —, the registrar), DNSSEC (DS at the parent, validated by the
  * resolver), the name servers' own registrable domains with THEIR expiry (a name server domain that
  * lapses is a classic takeover: whoever registers it answers for the zone), CAA, and the mail
  * posture: SPF (valid, within 10 lookups), DMARC, DKIM at a few common selectors, MTA-STS and
@@ -117,25 +117,29 @@ export function parsePortfolioInput(text, { max = PORTFOLIO_MAX_DOMAINS } = {}) 
 
 /**
  * The registry statuses read for risk: the flags as lib/passport.js orders them, the critical ones
- * ({@link CRITICAL_STATUSES}), whether the client transfer lock is set (null when the registry
- * reports no status at all), the registry lock (serverTransferProhibited), and the risk: 'critical'
- * (a critical status), 'hijack' (no clientTransferProhibited: anyone with the transfer code can move
- * the domain to another registrar), 'ok', or null without statuses.
+ * ({@link CRITICAL_STATUSES}), whether transfers are prohibited — clientTransferProhibited (the
+ * registrar's lock), serverTransferProhibited (the registry's: RFC 5731 says transfer requests MUST
+ * be rejected) or RFC 9083's plain "transfer prohibited", as Domain overview and Domain Health read
+ * it (null when the registry reports no status at all) —, the statuses that say so, the registry
+ * lock alone, and the risk: 'critical' (a critical status), 'hijack' (no transfer prohibition at
+ * all: anyone with the transfer code can move the domain to another registrar), 'ok', or null
+ * without statuses.
  * @param {string[]} statuses as RDAP lists them ('client transfer prohibited' or 'clientTransferProhibited')
  * @returns {{ flags: Array<{ code: string, kind: string }>, critical: string[], transferLock: boolean|null,
- *   registryLock: boolean|null, risk: 'critical'|'hijack'|'ok'|null }}
+ *   registryLock: boolean|null, transferCodes: string[], risk: 'critical'|'hijack'|'ok'|null }}
  */
 export function statusRisk(statuses) {
   const list = (Array.isArray(statuses) ? statuses : []).map((s) => String(s ?? '').trim()).filter(Boolean);
   const keys = new Set(list.map(squash));
   const critical = CRITICAL_STATUSES.filter((c) => keys.has(c.toLowerCase()));
   const known = list.length > 0;
-  const transferLock = known ? keys.has('clienttransferprohibited') : null;
+  const transferCodes = list.filter((s) => squash(s).includes('transferprohibited'));
+  const transferLock = known ? transferCodes.length > 0 : null;
   const registryLock = known ? keys.has('servertransferprohibited') : null;
   let risk = null;
   if (critical.length) risk = 'critical';
   else if (known) risk = transferLock ? 'ok' : 'hijack';
-  return { flags: rdapStatusFlags(list), critical, transferLock, registryLock, risk };
+  return { flags: rdapStatusFlags(list), critical, transferLock, registryLock, transferCodes, risk };
 }
 
 /**

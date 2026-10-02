@@ -181,14 +181,24 @@ describe('the list', () => {
 });
 
 describe('RDAP statuses read for risk', () => {
-  test('a missing clientTransferProhibited is a hijack risk; RFC 8056 and EPP spellings alike', () => {
+  test('no transfer prohibition at all is a hijack risk; a client, a registry (server) or a plain RFC 9083 one locks; RFC 8056 and EPP spellings alike', () => {
     assert.equal(statusRisk(['client transfer prohibited']).risk, 'ok');
     assert.equal(statusRisk(['clientTransferProhibited', 'clientDeleteProhibited']).transferLock, true);
     const open = statusRisk(['active']);
     assert.deepEqual([open.risk, open.transferLock, open.registryLock], ['hijack', false, false]);
-    // A registry lock alone: still no client transfer lock.
+    // A registry lock (RFC 5731: transfer requests MUST be rejected) is a transfer lock, and is said as one.
     const reg = statusRisk(['server transfer prohibited', 'active']);
-    assert.deepEqual([reg.risk, reg.transferLock, reg.registryLock], ['hijack', false, true]);
+    assert.deepEqual([reg.risk, reg.transferLock, reg.registryLock], ['ok', true, true]);
+    assert.deepEqual(statusRisk(['serverTransferProhibited']).transferLock, true);
+    // RFC 9083's plain "transfer prohibited" too.
+    const plain = statusRisk(['transfer prohibited']);
+    assert.deepEqual([plain.risk, plain.transferLock, plain.registryLock], ['ok', true, false]);
+    // As Domain overview and Domain Health read it (lib/passport.js, lib/health.js): any transfer prohibition.
+    for (const statuses of [['server delete prohibited', 'server transfer prohibited', 'server update prohibited'], ['client_transfer_prohibited'], ['Client Transfer Prohibited']]) {
+      assert.equal(statusRisk(statuses).transferLock, true, statuses.join());
+    }
+    assert.deepEqual(statusRisk(['client transfer prohibited']).transferCodes, ['client transfer prohibited']);
+    assert.deepEqual(statusRisk(['active', 'server transfer prohibited', 'transfer prohibited']).transferCodes, ['server transfer prohibited', 'transfer prohibited']);
   });
 
   test('serverHold, clientHold, redemptionPeriod and pendingDelete are critical, before anything else', () => {
@@ -204,7 +214,7 @@ describe('RDAP statuses read for risk', () => {
   });
 
   test('no status at all: nothing can be said', () => {
-    assert.deepEqual(statusRisk([]), { flags: [], critical: [], transferLock: null, registryLock: null, risk: null });
+    assert.deepEqual(statusRisk([]), { flags: [], critical: [], transferLock: null, registryLock: null, transferCodes: [], risk: null });
     assert.deepEqual(statusRisk(undefined).risk, null);
   });
 

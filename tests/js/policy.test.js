@@ -141,9 +141,13 @@ describe('evaluatePolicy', () => {
   test('transfer lock, critical statuses, registrar', () => {
     const p = one({ transferLock: true, 'status.critical': false, registrar: ['Example Registrar', 'Other Registrar'] });
     assert.deepEqual(evaluatePolicy(p, facts()).map((c) => c.status), ['pass', 'pass', 'pass']);
-    const bad = evaluatePolicy(p, facts({ registration: { ...facts().registration, transferLock: false, critical: ['serverHold'], registrar: 'Elsewhere Ltd' } }));
+    assert.equal(evidenceText(cellOf(p, facts(), 'transferLock'), t), 'transfers are prohibited: client transfer prohibited');
+    // A registry lock alone is a transfer lock (RFC 5731: transfer requests MUST be rejected).
+    const registry = cellOf(p, facts({ registration: { ...facts().registration, statuses: ['server transfer prohibited'], transferLock: true, registryLock: true } }), 'transferLock');
+    assert.deepEqual([registry.status, evidenceText(registry, t)], ['pass', 'transfers are prohibited: server transfer prohibited']);
+    const bad = evaluatePolicy(p, facts({ registration: { ...facts().registration, statuses: ['active'], transferLock: false, critical: ['serverHold'], registrar: 'Elsewhere Ltd' } }));
     assert.deepEqual(bad.map((c) => [c.status, evidenceText(c, t)]), [
-      ['fail', 'clientTransferProhibited is missing: the domain can be transferred away'],
+      ['fail', 'no transfer prohibition (clientTransferProhibited or serverTransferProhibited): the domain can be transferred away'],
       ['fail', 'critical status: serverHold'],
       ['fail', 'registrar: Elsewhere Ltd']
     ]);
@@ -255,7 +259,7 @@ describe('the matrix', () => {
     const csv = auditCsv(audit, { t });
     const lines = csv.replace(/^﻿/, '').trimEnd().split('\r\n');
     assert.equal(lines[0], 'Domain,Failed,Not known,Passed,expiryDays (>= 30),transferLock (true),dmarc.policy (>= quarantine)');
-    assert.equal(lines[2], 'example.org,2,0,1,FAIL · 9 days left (2027-04-20),FAIL · clientTransferProhibited is missing: the domain can be transferred away,PASS · DMARC p=quarantine');
+    assert.equal(lines[2], 'example.org,2,0,1,FAIL · 9 days left (2027-04-20),FAIL · no transfer prohibition (clientTransferProhibited or serverTransferProhibited): the domain can be transferred away,PASS · DMARC p=quarantine');
     assert.match(lines[3], /^example-test\.com\.tr,0,2,1,UNKNOWN · the \.tr registry publishes no RDAP: see its WHOIS,/);
   });
 

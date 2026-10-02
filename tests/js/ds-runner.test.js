@@ -1396,7 +1396,7 @@ describe('offline runs (fake DoH)', () => {
       assert.equal(first.code, EXIT.CHANGED, first.err);
       assert.match(first.out, /^Baseline audit\.json does not exist yet/);
       assert.match(first.out, /\nPolicy audit · baseline\n- 3 domains, 7 rules: 3 fail the policy, 0 could not be checked in full, 0 meet every rule\n- Rules: expiryDays >= 30, transferLock true, status\.critical false, nsExpiryDays >= 30, spf valid, spf\.lookups <= 10, dmarc\.policy >= none\n/);
-      assert.match(first.out, /\nPolicy audit · example\.org\n- 3 rules failed, 0 could not be checked, 4 passed\n- FAIL expiryDays >= 30: 20 days left \(\d{4}-\d{2}-\d{2}\)\n- FAIL transferLock true: clientTransferProhibited is missing: the domain can be transferred away\n- FAIL nsExpiryDays >= 30: name server domain example\.net: 12 days left\n/);
+      assert.match(first.out, /\nPolicy audit · example\.org\n- 3 rules failed, 0 could not be checked, 4 passed\n- FAIL expiryDays >= 30: 20 days left \(\d{4}-\d{2}-\d{2}\)\n- FAIL transferLock true: no transfer prohibition \(clientTransferProhibited or serverTransferProhibited\): the domain can be transferred away\n- FAIL nsExpiryDays >= 30: name server domain example\.net: 12 days left\n/);
       assert.match(first.err, /ds: audit: 3 domains, 7 rules, DKIM at 8 selectors\n/);
       assert.match(first.err, /ds: warning: no RDAP for example-test\.com\.tr \(the registry publishes none\): the registration rules could not be checked/);
       assert.deepEqual(rdapLog.map((x) => x.domain).sort(), ['example.com', 'example.net', 'example.org'], 'each once, the name servers\' domain too; none for .tr');
@@ -1471,6 +1471,13 @@ describe('offline runs (fake DoH)', () => {
       assert.equal(noDkim.code, EXIT.OK, 'a rule not checked is no failure');
       assert.match(noDkim.out, /- NOT KNOWN dkim true: not checked \(turned off\)\n/);
       assert.ok(!log.some((q) => q.name.includes('_domainkey')), 'no DKIM question');
+
+      // A registry lock alone (serverTransferProhibited, as nic.io answers) is a transfer lock: no failure.
+      writeFileSync(policy, '{ "transferLock": true }');
+      zone.rdap['example.com'].status = ['server delete prohibited', 'server transfer prohibited', 'server update prohibited'];
+      const registryLock = await runMain(['audit', '--policy', policy, 'example.com', '--no-dkim'], { fetchImpl: createPortfolioFetch(zone) });
+      assert.equal(registryLock.code, EXIT.OK, registryLock.out);
+      assert.match(registryLock.out, /- Every rule met: example\.com\n/);
 
       writeFileSync(policy, '{ "expiryDays": ">= 30", "dnsec": "signed", "spf.all": "-none" }');
       const asked = [];
@@ -1701,7 +1708,7 @@ test('the program itself: a spawned audit whose fetch is the portfolio fake exit
     const parked = spawnAudit(['--preset', 'parked', 'example.org', '--json', join(dir, 'audit.json')]);
     assert.equal(parked.status, EXIT.CHANGED, parked.stderr);
     assert.match(parked.stdout, /^Policy audit · parked domain\n- 1 domain, 6 rules: 1 fails the policy, 0 could not be checked in full, 0 meet every rule\n/);
-    assert.match(parked.stdout, /- FAIL transferLock true: clientTransferProhibited is missing/);
+    assert.match(parked.stdout, /- FAIL transferLock true: no transfer prohibition/);
     assert.match(parked.stdout, /- FAIL caa deny-all: no CAA record: any CA may issue/);
     const requests = JSON.parse(readFileSync(logFile, 'utf8'));
     assert.deepEqual(requests.rdap.map((x) => `${x.host} ${x.domain}`).sort(), ['rdap.example.net example.net', 'rdap.example.net example.org']);

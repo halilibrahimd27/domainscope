@@ -341,7 +341,10 @@ const RULE_EVAL = {
     const reg = f.registration;
     if (!reg || reg.state !== 'ok') return cell(entry, 'unknown', null, registrationUnknown(reg));
     if (reg.transferLock === null || reg.transferLock === undefined) return cell(entry, 'unknown', null, ev('pol.ev.noStatus'));
-    return boolCell(entry, reg.transferLock, ev(reg.transferLock ? 'pol.ev.lockOn' : 'pol.ev.lockOff'));
+    // Any transfer prohibition locks: the registrar's, the registry's (RFC 5731) or RFC 9083's plain one.
+    const codes = Array.isArray(reg.transferCodes) ? reg.transferCodes
+      : (reg.statuses || []).filter((x) => String(x).toLowerCase().replace(/[\s_-]+/g, '').includes('transferprohibited'));
+    return boolCell(entry, reg.transferLock, reg.transferLock ? ev('pol.ev.lockOn', { codes: codes.join(', ') }) : ev('pol.ev.lockOff'));
   },
   'status.critical'(entry, f) {
     const reg = f.registration;
@@ -587,7 +590,7 @@ export function auditJson(audit, { t, policy, app = 'DomainScope', version = '',
 
 const STRINGS = [
   ['pol.rule.expiryDays', ['Days until expiry', 'Bitişe kalan gün']],
-  ['pol.rule.transferLock', ['Transfer lock (clientTransferProhibited)', 'Transfer kilidi (clientTransferProhibited)']],
+  ['pol.rule.transferLock', ['Transfer lock (client or server transfer prohibited)', 'Transfer kilidi (client ya da server transfer prohibited)']],
   ['pol.rule.status.critical', ['Critical registry status (hold, redemption, pending delete)', 'Kritik kayıt durumu (askı, geri alma, silinme bekliyor)']],
   ['pol.rule.registrar', ['Registrar', 'Kayıt firması']],
   ['pol.rule.nsExpiryDays', ['Days until the name servers’ domains expire', 'Ad sunucusu alan adlarının bitişine kalan gün']],
@@ -628,8 +631,9 @@ const STRINGS = [
   ['pol.ev.noExpiry', ['the registry gives no expiry date', 'kayıt kuruluşu bitiş tarihi vermiyor']],
   ['pol.ev.daysLeft', [{ zero: 'expires today ({date})', one: '{count} day left ({date})', other: '{count} days left ({date})' }, { zero: 'bugün sona eriyor ({date})', other: '{count} gün kaldı ({date})' }]],
   ['pol.ev.expired', [{ one: 'expired {count} day ago ({date})', other: 'expired {count} days ago ({date})' }, '{count} gün önce sona erdi ({date})']],
-  ['pol.ev.lockOn', ['clientTransferProhibited is set', 'clientTransferProhibited var']],
-  ['pol.ev.lockOff', ['clientTransferProhibited is missing: the domain can be transferred away', 'clientTransferProhibited yok: alan adı başka yere transfer edilebilir']],
+  ['pol.ev.lockOn', ['transfers are prohibited: {codes}', 'transfer yasak: {codes}']],
+  ['pol.ev.lockOff', ['no transfer prohibition (clientTransferProhibited or serverTransferProhibited): the domain can be transferred away',
+    'transfer yasağı yok (clientTransferProhibited ya da serverTransferProhibited): alan adı başka yere transfer edilebilir']],
   ['pol.ev.noStatus', ['the registry reports no status', 'kayıt kuruluşu durum bildirmiyor']],
   ['pol.ev.critical', ['critical status: {codes}', 'kritik durum: {codes}']],
   ['pol.ev.noCritical', ['no hold, redemption or pending delete', 'askı, geri alma ya da silinme durumu yok']],

@@ -1004,7 +1004,7 @@ describe('portfolio (Domain portfolio)', () => {
       '- **Expire within 30 days:** `example.net` (expired 2 days ago), `example.org` (20 days)',
       '- **Name server domains expiring within 30 days:** `example.net` (12 days; name servers of 2 domains)',
       '- **Critical registry status:** `example.net` (serverHold, redemptionPeriod)',
-      '- **No transfer lock (clientTransferProhibited):** `example.org`',
+      '- **No transfer lock:** `example.org`',
       '- DNSSEC: 1 validated · 2 not signed',
       '- **Mail:** SPF over 10 lookups on 1 domain: `example-test.com.tr`',
       '- **Mail:** no enforcing DMARC policy on 2 domains: `example-test.com.tr`, `example.com`',

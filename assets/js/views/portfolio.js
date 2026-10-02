@@ -157,9 +157,11 @@ registerStrings('en', {
   'pf.invalidReg': 'not a registry domain',
   'pf.noExpiry': 'no date given',
   'pf.lockOn': 'Transfer lock',
-  'pf.lockOnTitle': 'clientTransferProhibited is set: the domain cannot be moved to another registrar without unlocking it first.',
+  'pf.lockOnTitle': 'Transfers are prohibited ({codes}): the domain cannot be moved to another registrar until that is lifted.',
+  'pf.registryLock': 'Registry lock',
+  'pf.registryLockTitle': 'serverTransferProhibited: the registry itself rejects transfer requests (RFC 5731), a stronger lock than the registrar’s.',
   'pf.lockOff': 'No transfer lock',
-  'pf.lockOffTitle': 'clientTransferProhibited is missing: anyone with the transfer code can move the domain to another registrar (a hijack risk).',
+  'pf.lockOffTitle': 'No transfer prohibition (clientTransferProhibited or serverTransferProhibited): anyone with the transfer code can move the domain to another registrar (a hijack risk).',
   'pf.noStatus': 'no status reported',
   'pf.criticalTitle': 'A hold takes the domain out of DNS; redemption and pending delete mean it is being lost.',
   'pf.pendingTitle': 'A registry operation is under way. A pending transfer that nobody here asked for is a hijack in progress: ask the registrar to stop it.',
@@ -335,9 +337,11 @@ registerStrings('tr', {
   'pf.invalidReg': 'kayıt kuruluşunun tuttuğu bir alan adı değil',
   'pf.noExpiry': 'tarih verilmiyor',
   'pf.lockOn': 'Transfer kilidi',
-  'pf.lockOnTitle': 'clientTransferProhibited var: alan adı, kilit kaldırılmadan başka bir kayıt firmasına taşınamaz.',
+  'pf.lockOnTitle': 'Transfer yasak ({codes}): bu kaldırılmadan alan adı başka bir kayıt firmasına taşınamaz.',
+  'pf.registryLock': 'Kayıt kuruluşu kilidi',
+  'pf.registryLockTitle': 'serverTransferProhibited: transfer isteklerini kayıt kuruluşunun kendisi reddeder (RFC 5731); bu, kayıt firmasının kilidinden daha güçlüdür.',
   'pf.lockOff': 'Transfer kilidi yok',
-  'pf.lockOffTitle': 'clientTransferProhibited yok: transfer kodunu bilen herkes alan adını başka bir kayıt firmasına taşıyabilir (ele geçirme riski).',
+  'pf.lockOffTitle': 'Transfer yasağı yok (clientTransferProhibited ya da serverTransferProhibited): transfer kodunu bilen herkes alan adını başka bir kayıt firmasına taşıyabilir (ele geçirme riski).',
   'pf.noStatus': 'durum bildirilmiyor',
   'pf.criticalTitle': 'Askıya alınan alan adı DNS’ten çıkar; geri alma süresi ve silinme bekleme, alan adının kaybedilmekte olduğunu gösterir.',
   'pf.pendingTitle': 'Kayıt kuruluşunda bir işlem sürüyor. Sizin istemediğiniz bir transfer bekliyorsa alan adı ele geçirilmek üzeredir: kayıt firmanızdan transferi durdurmasını isteyin.',
@@ -802,15 +806,18 @@ export function mount(container, ctx) {
   function statusCell(f) {
     const reg = f.registration;
     if (reg.state !== 'ok') return reg.state === 'unsupported' ? muted(t('pf.noRdap')) : null;
+    // Any transfer prohibition locks: the registry's own (serverTransferProhibited) is said as such.
     const lock = reg.transferLock === true
-      ? h('span', { title: t('pf.lockOnTitle') }, Badge(t('pf.lockOn'), { variant: 'ok', icon: 'lock' }))
+      ? reg.registryLock
+        ? h('span', { title: t('pf.registryLockTitle') }, Badge(t('pf.registryLock'), { variant: 'ok', icon: 'lock' }))
+        : h('span', { title: t('pf.lockOnTitle', { codes: (reg.transferCodes || []).join(', ') }) }, Badge(t('pf.lockOn'), { variant: 'ok', icon: 'lock' }))
       : reg.transferLock === false
         ? h('span', { title: t('pf.lockOffTitle') }, Badge(t('pf.lockOff'), { variant: 'warn', icon: 'unlock' }))
         : muted(t('pf.noStatus'));
     const critical = (reg.critical || []).map((c) => h('span', { title: t('pf.criticalTitle') }, Badge(c, { variant: 'error', icon: 'alert', mono: true })));
-    // The flags not said yet: the critical ones and the transfer lock have their badges above; an
-    // operation under way (a pending transfer, renewal, update) is a badge of its own.
-    const said = new Set([...CRITICAL_STATUSES, 'clientTransferProhibited'].map(squashStatus));
+    // The flags not said yet: the critical ones and the transfer prohibitions have their badges above;
+    // an operation under way (a pending transfer, renewal, update) is a badge of its own.
+    const said = new Set([...CRITICAL_STATUSES, ...(reg.transferCodes || [])].map(squashStatus));
     const rest = (reg.flags || []).filter((x) => !said.has(squashStatus(x.code)));
     const pending = rest.filter((x) => x.kind === 'pending')
       .map((x) => h('span', { title: t('pf.pendingTitle'), dataset: { flag: squashStatus(x.code) } }, Badge(x.code, { variant: 'warn', icon: 'clock', mono: true })));

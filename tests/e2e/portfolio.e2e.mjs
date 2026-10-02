@@ -83,7 +83,8 @@ const rdapJson = (domain, status, days) => ({
   secureDNS: { delegationSigned: domain === 'example.com' }
 });
 const RDAP = {
-  'example.com': rdapJson('example.com', ['client transfer prohibited', 'client delete prohibited'], 400),
+  // a registry lock alone (serverTransferProhibited): transfers are prohibited all the same
+  'example.com': rdapJson('example.com', ['server transfer prohibited', 'client delete prohibited'], 400),
   // no transfer lock: a hijack risk; expires in 20 days
   'example.org': rdapJson('example.org', ['active'], 20),
   // the name servers' domain: expires in 12 days
@@ -243,7 +244,7 @@ async function main() {
 
       const com = await rowOf(page, 'example.com');
       assert(/400 days left/.test(com.expiry) && com.days === '400', `expiry: ${com.expiry}`);
-      assert(/Transfer lock/.test(com.status) && /Example Registrar, Inc\./.test(com.registrar), JSON.stringify(com));
+      assert(/Registry lock/.test(com.status) && !/No transfer lock/.test(com.status) && /Example Registrar, Inc\./.test(com.registrar), JSON.stringify(com));
       assert(/Validated/.test(com.dnssec), com.dnssec);
       assert(/example\.net\s*12 days left/.test(com.ns), `ns: ${com.ns}`);
       assertEqual(com.risk, 'pf-risk-ns-expiring', 'its name servers\' domain lapses in 12 days');
@@ -400,7 +401,7 @@ async function main() {
       assertEqual(ls[0], '**Domain portfolio · 3 domains**', 'title');
       assert(ls.includes('- **Expire within 30 days:** `example.org` (20 days)'), out);
       assert(ls.some((l) => l.startsWith('- **Name server domains expiring within 30 days:** `example.net` (12 days; name servers of 3 domains)')), out);
-      assert(ls.includes('- **No transfer lock (clientTransferProhibited):** `example.org`'), out);
+      assert(ls.includes('- **No transfer lock:** `example.org`'), out);
       assert(ls.some((l) => /^- \*\*Policy\*\* `e2e`: 2 of 3 domains fail/.test(l)), out);
       assert(/#\/portfolio\?domains=example\.com(%2C|,)example\.org(%2C|,)example-test\.com\.tr$/.test(ls[ls.length - 1]), ls[ls.length - 1]);
     });

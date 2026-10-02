@@ -645,7 +645,7 @@ export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact, 
       columns: [
         { key: 'status', label: t('zcmp.col.status'), sortable: true, sortValue: (r) => DIFF_STATUSES.indexOf(r.status),
           render: (r) => h('span', { dataset: { status: r.status } }, Badge(t(`zcmp.st.${r.status}`), { variant: STATUS_VARIANT[r.status] })) },
-        { key: 'name', label: t('zcmp.col.name'), sortable: true, sortValue: (r) => r.rel, searchValue: (r) => `${r.rel} ${r.name}`,
+        { key: 'name', label: t('zcmp.col.name'), sortable: true, sortValue: (r) => r.rel, searchValue: (r) => `${r.rel} ${r.name}`, wrap: true, className: 'zcmp-name-col',
           render: (r) => h('strong', { class: 'zcmp-name' }, r.rel) },
         { key: 'type', label: t('zcmp.col.type'), sortable: true, sortValue: (r) => r.type, render: (r) => Badge(r.type, { variant: 'neutral', mono: true }) },
         { key: 'a', label: t('zcmp.col.a'), mono: true, wrap: true, searchValue: (r) => (r.a ? r.a.values.join(' ') : ''),

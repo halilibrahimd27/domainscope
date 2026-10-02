@@ -159,6 +159,11 @@
   .zcmp-table .dt-table td.zcmp-note {
     min-width: 12rem;
   }
+
+  /* A name wraps (a long owner would push the notes off the card), but most are short. */
+  .zcmp-table .dt-table td.zcmp-name-col {
+    min-width: 6rem;
+  }
 }
 
 /* Convert */

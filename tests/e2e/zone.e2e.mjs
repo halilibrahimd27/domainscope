@@ -1208,6 +1208,25 @@ async function main() {
       await shot(page, opts, 'zone-compare-partial-desktop-light-en');
     });
 
+    await run.step('Compare: a long owner name wraps in its column: the table fits its card at 1280 and 1440 px', async () => {
+      const long = `${'x'.repeat(60)}.${'y'.repeat(30)}`;
+      await pasteOther(`$ORIGIN example.com.\n$TTL 300\n${long} 300 IN TXT "v=spf1 -all"\nwww 300 IN CNAME example.com.\n`);
+      await page.waitFor((n) => [...document.querySelectorAll('.zcmp-table tbody tr.dt-row')].some((tr) => tr.textContent.includes(n)), { args: [long], message: 'the long name' });
+      for (const width of [1280, 1440]) {
+        await page.setViewport({ width, height: 900 });
+        await page.waitFor(() => {
+          const s = document.querySelector('.zcmp-table .dt-scroll');
+          return !!s && s.scrollWidth <= s.clientWidth + 1;
+        }, { timeout: 3000, message: `the table fits at ${width} px` }).catch(async (err) => {
+          throw new Error(`${err.message}: ${JSON.stringify(await page.evaluate(() => {
+            const s = document.querySelector('.zcmp-table .dt-scroll');
+            return { sw: s.scrollWidth, cw: s.clientWidth, cols: [...document.querySelectorAll('.zcmp-table thead th')].map((th) => `${th.dataset.key}:${th.offsetWidth}`).join(' ') };
+          }))}`);
+        });
+      }
+      await page.setViewport({ width: 1440, height: 900 });
+    });
+
     await run.step('Convert: BIND, Route 53, octoDNS and DNSControl as the library writes them, with their notes; each download reads back', async () => {
       await clickTab(page, 'convert');
       await page.waitFor(() => !!document.querySelector('[data-role="zconv"]'), { message: 'convert tab', timeout: 10000 });

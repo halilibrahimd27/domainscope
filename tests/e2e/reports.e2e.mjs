@@ -209,7 +209,7 @@ async function main() {
         const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/health"]'));
         return group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '').split('?')[0]) : [];
       });
-      assertEqual(nav, ['health', 'reports'], 'Mail & domain group');
+      assertEqual(nav, ['health', 'reports', 'portfolio'], 'Mail & domain group');
       assertEqual(await text(page, 'h1'), 'DMARC & TLS reports', 'title');
       assert(await page.evaluate(() => !!document.querySelector('.rpt-page .empty')), 'empty state');
       assert(/never uploaded or saved/.test(await text(page, '#page-body .alert')), 'privacy note');

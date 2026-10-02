@@ -65,5 +65,5 @@ jobs:
       # groups of ip, lookup and health (--offline skips their live groups); the rest hits live,
       # quota-limited APIs and is run by hand. Uses the runner's Google Chrome
       # (/usr/bin/google-chrome).
-      - name: Offline E2E (shell, subdomains, zone, verify, renewal, dane, pfx, chainfix, renew, estate, global, ptr, retire, carry, ip, lookup, health, workspaces, domain, change, privacy, reports)
+      - name: Offline E2E (shell, subdomains, zone, verify, renewal, dane, pfx, chainfix, renew, estate, global, ptr, retire, carry, ip, lookup, health, workspaces, domain, change, privacy, reports, portfolio)
         run: npm run test:e2e:offline

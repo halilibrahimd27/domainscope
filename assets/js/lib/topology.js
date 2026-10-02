@@ -16,6 +16,9 @@ import { terminatesTls } from './inventory.js';
 
 /** @typedef {import('./inventory.js').Server} Server */
 
+/** How strongly a name ties to a server (lib/scanner.js, lib/certsets.js): DNS, the zone file, an origin hint. */
+const VIA_RANK = { dns: 0, zone: 1, hint: 2 };
+
 /**
  * The topology an inventory describes: load balancers with their backends, shared addresses
  * (VIPs) with every server holding them, NAT pairs, the servers that never get the
@@ -71,10 +74,12 @@ export function inventoryTopology(servers) {
  * Apply the inventory topology to the server groups of a scan (lib/scanner ServerGroup:
  * `{ server, hosts: [{ name, ip, covered, via, through? }] }`). A load balancer's names reach its
  * backends: each backend gets a group (or more hosts in its own) with one entry per name and own
- * address, marked `lb: <load balancer name>` and keeping the load balancer's `via` and
- * `covered` — through every tier of load balancers. Every group the topology says something
- * about gets `topology` ({@link GroupTopology}); the caller computes `needsCert` with
- * {@link terminatesTls}. Without a topology key in the inventory the groups are returned as they are.
+ * address, keeping the load balancer's `covered` and the strongest `via` it came with, and
+ * `lbs`: every load balancer right in front that passed it (both of a VIP pair) — through every
+ * tier of load balancers. A name that reaches the backend directly keeps its own entry. Every
+ * group the topology says something about gets `topology` ({@link GroupTopology}); the caller
+ * computes `needsCert` with {@link terminatesTls}. Without a topology key in the inventory the
+ * groups are returned as they are.
  * @param {Array<object>} groups
  * @param {Server[]} servers the inventory
  * @returns {Array<object>} the groups, then the backend groups it added (in the order reached)
@@ -107,13 +112,24 @@ export function applyTopology(groups, servers) {
       if (!behind.get(g).includes(lb.server.name)) behind.get(g).push(lb.server.name);
       let added = false;
       for (const e of lb.hosts) {
+        const rank = VIA_RANK[e.via] ?? 9;
         for (const ip of backend.ips) {
-          if (g.hosts.some((x) => x.name === e.name && x.ip === ip)) continue;
-          g.hosts.push({ name: e.name, ip, covered: e.covered ?? null, via: e.via, lb: lb.server.name });
-          added = true;
+          const known = g.hosts.find((x) => x.name === e.name && x.ip === ip);
+          if (!known) {
+            g.hosts.push({ name: e.name, ip, covered: e.covered ?? null, via: e.via, lbs: [lb.server.name] });
+            added = true;
+          } else if (rank < (VIA_RANK[known.via] ?? 9)) {
+            // a stronger tie than the one known (DNS over an origin hint, also over a direct one) replaces it
+            known.via = e.via;
+            known.lbs = [lb.server.name];
+            added = true;
+          } else if (known.lbs && rank === (VIA_RANK[known.via] ?? 9) && !known.lbs.includes(lb.server.name)) {
+            known.lbs.push(lb.server.name); // the same name through the other one of a VIP pair
+          }
         }
       }
-      if (added && lbsOf.has(backend) && !queue.includes(g)) queue.push(g);
+      // a backend that is a load balancer passes what it got on (again, when a tie got stronger)
+      if (added && lbsOf.has(backend) && queue.indexOf(g, i + 1) === -1) queue.push(g);
     }
   }
   const vipHolders = new Map(topo.vips.map((v) => [v.ip, v.servers.map((s) => s.name)]));
@@ -161,8 +177,9 @@ export const TOPOLOGY_CSV_COLUMN = Object.freeze({ key: 'topology', header: 'Top
 
 /**
  * Put each load balancer's backend groups right after it (keeping the order otherwise), so a
- * list of server groups reads as "lb01, then what is behind lb01". Groups no load balancer of
- * the list reached stay where they are.
+ * list of server groups reads as "lb01, then what is behind lb01". The holders of a VIP the scan
+ * reached come together, as one load balancer ("lb01, lb02, then what is behind them"). Groups
+ * no load balancer of the list reached stay where they are.
  * @param {Array<{ server: { name: string }, topology?: GroupTopology }>} groups
  * @returns {Array<object>} a new array
  */
@@ -172,16 +189,26 @@ export function orderByLoadBalancer(groups) {
   const byName = new Map(list.map((g) => [g.server.name, g]));
   const out = [];
   const placed = new Set();
+  const reachedByListed = (g) => !!g.topology && g.topology.behind.some((n) => n !== g.server.name && byName.has(n));
+  /** The other holders of the VIPs `g` was reached at, in list order (none behind a listed load balancer). */
+  const partners = (g) => {
+    const names = new Set((g.topology ? g.topology.vips : []).flatMap((v) => v.servers));
+    return list.filter((x) => x !== g && names.has(x.server.name) && !reachedByListed(x));
+  };
   const place = (g) => {
     if (placed.has(g)) return;
-    placed.add(g);
-    out.push(g);
-    for (const b of g.topology ? g.topology.backends : []) {
-      const bg = byName.get(b.name);
-      if (bg && bg.topology && bg.topology.behind.includes(g.server.name)) place(bg);
+    const pair = [g, ...partners(g)].filter((x) => !placed.has(x));
+    for (const x of pair) {
+      placed.add(x);
+      out.push(x);
+    }
+    for (const x of pair) {
+      for (const b of x.topology ? x.topology.backends : []) {
+        const bg = byName.get(b.name);
+        if (bg && bg.topology && bg.topology.behind.includes(x.server.name)) place(bg);
+      }
     }
   };
-  const reachedByListed = (g) => !!g.topology && g.topology.behind.some((n) => n !== g.server.name && byName.has(n));
   for (const g of list) if (!reachedByListed(g)) place(g);
   for (const g of list) place(g); // load balancers in a loop: whatever is left, in order
   return out;

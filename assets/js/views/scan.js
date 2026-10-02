@@ -3387,7 +3387,7 @@ function buildRunUI(run, ctx, { onFinish }) {
               max: 3,
               render: (x) => h('span', { class: ['scan-srv-host', { 'is-hint': x.via === 'hint', 'is-zone': x.via === 'zone' }] }, x.name,
                 x.via === 'hint' || x.via === 'zone' ? h('span', { class: 'muted' }, ` · ${t(`scan.srv.via.${x.via}`)}`) : null,
-                x.lb ? h('span', { class: 'muted' }, ` · ${t('topo.via.lb', { lb: x.lb })}`) : null)
+                x.lbs ? h('span', { class: 'muted' }, ` · ${t('topo.via.lb', { lb: x.lbs.join(', ') })}`) : null)
             })
           },
           {
@@ -3433,7 +3433,7 @@ function buildRunUI(run, ctx, { onFinish }) {
       rows: g.hosts,
       dense: true,
       maxHeight: null,
-      rowKey: (x) => `${x.name}|${x.ip}|${x.via}|${x.lb || ''}`,
+      rowKey: (x) => `${x.name}|${x.ip}|${x.via}|${(x.lbs || []).join(',')}`,
       columns: [
         { key: 'name', label: t('scan.srv.col.host'), mono: true },
         { key: 'ip', label: t('scan.srv.col.ip'), mono: true, className: 'scan-col-ips' },
@@ -3441,7 +3441,7 @@ function buildRunUI(run, ctx, { onFinish }) {
           key: 'via', label: t('scan.srv.col.via'),
           render: (x) => h('span', { class: 'cluster scan-srv-via' },
             Badge(t(`scan.srv.via.${x.via}`), { variant: x.via === 'dns' ? 'direct' : x.via === 'zone' ? 'ok' : 'info' }),
-            x.lb ? Badge(t('topo.via.lb', { lb: x.lb }), { variant: 'neutral', icon: 'git-branch' }) : null,
+            x.lbs ? Badge(t('topo.via.lb', { lb: x.lbs.join(', ') }), { variant: 'neutral', icon: 'git-branch' }) : null,
             x.through ? Badge(x.through === 'vip' ? 'VIP' : 'NAT', { variant: 'neutral', icon: x.through === 'vip' ? 'share' : 'swap' }) : null)
         },
         cert ? {

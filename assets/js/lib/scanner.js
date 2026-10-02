@@ -2029,7 +2029,7 @@ export async function runScan(config = {}, hooks = {}) {
   }
   for (const hint of originHintList) delete hint.historyHosts; // internal only
   // The inventory topology (lib/topology.js): a load balancer's names reach its backends
-  // (entries with `lb`), and a server with terminates_tls=no needs no certificate. Without a
+  // (entries with `lbs`), and a server with terminates_tls=no needs no certificate. Without a
   // topology key in the inventory the groups are exactly as before.
   let serverGroups = applyTopology([...groups.values()], servers);
   for (const g of serverGroups) {
@@ -2085,7 +2085,7 @@ export async function runScan(config = {}, hooks = {}) {
     nxdomain: kindCount('nxdomain'),
     dangling: count((x) => x.classification.dangling),
     covered: count((x) => !!(x.cert && x.cert.covered)),
-    matchedServers: serverGroups.filter((g) => terminatesTls(g.server) && g.hosts.some((e) => e.via === 'dns' && !e.lb)).length,
+    matchedServers: serverGroups.filter((g) => terminatesTls(g.server) && g.hosts.some((e) => e.via === 'dns' && !e.lbs)).length,
     wildcardSuspects: count((x) => x.wildcardSuspect),
     // extensions
     unresolved: kindCount('unresolved'),

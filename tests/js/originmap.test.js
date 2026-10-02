@@ -188,11 +188,12 @@ describe('the merge rules (lib/originfill.js applyObservations)', () => {
     assert.equal(entry(res.map, 'shop.example.com|203.0.113.10|443').stale, null, 'confirmed again after the mark');
   });
 
-  test('a zone file: no port matches every port of the address; another origin there marks the rest zone-other', () => {
+  test('a zone file names no port: the address known on another port gets no 443 entry; another origin there marks the rest zone-other', () => {
     let { map } = applyObservations(ON, [hosted('shop.example.com', '203.0.113.10', 8443), hosted('shop.example.com', '203.0.113.30')], { source: 'cli-json', at: DAY1 });
     const res = applyObservations(map, [{ name: 'shop.example.com', ip: '203.0.113.10', port: null, outcome: 'hosted' }], { source: 'zone', at: DAY2 });
     assert.deepEqual(res.added, [], 'the address is known on 8443: no new 443 entry');
-    assert.deepEqual(res.confirmed, ['shop.example.com|203.0.113.10|8443']);
+    assert.deepEqual(res.confirmed, [], 'the zone says nothing about port 8443');
+    assert.equal(entry(res.map, 'shop.example.com|203.0.113.10|8443').source, 'cli-json');
     assert.deepEqual(res.staled, ['shop.example.com|203.0.113.30|443']);
     ({ map } = res);
     assert.deepEqual(entry(map, 'shop.example.com|203.0.113.30|443').stale, { reason: 'zone-other', at: DAY2, ip: '203.0.113.10', port: 443 });
@@ -223,6 +224,25 @@ describe('the merge rules (lib/originfill.js applyObservations)', () => {
     ({ map } = res);
     assert.equal(entry(map, 'shop.example.com|203.0.113.10|8443').stale, null);
     assert.deepEqual(entry(map, 'shop.example.com|203.0.113.30|443').stale, { reason: 'verify-elsewhere', at: DAY2, ip: '203.0.113.10', port: 443 });
+  });
+
+  test('a zone file (no port) never clears what a probe of one port found; a newer zone revives its own zone-other mark', () => {
+    const N = 'www.example.com';
+    const A = '203.0.113.10';
+    const zone = (ip, at) => (map) => applyObservations(map, [{ name: N, ip, port: null, outcome: 'hosted' }], { source: 'zone', at }).map;
+    let map = zone(A, DAY1)(ON);
+    ({ map } = applyObservations(map, [hosted(N, A, 8443), notHosted(N, A, 443)], { source: 'cli-json', at: DAY2 }));
+    assert.deepEqual(entry(map, `${N}|${A}|443`).stale, { reason: 'cli-not-hosted', at: DAY2 });
+    const res = applyObservations(map, [{ name: N, ip: A, port: null, outcome: 'hosted' }], { source: 'zone', at: DAY3 });
+    assert.deepEqual([res.added, res.confirmed, res.staled], [[], [], []]);
+    assert.deepEqual(entry(res.map, `${N}|${A}|443`).stale, { reason: 'cli-not-hosted', at: DAY2 }, 'the port-443 answer stands');
+    assert.deepEqual([entry(res.map, `${N}|${A}|8443`).source, entry(res.map, `${N}|${A}|8443`).lastConfirmed], ['cli-json', DAY2], 'port 8443 unchanged');
+    // Zone files alone: the newer one decides.
+    map = zone('198.51.100.20', DAY2)(zone(A, DAY1)(ON));
+    assert.equal(entry(map, `${N}|${A}|443`).stale.reason, 'zone-other');
+    map = zone(A, DAY3)(map);
+    assert.equal(entry(map, `${N}|${A}|443`).stale, null);
+    assert.equal(entry(map, `${N}|198.51.100.20|443`).stale.reason, 'zone-other');
   });
 
   test('the newest contradiction is kept, and only a newer confirmation clears it: an older report imported late changes nothing', () => {

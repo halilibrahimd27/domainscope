@@ -42,6 +42,8 @@ const OUTCOMES = Object.freeze(['hosted', 'not-hosted', 'unknown']);
 const CONTRADICTS = Object.freeze({
   'cli-json': ['cli-elsewhere', 'cli-not-hosted'], verify: ['verify-elsewhere', 'verify-not-hosted'], zone: ['zone-other', null]
 });
+/** Marks from a probe of one address and port (the CLI, Verify): a zone file, naming no port, never clears them. */
+const PROBE_MARKS = new Set(['cli-elsewhere', 'cli-not-hosted', 'verify-elsewhere', 'verify-not-hosted']);
 /** The mark an entry added from an older run gets when a newer run of this source found the name elsewhere. */
 const FOUND_ELSEWHERE = Object.freeze({ 'cli-json': 'cli-elsewhere', verify: 'verify-elsewhere', zone: 'zone-other' });
 const ms = (v) => (v ? Date.parse(v) || 0 : 0);
@@ -67,8 +69,10 @@ export function setRemember(map, on) {
 /**
  * Apply what one run saw to the map. Every observation is one name at one address:
  * `outcome` 'hosted' (it serves the name), 'not-hosted' (it answered without it) or 'unknown'
- * (no answer, an error: it was asked, and said nothing). `port` null matches any port of the
- * address (a zone file names no port) and adds {@link ORIGIN_DEFAULT_PORT}.
+ * (no answer, an error: it was asked, and said nothing). `port` null (a zone file names no port)
+ * is the address: it confirms the address's entry on {@link ORIGIN_DEFAULT_PORT} unless a probe
+ * of that port marked it, leaves an entry on another port as it is (no new 443 entry next to it),
+ * and adds one on 443 when the address has none.
  *
  * - 'hosted' confirms the matching entries (`lastConfirmed`, `source`; a stale mark not newer than
  *   the run goes, a newer one stays) or adds one — only for a proxied name: one the map has, or
@@ -132,6 +136,9 @@ export function applyObservations(map, observations, { source, at, proxied = nul
     foundAt.get(o.name).push(o);
     const hits = m.entries.filter((e) => matches(e, o));
     for (const e of hits) {
+      // A zone file names no port: never a confirmation of another port, nor of an answer a probe
+      // of this one gave (the address is known: no new entry either).
+      if (o.port === null && (e.port !== ORIGIN_DEFAULT_PORT || (e.stale && PROBE_MARKS.has(e.stale.reason)))) continue;
       if (t >= ms(e.lastConfirmed)) Object.assign(e, { lastConfirmed: when, source });
       if (t < ms(e.firstSeen)) e.firstSeen = when;
       if (e.stale && ms(e.stale.at) <= t) e.stale = null;

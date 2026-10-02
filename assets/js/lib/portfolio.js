@@ -123,10 +123,11 @@ export function parsePortfolioInput(text, { max = PORTFOLIO_MAX_DOMAINS } = {}) 
  * it (null when the registry reports no status at all) —, the statuses that say so, the registry
  * lock alone, and the risk: 'critical' (a critical status), 'hijack' (no transfer prohibition at
  * all: anyone with the transfer code can move the domain to another registrar), 'ok', or null
- * without statuses.
+ * without statuses; 'pending-transfer' (a transfer under way: a hijack in progress if nobody here
+ * asked for it) comes right after 'critical'.
  * @param {string[]} statuses as RDAP lists them ('client transfer prohibited' or 'clientTransferProhibited')
  * @returns {{ flags: Array<{ code: string, kind: string }>, critical: string[], transferLock: boolean|null,
- *   registryLock: boolean|null, transferCodes: string[], risk: 'critical'|'hijack'|'ok'|null }}
+ *   registryLock: boolean|null, transferCodes: string[], risk: 'critical'|'pending-transfer'|'hijack'|'ok'|null }}
  */
 export function statusRisk(statuses) {
   const list = (Array.isArray(statuses) ? statuses : []).map((s) => String(s ?? '').trim()).filter(Boolean);
@@ -138,6 +139,8 @@ export function statusRisk(statuses) {
   const registryLock = known ? keys.has('servertransferprohibited') : null;
   let risk = null;
   if (critical.length) risk = 'critical';
+  // a transfer under way: a hijack in progress if nobody here asked for it
+  else if (keys.has('pendingtransfer')) risk = 'pending-transfer';
   else if (known) risk = transferLock ? 'ok' : 'hijack';
   return { flags: rdapStatusFlags(list), critical, transferLock, registryLock, transferCodes, risk };
 }
@@ -789,7 +792,8 @@ export function unregisteredNsDomains(facts) {
 
 /**
  * The headline risk of a row, worst first: 'critical' (a critical registry status),
- * 'ns-unregistered' (a name server domain nobody has registered: as urgent), 'expired', 'expiring'
+ * 'ns-unregistered' (a name server domain nobody has registered: as urgent), 'pending-transfer'
+ * (a transfer under way), 'expired', 'expiring'
  * (< 30 days), 'ns-expiring' (a name server domain < 30 days), 'hijack' (no transfer lock), 'warn'
  * (< 60 days), 'ok', or null while nothing is known.
  * @param {object} facts
@@ -800,6 +804,7 @@ export function rowRisk(facts) {
   const nsMin = facts && facts.ns ? facts.ns.domains.filter((d) => !d.own && Number.isFinite(d.daysLeft)).map((d) => d.daysLeft) : [];
   if (reg && reg.risk === 'critical') return 'critical';
   if (unregisteredNsDomains(facts).length) return 'ns-unregistered';
+  if (reg && reg.risk === 'pending-transfer') return 'pending-transfer';
   if (reg && reg.expiry === 'expired') return 'expired';
   if (reg && reg.expiry === 'error') return 'expiring';
   if (nsMin.length && Math.min(...nsMin) < 30) return 'ns-expiring';
@@ -810,7 +815,7 @@ export function rowRisk(facts) {
 }
 
 /** Severity rank of {@link rowRisk} (sorting: worst first). */
-export const RISK_RANK = Object.freeze({ critical: 0, 'ns-unregistered': 0, expired: 1, expiring: 2, 'ns-expiring': 3, hijack: 4, warn: 5, ok: 6 });
+export const RISK_RANK = Object.freeze({ critical: 0, 'ns-unregistered': 0, 'pending-transfer': 1, expired: 2, expiring: 3, 'ns-expiring': 4, hijack: 5, warn: 6, ok: 7 });
 
 /* ------------------------------------------------------------------------ */
 /* Calendar and exports                                                     */
@@ -933,6 +938,7 @@ export function portfolioSummaryFacts(factsList, { at = null, stopped = false, n
     notLooked,
     expiring,
     critical: list.filter((f) => (reg(f).critical || []).length).map((f) => ({ domain: f.domain, codes: reg(f).critical })),
+    pendingTransfer: list.filter((f) => (reg(f).statuses || []).some((s) => squash(s) === 'pendingtransfer')).map((f) => f.domain),
     unlocked: list.filter((f) => reg(f).state === 'ok' && reg(f).transferLock === false).map((f) => f.domain),
     noRdap: count((f) => reg(f).state === 'unsupported'),
     notRegistered: list.filter((f) => reg(f).state === 'not-found').map((f) => f.domain),

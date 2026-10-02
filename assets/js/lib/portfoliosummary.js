@@ -50,6 +50,7 @@ export function portfolioSummary(facts, opts) {
     lines.push([strong(`${t('sum.pf.nsExpiring')}:`), ' ', ...named(f.nsExpiring, (x) => `${days(x)}; ${t('sum.pf.nsOf', { count: x.of.length })}`)]);
   }
   if ((f.critical || []).length) lines.push([strong(`${t('sum.pf.critical')}:`), ' ', ...named(f.critical, (x) => x.codes.join(', '))]);
+  if ((f.pendingTransfer || []).length) lines.push([strong(`${t('sum.pf.pendingTransfer')}:`), ' ', ...named(f.pendingTransfer)]);
   if ((f.notRegistered || []).length) lines.push([strong(`${t('sum.pf.notRegistered')}:`), ' ', ...named(f.notRegistered)]);
   if ((f.unlocked || []).length) lines.push([strong(`${t('sum.pf.unlocked')}:`), ' ', ...named(f.unlocked)]);
   const d = f.dnssec || {};
@@ -90,6 +91,7 @@ const STRINGS = [
   ['sum.pf.nsUnregistered', ['Name server domains not registered (anyone can register them and take over DNS)', 'Kayıtlı olmayan ad sunucusu alan adları (herkes kaydedip DNS’i ele geçirebilir)']],
   ['sum.pf.nsOf', [{ one: 'name servers of {count} domain', other: 'name servers of {count} domains' }, '{count} alan adının ad sunucuları']],
   ['sum.pf.critical', ['Critical registry status', 'Kritik kayıt durumu']],
+  ['sum.pf.pendingTransfer', ['Transfer pending (a hijack in progress if nobody here asked for it)', 'Transfer bekliyor (kimse istemediyse ele geçirme girişimi)']],
   ['sum.pf.notRegistered', ['Not registered', 'Kayıtlı değil']],
   ['sum.pf.unlocked', ['No transfer lock', 'Transfer kilidi yok']],
   ['sum.pf.validated', ['{count} validated', '{count} doğrulanıyor']],

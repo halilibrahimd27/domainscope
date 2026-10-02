@@ -213,6 +213,17 @@ describe('RDAP statuses read for risk', () => {
     assert.equal(statusRisk(['client transfer prohibited', 'server hold']).flags[0].kind, 'hold');
   });
 
+  test('a pending transfer (a hijack in progress if nobody here asked for it) is a risk of its own, ranked right after critical', () => {
+    for (const statuses of [['client transfer prohibited', 'pending transfer'], ['pendingTransfer', 'clientTransferProhibited'], ['pending transfer']]) {
+      assert.equal(statusRisk(statuses).risk, 'pending-transfer', statuses.join());
+    }
+    assert.equal(statusRisk(['pending transfer', 'server hold']).risk, 'critical', 'a critical status first');
+    assert.ok(RISK_RANK.critical < RISK_RANK['pending-transfer'] && RISK_RANK['pending-transfer'] < RISK_RANK.expired);
+    const f = portfolioFacts({ domain: 'example.com', rdap: { ok: true, domain: 'example.com', tld: 'com', registrar: 'Example Registrar, Inc.', status: ['client transfer prohibited', 'pending transfer'], expires: new Date(NOW.getTime() + 400 * DAY) } }, { now: NOW });
+    assert.equal(rowRisk(f), 'pending-transfer');
+    assert.deepEqual(portfolioSummaryFacts([f]).pendingTransfer, ['example.com']);
+  });
+
   test('no status at all: nothing can be said', () => {
     assert.deepEqual(statusRisk([]), { flags: [], critical: [], transferLock: null, registryLock: null, transferCodes: [], risk: null });
     assert.deepEqual(statusRisk(undefined).risk, null);

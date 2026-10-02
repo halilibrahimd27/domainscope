@@ -58,7 +58,7 @@ export const PORTFOLIO_FILTERS = Object.freeze(['all', 'attention', 'expiring', 
 /** The tiles above the table: each one a filter. */
 export const PORTFOLIO_TILES = Object.freeze(['expiring', 'critical', 'unlocked', 'ns', 'failed']);
 /** The risks a domain cell names (lib/portfolio.js rowRisk), 'ok' left out. */
-export const RISK_BADGES = Object.freeze(['critical', 'ns-unregistered', 'expired', 'expiring', 'ns-expiring', 'hijack', 'warn']);
+export const RISK_BADGES = Object.freeze(['critical', 'ns-unregistered', 'pending-transfer', 'expired', 'expiring', 'ns-expiring', 'hijack', 'warn']);
 /** A link carries the list only up to this many domains (a summary's link too). */
 export const MAX_LINK_DOMAINS = 50;
 /** The views' tabs. */
@@ -137,6 +137,7 @@ registerStrings('en', {
 
   'pf.risk.critical': 'Critical status',
   'pf.risk.ns-unregistered': 'NS domain not registered',
+  'pf.risk.pending-transfer': 'Transfer pending',
   'pf.risk.expired': 'Expired',
   'pf.risk.expiring': 'Expires soon',
   'pf.risk.ns-expiring': 'NS domain expires soon',
@@ -320,6 +321,7 @@ registerStrings('tr', {
 
   'pf.risk.critical': 'Kritik durum',
   'pf.risk.ns-unregistered': 'NS alan adı kayıtlı değil',
+  'pf.risk.pending-transfer': 'Transfer bekliyor',
   'pf.risk.expired': 'Süresi doldu',
   'pf.risk.expiring': 'Süresi yakında doluyor',
   'pf.risk.ns-expiring': 'NS alan adının süresi doluyor',
@@ -945,7 +947,7 @@ export function mount(container, ctx) {
   /** Sort values: what a column orders by (empty last in both directions). */
   const sortOf = {
     expiry: (r) => (r.facts.registration.state === 'ok' && Number.isFinite(r.facts.registration.daysLeft) ? r.facts.registration.daysLeft : null),
-    status: (r) => (r.facts.registration.risk ? { critical: 0, hijack: 1, ok: 2 }[r.facts.registration.risk] : null),
+    status: (r) => (r.facts.registration.risk ? { critical: 0, 'pending-transfer': 1, hijack: 2, ok: 3 }[r.facts.registration.risk] : null),
     registrar: (r) => r.facts.registration.registrar || null,
     dnssec: (r) => ({ failing: 0, unsigned: 1, signed: 2, validated: 3 }[r.facts.dnssec.state] ?? null),
     ns: (r) => (unregisteredNsDomains(r.facts).length ? -Infinity : Number.isFinite(r.facts.ns.minDaysLeft) ? r.facts.ns.minDaysLeft : null),

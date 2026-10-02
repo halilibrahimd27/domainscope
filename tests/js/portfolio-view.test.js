@@ -96,6 +96,9 @@ describe('Domain portfolio view helpers', () => {
     assert.ok(matchesFilter(nsGone, 'attention'), 'it needs a look');
     assert.ok(!matchesFilter(nsGone, 'failed'), 'an answer, not a failed lookup');
     assert.ok(RISK_BADGES.includes('ns-unregistered'));
+    // A pending transfer needs a look.
+    const moving = facts('example.com', { registration: { risk: 'pending-transfer', statuses: ['client transfer prohibited', 'pending transfer'] } });
+    assert.ok(matchesFilter(moving, 'attention') && RISK_BADGES.includes('pending-transfer'));
   });
 
   test('calendar events: one per domain, the name servers\' domains too, worded in the language; the .ics they make', () => {

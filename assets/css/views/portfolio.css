@@ -240,6 +240,7 @@
 /* A risky row is marked at its start (the colour is never the only signal: the badge says it). */
 .pf-table tr.pf-risk-critical td:first-child,
 .pf-table tr.pf-risk-ns-unregistered td:first-child,
+.pf-table tr.pf-risk-pending-transfer td:first-child,
 .pf-table tr.pf-risk-expired td:first-child,
 .pf-table tr.pf-risk-expiring td:first-child,
 .pf-table tr.pf-risk-ns-expiring td:first-child {
@@ -475,6 +476,7 @@
   /* the risk mark: on the whole card */
   .pf-table tr.pf-risk-critical,
   .pf-table tr.pf-risk-ns-unregistered,
+  .pf-table tr.pf-risk-pending-transfer,
   .pf-table tr.pf-risk-expired,
   .pf-table tr.pf-risk-expiring,
   .pf-table tr.pf-risk-ns-expiring {

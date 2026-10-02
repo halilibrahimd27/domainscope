@@ -877,12 +877,17 @@ async function runAudit(targets, options, env) {
   const now = env.now();
   const facts = run.allFacts({ now });
   const audit = auditPortfolio(policy, facts);
+  const audited = audit.rows.map((row, i) => auditTarget(row, facts[i], { t: env.t, exportRow, evidenceText, checkedAt: now }, { prev: prevBy.get(row.domain) || null }));
+  // A rule that failed when last checked and could not be checked tonight still fails the run: a
+  // registry outage never closes the nightly issue (the carried status is the requirement's own).
+  const carriedFails = audited.flatMap((x) => x.rules.filter((r) => r.status === 'unknown' && r.last && r.last.status === 'fail')
+    .map((r) => `${r.id} of ${x.target} could not be checked this run and failed when last checked (${isoDay(r.last.from) || 'an earlier run'}): it still counts as failed`));
   return {
     options: { policy: policyObject(policy), policyFile: policy.file || null, preset: options.preset, dkim: options.dkim, resolvers: [...options.chain] },
-    targets: audit.rows.map((row, i) => auditTarget(row, facts[i], { t: env.t, exportRow, evidenceText, checkedAt: now }, { prev: prevBy.get(row.domain) || null })),
+    targets: audited,
     docs: auditDocs(audit, { t: env.t, now, at: startedAt, policy }),
-    warnings: auditWarnings(facts, { cellFailures, cells: PORTFOLIO_CELLS }),
-    failed: audit.counts.failing > 0
+    warnings: [...auditWarnings(facts, { cellFailures, cells: PORTFOLIO_CELLS }), ...carriedFails],
+    failed: audit.counts.failing > 0 || carriedFails.length > 0
   };
 }
 

@@ -1453,6 +1453,29 @@ describe('offline runs (fake DoH)', () => {
     }
   });
 
+  test('audit: a rule that failed and could not be checked this run still fails the run (exit 4) until a run sees it pass', async () => {
+    const dir = tmp();
+    try {
+      const zone = portfolioZone({ now: NOW.getTime() });
+      const policy = join(dir, 'policy.json');
+      writeFileSync(policy, '{ "expiryDays": ">= 30" }');
+      const json = join(dir, 'audit.json');
+      const argv = ['audit', '--policy', policy, 'example.org', '--no-dkim', '--json', json, '--baseline', json];
+      const first = await runMain(argv, { fetchImpl: createPortfolioFetch(zone) });
+      assert.equal(first.code, EXIT.CHANGED, 'example.org expires in 20 days');
+      // RDAP answers 503 tonight: the rule is not known, its last check failed — the nightly issue stays open.
+      const second = await runMain(argv, { fetchImpl: createPortfolioFetch(zone, { rdapStatus: { 'example.org': 503 } }) });
+      assert.equal(second.code, EXIT.CHANGED, second.out + second.err);
+      assert.match(second.err, /ds: warning: expiryDays of example\.org could not be checked this run and failed when last checked \(\d{4}-\d{2}-\d{2}\): it still counts as failed\n/);
+      // The registry answers again with a renewed date: it passes, exit 0.
+      zone.rdap['example.org'].events[1].eventDate = new Date(NOW.getTime() + 400 * 86400000).toISOString();
+      const third = await runMain(argv, { fetchImpl: createPortfolioFetch(zone) });
+      assert.equal(third.code, EXIT.OK, third.out);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('audit: a name server domain nobody has registered fails nsExpiryDays and is warned about by name', async () => {
     const zone = portfolioZone({ now: NOW.getTime() });
     zone.table['example.com'].NS = ['ns1.example.net', 'ns2.example-gone.org'];

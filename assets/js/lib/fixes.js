@@ -705,6 +705,10 @@ export function formatNotes(req, format) {
     if (req.rrsets.some((r) => r.mode !== 'none' && (r.ttl < 60 || r.ttl > 86400))) notes.push({ key: 'fix.fn.cloudflare-ttl' });
   }
   if (format === 'cloudflare' && plans.some(({ plan }) => plan.ttlOnly || plan.remove === null || plan.remove.length)) notes.push({ key: 'fix.fn.cloudflare-ids' });
+  if (format === 'octodns') {
+    const quoted = req.rrsets.find((r) => r.type === 'TXT' && octoWritten(r).some(octoMangled));
+    if (quoted) notes.push({ key: 'fix.fn.octodns-quote', params: { name: quoted.name } });
+  }
   return notes;
 }
 
@@ -861,6 +865,10 @@ function cloudflareText(req) {
  */
 const octoRaw = (v) => octodnsTxt(txtText(v));
 const octoTxt = (v) => octodnsTxtValue(txtText(v)) ?? octoRaw(v);
+/** A TXT value octoDNS changes as it loads it (it deletes a `" "` inside): written, with a note. */
+const octoMangled = (v) => octodnsTxtValue(txtText(v)) === null;
+/** The values an octoDNS entry writes for a record set. */
+const octoWritten = (r) => (r.mode === 'none' ? [] : rrsetPlan(r).full || rrsetPlan(r).after || r.values);
 
 function octoValue(type, v, indent) {
   const pad = ' '.repeat(indent);
@@ -875,8 +883,7 @@ function octoValue(type, v, indent) {
 function octodnsText(req) {
   const out = [`# ${HEADER(req.zone)}`, `# In the zone's YAML (${req.zone}.yaml): set these entries; the other names stay as they are.`];
   // A `;` is written `\;`: the YamlProvider must read it so (octoDNS's default until 2.0, deprecated).
-  const written = (r) => (r.mode === 'none' ? [] : rrsetPlan(r).full || rrsetPlan(r).after || r.values);
-  if (req.rrsets.some((r) => r.type === 'TXT' && written(r).some((v) => txtText(v).includes(';')))) {
+  if (req.rrsets.some((r) => r.type === 'TXT' && octoWritten(r).some((v) => txtText(v).includes(';')))) {
     out.push('# TXT values write ; as \\; : the YamlProvider needs escaped_semicolons: true (octoDNS refuses them with false, its default from 2.0).');
   }
   out.push('---');
@@ -903,6 +910,9 @@ function octodnsText(req) {
       }
       // In octoDNS's key order (YamlProvider enforce_order): octodns, ttl, type, value(s). A TXT value
       // octoDNS's own check refuses (outside ASCII, a \ before a ;) loads only as lenient.
+      if (r.type === 'TXT' && values.some(octoMangled)) {
+        out.push('  # octoDNS deletes " " inside a TXT value as it loads it: it publishes this value without them; set it at the provider another way');
+      }
       if (r.type === 'TXT' && values.some((v) => octodnsTxtRefused(octoRaw(v)))) {
         out.push("  # octoDNS's check refuses this text (characters outside ASCII, or a \\ before a ;): lenient loads it with a warning",
           '  - octodns:', '      lenient: true', `    ttl: ${r.ttl}`);
@@ -2156,6 +2166,8 @@ const STRINGS = [
   ['fix.fn.unread-edit', ['Built without reading the current records: if {name} already has a {family} record, this output replaces it. Read the current records first, or edit that record as the instructions say.', 'Mevcut kayıtlar okunmadan oluşturuldu: {name} adında zaten bir {family} kaydı varsa bu çıktı onu değiştirir. Önce mevcut kayıtları okuyun ya da o kaydı talimatlarda yazıldığı gibi düzenleyin.']],
   ['fix.fn.route53-delete', ['A DELETE must name the set exactly as it is, its TTL included: check the TTL in the Route 53 console (a resolver reports only what is left of its cached copy).', 'DELETE, kümeyi TTL’i dahil tam olarak olduğu gibi belirtmelidir: TTL’i Route 53 konsolunda kontrol edin (bir çözümleyici yalnızca önbellekteki kopyasının kalan süresini bildirir).']],
   ['fix.fn.cloudflare-ttl', ['Cloudflare accepts TTLs from 60 to 86400 seconds (below 60 only on Enterprise plans), or 1 for automatic.', 'Cloudflare 60 ile 86400 saniye arasındaki TTL’leri (60 altını yalnızca Enterprise planlarında) ya da otomatik için 1’i kabul eder.']],
+  ['fix.fn.octodns-quote', ['{name}: a TXT value with " " inside (a quote, a space, a quote). octoDNS deletes it as it loads the file, so it publishes another value: set this one at the provider another way.',
+    '{name}: içinde " " (tırnak, boşluk, tırnak) olan bir TXT değeri. octoDNS dosyayı yüklerken bunu siler, bu yüzden başka bir değer yayımlar: bu değeri sağlayıcıya başka bir yoldan girin.']],
   ['fix.fn.cloudflare-ids', ['Deleting or changing a record needs its id: the list call before that step shows it; put it in place of RECORD_ID.', 'Bir kaydı silmek ya da değiştirmek için kimliği gerekir: o adımdan önceki listeleme çağrısı onu gösterir; RECORD_ID yerine yazın.']],
   // instructions
   ['fix.ins.title', ['DNS change request: {zone}', 'DNS değişiklik talebi: {zone}']],

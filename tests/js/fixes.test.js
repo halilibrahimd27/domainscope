@@ -357,6 +357,16 @@ describe('formats', () => {
     assert.match(y, /- 'v=DMARC1\\; p=none\\; it''s'$/m);
   });
 
+  test('octoDNS: a TXT value with " " inside is noted in the file and in the notes (octoDNS deletes it as it loads it)', () => {
+    const r = buildChange('record', { name: 'q.example.com', type: 'TXT', values: '"say \\"hi\\" \\"there\\""' });
+    const y = renderFix(r, 'octodns');
+    assert.match(y, /^ {2}# octoDNS deletes " " inside a TXT value as it loads it: [^\n]+\n(?: {2}[^\n]*\n)*? {6}- 'say "hi" "there"'$/m, y);
+    assert.ok(formatNotes(r, 'octodns').some((n) => n.key === 'fix.fn.octodns-quote' && n.params.name === 'q.example.com'));
+    assert.ok(!formatNotes(r, 'bind').some((n) => n.key === 'fix.fn.octodns-quote'), 'BIND takes it as it is');
+    const plain = buildChange('record', { name: 'q.example.com', type: 'TXT', values: 'v=spf1 -all' });
+    assert.ok(!/deletes " "/.test(renderFix(plain, 'octodns')) && !formatNotes(plain, 'octodns').some((n) => n.key === 'fix.fn.octodns-quote'));
+  });
+
   test('octoDNS: a TXT value with ; says to load it with escaped_semicolons: true; one that starts with a quote goes in one more pair', () => {
     const y = renderFix(buildChange('record', { name: 'example.com', type: 'TXT', values: 'v=DMARC1; p=none' }), 'octodns');
     assert.match(y, /^# TXT values write ; as \\; : the YamlProvider needs escaped_semicolons: true/m);

@@ -45,13 +45,19 @@ const CONTRADICTS = Object.freeze({
 });
 /** Marks from a probe of one address and port (the CLI, Verify): a zone file, naming no port, never clears them. */
 const PROBE_MARKS = new Set(['cli-elsewhere', 'cli-not-hosted', 'verify-elsewhere', 'verify-not-hosted']);
-/** The mark an entry added from an older run gets when a newer run of this source found the name elsewhere. */
-const FOUND_ELSEWHERE = Object.freeze({ 'cli-json': 'cli-elsewhere', verify: 'verify-elsewhere', zone: 'zone-other' });
+/**
+ * A zone file names all of a name's origins: an entry added from an older run at an address a newer
+ * zone file did not name starts stale (as it would have been marked, imported in date order). An
+ * entry the zone file gave keeps its date when a probe marks it later: the zone named it then. (What
+ * the CLI and Verify ruled out is kept exactly instead: `refuted`, see {@link applyObservations}.)
+ */
+const FOUND_ELSEWHERE = Object.freeze({ zone: 'zone-other' });
 const ms = (v) => (v ? Date.parse(v) || 0 : 0);
 /** A copy of the map to change (remembering off and no entry when there is none), read against `nowMs`. */
 const working = (map, nowMs) => {
   const m = sanitizeOriginMap(map, { now: nowMs }) || { v: 1, remember: false, entries: [] };
-  return { ...m, entries: m.entries.map((e) => ({ ...e, stale: e.stale && { ...e.stale } })) };
+  const copy = (e) => ({ ...e, stale: e.stale && { ...e.stale } });
+  return { ...m, entries: m.entries.map(copy), refuted: (m.refuted || []).map(copy) };
 };
 /** The changed copy as the workspace keeps it (one per key, capped, by name). */
 const finish = (m, nowMs) => sanitizeOriginMap(m, { now: nowMs });
@@ -72,16 +78,14 @@ export function setRemember(map, on) {
  * Apply what one run saw to the map. Every observation is one name at one address:
  * `outcome` 'hosted' (it serves the name), 'not-hosted' (it answered without it) or 'unknown'
  * (no answer, an error: it was asked, and said nothing). `port` null (a zone file names no port)
- * is the address: it confirms the address's entry on {@link ORIGIN_DEFAULT_PORT} unless a probe
- * of that port marked it, leaves an entry on another port as it is (no new 443 entry next to it),
- * and adds one on 443 when the address has none.
+ * speaks for the address on {@link ORIGIN_DEFAULT_PORT}: it confirms that entry unless a probe of
+ * the port marked it, or adds one; an entry on another port is left as it is.
  *
  * - 'hosted' confirms the matching entries (`lastConfirmed`, `source`; a stale mark not newer than
  *   the run goes, a newer one stays) or adds one — only for a proxied name: one the map has, or
  *   `proxied(name)` (absent: every name); the others are listed in `skipped`. An entry added from
- *   a run older than another entry of the name at another address, which the CLI JSON, Verify or
- *   a zone file confirmed, starts stale (that newer run found the name elsewhere), so the order
- *   reports are imported in does not matter.
+ *   a run older than one that ruled its address and port out (`refuted`, below), or older than a
+ *   zone file that did not name its address, starts stale with that newer mark.
  * - Contradictions (the CLI JSON, Verify, a zone file; a comparison or a manual entry never
  *   contradicts): a run marks an entry `<src>-elsewhere` only when it asked that entry's address
  *   and port and got no answer or an answer without the name while it found the name on another
@@ -90,11 +94,17 @@ export function setRemember(map, on) {
  *   address and port, with the name found nowhere else, marks it `<src>-not-hosted`. A zone file
  *   names a proxied name's origins: its other entries are `zone-other`. An entry confirmed by the
  *   same run, or at or after its time, is never marked; a stale entry takes the newer of two marks.
+ * - What the CLI JSON or Verify ruled out (as above) where the name has no entry is kept in the
+ *   map's `refuted` list (as stale entries, the newest per key, capped like the entries, shown
+ *   nowhere; an entry there, or forgetting every entry, ends it): an older report imported later
+ *   cannot bring it back. So CLI reports and Verify runs land the same in any order. A zone file
+ *   names no port, so it never outweighs a probe of a port: imported out of date order among probe
+ *   reports, it can land differently (import zone files in date order with them).
  * - A `*.parent` entry covers every name one label under it: such a name counts as proxied, and
  *   'hosted' at the wildcard's address and port adds nothing of its own. A probe that contradicts
- *   the wildcard for one name (as above, at its address and port) masks it for that name only: the
- *   name gets its own stale entry there (the wildcard's dates and source), and the wildcard stands
- *   for the other names.
+ *   the wildcard for one name (as above, at its address and port), newer than the wildcard's first
+ *   sighting there, masks it for that name only: the name gets its own stale entry there (from
+ *   that probe, first seen when the wildcard was), and the wildcard stands for the other names.
  * - With remembering off nothing changes (`off: true`).
  * - A run is never later than `now` (the real clock unless given): a report dated in the future (a
  *   fast clock, an edited file) counts as now, and so cannot outrank every later check.
@@ -119,11 +129,11 @@ export function applyObservations(map, observations, { source, at, now, proxied 
   };
   for (const e of m.entries) index(e);
   const own = (name) => byName.get(name) || [];
-  /** The active `*.parent` entries that cover a name (a wildcard name has none). */
-  const wildcards = (name) => {
-    const w = originWildcard(name);
-    return w ? own(w).filter((e) => !e.stale) : [];
-  };
+  // What the CLI and Verify ruled out at addresses the map did not hold yet, by key: an older
+  // finding imported later cannot bring it back (one per key, the newest).
+  const refuted = new Map(m.refuted.map((e) => [originKey(e), e]));
+  /** The `*.parent` entries that cover a name (a wildcard name has none), active or stale. */
+  const wildcards = (name) => own(originWildcard(name) || '');
   const sits = (e, ip, port) => e.ip === ip && e.port === port;
   const isProxied = (name) => byName.has(name) || wildcards(name).length > 0 || typeof proxied !== 'function' || !!proxied(name);
   const lookup = (ip) => (typeof serverOf === 'function' ? originServer(serverOf(ip)) : null);
@@ -157,11 +167,11 @@ export function applyObservations(map, observations, { source, at, now, proxied 
     if (o.outcome !== 'hosted') continue;
     if (!foundAt.has(o.name)) foundAt.set(o.name, []);
     foundAt.get(o.name).push(o);
-    const hits = own(o.name).filter((e) => e.ip === o.ip && (o.port === null || e.port === o.port));
+    // A zone file names no port: it speaks for the address on 443 (another port is left as it is),
+    // and never for an answer a probe of that port gave.
+    const hits = own(o.name).filter((e) => sits(e, o.ip, o.port ?? ORIGIN_DEFAULT_PORT));
     for (const e of hits) {
-      // A zone file names no port: never a confirmation of another port, nor of an answer a probe
-      // of this one gave (the address is known: no new entry either).
-      if (o.port === null && (e.port !== ORIGIN_DEFAULT_PORT || (e.stale && PROBE_MARKS.has(e.stale.reason)))) continue;
+      if (o.port === null && e.stale && PROBE_MARKS.has(e.stale.reason)) continue;
       if (t >= ms(e.lastConfirmed)) Object.assign(e, { lastConfirmed: when, source });
       if (t < ms(e.firstSeen)) e.firstSeen = when;
       if (e.stale && ms(e.stale.at) <= t) e.stale = null;
@@ -169,18 +179,22 @@ export function applyObservations(map, observations, { source, at, now, proxied 
       confirmed.add(originKey(e));
     }
     if (hits.length) continue;
-    // A wildcard entry already says this address serves the name: nothing of its own to add.
-    if (wildcards(o.name).some((w) => sits(w, o.ip, o.port ?? ORIGIN_DEFAULT_PORT))) continue;
     if (!isProxied(o.name)) {
       skipped.add(o.name);
       continue;
     }
     const e = { name: o.name, ip: o.ip, port: o.port ?? ORIGIN_DEFAULT_PORT, source, firstSeen: when, lastConfirmed: when, server: o.server || lookup(o.ip), stale: null };
-    // An older run than one that found the name on another address: its finding is already superseded.
+    // A newer run ruled this address out already (`refuted`), or a newer zone file named other
+    // addresses and not this one: an older finding starts stale, with the newest of those.
+    const ruledOut = refuted.get(originKey(e));
+    if (ruledOut && ms(ruledOut.stale.at) > t) e.stale = { ...ruledOut.stale };
+    const named = (x) => own(e.name).some((y) => y.ip === e.ip && y.source === x.source && y.lastConfirmed === x.lastConfirmed);
     const newer = own(e.name)
-      .filter((x) => x.ip !== e.ip && !x.stale && FOUND_ELSEWHERE[x.source] && ms(x.lastConfirmed) > t)
+      .filter((x) => x.ip !== e.ip && FOUND_ELSEWHERE[x.source] && ms(x.lastConfirmed) > t && !named(x))
       .sort((a, b) => ms(b.lastConfirmed) - ms(a.lastConfirmed))[0];
-    if (newer) e.stale = { reason: FOUND_ELSEWHERE[newer.source], at: newer.lastConfirmed, ip: newer.ip, port: newer.port };
+    if (newer && (!e.stale || ms(newer.lastConfirmed) > ms(e.stale.at))) {
+      e.stale = { reason: FOUND_ELSEWHERE[newer.source], at: newer.lastConfirmed, ip: newer.ip, port: newer.port };
+    }
     m.entries.push(e);
     index(e);
     confirmed.add(originKey(e));
@@ -193,18 +207,6 @@ export function applyObservations(map, observations, { source, at, now, proxied 
     // The newest contradiction is kept: an older run's mark never replaces a newer one.
     if (e.stale && ms(e.stale.at) >= t) return;
     e.stale = stamp(reason, by);
-    out.staled.push(originKey(e));
-  };
-  /**
-   * A probe contradicted a wildcard entry for one name: the name gets its own entry at the
-   * wildcard's address and port, stale, which masks the wildcard for that name only
-   * (lib/originmap.js originsFor / knownForScan). It carries the wildcard's dates and source.
-   */
-  const mask = (name, w, reason, by = null) => {
-    if (!reason || t <= ms(w.lastConfirmed)) return;
-    const e = { name, ip: w.ip, port: w.port, source: w.source, firstSeen: w.firstSeen, lastConfirmed: w.lastConfirmed, server: w.server, stale: stamp(reason, by) };
-    m.entries.push(e);
-    index(e);
     out.staled.push(originKey(e));
   };
   if (source === 'zone') {
@@ -227,13 +229,37 @@ export function applyObservations(map, observations, { source, at, now, proxied 
         const v = verdict(e.ip, answers.get(`${e.ip}|${e.port}`));
         if (v) mark(e, v[0], v[1]);
       }
-      for (const w of wildcards(name)) {
-        if (own(name).some((e) => sits(e, w.ip, w.port))) continue;
-        const v = verdict(w.ip, answers.get(`${w.ip}|${w.port}`));
-        if (v) mask(name, w, v[0], v[1]);
+      // Any other address and port it ruled out (a wildcard's, or one the map holds nothing for
+      // yet) is kept as refuted, the newest per key: an older finding imported later cannot bring
+      // it back, and a wildcard there is masked for this name (below).
+      if (!isProxied(name)) continue;
+      for (const [k, answer] of answers) {
+        const cut = k.lastIndexOf('|');
+        const ip = k.slice(0, cut);
+        const port = Number(k.slice(cut + 1));
+        const v = verdict(ip, answer);
+        const prev = refuted.get(`${name}|${k}`);
+        if (!v || own(name).some((e) => sits(e, ip, port)) || (prev && ms(prev.stale.at) >= t)) continue;
+        const before = new Date(t - 1).toISOString();
+        refuted.set(`${name}|${k}`, { name, ip, port, source, firstSeen: before, lastConfirmed: before, server: null, stale: stamp(v[0], v[1]) });
       }
     }
   }
+  // A name ruled out at a wildcard's address and port after the wildcard was first seen there: the
+  // name's own stale entry (from the run that ruled it out, first seen when the wildcard was) masks
+  // the wildcard for that name only (lib/originmap.js originsFor / knownForScan); the other names
+  // keep it.
+  for (const [k, r] of refuted) {
+    const w = wildcards(r.name).find((x) => sits(x, r.ip, r.port) && ms(r.stale.at) > ms(x.firstSeen));
+    if (!w || own(r.name).some((e) => sits(e, r.ip, r.port))) continue;
+    const e = { name: r.name, ip: w.ip, port: w.port, source: r.source, firstSeen: w.firstSeen, lastConfirmed: w.firstSeen, server: w.server, stale: { ...r.stale } };
+    m.entries.push(e);
+    index(e);
+    out.staled.push(k);
+  }
+  // An entry speaks for its key now: its refutation is done.
+  for (const k of [...refuted.keys()]) if (own(refuted.get(k).name).some((e) => originKey(e) === k)) refuted.delete(k);
+  m.refuted = [...refuted.values()];
   out.skipped = [...skipped].sort();
   out.map = finish(m, nowMs);
   // Counted against what the map kept: the caps (per name, in all) can drop a new entry.
@@ -278,7 +304,7 @@ export function addManualOrigin(map, input, { at, now, replace = null, serverOf 
     if (entries.filter((e) => e.name === name).length >= ORIGIN_MAP_LIMITS.perName || entries.length >= ORIGIN_MAP_LIMITS.entries) return fail('limit');
     entries.push({ ...entry, source: 'manual', firstSeen: when, lastConfirmed: when, server, stale: null });
   }
-  return { map: finish({ ...m, entries }, nowMs), error: null, key };
+  return { map: finish({ ...m, entries, refuted: m.refuted.filter((r) => originKey(r) !== key) }, nowMs), error: null, key };
 }
 
 /**
@@ -291,7 +317,9 @@ export function removeOrigins(map, keys) {
   const drop = new Set(keys || []);
   const nowMs = originNow();
   const m = working(map, nowMs);
-  return finish({ ...m, entries: m.entries.filter((e) => !drop.has(originKey(e))) }, nowMs);
+  const entries = m.entries.filter((e) => !drop.has(originKey(e)));
+  // Forgetting every entry forgets what runs ruled out too.
+  return finish({ ...m, entries, refuted: entries.length ? m.refuted : [] }, nowMs);
 }
 
 /* ------------------------------------------------------------------------ */

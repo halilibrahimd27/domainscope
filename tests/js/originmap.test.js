@@ -192,17 +192,23 @@ describe('the merge rules (lib/originfill.js applyObservations)', () => {
     assert.equal(entry(res.map, 'shop.example.com|203.0.113.10|443').stale, null, 'confirmed again after the mark');
   });
 
-  test('a zone file names no port: the address known on another port gets no 443 entry; another origin there marks the rest zone-other', () => {
+  test('a zone file names no port: it speaks for the address on 443 and leaves another port as it is; another origin there marks the rest zone-other', () => {
     let { map } = applyObservations(ON, [hosted('shop.example.com', '203.0.113.10', 8443), hosted('shop.example.com', '203.0.113.30')], { source: 'cli-json', at: DAY1 });
     const res = applyObservations(map, [{ name: 'shop.example.com', ip: '203.0.113.10', port: null, outcome: 'hosted' }], { source: 'zone', at: DAY2 });
-    assert.deepEqual(res.added, [], 'the address is known on 8443: no new 443 entry');
+    assert.deepEqual(res.added, ['shop.example.com|203.0.113.10|443'], 'the zone names the address: 443, beside the 8443 a probe found');
     assert.deepEqual(res.confirmed, [], 'the zone says nothing about port 8443');
-    assert.equal(entry(res.map, 'shop.example.com|203.0.113.10|8443').source, 'cli-json');
+    assert.deepEqual(entry(res.map, 'shop.example.com|203.0.113.10|8443'), { ...entry(map, 'shop.example.com|203.0.113.10|8443') });
     assert.deepEqual(res.staled, ['shop.example.com|203.0.113.30|443']);
     ({ map } = res);
     assert.deepEqual(entry(map, 'shop.example.com|203.0.113.30|443').stale, { reason: 'zone-other', at: DAY2, ip: '203.0.113.10', port: 443 });
     const fresh = applyObservations(ON, [{ name: 'www.example.com', ip: '192.0.2.10', port: null, outcome: 'hosted' }], { source: 'zone', at: DAY2 });
     assert.deepEqual(fresh.added, ['www.example.com|192.0.2.10|443'], 'a new zone origin gets port 443');
+    // The same entries whichever comes first, the zone file or the run that found 8443.
+    const zone = (m) => applyObservations(m, [{ name: 'shop.example.com', ip: '203.0.113.10', port: null, outcome: 'hosted' }], { source: 'zone', at: DAY1 }).map;
+    const cli = (m) => applyObservations(m, [hosted('shop.example.com', '203.0.113.10', 8443)], { source: 'cli-json', at: DAY2 }).map;
+    const keys = (m) => m.entries.map((e) => `${originKey(e)} ${e.stale ? 'stale' : 'active'}`).sort();
+    assert.deepEqual(keys(cli(zone(ON))), ['shop.example.com|203.0.113.10|443 active', 'shop.example.com|203.0.113.10|8443 active']);
+    assert.deepEqual(keys(zone(cli(ON))), keys(cli(zone(ON))));
   });
 
   test('an entry the run did not ask is never marked "elsewhere" (a pool); one it asked without an answer is', () => {
@@ -323,6 +329,103 @@ describe('the merge rules (lib/originfill.js applyObservations)', () => {
     assert.ok(Date.parse(stored.entries[0].lastConfirmed) <= Date.now(), stored.entries[0].lastConfirmed);
   });
 
+  test('what a newer run ruled out stays ruled out, whichever report is imported first', () => {
+    const N = 'www.example.net';
+    const [P, Q, R] = ['192.0.2.10', '192.0.2.11', '198.51.100.20'];
+    const [T1, T2, T3] = ['2026-09-01T00:00:00Z', '2026-09-10T00:00:00Z', '2026-09-20T00:00:00Z'];
+    const run = (obs, at, source = 'cli-json') => (map) => applyObservations(map, obs, { source, at }).map;
+    const state = (map) => map.entries.map((e) => `${originKey(e)} ${e.stale ? `${e.stale.reason}@${e.stale.at.slice(5, 10)}` : 'active'}`).sort();
+    const same = (label, older, newer) => assert.deepEqual(state(older(newer(ON))), state(newer(older(ON))), label);
+    // The newer run never asked P: it says nothing about P, either way.
+    same('never asked', run([hosted(N, P)], T1), run([hosted(N, R)], T2));
+    assert.deepEqual(state(run([hosted(N, P)], T1)(run([hosted(N, R)], T2)(ON))), [`${N}|${P}|443 active`, `${N}|${R}|443 active`]);
+    // The newer run asked P and got NOT_HOSTED (the CLI, then Verify): an older report cannot bring P back.
+    same('not hosted', run([hosted(N, P)], T1), run([notHosted(N, P)], T2));
+    same('not hosted (Verify)', run([hosted(N, P)], T1), run([notHosted(N, P)], T2, 'verify'));
+    assert.deepEqual(state(run([hosted(N, P)], T1)(run([notHosted(N, P)], T2, 'verify')(ON))), [`${N}|${P}|443 verify-not-hosted@09-10`]);
+    // A wildcard that arrives in the older report is masked for the name the newer one ruled out.
+    same('wildcard', run([hosted('*.example.net', Q)], T1), run([notHosted('api.example.net', Q)], T2));
+    assert.deepEqual(knownForScan(run([hosted('*.example.net', Q)], T1)(run([notHosted('api.example.net', Q)], T2)(ON)))[0].except, ['api.example.net']);
+    // Three runs in any order: T1 found P; T2 NOT_HOSTED at P, found R; T3 no answer at R, found P:8443.
+    const r1 = run([hosted(N, P)], T1);
+    const r2 = run([notHosted(N, P), hosted(N, R)], T2);
+    const r3 = run([unknown(N, R), hosted(N, P, 8443)], T3);
+    const chrono = state(r3(r2(r1(ON))));
+    for (const order of [[r2, r3, r1], [r3, r1, r2], [r1, r3, r2], [r2, r1, r3], [r3, r2, r1]]) {
+      assert.deepEqual(state(order.reduce((map, f) => f(map), ON)), chrono);
+    }
+    assert.deepEqual(chrono, [`${N}|${P}|443 cli-elsewhere@09-10`, `${N}|${P}|8443 active`, `${N}|${R}|443 cli-elsewhere@09-20`]);
+  });
+
+  test('zone files out of date order: an older finding is stale only where a newer zone file did not name its address', () => {
+    const N = 'www.example.net';
+    const [P, Q, R] = ['192.0.2.10', '192.0.2.11', '198.51.100.20'];
+    const [T1, T2, T3] = ['2026-09-01T00:00:00Z', '2026-09-10T00:00:00Z', '2026-09-20T00:00:00Z'];
+    const run = (obs, at, source) => (map) => applyObservations(map, obs, { source, at }).map;
+    const zone = (name, ips, at) => run(ips.map((ip) => ({ name, ip, port: null, outcome: 'hosted' })), at, 'zone');
+    const state = (map) => map.entries.map((e) => `${originKey(e)} ${e.stale ? e.stale.reason : 'active'}`).sort();
+    // The runs in date order: every other order lands the same.
+    const everyOrder = (runs) => {
+      const chrono = state(runs.reduce((map, f) => f(map), ON));
+      for (const order of [[0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]) {
+        assert.deepEqual(state(order.map((i) => runs[i]).reduce((map, f) => f(map), ON)), chrono, `order ${order.join('')}`);
+      }
+      return chrono;
+    };
+    // The newer zone file named Q too: Q:8443, found earlier, is not "another origin".
+    assert.deepEqual(everyOrder([run([hosted(N, Q, 8443)], T1, 'verify'), zone(N, [P, Q], T2), run([], T3, 'cli-json')]), [
+      `${N}|${P}|443 active`, `${N}|${Q}|443 active`, `${N}|${Q}|8443 active`
+    ]);
+    // A probe marked the newer zone file's entry since: the zone file still named Q, not P, on 09-10.
+    assert.deepEqual(everyOrder([zone(N, [P], T1), zone(N, [Q], T2), run([notHosted(N, Q)], T3, 'verify')]), [
+      `${N}|${P}|443 zone-other`, `${N}|${Q}|443 verify-not-hosted`
+    ]);
+    // A wildcard's address ruled out for the name: that entry is the probe's, no zone file of the name.
+    const chrono = everyOrder([run([hosted(N, P)], T1, 'cli-json'), zone('*.example.net', [R], T2), run([notHosted(N, R)], T3, 'cli-json')]);
+    assert.deepEqual(chrono, [`*.example.net|${R}|443 active`, `${N}|${P}|443 active`, `${N}|${R}|443 cli-not-hosted`]);
+    const masked = [zone('*.example.net', [R], T2), run([notHosted(N, R)], T3, 'cli-json')].reduce((map, f) => f(map), ON);
+    assert.deepEqual([entry(masked, `${N}|${R}|443`).source, entry(masked, `${N}|${R}|443`).firstSeen], ['cli-json', '2026-09-10T00:00:00.000Z']);
+  });
+
+  test('order does not matter: a seeded search over three CLI reports in all six orders finds no difference', () => {
+    let seed = 7;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed / 2147483648;
+    };
+    const pick = (a) => a[Math.floor(rnd() * a.length)];
+    const NAMES = ['www.example.net', 'shop.example.net'];
+    const IPS = ['192.0.2.10', '192.0.2.11', '198.51.100.20'];
+    const PORTS = [443, 443, 8443];
+    const OUTCOMES = ['hosted', 'hosted', 'not-hosted', 'unknown'];
+    const TIMES = ['2026-09-01T00:00:00Z', '2026-09-10T00:00:00Z', '2026-09-20T00:00:00Z'];
+    const ORDERS = [[0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+    const state = (map) => (map ? map.entries.map((e) => `${originKey(e)} ${e.stale ? 'stale' : 'active'}`).sort() : []);
+    let differences = 0;
+    for (let round = 0; round < 400; round += 1) {
+      const reports = TIMES.map((at) => {
+        const obs = [];
+        for (let i = 1 + Math.floor(rnd() * 3); i > 0; i -= 1) obs.push({ name: pick(NAMES), ip: pick(IPS), port: pick(PORTS), outcome: pick(OUTCOMES) });
+        return { at, obs };
+      });
+      const apply = (order) => order.reduce((map, i) => applyObservations(map, reports[i].obs, { source: 'cli-json', at: reports[i].at }).map, ON);
+      const chrono = state(apply([0, 1, 2]));
+      for (const order of ORDERS) if (JSON.stringify(state(apply(order))) !== JSON.stringify(chrono)) differences += 1;
+    }
+    assert.equal(differences, 0);
+  });
+
+  test('what a run ruled out at an address the map does not hold is kept, out of sight, and forgotten with the map', () => {
+    const N = 'www.example.net';
+    const map = applyObservations(ON, [notHosted(N, '192.0.2.10'), hosted('shop.example.net', '198.51.100.20')], { source: 'cli-json', at: DAY2 }).map;
+    assert.deepEqual(keys(map), ['shop.example.net|198.51.100.20|443'], 'no entry for www');
+    assert.deepEqual(map.refuted.map((e) => `${originKey(e)} ${e.stale.reason}@${e.stale.at}`), [`${N}|192.0.2.10|443 cli-not-hosted@${DAY2}`]);
+    assert.deepEqual(originsFor(map, N), [], 'never read as an origin');
+    assert.deepEqual(sanitizeOriginMap(JSON.parse(JSON.stringify(map))), map, 'stored and read back');
+    assert.equal(removeOrigins(map, keys(map)).refuted, undefined, 'forgetting every entry forgets them too');
+    assert.equal(setRemember(removeOrigins(map, keys(map)), false), null);
+  });
+
   test('a stored mark not newer than the last confirmation is dropped', () => {
     const map = sanitizeOriginMap({
       remember: true,
@@ -351,9 +454,11 @@ describe('the merge rules (lib/originfill.js applyObservations)', () => {
     assert.deepEqual(view('www.example.net'), ['www.example.net 198.51.100.40 active', `www.example.net ${W} stale`], 'no longer the wildcard\'s address');
     assert.deepEqual(view('shop.example.net'), [`*.example.net ${W} active`], 'the other names keep it');
     assert.deepEqual(knownForScan(map).find((k) => k.name === '*.example.net').except, ['www.example.net']);
-    // A name the wildcard already says is served there adds nothing of its own; no answer alone says nothing.
+    // A name found at the wildcard's address gets its own entry (whatever came first, the wildcard or
+    // the name); no answer alone says nothing.
     res = applyObservations(map, [hosted('shop.example.net', W), unknown('api.example.net', W)], { source: 'verify', at: DAY3 });
-    assert.deepEqual([res.added, res.confirmed, res.staled], [[], [], []]);
+    assert.deepEqual([res.added, res.confirmed, res.staled], [[`shop.example.net|${W}|443`], [], []]);
+    assert.deepEqual(originsFor(res.map, 'shop.example.net').map((e) => e.name), ['shop.example.net'], 'its own entry speaks for it');
     // Answered without the name, found nowhere else: masked as not served there.
     res = applyObservations(map, [notHosted('api.example.net', W)], { source: 'verify', at: DAY3 });
     assert.deepEqual(entry(res.map, `api.example.net|${W}|443`).stale, { reason: 'verify-not-hosted', at: DAY3 });

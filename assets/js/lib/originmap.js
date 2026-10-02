@@ -120,7 +120,8 @@ export function sanitizeOriginMap(value, { now } = {}) {
   }
   entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || rank(a, b) || (originKey(a) < originKey(b) ? -1 : 1));
   const remember = value.remember === true;
-  return remember || entries.length ? { v: 1, remember, entries } : null;
+  const refuted = ((value.refuted && sanitizeOriginMap({ entries: value.refuted }, { now })) || { entries: [] }).entries.filter((e) => e.stale);
+  return remember || entries.length ? { v: 1, remember, entries, ...(refuted.length && { refuted }) } : null;
 }
 
 const INDEXES = new WeakSet();

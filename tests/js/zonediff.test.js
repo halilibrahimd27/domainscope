@@ -25,7 +25,7 @@ describe('vocabulary', () => {
   test('statuses, reasons, notes, options and filters', () => {
     assert.deepEqual(DIFF_STATUSES, ['added', 'removed', 'changed', 'same', 'ignored']);
     assert.deepEqual(DIFF_REASONS, ['values', 'ttl', 'proxied', 'routing', 'soa-names', 'soa-serial', 'soa-timers']);
-    assert.deepEqual(DIFF_NOTES, ['ttl-ignored', 'txt-split', 'soa-ignored', 'soa-one-side', 'apex-ns', 'not-in-batch', 'batch-delete', 'partial']);
+    assert.deepEqual(DIFF_NOTES, ['ttl-ignored', 'txt-split', 'soa-ignored', 'soa-one-side', 'apex-ns', 'not-in-batch', 'batch-delete', 'partial', 'other-variants']);
     assert.deepEqual(DIFF_DEFAULTS, { ignoreTtl: false, joinTxt: true, ignoreSoa: false, ignoreApexNs: false });
     assert.deepEqual(DIFF_OPTIONS, ['ignoreTtl', 'joinTxt', 'ignoreSoa', 'ignoreApexNs']);
     assert.deepEqual(DIFF_FILTERS, ['diff', 'added', 'removed', 'changed', 'same', 'ignored', 'all']);
@@ -282,6 +282,31 @@ describe('a change batch or an incomplete export on one side', () => {
     // The batch as the starting point: the same rows, the other way round.
     assert.deepEqual(lines(diffZones(batch(), zone())), ['ignored @ A |not-in-batch', 'same mail A |', 'removed new A |', 'added old A |batch-delete', 'changed www A values|']);
     assert.ok(DIFF_NOTES.includes('not-in-batch') && DIFF_NOTES.includes('batch-delete'));
+  });
+
+  test('a change batch names routing variants by SetIdentifier: only those are compared, the zone\'s other variants are left alone', () => {
+    const w = (id, weight, ip) => ({ Name: 'www.example.com.', Type: 'A', SetIdentifier: id, Weight: weight, TTL: 60, ResourceRecords: [{ Value: ip }] });
+    const weighted = r53({ ResourceRecordSets: [{ Name: 'example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.10' }] }, w('blue', 50, '192.0.2.1'), w('green', 50, '192.0.2.2')] });
+    const changes = (...list) => r53({ Changes: list });
+    const www = (res) => {
+      const r = res.rows.find((x) => x.key === 'www|A');
+      return [r.status, r.reasons, r.a ? r.a.values : null, r.b ? r.b.values : null, r.added, r.removed, r.notes];
+    };
+    assert.deepEqual(www(diffZones(weighted, changes({ Action: 'UPSERT', ResourceRecordSet: w('blue', 0, '192.0.2.1') }))),
+      ['changed', ['routing'], ['192.0.2.1'], ['192.0.2.1'], [], [], ['other-variants']], 'blue weighed again; green is not in the batch');
+    assert.deepEqual(www(diffZones(weighted, changes({ Action: 'UPSERT', ResourceRecordSet: w('blue', 50, '192.0.2.1') }))),
+      ['same', [], ['192.0.2.1'], ['192.0.2.1'], [], [], ['other-variants']]);
+    assert.deepEqual(www(diffZones(weighted, changes({ Action: 'DELETE', ResourceRecordSet: w('blue', 50, '192.0.2.1') }))),
+      ['removed', [], ['192.0.2.1'], null, [], ['192.0.2.1'], ['batch-delete', 'other-variants']], 'only blue goes');
+    assert.deepEqual(www(diffZones(weighted, changes({ Action: 'UPSERT', ResourceRecordSet: w('red', 10, '192.0.2.3') }))),
+      ['added', [], null, ['192.0.2.3'], ['192.0.2.3'], [], ['other-variants']], 'a new variant');
+    assert.deepEqual(www(diffZones(weighted, changes({ Action: 'UPSERT', ResourceRecordSet: w('blue', 0, '192.0.2.1') }, { Action: 'UPSERT', ResourceRecordSet: w('green', 100, '192.0.2.2') }))),
+      ['changed', ['routing'], ['192.0.2.1', '192.0.2.2'], ['192.0.2.1', '192.0.2.2'], [], [], []], 'both variants named: the whole set');
+    assert.deepEqual(www(diffZones(changes({ Action: 'DELETE', ResourceRecordSet: w('blue', 50, '192.0.2.1') }), weighted)),
+      ['added', [], null, ['192.0.2.1'], ['192.0.2.1'], [], ['batch-delete', 'other-variants']], 'the batch as the starting point');
+    assert.deepEqual(www(diffZones(weighted, changes({ Action: 'DELETE', ResourceRecordSet: w('purple', 50, '192.0.2.9') }))),
+      ['ignored', [], ['192.0.2.1', '192.0.2.2'], null, [], [], ['not-in-batch']], 'a DELETE of a variant the zone lacks changes none of its variants');
+    assert.ok(DIFF_NOTES.includes('other-variants'));
   });
 
   test('an incomplete export: a set it lacks may be in the part that is missing, and the row says so', () => {

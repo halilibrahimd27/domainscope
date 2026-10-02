@@ -23,8 +23,10 @@
  *   routing ({@link DIFF_REASONS}).
  * - A Route 53 change batch (lib/zoneparse.js `changeBatch`) is not a zone but changes to one: a
  *   set it does not name is `ignored` ('not-in-batch'), never removed or added; a set it deletes
- *   is compared as gone ('batch-delete'). A set an incomplete export (`partial`) lacks may be in the
- *   part that is missing: its row says so ('partial').
+ *   is compared as gone ('batch-delete'). It names routing variants by their SetIdentifier: of the
+ *   other zone's set only those are compared ('other-variants' when it has more). A set or a value
+ *   an incomplete export (`partial`) lacks may be in the part that is missing: its row says so
+ *   ('partial').
  *
  * Pure, synchronous and DOM-free; nothing is sent or stored (the record sets of a zone are kept
  * per option while the zone object lives, in a WeakMap: toggling an option compares again without
@@ -44,9 +46,12 @@ export const DIFF_REASONS = Object.freeze(['values', 'ttl', 'proxied', 'routing'
 /**
  * What an option kept from counting (the row says so), why a set was left out, or why a set on
  * one side only may not be a difference: 'not-in-batch' (a change batch does not name it),
- * 'batch-delete' (a change batch deletes it), 'partial' (the file without it is incomplete).
+ * 'batch-delete' (a change batch deletes it), 'partial' (the file without it, or without some of
+ * its values, is incomplete), 'other-variants' (a change batch names only some of its routing
+ * variants: the others are left out).
  */
-export const DIFF_NOTES = Object.freeze(['ttl-ignored', 'txt-split', 'soa-ignored', 'soa-one-side', 'apex-ns', 'not-in-batch', 'batch-delete', 'partial']);
+export const DIFF_NOTES = Object.freeze(['ttl-ignored', 'txt-split', 'soa-ignored', 'soa-one-side', 'apex-ns', 'not-in-batch', 'batch-delete', 'partial',
+  'other-variants']);
 
 /** Comparison options and their defaults. */
 export const DIFF_DEFAULTS = Object.freeze({ ignoreTtl: false, joinTxt: true, ignoreSoa: false, ignoreApexNs: false });
@@ -356,11 +361,42 @@ function rowOrder(x, y) {
   return x.row.type < y.row.type ? -1 : x.row.type > y.row.type ? 1 : 0;
 }
 
-/** The keys of the sets a change batch deletes (lib/zoneparse.js `changeBatch`), or null: not a change batch. */
-function batchDeletes(zone) {
+/** A record's routing variant: its SetIdentifier, null for a plain record. */
+const variantId = (r) => (r.routing && r.routing.id !== undefined ? r.routing.id : null);
+
+/**
+ * What a change batch (lib/zoneparse.js `changeBatch`) names, per set key: the variants it sets or
+ * deletes (`ids`, SetIdentifiers; null for a plain set) and the ones it deletes (`deletes`). Null:
+ * not a change batch.
+ * @returns {Map<string, { ids: Set<string|null>, deletes: Set<string|null> }>|null}
+ */
+function batchScope(zone, sets) {
   if (!zone.changeBatch) return null;
   const origin = zone.origin || null;
-  return new Set((zone.changeBatch.deletes || []).map((d) => `${relativeName(d.name, origin)}|${String(d.type || '').toUpperCase()}`));
+  const scope = new Map();
+  const named = (key, id) => {
+    let s = scope.get(key);
+    if (!s) scope.set(key, (s = { ids: new Set(), deletes: new Set() }));
+    s.ids.add(id);
+    return s;
+  };
+  for (const set of sets.values()) for (const r of set.records) named(set.key, variantId(r));
+  for (const d of zone.changeBatch.deletes || []) {
+    named(`${relativeName(d.name, origin)}|${String(d.type || '').toUpperCase()}`, d.id ?? null).deletes.add(d.id ?? null);
+  }
+  return scope;
+}
+
+/**
+ * A set cut to the routing variants a change batch names (all of it when the batch names the
+ * plain set): `set` null when it has none of them, `left` when it has others.
+ */
+function variantsOf(set, ids, zone, opts) {
+  if (ids.has(null)) return { set, left: false };
+  const keep = set.records.filter((r) => ids.has(variantId(r)));
+  const left = keep.length < set.records.length;
+  if (!left) return { set, left };
+  return { set: keep.length ? recordSets({ origin: zone.origin, records: keep }, opts).get(set.key) || null : null, left };
 }
 
 /** Parse issues `partial` stands for (lib/zoneparse.js): not counted again among the problems. */
@@ -400,13 +436,31 @@ export function diffZones(a, b, options = {}) {
   for (const k of DIFF_OPTIONS) if (options && typeof options[k] === 'boolean') opts[k] = options[k];
   const setsA = setsOf(a, opts);
   const setsB = setsOf(b, opts);
-  const deletesA = batchDeletes(a);
-  const deletesB = batchDeletes(b);
+  const scopeA = batchScope(a, setsA);
+  const scopeB = batchScope(b, setsB);
   const rows = [];
   const keys = [...setsA.keys(), ...[...setsB.keys()].filter((k) => !setsA.has(k))];
   for (const key of keys) {
-    const sa = setsA.get(key) || null;
-    const sb = setsB.get(key) || null;
+    let sa = setsA.get(key) || null;
+    let sb = setsB.get(key) || null;
+    // A change batch names routing variants: of the other side's set, only those are compared.
+    // `untouched`: it names only variants that set lacks (a DELETE of one that is not there).
+    let others = false;
+    let untouched = false;
+    if (scopeB && scopeB.has(key) && sa) {
+      const cut = variantsOf(sa, scopeB.get(key).ids, a, opts);
+      if (cut.set || sb) {
+        sa = cut.set;
+        others = cut.left;
+      } else untouched = true;
+    }
+    if (scopeA && scopeA.has(key) && sb) {
+      const cut = variantsOf(sb, scopeA.get(key).ids, b, opts);
+      if (cut.set || sa) {
+        sb = cut.set;
+        others = others || cut.left;
+      } else untouched = true;
+    }
     const any = sa || sb;
     const row = {
       key, rel: any.rel, name: any.name, type: any.type, status: 'same', reasons: [], notes: [],
@@ -419,25 +473,26 @@ export function diffZones(a, b, options = {}) {
       // A provider's export (Cloudflare, Route 53 lists, octoDNS) has no SOA: nothing to compare.
       row.status = 'ignored';
       row.notes.push('soa-one-side');
-    } else if ((!sa && deletesA && !deletesA.has(key)) || (!sb && deletesB && !deletesB.has(key))) {
+    } else if (untouched || (!sa && scopeA && !scopeA.has(key)) || (!sb && scopeB && !scopeB.has(key))) {
       // A change batch says nothing of the sets it does not name: they are not removed.
       row.status = 'ignored';
       row.notes.push('not-in-batch');
     } else if (!sa) {
       row.status = 'added';
       row.added = [...sb.values.values()].map((v) => v.text);
-      if (deletesA) row.notes.push('batch-delete');
+      if (scopeA && scopeA.get(key).deletes.size) row.notes.push('batch-delete');
       if (a.partial) row.notes.push('partial');
     } else if (!sb) {
       row.status = 'removed';
       row.removed = [...sa.values.values()].map((v) => v.text);
-      if (deletesB) row.notes.push('batch-delete');
+      if (scopeB && scopeB.get(key).deletes.size) row.notes.push('batch-delete');
       if (b.partial) row.notes.push('partial');
     } else {
       Object.assign(row, compareSets(sa, sb, opts));
       row.added = [...sb.values.entries()].filter(([k]) => !sa.values.has(k)).map(([, v]) => v.text);
       row.removed = [...sa.values.entries()].filter(([k]) => !sb.values.has(k)).map(([, v]) => v.text);
     }
+    if (others && row.status !== 'ignored') row.notes.push('other-variants');
     rows.push(row);
   }
   const sorted = rows.map(orderKey).sort(rowOrder).map((x) => x.row);

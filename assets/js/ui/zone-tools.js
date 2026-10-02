@@ -117,6 +117,8 @@ const STRINGS = [
   ['zcmp.note.not-in-batch', ['Not in the change batch: it does not change this set, so this is no difference.', 'Değişiklik paketinde yok: paket bu kümeyi değiştirmiyor, yani bu bir fark değil.']],
   ['zcmp.note.batch-delete', ['The change batch deletes this set.', 'Değişiklik paketi bu kümeyi siliyor.']],
   ['zcmp.note.partial', ['The file without this set is incomplete: the set may be in the part that is missing.', 'Bu kümenin olmadığı dosya eksik: küme, dosyanın eksik kısmında olabilir.']],
+  ['zcmp.note.other-variants', ['The change batch names only some routing variants of this set: the others are left out of the comparison.',
+    'Değişiklik paketi bu kümenin yalnızca bazı yönlendirme varyantlarını içeriyor: diğerleri karşılaştırmaya alınmadı.']],
   ['zcmp.batch.title', ['A change batch, not a zone', 'Bir zone değil, bir değişiklik paketi']],
   ['zcmp.batch', ['The other file is a Route 53 change batch, not a whole zone (created or updated: {upserts}, deleted: {deletes}). Only the record sets it changes are compared: the rest of this zone shows as ignored, “not in the change batch”, never as removed.',
     'Diğer dosya bütün bir zone değil, bir Route 53 değişiklik paketi (oluşturulan ya da güncellenen: {upserts}, silinen: {deletes}). Yalnızca değiştirdiği kayıt kümeleri karşılaştırılır: bu zone’un geri kalanı kaldırıldı olarak değil, “değişiklik paketinde yok” notuyla yok sayıldı olarak görünür.']],

@@ -430,7 +430,7 @@ describe('the calendar and the exports', () => {
     const reg = (name) => ({ objectClassName: 'domain', ldhName: name, status: ['client transfer prohibited'], events: [{ eventAction: 'expiration', eventDate: iso(300) }], entities: [] });
     const fetchImpl = async (url) => {
       const u = String(url);
-      if (u === 'https://data.iana.org/rdap/dns.json') return json({ services: [[['nl'], ['https://rdap.registry.example/']]] });
+      if (u === 'https://data.iana.org/rdap/dns.json') return json({ services: [[['test'], ['https://rdap.registry.example/']]] });
       const name = u.split('/domain/')[1];
       if (u.startsWith('https://rdap.org/')) log.org += 1;
       else log.registry += 1;
@@ -447,7 +447,7 @@ describe('the calendar and the exports', () => {
       return json(reg(name));
     };
     const dns = { query: async (name, type) => ({ name, type, ok: true, rcode: 'NOERROR', answers: [], flags: {} }) };
-    const domains = Array.from({ length: 20 }, (_, i) => `example${i}.nl`);
+    const domains = Array.from({ length: 20 }, (_, i) => `example${i}.test`);
     const run = createPortfolio({ domains, dns, fetchImpl, dkim: false, rdapOptions: { registryRetryMs: 20, rdapOrgIntervalMs: 0 } });
     await run.start();
     const res = domains.map((d) => run.row(d).raw.rdap);

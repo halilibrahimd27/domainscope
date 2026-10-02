@@ -545,8 +545,8 @@ test('rdapDomain: a TLD the bootstrap does not list but RDAP_OVERRIDES does goes
   assert.equal(r.rdapServer, 'https://rdap.identitydigital.services/rdap/');
   assert.equal(r.unsupportedTld, false);
   // a TLD without RDAP and without an override: no request at all
-  const de = await rdapDomain('example.de', { fetchImpl: f });
-  assert.equal(de.unsupportedTld, true);
+  const none = await rdapDomain('example.example', { fetchImpl: f });
+  assert.equal(none.unsupportedTld, true);
   assert.deepEqual(f.calls.map((c) => c.url), [IANA_BOOTSTRAP.dns, 'https://rdap.identitydigital.services/rdap/domain/example.io']);
   // the bootstrap out of reach: the override still answers
   clearRdapCache();
@@ -559,12 +559,12 @@ test('rdap.org: one request a second at most, every lookup of the page together,
   const at = [];
   const f = mockFetch({
     ...BOOT,
-    'https://rdap.verisign.com/': () => new TypeError('Failed to fetch'),
+    'https://tld.registry.test/': () => new TypeError('Failed to fetch'),
     [RDAP_ORG]: (u) => { at.push([u.split('/').pop(), Date.now()]); return GITHUB_COM; }
   });
-  const rs = await Promise.all(['a.com', 'b.com', 'c.com'].map((d) => rdapDomain(d, { fetchImpl: f, rdapOrgIntervalMs: 80 })));
+  const rs = await Promise.all(['a.test', 'b.test', 'c.test'].map((d) => rdapDomain(d, { fetchImpl: f, rdapOrgIntervalMs: 80 })));
   assert.ok(rs.every((r) => r.ok));
-  assert.deepEqual(at.map((x) => x[0]), ['a.com', 'b.com', 'c.com']);
+  assert.deepEqual(at.map((x) => x[0]), ['a.test', 'b.test', 'c.test']);
   for (let i = 1; i < at.length; i += 1) assert.ok(at[i][1] - at[i - 1][1] >= 75, `spaced: ${at[i][1] - at[i - 1][1]} ms`);
 });
 
@@ -573,34 +573,34 @@ test('rdap.org: an unreadable answer (a browser\'s view of its 429) pauses it; t
   let orgCalls = 0;
   const f = mockFetch({
     ...BOOT,
-    'https://rdap.verisign.com/': () => jsonResponse('busy', 503),
+    'https://tld.registry.test/': () => jsonResponse('busy', 503),
     [RDAP_ORG]: () => { orgCalls += 1; return new TypeError('Failed to fetch'); }
   });
-  const first = await rdapDomain('a.com', { fetchImpl: f, rdapOrgIntervalMs: 0 });
+  const first = await rdapDomain('a.test', { fetchImpl: f, rdapOrgIntervalMs: 0 });
   assert.equal(first.ok, false);
   assert.equal(first.errorKind, 'network');
   assert.match(first.error, /rdap\.org gave no readable answer/);
   assert.equal(orgCalls, 1, 'a TypeError is never retried');
-  const second = await rdapDomain('b.com', { fetchImpl: f, rdapOrgIntervalMs: 0 });
+  const second = await rdapDomain('b.test', { fetchImpl: f, rdapOrgIntervalMs: 0 });
   assert.equal(orgCalls, 1, 'paused: not asked again');
   assert.equal(second.rdapOrgPaused, true);
   assert.equal(second.httpStatus, 503, 'the registry\'s answer is the one reported');
   // a readable 429 pauses it too, and is not retried
   clearRdapCache();
   let n = 0;
-  const g = mockFetch({ ...BOOT, 'https://rdap.verisign.com/': () => new TypeError('x'), [RDAP_ORG]: () => { n += 1; return jsonResponse('slow down', 429); } });
-  await rdapDomain('a.com', { fetchImpl: g, rdapOrgIntervalMs: 0 });
-  await rdapDomain('b.com', { fetchImpl: g, rdapOrgIntervalMs: 0 });
+  const g = mockFetch({ ...BOOT, 'https://tld.registry.test/': () => new TypeError('x'), [RDAP_ORG]: () => { n += 1; return jsonResponse('slow down', 429); } });
+  await rdapDomain('a.test', { fetchImpl: g, rdapOrgIntervalMs: 0 });
+  await rdapDomain('b.test', { fetchImpl: g, rdapOrgIntervalMs: 0 });
   assert.equal(n, 1);
   // after the pause it is asked again (the registry answered readably: the unreadable answer was rdap.org's)
   clearRdapCache();
   let m = 0;
-  const h = mockFetch({ ...BOOT, 'https://rdap.verisign.com/': () => jsonResponse('bad request', 400), [RDAP_ORG]: () => { m += 1; return new TypeError('y'); } });
-  await rdapDomain('a.com', { fetchImpl: h, rdapOrgIntervalMs: 0, rdapOrgCooldownMs: 30 });
-  const paused = await rdapDomain('b.com', { fetchImpl: h, rdapOrgIntervalMs: 0, rdapOrgCooldownMs: 30 });
+  const h = mockFetch({ ...BOOT, 'https://tld.registry.test/': () => jsonResponse('bad request', 400), [RDAP_ORG]: () => { m += 1; return new TypeError('y'); } });
+  await rdapDomain('a.test', { fetchImpl: h, rdapOrgIntervalMs: 0, rdapOrgCooldownMs: 30 });
+  const paused = await rdapDomain('b.test', { fetchImpl: h, rdapOrgIntervalMs: 0, rdapOrgCooldownMs: 30 });
   assert.deepEqual([m, paused.rdapOrgPaused], [1, true], 'paused');
   await new Promise((r) => setTimeout(r, 40));
-  await rdapDomain('c.com', { fetchImpl: h, rdapOrgIntervalMs: 0, rdapOrgCooldownMs: 30 });
+  await rdapDomain('c.test', { fetchImpl: h, rdapOrgIntervalMs: 0, rdapOrgCooldownMs: 30 });
   assert.equal(m, 2);
 });
 
@@ -615,11 +615,11 @@ test('rdap.org: a 429 pauses the lookups already waiting for their turn too; the
   let orgCalls = 0;
   const f = mockFetch({
     ...BOOT,
-    'https://rdap.verisign.com/': () => new TypeError('Failed to fetch'),
+    'https://tld.registry.test/': () => new TypeError('Failed to fetch'),
     [RDAP_ORG]: () => { orgCalls += 1; return jsonResponse('slow down', 429); }
   });
   // a slot of 250 ms: the first answer lands long before the next turn, even on a busy test machine
-  const rs = await Promise.all(['a.com', 'b.com', 'c.com', 'd.com'].map((d) => rdapDomain(d, { fetchImpl: f, rdapOrgIntervalMs: 250 })));
+  const rs = await Promise.all(['a.test', 'b.test', 'c.test', 'd.test'].map((d) => rdapDomain(d, { fetchImpl: f, rdapOrgIntervalMs: 250 })));
   assert.equal(orgCalls, 1, 'only the first one reaches rdap.org');
   assert.equal(rs.filter((r) => r.rdapOrgPaused).length, 3);
   assert.ok(rs.filter((r) => r.rdapOrgPaused).every((r) => !r.ok && r.errorKind === 'network'), 'the registry\'s own failure is the one reported');
@@ -641,8 +641,8 @@ test('registries: one request in flight per server; a 429 is waited out and aske
     last = now;
     return { ...GITHUB_COM, ldhName: u.split('/').pop().toUpperCase(), links: [] };
   };
-  const f = mockFetch({ ...BOOT, 'https://rdap.verisign.com/': registry, [RDAP_ORG]: () => { orgCalls += 1; return new TypeError('x'); } });
-  const domains = Array.from({ length: 6 }, (_, i) => `example${i}.com`);
+  const f = mockFetch({ ...BOOT, 'https://tld.registry.test/': registry, [RDAP_ORG]: () => { orgCalls += 1; return new TypeError('x'); } });
+  const domains = Array.from({ length: 6 }, (_, i) => `example${i}.test`);
   const rs = await Promise.all(domains.map((d) => rdapDomain(d, { fetchImpl: f, registryRetryMs: 25 })));
   assert.equal(rs.filter((r) => r.ok).length, 6, rs.map((r) => r.error).join(' | '));
   assert.equal(maxInFlight, 1, 'one request at a time to one registry server');
@@ -654,7 +654,7 @@ test('registries: a Retry-After is honoured before the server is asked again', a
   const at = [];
   const f = mockFetch({
     ...BOOT,
-    'https://rdap.verisign.com/': () => {
+    'https://tld.registry.test/': () => {
       calls += 1;
       at.push(Date.now());
       if (calls === 1) {
@@ -665,18 +665,18 @@ test('registries: a Retry-After is honoured before the server is asked again', a
       return GITHUB_COM;
     }
   });
-  const r = await rdapDomain('github.com', { fetchImpl: f, registryRetryMs: 10 });
+  const r = await rdapDomain('example.test', { fetchImpl: f, registryRetryMs: 10 });
   assert.equal(r.ok, true);
   assert.ok(at[1] - at[0] >= 950, `waited ${at[1] - at[0]} ms`);
 });
 
 test('registries: one that keeps answering 429 fails as rate limited after its retries, without rdap.org', async () => {
   let orgCalls = 0;
-  const f = mockFetch({ ...BOOT, 'https://rdap.verisign.com/': () => jsonResponse({ errorCode: 429 }, 429), [RDAP_ORG]: () => { orgCalls += 1; return GITHUB_COM; } });
-  const r = await rdapDomain('github.com', { fetchImpl: f, registryRetryMs: 5 });
+  const f = mockFetch({ ...BOOT, 'https://tld.registry.test/': () => jsonResponse({ errorCode: 429 }, 429), [RDAP_ORG]: () => { orgCalls += 1; return GITHUB_COM; } });
+  const r = await rdapDomain('example.test', { fetchImpl: f, registryRetryMs: 5 });
   assert.deepEqual([r.ok, r.errorKind, r.httpStatus], [false, 'rate-limit', 429]);
   assert.equal(orgCalls, 0);
-  assert.equal(f.calls.filter((c) => c.url.startsWith('https://rdap.verisign.com/')).length, 4, 'asked once and again three times');
+  assert.equal(f.calls.filter((c) => c.url.startsWith('https://tld.registry.test/')).length, 4, 'asked once and again three times');
 });
 
 test('rdap.org pauses for its own 429 only: a registry\'s 429 behind its redirect, or a registry that gave no readable answer either, does not', async () => {
@@ -684,19 +684,19 @@ test('rdap.org pauses for its own 429 only: a registry\'s 429 behind its redirec
   let orgCalls = 0;
   const f = mockFetch({
     ...BOOT,
-    'https://rdap.verisign.com/': () => new TypeError('Failed to fetch'),
-    [RDAP_ORG]: (u) => { orgCalls += 1; return redirectedResponse(`https://rdap.verisign.com/com/v1/domain/${u.split('/').pop()}`, { errorCode: 429 }, 429); }
+    'https://tld.registry.test/': () => new TypeError('Failed to fetch'),
+    [RDAP_ORG]: (u) => { orgCalls += 1; return redirectedResponse(`https://tld.registry.test/domain/${u.split('/').pop()}`, { errorCode: 429 }, 429); }
   });
-  await rdapDomain('a.com', { fetchImpl: f, rdapOrgIntervalMs: 0, registryRetryMs: 5 });
-  const second = await rdapDomain('b.com', { fetchImpl: f, rdapOrgIntervalMs: 0, registryRetryMs: 5 });
+  await rdapDomain('a.test', { fetchImpl: f, rdapOrgIntervalMs: 0, registryRetryMs: 5 });
+  const second = await rdapDomain('b.test', { fetchImpl: f, rdapOrgIntervalMs: 0, registryRetryMs: 5 });
   assert.equal(orgCalls, 2, 'not paused: the 429 was the registry\'s');
   assert.equal(second.rdapOrgPaused, undefined);
   // The registry fails without a readable answer (CORS) and so does the redirect: the registry again, not rdap.org's limit.
   clearRdapCache();
   let n = 0;
-  const g = mockFetch({ ...BOOT, 'https://rdap.verisign.com/': () => new TypeError('Failed to fetch'), [RDAP_ORG]: () => { n += 1; return new TypeError('Failed to fetch'); } });
-  await rdapDomain('a.com', { fetchImpl: g, rdapOrgIntervalMs: 0 });
-  const again = await rdapDomain('b.com', { fetchImpl: g, rdapOrgIntervalMs: 0 });
+  const g = mockFetch({ ...BOOT, 'https://tld.registry.test/': () => new TypeError('Failed to fetch'), [RDAP_ORG]: () => { n += 1; return new TypeError('Failed to fetch'); } });
+  await rdapDomain('a.test', { fetchImpl: g, rdapOrgIntervalMs: 0 });
+  const again = await rdapDomain('b.test', { fetchImpl: g, rdapOrgIntervalMs: 0 });
   assert.equal(n, 2, 'asked again: nothing says rdap.org was limited');
   assert.equal(again.rdapOrgPaused, undefined);
 });

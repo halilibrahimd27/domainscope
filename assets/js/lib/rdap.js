@@ -36,7 +36,7 @@
  *    most {@link RDAP_REGISTRY_429_RETRIES} times, never through rdap.org (it would only forward to
  *    the same registry).
  *  - An {@link RDAP_OVERRIDES} server answers 404 for a TLD it does not serve as well as for a
- *    domain not registered (rdap.identitydigital.services does for google.de): its 404 is not
+ *    domain not registered (rdap.identitydigital.services does for a .de name): its 404 is not
  *    conclusive, never "not registered".
  *
  * DOM-free; runs in browsers and Node 22.

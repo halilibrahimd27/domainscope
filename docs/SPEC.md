@@ -799,7 +799,7 @@ export const RDAP_REGISTRY_RETRY_MS = 2000, RDAP_REGISTRY_429_RETRIES = 3, RDAP_
                                                    // its 429 is waited out — the Retry-After, else 2 s doubled each time — and the same request asked again before the queue moves,
                                                    // at most 3 times; a Retry-After over a minute is not waited for (the lookup fails as rate limited, §5.36). After a registry's
                                                    // 429 rdap.org is not asked: it would only forward to the same registry
-// An RDAP_OVERRIDES server answers 404 for a TLD it does not serve as well as for a name not registered (rdap.identitydigital.services does for google.de): its
+// An RDAP_OVERRIDES server answers 404 for a TLD it does not serve as well as for a name not registered (rdap.identitydigital.services does for a .de name): its
 // 404 is not conclusive — the lookup fails with "HTTP 404 from a registry server the IANA bootstrap does not name: not conclusive", never `notFound` — and
 // rdap.org is not asked. rdapIp follows the same pacing and pause.
 // opts of both: rdapOrgIntervalMs, rdapOrgCooldownMs, registryRetryMs, registry429Retries, registryWaitMaxMs (tests); clearRdapCache() also resets the pacing

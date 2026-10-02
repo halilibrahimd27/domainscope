@@ -4,6 +4,7 @@ all:
       hosts:
         lb01:
           ansible_host: 203.0.113.2
+          owner: ops
           ports: [443, 8443]
           vip: 203.0.113.50
           backends: [web01, web02]

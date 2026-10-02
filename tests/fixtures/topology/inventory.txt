@@ -1,7 +1,7 @@
 # Topology keys: where TLS really terminates. lib/inventory.js and cli/ssl_origin_scan.py read this
-# file, and the CSV, YAML and JSON next to it, to the same servers (expected.json). Lines 11-15 and
-# 19 are TOPOLOGY warnings.
-lb01 203.0.113.2 ports=443,8443 vip=203.0.113.50 backends=web01,web02
+# file, and the CSV, YAML and JSON next to it, to the same servers (expected.json); a key neither
+# knows (owner=) is ignored. Lines 11-15 and 19 are TOPOLOGY warnings.
+lb01 203.0.113.2 ports=443,8443 vip=203.0.113.50 backends=web01,web02 owner=ops
 lb02 203.0.113.3 vip=203.0.113.50 backends="web01, web02"
 web01 10.0.0.21 terminates_tls=no
 web02 10.0.0.22 Terminates-TLS=yes ports=8443

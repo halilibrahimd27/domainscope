@@ -1262,6 +1262,43 @@ async function main() {
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'empty again' });
     });
 
+    await run.step('Convert a zone over Route 53\'s batch limits: several change batches AWS takes, in order, each to download or copy', async () => {
+      const big = ['$ORIGIN example.com.', '$TTL 300', ...Array.from({ length: 600 }, (_, i) => `h${i} A 192.0.2.${i % 250}`), ''].join('\n');
+      await page.evaluate((v) => {
+        document.querySelectorAll('.zone-import-folded, .zone-paste').forEach((d) => { d.open = true; });
+        const el = document.querySelector('[data-role="zone-paste"]');
+        const ta = el.tagName === 'TEXTAREA' ? el : el.querySelector('textarea');
+        ta.value = v;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }, big);
+      await page.click('[data-action="zone-paste-import"]');
+      await page.waitFor(() => !!document.querySelector('.zone-summary'), { message: 'the big zone' });
+      await clickTab(page, 'convert');
+      await page.waitFor(() => !!document.querySelector('[data-role="zconv"]'), { message: 'convert tab', timeout: 10000 });
+      await page.click('.zconv-targets [data-value="route53"]');
+      await page.waitFor(() => document.querySelector('[data-role="zconv-files"]')?.dataset.count === '2', { message: 'two change batches' });
+      const res = ZC.convertZone(ZP.parseZone(big, { format: 'bind' }), 'route53');
+      assertEqual(res.files.map((f) => [f.filename, f.written]), [['example.com.route53.1.json', 500], ['example.com.route53.2.json', 100]], 'the library\'s batches');
+      assert(/^Send them to Route 53 one after another, in this order:/.test(await text(page, '[data-role="zconv-files"]')), await text(page, '[data-role="zconv-files"]'));
+      assert(await page.evaluate(() => [...document.querySelectorAll('.zconv-pitfall')].some((li) => li.dataset.code === 'batch-split')), 'the note says why');
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('[data-action="zconv-download"]')].map((b) => b.getAttribute('aria-label'))),
+        ['Download example.com.route53.1.json', 'Download example.com.route53.2.json'], 'each button names its file');
+      await takeDownloads(page);
+      await page.click('[data-action="zconv-download"][data-part="2"]');
+      await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'the second batch' });
+      const [dl] = await takeDownloads(page);
+      assertEqual([dl.name, dl.text], [res.files[1].filename, res.files[1].text], 'the second batch, as the library writes it');
+      await stubClipboard(page);
+      await page.click('.zconv-file[data-part="1"] .zconv-copy');
+      await page.waitFor(() => window.__clip.length === 1, { message: 'copied' });
+      assertEqual((await takeClipboard(page))[0], res.files[0].text, 'Copy copies its own file');
+      assert(/^The preview shows the first 400 of the [\d,]+ lines of example\.com\.route53\.1\.json, the first of 2 files; its download and Copy have them all\.$/
+        .test(await text(page, '[data-role="zconv-preview-note"]')), await text(page, '[data-role="zconv-preview-note"]'));
+      await shot(page, opts, 'zone-convert-batches-desktop-light-en');
+      await page.click('[data-action="zone-forget"]');
+      await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'forgotten' });
+    });
+
     await run.step('"Delete all local data" drops a loaded zone; a reload forgets it', async () => {
       await page.click('[data-sample="cloudflare"]');
       await page.waitFor(() => !!document.querySelector('.zone-summary'));

@@ -163,6 +163,14 @@ const STRINGS = [
   ['zconv.privacy', ['The file holds every record it can write, origin addresses included: share it as you would share the zone export itself.',
     'Dosya, yazılabilen her kaydı origin adresleri dahil içerir: onu zone dışa aktarımının kendisi kadar özenle paylaşın.']],
   ['zconv.downloaded', ['{file} downloaded', '{file} indirildi']],
+  ['zconv.filesLead', ['Send them to Route 53 one after another, in this order:', 'Onları Route 53’e bu sırayla, birbiri ardına gönderin:']],
+  ['zconv.filesLabel', ['The change batches', 'Değişiklik paketleri']],
+  ['zconv.downloadPart', ['Download', 'İndir']],
+  ['zconv.copyPart', ['Copy', 'Kopyala']],
+  ['zconv.copyFile', ['Copy {file}', '{file} dosyasını kopyala']],
+  ['zconv.previewPart', ['The preview shows {file}, the first of {count} files.', 'Önizleme, {count} dosyanın ilki olan {file} dosyasını gösteriyor.']],
+  ['zconv.previewPartCut', ['The preview shows the first {shown} of the {total} lines of {file}, the first of {count} files; its download and Copy have them all.',
+    'Önizleme, {count} dosyanın ilki olan {file} dosyasının {total} satırından ilk {shown} tanesini gösteriyor; indirilen dosyada ve Kopyala’da hepsi var.']],
 
   ['zconv.pit.cname-apex.bind', ['CNAME at the apex: BIND cannot serve it next to the SOA and NS records, so it is commented out. Add A / AAAA records of its target instead (or ALIAS / ANAME if your name server has them).',
     'Zone kökünde (apex) CNAME: BIND onu SOA ve NS kayıtlarının yanında sunamaz, bu yüzden yorum satırına çevrildi. Yerine hedefinin A / AAAA kayıtlarını ekleyin (ad sunucunuzda varsa ALIAS / ANAME de olur).']],
@@ -267,8 +275,10 @@ const STRINGS = [
   ['zconv.pit.ttl-mixed', ['Values of one record set with different TTLs: the set gets the lowest (one TTL per set, RFC 2181).',
     'Aynı kayıt kümesinde farklı TTL’li değerler: kümeye en düşüğü verildi (küme başına tek TTL, RFC 2181).']],
   ['zconv.pit.ttl-default', ['Records without a TTL in the source: written with {ttl} s.', 'Kaynakta TTL’i olmayan kayıtlar: {ttl} sn ile yazıldı.']],
-  ['zconv.pit.batch-size', ['{records} records: Route 53 takes at most {max} in one change batch. Split the Changes into several files.',
-    '{records} kayıt: Route 53 bir değişiklik paketinde en fazla {max} kayıt alır. Changes listesini birkaç dosyaya bölün.']]
+  ['zconv.pit.batch-size', ['Record sets Route 53 refuses in a change batch: more than {values} values (its limit for one set), or more than {chars} characters of values (an UPSERT counts each twice; a CREATE, counted once, takes twice as many if the set is new). Make them smaller.',
+    'Route 53’ün bir değişiklik paketinde reddettiği kayıt kümeleri: {values} değerden fazlası (bir kümenin sınırı) ya da değerlerde {chars} karakterden fazlası (bir UPSERT her karakteri iki kez sayar; küme yeniyse bir kez sayan CREATE iki katını alır). Onları küçültün.']],
+  ['zconv.pit.batch-split', ['{records} records: more than one change batch takes, as Route 53 counts every value and every character of an UPSERT twice (at most {max} records and {maxChars} characters of values in one batch). Written as {files} change batches.',
+    '{records} kayıt: bir değişiklik paketinin alabileceğinden fazla, çünkü Route 53 bir UPSERT’teki her değeri ve her karakteri iki kez sayar (bir pakette en fazla {max} kayıt ve değerlerde {maxChars} karakter). {files} değişiklik paketi olarak yazıldı.']]
 ];
 
 registerStrings('en', Object.fromEntries(STRINGS.map(([k, v]) => [k, v[0]])));
@@ -317,8 +327,7 @@ export function rowNote(row) {
 export function pitfallText(p, target) {
   const params = { ...p.params, placeholder: ALIAS_ZONE_PLACEHOLDER };
   for (const k of ['types', 'flags', 'tags', 'keys']) if (Array.isArray(params[k])) params[k] = params[k].join(', ');
-  if (Number.isFinite(params.records)) params.records = formatNumber(params.records);
-  if (Number.isFinite(params.max)) params.max = formatNumber(params.max);
+  for (const k of ['records', 'max', 'maxChars', 'files', 'values', 'chars']) if (Number.isFinite(params[k])) params[k] = formatNumber(params[k]);
   return t(pitfallKey(p.code, target), params);
 }
 
@@ -706,7 +715,7 @@ export function ConvertTab({ zone, V }) {
         h('p', { class: 'text-sm zconv-counts', dataset: { role: 'zconv-counts', written: String(out.written), left: String(out.omitted.length) } },
           t('zconv.written', { count: out.written }), out.omitted.length ? ` · ${t('zconv.left', { count: out.omitted.length })}` : ''),
         notes(out),
-        h('div', { class: 'cluster zconv-actions' },
+        out.files.length > 1 ? fileList(out) : h('div', { class: 'cluster zconv-actions' },
           Button({
             label: t('zconv.download', { file: out.filename }), icon: 'download', variant: 'primary', size: 'sm', dataset: { action: 'zconv-download', target: V.target },
             onClick: () => {
@@ -720,12 +729,44 @@ export function ConvertTab({ zone, V }) {
     box.append(card,
       h('div', { class: 'stack-sm zconv-preview' },
         h('h3', { class: 'zone-h3' }, t('zconv.preview')),
-        cut ? h('p', { class: 'muted text-sm' }, t('zconv.previewCut', { shown: formatNumber(PREVIEW_LINES), total: formatNumber(lines.length) })) : null,
+        previewNote(out, cut, lines.length),
         CodeBlock(preview, { copy: false, maxHeight: '32rem', className: 'zconv-code', label: out.filename })));
     if (keepFocus) {
       const again = box.querySelector(`.zconv-targets [data-value="${keepFocus}"]`);
       if (again) again.focus({ preventScroll: true });
     }
+  }
+
+  /** What the preview shows: the first of several files, the first lines of a long one; or nothing to say. */
+  function previewNote(out, cut, total) {
+    const params = { file: out.filename, count: formatNumber(out.files.length), shown: formatNumber(PREVIEW_LINES), total: formatNumber(total) };
+    const key = out.files.length > 1 ? (cut ? 'zconv.previewPartCut' : 'zconv.previewPart') : cut ? 'zconv.previewCut' : null;
+    return key ? h('p', { class: 'muted text-sm', dataset: { role: 'zconv-preview-note' } }, t(key, params)) : null;
+  }
+
+  /** Several change batches: each file with its records, to download or copy, in the order to send them. */
+  function fileList(out) {
+    return h('div', { class: 'stack-sm zconv-files', dataset: { role: 'zconv-files', count: String(out.files.length) } },
+      h('p', { class: 'text-sm zconv-files-lead' }, t('zconv.filesLead')),
+      h('ol', { class: 'zconv-file-list', attrs: { 'aria-label': t('zconv.filesLabel') } }, out.files.map((f, i) => h('li', { class: 'zconv-file', dataset: { part: String(i + 1) } },
+        h('span', { class: 'zconv-file-name' }, h('code', null, f.filename), ' ', h('span', { class: 'muted text-sm' }, t('zconv.countTitle', { count: f.written }))),
+        h('span', { class: 'cluster zconv-actions' },
+          Button({
+            label: t('zconv.downloadPart'), icon: 'download', variant: i === 0 ? 'primary' : 'secondary', size: 'sm',
+            dataset: { action: 'zconv-download', target: V.target, part: String(i + 1) }, ariaLabel: t('zconv.download', { file: f.filename }),
+            onClick: () => {
+              downloadText(f.filename, f.text, out.mime);
+              announce(t('zconv.downloaded', { file: f.filename }));
+            }
+          }),
+          copyFile(f))))));
+  }
+
+  /** "Copy" of one of several files, named by its file for a screen reader. */
+  function copyFile(f) {
+    const btn = CopyButton(() => f.text, { label: t('zconv.copyPart'), title: t('zconv.copyFile', { file: f.filename }), variant: 'secondary', size: 'sm', toastOnCopy: true, className: 'zconv-copy' });
+    btn.setAttribute('aria-label', t('zconv.copyFile', { file: f.filename }));
+    return btn;
   }
 
   function notes(out) {

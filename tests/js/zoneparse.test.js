@@ -96,7 +96,7 @@ describe('API surface and closed code sets', () => {
   test('Zone shape', () => {
     const z = parseFixture(fx('cloudflare-export'));
     assert.deepEqual(Object.keys(z), ['format', 'dialect', 'markers', 'origin', 'originSource', 'originConfidence',
-      'records', 'warnings', 'fatal', 'partial', 'sources', 'stats', 'defaultTtl']);
+      'records', 'warnings', 'fatal', 'partial', 'sources', 'stats', 'defaultTtl', 'changeBatch']);
     assert.deepEqual(Object.keys(z.stats), ['bytes', 'lines', 'entries', 'records', 'skipped', 'generated', 'proxied', 'dnsOnly', 'byType', 'elapsedMs']);
     assert.deepEqual(z.sources, [{ name: 'cloudflare-export.txt', size: z.stats.bytes, format: 'bind', dialect: 'cloudflare' }]);
     assert.equal(z.stats.bytes, Buffer.byteLength(readFx('cloudflare-export.txt')));
@@ -887,6 +887,27 @@ describe('Route 53 JSON and cli53', () => {
     assert.deepEqual(find(z, 'ha.example.com').routing, { policy: 'failover', id: 'primary', failover: 'PRIMARY', healthCheck: '11111111-2222-3333-4444-555555555555' });
     assert.equal(z.partial, true);
     assert.deepEqual(z.warnings.find((w) => w.code === 'PARTIAL_EXPORT').params, { provider: 'route53', next: 'zz.example.com.', have: 22 });
+  });
+
+  test('a change batch: only well-formed CREATE / UPSERT sets count as read, DELETEs are listed, a malformed change is a skipped record', () => {
+    const set = (name, ip) => ({ Name: name, Type: 'A', TTL: 300, ResourceRecords: [{ Value: ip }] });
+    const batch = { Changes: [
+      { Action: 'UPSERT', ResourceRecordSet: set('example.com.', '192.0.2.1') },
+      { Action: 'DELETE', ResourceRecordSet: { ...set('old.example.com.', '192.0.2.2'), SetIdentifier: 'one' } },
+      null,
+      { Action: 'CREATE' },
+      { Action: 'UPSERT', ResourceRecordSet: 'not a map' },
+      { ResourceRecordSet: set('noaction.example.com.', '192.0.2.3') },
+      { Action: 'FOO', ResourceRecordSet: set('foo.example.com.', '192.0.2.4') },
+      { Action: 'CREATE', ResourceRecordSet: { Type: 'A' } }
+    ] };
+    const z = P(JSON.stringify(batch), { origin: 'example.com' });
+    assert.deepEqual(z.records.map((r) => `${r.name} ${r.type}`), ['example.com A']);
+    assert.deepEqual(z.warnings.find((w) => w.code === 'CHANGE_BATCH').params, { upserts: 1, deletes: 1 });
+    assert.deepEqual(z.changeBatch, { upserts: 1, deletes: [{ name: 'old.example.com', type: 'A', id: 'one' }] });
+    assert.equal(z.warnings.filter((w) => w.code === 'BAD_RECORD').length, 6, 'null, no set, a set that is not an object, no action, an unknown action, no Name');
+    assert.equal(parseFixture(fx('route53')).changeBatch, null, 'a listing is not a change batch');
+    assert.deepEqual(mergeZones([z, z]).changeBatch, { upserts: 2, deletes: [...z.changeBatch.deletes, ...z.changeBatch.deletes] }, 'merged batches add up');
   });
 
   test('octal TXT escapes decode like dnswire; multi-string values', () => {

@@ -70,6 +70,9 @@
  * @property {{ bytes: number, lines: number, entries: number, records: number, skipped: number, generated: number,
  *   proxied: number, dnsOnly: number, byType: Object<string, number>, elapsedMs: number }} stats
  * @property {number|null} defaultTtl the $TTL in force at the end of a BIND file (for $INCLUDE fragments)
+ * @property {{ upserts: number, deletes: Array<{ name: string, type: string, id: string|null }> }|null} changeBatch
+ *   a Route 53 change batch (CHANGE_BATCH): not a zone but changes to one. `records` are what its
+ *   CREATE / UPSERT changes set (`upserts`: the sets read), `deletes` what its DELETEs take away
  */
 
 import {
@@ -635,7 +638,7 @@ function looksLikeFqdn(rel, relLabels) {
 /* Issues                                                                   */
 /* ------------------------------------------------------------------------ */
 
-const STICKY = new Set(['PARTIAL_EXPORT', 'RECORDS_TRUNCATED']);
+const STICKY = new Set(['PARTIAL_EXPORT', 'RECORDS_TRUNCATED', 'CHANGE_BATCH']);
 
 class IssueList {
   constructor(limits, source) {
@@ -2118,7 +2121,8 @@ function newZone({ filename, bytes }) {
     partial: false,
     sources: [{ name: typeof filename === 'string' ? filename : '', size: bytes, format: null, dialect: null }],
     stats: { bytes, lines: 0, entries: 0, records: 0, skipped: 0, generated: 0, proxied: 0, dnsOnly: 0, byType: {}, elapsedMs: 0 },
-    defaultTtl: null
+    defaultTtl: null,
+    changeBatch: null
   };
 }
 
@@ -2821,27 +2825,51 @@ function r53Routing(set) {
   return r;
 }
 
+/**
+ * What a DELETE of a change batch takes away: its name, type and SetIdentifier; null when its set
+ * is not one (no Name or Type, a name that is not one).
+ */
+function changeDelete(set) {
+  const nameRaw = own(set, 'Name');
+  const typeRaw = own(set, 'Type');
+  if (typeof nameRaw !== 'string' || typeof typeRaw !== 'string' || !typeRaw.trim()) return null;
+  const nr = parseName(nameRaw, { absolute: true, base: 8 });
+  if (!nr.ok) return null;
+  const id = own(set, 'SetIdentifier');
+  return { name: nr.name, type: typeOf(typeRaw) || safeText(typeRaw.trim().toUpperCase(), 20), id: typeof id === 'string' ? safeText(id, 200) : null };
+}
+
 function parseRoute53(docs, zone, b, opts) {
   const { issues } = b;
+  // The record sets in file order; a change batch adds one entry per change, so a record's line is
+  // its change's number. `skip` holds the entries not read as sets: a DELETE, or why a change is
+  // not one (a skipped record).
   const sets = [];
+  const skip = new Map();
+  const fromBatch = [];
+  const deletes = [];
   let lastDoc = null;
-  let upserts = 0;
-  let deletes = 0;
   let batches = 0;
   for (const d of docs) {
     const v = d.value;
     const changes = changeList(v);
     if (changes) {
-      // A change batch: what the zone holds after it — CREATE / UPSERT sets; a DELETE goes.
+      // A change batch: what it sets are its CREATE / UPSERT sets; a DELETE takes a set away.
       batches += 1;
       for (const c of changes) {
-        const action = String(own(c, 'Action') ?? '').toUpperCase();
+        const action = typeof own(c, 'Action') === 'string' ? own(c, 'Action').trim().toUpperCase() : '';
         const set = own(c, 'ResourceRecordSet');
-        if (action === 'DELETE') deletes += 1;
-        else {
-          upserts += 1;
-          sets.push(set);
-        }
+        const at = sets.length;
+        sets.push(set);
+        if (!isPlainMap(c) || !isPlainMap(set)) skip.set(at, 'not-an-object');
+        else if (action === 'DELETE') {
+          const del = changeDelete(set);
+          if (del) {
+            deletes.push(del);
+            skip.set(at, 'delete');
+          } else skip.set(at, 'name-or-type');
+        } else if (action !== 'CREATE' && action !== 'UPSERT') skip.set(at, 'action');
+        else fromBatch.push(at);
       }
       continue;
     }
@@ -2849,8 +2877,14 @@ function parseRoute53(docs, zone, b, opts) {
     if (Array.isArray(list)) for (const s of list) sets.push(s);
     lastDoc = v;
   }
-  if (batches) issues.add('CHANGE_BATCH', 0, { upserts, deletes }, `a change batch: ${upserts} set(s) read, ${deletes} DELETE(s) left out`);
-  if (!sets.length) return { fatal: fatalIssue('EMPTY', {}, 'no record sets') };
+  const changeBatch = () => {
+    if (!batches) return;
+    const read = new Set(b.records.map((r) => r.line));
+    const upserts = fromBatch.filter((at) => read.has(at + 1)).length;
+    zone.changeBatch = { upserts, deletes };
+    issues.add('CHANGE_BATCH', 0, { upserts, deletes: deletes.length }, `a change batch: ${upserts} set(s) read, ${deletes.length} DELETE(s) left out`);
+  };
+  if (sets.every((_, at) => skip.has(at))) return { fatal: fatalIssue('EMPTY', {}, 'no record sets') };
   const trunc = own(lastDoc, 'IsTruncated');
   if (trunc === true || trunc === 'true' || typeof own(lastDoc, 'NextToken') === 'string') {
     zone.partial = true;
@@ -2876,6 +2910,12 @@ function parseRoute53(docs, zone, b, opts) {
     const set = sets[idx];
     const line = idx + 1;
     if (b.full(line)) break;
+    const why = skip.get(idx);
+    if (why === 'delete') continue;
+    if (why) {
+      badRecord(b, line, why);
+      continue;
+    }
     if (!isPlainMap(set)) {
       badRecord(b, line, 'not-an-object');
       continue;
@@ -2944,6 +2984,7 @@ function parseRoute53(docs, zone, b, opts) {
       b.push(rec);
     }
   }
+  changeBatch();
   return { fatal: null };
 }
 
@@ -4314,6 +4355,11 @@ export function mergeZones(zones, { limits = ZONE_LIMITS, lead: chosen = null } 
         records.push({ ...r, source: mapSource(r.source) });
       }
       if (z.partial) merged.partial = true;
+      if (z.changeBatch) {
+        merged.changeBatch = merged.changeBatch || { upserts: 0, deletes: [] };
+        merged.changeBatch.upserts += z.changeBatch.upserts;
+        merged.changeBatch.deletes.push(...z.changeBatch.deletes);
+      }
       const st = z.stats || {};
       for (const k of ['bytes', 'lines', 'entries', 'skipped', 'generated', 'elapsedMs']) merged.stats[k] += Number(st[k]) || 0;
     }

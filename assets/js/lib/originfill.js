@@ -67,8 +67,9 @@ export function setRemember(map, on) {
  * - 'hosted' confirms the matching entries (`lastConfirmed`, `source`; a stale mark older than
  *   the run goes) or adds one — only for a proxied name: one the map has, or `proxied(name)`
  *   (absent: every name); the others are listed in `skipped`.
- * - A run that found a name hosted marks the name's other entries stale (`<src>-elsewhere`,
- *   `zone-other`), and 'not-hosted' the entry at that address (`<src>-not-hosted`) — the CLI
+ * - A run that found a name hosted marks the name's entries at other addresses stale
+ *   (`<src>-elsewhere`, `zone-other`; another port of an address it found the name at is the same
+ *   server and is left alone), and 'not-hosted' the entry at that address (`<src>-not-hosted`) — the CLI
  *   JSON, Verify and a zone file contradict; a comparison or a manual entry never does. An entry
  *   confirmed by the same run, or after it, is never marked.
  * - With remembering off nothing changes (`off: true`).
@@ -100,9 +101,11 @@ export function applyObservations(map, observations, { source, at, proxied = nul
   const matches = (e, o) => e.name === o.name && e.ip === o.ip && (o.port === null || e.port === o.port);
   const confirmed = new Set();
   const skipped = new Set();
+  // Per name: where the run first found it hosted, and every address it found it at.
   const foundAt = new Map();
   for (const o of obs.filter((x) => x.outcome === 'hosted')) {
-    if (!foundAt.has(o.name)) foundAt.set(o.name, o);
+    if (!foundAt.has(o.name)) foundAt.set(o.name, { first: o, ips: new Set() });
+    foundAt.get(o.name).ips.add(o.ip);
     const hits = m.entries.filter((e) => matches(e, o));
     for (const e of hits) {
       if (t >= ms(e.lastConfirmed)) Object.assign(e, { lastConfirmed: when, source });
@@ -127,7 +130,12 @@ export function applyObservations(map, observations, { source, at, proxied = nul
     e.stale = { reason, at: when, ...(by ? { ip: by.ip, port: by.port ?? ORIGIN_DEFAULT_PORT } : {}) };
     out.staled.push(originKey(e));
   };
-  for (const e of m.entries) if (foundAt.has(e.name)) mark(e, elsewhere, foundAt.get(e.name));
+  // Found on another server: an entry at an address the run found the name at (another port of
+  // the same server, e.g. Verify asking 443 for an origin remembered on 8443) is not contradicted.
+  for (const e of m.entries) {
+    const found = foundAt.get(e.name);
+    if (found && !found.ips.has(e.ip)) mark(e, elsewhere, found.first);
+  }
   for (const o of obs.filter((x) => x.outcome === 'not-hosted')) for (const e of m.entries) if (matches(e, o)) mark(e, notHosted);
   out.confirmed = [...confirmed].filter((k) => !out.added.includes(k));
   out.skipped = [...skipped].sort();

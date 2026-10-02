@@ -199,6 +199,18 @@ describe('the merge rules (lib/originfill.js applyObservations)', () => {
     assert.deepEqual(fresh.added, ['www.example.com|192.0.2.10|443'], 'a new zone origin gets port 443');
   });
 
+  test('found on another port of the same address: the same server, not marked "elsewhere"', () => {
+    // Verify asks 443 for an origin remembered on 8443: hosted there adds the 443 entry and
+    // leaves the 8443 one alone; another address of the name is still marked.
+    let { map } = applyObservations(ON, [hosted('shop.example.com', '203.0.113.10', 8443), hosted('shop.example.com', '203.0.113.30')], { source: 'cli-json', at: DAY1 });
+    const res = applyObservations(map, [hosted('shop.example.com', '203.0.113.10', 443)], { source: 'verify', at: DAY2 });
+    assert.deepEqual(res.added, ['shop.example.com|203.0.113.10|443']);
+    assert.deepEqual(res.staled, ['shop.example.com|203.0.113.30|443']);
+    ({ map } = res);
+    assert.equal(entry(map, 'shop.example.com|203.0.113.10|8443').stale, null);
+    assert.deepEqual(entry(map, 'shop.example.com|203.0.113.30|443').stale, { reason: 'verify-elsewhere', at: DAY2, ip: '203.0.113.10', port: 443 });
+  });
+
   test('a comparison or a manual entry never marks another entry stale', () => {
     const { map } = applyObservations(ON, [hosted('shop.example.com', '203.0.113.10')], { source: 'zone', at: DAY1 });
     for (const source of ['compare', 'manual']) {

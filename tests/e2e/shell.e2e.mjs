@@ -1020,7 +1020,7 @@ async function main() {
       assertEqual(await page.evaluate(() => document.activeElement.dataset.tab), 'hosts', 'focused tab after ArrowRight');
       assertEqual(await page.evaluate(() => document.querySelector('.inv-examples [role="tab"][aria-selected="true"]').dataset.tab), 'hosts', 'selected tab');
       await page.press('End');
-      assertEqual(await page.evaluate(() => document.activeElement.dataset.tab), 'json', 'End → last tab');
+      assertEqual(await page.evaluate(() => document.activeElement.dataset.tab), 'topology', 'End → last tab (the topology keys)');
     });
 
     await step('Servers: save persists across reload and updates the nav status', async () => {

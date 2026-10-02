@@ -65,6 +65,10 @@ describe('TXT character-strings as bytes', () => {
     assert.equal(route53String(`k${ch(0xe4)}se`), `"k${BS}303${BS}244se"`, 'a string as its UTF-8 bytes');
   });
 
+  test('utf8Text keeps a leading byte order mark: it is part of the text', () => {
+    assert.equal(utf8Text(Uint8Array.of(0xef, 0xbb, 0xbf, 0x61)), `${ch(0xfeff)}a`);
+  });
+
   test('octodnsTxtValue: in one more pair of quotes when it starts with one (octoDNS strips them), null with " " inside', () => {
     const cases = [['"q"', '""q""'], ['a" "b', null], ['x;y', `x${BS};y`], ['"', '"""'], ['x"', 'x"'], [['"a', 'b"'], '""ab""']];
     for (const [input, want] of cases) assert.equal(octodnsTxtValue(input), want, JSON.stringify(input));

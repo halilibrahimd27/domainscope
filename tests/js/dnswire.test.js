@@ -749,6 +749,11 @@ describe('encodeMessage ↔ decodeMessage round trips (every supported RR type)'
     assert.equal(rr.text, '"A\\255\\254B" "ç!"');
   });
 
+  test('TXT: a leading byte order mark is part of the string, never stripped', () => {
+    const rr = decodeMessage(encodeMessage({ answers: [{ name: 'x', type: 'TXT', rdata: hex('04 efbbbf61') }] })).answers[0];
+    assert.deepEqual([rr.data[0].codePointAt(0), rr.data[0].length, rr.text], [0xfeff, 2, '"\\239\\187\\191a"']);
+  });
+
   test('TXT/CAA text escapes bidi, zero-width and C1 control characters (untrusted data)', () => {
     const m = decodeMessage(encodeMessage({
       answers: [

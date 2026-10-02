@@ -308,8 +308,8 @@ function bindSafe(text) {
 /** One line of comment text (no line break can end the comment). */
 const commentText = (s) => String(s ?? '').replace(/[\r\n\u2028\u2029]+/g, ' ');
 
-/** A JavaScript string literal (DNSControl): JSON's, with U+2028 / U+2029 escaped for older engines. */
-const js = (s) => JSON.stringify(String(s ?? '')).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+/** A JavaScript string literal (DNSControl): JSON's, with U+2028 / U+2029 escaped for older engines and U+FEFF never raw. */
+const js = (s) => JSON.stringify(String(s ?? '')).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029').replace(/\ufeff/g, '\\ufeff');
 
 /* ------------------------------------------------------------------------ */
 /* The plan                                                                 */

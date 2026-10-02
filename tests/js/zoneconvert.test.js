@@ -707,6 +707,14 @@ describe('pitfalls', () => {
     }
   });
 
+  test('a TXT string that starts with a byte order mark keeps it in every format', () => {
+    const z = bind('bom TXT "\\239\\187\\191v=spf1 -all"');
+    assert.match(convertZone(z, 'bind').text, /IN TXT +"\\239\\187\\191v=spf1 -all"$/m);
+    assert.equal(JSON.parse(convertZone(z, 'route53').text).Changes[0].ResourceRecordSet.ResourceRecords[0].Value, '"\\357\\273\\277v=spf1 -all"');
+    assert.ok(convertZone(z, 'octodns').text.includes('value: "\\ufeffv=spf1 -all"'), convertZone(z, 'octodns').text);
+    assert.ok(convertZone(z, 'dnscontrol').text.includes('TXT("bom", "\\ufeffv=spf1 -all")'), 'escaped: an invisible character never raw in dnsconfig.js');
+  });
+
   test('DNSControl: a space inside a SvcParam value is written as \\032 (DNSControl refuses the file over a raw one)', () => {
     const z = bind('k SVCB 2 k.example.net. key65000="a b" alpn=h2');
     assert.ok(convertZone(z, 'dnscontrol').text.includes(`SVCB("k", 2, "k.example.net.", ${JSON.stringify('alpn="h2" key65000="a\\032b"')})`), convertZone(z, 'dnscontrol').text);

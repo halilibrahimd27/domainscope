@@ -8,7 +8,8 @@
  */
 
 const utf8 = new TextEncoder();
-const utf8Strict = new TextDecoder('utf-8', { fatal: true });
+// ignoreBOM: a leading U+FEFF is part of a string, never stripped.
+const utf8Strict = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const octal = (b) => `\\${b.toString(8).padStart(3, '0')}`;
 
 /* ------------------------------------------------------------------------ */

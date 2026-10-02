@@ -1487,6 +1487,13 @@ describe('helpers', () => {
     assert.deepEqual([...decodeEscapes('\\12x').bytes], [49, 50, 120], '\\1 then "2x": fewer than three digits is a literal escape');
   });
 
+  test('a TXT string that starts with a byte order mark keeps it (data, text, the presentation)', () => {
+    const r = P('$ORIGIN example.com.\nbom 300 IN TXT "\\239\\187\\191v=spf1 -all"\n', { format: 'bind' }).records[0];
+    assert.deepEqual([r.data[0].codePointAt(0), r.text], [0xfeff, '"\\239\\187\\191v=spf1 -all"']);
+    assert.equal(decodeUtf8Lenient(Uint8Array.of(0xef, 0xbb, 0xbf, 0x61)).length, 2);
+    assert.equal(presentCharString(Uint8Array.of(0xef, 0xbb, 0xbf, 0x61)), '"\\239\\187\\191a"');
+  });
+
   test('toBindText: canonical text parses back to the same records (idempotent after one round)', () => {
     for (const f of FIXTURES) {
       const z = parseFixture(f);

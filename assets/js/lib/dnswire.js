@@ -172,7 +172,8 @@ const B64_LOOKUP = (() => {
 const B32HEX = '0123456789abcdefghijklmnopqrstuv';
 const HEX = '0123456789abcdef';
 const utf8Encoder = new TextEncoder();
-const utf8Strict = new TextDecoder('utf-8', { fatal: true });
+// ignoreBOM: a leading U+FEFF is part of a string, never stripped.
+const utf8Strict = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 /**
  * Standard base64 (with padding).

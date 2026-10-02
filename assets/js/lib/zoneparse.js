@@ -201,7 +201,8 @@ const nowMs = () => (globalThis.performance && typeof globalThis.performance.now
 const fqdn = (name) => (name === '.' ? '.' : `${name}.`);
 const rootToEmpty = (name) => (name === '.' ? '' : name);
 
-const utf8Strict = new TextDecoder('utf-8', { fatal: true });
+// ignoreBOM: a leading U+FEFF is part of a string, never stripped.
+const utf8Strict = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const utf8Encoder = new TextEncoder();
 
 /**

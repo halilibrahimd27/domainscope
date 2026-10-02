@@ -1,18 +1,11 @@
 /**
- * lib/originmap.js — a workspace's origin map: which server and port really serves a proxied
- * name, remembered once a CLI sweep, a zone file, a Verify origin check or a server comparison
- * found it. The workspace part 'origins' (lib/workspace.js): `{ v: 1, remember, entries }`.
- *
- * `remember` is the opt-in "Remember origins in this workspace" (off by default; while it is off
- * lib/originfill.js writes nothing). An entry: `{ name, ip, port, source, firstSeen,
- * lastConfirmed, server, stale }` — `source` where it was last confirmed ({@link ORIGIN_SOURCES}),
- * `server` an inventory name or null, `stale` null or `{ reason, at, ip?, port? }` once a later
- * run contradicted it ({@link STALE_REASONS}; ip / port: where the name was found instead; the
- * newest contradiction, always newer than `lastConfirmed`).
- * Stale entries are kept and shown, never a scan's known origin ({@link knownForScan}).
- *
- * This module is the model and how it is read (it loads with the workspace store); the merge
- * rules and the sources' observations are lib/originfill.js. DOM-free and pure.
+ * lib/originmap.js — a workspace's origin map (the part 'origins': `{ v: 1, remember, entries }`):
+ * which server and port really serves a proxied name. `remember` is the opt-in (off by default).
+ * An entry: `{ name, ip, port, source, firstSeen, lastConfirmed, server, stale }`; `stale` is null
+ * or the newest contradiction `{ reason, at, ip?, port? }` (always newer than lastConfirmed; ip /
+ * port: where the name was found instead). Stale entries are shown, never a known origin.
+ * The model and its readers (on the start route with the workspace store); the merge rules are
+ * lib/originfill.js. DOM-free and pure. Spec: docs/SPEC.md §5.61.
  */
 
 import { normalizeHostname } from './domain.js';
@@ -38,19 +31,13 @@ export const originTime = (v) => {
 };
 const ms = (v) => (v ? Date.parse(v) || 0 : 0);
 
-/**
- * The clock the map is read against, in ms: a Date, a number or a parseable string; anything else
- * (absent) is the real clock. Every date the map keeps or a run brings is at most this: a fast
- * clock or an edited file never dates an entry in the future, where no later check could reach it.
- * @param {Date|number|string|null|undefined} [now]
- * @returns {number}
- */
+/** The clock in ms (a Date, number or date string; else the real one): no date the map keeps is later. */
 export function originNow(now) {
   const n = now instanceof Date ? now.getTime() : typeof now === 'number' ? now : typeof now === 'string' ? Date.parse(now) : NaN;
   return Number.isFinite(n) ? n : Date.now();
 }
 
-/** An ISO time of `v` (see {@link originTime}), never later than `nowMs`; null when `v` is no time. */
+/** {@link originTime} of `v`, at most `nowMs`. */
 export function originTimeAt(v, nowMs) {
   const t = originTime(v);
   return t && Date.parse(t) > nowMs ? new Date(nowMs).toISOString() : t;
@@ -72,7 +59,7 @@ export function originPort(v) {
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null;
 }
 
-/** The `*.parent` name that covers a host name (one label under it), or null (a wildcard or a bare label). */
+/** The `*.parent` that covers a host name (one label under it), or null. */
 export function originWildcard(name) {
   const n = typeof name === 'string' ? name : '';
   const dot = n.indexOf('.');
@@ -100,8 +87,7 @@ function sanitizeEntry(raw, nowMs) {
   let stale = null;
   const s = raw.stale;
   const markedAt = s && typeof s === 'object' ? originTimeAt(s.at, nowMs) : null;
-  // A mark stands only while it is newer than the last confirmation (a confirmation as new as the
-  // mark, or newer, cleared it: lib/originfill.js).
+  // A mark stands only while newer than the last confirmation.
   if (markedAt && STALE_REASONS.includes(s.reason) && ms(markedAt) > ms(last)) {
     stale = { reason: s.reason, at: markedAt };
     const byIp = normalizeIP(String(s.ip ?? ''));
@@ -118,10 +104,8 @@ function sanitizeEntry(raw, nowMs) {
 const rank = (a, b) => Number(!!a.stale) - Number(!!b.stale) || ms(b.lastConfirmed) - ms(a.lastConfirmed);
 
 /**
- * The map as the workspace keeps it: every entry checked, one per key (the latest
- * confirmation), at most {@link ORIGIN_MAP_LIMITS} (active and recent entries kept first), by
- * name, no date later than `now` (the real clock unless given: {@link originNow}); null when
- * remembering is off and there is no entry (an empty part is not stored).
+ * The map as the workspace keeps it: every entry checked, one per key (the latest confirmation),
+ * capped (active and recent kept first), by name, no date after `now`; null when off and empty.
  * @param {unknown} value
  * @param {{ now?: Date|number|string }} [opts]
  * @returns {{ v: 1, remember: boolean, entries: object[] }|null}
@@ -148,14 +132,12 @@ export function sanitizeOriginMap(value, { now } = {}) {
   return remember || entries.length ? { v: 1, remember, entries } : null;
 }
 
-/** The indexes {@link originIndex} made (an index passed where a map is expected is used as is). */
 const INDEXES = new WeakSet();
 
 /**
- * The map read once for many lookups — a view's render, the scan's list: sanitized once, its
- * entries by name. Every reader here takes the map or its index; give a render the index, so a
- * full map (2,000 entries) is not checked again for each proxied host.
- * @param {object|null} map the workspace part, or an index (returned as is)
+ * The map read once for many lookups (a render): sanitized, entries by name. The readers below
+ * take the map or this index.
+ * @param {object|null} map the part, or an index (returned as is)
  * @returns {{ map: object|null, byName: Map<string, object[]> }}
  */
 export function originIndex(map) {
@@ -172,10 +154,9 @@ export function originIndex(map) {
 }
 
 /**
- * A name's entries: its own and a `*.parent` one covering it, active first, newest first. A
- * wildcard entry at an address and port the name has an entry of its own for is left out: that
- * entry (a stale one masks the wildcard for this name) speaks for it.
- * @param {object|null} map the map, or its {@link originIndex} (for many names)
+ * A name's entries, active and newest first: its own, and a covering `*.parent` one unless the
+ * name has its own at that address and port (a stale one masks the wildcard for the name).
+ * @param {object|null} map the map, or its {@link originIndex}
  * @param {string} name
  * @returns {object[]}
  */
@@ -190,16 +171,14 @@ export function originsFor(map, name) {
 }
 
 /**
- * The active (not stale) entries as a scan's known origins (lib/scanner.js `knownOrigins`). A
- * wildcard entry lists in `except` the names it does not apply to: those with an entry of their
- * own at its address and port (a stale one masks it, an active one speaks for itself).
+ * The active entries as a scan's `knownOrigins` (lib/scanner.js); a wildcard's `except` lists the
+ * names with their own entry at its address and port.
  * @param {object|null} map the map, or its {@link originIndex}
  * @returns {Array<{ name: string, ip: string, port: number, server: string|null, source: string, lastConfirmed: string, except?: string[] }>}
  */
 export function knownForScan(map) {
   const { map: m } = originIndex(map);
   if (!m) return [];
-  // The names with an entry of their own, by address and port.
   const at = new Map();
   for (const e of m.entries) {
     if (e.name.startsWith('*.')) continue;

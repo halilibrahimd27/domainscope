@@ -491,7 +491,8 @@ exit codes: 0 done, 1 the run failed (an unexpected error, printed), 2 usage err
   cannot be compared, are refused before the run), 3 a report file could not be written
   after the run, 4 a rule of the policy failed (audit), or something changed since --baseline
   (only with --fail-on-change), 130 interrupted (nothing written). When several apply: 3, then 4.
-  A rule that could not be checked (a lookup failed, a TLD without RDAP) is no failure.
+  A rule that could not be checked (a lookup failed, a TLD without RDAP) is no failure, unless it
+  failed when last checked (--baseline): it still counts as failed.
 
 examples:
   node tools/ds.mjs health example.com example.org --json health.json --md health.md

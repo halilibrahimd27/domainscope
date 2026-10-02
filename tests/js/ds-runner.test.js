@@ -1702,6 +1702,14 @@ describe('the documented commands', () => {
     for (const rule of ['Use it in a private repository', 'Never commit inventories or zone files unless you mean to', 'No secret is needed']) assert.ok(readme.includes(rule), rule);
   });
 
+  test('--help and the README say an unchecked rule that failed when last checked still fails the run (exit 4)', () => {
+    const readme = readFileSync(join(ROOT, 'docs', 'examples', 'README.md'), 'utf8').replace(/\s+/g, ' ');
+    const usage = USAGE.replace(/\s+/g, ' ');
+    for (const [where, text] of [['--help', usage], ['README', readme]]) {
+      assert.match(text, /could not be checked \([^)]*\) is no failure, unless it failed when last checked \(--baseline\): it still counts as failed/, where);
+    }
+  });
+
   test('the examples of the README and of --help parse', () => {
     const readme = readFileSync(join(ROOT, 'docs', 'examples', 'README.md'), 'utf8');
     const lines = [...`${readme}\n${USAGE}`.matchAll(/^ *node tools\/ds\.mjs (.+)$/gm)].map((m) => m[1]);

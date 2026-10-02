@@ -68,7 +68,8 @@ alike.
 statuses), the name servers' own domains and their expiry, DNSSEC, CAA and the mail posture. It
 exits 4 while a rule fails, so the issue stays open with the failing rules until every one
 passes; a rule that could not be checked (a TLD without RDAP, a lookup that failed) is no
-failure, and the night after compares with the last night that checked it.
+failure, unless it failed when last checked (--baseline): it still counts as failed. The night
+after compares with the last night that checked it.
 
 **Cert Spotter and more than about 10 domains.** Cert Spotter answers about 10 full-domain queries
 an hour per IP address. After its first "rate limited" of a night the runner does not ask it

@@ -356,7 +356,8 @@ export async function main(argv, io = {}) {
   await write(options.json, `${toJson(report)}\n`, 'JSON report');
 
   if (writeFailed) return EXIT.WRITE;
-  // audit: a rule of the policy failed (one that could not be checked is no failure)
+  // audit: a rule of the policy failed (one that could not be checked is no failure, unless it
+  // failed when last checked (--baseline): it still counts as failed)
   if (result.failed) return EXIT.CHANGED;
   if (options.failOnChange && notableChanges(run.changes).length) return EXIT.CHANGED;
   return EXIT.OK;

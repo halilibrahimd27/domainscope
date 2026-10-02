@@ -783,13 +783,16 @@ export function auditTarget(row, facts, { t, exportRow, evidenceText, checkedAt 
 }
 
 /**
- * The summaries of an audit: one for the run (the policy, the counts, the domains that meet every
- * rule), then one per domain with a failed or unchecked rule, its rules worst first.
+ * The summaries of an audit: one for the run (the policy, the counts, the rules not checked this
+ * run that failed when last checked — they still fail the run —, the domains that meet every rule),
+ * then one per domain with a failed or unchecked rule, its rules worst first.
  * @param {object} audit lib/policy.js auditPortfolio
- * @param {{ t: Function, now: Date, at: Date, policy: object }} opts
+ * @param {{ t: Function, now: Date, at: Date, policy: object,
+ *   carried?: Array<{ domain: string, id: string, required: string, from: string|null }> }} opts
+ *   `carried`: the rules carried as failed (not checked this run, failed when last checked)
  * @returns {object[]} SummaryDocs
  */
-export function auditDocs(audit, { t, now, at, policy }) {
+export function auditDocs(audit, { t, now, at, policy, carried = [] }) {
   const c = audit.counts;
   const name = policy.name ? [' · ', code(policy.name)] : [];
   const plural = (n, one, other) => `${n} ${n === 1 ? one : other}`;
@@ -798,6 +801,14 @@ export function auditDocs(audit, { t, now, at, policy }) {
       `${c.failing} fail${c.failing === 1 ? 's' : ''} the policy, ${c.unknown} could not be checked in full, ${c.passing} meet${c.passing === 1 ? 's' : ''} every rule`],
     ['Rules: ', ...audit.rules.flatMap((r, i) => [i ? ', ' : '', code(`${r.id} ${r.required}`)])]
   ];
+  if (carried.length) {
+    // why the run fails (exit 4) on a night no rule failed: an outage never closes the issue
+    const shown = carried.slice(0, AUDIT_MAX_DOMAINS);
+    lines.splice(1, 0, [strong('Still counted as failed'), ' (not checked this run, failed when last checked): ',
+      ...shown.flatMap((x, i) => [i ? ', ' : '', code(`${x.id} ${x.required}`), ' of ', code(x.domain), ` (${isoDay(x.from) || 'an earlier run'})`]),
+      carried.length > shown.length ? ` and ${carried.length - shown.length} more` : '']);
+  }
+  const lastFail = new Map(carried.map((x) => [`${x.domain}|${x.id}`, x]));
   const passing = audit.rows.filter((r) => !r.fail && !r.unknown).map((r) => r.domain);
   if (passing.length) lines.push(['Every rule met: ', ...valueParts(t, passing, AUDIT_MAX_DOMAINS)]);
   const docs = [summaryDoc('audit', ['Policy audit', ...name], lines, { t, at, now })];
@@ -807,7 +818,11 @@ export function auditDocs(audit, { t, now, at, policy }) {
     docs.push(summaryDoc('audit', ['Policy audit · ', code(r.domain)], [
       [`${plural(r.fail, 'rule', 'rules')} failed, ${r.unknown} could not be checked, ${r.pass} passed`],
       // the evidence quotes values from DNS and the registry: code parts (lib/summary.js textParts)
-      ...cells.map((x) => [strong(x.status === 'fail' ? 'FAIL' : 'NOT KNOWN'), ' ', code(`${x.id} ${x.required}`), ': ', ...textParts(t, x.evidence.key, x.evidence.params)])
+      ...cells.map((x) => {
+        const last = x.status === 'unknown' ? lastFail.get(`${r.domain}|${x.id}`) : null;
+        return [strong(x.status === 'fail' ? 'FAIL' : 'NOT KNOWN'), ' ', code(`${x.id} ${x.required}`), ': ', ...textParts(t, x.evidence.key, x.evidence.params),
+          last ? ` — failed when last checked (${isoDay(last.from) || 'an earlier run'}): still counts as failed` : ''];
+      })
     ], { t, at, now }));
   }
   return docs;
@@ -880,12 +895,13 @@ async function runAudit(targets, options, env) {
   const audited = audit.rows.map((row, i) => auditTarget(row, facts[i], { t: env.t, exportRow, evidenceText, checkedAt: now }, { prev: prevBy.get(row.domain) || null }));
   // A rule that failed when last checked and could not be checked tonight still fails the run: a
   // registry outage never closes the nightly issue (the carried status is the requirement's own).
-  const carriedFails = audited.flatMap((x) => x.rules.filter((r) => r.status === 'unknown' && r.last && r.last.status === 'fail')
-    .map((r) => `${r.id} of ${x.target} could not be checked this run and failed when last checked (${isoDay(r.last.from) || 'an earlier run'}): it still counts as failed`));
+  const carried = audited.flatMap((x) => x.rules.filter((r) => r.status === 'unknown' && r.last && r.last.status === 'fail')
+    .map((r) => ({ domain: x.target, id: r.id, required: r.required, from: r.last.from })));
+  const carriedFails = carried.map((x) => `${x.id} of ${x.domain} could not be checked this run and failed when last checked (${isoDay(x.from) || 'an earlier run'}): it still counts as failed`);
   return {
     options: { policy: policyObject(policy), policyFile: policy.file || null, preset: options.preset, dkim: options.dkim, resolvers: [...options.chain] },
     targets: audited,
-    docs: auditDocs(audit, { t: env.t, now, at: startedAt, policy }),
+    docs: auditDocs(audit, { t: env.t, now, at: startedAt, policy, carried }),
     warnings: [...auditWarnings(facts, { cellFailures, cells: PORTFOLIO_CELLS }), ...carriedFails],
     failed: audit.counts.failing > 0 || carriedFails.length > 0
   };

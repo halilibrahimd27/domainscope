@@ -99,6 +99,9 @@ export function valueParts(tr, list, max = 3) {
 
 /** What is listed but never counted (diff.mjs `counts: false`), for the note under the changes. */
 const NOT_COUNTED = 'sources that could not be read, moves between failure states, what a failed lookup or source may hide, renewed certificates';
+/** The audit's (diff.mjs diffAudit): a rule not checked this run, what comes in meeting the policy, a rule taken out of it. */
+const NOT_COUNTED_AUDIT = 'rules that could not be checked this run, a domain or rule added that meets the policy, a rule taken out of it';
+const notCounted = (command) => (command === 'audit' ? NOT_COUNTED_AUDIT : NOT_COUNTED);
 
 /** Change lines in the summary without --show-all (the CLI's MAX_SUMMARY_CHANGES). */
 export const MAX_SUMMARY_CHANGES = 50;
@@ -165,7 +168,7 @@ export function renderChangesText(run, { paint, showAll = false }) {
   }
   const quiet = changes.length - counted.length;
   if (quiet) {
-    lines.push(paint(`  Not counted: ${quiet} (${NOT_COUNTED}) - listed only, never counted by --fail-on-change.`, 'dim'));
+    lines.push(paint(`  Not counted: ${quiet} (${notCounted(run.command)}) - listed only, never counted by --fail-on-change.`, 'dim'));
   }
   for (const note of run.notes || []) lines.push(paint(`  ${note}`, 'dim'));
   lines.push('');
@@ -190,7 +193,7 @@ export function renderChangesMarkdown(run) {
   const lines = changes.slice(0, MAX_MARKDOWN_CHANGES).map((c) => `- **${c.tag}**${c.counts ? '' : ' (not counted)'} ${renderParts(c.parts, 'markdown')}`);
   if (changes.length > MAX_MARKDOWN_CHANGES) lines.push(`- … and ${changes.length - MAX_MARKDOWN_CHANGES} more: the JSON report lists them all`);
   if (changes.length > counted) {
-    lines.push(`- ${changes.length - counted} listed only (${NOT_COUNTED}): never counted by --fail-on-change`);
+    lines.push(`- ${changes.length - counted} listed only (${notCounted(run.command)}): never counted by --fail-on-change`);
   }
   for (const note of run.notes || []) lines.push(`- ${renderParts([note], 'markdown')}`);
   return `${[head, ...(lines.length ? ['', ...lines] : [])].join('\n')}\n`;

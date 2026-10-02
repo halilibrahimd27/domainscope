@@ -887,8 +887,13 @@ describe('diff: audit', () => {
     assert.match(changeText(changes[0]), /^example\.com: new rule expiryDays >= 60: fail — 40 days left/);
     assert.equal(changeText(changes[1]), 'example.net: now audited: 1 rule failed');
     // a domain added that meets every rule is listed, never counted (no exit 4 with --fail-on-change)
-    assert.deepEqual(tags(diff([target('example.com', [rule('expiryDays', 'pass')])], [target('example.com', [rule('expiryDays', 'pass')]), target('example.org', [rule('expiryDays', 'pass')])])),
-      ['NEW? example.org']);
+    const added = diff([target('example.com', [rule('expiryDays', 'pass')])], [target('example.com', [rule('expiryDays', 'pass')]), target('example.org', [rule('expiryDays', 'pass')])]);
+    assert.deepEqual(tags(added), ['NEW? example.org']);
+    // and the note under the changes says what an audit lists without counting
+    const audit = { command: 'audit', baseline: { file: 'audit.json' }, changes: added };
+    const note = 'rules that could not be checked this run, a domain or rule added that meets the policy, a rule taken out of it';
+    assert.ok(renderChangesText(audit, { paint: painter(false) }).includes(`  Not counted: 1 (${note}) - listed only, never counted by --fail-on-change.`));
+    assert.match(renderChangesMarkdown(audit), new RegExp(`\\n- 1 listed only \\(${note}\\): never counted by --fail-on-change\\n`));
   });
 
   test('values from DNS and the registry in the evidence are code parts (Markdown code spans)', () => {
@@ -1473,6 +1478,9 @@ describe('offline runs (fake DoH)', () => {
       const second = await runMain(argv, { fetchImpl: createPortfolioFetch(zone, { rdapStatus: { 'example.org': 503 } }) });
       assert.equal(second.code, EXIT.CHANGED, second.out + second.err);
       assert.match(second.err, /ds: warning: expiryDays of example\.org could not be checked this run and failed when last checked \(\d{4}-\d{2}-\d{2}\): it still counts as failed\n/);
+      // The summary (stdout, the issue's Markdown) says why the run fails though no rule failed tonight.
+      assert.match(second.out, /Still counted as failed \(not checked this run, failed when last checked\): `?expiryDays >= 30`? of `?example\.org`? \(\d{4}-\d{2}-\d{2}\)/, second.out);
+      assert.match(second.out, /NOT KNOWN`?\*{0,2} `?expiryDays >= 30`?: .* — failed when last checked \(\d{4}-\d{2}-\d{2}\): still counts as failed/, second.out);
       // The registry answers again with a renewed date: it passes, exit 0.
       zone.rdap['example.org'].events[1].eventDate = new Date(NOW.getTime() + 400 * 86400000).toISOString();
       const third = await runMain(argv, { fetchImpl: createPortfolioFetch(zone) });

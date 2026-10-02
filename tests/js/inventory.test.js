@@ -777,7 +777,7 @@ for (const [file, want] of Object.entries(TOPOLOGY_EXPECTED.files)) {
   test(`tests/fixtures/topology/${file}: the same servers, endpoints, topology and warnings as the CLI`, () => {
     // tests/python/test_inventory_targets.py reads the same file to the same expected.json.
     const r = parseInventory(readFileSync(new URL(file, TOPOLOGY_DIR), 'utf8'));
-    assert.deepEqual(topologyModel(r), { ...TOPOLOGY_EXPECTED.servers, ...want.extra });
+    assert.deepEqual(topologyModel(r), { ...(want.core === false ? {} : TOPOLOGY_EXPECTED.servers), ...want.extra });
     assert.deepEqual(topologyWarnings(r, want.lines), want.warnings);
   });
 }
@@ -963,6 +963,11 @@ test('lookupServers: DNS answers match through nat= and vip= and say so', () => 
   ]);
   // An own address answered directly has no `through`: the result shape of an old inventory.
   assert.deepEqual(Object.keys(lookupServers(['203.0.113.12'], index)[0]).sort(), ['ip', 'server']);
+});
+
+test('inventoryTopology: a passthrough load balancer with TLS terminating nowhere behind it (through every tier)', () => {
+  const { servers } = parseInventory(readFileSync(new URL('checks.txt', TOPOLOGY_DIR), 'utf8'));
+  assert.deepEqual([...inventoryTopology(servers).nowhere].map((s) => s.name), ['edge01']);
 });
 
 test('inventoryTopology: load balancers with their backends, VIP holders, NAT pairs, plain servers', () => {

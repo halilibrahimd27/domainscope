@@ -260,7 +260,7 @@ class InventoryTopologyParity(unittest.TestCase):
         for name, want in self.expected['files'].items():
             with self.subTest(file=name):
                 inventory = sos.parse_inventory((TOPOLOGY / name).read_text(encoding='utf-8'), name)
-                model = dict(self.expected['servers'])
+                model = {} if want.get('core') is False else dict(self.expected['servers'])
                 model.update(want['extra'])
                 self.assertEqual(topology_model(inventory), model)
                 self.assertEqual(topology_warnings(inventory, want['lines']), want['warnings'])

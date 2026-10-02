@@ -267,7 +267,7 @@ const TOPOLOGY_KEY_SET = new Set(TOPOLOGY_KEYS);
 
 /** The `reason` of a TOPOLOGY warning: a malformed value of each key, then the other causes. */
 export const TOPOLOGY_REASONS = Object.freeze(['ports', 'terminatesTls', 'vip', 'nat', 'backends', 'plainPorts',
-  'unknownBackend', 'selfBackend', 'conflict', 'noServer', 'groupVars']);
+  'unknownBackend', 'selfBackend', 'conflict', 'noServer', 'groupVars', 'noTermination']);
 const MALFORMED_REASON = { ports: 'ports', tls_ports: 'ports', terminates_tls: 'terminatesTls', vip: 'vip', nat: 'nat', backends: 'backends' };
 /** Ports that usually carry no TLS (plain or STARTTLS protocols): in a ports= list they are kept, with a warning. */
 const PLAIN_PORTS = new Set([20, 21, 22, 23, 25, 53, 80, 110, 119, 143, 389, 3306, 3389, 5432, 6379, 8080, 27017]);
@@ -573,6 +573,31 @@ function linkBackends(drafts, ctx) {
   }
 }
 
+/**
+ * Checks over the linked inventory (cli/ssl_origin_scan.py topology_checks alike): a load balancer
+ * that passes TLS through (terminates_tls=no) with no backend terminating it, through every
+ * passthrough tier, is a 'noTermination' warning.
+ */
+function topologyChecks(drafts, ctx) {
+  const byName = new Map(drafts.map((d) => [d.name, d]));
+  const plain = (d) => d.topo.terminatesTls === false;
+  for (const d of drafts) {
+    if (!plain(d) || !d.topo.backends.length) continue;
+    const seen = new Set([d]);
+    const queue = [d];
+    let ends = false;
+    while (queue.length && !ends) {
+      for (const b of queue.shift().topo.backends.map((n) => byName.get(n))) {
+        if (!b || seen.has(b)) continue;
+        seen.add(b);
+        if (plain(b)) queue.push(b);
+        else ends = true;
+      }
+    }
+    if (!ends) ctx.warn(d.line, 'TOPOLOGY', undefined, d.name, 'noTermination');
+  }
+}
+
 function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx) {
   const byName = new Map(); // lower name → server draft
   const drafts = [];
@@ -646,6 +671,7 @@ function finalizeServers(entries, warnings, groupDefs, lineCount, lineText, ctx)
   // 4) Servers without IPs → NO_IP (unless only referenced quietly). The topology keys appear
   //    only when given, so an inventory without them parses to the same shape as before.
   linkBackends(drafts, ctx);
+  topologyChecks(drafts, ctx);
   const servers = [];
   for (const d of drafts) {
     if (d.ips.length === 0) {

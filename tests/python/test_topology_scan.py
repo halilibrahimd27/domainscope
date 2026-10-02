@@ -166,6 +166,18 @@ class TopologySweep(unittest.TestCase):
         self.assertNotIn('includeBackends', doc['options'])
         self.assertTrue(all('topology' not in server for server in doc['servers']))
 
+    def test_tls_terminating_nowhere_behind_a_passthrough_load_balancer_is_said(self):
+        inventory = sos.parse_inventory('edge01 203.0.113.60 terminates_tls=no backends=pool01\n'
+                                        'pool01 10.0.0.61 terminates_tls=no\nweb01 10.0.0.1\n', 'x.txt')
+        self.assertEqual([(w.line, w.code, w.reason) for w in inventory.warnings],
+                         [(1, 'TOPOLOGY', 'noTermination')])
+        network = Network()
+        report = sos.run_scan(inventory.servers, sos.build_probe_names([NAME]), [443], timeout=1,
+                              workers=2, connect_fn=network.connect_fn, tls_fn=network.tls_fn)
+        text = sos.render_summary(report, color=False, width=200)
+        self.assertIn('  edge01  not scanned  passes TLS through (terminates_tls=no), but no backend '
+                      'behind it terminates TLS: TLS terminates nowhere - check the inventory', text)
+
     def test_the_json_report_says_where_tls_terminates(self):
         report, _network = scan()
         doc = sos.report_to_dict(report)

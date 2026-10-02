@@ -34,6 +34,7 @@ registerStrings('en', {
   'topo.vipHoldersN': 'install on all {count}: {names}',
   'topo.vipHolder1': 'only {name} holds it',
   'topo.noBackends': 'none of its backends is in the inventory',
+  'topo.noTermination': 'TLS terminates nowhere behind it: every backend says terminates_tls=no too — check the inventory',
   'topo.introScan': 'Your inventory says where TLS terminates: the servers behind a load balancer (or a VIP pair) come right after it, and a server with terminates_tls=no needs no certificate.',
   'topo.note.lb': 'Load balancer → {names}',
   'topo.note.passthrough': 'Passes TLS through to {names}: no certificate here',
@@ -78,6 +79,7 @@ registerStrings('tr', {
   'topo.vipHoldersN': '{count} sunucunun hepsine kurun: {names}',
   'topo.vipHolder1': 'yalnızca {name} tutuyor',
   'topo.noBackends': 'arkasındaki sunucuların hiçbiri envanterde yok',
+  'topo.noTermination': 'Arkasında TLS hiçbir yerde sonlanmıyor: her arka uç da terminates_tls=no diyor — envanteri kontrol edin',
   'topo.introScan': 'Envanteriniz TLS’in nerede sonlandığını söylüyor: bir yük dengeleyicinin (ya da VIP çiftinin) arkasındaki sunucular hemen altında gelir; terminates_tls=no olan bir sunucuya sertifika gerekmez.',
   'topo.note.lb': 'Yük dengeleyici → {names}',
   'topo.note.passthrough': 'TLS’i {names} sunucularına olduğu gibi iletiyor: burada sertifika gerekmez',
@@ -192,7 +194,8 @@ export function TopologyCard(servers) {
             return h('li', { class: 'topo-backend', dataset: { server: b.name, tls: String(own) } },
               serverLine(b, Badge(t(own ? 'topo.reencrypts' : 'topo.plain'), { variant: own ? 'warn' : 'ok', icon: own ? 'lock' : 'unlock' })));
           }))
-          : h('p', { class: 'muted text-xs topo-empty' }, t('topo.noBackends')));
+          : h('p', { class: 'muted text-xs topo-empty' }, t('topo.noBackends')),
+        topo.nowhere.has(server) ? h('p', { class: 'topo-warn', dataset: { topo: 'nowhere' } }, Icon('alert', { size: 12 }), h('span', null, t('topo.noTermination'))) : null);
     })));
   }
   if (topo.vips.length) {

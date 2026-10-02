@@ -1,5 +1,5 @@
 {
-  "about": "What lib/inventory.js (tests/js/inventory.test.js) and cli/ssl_origin_scan.py (tests/python/test_inventory_targets.py) read from each inventory here: the same six servers in every format ('servers'), each file's other servers ('extra') and its TOPOLOGY warnings as [line, code, reason], sorted. JSON and YAML lines are approximate in the web app, so 'lines': false compares [code, reason] only. 'endpoints' are the -t tokens (inventory.serverTargets / Server.endpoint_spec), 'terminatesTls' is null where the key was not given.",
+  "about": "What lib/inventory.js (tests/js/inventory.test.js) and cli/ssl_origin_scan.py (tests/python/test_inventory_targets.py) read from each inventory here: the same six servers in every format ('servers'), each file's other servers ('extra') and its TOPOLOGY warnings as [line, code, reason], sorted. JSON and YAML lines are approximate in the web app, so 'lines': false compares [code, reason] only. A file with \"core\": false holds only its own servers ('extra'). 'endpoints' are the -t tokens (inventory.serverTargets / Server.endpoint_spec), 'terminatesTls' is null where the key was not given.",
   "servers": {
     "lb01": { "endpoints": ["203.0.113.2:443", "203.0.113.2:8443"], "tlsPorts": [443, 8443], "terminatesTls": null, "vips": ["203.0.113.50"], "nats": [], "backends": ["web01", "web02"] },
     "lb02": { "endpoints": ["203.0.113.3"], "tlsPorts": [], "terminatesTls": null, "vips": ["203.0.113.50"], "nats": [], "backends": ["web01", "web02"] },
@@ -49,6 +49,18 @@
         "bad01": { "endpoints": ["10.0.0.50"], "tlsPorts": [], "terminatesTls": null, "vips": [], "nats": [], "backends": [] }
       },
       "warnings": [[null, "TOPOLOGY", "groupVars"], [null, "TOPOLOGY", "ports"]]
+    },
+    "checks.txt": {
+      "lines": true,
+      "core": false,
+      "extra": {
+        "edge01": { "endpoints": ["203.0.113.60"], "tlsPorts": [], "terminatesTls": false, "vips": [], "nats": [], "backends": ["pool01"] },
+        "pool01": { "endpoints": ["10.0.0.61"], "tlsPorts": [], "terminatesTls": false, "vips": [], "nats": [], "backends": [] },
+        "edge02": { "endpoints": ["203.0.113.61"], "tlsPorts": [], "terminatesTls": false, "vips": [], "nats": [], "backends": ["mid01"] },
+        "mid01": { "endpoints": ["10.0.0.62"], "tlsPorts": [], "terminatesTls": false, "vips": [], "nats": [], "backends": ["app03"] },
+        "app03": { "endpoints": ["10.0.0.63"], "tlsPorts": [], "terminatesTls": null, "vips": [], "nats": [], "backends": [] }
+      },
+      "warnings": [[4, "TOPOLOGY", "noTermination"]]
     }
   }
 }

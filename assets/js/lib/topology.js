@@ -52,12 +52,13 @@ const VIA_RANK = { dns: 0, zone: 1, hint: 2 };
 /**
  * The topology an inventory describes: load balancers with their backends, shared addresses
  * (VIPs) with every server holding them, NAT pairs, the servers that never get the
- * certificate and those with TLS ports of their own. `any` is false for an inventory without a
+ * certificate and those with TLS ports of their own, the load balancers passing TLS through with
+ * no server terminating it behind them (`nowhere`). `any` is false for an inventory without a
  * topology key (nothing changes then).
  * @param {Server[]} servers
  * @returns {{ any: boolean, lbs: Array<{ server: Server, backends: Server[] }>, backendOf: Map<Server, Server[]>,
  *   vips: Array<{ ip: string, servers: Server[] }>, nats: Array<{ ip: string, server: Server }>,
- *   plain: Server[], ported: Server[] }}
+ *   plain: Server[], ported: Server[], nowhere: Set<Server> }}
  */
 export function inventoryTopology(servers) {
   const list = (Array.isArray(servers) ? servers : []).filter((s) => s && Array.isArray(s.ips));
@@ -85,7 +86,22 @@ export function inventoryTopology(servers) {
   const plain = list.filter((s) => !terminatesTls(s));
   const ported = list.filter((s) => Array.isArray(s.tlsPorts) && s.tlsPorts.length);
   const any = list.some((s) => s.terminatesTls !== undefined) || lbs.length > 0 || vips.length > 0 || nats.length > 0 || ported.length > 0;
-  return { any, lbs, backendOf, vips, nats, plain, ported };
+  // passthrough load balancers with no backend terminating TLS, through every passthrough tier
+  const lbOf = new Map(lbs.map((lb) => [lb.server, lb.backends]));
+  const nowhere = new Set(lbs.filter((lb) => {
+    if (terminatesTls(lb.server)) return false;
+    const seen = new Set([lb.server]);
+    const queue = [...lb.backends];
+    while (queue.length) {
+      const b = queue.shift();
+      if (seen.has(b)) continue;
+      seen.add(b);
+      if (terminatesTls(b)) return false;
+      queue.push(...(lbOf.get(b) || []));
+    }
+    return true;
+  }).map((lb) => lb.server));
+  return { any, lbs, backendOf, vips, nats, plain, ported, nowhere };
 }
 
 /**

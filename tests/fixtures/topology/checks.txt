@@ -1,0 +1,8 @@
+# Checks the web app and the CLI make alike (expected.json, "checks.txt"): TLS that terminates
+# nowhere behind a passthrough load balancer, VIP holders that disagree, a backend cycle, a vip= /
+# nat= that is a server's own address and keys that are a letter off a topology key.
+edge01 203.0.113.60 terminates_tls=no backends=pool01
+pool01 10.0.0.61 terminates_tls=no
+edge02 203.0.113.61 terminates_tls=no backends=mid01
+mid01 10.0.0.62 terminates_tls=no backends=app03
+app03 10.0.0.63

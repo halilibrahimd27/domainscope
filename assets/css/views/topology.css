@@ -160,6 +160,25 @@
   margin: 4px 0 0 23px;
 }
 
+/* The inventory contradicts itself here (TLS terminates nowhere, VIP holders disagree): check it. */
+.topo-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--warn);
+  overflow-wrap: break-word;
+}
+
+.topo-warn .icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--warn-solid);
+}
+
 .topo-howto {
   margin: 0;
   overflow-wrap: anywhere;

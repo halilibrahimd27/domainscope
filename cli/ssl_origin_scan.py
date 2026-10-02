@@ -2095,6 +2095,7 @@ class _InventoryBuilder:
         servers = list(self.servers.values())
         if link:
             self.warnings.extend(link_backends(servers))
+            self.warnings.extend(topology_checks(servers))
         seen = {}  # type: Dict[str, str]
         for server in servers:
             warned = set()  # type: Set[str]
@@ -2141,6 +2142,38 @@ def link_backends(servers: Sequence[Server]) -> List[InventoryWarning]:
                     out.append(target.name)
         server.backends = out
         server.backend_refs = []
+    return warnings
+
+
+def _terminates_behind(server: Server, by_name: Dict[str, Server]) -> bool:
+    """Whether a server behind ``server`` terminates TLS, through every passthrough
+    (terminates_tls=no) tier of load balancers; ``by_name`` is keyed by the lower-case name."""
+    seen, queue = {server.name.lower()}, [server]
+    while queue:
+        for name in queue.pop(0).backends:
+            backend = by_name.get(name.lower())
+            if backend is None or backend.name.lower() in seen:
+                continue
+            seen.add(backend.name.lower())
+            if backend.gets_certificate:
+                return True
+            queue.append(backend)
+    return False
+
+
+def topology_checks(servers: Sequence[Server]) -> List[InventoryWarning]:
+    """Checks over the linked inventory (lib/inventory.js topologyChecks alike): a load balancer
+    that passes TLS through (terminates_tls=no) with no backend terminating it is a
+    'noTermination' TOPOLOGY warning."""
+    by_name = {server.name.lower(): server for server in servers}
+    warnings = []  # type: List[InventoryWarning]
+    for server in servers:
+        if not server.gets_certificate and server.backends \
+                and not _terminates_behind(server, by_name):
+            warnings.append(InventoryWarning(
+                server.line, 'TOPOLOGY', '%s passes TLS through (terminates_tls=no), but no backend '
+                'behind it terminates TLS - check the inventory' % server.name, server.source,
+                'noTermination'))
     return warnings
 
 
@@ -2828,6 +2861,7 @@ def load_targets(values: Sequence[str], allow_large: bool = False,
             warnings.extend(_merge_topology(existing, server))
     # backends= may name a server of another file: resolved once every file is read
     warnings.extend(link_backends(list(merged.values())))
+    warnings.extend(topology_checks(list(merged.values())))
     servers, resolve_warnings = resolve_servers(list(merged.values()), resolver, workers, cancel)
     return servers, warnings + resolve_warnings
 
@@ -4587,8 +4621,13 @@ def render_topology(report: ScanReport, summaries: Sequence[ServerSummary], styl
     if lbs:
         lines.append(style.paint('By load balancer: %d' % len(lbs), 'bold'))
         for lb in lbs:
-            role = ('terminates TLS: install the certificate here' if lb.gets_certificate
-                    else 'passes TLS through (terminates_tls=no): no certificate here')
+            if lb.gets_certificate:
+                role = 'terminates TLS: install the certificate here'
+            elif _terminates_behind(lb, by_name):
+                role = 'passes TLS through (terminates_tls=no): no certificate here'
+            else:
+                role = ('passes TLS through (terminates_tls=no), but no backend behind it '
+                        'terminates TLS: TLS terminates nowhere - check the inventory')
             vips = ['VIP %s' % vip for vip in lb.vips]
             plain = '  %s  %s  ' % (display_text(lb.name), _plain_state(lb, skipped, status))
             lines.extend(_wrap('  %s  %s  ' % (style.paint(display_text(lb.name), 'bold'), state(lb)),

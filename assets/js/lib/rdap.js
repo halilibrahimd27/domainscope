@@ -25,8 +25,19 @@
  *    {@link RDAP_OVERRIDES} sends them there instead of calling them "no RDAP".
  *  - rdap.org is the fallback only, at most one request a second ({@link RDAP_ORG_INTERVAL_MS},
  *    shared by every lookup of the page). Its 429 carries no CORS header, so a browser sees a
- *    network TypeError: after such an answer (or a readable 429) it is left alone for
- *    {@link RDAP_ORG_COOLDOWN_MS}, so a list of domains does not prolong its rate limit.
+ *    network TypeError: after such an answer (or a readable 429 of its own) it is left alone for
+ *    {@link RDAP_ORG_COOLDOWN_MS}, so a list of domains does not prolong its rate limit. A lookup
+ *    waiting for its turn when that happens is not sent. rdap.org redirects to the registry: a 429
+ *    whose final URL is the registry's is the registry's limit, and an unreadable answer after the
+ *    registry itself gave none is most likely the registry's again — neither pauses rdap.org.
+ *  - Registries rate-limit too: rdap.sidn.nl answered three concurrent requests 200, 429, 429. So
+ *    one request is in flight per registry server at a time, and a registry's 429 is waited out
+ *    (its Retry-After, else {@link RDAP_REGISTRY_RETRY_MS} doubled each time) and asked again, at
+ *    most {@link RDAP_REGISTRY_429_RETRIES} times, never through rdap.org (it would only forward to
+ *    the same registry).
+ *  - An {@link RDAP_OVERRIDES} server answers 404 for a TLD it does not serve as well as for a
+ *    domain not registered (rdap.identitydigital.services does for google.de): its 404 is not
+ *    conclusive, never "not registered".
  *
  * DOM-free; runs in browsers and Node 22.
  */
@@ -52,6 +63,14 @@ export const RDAP_ORG = 'https://rdap.org/';
 export const RDAP_ORG_INTERVAL_MS = 1000;
 /** After an unreadable answer (a browser's view of its 429) or a 429, rdap.org is not asked for this long. */
 export const RDAP_ORG_COOLDOWN_MS = 60000;
+const RDAP_ORG_HOST = 'rdap.org';
+
+/** A registry server's 429 without a Retry-After: it is asked again after this long, doubled each time. */
+export const RDAP_REGISTRY_RETRY_MS = 2000;
+/** A registry server's 429: the request is asked again at most this many times. */
+export const RDAP_REGISTRY_429_RETRIES = 3;
+/** A Retry-After longer than this is not waited out: the lookup fails as rate limited. */
+export const RDAP_REGISTRY_WAIT_MAX_MS = 60000;
 
 /**
  * Registry RDAP servers of TLDs the IANA bootstrap does not list yet (verified 2026-10-02: each
@@ -98,7 +117,7 @@ function isAbort(err) {
 
 function describe(err) {
   if (!err) return 'Unknown error';
-  if (err instanceof HttpError) return `HTTP ${err.status}${err.statusText ? ` ${err.statusText}` : ''}`;
+  if (err instanceof HttpError) return /not conclusive/.test(err.message) ? err.message : `HTTP ${err.status}${err.statusText ? ` ${err.statusText}` : ''}`;
   if (err instanceof TypeError) return `Network error (the RDAP server may not allow browser access): ${err.message}`;
   return String(err.message || err);
 }
@@ -152,11 +171,76 @@ function serviceCandidates(urls) {
 
 let bootstrapCaches = new WeakMap(); // fetchImpl → Map(kind → { promise, at })
 let rdapOrgGates = new WeakMap(); // fetchImpl → { next, coolUntil }
+let registryGates = new WeakMap(); // fetchImpl → Map(host → { tail, coolUntil })
 
-/** Drop the cached IANA bootstrap files and rdap.org's pacing (all fetch implementations). */
+/** Drop the cached IANA bootstrap files and the pacing of rdap.org and the registries (all fetch implementations). */
 export function clearRdapCache() {
   bootstrapCaches = new WeakMap();
   rdapOrgGates = new WeakMap();
+  registryGates = new WeakMap();
+}
+
+/** Host name of a URL (lower case), '' when it is none. */
+function hostOf(url) {
+  try {
+    return new URL(String(url)).host.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/** rdap.org was paused while a request waited for its turn: the request is not sent. */
+class RdapOrgPausedError extends Error {
+  constructor() {
+    super('rdap.org is paused after its rate limit: not asked');
+    this.name = 'RdapOrgPausedError';
+  }
+}
+
+/** One registry server's pacing for one fetch implementation: a queue of one request at a time, and its 429 wait. */
+function registryGate(fetchImpl, host) {
+  const key = typeof fetchImpl === 'function' ? fetchImpl : registryGate;
+  let hosts = registryGates.get(key);
+  if (!hosts) {
+    hosts = new Map();
+    registryGates.set(key, hosts);
+  }
+  let gate = hosts.get(host);
+  if (!gate) {
+    gate = { tail: Promise.resolve(), coolUntil: 0 };
+    hosts.set(host, gate);
+  }
+  return gate;
+}
+
+/**
+ * Wait for a registry server's turn: one request in flight per server, after its 429 wait.
+ * Resolves with the function that frees the server for the next request (call it once done).
+ */
+async function registryTurn(gate, signal) {
+  const prev = gate.tail;
+  let release;
+  const mine = new Promise((resolve) => {
+    release = resolve;
+  });
+  gate.tail = prev.then(() => mine);
+  try {
+    await withSignal(prev, signal);
+    const wait = gate.coolUntil - Date.now();
+    if (wait > 0) await sleep(wait, signal);
+  } catch (err) {
+    release();
+    throw err;
+  }
+  return release;
+}
+
+/** Wait a registry server out after its 429: its Retry-After, else `baseMs` (the caller doubles it). */
+function registryCoolDown(fetchImpl, host, err, baseMs) {
+  const wait = Number.isFinite(err && err.retryAfterMs) ? err.retryAfterMs : baseMs;
+  const gate = registryGate(fetchImpl, host);
+  gate.coolUntil = Math.max(gate.coolUntil, Date.now() + wait);
+  return wait;
 }
 
 /** rdap.org's pacing for one fetch implementation (the page has one: every lookup shares it). */
@@ -170,25 +254,39 @@ function rdapOrgGate(fetchImpl) {
   return gate;
 }
 
-/** Wait for rdap.org's next slot: requests go out at least `intervalMs` apart, in call order. */
+/**
+ * Wait for rdap.org's next slot: requests go out at least `intervalMs` apart, in call order. A
+ * request whose turn comes while rdap.org is paused is not sent (RdapOrgPausedError).
+ */
 async function rdapOrgTurn(gate, intervalMs, signal) {
+  if (gate.coolUntil > Date.now()) throw new RdapOrgPausedError();
   const now = Date.now();
   const at = Math.max(now, gate.next);
   gate.next = at + Math.max(0, intervalMs);
   if (at > now) await sleep(at - now, signal);
+  if (gate.coolUntil > Date.now()) throw new RdapOrgPausedError();
 }
 
 /**
- * After rdap.org's answer: a readable 429, or a TypeError — in a browser its 429 carries no CORS
- * header, so it cannot be told from a network error — pauses it for RDAP_ORG_COOLDOWN_MS (or its
- * Retry-After when longer). Returns the error to report (a TypeError says what it may be).
+ * After rdap.org's answer. Its own 429 (the final URL is rdap.org's) pauses it for
+ * RDAP_ORG_COOLDOWN_MS (or its Retry-After when longer); a 429 behind its redirect is the
+ * registry's: that server is waited out instead. A TypeError — in a browser rdap.org's 429 carries
+ * no CORS header, so it cannot be told from a network error — pauses it only when the registry
+ * itself answered readably this lookup (else it is most likely the registry's failure again).
+ * Returns the error to report (a TypeError says what it may be).
  */
-function noteRdapOrgFailure(gate, err, cooldownMs) {
-  const limited = err instanceof HttpError && err.status === 429;
-  if (!limited && !(err instanceof TypeError)) return err;
-  const wait = Math.max(cooldownMs, limited && Number.isFinite(err.retryAfterMs) ? err.retryAfterMs : 0);
-  gate.coolUntil = Date.now() + wait;
-  if (limited) return err;
+function noteRdapOrgFailure(gate, err, opts) {
+  if (err instanceof HttpError && err.status === 429) {
+    const host = hostOf(err.url);
+    if (host && host !== RDAP_ORG_HOST) {
+      registryCoolDown(opts.fetchImpl, host, err, opts.registryRetryMs);
+      return err;
+    }
+    gate.coolUntil = Date.now() + Math.max(opts.rdapOrgCooldownMs, Number.isFinite(err.retryAfterMs) ? err.retryAfterMs : 0);
+    return err;
+  }
+  if (!(err instanceof TypeError) || opts.registryUnreadable) return err;
+  gate.coolUntil = Date.now() + opts.rdapOrgCooldownMs;
   return new TypeError(`rdap.org gave no readable answer (its rate limit, HTTP 429, carries no CORS header): ${err.message}`);
 }
 
@@ -450,15 +548,41 @@ async function fetchRdap(url, { fetchImpl, signal, timeoutMs, gate = null, inter
       if (gate) await rdapOrgTurn(gate, intervalMs, signal);
       return fetchJson(url, { fetchImpl, signal, timeoutMs, headers: { accept: ACCEPT } });
     },
-    // Retry timeouts / 429 / 5xx once; never 4xx (404 = not found is an answer)
-    // and not network TypeErrors, which in browsers are almost always a
-    // missing CORS header (the rdap.org fallback is the second attempt). rdap.org's
-    // 429 is not retried either: it pauses rdap.org instead.
+    // Retry timeouts / 5xx once; never 4xx (404 = not found is an answer) and not network
+    // TypeErrors, which in browsers are almost always a missing CORS header (the rdap.org fallback
+    // is the second attempt). A 429 is not retried here: a registry's is waited out by its queue
+    // (askRegistry), rdap.org's pauses it.
     {
       retries: 1, signal, baseDelayMs: 400, maxDelayMs: 4000,
-      shouldRetry: (err) => !(err instanceof TypeError) && !(gate && err instanceof HttpError && err.status === 429) && defaultShouldRetry(err)
+      shouldRetry: (err) => !(err instanceof TypeError) && !(err instanceof HttpError && err.status === 429) && defaultShouldRetry(err)
     }
   );
+}
+
+/**
+ * Ask a registry server: one request in flight per server; its 429 is waited out (Retry-After, else
+ * `registryRetryMs` doubled each time) and the same request asked again first — the requests
+ * queued behind it wait —, at most `registry429Retries` times; then the 429 is the answer (rate
+ * limited).
+ */
+async function askRegistry(url, opts) {
+  const host = hostOf(url);
+  const gate = registryGate(opts.fetchImpl, host);
+  const release = await registryTurn(gate, opts.signal);
+  try {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await fetchRdap(url, opts);
+      } catch (err) {
+        if (isAbort(err) || !(err instanceof HttpError && err.status === 429)) throw err;
+        const wait = registryCoolDown(opts.fetchImpl, host, err, opts.registryRetryMs * 2 ** attempt);
+        if (attempt >= opts.registry429Retries || wait > opts.registryWaitMaxMs) throw err;
+        await sleep(wait, opts.signal);
+      }
+    }
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -466,13 +590,13 @@ async function fetchRdap(url, { fetchImpl, signal, timeoutMs, gate = null, inter
  * @returns {Promise<object>} the JSON; rejects like fetchRdap, or with the error noteRdapOrgFailure reports
  */
 async function askRdap(base, url, opts) {
-  if (base !== RDAP_ORG) return fetchRdap(url, opts);
+  if (base !== RDAP_ORG) return askRegistry(url, opts);
   const gate = rdapOrgGate(opts.fetchImpl);
   try {
     return await fetchRdap(url, { ...opts, gate, intervalMs: opts.rdapOrgIntervalMs });
   } catch (err) {
-    if (isAbort(err)) throw err;
-    throw noteRdapOrgFailure(gate, err, opts.rdapOrgCooldownMs);
+    if (isAbort(err) || err instanceof RdapOrgPausedError) throw err;
+    throw noteRdapOrgFailure(gate, err, opts);
   }
 }
 
@@ -496,15 +620,19 @@ function isNoServiceBody(err) {
  *  - otherwise `error` / `errorKind` (network, CORS, timeout, http, parse).
  *
  * A TLD the bootstrap does not list but {@link RDAP_OVERRIDES} does goes to that registry server
- * (also when the bootstrap cannot be read). rdap.org, the fallback, is paced to
- * {@link RDAP_ORG_INTERVAL_MS} and paused after an unreadable answer (`rdapOrgPaused` in the result
- * when it was skipped for that).
+ * (also when the bootstrap cannot be read); its 404 is not conclusive (a failure, never notFound).
+ * One request is in flight per registry server, and its 429 is waited out and asked again, never
+ * through rdap.org. rdap.org, the fallback, is paced to {@link RDAP_ORG_INTERVAL_MS} and paused
+ * after its own 429 or an unreadable answer (`rdapOrgPaused` in the result when it was skipped
+ * for that).
  *
  * @param {string} domain
  * @param {{ fetchImpl?: typeof fetch, signal?: AbortSignal, timeoutMs?: number, fallback?: boolean,
- *   rdapOrgIntervalMs?: number, rdapOrgCooldownMs?: number }} [opts]
+ *   rdapOrgIntervalMs?: number, rdapOrgCooldownMs?: number, registryRetryMs?: number,
+ *   registry429Retries?: number, registryWaitMaxMs?: number }} [opts]
  *   Extensions: timeoutMs (per request), fallback (false = never use rdap.org), rdapOrgIntervalMs /
- *   rdapOrgCooldownMs (rdap.org's pacing and pause, tests).
+ *   rdapOrgCooldownMs (rdap.org's pacing and pause), registryRetryMs / registry429Retries /
+ *   registryWaitMaxMs (a registry's 429; tests).
  * @returns {Promise<{ ok: boolean, domain: string, registrar: string|null, registrarIanaId: string|null,
  *   created: Date|null, updated: Date|null, expires: Date|null, status: string[], nameservers: string[],
  *   dnssecSigned: boolean|null, rdapServer: string|null, unsupportedTld: boolean, error: string|null,
@@ -516,7 +644,8 @@ function isNoServiceBody(err) {
  */
 export async function rdapDomain(domain, {
   fetchImpl = globalThis.fetch, signal, timeoutMs = DEFAULT_TIMEOUT_MS, fallback = true,
-  rdapOrgIntervalMs = RDAP_ORG_INTERVAL_MS, rdapOrgCooldownMs = RDAP_ORG_COOLDOWN_MS
+  rdapOrgIntervalMs = RDAP_ORG_INTERVAL_MS, rdapOrgCooldownMs = RDAP_ORG_COOLDOWN_MS,
+  registryRetryMs = RDAP_REGISTRY_RETRY_MS, registry429Retries = RDAP_REGISTRY_429_RETRIES, registryWaitMaxMs = RDAP_REGISTRY_WAIT_MAX_MS
 } = {}) {
   throwIfAborted(signal);
   const host = normalizeHostname(typeof domain === 'string' ? domain.replace(/^\*\./, '') : '');
@@ -531,7 +660,7 @@ export async function rdapDomain(domain, {
   const out = domainResult(name);
   out.input = input;
   out.tld = name.slice(name.lastIndexOf('.') + 1);
-  const opts = { fetchImpl, signal, timeoutMs, rdapOrgIntervalMs, rdapOrgCooldownMs };
+  const opts = { fetchImpl, signal, timeoutMs, rdapOrgIntervalMs, rdapOrgCooldownMs, registryRetryMs, registry429Retries, registryWaitMaxMs };
   const override = Object.hasOwn(RDAP_OVERRIDES, out.tld) ? RDAP_OVERRIDES[out.tld] : null;
 
   let candidates = [];
@@ -562,10 +691,16 @@ export async function rdapDomain(domain, {
     else candidates = [...candidates, RDAP_ORG];
   }
 
+  // A registry that rate-limits us, or an override server that does not know the name: rdap.org
+  // would only forward to the same registry (or does not serve the TLD). A registry without a
+  // readable answer: rdap.org's own unreadable answer after it is no sign of its rate limit.
+  let skipOrg = false;
+  let registryUnreadable = false;
   for (const base of candidates) {
+    if (base === RDAP_ORG && skipOrg) continue;
     const url = `${base}domain/${name}`;
     try {
-      const json = await askRdap(base, url, opts);
+      const json = await askRdap(base, url, { ...opts, registryUnreadable });
       const parsed = parseRdapDomain(json);
       let server = base;
       if (base === RDAP_ORG && parsed.selfUrl) {
@@ -593,13 +728,26 @@ export async function rdapDomain(domain, {
       };
     } catch (err) {
       if (isAbort(err)) throw err;
+      if (err instanceof RdapOrgPausedError) {
+        // paused while it waited for its turn: the registry's own error stands
+        paused = true;
+        continue;
+      }
       if (isNoServiceBody(err)) {
         return { ...out, unsupportedTld: true, error: `No RDAP service is published for .${out.tld}`, errorKind: 'unsupported', url };
+      }
+      if (err instanceof HttpError && err.status === 404 && base === override) {
+        // The override server answers 404 for a TLD it does not serve too: not conclusive.
+        lastErr = Object.assign(new HttpError(404, url, err.body), { message: 'HTTP 404 from a registry server the IANA bootstrap does not name: not conclusive' });
+        skipOrg = true;
+        continue;
       }
       if (err instanceof HttpError && err.status === 404) {
         // The registry is authoritative: the domain is not registered there.
         return { ...out, notFound: true, rdapServer: base, url, error: 'Domain not found in the registry', errorKind: 'http' };
       }
+      if (base !== RDAP_ORG && err instanceof HttpError && err.status === 429) skipOrg = true;
+      if (base !== RDAP_ORG && err instanceof TypeError) registryUnreadable = true;
       lastErr = err;
     }
   }
@@ -757,7 +905,8 @@ function ipResult(ip) {
  */
 export async function rdapIp(ip, {
   fetchImpl = globalThis.fetch, signal, timeoutMs = DEFAULT_TIMEOUT_MS, fallback = true,
-  rdapOrgIntervalMs = RDAP_ORG_INTERVAL_MS, rdapOrgCooldownMs = RDAP_ORG_COOLDOWN_MS
+  rdapOrgIntervalMs = RDAP_ORG_INTERVAL_MS, rdapOrgCooldownMs = RDAP_ORG_COOLDOWN_MS,
+  registryRetryMs = RDAP_REGISTRY_RETRY_MS, registry429Retries = RDAP_REGISTRY_429_RETRIES, registryWaitMaxMs = RDAP_REGISTRY_WAIT_MAX_MS
 } = {}) {
   throwIfAborted(signal);
   const canonical = normalizeIP(typeof ip === 'string' ? ip : '');
@@ -778,7 +927,7 @@ export async function rdapIp(ip, {
   const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(canonical);
   const lookupIp = mapped ? mapped[1] : canonical;
   const kind = lookupIp.includes(':') ? 'ipv6' : 'ipv4';
-  const opts = { fetchImpl, signal, timeoutMs, rdapOrgIntervalMs, rdapOrgCooldownMs };
+  const opts = { fetchImpl, signal, timeoutMs, rdapOrgIntervalMs, rdapOrgCooldownMs, registryRetryMs, registry429Retries, registryWaitMaxMs };
 
   let candidates = [];
   let lastErr = null;
@@ -794,13 +943,16 @@ export async function rdapIp(ip, {
     candidates = [...candidates, RDAP_ORG];
   }
 
+  let registryUnreadable = false;
   for (const base of candidates) {
     const url = `${base}ip/${lookupIp}`;
     try {
-      const parsed = parseRdapIp(await askRdap(base, url, opts));
+      const parsed = parseRdapIp(await askRdap(base, url, { ...opts, registryUnreadable }));
       return { ...out, ...parsed, ok: true, rdapServer: base, url, error: null, errorKind: null };
     } catch (err) {
       if (isAbort(err)) throw err;
+      if (err instanceof RdapOrgPausedError) continue;
+      if (base !== RDAP_ORG && err instanceof TypeError) registryUnreadable = true;
       if (err instanceof HttpError && err.status === 404) {
         return { ...out, notFound: true, rdapServer: base, url, error: 'Address not found in the registry', errorKind: 'http' };
       }

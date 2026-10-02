@@ -395,6 +395,42 @@ describe('the calendar and the exports', () => {
     assert.equal(rows[1].parked, 'locked');
   });
 
+  test('20 domains of one registry that answers one request per window and 429 to the rest: every one is read, rdap.org never blamed', async () => {
+    // rdap.sidn.nl answered three concurrent requests 200, 429, 429 on 2026-10-02.
+    let last = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const log = { registry: 0, registry429: 0, org: 0 };
+    const reg = (name) => ({ objectClassName: 'domain', ldhName: name, status: ['client transfer prohibited'], events: [{ eventAction: 'expiration', eventDate: iso(300) }], entities: [] });
+    const fetchImpl = async (url) => {
+      const u = String(url);
+      if (u === 'https://data.iana.org/rdap/dns.json') return json({ services: [[['nl'], ['https://rdap.registry.example/']]] });
+      const name = u.split('/domain/')[1];
+      if (u.startsWith('https://rdap.org/')) log.org += 1;
+      else log.registry += 1;
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 2));
+      inFlight -= 1;
+      const now = Date.now();
+      if (now - last < 40) {
+        log.registry429 += 1;
+        return json({ errorCode: 429 }, 429);
+      }
+      last = now;
+      return json(reg(name));
+    };
+    const dns = { query: async (name, type) => ({ name, type, ok: true, rcode: 'NOERROR', answers: [], flags: {} }) };
+    const domains = Array.from({ length: 20 }, (_, i) => `example${i}.nl`);
+    const run = createPortfolio({ domains, dns, fetchImpl, dkim: false, rdapOptions: { registryRetryMs: 20, rdapOrgIntervalMs: 0 } });
+    await run.start();
+    const res = domains.map((d) => run.rdapOf(d));
+    assert.equal(res.filter((r) => r && r.ok).length, 20, JSON.stringify(log));
+    assert.equal(maxInFlight, 1, 'one request at a time to the registry');
+    assert.equal(log.org, 0, 'rdap.org would forward to the same registry');
+    assert.ok(res.every((r) => !r.rdapOrgPaused));
+  });
+
   test('a name server domain the registry does not know (RDAP 404): the takeover is flagged — the row\'s risk, the summary, never "no data"', async () => {
     const zone = { ...ZONE, 'example.com': { ...ZONE['example.com'], NS: ['ns1.example.net', 'ns2.example-gone.org'] } };
     const dns = fakeDns(zone, { signed: ['example.com'] });

@@ -2700,10 +2700,13 @@ describe('topology notes and card (ui/topology.js)', () => {
       assert.equal(text(lb(['web01', 'web02'])), 'TLS’i web01, web02 sunucularına olduğu gibi iletiyor: burada sertifika gerekmez');
       assert.equal(i18n.t('topo.vipHolder1', { name: 'db01' }), 'yalnızca db01 sunucusunda');
       assert.match(i18n.t('topo.introScan'), /arkasındaki sunucular hemen altında listelenir;/);
+      // the intro never claims a terminates_tls=no server needs nothing when DNS points at it directly
+      assert.match(i18n.t('topo.introScan'), /DNS doğrudan ona işaret etmiyorsa sertifika gerekmez\.$/);
     } finally {
       i18n.setLang('en');
     }
     assert.equal(withFakeDocument(() => TopologyNotes(lb(['web01'])).textContent), 'Passes TLS through to web01: no certificate here');
+    assert.match(i18n.t('topo.introScan'), /needs no certificate unless DNS points at it directly\.$/);
   });
 
   test('TopologyWarnings: SSL Targets lists the inventory topology warnings in words, with their line and token', async () => {

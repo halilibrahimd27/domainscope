@@ -41,7 +41,7 @@ registerStrings('en', {
   'topo.vipPlainAll': 'plain HTTP on {names} (terminates_tls=no) — no certificate',
   'topo.noBackends': 'none of its backends is in the inventory',
   'topo.noTermination': 'TLS terminates nowhere behind it: every backend says terminates_tls=no too — check the inventory',
-  'topo.introScan': 'Your inventory says where TLS terminates: the servers behind a load balancer (or a VIP pair) come right after it, and a server with terminates_tls=no needs no certificate.',
+  'topo.introScan': 'Your inventory says where TLS terminates: the servers behind a load balancer (or a VIP pair) come right after it, and a server with terminates_tls=no needs no certificate unless DNS points at it directly.',
   'topo.note.lb': 'Load balancer → {names}',
   'topo.note.passthrough': { one: 'Passes TLS through to {names}: no certificate here', other: 'Passes TLS through to {names}: no certificate here' },
   'topo.note.behindPlain': 'Behind {lb} — plain HTTP, no certificate needed',
@@ -116,7 +116,7 @@ registerStrings('tr', {
   'topo.vipPlainAll': '{names} üzerinde düz HTTP (terminates_tls=no) — sertifika gerekmez',
   'topo.noBackends': 'arkasındaki sunucuların hiçbiri envanterde yok',
   'topo.noTermination': 'Arkasında TLS hiçbir yerde sonlanmıyor: her arka uç da terminates_tls=no diyor — envanteri kontrol edin',
-  'topo.introScan': 'Envanteriniz TLS’in nerede sonlandığını söylüyor: bir yük dengeleyicinin (ya da VIP çiftinin) arkasındaki sunucular hemen altında listelenir; terminates_tls=no olan bir sunucuya sertifika gerekmez.',
+  'topo.introScan': 'Envanteriniz TLS’in nerede sonlandığını söylüyor: bir yük dengeleyicinin (ya da VIP çiftinin) arkasındaki sunucular hemen altında listelenir; terminates_tls=no olan bir sunucuya, DNS doğrudan ona işaret etmiyorsa sertifika gerekmez.',
   'topo.note.lb': 'Yük dengeleyici → {names}',
   'topo.note.passthrough': {
     one: 'TLS’i {names} sunucusuna olduğu gibi iletiyor: burada sertifika gerekmez',

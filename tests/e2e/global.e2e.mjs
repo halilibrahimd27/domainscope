@@ -557,7 +557,7 @@ async function offlineVerdicts(browser, server) {
       title: document.querySelector('.glb-geo-group[data-group="cn"] .glb-geo-group-title > span:not(.flag)')?.textContent.trim(),
       message: document.querySelector('.glb-summary .alert-message')?.textContent || ''
     }));
-    assertEqual(tr.title, 'Çin (anakara)', 'TR group title');
+    assertEqual(tr.title, 'Anakara Çin', 'TR group title');
     assert(/Pekin, Çin; Şanghay, Çin; Guangzhou, Çin konumlarını diğer tüm kaynaklardan farklı bir yere \(CNAME china\.example\.com\.w\.kunluncan\.com\) gönderiyor/.test(tr.message), `TR body: ${tr.message}`);
     await setLangUi(page, 'en');
   });

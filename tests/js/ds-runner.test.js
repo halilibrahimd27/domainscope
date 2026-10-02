@@ -22,7 +22,7 @@ import { ctCertId, ctTarget, ctDoc, hostRow, baselineSeeds, reportHosts, createS
 import { failedAreas, checkAreas, carryHealth, carryCt, carryHosts, lastFullTimes } from '../../tools/ds/carry.mjs';
 import { main, decodeText, skippedWarnings } from '../../tools/ds.mjs';
 import { renderParts } from '../../assets/js/lib/summary.js';
-import { zoneTable, createFakeFetch, CF_EXPORT } from './ds-fake-doh.mjs';
+import { zoneTable, createFakeFetch, CF_EXPORT, portfolioZone, createPortfolioFetch } from './ds-fake-doh.mjs';
 import { DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
 import { issuerName, dnPart } from '../../assets/js/lib/passport.js';
 
@@ -51,7 +51,7 @@ describe('command line', () => {
   test('the default chain is the app\'s, without the resolvers Node\'s fetch cannot read', () => {
     assert.deepEqual([...NODE_CHAIN], DEFAULT_CHAIN.filter((id) => !NODE_UNREADABLE[id]));
     assert.ok(!NODE_CHAIN.includes('cznic') && NODE_CHAIN.includes('cloudflare'));
-    assert.deepEqual(COMMANDS, ['health', 'subdomains', 'drift', 'ct', 'renew', 'dane']);
+    assert.deepEqual(COMMANDS, ['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit']);
     for (const c of COMMANDS) assert.match(USAGE, new RegExp(`\\n  ${c} `), c);
   });
 
@@ -88,7 +88,9 @@ describe('command line', () => {
   test('an option of another subcommand is refused, naming where it belongs', () => {
     assert.throws(() => parseCommandLine(['health', 'example.com', '--level', 'small']), /--level applies to subdomains only, not to health/);
     assert.throws(() => parseCommandLine(['renew', 'example.com', '--sources', 'crtsh']), /--sources applies to subdomains and ct only/);
-    assert.throws(() => parseCommandLine(['dane', 'cert.pem', '--list', 'x.txt']), /--list applies to health, subdomains, ct and renew only, not to dane/);
+    assert.throws(() => parseCommandLine(['dane', 'cert.pem', '--list', 'x.txt']), /--list applies to health, subdomains, ct, renew and audit only, not to dane/);
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--no-dkim']), /--no-dkim applies to audit only, not to health/);
+    assert.throws(() => parseCommandLine(['ct', 'example.com', '--policy', 'p.json']), /--policy applies to audit only, not to ct/);
   });
 
   test('--resolver: a known chain in the given order; HTTP/2-only resolvers and unknown ids refused', () => {
@@ -186,6 +188,28 @@ describe('command line', () => {
     assert.throws(() => parseCommandLine(['renew', 'example.com', '--challenge', 'email']), /--challenge takes http-01, dns-01, tls-alpn-01, unknown/);
   });
 
+  test('audit: a policy file or a preset (one of them), a file of domains as a target, registrable domains, --no-dkim', () => {
+    const cl = parseCommandLine(['audit', '--preset', 'Baseline', 'https://www.example.com/x', 'example.com', 'mail.example.org']);
+    assert.deepEqual(cl.targets, ['example.com', 'example.org'], 'each domain once, as its registrable domain');
+    assert.deepEqual([cl.options.preset, cl.options.policy, cl.options.dkim], ['baseline', null, true]);
+    const file = parseCommandLine(['audit', '--policy', 'policy.json', 'domains.txt', join('lists', 'more'), 'example.net', '--no-dkim']);
+    assert.deepEqual(file.options.lists, ['domains.txt', join('lists', 'more')], 'a list extension or a path is a file of domains');
+    assert.deepEqual(file.targets, ['example.net']);
+    assert.deepEqual([file.options.policy, file.options.preset, file.options.dkim], ['policy.json', null, false]);
+    assert.deepEqual(parseCommandLine(['audit', '--preset', 'parked', '--list', 'd.lst']).options.lists, ['d.lst']);
+    assert.throws(() => parseCommandLine(['audit', 'example.com']), /audit needs the rules: --policy FILE or --preset NAME \(one of them\)/);
+    assert.throws(() => parseCommandLine(['audit', 'example.com', '--policy', 'p.json', '--preset', 'baseline']), /one of them/);
+    assert.throws(() => parseCommandLine(['audit', 'example.com', '--preset', 'strict']), /--preset takes baseline, strict-mail, parked, not "strict"/);
+    assert.throws(() => parseCommandLine(['audit', 'example.com', '--policy', '-']), /--policy takes a file, not "-"/);
+    assert.throws(() => parseCommandLine(['audit', '--preset', 'baseline']), /audit needs at least one domain \(or --list FILE\)/);
+    assert.throws(() => parseCommandLine(['audit', '--preset', 'baseline', '192.0.2.1', 'com.tr']), /not a domain name: "192\.0\.2\.1", "com\.tr"/);
+    assert.throws(() => parseCommandLine(['audit', 'example.com', '--policy', 'p.json', '--json', 'p.json']), /--json names the same file as --policy \(p\.json\)/);
+    assert.throws(() => parseCommandLine(['audit', '--preset', 'baseline', 'domains.txt', '--md', 'domains.txt']), /--md names the same file as --list \(domains\.txt\)/);
+    assert.deepEqual(parseListText('audit', 'www.example.com\nexample.com, mail.example-test.com.tr\n# not this\n203.0.113.9'), {
+      targets: ['example.com', 'example-test.com.tr'], invalid: ['203.0.113.9']
+    });
+  });
+
   test('--list text: several per line, comments; invalid entries are returned, not thrown', () => {
     const text = '# the watch list\nexample.com, example.org ; www.example.net  # inline\n\nnot_a_host!\n192.0.2.1\nexample.com\n';
     assert.deepEqual(parseListText('health', text), { targets: ['example.com', 'example.org', 'www.example.net'], invalid: ['not_a_host!', '192.0.2.1'] });
@@ -212,6 +236,8 @@ describe('baseline', () => {
     assert.match(baselineProblem(report('drift', [{ target: 'example.com', rows: [{ key: 'x|A' }] }]), 'drift'), /rows\[0\] has no "status"/);
     assert.match(baselineProblem(report('renew', [{ target: 'example.com' }]), 'renew'), /has no "verdict"/);
     assert.match(baselineProblem(report('dane', [{ target: 'x', endpoints: [{ key: 'k' }] }]), 'dane'), /endpoints\[0\] has no "status"/);
+    assert.match(baselineProblem(report('audit', [{ target: 'example.com', rules: [{ id: 'dnssec', status: 'maybe' }] }]), 'audit'), /rules\[0\] has no "status" \(pass, fail or unknown\)/);
+    assert.match(baselineProblem(report('audit', [{ target: 'example.com', rules: [{ status: 'pass' }] }]), 'audit'), /rules\[0\] has no "id"/);
     assert.match(baselineProblem(report('ct', [{ target: 'example.com', names: [], issuers: [], certificates: [{ id: 'x', ca: 'y' }] }]), 'ct'), /certificates\[0\] has no "names" list/);
     assert.match(baselineProblem(report('ct', [{ target: 'example.com', names: [], issuers: [], certificates: [{ id: 'x', ca: 'y', names: [], carried: true }] }]), 'ct'), /certificates\[0\] has a "carried" without a "from"/);
     assert.match(baselineProblem(report('ct', [{ target: 'example.com', names: [], issuers: [], sources: [{ source: 'crtsh', lastFullAt: 5 }], certificates: [] }]), 'ct'), /sources\[0\] has a "lastFullAt" that is not text/);
@@ -238,6 +264,10 @@ describe('baseline', () => {
     const h = (r) => report('health', [], { options: { resolvers: r } });
     assert.match(baselineNotes('health', h(['cloudflare']), h(['google']))[0], /The resolvers differ/);
     assert.deepEqual(baselineNotes('health', h(['cloudflare']), h(['cloudflare'])), []);
+    const au = (rules, dkim = true) => report('audit', [], { options: { policy: { name: 'x', version: 1, rules }, dkim } });
+    assert.match(baselineNotes('audit', au({ dnssec: '>= signed' }), au({ dnssec: '>= validated' }))[0], /The policy differs from the baseline's/);
+    assert.match(baselineNotes('audit', au({ dkim: true }), au({ dkim: true }, false))[0], /DKIM was checked in one run and not in the other \(--no-dkim\)/);
+    assert.deepEqual(baselineNotes('audit', au({ dkim: true }), au({ dkim: true })), []);
   });
 });
 
@@ -809,6 +839,59 @@ describe('diff: drift, renew, dane', () => {
 /* Rendering                                                                */
 /* ------------------------------------------------------------------------ */
 
+describe('diff: audit', () => {
+  const rule = (id, status, { required = '>= 30', key = 'pol.ev.daysLeft', params = { count: 40, date: '2026-11-06' }, last = null } = {}) => ({
+    id, status, required, actual: null, evidence: '', key, params, ...(last ? { last } : {})
+  });
+  const target = (domain, rules) => ({ target: domain, checkedAt: '2026-09-27T03:00:00.000Z', rules });
+  const diff = (before, after) => diffReports('audit', report('audit', before), report('audit', after), { t });
+
+  test('a rule that fails now is WORSE, one that passes now BETTER, with the evidence; the evidence alone moving is no change', () => {
+    const changes = diff(
+      [target('example.com', [rule('expiryDays', 'pass'), rule('transferLock', 'fail', { required: 'true', key: 'pol.ev.lockOff', params: {} })])],
+      [target('example.com', [rule('expiryDays', 'fail', { params: { count: 29, date: '2026-10-26' } }), rule('transferLock', 'pass', { required: 'true', key: 'pol.ev.lockOn', params: {} })])]);
+    assert.deepEqual(tags(changes), ['WORSE example.com expiryDays', 'BETTER example.com transferLock']);
+    assert.equal(changeText(changes[0]), 'example.com: expiryDays >= 30: pass → fail — 29 days left (2026-10-26)');
+    assert.equal(changes[0].tone, 'bad');
+    assert.equal(changes[1].tone, 'good');
+    assert.deepEqual(diff([target('example.com', [rule('expiryDays', 'pass')])], [target('example.com', [rule('expiryDays', 'pass', { params: { count: 39, date: '2026-11-06' } })])]), []);
+  });
+
+  test('a rule not checked this run is listed once, never counted; the night after compares with the status it carried', () => {
+    const lastFail = { status: 'fail', evidence: '20 days left', from: '2026-09-26T03:00:00.000Z' };
+    const unknown = (extra = {}) => rule('expiryDays', 'unknown', { key: 'pol.ev.failed', params: { what: 'RDAP' }, ...extra });
+    const failed = diff([target('example.com', [rule('expiryDays', 'fail')])], [target('example.com', [unknown({ last: lastFail })])]);
+    assert.deepEqual(tags(failed), ['FAILED? example.com expiryDays']);
+    assert.equal(changeText(failed[0]), 'example.com: expiryDays >= 30: fail → not known — RDAP lookup failed');
+    // still not known: nothing; checked again with the status it had: nothing
+    assert.deepEqual(diff([target('example.com', [unknown({ last: lastFail })])], [target('example.com', [unknown({ last: lastFail })])]), []);
+    assert.deepEqual(diff([target('example.com', [unknown({ last: lastFail })])], [target('example.com', [rule('expiryDays', 'fail')])]), []);
+    // checked again with another status: compared with the carried one, and said so
+    const better = diff([target('example.com', [unknown({ last: lastFail })])], [target('example.com', [rule('expiryDays', 'pass')])]);
+    assert.deepEqual(tags(better), ['BETTER example.com expiryDays']);
+    assert.match(changeText(better[0]), /: fail \(last checked 2026-09-26\) → pass — 40 days left/);
+    // never checked before: the first check is RECOVERED, counted when it fails
+    assert.deepEqual(tags(diff([target('example.com', [unknown()])], [target('example.com', [rule('expiryDays', 'fail')])])), ['RECOVERED example.com expiryDays']);
+    assert.deepEqual(tags(diff([target('example.com', [unknown()])], [target('example.com', [rule('expiryDays', 'pass')])])), ['RECOVERED? example.com expiryDays']);
+  });
+
+  test('a rule new to the policy or with another requirement says what it is now; rules and domains gone are listed, a new domain counts its failures', () => {
+    const changes = diff(
+      [target('example.com', [rule('expiryDays', 'pass'), rule('dkim', 'fail', { required: 'true', key: 'pol.ev.dkimNone', params: { count: 8 } })]), target('example.org', [])],
+      [target('example.com', [rule('expiryDays', 'fail', { required: '>= 60' }), rule('dnssec', 'pass', { required: '>= signed', key: 'pol.ev.dnssec.signed', params: {} })]),
+        target('example.net', [rule('expiryDays', 'fail')])]);
+    assert.deepEqual(tags(changes), ['NEW example.com expiryDays', 'NEW example.net', 'GONE example.org', 'NEW? example.com dnssec', 'GONE? example.com dkim']);
+    assert.match(changeText(changes[0]), /^example\.com: new rule expiryDays >= 60: fail — 40 days left/);
+    assert.equal(changeText(changes[1]), 'example.net: now audited: 1 rule failed');
+  });
+
+  test('values from DNS and the registry in the evidence are code parts (Markdown code spans)', () => {
+    const changes = diff([target('example.com', [rule('registrar', 'pass', { required: 'Example Registrar', key: 'pol.ev.registrar', params: { name: 'Example Registrar' } })])],
+      [target('example.com', [rule('registrar', 'fail', { required: 'Example Registrar', key: 'pol.ev.registrar', params: { name: '@team <!here> *Other*' } })])]);
+    assert.match(renderChangesMarkdown({ command: 'audit', baseline: { file: 'audit.json' }, changes }), /- \*\*WORSE\*\* `example\.com`: `registrar Example Registrar`: pass → fail — registrar: `@team <!here> \*Other\*`/);
+  });
+});
+
 describe('render', () => {
   const b = report('health', [{ target: 'example.com', score: 100, checks: [] }]);
   const a = report('health', [{ target: 'example.com', score: 80, checks: [check('dkim.none', 'warn'), check('dmarc.none', 'warn')] }]);
@@ -1300,6 +1383,112 @@ describe('offline runs (fake DoH)', () => {
     }
   });
 
+  test('audit over four nights: a failed rule is exit 4; RDAP once per domain, from the registry; .tr not known; a night RDAP fails carries the statuses on', async () => {
+    const dir = tmp();
+    try {
+      const zone = portfolioZone({ now: NOW.getTime() });
+      const json = join(dir, 'audit.json');
+      const md = join(dir, 'audit.md');
+      const argv = ['audit', '--preset', 'baseline', 'example.com', 'www.example.org', 'example-test.com.tr', '--json', json, '--baseline', json, '--fail-on-change'];
+      const log = [];
+      const rdapLog = [];
+      const first = await runMain([...argv, '--md', md], { fetchImpl: createPortfolioFetch(zone, { log, rdapLog }) });
+      assert.equal(first.code, EXIT.CHANGED, first.err);
+      assert.match(first.out, /^Baseline audit\.json does not exist yet/);
+      assert.match(first.out, /\nPolicy audit · baseline\n- 3 domains, 7 rules: 3 fail the policy, 0 could not be checked in full, 0 meet every rule\n- Rules: expiryDays >= 30, transferLock true, status\.critical false, nsExpiryDays >= 30, spf valid, spf\.lookups <= 10, dmarc\.policy >= none\n/);
+      assert.match(first.out, /\nPolicy audit · example\.org\n- 3 rules failed, 0 could not be checked, 4 passed\n- FAIL expiryDays >= 30: 20 days left \(\d{4}-\d{2}-\d{2}\)\n- FAIL transferLock true: clientTransferProhibited is missing: the domain can be transferred away\n- FAIL nsExpiryDays >= 30: name server domain example\.net: 12 days left\n/);
+      assert.match(first.err, /ds: audit: 3 domains, 7 rules, DKIM at 8 selectors\n/);
+      assert.match(first.err, /ds: warning: no RDAP for example-test\.com\.tr \(the registry publishes none\): the registration rules could not be checked/);
+      assert.deepEqual(rdapLog.map((x) => x.domain).sort(), ['example.com', 'example.net', 'example.org'], 'each once, the name servers\' domain too; none for .tr');
+      assert.ok(rdapLog.every((x) => x.host === 'rdap.example.net'), 'the registry the bootstrap names, never rdap.org');
+      assert.ok(log.some((q) => q.name === 'google._domainkey.example.com'), 'DKIM at the common selectors');
+      const doc = JSON.parse(readFileSync(json, 'utf8'));
+      assert.equal(doc.command, 'audit');
+      assert.deepEqual(doc.options.policy.rules, { expiryDays: '>= 30', transferLock: true, 'status.critical': false, nsExpiryDays: '>= 30', spf: 'valid', 'spf.lookups': '<= 10', 'dmarc.policy': '>= none' });
+      assert.deepEqual([doc.options.preset, doc.options.policyFile, doc.options.dkim], ['baseline', null, true]);
+      assert.deepEqual(doc.targets.map((x) => x.target), ['example.com', 'example.org', 'example-test.com.tr'], 'www.example.org is example.org');
+      const tr = doc.targets[2];
+      assert.deepEqual(tr.rules.filter((r) => r.status === 'unknown').map((r) => r.id), ['expiryDays', 'transferLock', 'status.critical']);
+      assert.deepEqual([tr.rules[0].key, tr.rules[0].params, tr.row.registration], ['pol.ev.noRdap', { tld: '.tr' }, 'unsupported']);
+      assert.deepEqual(doc.targets[0].rules.find((r) => r.id === 'nsExpiryDays'), {
+        id: 'nsExpiryDays', status: 'fail', required: '>= 30', actual: 12, evidence: 'name server domain example.net: 12 days left',
+        key: 'pol.ev.nsDays', params: { domain: 'example.net', count: 12 }
+      });
+      assert.equal(doc.targets[0].row.nsDomains, 'example.net:12');
+      const mdText = readFileSync(md, 'utf8');
+      assert.match(mdText, /^\*\*audit: first run\*\*/);
+      assert.match(mdText, /\*\*Policy audit · `baseline`\*\*\n- 3 domains, 7 rules/);
+      assert.match(mdText, /- \*\*NOT KNOWN\*\* `expiryDays >= 30`: the `\.tr` registry publishes no RDAP: see its WHOIS\n/);
+      assert.match(mdText, /- \*\*FAIL\*\* `nsExpiryDays >= 30`: name server domain `example\.net`: 12 days left\n/);
+
+      // Night 2: the name servers' domain renewed, example.org locked.
+      zone.rdap['example.net'].events[1].eventDate = new Date(NOW.getTime() + 400 * 86400000).toISOString();
+      zone.rdap['example.org'].status = ['client transfer prohibited'];
+      const second = await runMain(argv, { fetchImpl: createPortfolioFetch(zone) });
+      assert.equal(second.code, EXIT.CHANGED, 'example.org still expires in 20 days, the .tr domain has no DMARC');
+      const doc2 = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(tags(doc2.changes), ['BETTER example.com nsExpiryDays', 'BETTER example.org transferLock', 'BETTER example.org nsExpiryDays', 'BETTER example-test.com.tr nsExpiryDays']);
+
+      // Night 3: example.org's RDAP answers 503 (the registry, then rdap.org as the fallback): its registration
+      // rules cannot be checked, listed only; the statuses they had are carried.
+      const rdapLog3 = [];
+      const third = await runMain(argv, { fetchImpl: createPortfolioFetch(zone, { rdapLog: rdapLog3, rdapStatus: { 'example.org': 503 } }) });
+      assert.equal(third.code, EXIT.CHANGED);
+      assert.match(third.err, /ds: warning: RDAP could not be read for example\.org: the registration rules could not be checked/);
+      assert.ok(rdapLog3.some((x) => x.host === 'rdap.org' && x.domain === 'example.org'), 'rdap.org only when the registry fails');
+      const doc3 = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(tags(doc3.changes), ['FAILED? example.org expiryDays', 'FAILED? example.org transferLock', 'FAILED? example.org status.critical']);
+      const org3 = doc3.targets.find((x) => x.target === 'example.org');
+      assert.deepEqual(org3.rules.slice(0, 3).map((r) => [r.status, r.last && r.last.status, r.last && r.last.from]), [
+        ['unknown', 'fail', doc2.targets[1].checkedAt], ['unknown', 'pass', doc2.targets[1].checkedAt], ['unknown', 'pass', doc2.targets[1].checkedAt]
+      ]);
+
+      // Night 4: RDAP answers again with what it said before: compared with the carried statuses, nothing changed.
+      const fourth = await runMain(argv, { fetchImpl: createPortfolioFetch(zone) });
+      assert.equal(fourth.code, EXIT.CHANGED, 'rules still fail');
+      assert.match(fourth.out, /Changes since the baseline \(audit\.json, run of 2026-09-28 03:00 UTC\): none/);
+      assert.deepEqual(JSON.parse(readFileSync(json, 'utf8')).changes, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('audit: a policy file the app exported (every rule met: exit 0), DKIM off, and a file with a typo refused before anything is sent', async () => {
+    const dir = tmp();
+    try {
+      const zone = portfolioZone({ now: NOW.getTime() });
+      const policy = join(dir, 'policy.json');
+      writeFileSync(policy, '\uFEFF{\n  "name": "mail",\n  "version": 1,\n  "rules": { "spf": "valid", "spf.lookups": "<= 10", "dkim": true }\n}\n');
+      const list = join(dir, 'domains.txt');
+      writeFileSync(list, '# the portfolio\nexample.com\nmail.example.com\n');
+      const log = [];
+      const pass = await runMain(['audit', '--policy', policy, list, '--json', join(dir, 'a.json')], { fetchImpl: createPortfolioFetch(zone, { log }) });
+      assert.equal(pass.code, EXIT.OK, pass.err + pass.out);
+      assert.match(pass.out, /^Policy audit · mail\n- 1 domain, 3 rules: 0 fail the policy, 0 could not be checked in full, 1 meets every rule\n- Rules: spf valid, spf\.lookups <= 10, dkim true\n- Every rule met: example\.com\n/);
+      assert.equal(JSON.parse(readFileSync(join(dir, 'a.json'), 'utf8')).options.policyFile, 'policy.json');
+
+      const noDkim = await runMain(['audit', '--policy', policy, 'example.com', '--no-dkim'], { fetchImpl: createPortfolioFetch(zone, { log: (log.length = 0, log) }) });
+      assert.equal(noDkim.code, EXIT.OK, 'a rule not checked is no failure');
+      assert.match(noDkim.out, /- NOT KNOWN dkim true: not checked \(turned off\)\n/);
+      assert.ok(!log.some((q) => q.name.includes('_domainkey')), 'no DKIM question');
+
+      writeFileSync(policy, '{ "expiryDays": ">= 30", "dnsec": "signed", "spf.all": "-none" }');
+      const asked = [];
+      const fetchImpl = async (url) => {
+        asked.push(url);
+        return new Response('', { status: 404 });
+      };
+      const typo = await runMain(['audit', '--policy', policy, 'example.com'], { fetchImpl });
+      assert.equal(typo.code, EXIT.USAGE);
+      assert.match(typo.err, /^ds: error: --policy .*policy\.json: unknown rule "dnsec"; "spf\.all" does not take "-none" \(for example ">= ~all"\) \(the rules: expiryDays, transferLock, /);
+      writeFileSync(policy, '{ "expiryDays": ');
+      assert.match((await runMain(['audit', '--policy', policy, 'example.com'], { fetchImpl })).err, /--policy .*: not JSON \(/);
+      assert.deepEqual(asked, [], 'nothing sent');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('renew and dane on the fake zone', async () => {
     const table = zoneTable();
     const renew = await runMain(['renew', 'example.com', '*.example.com', '--ca', 'letsencrypt', '--challenge', 'dns-01'], { fetchImpl: createFakeFetch(table) });
@@ -1407,7 +1596,7 @@ describe('the documented commands', () => {
   test('every ds line of the nightly template, commented ones too, is a command line the runner takes', () => {
     const yml = readFileSync(join(ROOT, 'docs', 'examples', 'nightly-domainscope.yml'), 'utf8').replace(/\r\n/g, '\n');
     const lines = [...yml.matchAll(/^ *#? *ds ([a-z][\w-]*) ([a-z]+)((?: [^\s#]+)*) *$/gm)];
-    assert.equal(lines.length, 6, `${lines.length} ds lines`);
+    assert.equal(lines.length, 7, `${lines.length} ds lines`);
     for (const [, name, command, rest] of lines) {
       assert.ok(COMMANDS.includes(command), command);
       const argv = [command, ...rest.trim().split(/\s+/).filter(Boolean).map(unquote), '--baseline', `results/${name}.json`,
@@ -1497,6 +1686,29 @@ test('the program itself: a spawned runner whose fetch is the fake DoH (node --i
     const help = spawnSync(process.execPath, [DS, '--help'], { cwd: ROOT, encoding: 'utf8', timeout: 60000 });
     assert.equal(help.status, 0);
     assert.equal(help.stdout, `${USAGE}${USAGE.endsWith('\n') ? '' : '\n'}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the program itself: a spawned audit whose fetch is the portfolio fake exits 4 on a failed rule, 0 when every rule is met', () => {
+  const dir = tmp();
+  try {
+    const logFile = join(dir, 'requests.json');
+    const spawnAudit = (args) => spawnSync(process.execPath, ['--import', pathToFileURL(join(ROOT, 'tests', 'js', 'ds-fake-doh.mjs')).href, DS, 'audit', ...args, '--no-color'], {
+      cwd: ROOT, encoding: 'utf8', env: { ...process.env, DS_FAKE_DOH: 'portfolio', DS_FAKE_DOH_LOG: logFile, NO_COLOR: '1' }, timeout: 60000
+    });
+    const parked = spawnAudit(['--preset', 'parked', 'example.org', '--json', join(dir, 'audit.json')]);
+    assert.equal(parked.status, EXIT.CHANGED, parked.stderr);
+    assert.match(parked.stdout, /^Policy audit · parked domain\n- 1 domain, 6 rules: 1 fails the policy, 0 could not be checked in full, 0 meet every rule\n/);
+    assert.match(parked.stdout, /- FAIL transferLock true: clientTransferProhibited is missing/);
+    assert.match(parked.stdout, /- FAIL caa deny-all: no CAA record: any CA may issue/);
+    const requests = JSON.parse(readFileSync(logFile, 'utf8'));
+    assert.deepEqual(requests.rdap.map((x) => `${x.host} ${x.domain}`).sort(), ['rdap.example.net example.net', 'rdap.example.net example.org']);
+    assert.ok(requests.dns.every((q) => q.name === 'example.org' || q.name.endsWith('.example.org')), 'only the domain\'s own names asked');
+    const met = spawnAudit(['--preset', 'strict-mail', 'example.com']);
+    assert.equal(met.status, EXIT.OK, met.stdout + met.stderr);
+    assert.match(met.stdout, /- Every rule met: example\.com\n/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

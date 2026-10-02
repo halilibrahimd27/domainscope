@@ -10,9 +10,11 @@
  *
  * Loaded with `node --import <this file>` and DS_FAKE_DOH=1 in the environment it replaces
  * globalThis.fetch of a spawned runner, and DS_FAKE_DOH_LOG=<file> receives the questions asked
- * (JSON) when the process exits; DS_FAKE_DOH=hang gives it a network that never answers
- * ({@link createHangingFetch}, the Ctrl-C test). Documentation data only (example.com, 192.0.2.0/24,
- * 198.51.100.0/24, 2001:db8::/32, the fake Cloudflare edge 104.16.1.1).
+ * (JSON) when the process exits; DS_FAKE_DOH=portfolio gives it the Domain portfolio's three zones
+ * and their RDAP registry ({@link portfolioZone}, {@link createPortfolioFetch}: the `audit`
+ * command); DS_FAKE_DOH=hang a network that never answers ({@link createHangingFetch}, the
+ * Ctrl-C test). Documentation data only (example.com / .net / .org, example-test.com.tr,
+ * 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32, the fake Cloudflare edge 104.16.1.1).
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -122,6 +124,101 @@ export function createFakeFetch(table, { apex = 'example.com', log = [], other, 
   };
 }
 
+/* ------------------------------------------------------------------------ */
+/* The Domain portfolio (the runner's `audit`)                              */
+/* ------------------------------------------------------------------------ */
+
+const DAY_MS = 86400000;
+/** The registry server the fake IANA bootstrap names for .com, .net and .org (none for .tr). */
+export const PORTFOLIO_RDAP_BASE = 'https://rdap.example.net/';
+
+/**
+ * Three zones on one provider's name servers (ns*.example.net), as the portfolio e2e suite has
+ * them: example.com signed, locked and sending mail with SPF, DMARC p=reject, a DKIM key,
+ * MTA-STS and TLS-RPT; example.org a parked domain (null MX, -all, p=reject) without a transfer
+ * lock that expires in 20 days; example-test.com.tr on a registry without RDAP, with ~all and no
+ * DMARC. The name servers' domain example.net expires in 12 days. Dates count from `now`.
+ * @param {{ now?: number }} [opts]
+ * @returns {{ table: Record<string, Record<string, any[]>>, rdap: Record<string, object>, signed: string[] }}
+ */
+export function portfolioZone({ now = Date.now() } = {}) {
+  // half a day past the count, so a test a few minutes later still counts the same whole days
+  const iso = (days) => new Date(now + days * DAY_MS + DAY_MS / 2).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const dnskey = { flags: 257, protocol: 3, algorithm: 13, publicKey: Buffer.alloc(64, 7).toString('base64') };
+  const keyTag = decodeMessage(encodeMessage({ answers: [{ name: 'example.com', type: 'DNSKEY', ttl: 300, data: dnskey }] })).answers[0].data.keyTag;
+  const table = {
+    'example.com': {
+      NS: ['ns1.example.net', 'ns2.example.net'],
+      DS: [{ keyTag, algorithm: 13, digestType: 2, digest: 'ab'.repeat(32) }],
+      DNSKEY: [dnskey],
+      CAA: [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }],
+      MX: [{ preference: 10, exchange: 'mx.example.com' }],
+      TXT: [['v=spf1 include:_spf.example.net -all'], ['site-verification=ds']]
+    },
+    '_spf.example.net': { TXT: [['v=spf1 ip4:192.0.2.0/24 -all']] },
+    'mx.example.com': { A: ['192.0.2.25'] },
+    '_dmarc.example.com': { TXT: [['v=DMARC1; p=reject; rua=mailto:dmarc@example.com']] },
+    'google._domainkey.example.com': { TXT: [['v=DKIM1; k=rsa; p=MIIBIjANBgkqh']] },
+    '_mta-sts.example.com': { TXT: [['v=STSv1; id=20261001']] },
+    '_smtp._tls.example.com': { TXT: [['v=TLSRPTv1; rua=mailto:tls@example.com']] },
+    'example.org': { NS: ['ns1.example.net', 'ns.example.org'], MX: [{ preference: 0, exchange: '.' }], TXT: [['v=spf1 -all']] },
+    '_dmarc.example.org': { TXT: [['v=DMARC1; p=reject']] },
+    'example-test.com.tr': { NS: ['ns1.example.net'], MX: [{ preference: 10, exchange: 'mx.example-test.com.tr' }], TXT: [['v=spf1 ~all']] },
+    'mx.example-test.com.tr': { A: ['203.0.113.25'] }
+  };
+  const rdapJson = (domain, status, days) => ({
+    objectClassName: 'domain', ldhName: domain.toUpperCase(), status,
+    events: [{ eventAction: 'registration', eventDate: '2001-05-01T00:00:00Z' }, { eventAction: 'expiration', eventDate: iso(days) }],
+    entities: [{ objectClassName: 'entity', roles: ['registrar'], vcardArray: ['vcard', [['version', {}, 'text', '4.0'], ['fn', {}, 'text', 'Example Registrar, Inc.']]], publicIds: [{ type: 'IANA Registrar ID', identifier: '9999' }] }],
+    secureDNS: { delegationSigned: domain === 'example.com' }
+  });
+  const rdap = {
+    'example.com': rdapJson('example.com', ['client transfer prohibited', 'client delete prohibited'], 400),
+    'example.org': rdapJson('example.org', ['active'], 20),
+    'example.net': rdapJson('example.net', ['client transfer prohibited'], 12)
+  };
+  return { table, rdap, signed: ['example.com'] };
+}
+
+/**
+ * A fetch with the portfolio's services: DoH answers from `table` (each name as it is, no CNAME
+ * or wildcard; NXDOMAIN for a name with nothing at or below it; AD on the `signed` zones), the
+ * IANA RDAP bootstrap and the registry at {@link PORTFOLIO_RDAP_BASE} (rdap.org answers the same,
+ * so a test sees if it was asked), every other request a 404.
+ * @param {{ table: object, rdap: object, signed?: string[] }} zone {@link portfolioZone}
+ * @param {{ log?: Array<{ name: string, type: string }>, rdapLog?: Array<{ host: string, domain: string }>,
+ *   rcodes?: Record<string, string>, rdapStatus?: Record<string, number> }} [opts] `rcodes`: 'name|TYPE' →
+ *   a forced rcode; `rdapStatus`: domain → an HTTP status the registry answers instead
+ * @returns {typeof fetch}
+ */
+export function createPortfolioFetch({ table, rdap, signed = [] }, { log = [], rdapLog = [], rcodes = {}, rdapStatus = {} } = {}) {
+  const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/rdap+json' } });
+  const below = (name) => Object.keys(table).some((k) => k.endsWith(`.${name}`));
+  return async (input) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (url.startsWith('https://data.iana.org/rdap/dns.json')) return json({ services: [[['com', 'net', 'org'], [PORTFOLIO_RDAP_BASE]]] });
+    if (url.startsWith(PORTFOLIO_RDAP_BASE) || url.startsWith('https://rdap.org/')) {
+      const domain = decodeURIComponent(url.split('/domain/')[1] || '');
+      rdapLog.push({ host: new URL(url).host, domain });
+      if (rdapStatus[domain]) return json({ errorCode: rdapStatus[domain] }, rdapStatus[domain]);
+      return rdap[domain] ? json(rdap[domain]) : json({ errorCode: 404 }, 404);
+    }
+    const m = /[?&]dns=([^&]+)/.exec(url);
+    if (!m) return new Response('not found', { status: 404 });
+    const q = decodeMessage(base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
+    const name = String(q.name).toLowerCase().replace(/[.]$/, '');
+    log.push({ name, type: q.type });
+    const forced = rcodes[`${name}|${q.type}`];
+    const node = table[name];
+    const rcode = forced || (node || below(name) ? 'NOERROR' : 'NXDOMAIN');
+    const answers = !forced && node ? (node[q.type] || []).map((data) => ({ name, type: q.type, ttl: 300, data })) : [];
+    const ad = signed.some((z) => name === z || name.endsWith(`.${z}`));
+    return new Response(encodeMessage({
+      id: 0, flags: { qr: true, rd: true, ra: true, ad }, rcode, questions: [{ name: q.name, type: q.type }], answers, edns: {}
+    }), { headers: { 'content-type': 'application/dns-message' } });
+  };
+}
+
 /**
  * A fetch that never answers: each request waits for its signal (a request without one waits
  * for ever) and `onRequest(url)` hears of it. The Ctrl-C test's network.
@@ -139,12 +236,20 @@ export function createHangingFetch(onRequest = () => {}) {
 }
 
 // `node --import tests/js/ds-fake-doh.mjs` with DS_FAKE_DOH=1: the spawned runner's fetch;
+// DS_FAKE_DOH=portfolio: the portfolio's zones and RDAP (the `audit` command);
 // DS_FAKE_DOH=hang: nothing ever answers, and each request is named on stderr (`fake: GET <url>`).
 if (process.env.DS_FAKE_DOH === '1') {
   const log = [];
   globalThis.fetch = createFakeFetch(zoneTable(), { log });
   if (process.env.DS_FAKE_DOH_LOG) {
     process.on('exit', () => writeFileSync(process.env.DS_FAKE_DOH_LOG, JSON.stringify(log)));
+  }
+} else if (process.env.DS_FAKE_DOH === 'portfolio') {
+  const log = [];
+  const rdapLog = [];
+  globalThis.fetch = createPortfolioFetch(portfolioZone(), { log, rdapLog });
+  if (process.env.DS_FAKE_DOH_LOG) {
+    process.on('exit', () => writeFileSync(process.env.DS_FAKE_DOH_LOG, JSON.stringify({ dns: log, rdap: rdapLog })));
   }
 } else if (process.env.DS_FAKE_DOH === 'hang') {
   globalThis.fetch = createHangingFetch((url) => process.stderr.write(`fake: GET ${url.split('?')[0]}\n`));

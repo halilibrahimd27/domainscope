@@ -11,6 +11,7 @@
  *   node tools/ds.mjs ct --list domains.txt --json ct.json
  *   node tools/ds.mjs renew example.com '*.example.com' --ca letsencrypt
  *   node tools/ds.mjs dane fullchain.pem
+ *   node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
  *
  * Commands, options and exit codes: tools/ds/args.mjs (USAGE, `--help`). The checks:
  * tools/ds/commands.mjs; "Changes since the baseline": tools/ds/diff.mjs; the summary and the
@@ -174,6 +175,44 @@ export async function loadBaseline(path, command, { allowMissing = false } = {})
 }
 
 /**
+ * The rules of an `audit` run: a built-in preset, or the `--policy` file read (UTF-8 or UTF-16)
+ * and checked by lib/policy.js before anything is sent. A rule the file names wrongly (an unknown
+ * rule, a value it does not take) is a usage error, not a rule left out: a typo never passes.
+ * @param {import('./ds/args.mjs').DsOptions} options
+ * @returns {Promise<{ name: string|null, rules: object[], file?: string }>}
+ */
+export async function loadPolicy(options) {
+  const { parsePolicy, presetPolicy, POLICY_RULES } = await import('../assets/js/lib/policy.js');
+  if (options.preset) return presetPolicy(options.preset);
+  const { policy, errors } = parsePolicy(decodeText(await readInput(options.policy, '--policy')));
+  if (errors.length) {
+    const known = errors.some((e) => e.code === 'unknown-rule') ? ` (the rules: ${POLICY_RULES.map((r) => r.id).join(', ')})` : '';
+    throw new UsageError(`--policy ${options.policy}: ${errors.map(policyErrorText).join('; ')}${known}`);
+  }
+  return { ...policy, file: basename(options.policy) };
+}
+
+/**
+ * Why a policy file is refused, in the runner's words (the app's say "it is left out": here the
+ * whole file is refused). Values from the file are quoted and cut (lib/summary.js cleanText).
+ * @param {{ code: string, rule?: string, value?: string, detail?: string, example?: string }} e lib/policy.js parsePolicy error
+ * @returns {string}
+ */
+export function policyErrorText(e) {
+  const q = (s) => `"${cleanText(String(s ?? '')).slice(0, 60)}"`;
+  switch (e.code) {
+    case 'not-json': return `not JSON (${cleanText(e.detail || '')})`;
+    case 'not-object': return 'a policy is a JSON object of rules, such as { "expiryDays": ">= 30" }';
+    case 'too-large': return `longer than ${e.value} characters`;
+    case 'too-many': return `more than ${e.value} rules`;
+    case 'unknown-rule': return `unknown rule ${q(e.rule)}`;
+    case 'bad-value': return `${q(e.rule)} does not take ${cleanText(e.value || '')} (for example ${e.example})`;
+    case 'empty': return 'no rule in it';
+    default: return e.code;
+  }
+}
+
+/**
  * Run the runner with a command line; resolves with the exit code (never rejects).
  * @param {string[]} argv arguments after the script
  * @param {{ stdout?: { write: Function, isTTY?: boolean }, stderr?: { write: Function },
@@ -233,6 +272,7 @@ export async function main(argv, io = {}) {
     if (COMMAND_SPECS[command].targets === 'file') {
       inputs.file = { name: basename(targets[0]), bytes: await readInput(targets[0]) };
     }
+    if (command === 'audit') inputs.policy = await loadPolicy(options);
     if (options.exact) {
       const { valid, invalid } = parseHostList(decodeText(await readInput(options.exact, '--exact')));
       for (const w of skippedWarnings(`--exact ${options.exact}`, invalid, 'a host name')) warn(w);
@@ -315,6 +355,8 @@ export async function main(argv, io = {}) {
   await write(options.json, `${toJson(report)}\n`, 'JSON report');
 
   if (writeFailed) return EXIT.WRITE;
+  // audit: a rule of the policy failed (one that could not be checked is no failure)
+  if (result.failed) return EXIT.CHANGED;
   if (options.failOnChange && notableChanges(run.changes).length) return EXIT.CHANGED;
   return EXIT.OK;
 }

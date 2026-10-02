@@ -19,7 +19,8 @@ the checks ask keyless public services only. The checkout keeps no token while t
 2. Copy `nightly-domainscope.yml` to its `.github/workflows/`, and pin `ref:` to a DomainScope
    commit SHA (or to a release tag once there is one).
 3. Switch on the steps you want (health and the Certificate Transparency watch run by default;
-   subdomain discovery, an exact host list, zone drift and renewal readiness are commented out).
+   subdomain discovery, an exact host list, zone drift, renewal readiness and the policy audit
+   are commented out).
 4. Run it once by hand (Actions › DomainScope nightly › Run workflow): the first night has no
    baseline to compare with, so it only writes `results/`.
 
@@ -61,6 +62,14 @@ the domain in full before, or when its certificate was issued after the first of
 reads; issuers are named from the certificate's issuer DN, so crt.sh and Cert Spotter name them
 alike.
 
+**The policy audit.** `audit` checks each domain of the list against the rules of a policy (a
+`policy.json` exported from the app's Domain portfolio, or `--preset baseline`, `strict-mail` or
+`parked`): the registration from the registry's RDAP server (expiry, transfer lock, critical
+statuses), the name servers' own domains and their expiry, DNSSEC, CAA and the mail posture. It
+exits 4 while a rule fails, so the issue stays open with the failing rules until every one
+passes; a rule that could not be checked (a TLD without RDAP, a lookup that failed) is no
+failure, and the night after compares with the last night that checked it.
+
 **Cert Spotter and more than about 10 domains.** Cert Spotter answers about 10 full-domain queries
 an hour per IP address. After its first "rate limited" of a night the runner does not ask it
 again until its wait is over (at most an hour), and once crt.sh is down (unavailable, or timed
@@ -79,14 +88,15 @@ node tools/ds.mjs drift example.com.zone --origin example.com --md drift.md
 node tools/ds.mjs ct --list domains.txt --json ct.json
 node tools/ds.mjs renew example.com '*.example.com' --ca letsencrypt --challenge dns-01
 node tools/ds.mjs dane fullchain.pem
+node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
 ```
 
 `node tools/ds.mjs --help` lists every option. Exit codes: 0 done, 1 the run failed (an
 unexpected error, printed), 2 usage error (report files that cannot be written, a report file
 that is one of the run's own input files, and a baseline that cannot be compared are refused
 before anything is sent), 3 a report could not be written after the run, 4 something changed
-since `--baseline` (only with `--fail-on-change`), 130 interrupted (Ctrl-C, or `timeout -s INT`:
-nothing is written). DNS goes to the app's DoH resolvers (Cloudflare,
+since `--baseline` (only with `--fail-on-change`) or a rule of the policy failed (`audit`), 130
+interrupted (Ctrl-C, or `timeout -s INT`: nothing is written). DNS goes to the app's DoH resolvers (Cloudflare,
 Google, DNS.SB; Quad9 and CZ.NIC answer over HTTP/2 only, which Node's fetch does not speak) with
 the app's concurrency; nothing goes to Globalping. A discovery run prints its progress through
 the long stages and the scanner's own warnings (a list of names cut at 20,000, resolvers that

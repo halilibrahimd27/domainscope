@@ -1,5 +1,5 @@
 /**
- * tools/ds/commands.mjs — the six checks of the headless runner, each over the app's own
+ * tools/ds/commands.mjs — the checks of the headless runner, each over the app's own
  * DOM-free libraries (assets/js/lib) with an injected DohClient, fetch and AbortSignal.
  *
  * Every command returns `{ options, targets, docs, warnings }`:
@@ -737,7 +737,146 @@ async function runDane(targets, options, env) {
 /* dispatch                                                                 */
 /* ------------------------------------------------------------------------ */
 
-const RUNNERS = Object.freeze({ health: runHealth, subdomains: runSubdomains, drift: runDrift, ct: runCt, renew: runRenew, dane: runDane });
+/* ------------------------------------------------------------------------ */
+/* audit                                                                    */
+/* ------------------------------------------------------------------------ */
+
+/** Domains a summary of the audit names before "+N more". */
+const AUDIT_MAX_DOMAINS = 20;
+
+/**
+ * The compared part of one domain's audit: its export row (lib/portfolio.js exportRow: the facts
+ * as codes and values) and every rule with its status, the requirement, the actual value and the
+ * evidence (in English, and as its key and params). A rule that could not be checked this run
+ * carries `last`: the status the last run that checked it found (`from`: that run's check), so
+ * the next run compares with that check and not with the gap — as long as the requirement is the
+ * same (tools/ds/carry.mjs does the same for health, CT and hosts).
+ * @param {object} row an auditPortfolio row
+ * @param {object} facts portfolioFacts of the domain
+ * @param {{ t: Function, exportRow: Function, evidenceText: Function, checkedAt: Date }} kit
+ * @param {{ prev?: object|null }} [baseline] the baseline's target of the domain
+ * @returns {object}
+ */
+export function auditTarget(row, facts, { t, exportRow, evidenceText, checkedAt }, { prev = null } = {}) {
+  const before = new Map(((prev && prev.rules) || []).map((r) => [r.id, r]));
+  return {
+    target: row.domain,
+    checkedAt: isoTime(checkedAt),
+    pass: row.pass,
+    fail: row.fail,
+    unknown: row.unknown,
+    rules: row.cells.map((c) => {
+      const out = {
+        id: c.id, status: c.status, required: c.required, actual: c.actual, evidence: evidenceText(c, t), key: c.evidence.key, params: { ...c.evidence.params }
+      };
+      const p = c.status === 'unknown' ? before.get(c.id) : null;
+      if (p && p.required === c.required) {
+        const last = p.status === 'pass' || p.status === 'fail'
+          ? { status: p.status, evidence: p.evidence || '', from: prev.checkedAt || null }
+          : p.last || null;
+        if (last) out.last = last;
+      }
+      return out;
+    }),
+    row: exportRow(facts)
+  };
+}
+
+/**
+ * The summaries of an audit: one for the run (the policy, the counts, the domains that meet every
+ * rule), then one per domain with a failed or unchecked rule, its rules worst first.
+ * @param {object} audit lib/policy.js auditPortfolio
+ * @param {{ t: Function, now: Date, at: Date, policy: object }} opts
+ * @returns {object[]} SummaryDocs
+ */
+export function auditDocs(audit, { t, now, at, policy }) {
+  const c = audit.counts;
+  const name = policy.name ? [' · ', code(policy.name)] : [];
+  const plural = (n, one, other) => `${n} ${n === 1 ? one : other}`;
+  const lines = [
+    [`${plural(c.domains, 'domain', 'domains')}, ${plural(audit.rules.length, 'rule', 'rules')}: `,
+      `${c.failing} fail${c.failing === 1 ? 's' : ''} the policy, ${c.unknown} could not be checked in full, ${c.passing} meet${c.passing === 1 ? 's' : ''} every rule`],
+    ['Rules: ', ...audit.rules.flatMap((r, i) => [i ? ', ' : '', code(`${r.id} ${r.required}`)])]
+  ];
+  const passing = audit.rows.filter((r) => !r.fail && !r.unknown).map((r) => r.domain);
+  if (passing.length) lines.push(['Every rule met: ', ...valueParts(t, passing, AUDIT_MAX_DOMAINS)]);
+  const docs = [summaryDoc('audit', ['Policy audit', ...name], lines, { t, at, now })];
+  const rank = { fail: 0, unknown: 1, pass: 2 };
+  for (const r of audit.rows.filter((x) => x.fail || x.unknown)) {
+    const cells = [...r.cells].sort((a, b) => rank[a.status] - rank[b.status]).filter((x) => x.status !== 'pass');
+    docs.push(summaryDoc('audit', ['Policy audit · ', code(r.domain)], [
+      [`${plural(r.fail, 'rule', 'rules')} failed, ${r.unknown} could not be checked, ${r.pass} passed`],
+      // the evidence quotes values from DNS and the registry: code parts (lib/summary.js textParts)
+      ...cells.map((x) => [strong(x.status === 'fail' ? 'FAIL' : 'NOT KNOWN'), ' ', code(`${x.id} ${x.required}`), ': ', ...textParts(t, x.evidence.key, x.evidence.params)])
+    ], { t, at, now }));
+  }
+  return docs;
+}
+
+/**
+ * The warnings of an audit run: what could not be read, so the rules that need it could not be
+ * checked (a TLD without RDAP, an RDAP or DNS lookup that failed, a name server domain's RDAP).
+ * @param {object[]} facts portfolioFacts per domain
+ * @param {{ cellFailures: Function, cells: string[] }} kit lib/portfolio.js
+ * @returns {string[]}
+ */
+export function auditWarnings(facts, { cellFailures, cells }) {
+  const out = [];
+  const list = (names) => names.slice(0, AUDIT_MAX_DOMAINS).join(', ') + (names.length > AUDIT_MAX_DOMAINS ? ` and ${names.length - AUDIT_MAX_DOMAINS} more` : '');
+  const noRdap = facts.filter((f) => f.registration.state === 'unsupported').map((f) => f.domain);
+  if (noRdap.length) out.push(`no RDAP for ${list(noRdap)} (the registry publishes none): the registration rules could not be checked; the registry's WHOIS has the dates`);
+  const rdapFailed = facts.filter((f) => f.registration.state === 'failed').map((f) => f.domain);
+  if (rdapFailed.length) out.push(`RDAP could not be read for ${list(rdapFailed)}: the registration rules could not be checked`);
+  const nsFailed = new Map();
+  for (const f of facts) {
+    for (const x of cellFailures(f, 'ns')) {
+      if (!x.nsDomain) continue;
+      if (!nsFailed.has(x.nsDomain)) nsFailed.set(x.nsDomain, []);
+      nsFailed.get(x.nsDomain).push(f.domain);
+    }
+  }
+  for (const [ns, of] of nsFailed) out.push(`RDAP could not be read for the name server domain ${ns} (of ${list(of)}): nsExpiryDays could not be checked`);
+  const dnsFailed = facts.filter((f) => cells.some((c) => cellFailures(f, c).some((x) => x.lookup !== 'rdap'))).map((f) => f.domain);
+  if (dnsFailed.length) out.push(`a DNS lookup failed for ${list(dnsFailed)}: the rules that read it could not be checked`);
+  return out;
+}
+
+async function runAudit(targets, options, env) {
+  const { createPortfolio, exportRow, cellFailures, PORTFOLIO_CELLS, PORTFOLIO_DKIM_SELECTORS } = await import('../../assets/js/lib/portfolio.js');
+  const { auditPortfolio, evidenceText, policyObject } = await import('../../assets/js/lib/policy.js');
+  const policy = env.inputs.policy;
+  const startedAt = env.now();
+  const prevBy = new Map(((env.baseline && env.baseline.targets) || []).map((x) => [x.target, x]));
+  let done = 0;
+  const run = createPortfolio({
+    domains: targets,
+    dns: env.dns,
+    fetchImpl: env.fetchImpl,
+    dkim: options.dkim,
+    onEvent: (e) => {
+      if (e.type === 'row' && e.state === 'done') {
+        done += 1;
+        env.progress(`audit ${e.domain} (${done}/${targets.length})`);
+      }
+    }
+  });
+  env.progress(`audit: ${targets.length} domain${targets.length === 1 ? '' : 's'}, ${policy.rules.length} rule${policy.rules.length === 1 ? '' : 's'}`
+    + `${options.dkim ? `, DKIM at ${PORTFOLIO_DKIM_SELECTORS.length} selectors` : ''}`);
+  await run.start({ signal: env.signal });
+  throwIfAborted(env.signal);
+  const now = env.now();
+  const facts = run.allFacts({ now });
+  const audit = auditPortfolio(policy, facts);
+  return {
+    options: { policy: policyObject(policy), policyFile: policy.file || null, preset: options.preset, dkim: options.dkim, resolvers: [...options.chain] },
+    targets: audit.rows.map((row, i) => auditTarget(row, facts[i], { t: env.t, exportRow, evidenceText, checkedAt: now }, { prev: prevBy.get(row.domain) || null })),
+    docs: auditDocs(audit, { t: env.t, now, at: startedAt, policy }),
+    warnings: auditWarnings(facts, { cellFailures, cells: PORTFOLIO_CELLS }),
+    failed: audit.counts.failing > 0
+  };
+}
+
+const RUNNERS = Object.freeze({ health: runHealth, subdomains: runSubdomains, drift: runDrift, ct: runCt, renew: runRenew, dane: runDane, audit: runAudit });
 
 /**
  * Run one subcommand.
@@ -747,8 +886,8 @@ const RUNNERS = Object.freeze({ health: runHealth, subdomains: runSubdomains, dr
  * @param {{ dns: object, fetchImpl: typeof fetch, signal?: AbortSignal, now: () => Date, t: Function,
  *   progress: (text: string) => void, baseline: object|null,
  *   inputs: { file?: { name: string, bytes: Uint8Array }, exactNames?: string[], exactFile?: string } }} env
- * @returns {Promise<{ options: object, targets: object[], docs: object[], warnings: string[] }>}
- *   rejects with a UsageError for an input it cannot check (a zone without a name, no
+ * @returns {Promise<{ options: object, targets: object[], docs: object[], warnings: string[], failed?: boolean }>}
+ *   `failed` (audit): a rule of the policy failed, exit 4; rejects with a UsageError for an input it cannot check (a zone without a name, no
  *   certificate), with an AbortError when `signal` aborts
  */
 export async function runCommand(command, targets, options, env) {

@@ -13,6 +13,7 @@ import { t, registerStrings } from '../../assets/js/i18n.js';
 import { SUMMARY_I18N, renderMarkdown, renderPlainText, renderParts, utcStamp } from '../../assets/js/lib/summary.js';
 import { HEALTH_I18N } from '../../assets/js/lib/health.js';
 import { RENEWAL_I18N } from '../../assets/js/lib/renewal.js';
+import { POLICY_I18N } from '../../assets/js/lib/policy.js';
 
 /** A code part: an untrusted value. */
 export const code = (value) => ({ code: String(value ?? '') });
@@ -49,6 +50,8 @@ export async function setupStrings() {
   registerStrings('en', SUMMARY_I18N.en);
   registerStrings('en', HEALTH_I18N.en);
   registerStrings('en', RENEWAL_I18N.en);
+  // audit: the policy's rule names and the evidence of each cell
+  registerStrings('en', POLICY_I18N.en);
   await import('../../assets/js/views/zone.js');
   await import('../../assets/js/ui/dane-panel.js');
   return t;

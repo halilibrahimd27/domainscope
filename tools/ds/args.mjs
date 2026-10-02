@@ -18,17 +18,24 @@ import { SOURCES } from '../../assets/js/lib/sourceinfo.js';
 import { parseRenewalNames, RENEWAL_CAS, RENEWAL_CHALLENGES } from '../../assets/js/lib/renewal.js';
 import { DRIFT_DEFAULT_BUDGET, DRIFT_MAX_BUDGET } from '../../assets/js/lib/zonedrift.js';
 import { CONCURRENCY_RANGE, DEFAULT_SETTINGS } from '../../assets/js/state.js';
+import { POLICY_PRESET_IDS } from '../../assets/js/lib/policy.js';
+import { passportDomain } from '../../assets/js/lib/passport.js';
+import { PORTFOLIO_DKIM_SELECTORS } from '../../assets/js/lib/portfolio.js';
 
 /** The runner's name in reports and messages. */
 export const DS_TOOL = 'domainscope-ds';
 /** Version of the runner and of its `--json` report (a baseline must share the major number). */
 export const DS_VERSION = '1.0.0';
 
-/** Exit codes, numbered as the Python CLI's (cli/ssl_origin_scan.py); FAILED: an unexpected error (printed). */
+/**
+ * Exit codes, numbered as the Python CLI's (cli/ssl_origin_scan.py); FAILED: an unexpected error
+ * (printed). CHANGED: something changed since --baseline (with --fail-on-change) or, for `audit`,
+ * a rule of the policy failed — 4, as the CLI's `--compare --fail-on-change` says "look here".
+ */
 export const EXIT = Object.freeze({ OK: 0, FAILED: 1, USAGE: 2, WRITE: 3, CHANGED: 4, INTERRUPTED: 130 });
 
 /** The subcommands, in help order. */
-export const COMMANDS = Object.freeze(['health', 'subdomains', 'drift', 'ct', 'renew', 'dane']);
+export const COMMANDS = Object.freeze(['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit']);
 
 /**
  * What each subcommand takes: `targets` 'domains' (host names, also from --list), 'names'
@@ -40,8 +47,19 @@ export const COMMAND_SPECS = Object.freeze({
   drift: Object.freeze({ targets: 'file', options: Object.freeze(['origin', 'include-origins', 'max-queries']) }),
   ct: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'days', 'sources']) }),
   renew: Object.freeze({ targets: 'names', options: Object.freeze(['list', 'ca', 'challenge']) }),
-  dane: Object.freeze({ targets: 'file', options: Object.freeze([]) })
+  dane: Object.freeze({ targets: 'file', options: Object.freeze([]) }),
+  audit: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'policy', 'preset', 'no-dkim']) })
 });
+
+/**
+ * An `audit` target that names a file of domains rather than a domain: a path (a separator in
+ * it) or a list's extension (`domains.txt`, `.csv`, `.list`, `.lst` — none is a TLD).
+ * @param {string} token
+ * @returns {boolean}
+ */
+export function isListArgument(token) {
+  return /[\\/]/.test(token) || /\.(?:txt|csv|list|lst)$/i.test(token);
+}
 
 /**
  * Resolvers Node's fetch cannot read (measured 2026-09-28 with Node 22 and 24): they answer
@@ -92,7 +110,10 @@ const OPTION_SPEC = Object.freeze({
   'include-origins': { type: 'boolean' },
   'max-queries': { type: 'string' },
   ca: { type: 'string' },
-  challenge: { type: 'string' }
+  challenge: { type: 'string' },
+  policy: { type: 'string' },
+  preset: { type: 'string' },
+  'no-dkim': { type: 'boolean' }
 });
 
 /** Options every subcommand takes. */
@@ -120,6 +141,9 @@ const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'res
  * @property {number} maxQueries drift: query budget
  * @property {string|null} ca renew: RENEWAL_CAS id
  * @property {string} challenge renew: RENEWAL_CHALLENGES
+ * @property {string|null} policy audit: the policy file (lib/policy.js)
+ * @property {string|null} preset audit: a lib/policy.js POLICY_PRESET_IDS preset instead of a file
+ * @property {boolean} dkim audit: look for DKIM keys at the common selectors (off with --no-dkim)
  */
 
 /**
@@ -202,8 +226,10 @@ function sourceList(value, allowed, name) {
 
 /**
  * The targets of a subcommand from tokens (positional arguments, or the lines of a --list
- * file): domains are normalized host names (a URL gives its host), renewal names go through
- * lib/renewal.js parseRenewalNames (a `*.` wildcard too). Duplicates are dropped.
+ * file): domains are normalized host names (a URL gives its host), `audit`'s their registrable
+ * domains (lib/passport.js passportDomain, as the app's Domain portfolio reads its list:
+ * www.example.com is example.com), renewal names go through lib/renewal.js parseRenewalNames (a
+ * `*.` wildcard too). Duplicates are dropped.
  * @param {string} command
  * @param {string[]} tokens
  * @returns {{ targets: string[], invalid: string[] }}
@@ -220,7 +246,7 @@ export function parseTargets(command, tokens) {
   const targets = [];
   const invalid = [];
   for (const token of list) {
-    const host = normalizeHostname(token);
+    const host = command === 'audit' ? (passportDomain(token) || {}).domain : normalizeHostname(token);
     if (!host) invalid.push(token);
     else if (!targets.includes(host)) targets.push(host);
   }
@@ -278,7 +304,7 @@ export function parseCommandLine(argv) {
   }
   if (help || version) return { command, targets: [], options: defaults(), help, version };
 
-  for (const name of ['json', 'md', 'baseline', 'exact']) {
+  for (const name of ['json', 'md', 'baseline', 'exact', 'policy']) {
     if (v[name] === '-') throw new UsageError(`--${name} takes a file, not "-"`);
     if (v[name] !== undefined && !String(v[name]).trim()) throw new UsageError(`--${name} needs a file name`);
   }
@@ -341,11 +367,24 @@ export function parseCommandLine(argv) {
     }
   }
 
-  let targets = rest;
+  if (command === 'audit') {
+    if ((v.policy === undefined) === (v.preset === undefined)) throw new UsageError('audit needs the rules: --policy FILE or --preset NAME (one of them)');
+    if (v.preset !== undefined) {
+      const preset = String(v.preset).trim().toLowerCase();
+      if (!POLICY_PRESET_IDS.includes(preset)) throw new UsageError(`--preset takes ${POLICY_PRESET_IDS.join(', ')}, not "${v.preset}"`);
+      options.preset = preset;
+    }
+    options.policy = v.policy ?? null;
+    options.dkim = v['no-dkim'] !== true;
+    // `audit --policy policy.json domains.txt`: a positional file is a list of domains.
+    options.lists = [...options.lists, ...rest.filter(isListArgument)];
+  }
+
+  let targets = command === 'audit' ? rest.filter((x) => !isListArgument(x)) : rest;
   if (spec.targets === 'file') {
     if (rest.length !== 1) throw new UsageError(`${command} takes one file${rest.length ? `, not ${rest.length}` : ''}`);
   } else {
-    const parsed = parseTargets(command, rest);
+    const parsed = parseTargets(command, targets);
     if (parsed.invalid.length) {
       const what = spec.targets === 'names' ? 'a name a certificate can carry' : 'a domain name';
       throw new UsageError(`not ${what}: ${parsed.invalid.map((s) => `"${s}"`).join(', ')}`);
@@ -359,6 +398,7 @@ export function parseCommandLine(argv) {
   // or the list with JSON / Markdown.
   const inputs = [
     ...options.lists.map((file) => ['--list', file]),
+    ...(options.policy ? [['--policy', options.policy]] : []),
     ...(options.exact ? [['--exact', options.exact]] : []),
     ...(spec.targets === 'file' ? [[command === 'drift' ? 'the zone file' : 'the certificate file', rest[0]]] : [])
   ];
@@ -375,7 +415,8 @@ function defaults() {
     json: null, md: null, baseline: null, failOnChange: false, chain: [...NODE_CHAIN], chainGiven: false,
     concurrency: DEFAULT_SETTINGS.concurrency, lists: [], quiet: false, noColor: false, showAll: false,
     exact: null, level: DS_DEFAULT_LEVEL, sources: null, days: DS_DEFAULT_DAYS,
-    origin: null, includeOrigins: false, maxQueries: DRIFT_DEFAULT_BUDGET, ca: null, challenge: 'unknown'
+    origin: null, includeOrigins: false, maxQueries: DRIFT_DEFAULT_BUDGET, ca: null, challenge: 'unknown',
+    policy: null, preset: null, dkim: true
   };
 }
 
@@ -402,9 +443,17 @@ commands:
   renew NAME...                  Renewal readiness: will the next ACME renewal validate?
       [--ca ID] [--challenge http-01|dns-01|tls-alpn-01|unknown]
   dane CERT.pem                  the DANE / TLSA renewal guard for a certificate (fullchain.pem)
+  audit DOMAIN|FILE...           the Domain portfolio's policy audit: each domain's registration
+                                 (RDAP), DNSSEC, the name servers' own domains, CAA and mail posture
+                                 against the rules of a policy; a pass / fail matrix
+      --policy FILE              the policy (JSON, as the app exports it), or
+      --preset NAME              a built-in one: ${POLICY_PRESET_IDS.join(', ')}
+      [--no-dkim]                skip the DKIM keys (${PORTFOLIO_DKIM_SELECTORS.length} common selectors per domain)
 
 targets: DOMAIN / NAME on the command line, and --list FILE (repeatable) with one or more per
   line (# comments). An invalid entry is an error on the command line and a warning in a file.
+  audit takes a file of domains as a target too (a path, or a name ending .txt, .csv, .list,
+  .lst), and audits each domain's registrable domain (www.example.com is example.com).
 
 options:
   --json FILE          write the report (JSON); give it to --baseline next time
@@ -432,13 +481,15 @@ what is sent: names and record types to the DoH resolvers (renew also asks Cloud
   full-domain queries an hour per IP address — and crt.sh is not asked again that run once
   it is down (ct --sources crtsh leaves Cert Spotter out). Nothing goes to Globalping: the
   checks that need a probe (Verify, the MTA-STS policy, the HTTP-01 test) stay in the app,
-  behind a click.
+  behind a click. audit asks the DoH resolvers and RDAP (the registry's server from the IANA
+  bootstrap; rdap.org only as the fallback, one request a second), each name server domain once.
 
 exit codes: 0 done, 1 the run failed (an unexpected error, printed), 2 usage error (report
   files that cannot be written or that are one of the run's input files, and a baseline that
   cannot be compared, are refused before the run), 3 a report file could not be written
-  after the run, 4 something changed since --baseline (only with --fail-on-change), 130
-  interrupted (nothing written). When several apply: 3, then 4.
+  after the run, 4 a rule of the policy failed (audit), or something changed since --baseline
+  (only with --fail-on-change), 130 interrupted (nothing written). When several apply: 3, then 4.
+  A rule that could not be checked (a lookup failed, a TLD without RDAP) is no failure.
 
 examples:
   node tools/ds.mjs health example.com example.org --json health.json --md health.md
@@ -447,4 +498,6 @@ examples:
   node tools/ds.mjs drift example.com.zone --origin example.com --md drift.md
   node tools/ds.mjs renew example.com '*.example.com' --ca letsencrypt --challenge dns-01
   node tools/ds.mjs dane fullchain.pem
+  node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
+  node tools/ds.mjs audit --preset parked example.org --baseline audit.json --json audit.json
 `;

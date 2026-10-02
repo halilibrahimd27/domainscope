@@ -2,11 +2,11 @@
 #
 # Copy this file to .github/workflows/ of a PRIVATE repository of yours, next to a domains.txt
 # (one domain per line, # comments). Every night it runs Domain Health and the Certificate
-# Transparency watch for those domains (subdomain discovery, zone drift and renewal readiness
-# are there to switch on), commits the JSON reports and Markdown summaries under results/, and
-# keeps ONE issue: opened or updated when something changed since the night before, closed on
-# a night with no change when every check completed. The results/*.json of one night are the
-# next night's baseline; git history keeps every night.
+# Transparency watch for those domains (subdomain discovery, zone drift, renewal readiness and
+# the policy audit are there to switch on), commits the JSON reports and Markdown summaries
+# under results/, and keeps ONE issue: opened or updated when something changed since the night
+# before, closed on a night with no change when every check completed. The results/*.json of one
+# night are the next night's baseline; git history keeps every night.
 #
 # Read this before you switch it on:
 # - Use it in a PRIVATE repository. The results name your hosts, their addresses and your DNS
@@ -108,6 +108,9 @@ jobs:
           # ds drift-example drift zones/example.com.zone --origin example.com
           # Renewal readiness of the names you renew (a wildcard too):
           # ds renew renew --list renew-names.txt --ca letsencrypt --challenge dns-01
+          # The Domain portfolio's policy audit (policy.json as the app exports it): exit 4 while a rule
+          # fails, so the issue stays open until every rule passes:
+          # ds audit audit --list domains.txt --policy policy.json
           echo "changed=${changed[*]}" >> "$GITHUB_OUTPUT"
           echo "failed=${failed[*]}" >> "$GITHUB_OUTPUT"
 

@@ -109,8 +109,12 @@ const TARGET_CHECKS = Object.freeze({
   dane: (x) => {
     if (!isStrOrNull(x.serialHex)) return 'has a "serialHex" that is not text';
     return itemsProblem(x.endpoints, 'endpoints', (e) => (!isStr(e.key) ? 'has no "key"' : !isStr(e.status) ? 'has no "status"' : null));
-  }
+  },
+  audit: (x) => itemsProblem(x.rules, 'rules', (r) => (!isStr(r.id) ? 'has no "id"' : !AUDIT_STATUSES.includes(r.status) ? 'has no "status" (pass, fail or unknown)' : null))
 });
+
+/** A cell's outcome in an audit report (lib/policy.js POLICY_STATUSES). */
+const AUDIT_STATUSES = Object.freeze(['pass', 'fail', 'unknown']);
 
 /**
  * Why `doc` cannot be the baseline of a `command` run, or null: it must be a `--json` report of
@@ -630,6 +634,75 @@ function diffDane(before, after, { t }) {
 }
 
 /* ------------------------------------------------------------------------ */
+/* audit                                                                    */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The policy audit: per domain and rule, a status that moved — pass → fail WORSE, fail → pass
+ * BETTER; to "could not be checked" FAILED (listed only, the status it had is carried: `last`),
+ * and checked again RECOVERED when no run had checked it before (counted when it lands on a fail),
+ * else compared with the carried status, so a rule that failed before and after a night it could
+ * not be checked is no change —, a rule new, gone or with another requirement (a policy changed:
+ * the note says so), a domain new or gone. The evidence alone moving (one day fewer left) is no
+ * change.
+ */
+function diffAudit(before, after, { t }) {
+  const out = [];
+  const old = byTarget(before);
+  const now = byTarget(after);
+  const word = (s) => (s === 'unknown' ? 'not known' : s);
+  const what = (r) => [code(`${r.id} ${r.required || ''}`.trim()), ': '];
+  // The evidence quotes values from DNS and the registry (a registrar's name, CAA issuers): code parts.
+  const evidence = (r) => (r.key ? [' — ', ...textParts(t, r.key, r.params)] : r.evidence ? [' — ', code(r.evidence)] : []);
+  const checked = (s) => s === 'pass' || s === 'fail';
+  for (const [domain, a] of now) {
+    const b = old.get(domain);
+    if (!b) {
+      const failing = (a.rules || []).filter((r) => r.status === 'fail');
+      out.push(change('NEW', domain, null, [`now audited: ${failing.length} rule${failing.length === 1 ? '' : 's'} failed`],
+        { tone: failing.length ? 'bad' : 'info', kind: 'appeared', after: failing.map((r) => r.id) }));
+      continue;
+    }
+    const prev = new Map((b.rules || []).map((r) => [r.id, r]));
+    for (const r of a.rules || []) {
+      const p = prev.get(r.id);
+      if (!p || (p.required || '') !== (r.required || '')) {
+        // A rule new to the policy, or with another requirement: what it says now.
+        out.push(change('NEW', domain, r.id, ['new rule ', ...what(r), word(r.status), ...evidence(r)],
+          { tone: r.status === 'fail' ? 'bad' : 'info', counts: r.status === 'fail', kind: 'appeared', after: r.status }));
+        continue;
+      }
+      if (r.status === 'unknown') {
+        // Not checked this run: said once, never counted; its last status is carried.
+        if (checked(p.status)) {
+          out.push(change('FAILED', domain, r.id, [...what(r), `${word(p.status)} → not known`, ...evidence(r)], { tone: 'quiet', counts: false, before: p.status, after: r.status }));
+        }
+        continue;
+      }
+      const carried = !checked(p.status) && p.last && checked(p.last.status) ? p.last : null;
+      const was = carried ? carried.status : p.status;
+      if (was === r.status) continue;
+      const since = carried ? ` (last checked ${isoDay(carried.from) || 'in an earlier run'})` : '';
+      const move = [...what(r), `${word(was)}${since} → ${word(r.status)}`, ...evidence(r)];
+      if (!checked(was)) {
+        out.push(change('RECOVERED', domain, r.id, move, { tone: r.status === 'fail' ? 'bad' : 'good', counts: r.status === 'fail', before: was, after: r.status }));
+      } else {
+        const worse = r.status === 'fail';
+        out.push(change(worse ? 'WORSE' : 'BETTER', domain, r.id, move, { tone: worse ? 'bad' : 'good', before: was, after: r.status }));
+      }
+    }
+    const ids = new Set((a.rules || []).map((r) => r.id));
+    for (const p of b.rules || []) {
+      if (!ids.has(p.id)) out.push(change('GONE', domain, p.id, [...what(p), `no longer a rule; was ${word(p.status)}`], { tone: 'quiet', counts: false, kind: 'disappeared', before: p.status }));
+    }
+  }
+  for (const [domain] of old) {
+    if (!now.has(domain)) out.push(change('GONE', domain, null, ['no longer audited'], { kind: 'disappeared' }));
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------------ */
 /* Notes and dispatch                                                       */
 /* ------------------------------------------------------------------------ */
 
@@ -661,11 +734,15 @@ export function baselineNotes(command, before, after) {
   if (command === 'renew' && (differs('ca') || differs('challenge'))) {
     notes.push(`The CA or the challenge differs from the baseline's (${listText(o.ca)} / ${listText(o.challenge)} → ${listText(n.ca)} / ${listText(n.challenge)}): verdicts can move because of that rather than because of DNS.`);
   }
+  if (command === 'audit' && JSON.stringify((o.policy && o.policy.rules) || null) !== JSON.stringify((n.policy && n.policy.rules) || null)) {
+    notes.push('The policy differs from the baseline\'s: rules can pass or fail because of that rather than because of DNS or the registry.');
+  }
+  if (command === 'audit' && o.dkim !== undefined && o.dkim !== n.dkim) notes.push('DKIM was checked in one run and not in the other (--no-dkim): the dkim rule can move because of that.');
   if (command === 'dane' && differs('serialHex')) notes.push(`The certificate differs from the baseline's (serial ${listText(o.serialHex)} → ${listText(n.serialHex)}): statuses can move because of that rather than because of DNS.`);
   return notes;
 }
 
-const DIFFS = Object.freeze({ health: diffHealth, subdomains: diffSubdomains, ct: diffCt, drift: diffDrift, renew: diffRenew, dane: diffDane });
+const DIFFS = Object.freeze({ health: diffHealth, subdomains: diffSubdomains, ct: diffCt, drift: diffDrift, renew: diffRenew, dane: diffDane, audit: diffAudit });
 
 /**
  * What changed from the baseline report `before` to the report `after` of the same subcommand,

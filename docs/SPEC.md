@@ -2361,17 +2361,16 @@ export const PORTFOLIO_DKIM_SELECTORS = ['google', 'selector1', 'selector2', 'de
                                                    // `*._domainkey` wildcard (often "v=DKIM1; p=" of a domain that sends nothing) answers every selector, so its record is no key
 export const PORTFOLIO_LOOKUPS = ['rdap', 'ns', 'ds', 'dnskey', 'caa', 'mx', 'txt', 'dmarc', 'spf', 'dkim', 'mtaSts', 'tlsRpt'], LOOKUP_SOURCES /* rdap → 'rdap', the rest 'doh' */
 export const PORTFOLIO_CELLS = ['expiry', 'status', 'registrar', 'dnssec', 'ns', 'caa', 'spf', 'dmarc', 'dkim', 'mtaSts', 'parked'], CELL_LOOKUPS /* a column's lookups */
-export const CRITICAL_STATUSES = ['serverHold', 'clientHold', 'redemptionPeriod', 'pendingDelete'], RISK_RANK, EXPORT_COLUMNS
+export const CRITICAL_STATUSES = ['serverHold', 'clientHold', 'redemptionPeriod', 'pendingDelete'], EXPORT_COLUMNS
 export function parsePortfolioInput(text, { max }) -> { domains /* registrable (§5.46 passportDomain), in order, once */, reduced: [{ input, domain }], invalid, capped }
 export function statusRisk(statuses) -> { flags, critical, transferLock: boolean|null, registryLock: boolean|null, risk: 'critical'|'hijack'|'ok'|null }   // RFC 8056 and EPP spellings
-export function nsDomainsOf(hosts, domain) -> [{ domain, hosts, own }] ; plannedNsDomains(zones) -> [{ domain, of }]   // the name servers' registrable domains, each once
+export function nsDomainsOf(hosts, domain) -> [{ domain, hosts, own }]   // a zone's name servers by registrable domain, its own first
 export async function runPortfolioLookup(id, domain, { dns, fetchImpl, signal, raw, rdapFor, dkim, noCache })
 export function createPortfolio({ domains, dns, fetchImpl, dkim = true, concurrency, rdapConcurrency, rdapOptions, onEvent }) -> run
   // run.start({ signal }): rejects with an AbortError on a stop — the rows not finished are 'stopped', what landed stays; run.retry(domain, lookups, { signal }): those lookups
   // again past the DNS cache (RDAP too when listed); run.retryRdap(domain): a domain's RDAP again, a name server domain's too (every row reading it is told);
-  // run.facts(domain, { now }), allFacts, pending(domain), affectedBy(domain) /* the rows reading a domain's RDAP */, snapshot(); events: { type: 'lookup', domain, lookup },
+  // run.domains(), row(domain), facts(domain, { now }), allFacts, pending(domain), affectedBy(domain) /* the rows reading a domain's RDAP */; events: { type: 'lookup', domain, lookup },
   // { type: 'rdap', domain }, { type: 'row', domain, state: 'running'|'done'|'stopped' }
-export function restorePortfolio(snapshot, opts) -> run   // nothing asked again; Retry works on it
 export function portfolioFacts(raw, { now, rdap /* the run's RDAP results */, dkim }) -> facts   // pure: codes and values, never text
 export function cellFailures(facts, column) -> [{ lookup, status /* §5.36 */, nsDomain? }]   // what a column's "⚠ n/a" says and its Retry asks
 export function rowRisk(facts) -> 'critical'|'expired'|'expiring'|'ns-expiring'|'hijack'|'warn'|'ok'|null ; expiryBand(daysLeft)   // Domain Health's bands: < 0, < 30, < 60
@@ -2382,7 +2381,8 @@ export function expiryUid(domain) -> 'expiry-<domain>@domainscope' ; exportRow(f
 - **Name servers:** their registrable domains (`own` when under the domain itself: they expire with it) with each one's registration from the run's RDAP and `minDaysLeft`. A row is done once its name servers' domains are read too.
 - **DNSSEC:** DS at the parent (`unsigned` without one), `validated` when the DNSKEY answer carries AD, `failing` when the DNSKEY answer is an error rcode next to a DS. **CAA** (§5.15 findCaa through §5.46 certsCard): its state, issuers and wildcard issuers. **Mail** (§5.46 mailCard): MX (`null` / `none` / `some`), SPF (one record, its `all`, the lookup count of §5.15 spfLookupCount once the TXT answer landed: `over` past 10, `partial` when a lookup in its tree failed), DMARC (policy, pct), DKIM (the selectors with a key, revoked ones, a wildcard; `off` when not asked, never "none"), MTA-STS (`v=STSv1` with an id) and TLS-RPT (`v=TLSRPTv1` with a rua): `present` / `none` / `invalid`. **Parked:** a domain without MX, or with a null MX, should say it takes no mail — null MX, `-all`, `p=reject` (`complete` true / false, or null while a part is not known).
 - A lookup that failed is a §5.36 status on its part (`failure`), never "none"; `cellFailures` lists them per column (the name servers column its name server domains whose RDAP failed too, `nsDomain`).
-- Tests: `tests/js/portfolio.test.js` (the list, statuses read for risk, the name server domains deduped, a run over a fake DoH and RDAP registry — a stop, a Retry past the cache, a snapshot —, the facts, the calendar dates, the exports).
+- The run is the view's page-session state (§6 7c): a language switch or a visit elsewhere shows it again as it is, so nothing is rebuilt from a copy.
+- Tests: `tests/js/portfolio.test.js` (the list, statuses read for risk, the name server domains deduped, a run over a fake DoH and RDAP registry — a stop, a Retry past the cache, DKIM off —, the facts, the calendar dates, the exports, and no dead API: every export is read and every method of a run called by the view or the runner).
 
 ### 5.62 `lib/policy.js` — a domain policy and its audit
 Pure (no DOM, network, storage or clock beyond the facts); the view's policy tab and the runner's `audit` (§9).

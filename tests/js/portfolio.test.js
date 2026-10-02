@@ -6,10 +6,14 @@
  */
 import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as portfolioLib from '../../assets/js/lib/portfolio.js';
 import {
   PORTFOLIO_LOOKUPS, PORTFOLIO_CELLS, CELL_LOOKUPS, CRITICAL_STATUSES, PORTFOLIO_MAX_DOMAINS, PORTFOLIO_DKIM_SELECTORS,
-  parsePortfolioInput, statusRisk, nsDomainsOf, plannedNsDomains, createPortfolio, restorePortfolio, portfolioFacts, cellFailures,
-  rowRisk, RISK_RANK, expiryBand, expiryEvents, expiryUid, exportRow, EXPORT_COLUMNS, portfolioSummaryFacts
+  parsePortfolioInput, statusRisk, nsDomainsOf, createPortfolio, portfolioFacts, cellFailures,
+  rowRisk, expiryBand, expiryEvents, expiryUid, exportRow, EXPORT_COLUMNS, portfolioSummaryFacts
 } from '../../assets/js/lib/portfolio.js';
 import { clearRdapCache } from '../../assets/js/lib/rdap.js';
 import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
@@ -218,10 +222,20 @@ describe('RDAP statuses read for risk', () => {
       assert.equal(statusRisk(statuses).risk, 'pending-transfer', statuses.join());
     }
     assert.equal(statusRisk(['pending transfer', 'server hold']).risk, 'critical', 'a critical status first');
-    assert.ok(RISK_RANK.critical < RISK_RANK['pending-transfer'] && RISK_RANK['pending-transfer'] < RISK_RANK.expired);
-    const f = portfolioFacts({ domain: 'example.com', rdap: { ok: true, domain: 'example.com', tld: 'com', registrar: 'Example Registrar, Inc.', status: ['client transfer prohibited', 'pending transfer'], expires: new Date(NOW.getTime() + 400 * DAY) } }, { now: NOW });
+    const facts = (status, days) => portfolioFacts({ domain: 'example.com', rdap: { ok: true, domain: 'example.com', tld: 'com', registrar: 'Example Registrar, Inc.', status, expires: new Date(NOW.getTime() + days * DAY) } }, { now: NOW });
+    const f = facts(['client transfer prohibited', 'pending transfer'], 400);
     assert.equal(rowRisk(f), 'pending-transfer');
+    assert.equal(rowRisk(facts(['client transfer prohibited', 'pending transfer'], -2)), 'pending-transfer', 'ranked before an expiry gone by');
+    assert.equal(rowRisk(facts(['pending transfer', 'server hold'], 400)), 'critical', 'after a critical status');
     assert.deepEqual(portfolioSummaryFacts([f]).pendingTransfer, ['example.com']);
+  });
+
+  test('a row\'s risk: the first that applies, worst first', () => {
+    const of = (status, days) => rowRisk(portfolioFacts({ domain: 'example.com', rdap: { ok: true, domain: 'example.com', tld: 'com', registrar: 'Example Registrar, Inc.', status, expires: new Date(NOW.getTime() + days * DAY + DAY / 2) } }, { now: NOW }));
+    const locked = ['client transfer prohibited'];
+    assert.deepEqual([
+      of(['server hold', 'pending transfer'], -1), of(['pending transfer', ...locked], -1), of(locked, -1), of(['active'], 10), of(['active'], 45), of(locked, 45), of(locked, 400)
+    ], ['critical', 'pending-transfer', 'expired', 'expiring', 'hijack', 'warn', 'ok']);
   });
 
   test('no status at all: nothing can be said', () => {
@@ -243,14 +257,17 @@ describe('name server domains', () => {
     ]);
   });
 
-  test('deduped over the portfolio: a provider shared by every zone is one domain, a portfolio domain none', () => {
-    const planned = plannedNsDomains([
-      { domain: 'example.com', hosts: ['ns1.example.net', 'ns2.example.net'] },
-      { domain: 'example.org', hosts: ['ns1.example.net', 'ns.example.org', 'ns1.example-test.com.tr'] },
-      { domain: 'example-test.com.tr', hosts: ['ns1.example.net'] }
-    ]);
-    assert.deepEqual(planned, [{ domain: 'example.net', of: ['example.com', 'example.org', 'example-test.com.tr'] }],
-      'example.net once; example-test.com.tr is in the portfolio itself');
+  test('deduped over the portfolio: a provider shared by every zone is asked once, a portfolio domain as itself', async () => {
+    const zone = { ...ZONE, 'example.org': { ...ZONE['example.org'], NS: ['ns1.example.net', 'ns.example.org', 'ns1.example-test.com.tr'] } };
+    const fetchImpl = rdapFetch(RDAP);
+    const run = createPortfolio({ domains: ['example.com', 'example.org', 'example-test.com.tr'], dns: fakeDns(zone), fetchImpl, rdapOptions: { rdapOrgIntervalMs: 0 } });
+    await run.start();
+    assert.deepEqual(fetchImpl.rdap().map((u) => u.split('/domain/')[1]).sort(), ['example.com', 'example.net', 'example.org'],
+      'example.net once for the three zones; .tr has no RDAP, asked neither as a domain nor as a name server domain');
+    assert.deepEqual(run.affectedBy('example.net'), ['example.com', 'example.org', 'example-test.com.tr']);
+    assert.deepEqual(run.affectedBy('example-test.com.tr'), ['example-test.com.tr', 'example.org'], 'a portfolio domain serving another one');
+    assert.deepEqual(run.facts('example.org', { now: NOW }).ns.domains.map((d) => [d.domain, d.own]),
+      [['example.org', true], ['example-test.com.tr', false], ['example.net', false]]);
   });
 });
 
@@ -364,17 +381,11 @@ describe('a run', () => {
     assert.equal(run.row(last).state, 'done');
   });
 
-  test('restored from a snapshot: the same facts with no request; DKIM off is "off", never "none"', async () => {
-    const { run, fetchImpl } = run4({ run: { dkim: false } });
+  test('DKIM off: no selector asked, the cell "off", never "none"', async () => {
+    const { run, dns } = run4({ run: { dkim: false } });
     await run.start();
-    const snap = run.snapshot();
-    const n = fetchImpl.log.length;
-    const dns = fakeDns(ZONE);
-    const back = restorePortfolio(snap, { dns, fetchImpl });
-    assert.deepEqual(back.allFacts({ now: NOW }), run.allFacts({ now: NOW }));
-    assert.equal(fetchImpl.log.length, n);
-    assert.equal(dns.calls.length, 0);
-    assert.equal(back.facts('example.com', { now: NOW }).dkim.state, 'off');
+    assert.ok(!dns.calls.some((c) => c.name.includes('._domainkey.')), 'no DKIM question');
+    assert.equal(run.facts('example.com', { now: NOW }).dkim.state, 'off');
   });
 });
 
@@ -439,7 +450,7 @@ describe('the calendar and the exports', () => {
     const domains = Array.from({ length: 20 }, (_, i) => `example${i}.nl`);
     const run = createPortfolio({ domains, dns, fetchImpl, dkim: false, rdapOptions: { registryRetryMs: 20, rdapOrgIntervalMs: 0 } });
     await run.start();
-    const res = domains.map((d) => run.rdapOf(d));
+    const res = domains.map((d) => run.row(d).raw.rdap);
     assert.equal(res.filter((r) => r && r.ok).length, 20, JSON.stringify(log));
     assert.equal(maxInFlight, 1, 'one request at a time to the registry');
     assert.equal(log.org, 0, 'rdap.org would forward to the same registry');
@@ -455,7 +466,8 @@ describe('the calendar and the exports', () => {
     const f = run.facts('example.com', { now: NOW });
     assert.deepEqual(f.ns.domains.map((d) => [d.domain, d.state]), [['example-gone.org', 'not-found'], ['example.net', 'ok']]);
     assert.equal(rowRisk(f), 'ns-unregistered');
-    assert.equal(RISK_RANK['ns-unregistered'], RISK_RANK.critical, 'as urgent as a critical registry status');
+    assert.equal(rowRisk({ ...f, registration: { ...f.registration, risk: 'pending-transfer' } }), 'ns-unregistered', 'before a pending transfer');
+    assert.equal(rowRisk({ ...f, registration: { ...f.registration, risk: 'critical' } }), 'critical', 'a critical registry status first');
     assert.deepEqual(cellFailures(f, 'ns'), [], 'an answer, not a failure');
     const s = portfolioSummaryFacts([f], { at: NOW });
     assert.deepEqual(s.nsUnregistered, [{ domain: 'example-gone.org', of: ['example.com'] }]);
@@ -489,5 +501,25 @@ describe('the calendar and the exports', () => {
     for (const k of ['caa', 'mx', 'spf', 'dmarc', 'dkim']) assert.equal(f[k].state, null, k);
     assert.equal(f.ns.state, 'pending');
     assert.equal(rowRisk(f), null);
+  });
+});
+
+describe('the module', () => {
+  test('no dead API: every export is read (by the module, the app or the runner), every method of a run called by the app or the runner', () => {
+    const root = fileURLToPath(new URL('../../', import.meta.url));
+    const walk = (dir) => readdirSync(dir).flatMap((name) => {
+      const p = path.join(dir, name);
+      return statSync(p).isDirectory() ? walk(p) : /\.m?js$/.test(name) ? [p] : [];
+    });
+    const self = path.join(root, 'assets', 'js', 'lib', 'portfolio.js');
+    const own = readFileSync(self, 'utf8');
+    const others = [...walk(path.join(root, 'assets', 'js')), ...walk(path.join(root, 'tools'))]
+      .filter((f) => path.resolve(f) !== path.resolve(self)).map((f) => readFileSync(f, 'utf8')).join('\n');
+    const uses = (text, name) => (text.match(new RegExp(`(?<![\\w$])${name}(?![\\w$])`, 'g')) || []).length;
+    assert.deepEqual(Object.keys(portfolioLib).filter((name) => !uses(others, name) && uses(own, name) < 2), [], 'exports nothing reads');
+    const run = createPortfolio({ domains: ['example.com'], dns: fakeDns({}) });
+    const methods = Object.keys(run).filter((k) => typeof run[k] === 'function');
+    assert.ok(methods.includes('start') && methods.includes('retry'), methods.join());
+    assert.deepEqual(methods.filter((k) => !new RegExp(`\\brun\\.${k}\\(`).test(others)), [], 'methods of a run nothing calls');
   });
 });

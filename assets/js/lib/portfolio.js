@@ -167,25 +167,6 @@ export function nsDomainsOf(hosts, domain) {
     .sort((a, b) => Number(b.own) - Number(a.own) || a.domain.localeCompare(b.domain, 'en'));
 }
 
-/**
- * Every name server domain a run will ask RDAP for, each once, beyond the portfolio's own domains:
- * what dedupes the takeover check over a portfolio whose zones share a provider.
- * @param {Array<{ domain: string, hosts: string[] }>} zones each portfolio domain with its NS hosts
- * @returns {Array<{ domain: string, of: string[] }>} `of`: the portfolio domains served from it
- */
-export function plannedNsDomains(zones) {
-  const portfolio = new Set((zones || []).map((z) => canon(z.domain)));
-  const by = new Map();
-  for (const z of zones || []) {
-    for (const d of nsDomainsOf(z.hosts, z.domain)) {
-      if (d.own || portfolio.has(d.domain)) continue;
-      if (!by.has(d.domain)) by.set(d.domain, []);
-      by.get(d.domain).push(canon(z.domain));
-    }
-  }
-  return [...by].map(([d, of]) => ({ domain: d, of })).sort((a, b) => a.domain.localeCompare(b.domain, 'en'));
-}
-
 /* ------------------------------------------------------------------------ */
 /* Lookups                                                                  */
 /* ------------------------------------------------------------------------ */
@@ -297,7 +278,7 @@ export async function runPortfolioLookup(id, domain, { dns, fetchImpl = globalTh
  * servers are under it), `{ type: 'row', domain, state }` ('running' | 'done' | 'stopped').
  * @param {{ domains: string[], dns: object, fetchImpl?: typeof fetch, dkim?: boolean, concurrency?: number,
  *   rdapConcurrency?: number, rdapOptions?: object, onEvent?: Function }} opts `dns`: a DohClient;
- *   `rdapOptions`: passed to rdapDomain (tests: rdap.org's pacing)
+ *   `rdapOptions`: passed to rdapDomain (tests: the registries' and rdap.org's pacing)
  * @returns {object}
  */
 export function createPortfolio({
@@ -463,25 +444,10 @@ export function createPortfolio({
     await rdapFor(d, { signal, noCache: true });
   };
 
-  /** An RDAP result known already (a restored run): it answers without a request. */
-  run.seedRdap = (domain, result) => {
-    const d = canon(domain);
-    rdap.set(d, result);
-    memo.set(d, { promise: Promise.resolve(result) });
-  };
-  /** A portfolio domain served from a name server domain (a restored run). */
-  run.noteUser = (nsDomain, domain) => {
-    const ns = canon(nsDomain);
-    if (!nsUsers.has(ns)) nsUsers.set(ns, new Set());
-    nsUsers.get(ns).add(canon(domain));
-  };
   run.domains = () => [...order];
   run.row = (domain) => rows.get(canon(domain)) || null;
-  run.rdapOf = (domain) => rdap.get(canon(domain));
-  /** The portfolio domains whose name servers are under `nsDomain` (an `rdap` event redraws them). */
-  run.usersOf = (nsDomain) => [...(nsUsers.get(canon(nsDomain)) || [])];
-  /** The rows that read `domain`'s RDAP: its own and those whose name servers are under it. */
-  run.affectedBy = (domain) => uniq([...(rows.has(canon(domain)) ? [canon(domain)] : []), ...run.usersOf(domain)]);
+  /** The rows that read `domain`'s RDAP (an `rdap` event redraws them): its own and those whose name servers are under it. */
+  run.affectedBy = (domain) => uniq([...(rows.has(canon(domain)) ? [canon(domain)] : []), ...(nsUsers.get(canon(domain)) || [])]);
   run.facts = (domain, { now } = {}) => {
     const row = rows.get(canon(domain));
     return row ? portfolioFacts(row.raw, { now, rdap, dkim }) : null;
@@ -492,41 +458,6 @@ export function createPortfolio({
     const row = rows.get(canon(domain));
     return row ? PORTFOLIO_LOOKUPS.filter((id) => row.raw[id] === undefined) : [];
   };
-  /** What a snapshot keeps: every row's results and the RDAP results of the run, JSON-ready (Dates kept). */
-  run.snapshot = () => ({
-    domains: [...order],
-    dkim,
-    status: run.status,
-    startedAt: run.startedAt,
-    finishedAt: run.finishedAt,
-    rows: order.map((d) => ({ domain: d, raw: rows.get(d).raw, state: rows.get(d).state })),
-    rdap: [...rdap],
-    nsUsers: [...nsUsers].map(([k, v]) => [k, [...v]])
-  });
-  return run;
-}
-
-/**
- * A run rebuilt from {@link createPortfolio}'s snapshot (a language switch, the way back to the
- * view): nothing is asked again; Retry works on it as on a fresh run.
- * @param {object} snap
- * @param {{ dns: object, fetchImpl?: typeof fetch, onEvent?: Function, rdapOptions?: object }} opts
- * @returns {object}
- */
-export function restorePortfolio(snap, opts) {
-  const run = createPortfolio({ ...opts, domains: snap.domains, dkim: snap.dkim !== false });
-  for (const r of snap.rows || []) {
-    const row = run.row(r.domain);
-    if (!row) continue;
-    Object.assign(row.raw, r.raw);
-    row.state = r.state === 'running' || r.state === 'queued' ? 'stopped' : r.state;
-  }
-  // The RDAP results the snapshot holds answer again without a request.
-  for (const [d, result] of snap.rdap || []) run.seedRdap(d, result);
-  for (const [ns, users] of snap.nsUsers || []) for (const u of users) run.noteUser(ns, u);
-  run.status = snap.status === 'running' ? 'stopped' : snap.status || 'done';
-  run.startedAt = snap.startedAt ? new Date(snap.startedAt) : null;
-  run.finishedAt = snap.finishedAt ? new Date(snap.finishedAt) : null;
   return run;
 }
 
@@ -813,9 +744,6 @@ export function rowRisk(facts) {
   if (reg && reg.state === 'ok') return 'ok';
   return null;
 }
-
-/** Severity rank of {@link rowRisk} (sorting: worst first). */
-export const RISK_RANK = Object.freeze({ critical: 0, 'ns-unregistered': 0, 'pending-transfer': 1, expired: 2, expiring: 3, 'ns-expiring': 4, hijack: 5, warn: 6, ok: 7 });
 
 /* ------------------------------------------------------------------------ */
 /* Calendar and exports                                                     */

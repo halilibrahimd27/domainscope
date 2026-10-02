@@ -12,7 +12,7 @@ import {
   id, titleKey, icon, result, linkText, shareParams, matchesFilter, calendarEvents, matrixCountsText,
   PORTFOLIO_FILTERS, PORTFOLIO_TILES, RISK_BADGES, PORTFOLIO_TABS, MAX_LINK_DOMAINS
 } from '../../assets/js/views/portfolio.js';
-import { RISK_RANK, expiryUid } from '../../assets/js/lib/portfolio.js';
+import { expiryUid } from '../../assets/js/lib/portfolio.js';
 import { buildCalendar } from '../../assets/js/lib/ics.js';
 
 after(() => setLang('en'));
@@ -56,7 +56,8 @@ describe('Domain portfolio view helpers', () => {
     assert.equal(result(), null);
     assert.deepEqual(PORTFOLIO_TABS, ['domains', 'policy']);
     for (const tile of PORTFOLIO_TILES) assert.ok(PORTFOLIO_FILTERS.includes(tile), tile);
-    assert.deepEqual([...RISK_BADGES].sort(), Object.keys(RISK_RANK).filter((r) => r !== 'ok').sort());
+    // every risk lib/portfolio.js rowRisk names but 'ok', worst first
+    assert.deepEqual([...RISK_BADGES], ['critical', 'ns-unregistered', 'pending-transfer', 'expired', 'expiring', 'ns-expiring', 'hijack', 'warn']);
   });
 
   test('a link carries the list (one per line in the box), up to MAX_LINK_DOMAINS domains', () => {

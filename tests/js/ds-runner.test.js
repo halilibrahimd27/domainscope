@@ -1523,6 +1523,11 @@ describe('offline runs (fake DoH)', () => {
       assert.match(typo.err, /^ds: error: --policy .*policy\.json: unknown rule "dnsec"; "spf\.all" does not take "-none" \(for example ">= ~all"\) \(the rules: expiryDays, transferLock, /);
       writeFileSync(policy, '{ "expiryDays": ');
       assert.match((await runMain(['audit', '--policy', policy, 'example.com'], { fetchImpl })).err, /--policy .*: not JSON \(/);
+      // A key beside a nested "rules" is never dropped silently (the run would pass a rule it never read).
+      writeFileSync(policy, '{"rules":{"status.critical":false},"expiryDays":">= 30","transferLokc":true}');
+      const beside = await runMain(['audit', '--policy', policy, 'example.org'], { fetchImpl });
+      assert.equal(beside.code, EXIT.USAGE);
+      assert.match(beside.err, /"expiryDays" is outside "rules"; unknown rule "transferLokc"/);
       assert.deepEqual(asked, [], 'nothing sent');
     } finally {
       rmSync(dir, { recursive: true, force: true });

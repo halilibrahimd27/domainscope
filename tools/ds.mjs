@@ -206,6 +206,7 @@ export function policyErrorText(e) {
     case 'too-large': return `longer than ${e.value} characters`;
     case 'too-many': return `more than ${e.value} rules`;
     case 'unknown-rule': return `unknown rule ${q(e.rule)}`;
+    case 'outside-rules': return `${q(e.rule)} is outside "rules"`;
     case 'bad-value': return `${q(e.rule)} does not take ${cleanText(e.value || '')} (for example ${e.example})`;
     case 'empty': return 'no rule in it';
     default: return e.code;

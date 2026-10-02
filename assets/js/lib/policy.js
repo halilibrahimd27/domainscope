@@ -39,7 +39,7 @@ const RESERVED_KEYS = new Set(['name', 'version', 'description', '$schema', 'rul
 /** A cell's outcome. */
 export const POLICY_STATUSES = Object.freeze(['pass', 'fail', 'unknown']);
 /** Why a policy text was refused or a rule left out ({@link parsePolicy}). */
-export const POLICY_ERRORS = Object.freeze(['not-json', 'not-object', 'too-large', 'too-many', 'unknown-rule', 'bad-value', 'empty']);
+export const POLICY_ERRORS = Object.freeze(['not-json', 'not-object', 'too-large', 'too-many', 'unknown-rule', 'outside-rules', 'bad-value', 'empty']);
 
 const rule = (id, kind, extra = {}) => Object.freeze({ id, kind, ...extra, ...(extra.levels ? { levels: Object.freeze([...extra.levels]) } : {}),
   ...(extra.values ? { values: Object.freeze([...extra.values]) } : {}), health: Object.freeze([...(extra.health || [])]) });
@@ -212,6 +212,13 @@ export function parsePolicy(input) {
   const keys = Object.keys(map);
   if (keys.length > POLICY_MAX_RULES) return { policy: null, errors: [{ code: 'too-many', value: String(POLICY_MAX_RULES) }] };
   const parsed = new Map();
+  // Beside a nested "rules" object, a key is never dropped silently: a rule id there is said to be
+  // outside "rules", anything else (a typo) an unknown rule.
+  if (nested) {
+    for (const key of Object.keys(obj).filter((k) => !RESERVED_KEYS.has(k))) {
+      errors.push({ code: policyRule(key) ? 'outside-rules' : 'unknown-rule', rule: key.slice(0, 60) });
+    }
+  }
   for (const key of keys) {
     const r = policyRule(key);
     if (!r) {
@@ -622,6 +629,7 @@ const STRINGS = [
   ['pol.err.too-large', ['The policy is too long (at most {value} characters).', 'Politika çok uzun (en fazla {value} karakter).']],
   ['pol.err.too-many', ['Too many rules (at most {value}).', 'Çok fazla kural var (en fazla {value}).']],
   ['pol.err.unknown-rule', ['Unknown rule “{rule}”: it is left out.', 'Bilinmeyen kural: “{rule}”. Dikkate alınmadı.']],
+  ['pol.err.outside-rules', ['“{rule}” is outside "rules": it is left out.', '“{rule}” kuralı "rules" dışında: dikkate alınmadı.']],
   ['pol.err.bad-value', ['“{rule}” does not take {value} (for example {example}): it is left out.', '“{rule}” kuralı {value} değerini almaz (örneğin {example}). Dikkate alınmadı.']],
   ['pol.err.empty', ['The policy has no rules yet.', 'Politikada henüz kural yok.']],
 

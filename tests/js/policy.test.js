@@ -76,6 +76,16 @@ describe('parsePolicy', () => {
     assert.deepEqual(by.nsExpiryDays, ['==', 60]);
   });
 
+  test('nested { rules }: a key beside "rules" is never dropped silently — a rule there is said to be outside, anything else unknown', () => {
+    const { policy, errors } = parsePolicy('{"rules":{"status.critical":false},"expiryDays":">= 30","transferLokc":true}');
+    assert.deepEqual(policy.rules.map((r) => r.id), ['status.critical']);
+    assert.deepEqual(errors.map((e) => [e.code, e.rule]), [['outside-rules', 'expiryDays'], ['unknown-rule', 'transferLokc']]);
+    assert.ok(POLICY_ERRORS.includes('outside-rules'));
+    assert.equal(t('pol.err.outside-rules', errors[0]), '“expiryDays” is outside "rules": it is left out.');
+    // the file's own keys beside "rules" are no rules
+    assert.deepEqual(parsePolicy({ name: 'x', version: 1, description: 'd', $schema: 's', rules: { dkim: true } }).errors, []);
+  });
+
   test('errors: not JSON, not an object, too long, too many rules; an unknown rule or a bad value is left out, never passed', () => {
     assert.equal(parsePolicy('{ nope').errors[0].code, 'not-json');
     assert.equal(parsePolicy('[1, 2]').errors[0].code, 'not-object');

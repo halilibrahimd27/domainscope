@@ -23,7 +23,7 @@
  * Topology keys (TOPOLOGY_KEYS) say where TLS terminates, in every format, as the CLI reads them.
  */
 
-import { normalizeIP, parseCidr, ipInCidr } from './netinfo.js';
+import { normalizeIP, parseCidr, ipInCidr } from './ip.js';
 
 /**
  * @typedef {object} Server

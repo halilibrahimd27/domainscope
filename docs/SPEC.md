@@ -82,7 +82,8 @@ assets/js/lib/ciphers.js      # pure-JS CBC decryption: DES / 3DES, RC2, AES (th
 assets/js/lib/sha.js          # pure-JS SHA-1 / SHA-256: x509's fingerprint fallback and the PKCS#12 KDF (§5.47)
 assets/js/lib/chainfix.js     # the missing intermediate from the bundled CCADB list (repairChain), the roots a chain can end at and their root-store standing (chainStanding) (§5.49)
 assets/js/lib/domain.js
-assets/js/lib/netinfo.js
+assets/js/lib/ip.js           # IP parsing and formatting, CIDR math, private ranges, PTR names: the part of netinfo (§5.4) the start route needs
+assets/js/lib/netinfo.js      # the provider ranges and CNAME suffixes, the answer classification; re-exports lib/ip.js; loaded with the discovery engine, never on the start route
 assets/js/lib/inventory.js
 assets/js/lib/topology.js     # where TLS terminates: the inventory's load balancers, VIPs and NAT pairs, applied to a scan's server groups (§5.61)
 assets/js/lib/wordlist.js
@@ -391,6 +392,7 @@ export function baseDomainsFromNames(names) -> string[] // unique registrable do
 ```
 
 ### 5.4 `lib/netinfo.js`
+The IP functions below (up to `reversePtrName`) are written in `lib/ip.js`, which the start route imports; `lib/netinfo.js` re-exports all of it and adds the providers, so every other module may import either.
 ```js
 export function ipVersion(s) -> 4|6|0
 export function normalizeIP(s) -> string|null           // IPv4 dotted; IPv6 RFC 5952 lowercase compressed; strips [] and %zone; IPv4-mapped kept as '::ffff:1.2.3.4'

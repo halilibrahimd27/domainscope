@@ -56,14 +56,20 @@ const JS = join(ASSETS, 'js');
  * ≈ 365 KB (373,256 bytes), under the 370 KB budget it had before wave 4. Global DNS's mainland
  * China locations (lib/resolvers.js) and the Chinese CDNs recognised by CNAME (lib/netinfo.js), both
  * on the start route, added ≈ 2 KB: ≈ 367 KB (375,666 bytes). The Domain portfolio's navigation
- * entry and the workspace's policy part added ≈ 0.5 KB: ≈ 367 KB (376,219 bytes).
+ * entry and the workspace's policy part added ≈ 0.5 KB: ≈ 367 KB (376,219 bytes). Zone File's Compare
+ * and Convert load with their tab (≈ 0.1 KB on the route); the inventory's topology keys
+ * (lib/inventory.js) added ≈ 4 KB: ≈ 371 KB (380,394 bytes), over the budget. The provider ranges
+ * and the answer classification of lib/netinfo.js (12 KB), which only the discovery engine and the
+ * views that classify answers use, then left the start route: the IP parsing and CIDR math the
+ * shell, the workspace's inventory and the Copy summary need are in lib/ip.js (4 KB), which
+ * netinfo.js re-exports: ≈ 364 KB (372,300 bytes).
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;
 
-/** Modules that must never be part of the start route (lib/summary.js: every view's Copy summary but the start view's). */
+/** Modules that must never be part of the start route (lib/summary.js: every view's Copy summary but the start view's; lib/netinfo.js: the provider tables, the shell needs only lib/ip.js). */
 const HEAVY = ['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/zoneparse.js', 'lib/x509.js', 'lib/health.js',
-  'lib/propagation.js', 'lib/ipintel.js', 'lib/zonedrift.js', 'lib/summary.js', 'lib/topology.js'];
+  'lib/propagation.js', 'lib/ipintel.js', 'lib/zonedrift.js', 'lib/summary.js', 'lib/topology.js', 'lib/netinfo.js'];
 
 const rel = (file) => relative(ROOT, file).split(sep).join('/');
 const code = (file) => readFileSync(file, 'utf8')

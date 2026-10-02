@@ -21,7 +21,7 @@
  */
 
 import { normalizeHostname, isSubdomainOf, sortHostnames } from './domain.js';
-import { normalizeIP } from './netinfo.js';
+import { normalizeIP } from './ip.js';
 
 /**
  * Well-known SRV service owners (~40). Queried as `<service>.<domain>` SRV; a

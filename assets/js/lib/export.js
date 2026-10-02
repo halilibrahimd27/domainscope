@@ -6,7 +6,7 @@
 
 import { sortHostnames } from './domain.js';
 import { addressTargets } from './inventory.js';
-import { normalizeIP } from './netinfo.js';
+import { normalizeIP } from './ip.js';
 
 /* ------------------------------------------------------------------------ */
 /* CSV                                                                      */

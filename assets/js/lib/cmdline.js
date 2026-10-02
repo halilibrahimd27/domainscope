@@ -47,7 +47,7 @@
  * POSIX shell or PowerShell, so it must be inert under both.
  */
 
-import { parseCidr, normalizeIP, formatIP } from './netinfo.js';
+import { parseCidr, normalizeIP, formatIP } from './ip.js';
 import { normalizeHostname } from './domain.js';
 
 /* ------------------------------------------------------------------------ */

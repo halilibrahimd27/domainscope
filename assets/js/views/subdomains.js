@@ -69,7 +69,7 @@ import {
   normalizeHostname, stripWildcard, registrableDomain, isPublicSuffix, isSubdomainOf, parseHostList, sortHostnames,
   baseDomainsFromNames
 } from '../lib/domain.js';
-import { normalizeIP } from '../lib/netinfo.js';
+import { normalizeIP } from '../lib/ip.js';
 import { SOURCES, sourceHealthSummary } from '../lib/sourceinfo.js';
 // The pure plan parts of the engine; lib/scanner.js itself loads when a scan starts (loadScanner).
 import { learnedLabelsFromScan, estimateQueries, SCAN_STAGES, HOST_SPECIFIC_HINT_KINDS } from '../lib/scanplan.js';

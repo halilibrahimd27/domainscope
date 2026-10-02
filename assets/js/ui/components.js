@@ -71,7 +71,7 @@ import {
   t, formatNumber, formatBytes, formatPercent, getLang, localeTag
 } from '../i18n.js';
 import { errorKind } from '../lib/util.js';
-import { parseIP } from '../lib/netinfo.js';
+import { parseIP } from '../lib/ip.js';
 import { downloadText, timestampedName, jsonReplacer } from './download.js';
 
 /* ------------------------------------------------------------------------ */

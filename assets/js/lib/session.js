@@ -33,7 +33,7 @@
  */
 
 import { normalizeHostname, registrableDomain, isPublicSuffix } from './domain.js';
-import { normalizeIP } from './netinfo.js';
+import { normalizeIP } from './ip.js';
 
 /** Kinds of target: a registrable domain, a host name below one, an IP address. */
 export const TARGET_KINDS = Object.freeze(['domain', 'host', 'ip']);

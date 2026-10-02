@@ -19,7 +19,7 @@
  * DOM-free and dependency-light (the shell loads it); runs in browsers and Node 22.
  */
 
-import { isPrivateIP, normalizeIP } from './netinfo.js';
+import { isPrivateIP, normalizeIP } from './ip.js';
 
 /** Views with a summary, in navigation order. */
 export const SUMMARY_KINDS = Object.freeze(['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'change', 'ip', 'retire',

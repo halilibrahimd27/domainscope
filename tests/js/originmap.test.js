@@ -331,6 +331,21 @@ describe('the merge rules (lib/originfill.js applyObservations)', () => {
     ]);
   });
 
+  test('what a run says it added is what the map kept: the caps can drop a new entry', () => {
+    const full = [];
+    for (let i = 0; i < ORIGIN_MAP_LIMITS.entries; i += 1) full.push({ name: `h${i}.example.com`, ip: `198.51.100.${i % 250}`, source: 'zone', lastConfirmed: DAY2 });
+    const map = sanitizeOriginMap({ remember: true, entries: full });
+    const older = [];
+    for (let i = 0; i < 10; i += 1) older.push(hosted(`new${i}.example.com`, '203.0.113.5'));
+    let res = applyObservations(map, older, { source: 'cli-json', at: DAY1 });
+    assert.deepEqual([res.added, res.map.entries.length], [[], ORIGIN_MAP_LIMITS.entries], 'older than every kept entry: none kept, none counted');
+    const pool = [];
+    for (let i = 1; i <= ORIGIN_MAP_LIMITS.perName + 4; i += 1) pool.push(hosted('pool.example.com', `203.0.113.${i}`));
+    res = applyObservations(ON, pool, { source: 'cli-json', at: DAY1 });
+    assert.equal(res.map.entries.length, ORIGIN_MAP_LIMITS.perName);
+    assert.equal(res.added.length, ORIGIN_MAP_LIMITS.perName, 'one name: at most 16 addresses, and the count says so');
+  });
+
   test('a comparison or a manual entry never marks another entry stale', () => {
     const { map } = applyObservations(ON, [hosted('shop.example.com', '203.0.113.10')], { source: 'zone', at: DAY1 });
     for (const source of ['compare', 'manual']) {

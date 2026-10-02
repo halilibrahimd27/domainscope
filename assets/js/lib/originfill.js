@@ -191,9 +191,14 @@ export function applyObservations(map, observations, { source, at, now, proxied 
     if (by && !(foundAt.get(e.name) || []).some((o) => o.ip === e.ip)) mark(e, elsewhere, by);
     else if (answer === 'not-hosted') mark(e, notHosted);
   }
-  out.confirmed = [...confirmed].filter((k) => !out.added.includes(k));
   out.skipped = [...skipped].sort();
   out.map = finish(m, nowMs);
+  // Counted against what the map kept: the caps (per name, in all) can drop a new entry.
+  const kept = new Set(out.map ? out.map.entries.map(originKey) : []);
+  const added = new Set(out.added);
+  out.added = out.added.filter((k) => kept.has(k));
+  out.confirmed = [...confirmed].filter((k) => !added.has(k) && kept.has(k));
+  out.staled = [...new Set(out.staled)].filter((k) => kept.has(k));
   return out;
 }
 

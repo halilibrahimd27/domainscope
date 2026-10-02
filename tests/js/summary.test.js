@@ -587,6 +587,30 @@ describe('zone', () => {
       assert.ok(tr.includes(s), `${s}\n${tr}`);
     }
   });
+
+  test('a comparison says when a file is a change batch, incomplete, named by a guess, or had problems, right under the formats', () => {
+    const side = (extra) => ({ origin: 'example.com', format: 'AWS Route 53 (JSON)', partial: false, changeBatch: null, guessed: false, problems: { errors: 0, warnings: 0 }, ...extra });
+    const batch = lines(md(S.zoneSummary({ compare: { ...compare, b: side({ changeBatch: { upserts: 1, deletes: 2 } }) } }, opts())));
+    assert.deepEqual(batch.slice(1, 3), ['- This zone: BIND zone file · the other: AWS Route 53 (JSON)',
+      '- The other file is a Route 53 change batch, not a whole zone (created or updated: 1, deleted: 2): only the record sets it changes were compared']);
+    const other = md(S.zoneSummary({ compare: { ...compare, b: side({ partial: true, guessed: true, problems: { errors: 2, warnings: 1 } }) } }, opts()));
+    for (const s of ['- The other file is incomplete: a record set it lacks may only be in the part that is missing',
+      '- The other file names no zone: its name was guessed from its records', '- Reading the other file: 2 errors · 1 warning']) {
+      assert.ok(other.includes(s), `${s}\n${other}`);
+    }
+    const mine = md(S.zoneSummary({ compare: { ...compare, a: side({ format: 'BIND zone file', partial: true, changeBatch: { upserts: 3, deletes: 0 } }) } }, opts()));
+    for (const s of ['- This zone’s file is a Route 53 change batch, not a whole zone (created or updated: 3, deleted: 0): only the record sets it changes were compared',
+      '- This zone’s file is incomplete: a record set it lacks may only be in the part that is missing']) {
+      assert.ok(mine.includes(s), `${s}\n${mine}`);
+    }
+    assert.ok(!mine.includes('Reading the other file'), 'no problem line without problems');
+    const tr = md(S.zoneSummary({ compare: { ...compare, b: side({ changeBatch: { upserts: 1, deletes: 2 }, partial: true, guessed: true, problems: { errors: 1, warnings: 0 } }) } }, opts('tr')));
+    for (const s of ['- Diğer dosya bütün bir zone değil, bir Route 53 değişiklik paketi (oluşturulan ya da güncellenen: 1, silinen: 2): yalnızca değiştirdiği kayıt kümeleri karşılaştırıldı',
+      '- Diğer dosya eksik: onda olmayan bir kayıt kümesi yalnızca eksik kısımda olabilir', '- Diğer dosya bir zone adı belirtmiyor: adı kayıtlarından tahmin edildi',
+      '- Diğer dosya okunurken: 1 hata']) {
+      assert.ok(tr.includes(s), `${s}\n${tr}`);
+    }
+  });
 });
 
 describe('cert', () => {

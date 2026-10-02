@@ -2235,7 +2235,8 @@ export function mount(container, ctx) {
   function compareTab(z) {
     return toolsTab('zcmp', ({ CompareTab }) => CompareTab({
       ctx, zone: z, C: S.compare, samples: SAMPLES, formatLabel: fmtLabel, redact: redactCompare,
-      parse: (files, { origin }) => parseFiles(files, { origin })
+      parse: (files, { origin }) => parseFiles(files, { origin }),
+      issue: (w) => ({ text: t(issueKey(w.code, w.params), w.params), where: [w.name, w.type, w.line ? t('zone.problems.line', { line: w.line }) : ''].filter(Boolean).join(' · ') })
     }));
   }
 

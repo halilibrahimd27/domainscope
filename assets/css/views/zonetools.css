@@ -87,6 +87,27 @@
   overflow-wrap: anywhere;
 }
 
+/* Compare: what the parser said of the second zone */
+.zcmp-other-box .zone-guessed {
+  align-items: flex-start;
+}
+
+.zcmp-other-box .zone-guessed .icon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.zcmp-problems {
+  padding: 4px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.zcmp-problems > .disclosure-body {
+  padding-bottom: 12px;
+}
+
 /* Compare: the result */
 .zcmp-head {
   display: flex;
@@ -227,7 +248,8 @@
     padding: 12px;
   }
 
-  .zcmp-loader-folded {
+  .zcmp-loader-folded,
+  .zcmp-problems {
     padding: 4px 12px;
   }
 

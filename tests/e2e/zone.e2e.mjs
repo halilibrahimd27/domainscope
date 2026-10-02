@@ -1151,6 +1151,63 @@ async function main() {
       assert(new RegExp(`· ${origin}/domainscope/#/zone$`).test(ls[ls.length - 1]), `a bare #/zone link: ${ls[ls.length - 1]}`);
     });
 
+    /** Paste a second zone into the folded importer and compare. */
+    const pasteOther = async (value) => {
+      await page.evaluate((v) => {
+        for (const d of document.querySelectorAll('.zcmp-loader-folded, .zcmp-paste')) d.open = true;
+        const el = document.querySelector('[data-role="zcmp-paste"]');
+        const ta = el.tagName === 'TEXTAREA' ? el : el.querySelector('textarea');
+        ta.value = v;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }, value);
+      await jsClick(page, '[data-action="zcmp-paste-run"]');
+    };
+    const copySummary = async () => {
+      await stubClipboard(page);
+      await page.click('.zcmp-summary [data-action="copy-summary"]');
+      await page.waitFor(() => window.__clip.length === 1, { message: 'copied' });
+      return (await takeClipboard(page))[0];
+    };
+
+    await run.step('Compare: a change batch is changes, not a zone: named after this zone, said in its bar and Copy summary, the sets it leaves alone never removed', async () => {
+      // One UPSERT alone would name the batch after its record (api.example.com) and "remove" the rest.
+      const batch = JSON.stringify({ Comment: 'one change', Changes: [{ Action: 'UPSERT', ResourceRecordSet: { Name: 'api.example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.15' }] } }] });
+      await pasteOther(batch);
+      await page.waitFor(() => !!document.querySelector('[data-role="zcmp-batch"]'), { message: 'the change batch said' });
+      assertEqual(await text(page, '.zcmp-other-title'), 'Compared with example.com', 'named after this zone, not after its one record');
+      assert(/Route 53 change batch, not a whole zone \(created or updated: 1, deleted: 0\)/.test(await text(page, '[data-role="zcmp-batch"]')), await text(page, '[data-role="zcmp-batch"]'));
+      const res = ZD.diffZones(sampleZone('cloudflare'), ZP.parseZone(batch, { origin: 'example.com' }));
+      assertEqual([res.counts.removed, res.counts.changed, res.counts.ignored], [0, 1, 9], 'one change, nothing removed, the rest not in the batch');
+      assertEqual(await cmpRows(), expectRows(res), 'the differences, as lib/zonediff.js finds them');
+      await page.click('.zcmp-chips .zone-chip[data-filter="ignored"]');
+      await page.waitFor(() => document.querySelectorAll('.zcmp-table tbody tr.dt-row').length === 9, { message: 'ignored filter' });
+      assert(/Not in the change batch/.test(await text(page, '.zcmp-table tbody tr.dt-row')), 'an ignored row says why');
+      await page.click('.zcmp-chips .zone-chip[data-filter="diff"]');
+      const md = await copySummary();
+      assert(md.includes('- The other file is a Route 53 change batch, not a whole zone (created or updated: 1, deleted: 0): only the record sets it changes were compared'), md);
+      assert(!/192\.0\.2\.|198\.51\.100\./.test(md), 'no value in the summary');
+    });
+
+    await run.step('Compare: an incomplete export says so in its bar and Copy summary; each set it lacks may only be in the part that is missing', async () => {
+      const page1 = JSON.stringify({ success: true, errors: [], messages: [], result: [
+        { id: '1', zone_name: 'example.com', name: 'example.com', type: 'A', content: '192.0.2.10', proxied: true, ttl: 1 },
+        { id: '2', zone_name: 'example.com', name: 'mail.example.com', type: 'A', content: '198.51.100.25', proxied: false, ttl: 1 }
+      ], result_info: { page: 1, per_page: 2, count: 2, total_count: 11, total_pages: 6 } });
+      await pasteOther(page1);
+      await page.waitFor(() => !!document.querySelector('[data-role="zcmp-partial"]'), { message: 'the incomplete export said' });
+      assert(!await page.evaluate(() => !!document.querySelector('[data-role="zcmp-batch"]')), 'no change batch now');
+      const bar = await text(page, '[data-role="zcmp-partial"]');
+      assert(/This export is incomplete/.test(bar) && /Only 2 records are in this export/.test(bar), bar);
+      const res = ZD.diffZones(sampleZone('cloudflare'), ZP.parseZone(page1, { origin: 'example.com' }));
+      assert(res.counts.removed > 0 && res.rows.filter((r) => r.status === 'removed').every((r) => r.notes.includes('partial')), 'every removed set carries the note');
+      assertEqual(await cmpRows(), expectRows(res), 'the differences');
+      const removedRow = await page.evaluate(() => [...document.querySelectorAll('.zcmp-table tbody tr.dt-row')].find((tr) => tr.querySelector('[data-status="removed"]'))?.textContent || '');
+      assert(/may be in the part that is missing/.test(removedRow), `a removed row says the file is incomplete: ${removedRow}`);
+      const md = await copySummary();
+      assert(md.includes('- The other file is incomplete: a record set it lacks may only be in the part that is missing'), md);
+      await shot(page, opts, 'zone-compare-partial-desktop-light-en');
+    });
+
     await run.step('Convert: BIND, Route 53, octoDNS and DNSControl as the library writes them, with their notes; each download reads back', async () => {
       await clickTab(page, 'convert');
       await page.waitFor(() => !!document.querySelector('[data-role="zconv"]'), { message: 'convert tab', timeout: 10000 });
@@ -1523,6 +1580,47 @@ async function main() {
       }
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await setLangUi(page, 'en');
+    });
+
+    await run.step('The second zone\'s notes at 320 and 375 px, TR/EN × light/dark: a guessed name, an incomplete export, its problems, a change batch', async () => {
+      await clickTab(page, 'compare');
+      const listing = JSON.stringify({ ResourceRecordSets: [
+        { Name: 'www.example.net.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.10' }] },
+        { Name: 'bad.example.net.', Type: 'A', TTL: 300 }
+      ], IsTruncated: true, NextRecordName: 'zz.example.net.', NextRecordType: 'A' });
+      const batch = JSON.stringify({ Changes: [
+        { Action: 'UPSERT', ResourceRecordSet: { Name: 'api.example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.15' }] } },
+        { Action: 'DELETE', ResourceRecordSet: { Name: 'ftp.example.com.', Type: 'A', TTL: 1, ResourceRecords: [{ Value: '192.0.2.10' }] } }
+      ] });
+      const openProblems = () => page.evaluate(() => { for (const d of document.querySelectorAll('.zcmp-problems')) d.open = true; });
+      for (const [label, value, roles] of [['listing', listing, ['zcmp-guessed', 'zcmp-partial']], ['batch', batch, ['zcmp-batch']]]) {
+        await pasteOther(value);
+        await page.waitFor((rs) => rs.every((r) => !!document.querySelector(`[data-role="${r}"]`)), { args: [roles], message: label });
+        if (label === 'listing') {
+          assertEqual(await text(page, '.zcmp-other-title'), 'Compared with example.net', 'names of another zone keep their guess');
+          assert(await page.evaluate(() => !!document.querySelector('.zcmp-problems .zone-problem[data-code="BAD_RECORD"]')), 'the record it could not read is listed');
+        } else {
+          const rows = await cmpRows();
+          assert(rows.includes('removed ftp A') && rows.includes('changed api A') && !rows.some((r) => r.startsWith('removed ') && r !== 'removed ftp A'), `only the DELETE is removed: ${rows}`);
+        }
+        for (const lang of ['en', 'tr']) {
+          await setLangUi(page, lang);
+          await page.waitFor((rs) => rs.every((r) => !!document.querySelector(`[data-role="${r}"]`)), { args: [roles], message: `${label} after the language switch`, timeout: 10000 });
+          await openProblems();
+          for (const scheme of ['light', 'dark']) {
+            await page.emulateMedia({ 'prefers-color-scheme': scheme });
+            for (const width of [320, 375]) {
+              await page.setViewport({ width, height: 800, mobile: true });
+              await page.evaluate(() => window.scrollTo(0, 0));
+              await assertNoHorizontalScroll(page, `${label} ${width} ${scheme} ${lang}`);
+            }
+            await shot(page, opts, `zone-compare-${label}-mobile-${scheme}-${lang}`);
+            await page.setViewport({ width: 1440, height: 900 });
+          }
+        }
+        await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+        await setLangUi(page, 'en');
+      }
     });
 
     run.group('Quality');

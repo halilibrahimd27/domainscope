@@ -114,6 +114,20 @@ const STRINGS = [
   ['zcmp.note.soa-ignored', ['The serial, the timers or the TTL differ, ignored.', 'Seri numarası, zamanlayıcılar ya da TTL farklı, yok sayıldı.']],
   ['zcmp.note.soa-one-side', ['Only one file has an SOA record (a provider’s export leaves it out), ignored.', 'SOA kaydı yalnızca bir dosyada var (sağlayıcı dışa aktarımları onu içermez), yok sayıldı.']],
   ['zcmp.note.apex-ns', ['NS at the apex, ignored.', 'Zone kökündeki (apex) NS, yok sayıldı.']],
+  ['zcmp.note.not-in-batch', ['Not in the change batch: it does not change this set, so this is no difference.', 'Değişiklik paketinde yok: paket bu kümeyi değiştirmiyor, yani bu bir fark değil.']],
+  ['zcmp.note.batch-delete', ['The change batch deletes this set.', 'Değişiklik paketi bu kümeyi siliyor.']],
+  ['zcmp.note.partial', ['The file without this set is incomplete: the set may be in the part that is missing.', 'Bu kümenin olmadığı dosya eksik: küme, dosyanın eksik kısmında olabilir.']],
+  ['zcmp.batch.title', ['A change batch, not a zone', 'Bir zone değil, bir değişiklik paketi']],
+  ['zcmp.batch', ['The other file is a Route 53 change batch, not a whole zone (created or updated: {upserts}, deleted: {deletes}). Only the record sets it changes are compared: the rest of this zone shows as ignored, “not in the change batch”, never as removed.',
+    'Diğer dosya bütün bir zone değil, bir Route 53 değişiklik paketi (oluşturulan ya da güncellenen: {upserts}, silinen: {deletes}). Yalnızca değiştirdiği kayıt kümeleri karşılaştırılır: bu zone’un geri kalanı kaldırıldı olarak değil, “değişiklik paketinde yok” notuyla yok sayıldı olarak görünür.']],
+  ['zcmp.batchThis', ['This zone’s file is a Route 53 change batch, not a whole zone: only the record sets it changes are compared, and the other file’s other record sets show as ignored, never as added.',
+    'Bu zone’un dosyası bütün bir zone değil, bir Route 53 değişiklik paketi: yalnızca değiştirdiği kayıt kümeleri karşılaştırılır; diğer dosyanın öteki kayıt kümeleri eklendi olarak değil, yok sayıldı olarak görünür.']],
+  ['zcmp.partial', ['Record sets missing from it show as removed, though they may only be in the part that is missing.', 'Onda olmayan kayıt kümeleri kaldırıldı olarak görünür; oysa yalnızca eksik kısımda olabilirler.']],
+  ['zcmp.partialThis', ['This zone’s export is incomplete: record sets missing from it show as added, though they may only be in the part that is missing.',
+    'Bu zone’un dışa aktarımı eksik: onda olmayan kayıt kümeleri eklendi olarak görünür; oysa yalnızca eksik kısımda olabilirler.']],
+  ['zcmp.guessed', ['The other file names no zone: its name was guessed from its records. If it is wrong, type the right one under “Load another file”.',
+    'Diğer dosya bir zone adı belirtmiyor: adı kayıtlarından tahmin edildi. Yanlışsa doğrusunu “Başka bir dosya yükle” altına yazın.']],
+  ['zcmp.problems', [{ one: '{count} problem reading the other file', other: '{count} problems reading the other file' }, 'Diğer dosya okunurken çıkan {count} sorun']],
   ['zcmp.proxy.true', ['proxied', 'proxy’li']],
   ['zcmp.proxy.false', ['DNS only', 'yalnızca DNS']],
   ['zcmp.proxy.mixed', ['mixed', 'karışık']],
@@ -308,6 +322,25 @@ export function pitfallText(p, target) {
   return t(pitfallKey(p.code, target), params);
 }
 
+/**
+ * The second zone, read: under the name typed for it; else as the file names itself; else under
+ * this zone's name when the file names none (ORIGIN_REQUIRED) or only guesses one from its records
+ * (low confidence) and every name in it fits under this zone's — a change batch of one record
+ * names no zone after that record.
+ * @param {object[]} files
+ * @param {{ zone: object, typed?: string, parse: (files: object[], opts: { origin: string|null }) => object }} opts
+ * @returns {object} the parsed zone
+ */
+export function readOther(files, { zone, typed = '', parse }) {
+  const name = String(typed || '').trim() || null;
+  const other = parse(files, { origin: name });
+  const own = zone && zone.origin ? zone.origin : null;
+  if (name || !own) return other;
+  if (other.fatal) return other.fatal.code === 'ORIGIN_REQUIRED' ? parse(files, { origin: own }) : other;
+  if (other.originConfidence !== 'low' || !other.records.length) return other;
+  return other.records.every((r) => r.name === own || r.name.endsWith(`.${own}`)) ? parse(files, { origin: own }) : other;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Compare                                                                  */
 /* ------------------------------------------------------------------------ */
@@ -319,16 +352,20 @@ function ensureCompare(C) {
   return C;
 }
 
+/** At most this many of the second zone's parse problems are listed in its bar. */
+const OTHER_PROBLEMS = 20;
+
 /**
  * The Compare tab body.
  * @param {{ ctx: object, zone: object, C: object, parse: (files: object[], opts: { origin: string|null }) => object,
  *   samples: Array<{ id: string, file: string, text: string }>, formatLabel: (zone: object) => string,
- *   redact: (values: string[], include: boolean) => string[] }} opts
+ *   redact: (values: string[], include: boolean) => string[], issue: (w: object) => { text: string, where: string } }} opts
  *   `C`: the view's holder ({ files, zone, originInput, options, filter, includeOrigins, cache }); `parse`:
- *   views/zone.js parseFiles; `redact`: the origin addresses of both zones hidden unless `include`
+ *   views/zone.js parseFiles; `redact`: the origin addresses of both zones hidden unless `include`; `issue`: a parse
+ *   issue worded as the Problems tab words it, and where it is
  * @returns {HTMLElement}
  */
-export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact }) {
+export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact, issue }) {
   ensureCompare(C);
   const box = h('div', { class: 'stack zcmp', dataset: { role: 'zcmp' } });
 
@@ -349,11 +386,9 @@ export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact }
     read({ focus: true });
   }
 
-  /** Parse the second zone; a file that names no zone is read under this zone's name. */
+  /** Parse the second zone (readOther: a file that names no zone is read under this zone's name). */
   function read({ focus = false } = {}) {
-    let other = parse(C.files, { origin: C.originInput || null });
-    if (other.fatal && other.fatal.code === 'ORIGIN_REQUIRED' && zone.origin && !C.originInput) other = parse(C.files, { origin: zone.origin });
-    C.zone = other;
+    C.zone = readOther(C.files, { zone, typed: C.originInput, parse });
     C.cache = null;
     C.filter = 'diff';
     render();
@@ -445,7 +480,7 @@ export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact }
     const z = C.zone;
     const files = (C.files || []).map((f) => f.name).join(', ');
     const size = (C.files || []).reduce((n, f) => n + f.size, 0);
-    return h('div', { class: 'zcmp-other', dataset: { format: z.format || '' } },
+    const bar = h('div', { class: 'zcmp-other', dataset: { format: z.format || '' } },
       h('div', { class: 'zcmp-other-main' },
         h('h3', { class: 'zcmp-other-title', tabindex: -1 }, z.origin ? t('zcmp.other', { origin: z.origin }) : t('zcmp.otherNoOrigin')),
         h('div', { class: 'cluster zcmp-other-meta' },
@@ -454,6 +489,43 @@ export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact }
             t('zcmp.otherCounts', { count: z.records.length, files: `${files} · ${formatBytes(size)}` })))),
       h('div', { class: 'cluster zcmp-other-actions' },
         Button({ label: t('zcmp.forget'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'zcmp-forget' }, onClick: forgetOther })));
+    if (z.fatal) return bar;
+    return h('div', { class: 'stack-sm zcmp-other-box' }, bar, ...otherNotes(z));
+  }
+
+  /** What the parser said of the second zone: a change batch, an incomplete export, a guessed name, its problems. */
+  function otherNotes(z) {
+    const out = [];
+    if (z.origin && z.originConfidence === 'low') {
+      out.push(h('p', { class: 'zone-guessed text-sm', dataset: { role: 'zcmp-guessed' } }, Icon('alert', { size: 14 }), ' ', t('zcmp.guessed')));
+    }
+    const isPartial = (w) => w.code === 'PARTIAL_EXPORT' || w.code === 'RECORDS_TRUNCATED';
+    const partial = z.warnings.find(isPartial);
+    if (partial) {
+      out.push(h('div', { class: 'zcmp-partial', dataset: { role: 'zcmp-partial', code: partial.code } },
+        Alert({ variant: 'error', title: t('zone.partial.title'), message: `${issue(partial).text} ${t('zcmp.partial')}` })));
+    }
+    if (z.changeBatch) {
+      out.push(h('div', { class: 'zcmp-batch', dataset: { role: 'zcmp-batch' } },
+        Alert({ variant: 'warn', title: t('zcmp.batch.title'), message: t('zcmp.batch', { upserts: formatNumber(z.changeBatch.upserts), deletes: formatNumber(z.changeBatch.deletes.length) }) })));
+    }
+    const problems = z.warnings.filter((w) => (w.severity === 'error' || w.severity === 'warn') && !isPartial(w));
+    if (problems.length) {
+      const shown = problems.slice(0, OTHER_PROBLEMS);
+      out.push(Disclosure({
+        summary: t('zcmp.problems', { count: problems.length }),
+        className: 'zcmp-problems',
+        children: h('ul', { class: 'zone-problems zcmp-problem-list' },
+          shown.map((w) => {
+            const { text, where } = issue(w);
+            const sev = w.severity === 'warn' ? 'warn' : 'error';
+            return h('li', { class: 'zone-problem', dataset: { code: w.code, severity: sev } }, SeverityIcon(sev),
+              h('div', { class: 'zone-problem-body' }, h('div', { class: 'zone-problem-title' }, text), where ? h('div', { class: 'text-sm muted' }, where) : null));
+          }),
+          problems.length > shown.length ? h('li', { class: 'muted text-sm' }, t('common.moreCount', { count: problems.length - shown.length })) : null)
+      }));
+    }
+    return out;
   }
 
   function fatalAlert(fatal) {
@@ -468,6 +540,9 @@ export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact }
     const c = res.counts;
     const diffs = c.added + c.removed + c.changed;
     if (res.relative) out.append(Alert({ variant: 'info', compact: true, message: t('zcmp.relative', { a: res.a.origin, b: res.b.origin }) }));
+    // This zone itself a change batch, or incomplete (its own banner says so above the tabs).
+    if (res.a.changeBatch) out.append(Alert({ variant: 'warn', compact: true, message: t('zcmp.batchThis') }));
+    if (res.a.partial) out.append(Alert({ variant: 'warn', compact: true, message: t('zcmp.partialThis') }));
     const head = diffs
       ? t('zcmp.head.diff', { count: diffs, added: formatNumber(c.added), removed: formatNumber(c.removed), changed: formatNumber(c.changed), same: formatNumber(c.same) })
       : t('zcmp.head.same', { count: c.same });

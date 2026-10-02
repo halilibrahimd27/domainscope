@@ -207,12 +207,16 @@ export const ZONE_COMPARE_STATUSES = Object.freeze(['added', 'removed', 'changed
 export const ZONE_COMPARE_REASONS = Object.freeze(['values', 'ttl', 'proxied', 'routing', 'soa-names', 'soa-serial', 'soa-timers']);
 
 /**
- * Zone File › Compare: both zones by name and format, the counts, the options that hid something,
- * and the first differences by name and type with what changed — never a value of either file.
- * @param {{ a: { origin: string|null, format?: string }, b: { origin: string|null, format?: string }, relative?: boolean,
+ * Zone File › Compare: both zones by name and format, what makes either less than a whole zone (a
+ * Route 53 change batch, an incomplete export) and how the other file was read (a guessed name,
+ * problems), the counts, the options that hid something, and the first differences by name and
+ * type with what changed — never a value of either file.
+ * @param {{ a: CompareSide, b: CompareSide, relative?: boolean,
  *   counts: { added: number, removed: number, changed: number, same: number, ignored: number }, options?: string[],
  *   differences?: Array<{ status: string, name: string, type: string, reasons?: string[] }>, more?: number }} cmp
- *   lib/zonediff.js diffSummaryFacts (the format labels the view shows)
+ *   lib/zonediff.js diffSummaryFacts (the format labels the view shows); CompareSide = { origin: string|null,
+ *   format?: string, partial?: boolean, changeBatch?: { upserts: number, deletes: number }|null, guessed?: boolean,
+ *   problems?: { errors: number, warnings: number } }
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {SummaryDoc}
  */
@@ -226,6 +230,14 @@ export function zoneCompareSummary(cmp, opts) {
   if (cmp.a && cmp.b && (cmp.a.format || cmp.b.format)) {
     lines.push([t('sum.zcmp.formats', { a: cleanText(cmp.a.format || '?'), b: cleanText(cmp.b.format || '?') })]);
   }
+  const batch = (cb) => ({ upserts: Number(cb.upserts) || 0, deletes: Number(cb.deletes) || 0 });
+  if (cmp.a && cmp.a.changeBatch) lines.push([t('sum.zcmp.batch.a', batch(cmp.a.changeBatch))]);
+  if (cmp.a && cmp.a.partial) lines.push([t('sum.zcmp.partial.a')]);
+  if (cmp.b && cmp.b.changeBatch) lines.push([t('sum.zcmp.batch.b', batch(cmp.b.changeBatch))]);
+  if (cmp.b && cmp.b.partial) lines.push([t('sum.zcmp.partial.b')]);
+  if (cmp.b && cmp.b.guessed) lines.push([t('sum.zcmp.guessed')]);
+  const problems = cmp.b && cmp.b.problems ? k.counts([['sum.count.error', cmp.b.problems.errors], ['sum.count.warn', cmp.b.problems.warnings]]) : '';
+  if (problems) lines.push([t('sum.zcmp.problems', { list: problems })]);
   if (cmp.relative) lines.push([t('sum.zcmp.relative')]);
   if (!diffs) lines.push([t('sum.zcmp.none', { count: Number(c.same) || 0 })]);
   else {
@@ -905,6 +917,14 @@ const STRINGS = [
   ['sum.zone.noProblems', ['No problems found in the zone', 'Zone’da sorun bulunmadı']],
   ['sum.zone.private', ['The zone file stays in this browser: the link opens Zone File without it', 'Zone dosyası bu tarayıcıda kalır: bağlantı Zone Dosyası aracını dosya olmadan açar']],
   ['sum.zcmp.formats', ['This zone: {a} · the other: {b}', 'Bu zone: {a} · diğeri: {b}']],
+  ['sum.zcmp.batch.a', ['This zone’s file is a Route 53 change batch, not a whole zone (created or updated: {upserts}, deleted: {deletes}): only the record sets it changes were compared',
+    'Bu zone’un dosyası bütün bir zone değil, bir Route 53 değişiklik paketi (oluşturulan ya da güncellenen: {upserts}, silinen: {deletes}): yalnızca değiştirdiği kayıt kümeleri karşılaştırıldı']],
+  ['sum.zcmp.batch.b', ['The other file is a Route 53 change batch, not a whole zone (created or updated: {upserts}, deleted: {deletes}): only the record sets it changes were compared',
+    'Diğer dosya bütün bir zone değil, bir Route 53 değişiklik paketi (oluşturulan ya da güncellenen: {upserts}, silinen: {deletes}): yalnızca değiştirdiği kayıt kümeleri karşılaştırıldı']],
+  ['sum.zcmp.partial.a', ['This zone’s file is incomplete: a record set it lacks may only be in the part that is missing', 'Bu zone’un dosyası eksik: onda olmayan bir kayıt kümesi yalnızca eksik kısımda olabilir']],
+  ['sum.zcmp.partial.b', ['The other file is incomplete: a record set it lacks may only be in the part that is missing', 'Diğer dosya eksik: onda olmayan bir kayıt kümesi yalnızca eksik kısımda olabilir']],
+  ['sum.zcmp.guessed', ['The other file names no zone: its name was guessed from its records', 'Diğer dosya bir zone adı belirtmiyor: adı kayıtlarından tahmin edildi']],
+  ['sum.zcmp.problems', ['Reading the other file: {list}', 'Diğer dosya okunurken: {list}']],
   ['sum.zcmp.relative', ['Different zone names: the names were compared relative to each zone', 'Farklı zone adları: adlar her zone’a göre göreli karşılaştırıldı']],
   ['sum.zcmp.none', [{ one: 'No differences: the {count} record set is the same', other: 'No differences: all {count} record sets are the same' },
     'Fark yok: {count} kayıt kümesinin hepsi aynı']],

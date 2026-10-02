@@ -69,6 +69,30 @@ describe('zone-tools', () => {
     assert.match(Z.pitfallText({ code: 'alias-zone-id', params: {} }, 'route53'), /replace HOSTED_ZONE_ID_OF_THE_TARGET with it/);
   });
 
+  test('the second zone: named as typed, as the file names it, or after this zone when the file only guesses and every name fits', () => {
+    const zone = bind('@ A 192.0.2.1');
+    const parse = (files, { origin }) => parseZone(files[0].text, { origin, filename: files[0].name });
+    const batch = (name) => [{ name: 'pasted', text: JSON.stringify({ Changes: [{ Action: 'UPSERT', ResourceRecordSet: { Name: name, Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.10' }] } }] }) }];
+    const pick = (z) => [z.origin, z.originSource, z.originConfidence];
+    assert.deepEqual(pick(parse(batch('www.example.com.'), { origin: null })), ['www.example.com', 'records', 'low'], 'alone, a one-record batch is named after its record');
+    assert.deepEqual(pick(Z.readOther(batch('www.example.com.'), { zone, parse })), ['example.com', 'user', 'high'], 'every name fits under this zone: its name');
+    assert.deepEqual(pick(Z.readOther(batch('www.example.com.'), { zone, typed: ' www.example.com ', parse })), ['www.example.com', 'user', 'high'], 'a typed name wins');
+    assert.deepEqual(pick(Z.readOther(batch('www.example.net.'), { zone, parse })), ['www.example.net', 'records', 'low'], 'names of another zone keep their guess');
+    assert.deepEqual(pick(Z.readOther([{ name: 'db', text: 'www 300 IN A 192.0.2.1\n' }], { zone, parse })), ['example.com', 'user', 'high'], 'a file that names no zone at all');
+    const header = [{ name: 'p', text: JSON.stringify({ result: [{ id: '1', zone_name: 'example.org', name: 'example.org', type: 'A', content: '192.0.2.1', ttl: 1, proxied: false }], success: true }) }];
+    assert.equal(Z.readOther(header, { zone, parse }).origin, 'example.org', 'a name the file states is kept');
+  });
+
+  test('the notes of a change batch and an incomplete export, in English and Turkish', () => {
+    const row = (notes) => ({ reasons: [], notes, a: null, b: null });
+    assert.equal(Z.rowNote(row(['not-in-batch'])), 'Not in the change batch: it does not change this set, so this is no difference.');
+    assert.equal(Z.rowNote(row(['batch-delete', 'partial'])), 'The change batch deletes this set. The file without this set is incomplete: the set may be in the part that is missing.');
+    i18n.setLang('tr');
+    assert.equal(Z.rowNote(row(['not-in-batch'])), 'Değişiklik paketinde yok: paket bu kümeyi değiştirmiyor, yani bu bir fark değil.');
+    assert.equal(Z.rowNote(row(['batch-delete', 'partial'])), 'Değişiklik paketi bu kümeyi siliyor. Bu kümenin olmadığı dosya eksik: küme, dosyanın eksik kısmında olabilir.');
+    i18n.setLang('en');
+  });
+
   test('the preview stops at PREVIEW_LINES lines', () => {
     assert.equal(Z.PREVIEW_LINES, 400);
   });

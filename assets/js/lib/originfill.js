@@ -29,7 +29,7 @@
 import { readEstateReport, ESTATE_MAX_REPORTS } from './estate.js';
 import { normalizeIP } from './netinfo.js';
 import {
-  sanitizeOriginMap, originName, originPort, originKey, originServer, originTime, ORIGIN_SOURCES, ORIGIN_MAP_LIMITS, ORIGIN_DEFAULT_PORT
+  sanitizeOriginMap, originName, originPort, originKey, originServer, originNow, originTimeAt, ORIGIN_SOURCES, ORIGIN_MAP_LIMITS, ORIGIN_DEFAULT_PORT
 } from './originmap.js';
 
 /* ------------------------------------------------------------------------ */
@@ -47,13 +47,13 @@ const PROBE_MARKS = new Set(['cli-elsewhere', 'cli-not-hosted', 'verify-elsewher
 /** The mark an entry added from an older run gets when a newer run of this source found the name elsewhere. */
 const FOUND_ELSEWHERE = Object.freeze({ 'cli-json': 'cli-elsewhere', verify: 'verify-elsewhere', zone: 'zone-other' });
 const ms = (v) => (v ? Date.parse(v) || 0 : 0);
-/** A copy of the map to change (remembering off and no entry when there is none). */
-const working = (map) => {
-  const m = sanitizeOriginMap(map) || { v: 1, remember: false, entries: [] };
+/** A copy of the map to change (remembering off and no entry when there is none), read against `nowMs`. */
+const working = (map, nowMs) => {
+  const m = sanitizeOriginMap(map, { now: nowMs }) || { v: 1, remember: false, entries: [] };
   return { ...m, entries: m.entries.map((e) => ({ ...e, stale: e.stale && { ...e.stale } })) };
 };
 /** The changed copy as the workspace keeps it (one per key, capped, by name). */
-const finish = (m) => sanitizeOriginMap(m);
+const finish = (m, nowMs) => sanitizeOriginMap(m, { now: nowMs });
 
 /**
  * Remembering on or off. Turning it off keeps the entries (they are still used; remove them
@@ -63,7 +63,8 @@ const finish = (m) => sanitizeOriginMap(m);
  * @returns {object|null}
  */
 export function setRemember(map, on) {
-  return finish({ ...working(map), remember: !!on });
+  const nowMs = originNow();
+  return finish({ ...working(map, nowMs), remember: !!on }, nowMs);
 }
 
 /**
@@ -89,16 +90,19 @@ export function setRemember(map, on) {
  *   names a proxied name's origins: its other entries are `zone-other`. An entry confirmed by the
  *   same run, or at or after its time, is never marked; a stale entry takes the newer of two marks.
  * - With remembering off nothing changes (`off: true`).
+ * - A run is never later than `now` (the real clock unless given): a report dated in the future (a
+ *   fast clock, an edited file) counts as now, and so cannot outrank every later check.
  * @param {object|null} map
  * @param {Array<{ name: string, ip: string, port?: number|null, outcome: 'hosted'|'not-hosted'|'unknown', server?: string|null }>} observations
- * @param {{ source: string, at: Date|string, proxied?: ((name: string) => boolean)|null, serverOf?: ((ip: string) => (string|null))|null }} opts
+ * @param {{ source: string, at: Date|string, now?: Date|number|string, proxied?: ((name: string) => boolean)|null, serverOf?: ((ip: string) => (string|null))|null }} opts
  * @returns {{ map: object|null, off: boolean, added: string[], confirmed: string[], staled: string[], skipped: string[] }}
  *   keys added, confirmed and marked stale; names skipped as not known to be proxied
  */
-export function applyObservations(map, observations, { source, at, proxied = null, serverOf = null } = {}) {
-  const m = working(map);
-  const out = { map: sanitizeOriginMap(map), off: !m.remember, added: [], confirmed: [], staled: [], skipped: [] };
-  const when = originTime(at);
+export function applyObservations(map, observations, { source, at, now, proxied = null, serverOf = null } = {}) {
+  const nowMs = originNow(now);
+  const m = working(map, nowMs);
+  const out = { map: sanitizeOriginMap(map, { now: nowMs }), off: !m.remember, added: [], confirmed: [], staled: [], skipped: [] };
+  const when = originTimeAt(at, nowMs);
   if (out.off || !when || !ORIGIN_SOURCES.includes(source)) return out;
   const t = ms(when);
   const names = new Set(m.entries.map((e) => e.name));
@@ -189,7 +193,7 @@ export function applyObservations(map, observations, { source, at, proxied = nul
   }
   out.confirmed = [...confirmed].filter((k) => !out.added.includes(k));
   out.skipped = [...skipped].sort();
-  out.map = finish(m);
+  out.map = finish(m, nowMs);
   return out;
 }
 
@@ -201,9 +205,10 @@ export function applyObservations(map, observations, { source, at, proxied = nul
  * @param {{ at: Date|string, replace?: string|null, serverOf?: ((ip: string) => (string|null))|null }} opts
  * @returns {{ map: object|null, error: string|null, key: string|null }}
  */
-export function addManualOrigin(map, input, { at, replace = null, serverOf = null } = {}) {
-  const m = working(map);
-  const fail = (error) => ({ map: sanitizeOriginMap(map), error, key: null });
+export function addManualOrigin(map, input, { at, now, replace = null, serverOf = null } = {}) {
+  const nowMs = originNow(now);
+  const m = working(map, nowMs);
+  const fail = (error) => ({ map: sanitizeOriginMap(map, { now: nowMs }), error, key: null });
   if (!m.remember) return fail('off');
   const src = input || {};
   const name = originName(String(src.name ?? '').trim());
@@ -212,7 +217,7 @@ export function addManualOrigin(map, input, { at, replace = null, serverOf = nul
   if (!ip) return fail('ip');
   const port = originPort(typeof src.port === 'string' ? src.port.trim() : src.port);
   if (!port) return fail('port');
-  const when = originTime(at) || new Date(0).toISOString();
+  const when = originTimeAt(at, nowMs) || new Date(nowMs).toISOString();
   const entry = { name, ip, port };
   const key = originKey(entry);
   const entries = m.entries.filter((e) => originKey(e) !== replace || replace === key);
@@ -224,7 +229,7 @@ export function addManualOrigin(map, input, { at, replace = null, serverOf = nul
     if (entries.filter((e) => e.name === name).length >= ORIGIN_MAP_LIMITS.perName || entries.length >= ORIGIN_MAP_LIMITS.entries) return fail('limit');
     entries.push({ ...entry, source: 'manual', firstSeen: when, lastConfirmed: when, server, stale: null });
   }
-  return { map: finish({ ...m, entries }), error: null, key };
+  return { map: finish({ ...m, entries }, nowMs), error: null, key };
 }
 
 /**
@@ -235,8 +240,9 @@ export function addManualOrigin(map, input, { at, replace = null, serverOf = nul
  */
 export function removeOrigins(map, keys) {
   const drop = new Set(keys || []);
-  const m = working(map);
-  return finish({ ...m, entries: m.entries.filter((e) => !drop.has(originKey(e))) });
+  const nowMs = originNow();
+  const m = working(map, nowMs);
+  return finish({ ...m, entries: m.entries.filter((e) => !drop.has(originKey(e))) }, nowMs);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -312,7 +318,8 @@ export function cliReportObservations(doc) {
 
 /**
  * Several report files (`{ name, text }`, at most ESTATE_MAX_REPORTS): each read with the
- * Certificate estate's reader, the readable ones oldest first (so a newer run has the last word).
+ * Certificate estate's reader, the readable ones oldest first (so a newer run has the last word),
+ * an undated one last (it is applied as now).
  * @param {Array<{ name: string, text: string }>} files
  * @returns {{ reports: Array<{ name: string, observations: object[], at: string|null, originCertNames: string[] }>,
  *   errors: Array<{ name: string, error: string, detail?: string }> }}
@@ -328,7 +335,8 @@ export function readCliReports(files) {
     }
     reports.push({ name: read.report.name, ...cliReportObservations(read.report.doc) });
   }
-  reports.sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
+  const order = (r) => (r.at ? Date.parse(r.at) : Infinity);
+  reports.sort((a, b) => order(a) - order(b));
   return { reports, errors };
 }
 

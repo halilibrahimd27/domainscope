@@ -284,6 +284,39 @@ describe('the merge rules (lib/originfill.js applyObservations)', () => {
     assert.equal(entry(two, `${N}|${A}|443`).stale, null);
   });
 
+  test('a report dated in the future (a fast clock, an edited file) is applied as now: it pins nothing against today\'s checks', () => {
+    const now = Date.parse('2026-10-02T12:00:00.000Z');
+    const iso = (ms) => new Date(ms).toISOString();
+    const [A, B] = ['203.0.113.10', '198.51.100.20'];
+    let { map } = applyObservations(ON, [hosted('api.example.com', A)], { source: 'zone', at: '2026-09-01T00:00:00Z', now });
+    ({ map } = applyObservations(map, [hosted('api.example.com', B), notHosted('api.example.com', A)], { source: 'cli-json', at: '2099-01-01T00:00:00Z', now }));
+    assert.equal(entry(map, `api.example.com|${B}|443`).lastConfirmed, iso(now));
+    assert.equal(entry(map, `api.example.com|${A}|443`).stale.at, iso(now));
+    // An hour later Verify finds it on A again, and B answering without it.
+    const later = now + 3600e3;
+    const res = applyObservations(map, [hosted('api.example.com', A), notHosted('api.example.com', B)], { source: 'verify', at: iso(later - 60e3), now: later });
+    assert.deepEqual([res.confirmed, res.staled], [[`api.example.com|${A}|443`], [`api.example.com|${B}|443`]]);
+    assert.deepEqual(knownForScan(res.map).map((k) => k.ip), [A]);
+  });
+
+  test('stored dates from the future (a hand-over file) are clamped to now', () => {
+    const now = Date.parse('2026-10-02T12:00:00.000Z');
+    const iso = new Date(now).toISOString();
+    const map = sanitizeOriginMap({
+      remember: true,
+      entries: [
+        { name: 'www.example.com', ip: '192.0.2.10', source: 'cli-json', firstSeen: '2099-01-01T00:00:00Z', lastConfirmed: '2099-01-01T00:00:00Z' },
+        { name: 'www.example.com', ip: '192.0.2.11', source: 'zone', firstSeen: DAY1, lastConfirmed: DAY1, stale: { reason: 'cli-elsewhere', at: '2099-01-01T00:00:00Z', ip: '192.0.2.10', port: 443 } }
+      ]
+    }, { now });
+    const by = (ip) => map.entries.find((e) => e.ip === ip);
+    assert.deepEqual([by('192.0.2.10').firstSeen, by('192.0.2.10').lastConfirmed], [iso, iso]);
+    assert.equal(by('192.0.2.11').stale.at, iso);
+    // The workspace store reads a part the same way, with the real clock.
+    const stored = sanitizePart('origins', { remember: true, entries: [{ name: 'www.example.com', ip: '192.0.2.10', lastConfirmed: '2099-01-01T00:00:00Z' }] });
+    assert.ok(Date.parse(stored.entries[0].lastConfirmed) <= Date.now(), stored.entries[0].lastConfirmed);
+  });
+
   test('a stored mark not newer than the last confirmation is dropped', () => {
     const map = sanitizeOriginMap({
       remember: true,

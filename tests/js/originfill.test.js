@@ -116,6 +116,13 @@ describe('the CLI --json reports', () => {
     assert.deepEqual(knownForScan(map).map((k) => `${k.ip} ${k.server}`), ['198.51.100.20 web05']);
   });
 
+  test('an undated report is read last: it is applied as now', () => {
+    const dated = report({ finishedAt: '2026-09-02T08:00:00.000Z', rows: [{ name: 'shop.example.com', ip: '203.0.113.10', status: 'UPDATED' }] });
+    const undated = { ...report({ rows: [{ name: 'shop.example.com', ip: '198.51.100.20', status: 'UPDATED' }] }), startedAt: null, finishedAt: null };
+    const { reports } = readCliReports([{ name: 'undated.json', text: JSON.stringify(undated) }, { name: 'dated.json', text: JSON.stringify(dated) }]);
+    assert.deepEqual(reports.map((r) => [r.name, r.at]), [['dated.json', '2026-09-02T08:00:00.000Z'], ['undated.json', null]]);
+  });
+
   test('a bare-address target is no server name; another port is kept', () => {
     const { observations } = cliReportObservations(report({ rows: [{ name: 'shop.example.com', ip: '203.0.113.10', port: 8443, status: 'UPDATED', server: '203.0.113.10' }] }));
     assert.deepEqual(observations, [{ name: 'shop.example.com', ip: '203.0.113.10', port: 8443, outcome: 'hosted', server: null }]);

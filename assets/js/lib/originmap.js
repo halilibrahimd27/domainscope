@@ -38,6 +38,24 @@ export const originTime = (v) => {
 };
 const ms = (v) => (v ? Date.parse(v) || 0 : 0);
 
+/**
+ * The clock the map is read against, in ms: a Date, a number or a parseable string; anything else
+ * (absent) is the real clock. Every date the map keeps or a run brings is at most this: a fast
+ * clock or an edited file never dates an entry in the future, where no later check could reach it.
+ * @param {Date|number|string|null|undefined} [now]
+ * @returns {number}
+ */
+export function originNow(now) {
+  const n = now instanceof Date ? now.getTime() : typeof now === 'number' ? now : typeof now === 'string' ? Date.parse(now) : NaN;
+  return Number.isFinite(n) ? n : Date.now();
+}
+
+/** An ISO time of `v` (see {@link originTime}), never later than `nowMs`; null when `v` is no time. */
+export function originTimeAt(v, nowMs) {
+  const t = originTime(v);
+  return t && Date.parse(t) > nowMs ? new Date(nowMs).toISOString() : t;
+}
+
 /** A server name as an entry keeps it (controls removed, at most 80 characters), or null. */
 export const originServer = (v) => (typeof v === 'string'
   ? v.normalize('NFC').replace(JUNK_RE, ' ').replace(/\s+/g, ' ').trim().slice(0, ORIGIN_MAP_LIMITS.server).trim() || null : null);
@@ -63,21 +81,22 @@ export function originTarget(e) {
   return e.ip.includes(':') ? `[${e.ip}]:${e.port}` : `${e.ip}:${e.port}`;
 }
 
-/** One stored entry, checked; null when it is not one. */
-function sanitizeEntry(raw) {
+/** One stored entry, checked, its dates at most `nowMs`; null when it is not one. */
+function sanitizeEntry(raw, nowMs) {
   if (!raw || typeof raw !== 'object') return null;
   const name = originName(raw.name);
   const ip = normalizeIP(String(raw.ip ?? ''));
   const port = originPort(raw.port);
-  const last = originTime(raw.lastConfirmed) || originTime(raw.firstSeen);
+  const last = originTimeAt(raw.lastConfirmed, nowMs) || originTimeAt(raw.firstSeen, nowMs);
   if (!name || !ip || !port || !last) return null;
-  const first = originTime(raw.firstSeen);
+  const first = originTimeAt(raw.firstSeen, nowMs);
   let stale = null;
   const s = raw.stale;
+  const markedAt = s && typeof s === 'object' ? originTimeAt(s.at, nowMs) : null;
   // A mark stands only while it is newer than the last confirmation (a confirmation as new as the
   // mark, or newer, cleared it: lib/originfill.js).
-  if (s && typeof s === 'object' && STALE_REASONS.includes(s.reason) && originTime(s.at) && ms(originTime(s.at)) > ms(last)) {
-    stale = { reason: s.reason, at: originTime(s.at) };
+  if (markedAt && STALE_REASONS.includes(s.reason) && ms(markedAt) > ms(last)) {
+    stale = { reason: s.reason, at: markedAt };
     const byIp = normalizeIP(String(s.ip ?? ''));
     const byPort = originPort(s.port);
     if (byIp && byPort) Object.assign(stale, { ip: byIp, port: byPort });
@@ -94,15 +113,18 @@ const rank = (a, b) => Number(!!a.stale) - Number(!!b.stale) || ms(b.lastConfirm
 /**
  * The map as the workspace keeps it: every entry checked, one per key (the latest
  * confirmation), at most {@link ORIGIN_MAP_LIMITS} (active and recent entries kept first), by
- * name; null when remembering is off and there is no entry (an empty part is not stored).
+ * name, no date later than `now` (the real clock unless given: {@link originNow}); null when
+ * remembering is off and there is no entry (an empty part is not stored).
  * @param {unknown} value
+ * @param {{ now?: Date|number|string }} [opts]
  * @returns {{ v: 1, remember: boolean, entries: object[] }|null}
  */
-export function sanitizeOriginMap(value) {
+export function sanitizeOriginMap(value, { now } = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const nowMs = originNow(now);
   const byKey = new Map();
   for (const raw of Array.isArray(value.entries) ? value.entries.slice(0, ORIGIN_MAP_LIMITS.entries * 4) : []) {
-    const e = sanitizeEntry(raw);
+    const e = sanitizeEntry(raw, nowMs);
     const prev = e && byKey.get(originKey(e));
     if (e && (!prev || ms(e.lastConfirmed) > ms(prev.lastConfirmed))) byKey.set(originKey(e), e);
   }

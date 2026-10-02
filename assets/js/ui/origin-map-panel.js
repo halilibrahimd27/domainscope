@@ -32,13 +32,14 @@ import { t, registerStrings, formatDate, formatDateTime, formatNumber } from '..
 import { state } from '../state.js';
 import { originKey, originTarget, sanitizeOriginMap, ORIGIN_DEFAULT_PORT } from '../lib/originmap.js';
 import { addManualOrigin, removeOrigins, setRemember, readCliReports } from '../lib/originfill.js';
-import { originMap, recordOrigins, recordText, serverOf, staleText, StaleBadge } from './origin-map.js';
+import { keptHereOnly, originMap, recordOrigins, recordText, saveOrigins, serverOf, staleText, StaleBadge } from './origin-map.js';
 
 /** Why the form refuses an entry (lib/originmap.js addManualOrigin). */
 export const FORM_ERRORS = Object.freeze(['off', 'name', 'ip', 'port', 'limit']);
 
 registerStrings('en', {
   'omp.privacy': 'The origin map stays in this browser, in the current workspace (IndexedDB). It leaves the browser only inside a workspace hand-over file you export yourself.',
+  'omp.privacyMemory': 'Browser storage is unavailable, so the origin map is kept in this tab only and is gone when you close it. It is sent nowhere.',
   'omp.lead': 'Which server and port really serves a name behind a CDN, remembered once a CLI sweep, a zone file or a server comparison found it. Verify checks the remembered origins (and a zone file’s) again, never a mere candidate. Subdomains and SSL Targets rank these origins first and put them in the CLI command.',
   'omp.remember': 'Remember origins in this workspace',
   'omp.rememberHint': 'Off by default. While it is off nothing is written to this map.',
@@ -100,6 +101,7 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'omp.privacy': 'Origin haritası bu tarayıcıda, geçerli çalışma alanında (IndexedDB) kalır. Tarayıcıdan yalnızca kendi dışa aktardığınız bir çalışma alanı devir dosyasının içinde çıkar.',
+  'omp.privacyMemory': 'Tarayıcı depolaması kullanılamıyor; origin haritası yalnızca bu sekmede tutulur ve sekmeyi kapattığınızda silinir. Hiçbir yere gönderilmez.',
   'omp.lead': 'Bir CDN’in arkasındaki adı gerçekte hangi sunucunun ve portun sunduğu; bir CLI taraması, zone dosyası ya da sunucu karşılaştırması bir kez bulduğunda hatırlanır. Doğrula, hatırlanan origin’leri (ve bir zone dosyasınınkileri) yeniden kontrol eder; yalnızca aday olan bir adresi asla hatırlamaz. Subdomain Tarama ve SSL Hedefleri bu origin’leri ilk sıraya koyar ve CLI komutuna ekler.',
   'omp.remember': 'Bu çalışma alanında origin’leri hatırla',
   'omp.rememberHint': 'Varsayılan olarak kapalı. Kapalıyken bu haritaya hiçbir şey yazılmaz.',
@@ -179,17 +181,24 @@ export function OriginMapPanel({ ctx }) {
   const S = { editing: null, form: { name: '', ip: '', port: '', server: '' }, all: false, outcome: null, importLines: [] };
 
   const map = () => originMap() || { v: 1, remember: false, entries: [] };
-  const save = (next) => state.setWorkspaceData('origins', sanitizeOriginMap(next));
-  const outcomeEl = h('div', { class: 'om-outcome', dataset: { role: 'om-outcome' }, attrs: { 'aria-live': 'polite', tabindex: -1 } });
+  const save = (next) => saveOrigins(sanitizeOriginMap(next));
+  // Not a live region: say() announces each message once (announce(), or the focus moved onto it).
+  const outcomeEl = h('div', { class: 'om-outcome', dataset: { role: 'om-outcome' }, attrs: { tabindex: -1 } });
 
-  /** Say what a click did; when that click's control went away (a deleted row), the keyboard focus goes to the message. */
-  function say(message, variant = 'ok') {
-    S.outcome = { message, variant };
+  /**
+   * Say what a click did, once; `wrote` adds that it is kept in this tab only when browser storage
+   * is unavailable. When that click's control went away (a deleted row), the keyboard focus goes
+   * to the message, which is then read as it gets the focus.
+   */
+  function say(message, variant = 'ok', { wrote = false } = {}) {
+    const text = wrote && keptHereOnly() ? `${message} ${t('om.memoryOnly')}` : message;
+    const shown = wrote && keptHereOnly() && variant === 'ok' ? 'warn' : variant;
+    S.outcome = { message: text, variant: shown };
     clear(outcomeEl);
-    outcomeEl.append(Alert({ variant, compact: true, message, dismissible: true, onDismiss: () => { S.outcome = null; } }));
-    announce(message);
+    outcomeEl.append(Alert({ variant: shown, compact: true, message: text, dismissible: true, onDismiss: () => { S.outcome = null; } }));
     const doc = globalThis.document;
     if (doc && (!doc.activeElement || doc.activeElement === doc.body || !doc.activeElement.isConnected)) outcomeEl.focus({ preventScroll: true });
+    else announce(text);
   }
 
   async function toggle(on) {
@@ -211,7 +220,7 @@ export function OriginMapPanel({ ctx }) {
     save(removeOrigins(map(), [originKey(entry)]));
     if (S.editing === originKey(entry)) S.editing = null;
     render();
-    say(t('omp.deleted', { name: entry.name, target: originTarget(entry) }), 'info');
+    say(t('omp.deleted', { name: entry.name, target: originTarget(entry) }), 'info', { wrote: true });
   }
 
   function edit(entry) {
@@ -226,7 +235,7 @@ export function OriginMapPanel({ ctx }) {
     const stale = map().entries.filter((e) => e.stale);
     save(removeOrigins(map(), stale.map(originKey)));
     render();
-    say(t('omp.removedStale', { count: stale.length }), 'info');
+    say(t('omp.removedStale', { count: stale.length }), 'info', { wrote: true });
   }
 
   async function forget() {
@@ -236,7 +245,7 @@ export function OriginMapPanel({ ctx }) {
     save(removeOrigins(map(), map().entries.map(originKey)));
     S.editing = null;
     render();
-    say(t('omp.forgotten'), 'info');
+    say(t('omp.forgotten'), 'info', { wrote: true });
   }
 
   function submit() {
@@ -253,7 +262,7 @@ export function OriginMapPanel({ ctx }) {
     S.editing = null;
     S.form = { name: '', ip: '', port: '', server: '' };
     render();
-    say(t('omp.added', { name, target: originTarget({ ip, port: Number(port) }) }));
+    say(t('omp.added', { name, target: originTarget({ ip, port: Number(port) }) }), 'ok', { wrote: true });
   }
 
   function importReports(files) {
@@ -271,6 +280,23 @@ export function OriginMapPanel({ ctx }) {
     S.importLines = lines;
     render();
     announce(lines.map((l) => l.text).join(' '));
+  }
+
+  /** An entry's Edit button (found again by its key: Cancel puts the focus back on it). */
+  function editButton(e) {
+    const button = IconButton({ icon: 'edit', size: 'sm', label: t('omp.edit', { name: e.name, target: originTarget(e) }), onClick: () => edit(e) });
+    Object.assign(button.dataset, { action: 'om-edit', key: originKey(e) });
+    return button;
+  }
+
+  /** Leave the edit form; the focus goes back to the Edit button of the entry (or to the name field). */
+  function cancelEdit() {
+    const key = S.editing;
+    S.editing = null;
+    S.form = { name: '', ip: '', port: '', server: '' };
+    render();
+    const back = [...el.querySelectorAll('[data-action="om-edit"]')].find((b) => b.dataset.key === key) || el.querySelector('[data-role="om-name"]');
+    if (back && !back.disabled) back.focus();
   }
 
   function rememberSwitch(m) {
@@ -315,7 +341,7 @@ export function OriginMapPanel({ ctx }) {
         {
           key: 'actions', label: t('omp.col.actions'), export: false,
           render: (e) => h('div', { class: 'cluster om-actions' },
-            m.remember ? IconButton({ icon: 'edit', size: 'sm', label: t('omp.edit', { name: e.name, target: originTarget(e) }), onClick: () => edit(e) }) : null,
+            m.remember ? editButton(e) : null,
             IconButton({ icon: 'trash', size: 'sm', label: t('omp.delete', { name: e.name, target: originTarget(e) }), onClick: () => remove(e) }))
         }
       ]
@@ -368,14 +394,7 @@ export function OriginMapPanel({ ctx }) {
             label: S.editing ? t('omp.save') : t('omp.add'), icon: 'check', variant: 'primary', disabled: !m.remember,
             dataset: { action: 'om-add', shortcut: 'submit' }, onClick: submit
           }),
-          S.editing ? Button({
-            label: t('omp.cancel'), variant: 'ghost', dataset: { action: 'om-cancel' },
-            onClick: () => {
-              S.editing = null;
-              S.form = { name: '', ip: '', port: '', server: '' };
-              render();
-            }
-          }) : null))
+          S.editing ? Button({ label: t('omp.cancel'), variant: 'ghost', dataset: { action: 'om-cancel' }, onClick: cancelEdit }) : null))
     });
   }
 
@@ -394,7 +413,8 @@ export function OriginMapPanel({ ctx }) {
         h('p', { class: 'text-sm' }, t('omp.importHint')),
         m.remember ? drop.el : null,
         m.remember ? all.el : null,
-        h('div', { class: 'stack-sm', dataset: { role: 'om-import-result' }, attrs: { 'aria-live': 'polite' } },
+        // Not a live region: importReports announces the lines once.
+        h('div', { class: 'stack-sm', dataset: { role: 'om-import-result' } },
           S.importLines.map((l) => Alert({ variant: l.variant, compact: true, message: l.text }))))
     });
   }
@@ -405,7 +425,8 @@ export function OriginMapPanel({ ctx }) {
     const focusKey = active && el.contains(active) ? (active.dataset.role || active.dataset.action || null) : null;
     clear(el);
     el.append(
-      Alert({ variant: 'ok', icon: 'lock', compact: true, message: t('omp.privacy') }),
+      keptHereOnly() ? Alert({ variant: 'warn', icon: 'alert', compact: true, message: t('omp.privacyMemory') })
+        : Alert({ variant: 'ok', icon: 'lock', compact: true, message: t('omp.privacy') }),
       tableCard(m),
       h('div', { class: 'om-columns' }, formCard(m), importCard(m)));
     if (S.outcome) {

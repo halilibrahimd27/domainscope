@@ -363,6 +363,23 @@ async function main() {
       assertEqual(badge, '2', 'tab badge');
     });
 
+    await run.step('Edit, then Cancel from the keyboard: the focus goes back to that row\'s Edit button; each message is said once', async () => {
+      await openOriginMap(page);
+      const label = await page.evaluate(() => {
+        const button = document.querySelector('.om-table tbody tr.dt-row .om-actions .btn');
+        button.click();
+        return button.getAttribute('aria-label');
+      });
+      await page.waitFor(() => document.querySelector('[data-action="om-cancel"]'), { message: 'edit mode' });
+      await page.evaluate(() => document.querySelector('[data-action="om-cancel"]').focus());
+      await page.press('Enter');
+      await page.waitFor(() => !document.querySelector('[data-action="om-cancel"]'), { message: 'cancelled' });
+      assertEqual(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), label, 'focus on the row\'s Edit button');
+      // announce() says each message; the lines that show them are no live regions of their own.
+      assertEqual(await page.evaluate(() => ['om-outcome', 'om-import-result'].map((r) => document.querySelector(`[data-role="${r}"]`)?.getAttribute('aria-live') ?? null)),
+        [null, null], 'no second live region');
+    });
+
     await run.step('switching remembering off asks first and keeps the entries; the form is disabled', async () => {
       await toggleRemember(page);
       await page.waitFor(() => document.querySelector('dialog.modal[open] .modal-foot .btn-primary'), { message: 'confirmation' });
@@ -429,6 +446,56 @@ async function main() {
       await openOriginMap(page);
       assertEqual(await page.evaluate(() => [document.querySelector('[data-role="om-remember"]')?.checked, document.querySelector('[data-role="om-count"]')?.textContent]),
         [false, 'No origins remembered yet.'], 'off and empty again');
+    });
+
+    run.group('Storage: a write that fails, browser storage refused');
+    await run.step('a write that fails (the storage is full): a warning says the origin map was not saved', async () => {
+      await openOriginMap(page);
+      await removeToasts(page);
+      await page.evaluate(() => {
+        const transaction = IDBDatabase.prototype.transaction;
+        window.__restorePut = () => {
+          IDBDatabase.prototype.transaction = transaction;
+        };
+        IDBDatabase.prototype.transaction = function full() {
+          throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+        };
+      });
+      try {
+        await toggleRemember(page);
+        const toast = await page.waitFor(() => [...document.querySelectorAll('.toast')].map((el) => el.textContent).find((x) => /origin map could not be saved/.test(x)) || false,
+          { message: 'the warning', timeout: 10000 });
+        assert(/lasts until you close this tab/.test(toast), toast);
+      } finally {
+        await page.evaluate(() => window.__restorePut());
+      }
+      await removeToasts(page);
+    });
+
+    await run.step('browser storage refused: the tab says the map lives in this tab only, and so does a remembered origin', async () => {
+      const memory = await browser.newPage('about:blank', { width: 1024, height: 800 });
+      try {
+        await networkGuard(memory);
+        await memory.send('Page.addScriptToEvaluateOnNewDocument', {
+          source: '(() => { IDBFactory.prototype.open = function () { throw new DOMException(\'refused (test)\', \'UnknownError\'); }; })();'
+        });
+        await memory.goto(`${server.url}#/about`);
+        await waitReady(memory);
+        await setLangUi(memory, 'en');
+        await openOriginMap(memory);
+        const privacy = await memory.evaluate(() => document.querySelector('.om-panel > .alert')?.textContent || '');
+        assert(/in this tab only/.test(privacy) && !/IndexedDB/.test(privacy), privacy);
+        await toggleRemember(memory);
+        await memory.waitFor(() => document.querySelector('[data-role="om-remember"]')?.checked, { message: 'on' });
+        await memory.type('[data-role="om-name"]', `www.${APEX}`);
+        await memory.type('[data-role="om-ip"]', '192.0.2.10');
+        await memory.press('Enter');
+        const said = await memory.waitFor(() => document.querySelector('[data-role="om-outcome"] .alert')?.textContent || false, { message: 'outcome' });
+        assert(/^Remembered www\.example\.net → 192\.0\.2\.10\./.test(said) && /in this tab only/.test(said), said);
+        await assertNoMissingKeys(memory);
+      } finally {
+        await memory.close();
+      }
     });
 
     run.group('Quality');

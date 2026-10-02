@@ -41,7 +41,8 @@ registerStrings('en', {
     one: 'Not remembered: {list} (not known to be behind a CDN).',
     other: 'Not remembered: {count} names not known to be behind a CDN ({list}).'
   },
-  'om.notSaved': 'The origin map could not be saved in this browser: it lasts until you close this tab.'
+  'om.notSaved': 'The origin map could not be saved in this browser: it lasts until you close this tab.',
+  'om.memoryOnly': 'Kept in this tab only: browser storage is unavailable.'
 });
 
 registerStrings('tr', {
@@ -66,7 +67,8 @@ registerStrings('tr', {
   'om.skipped': {
     other: 'Hatırlanmadı: CDN arkasında olduğu bilinmeyen {count} ad ({list}).'
   },
-  'om.notSaved': 'Origin haritası bu tarayıcıya kaydedilemedi: bu sekme kapanana kadar geçerli.'
+  'om.notSaved': 'Origin haritası bu tarayıcıya kaydedilemedi: bu sekme kapanana kadar geçerli.',
+  'om.memoryOnly': 'Yalnızca bu sekmede tutuluyor: tarayıcı depolaması kullanılamıyor.'
 });
 
 /** The keys this module builds from library codes (tests/js/i18n-coverage.test.js). */
@@ -83,6 +85,25 @@ export function originMap() {
 export function rememberOn() {
   const map = originMap();
   return !!(map && map.remember);
+}
+
+/** True when the workspaces live in this tab only (browser storage refused or unreadable). */
+export function keptHereOnly() {
+  return !state.workspacePersistence;
+}
+
+/**
+ * Save the active workspace's origin map; a write that fails (a full or blocked storage) says so
+ * in a warning.
+ * @param {object|null} map
+ * @returns {Promise<boolean>} written
+ */
+export function saveOrigins(map) {
+  const done = state.setWorkspaceData('origins', map);
+  done.then((ok) => {
+    if (!ok) toast(t('om.notSaved'), { type: 'warn', timeout: 8000 });
+  });
+  return done;
 }
 
 /** The inventory server of an address, by name (or null). */
@@ -132,24 +153,22 @@ export function OriginMapOffNote(ctx) {
 export function recordOrigins(observations, { source, at, proxied = null }) {
   const res = applyObservations(originMap(), observations, { source, at, proxied, serverOf });
   const changed = res.added.length || res.confirmed.length || res.staled.length;
-  const done = !res.off && changed ? state.setWorkspaceData('origins', res.map) : Promise.resolve(true);
-  done.then((ok) => {
-    if (!ok) toast(t('om.notSaved'), { type: 'warn', timeout: 8000 });
-  });
+  const done = !res.off && changed ? saveOrigins(res.map) : Promise.resolve(true);
   return { ...res, done };
 }
 
 /**
- * What {@link recordOrigins} did, in one or two sentences.
+ * What {@link recordOrigins} did, in one to three sentences (the last: kept in this tab only, when
+ * browser storage is unavailable and something changed).
  * @param {{ added: string[], confirmed: string[], staled: string[], skipped?: string[] }} res
  * @returns {string}
  */
 export function recordText(res) {
-  const line = t('om.result', {
+  const parts = [t('om.result', {
     added: formatNumber(res.added.length), confirmed: formatNumber(res.confirmed.length), staled: formatNumber(res.staled.length)
-  });
+  })];
   const skipped = res.skipped || [];
-  if (!skipped.length) return line;
-  const list = skipped.slice(0, 5).join(', ') + (skipped.length > 5 ? ', …' : '');
-  return `${line} ${t('om.skipped', { count: skipped.length, list })}`;
+  if (skipped.length) parts.push(t('om.skipped', { count: skipped.length, list: skipped.slice(0, 5).join(', ') + (skipped.length > 5 ? ', …' : '') }));
+  if (keptHereOnly() && (res.added.length || res.confirmed.length || res.staled.length)) parts.push(t('om.memoryOnly'));
+  return parts.join(' ');
 }

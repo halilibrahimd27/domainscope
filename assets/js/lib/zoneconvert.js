@@ -388,6 +388,8 @@ const LIST_PARAMS = Object.freeze(['types', 'flags', 'tags', 'keys']);
 /** A pitfall collector for one conversion. */
 function collector(target, origin) {
   const map = new Map();
+  /** code → the names already listed (a zone of 20,000 proxied records lists 20,000 names). */
+  const listed = new Map();
   return {
     flag(code, r = null, extra = {}) {
       const severity = PITFALL_SEVERITY[code] && PITFALL_SEVERITY[code][target];
@@ -396,11 +398,15 @@ function collector(target, origin) {
       if (!p) {
         p = { code, severity, count: 0, names: [], params: { target: TARGET_NAMES[target] } };
         map.set(code, p);
+        listed.set(code, new Set());
       }
       p.count += 1;
       if (r) {
         const rel = relativeName(r.name, origin);
-        if (!p.names.includes(rel)) p.names.push(rel);
+        if (!listed.get(code).has(rel)) {
+          listed.get(code).add(rel);
+          p.names.push(rel);
+        }
       }
       for (const [k, v] of Object.entries(extra)) {
         if (LIST_PARAMS.includes(k)) {

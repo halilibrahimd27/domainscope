@@ -32,6 +32,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { stubClipboard, takeClipboard } from './scan.e2e.mjs';
 import { groupAnswers, groupLetter, median, minAnswerTtl, splitChain, isBrowserBlocked, terminalCommand, GLOBAL_TYPES } from '../../assets/js/views/global.js';
 import { RESOLVERS, ECS_RESOLVERS, GEO_VANTAGES } from '../../assets/js/lib/resolvers.js';
 
@@ -227,6 +228,10 @@ const SERVFAIL_SUBNETS = [GEO_VANTAGES[0].subnet, GEO_VANTAGES[1].subnet];
  * - china-nocontrol.example.com: as china.example.com, but the control gets no answer: the China
  *   branch is told with a doubt and the TTL;
  * - china-servfail.example.com: AliDNS SERVFAILs for Shanghai: a failure, never "DNSSEC";
+ * - china-anycast(-stale|-nocontrol).example.com: as china(-stale|-nocontrol), but the world is on
+ *   Cloudflare's anycast addresses, so every resolver and location outside China agrees;
+ * - china-bare.example.com: Fastly's anycast address everywhere, a bare Cloudflare-range address
+ *   with no name in front only for the China rows: the shape of a forged answer;
  * - txt.example.com TXT: eight records; AliDNS would give three of them (it cuts large answers short
  *   without TC), so the China rows are not asked for TXT at all.
  * The China rows' questions reach AliDNS in its JSON form and are answered in it (recorded in
@@ -303,6 +308,17 @@ const fakeGlobalDnsScript = () => `(() => {
       const edge = qname + '.w.kunluncan.com';
       return { answers: [{ ...cn(qname, edge), ttl: 600 }, a(edge, h % 2 ? '198.51.100.17' : '198.51.100.18')] };
     }
+    if (/^china-anycast(-stale|-nocontrol)?\.example\.com$/.test(qname)) {
+      const edge = qname + '.cdn.cloudflare.net';
+      const world = { answers: [cn(qname, edge), a(edge, '104.16.1.1')] };
+      if (resolver !== 'alidns') return world;
+      const inChina = CN_SUBNETS.includes(ecs);
+      if (!inChina && qname === 'china-anycast-nocontrol.example.com') return { rcode: 'SERVFAIL', answers: [] };
+      if (!inChina && qname === 'china-anycast.example.com') return world;
+      const ali = qname + '.w.kunluncan.com';
+      return { answers: [{ ...cn(qname, ali), ttl: 600 }, a(ali, h % 2 ? '198.51.100.17' : '198.51.100.18')] };
+    }
+    if (qname === 'china-bare.example.com') return { answers: [a(qname, resolver === 'alidns' && CN_SUBNETS.includes(ecs) ? '104.16.5.5' : FASTLY[0])] };
     if (qname === 'txt.example.com') {
       const all = ['example-verification=aaaa0001', 'example-verification=aaaa0002', 'example-verification=aaaa0003', 'example-verification=aaaa0004',
         'example-verification=aaaa0005', 'example-verification=aaaa0006', 'example-verification=aaaa0007', 'v=spf1 -all'];
@@ -378,6 +394,14 @@ function verdictInfo() {
     groupsStat: document.querySelectorAll('.glb-stats .stat')[1]?.className || '',
     external: window.__externalFetches
   };
+}
+
+/** The verdict line of the Global DNS Copy summary (Markdown): its second line. */
+async function copiedVerdict(page) {
+  await stubClipboard(page);
+  await page.click('[data-summary="global"] [data-action="copy-summary"]');
+  await page.waitFor(() => window.__clip.length === 1, { message: 'summary copied' });
+  return (await takeClipboard(page))[0].split('\n')[1];
 }
 
 async function offlineVerdicts(browser, server) {
@@ -596,12 +620,48 @@ async function offlineVerdicts(browser, server) {
     await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
     const unsure = await page.evaluate(verdictInfo);
     assertEqual(unsure.state, 'by-design', `unsure: state (${unsure.title}: ${unsure.message})`);
+    assertEqual(unsure.title, 'Most likely by design: CDN / GeoDNS edges (Amazon CloudFront, Alibaba Cloud CDN)', 'unsure: a hedged title');
+    assertEqual(await copiedVerdict(page), '- Most likely by design: CDN / GeoDNS edges (Amazon CloudFront, Alibaba Cloud CDN); AliDNS may still hold an older answer for mainland China',
+      'unsure: a hedged Copy summary');
     assert(/sends Beijing, China; Shanghai, China; Guangzhou, China to CNAME china-nocontrol\.example\.com\.w\.kunluncan\.com, unlike every other source: either .* a line of its own .*, or AliDNS still holds an older answer — that would expire within 10 min\. AliDNS asked on behalf of a subnet outside China could not tell the two apart\./.test(unsure.message),
       `unsure: the doubt and the TTL: ${unsure.message}`);
     await setLangUi(page, 'tr');
     await page.waitFor(() => /eski bir yanıt/.test(document.querySelector('.glb-summary .alert-message')?.textContent || ''), { message: 'TR doubt' });
+    assertEqual(await page.evaluate(() => document.querySelector('.glb-summary .alert-title')?.textContent), 'Büyük olasılıkla tasarım gereği farklı: CDN / GeoDNS uç sunucuları (Amazon CloudFront, Alibaba Cloud CDN)', 'TR hedged title');
     await setLangUi(page, 'en');
     assertEqual([stale.external, unsure.external], [[], []], 'nothing left the page');
+  });
+
+  await step('mainland China when every resolver agrees (anycast): the China branch still needs the control, a bare CDN address there is never GeoDNS', async () => {
+    const check = async (name) => {
+      await gotoHash(page, `#/global?name=${name}&type=A`, 'global');
+      await page.waitFor(DONE, { timeout: 20000, message: `${name}: offline check done` });
+      return page.evaluate(verdictInfo);
+    };
+    // The control gets the world's Cloudflare answer: China's line, GeoDNS, told as such.
+    const line = await check('china-anycast.example.com');
+    assertEqual([line.state, line.title], ['geo', 'Resolvers agree — locations differ'], `line: ${line.message}`);
+    assert(/china-anycast\.example\.com sends Beijing, China; Shanghai, China; Guangzhou, China to CNAME china-anycast\.example\.com\.w\.kunluncan\.com, unlike every other source\. Asked on behalf of a subnet outside China, AliDNS gives the rest of the world.s answer/.test(line.message),
+      `line: the split told: ${line.message}`);
+    // The control gets China's branch too: AliDNS's own older answer, a move from Alibaba Cloud CDN to Cloudflare.
+    const stale = await check('china-anycast-stale.example.com');
+    assertEqual([stale.state, stale.findings.map((f) => f.code)], ['differ', ['cname']], `stale: ${stale.title}: ${stale.message}`);
+    assert(/points to different providers depending on the source \(Cloudflare, Alibaba Cloud CDN\)/.test(stale.findings[0].text), `stale: the move: ${stale.findings[0].text}`);
+    // No control answer: likely GeoDNS, never certain — the title, the body and the Copy summary say so.
+    const unsure = await check('china-anycast-nocontrol.example.com');
+    assertEqual([unsure.state, unsure.title], ['geo', 'Resolvers agree — locations differ, most likely by GeoDNS'], `unsure: ${unsure.message}`);
+    assert(/one difference is not certain: .*either a line of its own for the resolvers in mainland China .*, or an older answer AliDNS still holds — that would expire within 10 min\./.test(unsure.message),
+      `unsure: the doubt and the TTL: ${unsure.message}`);
+    assertEqual(await copiedVerdict(page), '- Resolvers agree — locations differ, most likely by GeoDNS; AliDNS may still hold an older answer for mainland China', 'unsure: Copy summary');
+    await setLangUi(page, 'tr');
+    await page.waitFor(() => document.querySelector('.glb-summary .alert-title')?.textContent === 'Çözümleyiciler aynı — konumlar büyük olasılıkla GeoDNS yüzünden farklı', { message: 'TR hedged geo title' });
+    assertEqual(await copiedVerdict(page), '- Çözümleyiciler aynı — konumlar büyük olasılıkla GeoDNS yüzünden farklı; AliDNS anakara Çin için hâlâ eski bir yanıtı tutuyor olabilir', 'TR Copy summary');
+    await setLangUi(page, 'en');
+    // A bare Cloudflare-range address only in China while the world gets Fastly's anycast address.
+    const bare = await check('china-bare.example.com');
+    assertEqual([bare.state, bare.findings.map((f) => f.code)], ['differ', ['operators']], `bare: ${bare.title}: ${bare.message}`);
+    assert(/point to different providers depending on the source \(Fastly, Cloudflare\)/.test(bare.findings[0].text), `bare: ${bare.findings[0].text}`);
+    assertEqual([line.external, stale.external, unsure.external, bare.external], [[], [], [], []], 'nothing left the page');
   });
 
   await step('mainland China: an AliDNS SERVFAIL is a failure there, never a DNSSEC validation failure', async () => {
@@ -654,7 +714,7 @@ async function offlineVerdicts(browser, server) {
     await page.setViewport({ width: 375, height: 812, mobile: true });
     for (const scheme of ['light', 'dark']) {
       await page.emulateMedia({ 'prefers-color-scheme': scheme });
-      for (const name of ['www.example.com', 'example.org', 'china.example.com', 'mixed.example.com']) {
+      for (const name of ['www.example.com', 'example.org', 'china.example.com', 'china-anycast-nocontrol.example.com', 'mixed.example.com']) {
         await gotoHash(page, `#/global?name=${name}&type=A`, 'global');
         await page.waitFor(DONE, { timeout: 20000 });
         await assertNoHorizontalScroll(page, `375 px ${scheme} ${name}`);

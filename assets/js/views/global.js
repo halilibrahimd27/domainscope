@@ -94,13 +94,18 @@ registerStrings('en', {
   'glb.sum.agreeBody': { one: 'The source returned this answer.', other: 'All {count} resolvers and locations returned the same answer.' },
   'glb.sum.geoTitle': 'Resolvers agree — locations differ',
   'glb.sum.geoBody': 'The locations see {groups} different answers. That is normal for CDNs and GeoDNS: every region is sent to nearby servers.',
+  'glb.sum.geoTitleUnsure': 'Resolvers agree — locations differ, most likely by GeoDNS',
+  'glb.sum.geoBodyUnsure': 'The locations see {groups} different answers. CDNs and GeoDNS send every region to nearby servers, but one difference is not certain:',
   'glb.sum.designTitle': 'Differs by design: CDN / GeoDNS edges ({operators})',
+  'glb.sum.designTitleUnsure': 'Most likely by design: CDN / GeoDNS edges ({operators})',
   'glb.sum.designBody': 'Every answer is an edge of a known CDN, platform or DNS steering service, and the CNAME chains agree up to it. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
   'glb.sum.designSteered': 'Every answer is an edge of a known CDN, platform or DNS steering service. On the way, {owner} sends sources to different names ({targets}), but they lead to the same CDN names: weighted or load-balanced records in the name’s own DNS, not a change. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
   'glb.sum.designGeo': 'Every answer is an edge of a known CDN, platform or DNS steering service. {owner} sends {sources} to {targets}, unlike every other source. Asked on behalf of a subnet outside China, AliDNS gives the rest of the world’s answer: the name’s own DNS answers the resolvers in mainland China from a line of its own (typically for a CDN there), not a change. Such operators hand out different, nearby servers per region and resolver — this is not propagation.',
   'glb.sum.designGeoUnsure': 'Every answer is an edge of a known CDN, platform or DNS steering service. {owner} sends {sources} to {targets}, unlike every other source: either the name’s own DNS answers the resolvers in mainland China from a line of its own (typically for a CDN there), or AliDNS still holds an older answer — that would expire within {ttl}. AliDNS asked on behalf of a subnet outside China could not tell the two apart.',
   'glb.sum.nodataTitle': 'No {type} records anywhere — the CNAME chains differ by design ({operators})',
+  'glb.sum.nodataTitleUnsure': 'No {type} records anywhere — the CNAME chains most likely differ by design ({operators})',
   'glb.sum.nodataBody': 'No source returns {type} records for this name. The CNAME chains differ only by steering (CDN / GeoDNS, weighted or load-balanced records) and all lead to {operators} — this is not propagation.',
+  'glb.sum.nodataNone': 'No source returns {type} records for this name.',
   'glb.sum.designMulti': 'More than one operator answers (multi-CDN steering). If you are moving from one to the other, answers that point to the old one stay cached until their TTL expires.',
   'glb.sum.designPart': 'The differences between {operators} edges are by design; these are not:',
   'glb.sum.differTitle': 'Answers differ',
@@ -241,13 +246,18 @@ registerStrings('tr', {
   'glb.sum.agreeBody': { one: 'Kaynak bu yanıtı döndürdü.', other: '{count} çözümleyici ve konumun hepsi aynı yanıtı döndürdü.' },
   'glb.sum.geoTitle': 'Çözümleyiciler aynı — konumlar farklı',
   'glb.sum.geoBody': 'Konumlar {groups} farklı yanıt görüyor. CDN ve GeoDNS için bu normaldir: her bölge yakınındaki sunuculara yönlendirilir.',
+  'glb.sum.geoTitleUnsure': 'Çözümleyiciler aynı — konumlar büyük olasılıkla GeoDNS yüzünden farklı',
+  'glb.sum.geoBodyUnsure': 'Konumlar {groups} farklı yanıt görüyor. CDN ve GeoDNS her bölgeyi yakınındaki sunuculara yönlendirir, ama farklardan biri kesin değil:',
   'glb.sum.designTitle': 'Tasarım gereği farklı: CDN / GeoDNS uç sunucuları ({operators})',
+  'glb.sum.designTitleUnsure': 'Büyük olasılıkla tasarım gereği farklı: CDN / GeoDNS uç sunucuları ({operators})',
   'glb.sum.designBody': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu ve CNAME zincirleri ona kadar aynı. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
   'glb.sum.designSteered': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu. Yol üzerinde {owner} kaynakları farklı adlara gönderiyor ({targets}), ama bunlar aynı CDN adlarına çıkıyor: adın kendi DNS’indeki ağırlıklı ya da yük dengeleyen kayıtlar, bir değişiklik değil. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
   'glb.sum.designGeo': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu. {owner}, {sources} konumlarını diğer tüm kaynaklardan farklı bir yere ({targets}) gönderiyor. Anakara Çin dışındaki bir alt ağ adına sorulduğunda AliDNS dünyanın geri kalanının yanıtını veriyor: adın kendi DNS’i anakara Çin’deki çözümleyicilere ayrı bir hattan yanıt veriyor (genellikle oradaki bir CDN için), bu bir değişiklik değil. Bu sağlayıcılar her bölgeye ve çözümleyiciye farklı, yakın sunucular verir — bu bir yayılma (propagation) sorunu değil.',
   'glb.sum.designGeoUnsure': 'Her yanıt bilinen bir CDN’in, platformun ya da DNS yönlendirme hizmetinin uç sunucusu. {owner}, {sources} konumlarını diğer tüm kaynaklardan farklı bir yere ({targets}) gönderiyor: ya adın kendi DNS’i anakara Çin’deki çözümleyicilere ayrı bir hattan yanıt veriyor (genellikle oradaki bir CDN için) ya da AliDNS hâlâ eski bir yanıtı tutuyor — o yanıt en geç {ttl} içinde sona erer. Anakara Çin dışındaki bir alt ağ adına AliDNS’e sormak bu ikisini ayırt edemedi.',
   'glb.sum.nodataTitle': 'Hiçbir kaynakta {type} kaydı yok — CNAME zincirleri tasarım gereği farklı ({operators})',
+  'glb.sum.nodataTitleUnsure': 'Hiçbir kaynakta {type} kaydı yok — CNAME zincirleri büyük olasılıkla tasarım gereği farklı ({operators})',
   'glb.sum.nodataBody': 'Hiçbir kaynak bu ad için {type} kaydı döndürmüyor. CNAME zincirleri yalnızca yönlendirme (CDN / GeoDNS, ağırlıklı ya da yük dengeleyen kayıtlar) yüzünden farklı ve hepsi {operators} adlarına çıkıyor — bu bir yayılma (propagation) sorunu değil.',
+  'glb.sum.nodataNone': 'Hiçbir kaynak bu ad için {type} kaydı döndürmüyor.',
   'glb.sum.designMulti': 'Birden fazla sağlayıcı yanıt veriyor (çoklu CDN yönlendirmesi). Birinden diğerine geçiyorsanız, eskisini gösteren yanıtlar TTL süresi dolana kadar önbellekte kalır.',
   'glb.sum.designPart': '{operators} uç sunucuları arasındaki farklar tasarım gereği; şunlar öyle değil:',
   'glb.sum.differTitle': 'Yanıtlar farklı',
@@ -1238,9 +1248,9 @@ export function mount(container, ctx) {
       // No records of the type anywhere (AAAA of an IPv4-only CDN name): only the chains differ.
       const type = current.type;
       const steered = verdict.steering[0];
-      // Only the locations asked through a resolver of their own (mainland China) take another branch.
-      const split = verdict.geoSplits[0];
-      const body = verdict.noRecords ? t('glb.sum.nodataBody', { type, operators })
+      const { split, unsure } = splitOfVerdict();
+      const body = verdict.noRecords
+        ? (unsure ? [t('glb.sum.nodataNone', { type }), splitText(split)] : [t('glb.sum.nodataBody', { type, operators }), split ? splitText(split) : null]).filter(Boolean).join(' ')
         : split ? t(split.line ? 'glb.sum.designGeo' : 'glb.sum.designGeoUnsure', splitParams(split))
           : steered ? t('glb.sum.designSteered', { owner: steered.owner || current.name, targets: shortList(steered.targets) })
             : t('glb.sum.designBody');
@@ -1250,12 +1260,19 @@ export function mount(container, ctx) {
       alert = Alert({
         variant: 'info',
         icon: 'globe',
-        title: verdict.noRecords ? t('glb.sum.nodataTitle', { type, operators }) : t('glb.sum.designTitle', { operators }),
+        title: verdict.noRecords ? t(unsure ? 'glb.sum.nodataTitleUnsure' : 'glb.sum.nodataTitle', { type, operators })
+          : t(unsure ? 'glb.sum.designTitleUnsure' : 'glb.sum.designTitle', { operators }),
         message: [body, multi ? t('glb.sum.designMulti') : null, extra].filter(Boolean).join(' ')
       });
     } else if (state === 'geo') {
       const geoGroups = distinct(usable.filter((r) => r.kind === 'geo'));
-      alert = Alert({ variant: 'info', icon: 'map-pin', title: t('glb.sum.geoTitle'), message: [t('glb.sum.geoBody', { groups: formatNumber(geoGroups) }), extra].filter(Boolean).join(' ') });
+      const { split, unsure } = splitOfVerdict();
+      alert = Alert({
+        variant: 'info',
+        icon: 'map-pin',
+        title: t(unsure ? 'glb.sum.geoTitleUnsure' : 'glb.sum.geoTitle'),
+        message: [t(unsure ? 'glb.sum.geoBodyUnsure' : 'glb.sum.geoBody', { groups: formatNumber(geoGroups) }), split ? splitText(split) : null, extra].filter(Boolean).join(' ')
+      });
     } else {
       alert = Alert({
         variant: 'warn',
@@ -1307,6 +1324,18 @@ export function mount(container, ctx) {
     owner: split.owner || current.name, sources: sourceNames(split.members), targets: splitTargets(split), ttl: humanTtl(splitTtl(split))
   });
 
+  /** A split told on its own: the region's line (the control confirms it), or either that or an older answer. */
+  const splitText = (split) => t(split.line ? 'glb.find.cnameGeo' : 'glb.find.cnameGeoUnsure', splitParams(split));
+
+  /**
+   * The branch only the locations asked through a resolver of their own (mainland China) take, the
+   * one the control could not confirm first: a verdict that rests on it is told as likely, never certain.
+   */
+  function splitOfVerdict() {
+    const split = verdict.geoSplits.find((s) => !s.line) || verdict.geoSplits[0] || null;
+    return { split, unsure: !!split && !split.line };
+  }
+
   /**
    * Display names of answer sources (resolver names, location names), de-duplicated. Joined
    * with "; ": a location name has a comma of its own ("Istanbul, Türkiye").
@@ -1347,7 +1376,7 @@ export function mount(container, ctx) {
         const owner = f.owner || current.name;
         if (f.byLocation) {
           // Only the locations asked through a resolver of their own take this branch: by design.
-          text = t(f.byLocation.line ? 'glb.find.cnameGeo' : 'glb.find.cnameGeoUnsure', splitParams(f.byLocation));
+          text = splitText(f.byLocation);
           break;
         }
         // null: the chain ends there — in address records, or with no records at all.

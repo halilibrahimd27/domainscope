@@ -73,7 +73,8 @@ export function healthSummary({ report }, opts) {
 /**
  * Global DNS: why the answers agree or differ (lib/propagation.propagationVerdict), how many
  * answers from how many sources (with none, only how many failed), who operates them, the
- * findings and the addresses seen.
+ * findings and the addresses seen. A verdict that rests on a branch only mainland China takes
+ * which the control could not confirm (a `geoSplits` entry without `line`) is worded as likely.
  * @param {{ name: string, type: string, verdict: object|null, total: number, answered: number,
  *   failed?: number, cancelled?: boolean, addresses?: number, at?: Date }} facts `at`: when the check ended
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
@@ -86,9 +87,13 @@ export function globalSummary(facts, opts) {
   const answered = Number(facts.answered) || 0;
   const operators = (v.operators || []).map((op) => op.name).filter(Boolean);
   const opList = operators.slice(0, 3).join(', ') + (operators.length > 3 ? ` ${t('common.moreCount', { count: operators.length - 3 })}` : '');
+  // A branch only mainland China takes that the control could not confirm: a likely answer, not a certain one.
+  const unsure = (v.geoSplits || []).some((split) => !split.line);
   let state;
   if (!answered) state = facts.cancelled ? t('sum.global.stopped') : t('sum.global.failed');
-  else if (v.state === 'by-design') state = v.noRecords ? t('sum.global.nodata', { type: facts.type, operators: opList }) : t('sum.global.design', { operators: opList });
+  else if (v.state === 'by-design' && v.noRecords) state = t(unsure ? 'sum.global.nodataUnsure' : 'sum.global.nodata', { type: facts.type, operators: opList });
+  else if (v.state === 'by-design') state = t(unsure ? 'sum.global.designUnsure' : 'sum.global.design', { operators: opList });
+  else if (v.state === 'geo' && unsure) state = t('sum.global.geoUnsure');
   else if (['agree', 'geo', 'unresolved', 'differ'].includes(v.state)) state = t(`sum.global.${v.state}`);
   else state = t('sum.global.differ');
   if (facts.cancelled && answered) state = `${state} ${t('sum.global.partial')}`;
@@ -800,8 +805,14 @@ const STRINGS = [
 
   ['sum.global.agree', ['All answers agree', 'Tüm yanıtlar aynı']],
   ['sum.global.design', ['Differs by design: CDN / GeoDNS edges ({operators})', 'Tasarım gereği farklı: CDN / GeoDNS uç sunucuları ({operators})']],
+  ['sum.global.designUnsure', ['Most likely by design: CDN / GeoDNS edges ({operators}); AliDNS may still hold an older answer for mainland China',
+    'Büyük olasılıkla tasarım gereği farklı: CDN / GeoDNS uç sunucuları ({operators}); AliDNS anakara Çin için hâlâ eski bir yanıtı tutuyor olabilir']],
   ['sum.global.nodata', ['No {type} records anywhere — the CNAME chains differ by design ({operators})', 'Hiçbir kaynakta {type} kaydı yok — CNAME zincirleri tasarım gereği farklı ({operators})']],
+  ['sum.global.nodataUnsure', ['No {type} records anywhere — the CNAME chains most likely differ by design ({operators}); AliDNS may still hold an older answer for mainland China',
+    'Hiçbir kaynakta {type} kaydı yok — CNAME zincirleri büyük olasılıkla tasarım gereği farklı ({operators}); AliDNS anakara Çin için hâlâ eski bir yanıtı tutuyor olabilir']],
   ['sum.global.geo', ['Resolvers agree — locations differ (GeoDNS)', 'Çözümleyiciler aynı — konumlar farklı (GeoDNS)']],
+  ['sum.global.geoUnsure', ['Resolvers agree — locations differ, most likely by GeoDNS; AliDNS may still hold an older answer for mainland China',
+    'Çözümleyiciler aynı — konumlar büyük olasılıkla GeoDNS yüzünden farklı; AliDNS anakara Çin için hâlâ eski bir yanıtı tutuyor olabilir']],
   ['sum.global.unresolved', ['No source could resolve the name', 'Hiçbir kaynak adı çözümleyemedi']],
   ['sum.global.differ', ['Answers differ', 'Yanıtlar farklı']],
   ['sum.global.failed', ['No answers', 'Yanıt alınamadı']],

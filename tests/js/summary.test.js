@@ -244,6 +244,33 @@ describe('global', () => {
     assert.ok(md(tr).includes('- Dünya genelinde 12 adres görüldü'));
   });
 
+  test('a branch only mainland China takes that the control could not confirm: a hedged line, in both languages', () => {
+    const groups = [{ key: 'a' }, { key: 'b' }];
+    const operators = [{ name: 'Amazon CloudFront' }, { name: 'Alibaba Cloud CDN' }];
+    const split = (line) => [{ owner: null, targets: ['www.example.com.w.kunluncan.com'], members: ['geo:cn-bjs-cu'], line }];
+    const first = (verdict, lang = 'en') => lines(md(S.globalSummary({ ...base, verdict }, opts(lang))))[1];
+    // Confirmed by the control: the plain words.
+    assert.equal(first({ state: 'by-design', groups, operators, findings: [], geoSplits: split(true) }),
+      '- Differs by design: CDN / GeoDNS edges (Amazon CloudFront, Alibaba Cloud CDN)');
+    assert.equal(first({ state: 'geo', groups, operators, findings: [], geoSplits: split(true) }), '- Resolvers agree — locations differ (GeoDNS)');
+    // No usable control: a likely answer, never a certain one.
+    const unsure = [
+      [{ state: 'by-design', groups, operators, findings: [], geoSplits: split(null) },
+        '- Most likely by design: CDN / GeoDNS edges (Amazon CloudFront, Alibaba Cloud CDN); AliDNS may still hold an older answer for mainland China',
+        '- Büyük olasılıkla tasarım gereği farklı: CDN / GeoDNS uç sunucuları (Amazon CloudFront, Alibaba Cloud CDN); AliDNS anakara Çin için hâlâ eski bir yanıtı tutuyor olabilir'],
+      [{ state: 'geo', groups, operators, findings: [], geoSplits: split(null) },
+        '- Resolvers agree — locations differ, most likely by GeoDNS; AliDNS may still hold an older answer for mainland China',
+        '- Çözümleyiciler aynı — konumlar büyük olasılıkla GeoDNS yüzünden farklı; AliDNS anakara Çin için hâlâ eski bir yanıtı tutuyor olabilir'],
+      [{ state: 'by-design', noRecords: true, groups, operators, findings: [], geoSplits: split(null) },
+        '- No A records anywhere — the CNAME chains most likely differ by design (Amazon CloudFront, Alibaba Cloud CDN); AliDNS may still hold an older answer for mainland China',
+        '- Hiçbir kaynakta A kaydı yok — CNAME zincirleri büyük olasılıkla tasarım gereği farklı (Amazon CloudFront, Alibaba Cloud CDN); AliDNS anakara Çin için hâlâ eski bir yanıtı tutuyor olabilir']
+    ];
+    for (const [verdict, en, tr] of unsure) {
+      assert.equal(first(verdict), en);
+      assert.equal(first(verdict, 'tr'), tr);
+    }
+  });
+
   test('all answers agree: one answer, in both languages (never "1 different answer")', () => {
     const verdict = { state: 'agree', groups: [{ key: 'a' }], operators: [], findings: [] };
     const en = lines(md(S.globalSummary({ ...base, failed: 0, verdict }, opts())));

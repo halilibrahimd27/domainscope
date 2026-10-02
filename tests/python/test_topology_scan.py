@@ -15,6 +15,7 @@ import base64
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import re
 import sys
@@ -22,6 +23,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI_PATH = ROOT / 'cli' / 'ssl_origin_scan.py'
@@ -191,6 +193,35 @@ class TopologySweep(unittest.TestCase):
                       'terminates_tls=no - check the inventory', text)
         self.assertNotIn('install the certificate on both', text)
 
+    def test_a_terminates_tls_no_server_that_answers_tls_says_the_inventory_looks_wrong(self):
+        # --include-backends scans them; here every server answers with the certificate
+        inventory = sos.parse_inventory('lb01 203.0.113.2 terminates_tls=no backends=web01,web02\n'
+                                        'web01 10.0.0.21\nweb02 10.0.0.22 terminates_tls=no\n'
+                                        'web03 10.0.0.23 terminates_tls=no\n', 'x.txt')
+        network = Network()
+        report = sos.run_scan(inventory.servers, sos.build_probe_names([NAME]), [443], timeout=1,
+                              workers=4, connect_fn=network.connect_fn, tls_fn=network.tls_fn,
+                              include_backends=True)
+        text = sos.render_summary(report, color=False, width=240)
+        self.assertIn("  lb01  NEEDS_UPDATE  passes TLS through (terminates_tls=no) and answers TLS for "
+                      "the names: its backends' certificate, or the inventory is wrong - check it", text)
+        self.assertIn('    -> web02  NEEDS_UPDATE  answers TLS for the names although the inventory '
+                      'says plain HTTP (terminates_tls=no) - check the inventory', text)
+        self.assertNotIn('plain HTTP, no certificate needed', text)
+        self.assertIn('  web02  10.0.0.22  [behind lb01, terminates_tls=no but answers TLS - check the '
+                      'inventory]', text)
+        self.assertIn('  web03  10.0.0.23  [terminates_tls=no but answers TLS - check the inventory]', text)
+
+    def test_a_backend_without_keys_of_its_own_says_its_load_balancers_in_the_json(self):
+        inventory = sos.parse_inventory('lb01 203.0.113.2 backends=web01\nweb01 10.0.0.21\n', 'x.txt')
+        network = Network()
+        report = sos.run_scan(inventory.servers, sos.build_probe_names([NAME]), [443], timeout=1,
+                              workers=2, connect_fn=network.connect_fn, tls_fn=network.tls_fn)
+        servers = {server['name']: server for server in sos.report_to_dict(report)['servers']}
+        self.assertEqual(servers['web01']['topology'], {
+            'terminatesTls': True, 'tlsPorts': [], 'vips': [], 'nats': [], 'backends': [],
+            'behind': ['lb01']})
+
     def test_the_json_report_says_where_tls_terminates(self):
         report, _network = scan()
         doc = sos.report_to_dict(report)
@@ -242,6 +273,35 @@ class TopologyCommandLine(unittest.TestCase):
         self.assertEqual([(w.code, w.reason) for w in warnings], [('TOPOLOGY', 'unknownBackend')])
         self.assertEqual(str(warnings[0]), '%s:1: TOPOLOGY backends=web01 on lb01: no server of that '
                          'name or address in the inventory' % lbs)
+
+    def test_a_server_newly_marked_terminates_tls_no_is_no_change_since_the_baseline(self):
+        # A --baseline from before the key: the backend is left out now, which is the inventory's
+        # doing, not the server's - SKIPPED, listed, never counted (no exit 4, no --notify).
+        inv = self.write('inv.txt', 'lb01 203.0.113.2 backends=web01\nweb01 10.0.0.21\n')
+        base = os.path.join(self.dir, 'base.json')
+        network = Network()
+        with mock.patch.object(sos, 'tcp_connect', network.connect_fn), \
+                mock.patch.object(sos, 'TlsProber', lambda: network.tls_fn):
+            code, _out, _err = run_main('-t', inv, '-n', NAME, '--json', base, '-q')
+            self.assertEqual(code, 0)
+            self.write('inv.txt', 'lb01 203.0.113.2 backends=web01\nweb01 10.0.0.21 terminates_tls=no\n')
+            code, out, _err = run_main('-t', inv, '-n', NAME, '--no-color', '--baseline', base,
+                                       '--fail-on-change')
+        self.assertEqual(code, 0, out)
+        self.assertIn('SKIPPED    web01 10.0.0.21:443: not scanned now (terminates_tls=no;', out)
+        self.assertIn('SKIPPED: 1 left out now for terminates_tls=no', out)
+        self.assertNotIn('GONE', out)
+        self.assertNotIn('FAILING', out)
+        with open(base, encoding='utf-8') as handle:
+            before = json.load(handle)
+        with mock.patch.object(sos, 'tcp_connect', network.connect_fn), \
+                mock.patch.object(sos, 'TlsProber', lambda: network.tls_fn):
+            report = sos.run_scan(sos.parse_inventory('lb01 203.0.113.2 backends=web01\nweb01 '
+                                                      '10.0.0.21 terminates_tls=no\n', 'x').servers,
+                                  sos.build_probe_names([NAME]), [443], timeout=1, workers=2)
+        changes = sos.compare_reports(before, sos.report_to_dict(report))
+        self.assertEqual([(c['kind'], c['after']['status'], sos.change_tag(c), sos.counts_as_change(c))
+                          for c in changes], [('disappeared', 'SKIPPED', 'SKIPPED', False)])
 
     def test_the_help_lists_the_flag_and_the_keys(self):
         text = sos.build_parser().format_help()

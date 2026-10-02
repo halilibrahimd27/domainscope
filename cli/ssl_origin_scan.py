@@ -92,6 +92,9 @@ HOSTED_STATUSES = (NEEDS_UPDATE, ORIGIN_CERT, PRIVATE_CERT)
 OPEN = 'OPEN'  # endpoint state after a successful TCP connect (phase 1)
 # Not a scan status: a target address removed by --exclude (CSV rows only, never probed).
 EXCLUDED = 'EXCLUDED'
+# Not a scan status either: a server with terminates_tls=no left out of the scan (no
+# --include-backends); a --baseline change to it is listed as SKIPPED, never counted.
+SKIPPED = 'SKIPPED'
 
 # Kinds of result rows.
 PROBE_SNI = 'sni'            # handshake with SNI = the name
@@ -4184,7 +4187,9 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
             'hostedNotInNewCert': by_status.get('OTHER', []),
             'defaultCertNeedsUpdate': any(r.status == NEEDS_UPDATE for r in default_rows),
         })
-        if summary.server.has_topology():  # only then: an old inventory's report is unchanged
+        # only with topology keys, so an old inventory's report is unchanged; a backend without
+        # keys of its own still says which load balancers it is behind
+        if summary.server.has_topology() or behind.get(summary.server.name.lower()):
             servers[-1]['topology'] = _topology_dict(summary.server, behind)
     certificates = {}
     for sha, cert in report.certificates.items():
@@ -4577,10 +4582,13 @@ def _section(lines: List[str], title: str, summaries: Sequence[ServerSummary], s
     lines.append('')
 
 
-def topology_tag(servers: Sequence[Server]) -> Callable[[Server], str]:
+def topology_tag(servers: Sequence[Server], answered: Iterable[str] = ()) -> Callable[[Server], str]:
     """``tag(server)``: where TLS terminates for ``server``, from the topology of ``servers``
     (``LB: web01, web02``, ``behind lb01``, ``VIP 203.0.113.50 with lb02``, ``NAT
-    203.0.113.10``, ``TLS ports 443,8443``); '' for a server the inventory says nothing about."""
+    203.0.113.10``, ``TLS ports 443,8443``); '' for a server the inventory says nothing about.
+    A terminates_tls=no server among ``answered`` (the names of the servers that answered TLS
+    for the names) says the inventory looks wrong."""
+    answered = set(answered)
     behind = {}  # type: Dict[str, List[str]]
     holders = {}  # type: Dict[str, List[str]]
     for server in servers:
@@ -4595,11 +4603,12 @@ def topology_tag(servers: Sequence[Server]) -> Callable[[Server], str]:
             parts.append('LB: %s%s' % (', '.join(server.backends),
                                        '' if server.gets_certificate else ', TLS passed through'))
         lbs = behind.get(server.name.lower(), [])
+        wrong = not server.gets_certificate and not server.backends and server.name in answered
         if lbs:
-            parts.append('behind %s%s' % (', '.join(lbs), ', re-encrypts' if server.gets_certificate
-                                          else ', plain HTTP'))
+            parts.append('behind %s, %s' % (', '.join(lbs), 're-encrypts' if server.gets_certificate
+                                            else _ANSWERS_ANYWAY if wrong else 'plain HTTP'))
         elif not server.gets_certificate and not server.backends:
-            parts.append('terminates_tls=no')
+            parts.append(_ANSWERS_ANYWAY if wrong else 'terminates_tls=no')
         for vip in server.vips:
             others = [name for name in holders.get(vip, []) if name != server.name]
             parts.append('VIP %s%s' % (vip, ' with %s' % ', '.join(others) if others else ''))
@@ -4608,6 +4617,12 @@ def topology_tag(servers: Sequence[Server]) -> Callable[[Server], str]:
             parts.append('TLS ports %s' % ','.join(str(port) for port in server.tls_ports))
         return '; '.join(parts)
     return tag
+
+
+# A terminates_tls=no server that served a certificate covering the names (UPDATED, NEEDS_UPDATE,
+# ORIGIN_CERT, PRIVATE_CERT): the inventory looks wrong, never "no certificate needed".
+_ANSWERS_TLS = (UPDATED,) + HOSTED_STATUSES
+_ANSWERS_ANYWAY = 'terminates_tls=no but answers TLS - check the inventory'
 
 
 def render_topology(report: ScanReport, summaries: Sequence[ServerSummary], style: Style,
@@ -4634,9 +4649,15 @@ def render_topology(report: ScanReport, summaries: Sequence[ServerSummary], styl
     if lbs:
         lines.append(style.paint('By load balancer: %d' % len(lbs), 'bold'))
         for lb in lbs:
+            ends = _terminates_behind(lb, by_name)
             if lb.gets_certificate:
                 role = 'terminates TLS: install the certificate here'
-            elif _terminates_behind(lb, by_name):
+            elif status.get(lb.name) in _ANSWERS_TLS:
+                role = ('passes TLS through (terminates_tls=no) and answers TLS for the names: its '
+                        'backends\' certificate, or the inventory is wrong - check it' if ends else
+                        'says terminates_tls=no, yet answers TLS for the names and no backend '
+                        'terminates TLS: the inventory is wrong - check it')
+            elif ends:
                 role = 'passes TLS through (terminates_tls=no): no certificate here'
             else:
                 role = ('passes TLS through (terminates_tls=no), but no backend behind it '
@@ -4650,10 +4671,15 @@ def render_topology(report: ScanReport, summaries: Sequence[ServerSummary], styl
                 if backend is None:
                     lines.append('    -> %s  %s' % (display_text(name), style.paint('not in the targets', 'dim')))
                     continue
-                what = ('re-encrypts: needs the certificate too' if backend.gets_certificate
-                        else 'plain HTTP, no certificate needed')
-                if backend.name in skipped:
-                    what += ' (--include-backends scans it)'
+                if backend.gets_certificate:
+                    what = 're-encrypts: needs the certificate too'
+                elif status.get(backend.name) in _ANSWERS_TLS:
+                    what = ('answers TLS for the names although the inventory says plain HTTP '
+                            '(terminates_tls=no) - check the inventory')
+                else:
+                    what = 'plain HTTP, no certificate needed'
+                    if backend.name in skipped:
+                        what += ' (--include-backends scans it)'
                 prefix = '    -> %s  %s  ' % (display_text(backend.name), state(backend))
                 plain = '    -> %s  %s  ' % (display_text(backend.name),
                                              _plain_state(backend, skipped, status))
@@ -4763,7 +4789,8 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
         lines.extend(render_monitor(report, monitor, style, show_all, width))
     # Where TLS terminates (the inventory's topology keys): grouped by load balancer first.
     lines.extend(render_topology(report, summaries, style, width))
-    tag = topology_tag(list(report.servers) + list(report.skipped_backends)) \
+    tag = topology_tag(list(report.servers) + list(report.skipped_backends),
+                       [s.server.name for s in summaries if s.status in _ANSWERS_TLS]) \
         if report.has_topology else None
 
     def note(status: str, cert: CertInfo) -> str:
@@ -5093,7 +5120,8 @@ def counts_as_change(change: Dict[str, Any]) -> bool:
     short --timeout a refused connection and a timeout can take turns from run to run.
     Such a move is listed (summary, JSON, message) but does not trigger --notify or
     --fail-on-change, nor keep a baseline whose message was not delivered."""
-    return change.get('transition') != 'failing'
+    return (change.get('transition') != 'failing'
+            and (change.get('after') or {}).get('status') != SKIPPED)
 
 
 def notable_changes(changes: Optional[Sequence[Dict[str, Any]]]) -> List[Dict[str, Any]]:
@@ -5180,6 +5208,10 @@ def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
     for entry in after.get('excluded') or []:
         if isinstance(entry, dict) and isinstance(entry.get('ip'), str):
             excluded.setdefault(normalize_ip(entry['ip']) or entry['ip'], entry.get('excludedBy'))
+    skipped = set()  # the addresses of servers left out for terminates_tls=no (skippedBackends)
+    for entry in after.get('skippedBackends') or []:
+        if isinstance(entry, dict) and isinstance(entry.get('ips'), list):
+            skipped.update(normalize_ip(ip) or ip for ip in entry['ips'] if isinstance(ip, str))
     keys = list(new_endpoints) + [key for key in old_endpoints if key not in new_endpoints]
     for key in keys:
         old, new = old_endpoints.get(key), new_endpoints.get(key)
@@ -5189,6 +5221,8 @@ def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
             after_view = _endpoint_view(new) if new else None
             if new is None and ip in excluded:
                 after_view = {'status': EXCLUDED, 'excludedBy': excluded[ip]}
+            elif new is None and ip in skipped:
+                after_view = {'status': SKIPPED, 'reason': 'terminates_tls=no'}
             if old is None or new is None:
                 kind, transition = ('appeared' if old is None else 'disappeared'), None
             else:
@@ -5310,7 +5344,7 @@ _CHANGE_TAGS = {'appeared': 'NEW', 'disappeared': 'GONE', 'cert': 'CERT'}
 _TAG_STYLES = {'FAILED': ('red', 'bold'), 'REGRESSED': ('red', 'bold'), 'UNHOSTED': ('red',),
                'GONE': ('red',), 'RECOVERED': ('green',), 'UPDATED': ('green', 'bold'),
                'HOSTED': ('green',), 'NEW': ('cyan',), 'CERT': ('yellow',),
-               'CHANGED': ('yellow',), 'FAILING': ('dim',)}
+               'CHANGED': ('yellow',), 'FAILING': ('dim',), SKIPPED: ('dim',)}
 _BAD_TAGS = ('FAILED', 'REGRESSED', 'UNHOSTED', 'GONE')
 _TAG_WIDTH = max(len(tag) for tag in _TAG_STYLES)
 
@@ -5329,6 +5363,8 @@ def change_tag(change: Dict[str, Any]) -> str:
     ``NEW`` / ``GONE`` for what appeared / disappeared, ``CERT`` for a new certificate."""
     if change.get('kind') == 'status':
         return str(change.get('transition') or 'changed').upper()
+    if (change.get('after') or {}).get('status') == SKIPPED:
+        return SKIPPED
     return _CHANGE_TAGS.get(str(change.get('kind')), 'CHANGED')
 
 
@@ -5382,6 +5418,8 @@ def _endpoint_state(view: Dict[str, Any]) -> str:
     status = str(view.get('status'))
     if status == EXCLUDED:
         return 'excluded by --exclude %s' % view.get('excludedBy')
+    if status == SKIPPED:
+        return 'not scanned (terminates_tls=no; --include-backends scans it)'
     if status == OPEN:
         names = view.get('names') or 0
         if not names:
@@ -5419,6 +5457,9 @@ def change_text(change: Dict[str, Any]) -> str:
     if scope == 'endpoint':
         if kind == 'appeared':
             what = 'new endpoint, ' + _endpoint_state(after)
+        elif kind == 'disappeared' and after.get('status') == SKIPPED:
+            what = ('not scanned now (terminates_tls=no; --include-backends scans it); was '
+                    + _endpoint_state(before))
         elif kind == 'disappeared' and after.get('status') == EXCLUDED:
             what = '%s now; was %s' % (_endpoint_state(after), _endpoint_state(before))
         elif kind == 'disappeared':
@@ -5527,12 +5568,17 @@ def _render_changes(monitor: MonitorResult, style: Style, show_all: bool,
     if len(shown) < len(changes):
         lines.append(style.paint('  ... and %d more - use --show-all or the --json report to '
                                  'list them.' % (len(changes) - len(shown)), 'dim'))
-    quiet = len(changes) - len(notable_changes(changes))
-    if quiet:
+    failing = sum(1 for change in changes if change.get('transition') == 'failing')
+    skipped = sum(1 for change in changes if (change.get('after') or {}).get('status') == SKIPPED)
+    if failing:
         lines.append(style.paint(
             '  FAILING: %d moved from one failure state to another (TLS_ERROR, TIMEOUT, '
             'CLOSED) - nothing served either way, so not counted by --notify or '
-            '--fail-on-change.' % quiet, 'dim'))
+            '--fail-on-change.' % failing, 'dim'))
+    if skipped:
+        lines.append(style.paint(
+            '  SKIPPED: %d left out now for terminates_tls=no - the inventory changed, not the '
+            'server, so not counted by --notify or --fail-on-change.' % skipped, 'dim'))
     lines.extend(style.paint('  ' + note, 'dim') for note in baseline_notes(info))
     lines.append('')
     return lines

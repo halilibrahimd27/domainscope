@@ -87,6 +87,7 @@ const STRINGS = [
     other: '{count} differences: {added} added, {removed} removed, {changed} changed; {same} record sets the same.' },
   '{count} fark: {added} eklendi, {removed} kaldırıldı, {changed} değişti; {same} kayıt kümesi aynı.']],
   ['zcmp.head.ignored', [{ one: '{count} record set ignored.', other: '{count} record sets ignored.' }, '{count} kayıt kümesi yok sayıldı.']],
+  ['zcmp.summaryLabel', ['Summary of the comparison', 'Karşılaştırmanın özeti']],
   ['zcmp.filter', ['Show', 'Göster']],
   ['zcmp.filter.diff', ['Differences', 'Farklar']],
   ['zcmp.filter.all', ['All', 'Tümü']],
@@ -206,11 +207,11 @@ const STRINGS = [
     'octoDNS denetiminin reddettiği TXT metni (ASCII dışı karakterler ya da ; öncesinde bir \\): octodns.lenient ile yazıldı; octoDNS onu bir uyarıyla yükler.']],
   ['zconv.pit.name-lenient', ['{types} records not at a _service._proto name: octoDNS refuses them, so they are written with octodns.lenient; clients look them up only at such names.',
     '_servis._protokol biçiminde olmayan adlardaki {types} kayıtları: octoDNS onları reddeder, bu yüzden octodns.lenient ile yazıldı; istemciler onları yalnızca bu biçimdeki adlarda arar.']],
-  ['zconv.pit.unsupported-type.bind', ['{types}: a provider’s own record type, which a BIND server does not serve; commented out.',
-    '{types}: bir BIND sunucusunun sunmadığı, sağlayıcıya özgü bir kayıt türü; yorum satırına çevrildi.']],
-  ['zconv.pit.unsupported-type', ['{types}: {target} does not support this record type; left out.', '{types}: {target} bu kayıt türünü desteklemiyor; dışarıda bırakıldı.']],
-  ['zconv.pit.by-hand', ['{types}: {target} has this record type, but DomainScope cannot write it from this file; left out, add it by hand.',
-    '{types}: {target} bu kayıt türünü destekler, ama DomainScope onu bu dosyadan yazamıyor; dışarıda bırakıldı, elle ekleyin.']],
+  ['zconv.pit.unsupported-type.bind', ['{types} records: provider record types a BIND server does not serve; commented out.',
+    '{types} kayıtları: bir BIND sunucusunun sunmadığı, sağlayıcıya özgü kayıt türleri; yorum satırına çevrildi.']],
+  ['zconv.pit.unsupported-type', ['{types} records: {target} does not support them; left out.', '{types} kayıtları: {target} bunları desteklemiyor; dışarıda bırakıldı.']],
+  ['zconv.pit.by-hand', ['{types} records: {target} has them, but DomainScope cannot write them from this file; left out, add them by hand.',
+    '{types} kayıtları: {target} bunları destekler, ama DomainScope onları bu dosyadan yazamıyor; dışarıda bırakıldı, elle ekleyin.']],
   ['zconv.pit.unreadable.bind', ['Records whose value could not be read (invalid, or a form DomainScope cannot decode): commented out as the file has them.',
     'Değeri okunamayan kayıtlar (geçersiz ya da DomainScope’un çözemediği bir biçim): dosyadaki halleriyle yorum satırına çevrildi.']],
   ['zconv.pit.unreadable', ['Records whose value could not be read (invalid, or a form DomainScope cannot decode): left out.',
@@ -467,17 +468,20 @@ export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact }
     const head = diffs
       ? t('zcmp.head.diff', { count: diffs, added: formatNumber(c.added), removed: formatNumber(c.removed), changed: formatNumber(c.changed), same: formatNumber(c.same) })
       : t('zcmp.head.same', { count: c.same });
+    const summary = SummaryButton({
+      kind: 'zone',
+      className: 'zcmp-summary',
+      facts: () => {
+        const r = result();
+        return r ? { origin: zone.origin, compare: diffSummaryFacts(r, { formatA: formatLabel(zone), formatB: formatLabel(C.zone) }) } : null;
+      },
+      url: () => ctx.shareUrl(permalinkParams('zone', ctx.params))
+    });
+    // The zone's own Copy summary is on the page too: this group names the comparison.
+    summary.el.setAttribute('aria-label', t('zcmp.summaryLabel'));
     out.append(h('div', { class: 'zcmp-head', dataset: { role: 'zcmp-head', differences: String(diffs) } },
       Alert({ variant: diffs ? 'warn' : 'ok', compact: true, message: c.ignored ? `${head} ${t('zcmp.head.ignored', { count: c.ignored })}` : head }),
-      h('div', { class: 'zcmp-head-actions cluster' }, SummaryButton({
-        kind: 'zone',
-        className: 'zcmp-summary',
-        facts: () => {
-          const r = result();
-          return r ? { origin: zone.origin, compare: diffSummaryFacts(r, { formatA: formatLabel(zone), formatB: formatLabel(C.zone) }) } : null;
-        },
-        url: () => ctx.shareUrl(permalinkParams('zone', ctx.params))
-      }).el)));
+      h('div', { class: 'zcmp-head-actions cluster' }, summary.el)));
     out.append(optionsBox());
     out.append(h('p', { class: 'muted text-sm zcmp-legend' }, t('zcmp.legend')));
     out.append(table(res));

@@ -1138,6 +1138,8 @@ async function main() {
       assert(json.text.includes('192.0.2.14'), 'origins included on opt-in');
       await jsClick(page, '[data-role="zcmp-include-origins"]');
       await stubClipboard(page);
+      assertEqual(await page.evaluate(() => document.querySelector('.zcmp-summary')?.getAttribute('aria-label')), 'Summary of the comparison',
+        'the comparison\'s Copy summary group is told apart from the zone\'s');
       await page.click('.zcmp-summary [data-action="copy-summary"]');
       await page.waitFor(() => window.__clip.length === 1, { message: 'copied' });
       const [md] = await takeClipboard(page);

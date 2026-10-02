@@ -56,15 +56,15 @@ describe('zone-tools', () => {
       }
     }
     const text = (target, code) => Z.pitfallText(convertZone(z, target).pitfalls.find((p) => p.code === code), target);
-    assert.equal(text('route53', 'unsupported-type'), 'URI, LOC, ANAME: Route 53 does not support this record type; left out.');
+    assert.equal(text('route53', 'unsupported-type'), 'URI, LOC, ANAME records: Route 53 does not support them; left out.');
     assert.equal(text('route53', 'caa-flags'), 'CAA flags other than 0 or 128 (1): many providers accept only these two.');
     assert.match(text('dnscontrol', 'caa-tag'), /^CAA tag policy: DNSControl accepts only issue, .* kept as a comment\.$/);
-    assert.equal(text('octodns', 'by-hand'), 'LOC: octoDNS has this record type, but DomainScope cannot write it from this file; left out, add it by hand.');
+    assert.equal(text('octodns', 'by-hand'), 'LOC records: octoDNS has them, but DomainScope cannot write them from this file; left out, add them by hand.');
     assert.match(text('octodns', 'svc-key'), /^HTTPS \/ SVCB parameters written by number \(dohpath, ohttp: key5 for ech, key7 for dohpath …\): /);
     assert.match(text('dnscontrol', 'txt-split'), /: DNSControl keeps the joined text and splits it again/);
     assert.match(text('dnscontrol', 'alias-record'), /^ALIAS \/ ANAME records: written as ALIAS\(…\)/);
     i18n.setLang('tr');
-    assert.equal(text('octodns', 'by-hand'), 'LOC: octoDNS bu kayıt türünü destekler, ama DomainScope onu bu dosyadan yazamıyor; dışarıda bırakıldı, elle ekleyin.');
+    assert.equal(text('octodns', 'by-hand'), 'LOC kayıtları: octoDNS bunları destekler, ama DomainScope onları bu dosyadan yazamıyor; dışarıda bırakıldı, elle ekleyin.');
     i18n.setLang('en');
     assert.match(Z.pitfallText({ code: 'alias-zone-id', params: {} }, 'route53'), /replace HOSTED_ZONE_ID_OF_THE_TARGET with it/);
   });

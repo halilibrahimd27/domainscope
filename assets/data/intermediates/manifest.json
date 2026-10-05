@@ -1,7 +1,7 @@
 {
   "format": 1,
-  "generated": "2026-09-28",
-  "digest": "43f9acdd602059cdfde14b29f9f0f29ccf1deff0bdfe7487f4d9cb627ba0a74e",
+  "generated": "2026-10-05",
+  "digest": "3634e2b32e2620135aef1227a241671d3222f2ee1bcc333689fd94fe39d57448",
   "sources": [
     {
       "id": "intermediates",
@@ -44,9 +44,9 @@
     }
   },
   "counts": {
-    "intermediates": 2273,
-    "keys": 2120,
-    "roots": 242,
+    "intermediates": 2304,
+    "keys": 2149,
+    "roots": 245,
     "events": 35,
     "distrustEvents": 31,
     "expiryEvents": 4

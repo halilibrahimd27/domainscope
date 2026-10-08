@@ -300,6 +300,15 @@ describe('reachability', () => {
     assert.throws(() => exposureProbes({ name: 'www.example.net', ip: '10.0.0.5' }), /routable/);
   });
 
+  test('exposureProbes pins the origin probe to the CDN measurement when given its id', () => {
+    const { proxied, origin } = exposureProbes({ name: 'www.example.net', ip: ROUTABLE, locations: 'AbCdEf0123456' });
+    assert.equal(origin.locations, 'AbCdEf0123456');
+    // The CDN side is the one whose probe the origin side reuses, so it pins nothing of its own.
+    assert.equal(proxied.locations, undefined);
+    // A bad id is refused, never put into a request.
+    assert.throws(() => exposureProbes({ name: 'www.example.net', ip: ROUTABLE, locations: 'not an id' }), /measurement id/);
+  });
+
   test('the origin serving the site directly with a covering certificate is exposed (critical)', () => {
     const sides = readExposureSides({
       proxiedMeasurement: measurement({ cover: 'www.example.net' }),

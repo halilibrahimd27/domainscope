@@ -357,14 +357,16 @@ export async function runLeakScan({ targets, dns, signal, hosts = new Map(), onP
 /**
  * The two Globalping request bodies of a reachability check: the proxied answer (a GET of the name,
  * which the CDN serves) and the origin answer (a GET of the origin address with the name as SNI /
- * Host). Pure. Throws for a target a probe cannot accept — guard with `target.probeable` first.
- * @param {{ name: string, ip: string, port?: number }} target
+ * Host). `locations` (a finished measurement id) pins the origin probe to the same vantage as the
+ * CDN answer, so a difference is the server's, not the network's. Pure. Throws for a target a probe
+ * cannot accept — guard with `target.probeable` first.
+ * @param {{ name: string, ip: string, port?: number, locations?: string|null }} target
  * @returns {{ proxied: object, origin: object }}
  */
-export function exposureProbes({ name, ip, port = ORIGIN_DEFAULT_PORT }) {
+export function exposureProbes({ name, ip, port = ORIGIN_DEFAULT_PORT, locations = null }) {
   return {
     proxied: httpsGetRequest({ host: name, path: '/', port, timeoutS: EXPOSURE_TIMEOUT_S, probes: 1 }),
-    origin: httpsGetAtRequest({ ip, host: name, path: '/', port, timeoutS: EXPOSURE_TIMEOUT_S, probes: 1 })
+    origin: httpsGetAtRequest({ ip, host: name, path: '/', port, timeoutS: EXPOSURE_TIMEOUT_S, probes: 1, locations })
   };
 }
 

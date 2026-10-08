@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   sClientHost, sClientCommand, SAMPLE_CERT_URL, loadSampleCert, ctCertLoad, dnDisplayName, analyzeChain, ctCrtshWhy, ctOutcomeMessage,
   ctCrtshIncomplete, focusLoadedCert, certTarget, loadCertificateData, loadCertificateFile, certSummaryFacts, issuerDisplayName,
-  fullchainCerts, daneHolderKey, chainEndVerdict
+  fullchainCerts, daneHolderKey, chainEndVerdict, hostToUnicode
 } from '../../assets/js/views/cert.js';
 import { createIntermediateStore, repairChain } from '../../assets/js/lib/chainfix.js';
 import { isLockedPfx } from '../../assets/js/ui/pfx-import.js';
@@ -167,6 +167,24 @@ describe('cert view: where the file\'s chain stops short of a root (chainEndVerd
     assert.deepEqual(analyzeChain(read('chainfix_leaf_deep.pem', 'chainfix_deep_ca.pem').certificates).issues.map((i) => i.code), ['ends-at']);
     assert.equal(await verdict('chainfix_leaf_deep.pem', 'chainfix_deep_ca.pem'), 'intermediate');
     assert.equal(await verdict('chainfix_leaf.pem', 'chainfix_inter.pem'), 'root');
+  });
+});
+
+describe('cert view: an IDN name in the Names tab (hostToUnicode)', () => {
+  test('a Punycode label up to the DNS limit of 63 characters is shown decoded', () => {
+    assert.equal(hostToUnicode('xn--mnchen-3ya.example.com'), 'münchen.example.com');
+    const longest = new URL(`http://${'a'.repeat(52)}ü.example.com/`).hostname;
+    assert.equal(longest.split('.')[0].length, 60);
+    assert.equal(hostToUnicode(longest), `${'a'.repeat(52)}ü.example.com`);
+    assert.equal(hostToUnicode('xn--zz.example.com'), 'xn--zz.example.com', 'not Punycode: as it is');
+  });
+
+  test('a longer xn-- label is no DNS label: shown as it is, never decoded (a crafted one costs quadratic time)', () => {
+    // Code points in descending order: every one is inserted at the front while decoding.
+    const crafted = new URL(`http://${String.fromCodePoint(...Array.from({ length: 3000 }, (_, i) => 0x9fff - i))}.example.com/`).hostname;
+    const [label] = crafted.split('.');
+    assert.ok(label.startsWith('xn--') && label.length > 63, `${label.length} characters`);
+    assert.equal(hostToUnicode(crafted), crafted);
   });
 });
 

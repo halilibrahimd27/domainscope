@@ -1073,13 +1073,15 @@ export function punycodeDecode(input) {
 
 /**
  * Display form of an IDN hostname ('xn--mnchen-3ya.example.com' → 'münchen.example.com').
- * Labels that are not valid Punycode stay as they are.
+ * Labels that are not valid Punycode stay as they are, and so does one longer than a DNS label
+ * (63 characters): SAN values are not length-checked, and decoding a crafted label takes time
+ * quadratic in its length.
  * @param {string} host
  * @returns {string}
  */
 export function hostToUnicode(host) {
   return String(host ?? '').split('.').map((label) => {
-    if (!/^xn--/i.test(label)) return label;
+    if (!/^xn--/i.test(label) || label.length > 63) return label;
     try {
       return punycodeDecode(label.slice(4).toLowerCase());
     } catch {

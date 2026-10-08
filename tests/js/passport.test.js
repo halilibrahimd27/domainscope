@@ -16,7 +16,7 @@ import { domainHealth } from '../../assets/js/lib/health.js';
 import { ctNoteKey } from '../../assets/js/views/domain.js';
 import { clearRdapCache } from '../../assets/js/lib/rdap.js';
 import { createCtCooldown, CT_COOLDOWN_MS } from '../../assets/js/lib/ctcert.js';
-import { healthScore } from '../../assets/js/lib/summary.js';
+import { scoreHealth } from '../../assets/js/lib/healthscore.js';
 import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
 import { throwIfAborted } from '../../assets/js/lib/util.js';
 
@@ -424,7 +424,7 @@ describe('buildPassport', () => {
     const card = healthCard(raw, { now: NOW });
     const direct = await domainHealth('example.com', { dns: fakeDns(zone, { signed: ['example.com'] }), fetchImpl: mockFetch(), now: NOW });
     assert.deepEqual(card.summary, direct.summary);
-    assert.equal(card.score, healthScore(direct.summary));
+    assert.equal(card.score, scoreHealth(direct.checks).score);
     assert.deepEqual(card.report.checks.map((c) => c.id).sort(), direct.checks.map((c) => c.id).sort());
     assert.ok(card.problems.length <= 3 && card.problems.every((p) => p.severity === 'error' || p.severity === 'warn'));
     // Without the registration lookup the score is not shown yet: it would change under the reader.

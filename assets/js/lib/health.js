@@ -1507,7 +1507,7 @@ export async function findCaa(name, { dns, signal } = {}) {
 
 /** Check categories (the part of the id before the first '.') → UI groups. */
 export const HEALTH_CATEGORIES = Object.freeze({
-  domain: 'dns', soa: 'dns', ns: 'dns', apex: 'dns', ipv6: 'dns', 'https-rr': 'dns', wildcard: 'dns',
+  domain: 'dns', soa: 'dns', ns: 'dns', apex: 'dns', ipv6: 'dns', 'https-rr': 'web', www: 'web', observatory: 'web', wildcard: 'dns',
   mx: 'email', 'mail-identity': 'email', spf: 'email', dmarc: 'email', dkim: 'email', 'mta-sts': 'email', 'tls-rpt': 'email', bimi: 'email',
   caa: 'security', dnssec: 'security',
   rdap: 'registration'

@@ -85,6 +85,8 @@ before(async () => {
   await imp('assets/js/ui/cutover.js');
   // Global DNS › ISP resolvers: loaded on the first click of "Ask ISP resolvers…".
   await imp('assets/js/ui/isp-resolvers.js');
+  // Domain Health v2 (problems first, the Web card): loaded with the first report.
+  await imp('assets/js/ui/health-v2.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -467,6 +469,10 @@ describe('i18n coverage', () => {
     const isp = await imp('assets/js/lib/ispdns.js');
     for (const e of isp.ISP_PLAN_ERRORS) add(`isp.err.${e}`);
     for (const s of ['agree', 'by-design', 'geo']) add(`isp.sum.ref.${s}`);
+    // Domain Health v2 (ui/health-v2.js over lib/healthweb.js and lib/healthadvice.js): skip reasons, caps, every Web check and advice.
+    const hv2 = await imp('assets/js/ui/health-v2.js');
+    const [hweb, hadv] = await Promise.all([imp('assets/js/lib/healthweb.js'), imp('assets/js/lib/healthadvice.js')]);
+    for (const k of [...hv2.generatedKeys(), ...Object.keys(hweb.HEALTH_WEB_I18N.en), ...Object.keys(hadv.HEALTH_ADVICE_I18N.en)]) add(k);
     assert.deepEqual(missingIn(keys), []);
   });
 

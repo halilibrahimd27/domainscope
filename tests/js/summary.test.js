@@ -144,7 +144,9 @@ describe('permalinkParams', () => {
 
 describe('health', () => {
   const report = (checks, summary) => ({ domain: 'example.com', checkedAt: new Date('2026-09-27T09:00:00Z'), summary, checks });
-  const check = (id, severity, params = {}) => ({ id, severity, titleKey: `health.${id}.title`, params });
+  // The group lib/health files each check under (the v2 score weighs them, lib/healthscore.js).
+  const GROUPS = { spf: 'email', dmarc: 'email', ipv6: 'dns', ns: 'dns', rdap: 'registration' };
+  const check = (id, severity, params = {}) => ({ id, severity, titleKey: `health.${id}.title`, params, group: GROUPS[id.split('.')[0]] });
 
   test('score + verdict, counts, errors before warnings, footer with the permalink', () => {
     const r = report([check('spf.too-many-lookups', 'warn', { count: 12, limit: 10 }), check('dmarc.missing', 'error'), check('ipv6.missing', 'info'), check('ns.ok', 'ok')],
@@ -154,7 +156,8 @@ describe('health', () => {
     assertShape(doc);
     const ls = lines(out);
     assert.equal(ls[0], '**Domain Health · `example.com`**');
-    assert.equal(ls[1], '- Problems found · score 74/100');
+    // dns 100 (weight 30), email 100 − 40 − 15 = 45 (weight 25): (3000 + 1125) / 55 = 75, a C
+    assert.equal(ls[1], '- Problems found · grade C · score 75/100');
     assert.equal(ls[2], '- 1 error · 1 warning · 1 note · 1 passed');
     assert.match(ls[3], /^- \*\*Error:\*\* /, 'error first');
     assert.match(ls[4], /^- \*\*Warning:\*\* /);
@@ -180,7 +183,7 @@ describe('health', () => {
     assert.ok(md(doc).includes('- +3 more warnings and errors'));
     const clean = S.healthSummary({ report: report([check('ns.ok', 'ok')], { ok: 12, info: 0, warn: 0, error: 0 }) }, opts());
     assertShape(clean);
-    assert.deepEqual(lines(md(clean)).slice(1, 4), ['- Healthy · score 100/100', '- 12 passed', '- No errors or warnings']);
+    assert.deepEqual(lines(md(clean)).slice(1, 4), ['- Healthy · grade A · score 100/100', '- 12 passed', '- No errors or warnings']);
   });
 
   test('Turkish', () => {
@@ -188,7 +191,8 @@ describe('health', () => {
     const out = md(doc);
     assertShape(doc);
     assert.match(out, /^\*\*Alan Adı Sağlığı · `example\.com`\*\*/m);
-    assert.ok(out.includes('- Sorun bulundu · puan 80/100'));
+    // only the email group, at 100 − 40 = 60: a D
+    assert.ok(out.includes('- Sorun bulundu · not D · puan 60/100'), out);
     assert.ok(out.includes('- 1 hata · 3 başarılı'));
     assert.ok(out.includes('- **Hata:** '));
     assert.ok(out.includes('kontrol edildi: 2026-09-27 09:00 UTC'));

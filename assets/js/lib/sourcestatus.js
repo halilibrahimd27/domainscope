@@ -50,7 +50,9 @@ export const STATUS_SOURCES = Object.freeze({
   // Renewal readiness › Plan: Let's Encrypt's ARI window (no published quota for it)
   ari: Object.freeze({ period: null }),
   // Google's CT log list (Certificate › Transparency): a static file, no quota.
-  ctloglist: Object.freeze({ period: null })
+  ctloglist: Object.freeze({ period: null }),
+  // Domain Health › Web: Mozilla's HTTP Observatory answers a recent scan of a host from its cache.
+  observatory: Object.freeze({ period: 'minutes' })
 });
 
 /** Every reason code {@link sourceStatus} can return (`srcst.reason.<code>` in the UI). */

@@ -46,7 +46,8 @@ import {
 } from './health.js';
 import { CERTSPOTTER_ISSUANCES, CRTSH_BASE, CT_TIMEOUT_MS, CRTSH_TIMEOUT_MS, ctCooldown, noteCertspotterLimit } from './ctcert.js';
 import { sourceStatus, dohStatus, rdapStatus } from './sourcestatus.js';
-import { healthScore, trafficLight } from './summarycore.js';
+import { trafficLight } from './summarycore.js';
+import { scoreHealth } from './healthscore.js';
 
 /** The cards of a passport, in display order. */
 export const PASSPORT_CARDS = Object.freeze(['registration', 'dns', 'mail', 'web', 'certs', 'saas', 'health']);
@@ -1004,7 +1005,7 @@ export function healthCard(raw, { now, max = 3 } = {}) {
     ...card,
     report,
     summary: report.summary,
-    score: healthScore(report.summary),
+    score: scoreHealth(report.checks).score,
     light: trafficLight(report.summary),
     problems: problems.slice(0, max).map((c) => ({ id: c.id, severity: c.severity, titleKey: c.titleKey, params: c.params })),
     moreProblems: Math.max(0, problems.length - max)

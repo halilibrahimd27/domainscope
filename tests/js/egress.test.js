@@ -582,6 +582,7 @@ const CALL_SITES = {
   'assets/js/lib/ipenrich.js': ['ripestat', 'peeringdb'],
   'assets/js/lib/rdap.js': ['rdap-bootstrap', 'rdap'],
   'assets/js/lib/globalping.js': ['globalping'],
+  'assets/js/lib/observatory.js': ['observatory'],
   'assets/js/lib/passport.js': ['certspotter', 'crtsh', 'rdap'],
   // the Domain portfolio: hands its fetch to lib/rdap.js (and its DNS client to lib/passport.js)
   'assets/js/lib/portfolio.js': [],
@@ -636,6 +637,9 @@ const LINK_HOSTS = {
   'assets/js/lib/delegation.js': ['blogs.infoblox.com', 'eclypsium.com', 'github.com'],
   // the page each takeover catalogue entry rests on (Subdomains › Takeover risks links it)
   'assets/js/lib/takeover.js': ['github.com', 'learn.microsoft.com', 'docs.github.com', 'cloud.google.com', 'hackerone.com'],
+  // Domain Health › Web: the HSTS preload list's status page and MDN's Observatory report (no CORS / a page)
+  'assets/js/lib/healthweb.js': ['hstspreload.org'],
+  'assets/js/lib/observatory.js': ['developer.mozilla.org'],
   // where a DNS provider's read-only token is made, and how (deSEC's token page is on its API host,
   // desec.io/tokens: a desec URL the registry gives no endpoint)
   'assets/js/lib/zonefetch.js': ['desec.readthedocs.io', 'cloud.digitalocean.com', 'docs.digitalocean.com'],
@@ -645,7 +649,7 @@ const LINK_HOSTS = {
   'assets/js/ui/chain-repair.js': ['www.ccadb.org'],
   // the CA/Browser Forum ballot the lifetime schedule comes from
   'assets/js/ui/renewal-planner.js': ['cabforum.org'],
-  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'googlechrome.github.io', 'hackertarget.com', 'letsencrypt.org', 'sslmate.com', 'www.robtex.com', 'www.shodan.io', 'www.whoisxmlapi.com'],
+  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'developer.mozilla.org', 'globalping.io', 'googlechrome.github.io', 'hackertarget.com', 'letsencrypt.org', 'sslmate.com', 'www.robtex.com', 'www.shodan.io', 'www.whoisxmlapi.com'],
   'assets/js/views/ip.js': ['bgp.he.net']
 };
 /**

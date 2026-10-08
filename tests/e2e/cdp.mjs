@@ -638,7 +638,8 @@ export class Browser {
 /**
  * Launch headless Chrome (fallback Edge) with a throw-away profile under tests/e2e/.profile-<n>.
  * @param {{ browser?: 'auto'|'chrome'|'edge', executablePath?: string, headless?: boolean, args?: string[],
- *   profileRoot?: string, timeout?: number, lang?: string }} [opts]
+ *   profileRoot?: string, timeout?: number, lang?: string }} [opts] `lang` is the browser's UI and
+ *   page language (navigator.languages, Accept-Language) on every OS, en-US by default
  * @returns {Promise<Browser>}
  */
 export async function launchBrowser({
@@ -668,6 +669,9 @@ export async function launchBrowser({
     '--hide-scrollbars',
     '--force-color-profile=srgb',
     `--lang=${lang}`,
+    // navigator.languages and Accept-Language: Chrome on macOS ignores --lang and takes them from
+    // the system languages, so on a Turkish Mac the app would boot in Turkish.
+    `--accept-lang=${lang}`,
     '--window-size=1440,900',
     // A mouse on every OS: headless Chrome on Linux sees no input device, so without this a
     // desktop page is `(hover: none) and (pointer: none)` there but `hover` + `fine` on Windows

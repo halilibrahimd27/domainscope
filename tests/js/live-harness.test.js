@@ -3,18 +3,18 @@
  *   tests/live/replay-cache.mjs   — passive-source record / replay cache of the benchmark
  *   tests/live/targets.mjs        — positional-argument parsing of the live scripts
  *   tests/e2e/run-all.mjs         — suite ordering, result counting, leftover-profile sweep
- *   tests/e2e/cdp.mjs             — launched-browser cleanup, resolver-failure tolerance, key events
+ *   tests/e2e/cdp.mjs             — launched-browser cleanup, resolver-failure tolerance, key events, launch flags
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createReplayCache, isFinalAnswer } from '../live/replay-cache.mjs';
 import { positionalArgs, PUBLIC_FALLBACK_DOMAINS } from '../live/targets.mjs';
 import { parseArgs, orderSuites, countResults, profileDirsOf } from '../e2e/run-all.mjs';
-import { resolverProblemFilter, registerBrowserProcess, killLaunchedBrowsers, Page } from '../e2e/cdp.mjs';
+import { resolverProblemFilter, registerBrowserProcess, killLaunchedBrowsers, launchBrowser, Page } from '../e2e/cdp.mjs';
 import { RESOLVERS, DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
 
 /* ---- replay cache --------------------------------------------------------------- */
@@ -217,4 +217,23 @@ test('cdp: press() sends no native key code, so Chrome on macOS does not also ac
   assert.deepEqual(sent.slice(0, 2).map(brief), [['rawKeyDown', 'Escape', 'Escape', 27, undefined, 0], ['keyUp', 'Escape', 'Escape', 27, undefined, 0]]);
   assert.deepEqual(brief(sent.at(-2)), ['keyDown', 'Enter', 'Enter', 13, '\r', 2]);
   assert.deepEqual(brief(sent.at(-4)), ['keyDown', 'a', 'KeyA', 65, 'a', 0]);
+});
+
+test('cdp: launchBrowser gives the page language as --lang and as --accept-lang (Chrome on macOS ignores --lang)', { skip: process.platform === 'win32' && 'the stand-in browser is a POSIX shell script' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ds-browser-'));
+  const argsFile = join(dir, 'args.txt');
+  const exe = join(dir, 'fake-chrome');
+  // stand-in for a browser that writes its command line and refuses to start
+  writeFileSync(exe, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\nexit 3\n`, { mode: 0o755 });
+  try {
+    await assert.rejects(launchBrowser({ executablePath: exe, profileRoot: dir, timeout: 10000 }), /exited early \(code 3\)/);
+    let args = readFileSync(argsFile, 'utf8').split('\n');
+    assert.ok(args.includes('--lang=en-US'), args.join(' '));
+    assert.ok(args.includes('--accept-lang=en-US'), 'navigator.languages follows --accept-lang on every OS');
+    await assert.rejects(launchBrowser({ executablePath: exe, profileRoot: dir, timeout: 10000, lang: 'tr-TR' }), /exited early/);
+    args = readFileSync(argsFile, 'utf8').split('\n');
+    assert.deepEqual(args.filter((a) => /^--(accept-)?lang=/.test(a)), ['--lang=tr-TR', '--accept-lang=tr-TR']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

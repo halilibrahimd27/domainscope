@@ -764,6 +764,9 @@ describe('encodeMessage ↔ decodeMessage round trips (every supported RR type)'
     assert.equal(m.answers[0].text, '"safe\\226\\128\\174evil\\226\\128\\139\\194\\133\\239\\187\\191!"');
     assert.equal(m.answers[0].data[0], 'safe‮evil​\u0085﻿!', 'data keeps the raw string');
     assert.equal(m.answers[1].text, '0 issue "ca\\226\\129\\166.example"');
+    // The Arabic letter mark (the last Bidi_Control character) and the line / paragraph separators too.
+    const more = decodeMessage(encodeMessage({ answers: [{ name: 'x', type: 'TXT', data: ['v=spf1 \u061c-all \u2028\u2029'] }] }));
+    assert.equal(more.answers[0].text, '"v=spf1 \\216\\156-all \\226\\128\\168\\226\\128\\169"');
   });
 
   test('CAA: a tag that is not alphanumeric degrades to the generic form (no raw bidi / newline in text)', () => {

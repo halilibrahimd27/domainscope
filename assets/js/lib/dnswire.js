@@ -303,12 +303,13 @@ function ddd(b) {
 
 /**
  * Code points that must not appear raw in presentation text: C0/C1 controls, DEL,
- * zero-width and bidirectional formatting characters (they can make untrusted TXT
- * data render deceptively, "Trojan Source" style).
+ * zero-width and bidirectional formatting characters, the Arabic letter mark included
+ * (they can make untrusted TXT data render deceptively, "Trojan Source" style), and the
+ * line and paragraph separators (they split one record over lines).
  */
 function isUnsafeCodePoint(cp) {
-  return cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) || (cp >= 0x200b && cp <= 0x200f) ||
-    (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2060 && cp <= 0x206f) || cp === 0xfeff ||
+  return cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) || cp === 0x061c || (cp >= 0x200b && cp <= 0x200f) ||
+    (cp >= 0x2028 && cp <= 0x202e) || (cp >= 0x2060 && cp <= 0x206f) || cp === 0xfeff ||
     (cp >= 0xfff9 && cp <= 0xfffb);
 }
 

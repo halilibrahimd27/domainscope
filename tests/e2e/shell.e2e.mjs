@@ -555,25 +555,44 @@ async function paletteGroup(browser, server) {
   };
   const PEM = (await readFile(path.join(HERE, '..', 'fixtures', 'bundle_leaf.pem'), 'utf8')).trim();
 
-  await step('Ctrl+K opens the palette: a combobox in a dialog, every tool listed, the first one active', async () => {
+  await step('Ctrl+K opens the palette: a combobox in a dialog with the current target, the recent domains and every tool', async () => {
     await pal.goto(`${server.url}#/lookup`);
     await waitReady(pal);
+    // A target and a recent domain as a run leaves them (the profile may hold more from the groups before).
+    await pal.evaluate(async () => {
+      const [{ pageSession }, { state }] = await Promise.all([import('./assets/js/app.js'), import('./assets/js/state.js')]);
+      pageSession.setTarget('www.example.org');
+      state.recordRecent('example.net');
+    });
     await pal.evaluate(() => document.getElementById('page-title').focus());
     await openWith();
+    const list = await entries();
     const a11y = await pal.evaluate(() => {
       const input = document.querySelector('[data-role="palette-input"]');
-      const list = document.getElementById(input.getAttribute('aria-controls'));
+      const box = document.getElementById(input.getAttribute('aria-controls'));
       return {
         role: input.getAttribute('role'), expanded: input.getAttribute('aria-expanded'), auto: input.getAttribute('aria-autocomplete'),
-        label: !!input.getAttribute('aria-label'), listRole: list && list.getAttribute('role'),
+        label: !!input.getAttribute('aria-label'), listRole: box && box.getAttribute('role'),
         modal: !!input.closest('dialog[aria-labelledby]'), status: document.querySelector('.pal-status').textContent
       };
     });
-    assertEqual(a11y, { role: 'combobox', expanded: 'true', auto: 'list', label: true, listRole: 'listbox', modal: true, status: `${ROUTES.length} results` },
+    assertEqual(a11y, { role: 'combobox', expanded: 'true', auto: 'list', label: true, listRole: 'listbox', modal: true, status: `${list.length} results` },
       'combobox semantics');
-    assertEqual(await entries(), ROUTES.map((id) => `tool:${id}`), 'every tool, in navigation order');
-    assertEqual(await activeEntry(), 'tool:subdomains', 'the first entry is active');
+    assertEqual(list.slice(0, 2), ['target:www.example.org', 'recent:example.net'], 'the target, then the most recent domain');
+    const tools = list.filter((k) => k.startsWith('tool:'));
+    assertEqual(tools, ROUTES.map((id) => `tool:${id}`), 'every tool, in navigation order');
+    assertEqual(list.slice(-tools.length), tools, 'the tools last');
+    assert(list.filter((k) => k.startsWith('recent:')).length <= 5, `five recent domains at most: ${list.join(', ')}`);
+    assertEqual(await activeEntry(), 'target:www.example.org', 'the first entry is active');
     await shot(pal, 'desktop-light-en-palette');
+  });
+
+  await step('Enter on the current target puts it in the box, and its actions follow', async () => {
+    await pal.press('Enter');
+    await pal.waitFor(() => document.querySelector('[data-role="palette-input"]').value === 'www.example.org', { message: 'the target in the box' });
+    assert(await isOpen(), 'the palette stays open');
+    assertEqual((await entries()).slice(0, 3), ['action:subdomains', 'action:domain', 'action:health'], 'the host name’s actions');
+    assertEqual(await focused(), 'palette-input', 'the box keeps the focus');
   });
 
   await step('a tool is found by its Turkish name; ↓ and ↑ move through the list and wrap around', async () => {

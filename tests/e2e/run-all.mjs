@@ -20,7 +20,8 @@
  *   bulk, then cutover, the offline suite of the cutover follow-ups (Global DNS's expected value and
  *   its name server probe, the TTL planner's calendar); retire, the offline suite of Retire an IP,
  *   right after ptr; reports, the offline suite of
- *   DMARC & TLS reports, right after health, then portfolio, the offline suite of the Domain portfolio),
+ *   DMARC & TLS reports, right after health, then portfolio, the offline suite of the Domain portfolio,
+ *   and secscore, the offline suite of its domain security: lock depth, registrar class, the score),
  *   then carry (offline: the target and kept results carried across views), workspaces
  *   (offline: the customer workspaces in IndexedDB and their hand-over file), origins (offline: the
  *   workspace's origin map filled from a zone and a CLI report, used by the scans) and privacy (offline:
@@ -47,7 +48,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ORDER = ['shell', 'subdomains', 'domain', 'locales', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'lookup', 'explain', 'bulk', 'change', 'cutover', 'ip', 'ptr', 'retire', 'health', 'reports', 'portfolio', 'carry', 'workspaces', 'origins', 'privacy', 'integration'];
+const ORDER = ['shell', 'subdomains', 'domain', 'locales', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'lookup', 'explain', 'bulk', 'change', 'cutover', 'ip', 'ptr', 'retire', 'health', 'reports', 'portfolio', 'secscore', 'carry', 'workspaces', 'origins', 'privacy', 'integration'];
 const POSIX = process.platform !== 'win32';
 /** After SIGTERM, how long a timed-out suite gets before SIGKILL. */
 const KILL_GRACE_MS = 5000;

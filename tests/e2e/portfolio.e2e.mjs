@@ -94,7 +94,8 @@ const rdapJson = (domain, status, days) => ({
   secureDNS: { delegationSigned: domain === 'example.com' }
 });
 const RDAP = {
-  // a registry lock alone (serverTransferProhibited): transfers are prohibited all the same
+  // the registry's transfer prohibition alone (serverTransferProhibited): transfers are prohibited all the
+  // same, but it is a partial registry lock (a registry lock is server transfer, update and delete prohibited)
   'example.com': rdapJson('example.com', ['server transfer prohibited', 'client delete prohibited'], 400),
   // no transfer lock: a hijack risk; expires in 20 days
   'example.org': rdapJson('example.org', ['active'], 20),
@@ -322,7 +323,7 @@ async function main() {
 
       const com = await rowOf(page, 'example.com');
       assert(/400 days left/.test(com.expiry) && com.days === '400', `expiry: ${com.expiry}`);
-      assert(/Registry lock/.test(com.status) && !/No transfer lock/.test(com.status) && /Example Registrar, Inc\./.test(com.registrar), JSON.stringify(com));
+      assert(/Partial registry lock/.test(com.status) && !/No transfer lock/.test(com.status) && /Example Registrar, Inc\./.test(com.registrar), JSON.stringify(com));
       assert(/Validated/.test(com.dnssec), com.dnssec);
       assert(/example\.net\s*12 days left/.test(com.ns), `ns: ${com.ns}`);
       assertEqual(com.risk, 'pf-risk-ns-expiring', 'its name servers\' domain lapses in 12 days');
@@ -393,7 +394,7 @@ async function main() {
       await page.waitFor(() => (window.__downloads || []).length === 3, { message: 'three downloads' });
       const [csv, json, ics] = await takeDownloads(page);
       assert(/^domain-portfolio-.*\.csv$/.test(csv.name) && csv.bom, csv.name);
-      assert(csv.text.startsWith('domain,registration,registrar,expires,daysLeft,risk,'), csv.text.slice(0, 80));
+      assert(csv.text.startsWith('domain,registration,registrar,registrarClass,expires,daysLeft,risk,'), csv.text.slice(0, 80));
       assert(/\r\nexample\.org,ok,"Example Registrar, Inc\.",/.test(csv.text), 'the rows shown, sorted');
       const doc = JSON.parse(json.text);
       assertEqual([doc.format, doc.domains.length, doc.domains[0].domain], ['domainscope-portfolio', 3, 'example.org'], 'JSON');

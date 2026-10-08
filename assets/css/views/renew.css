@@ -512,6 +512,18 @@
   margin-right: 6px;
 }
 
+/* Long labels (a CA's name, the Turkish forms) wrap instead of widening a phone's page. */
+.rpl-panel .btn {
+  max-width: 100%;
+  height: auto;
+  min-height: var(--btn-h);
+  padding-top: 5px;
+  padding-bottom: 5px;
+  line-height: 1.25;
+  white-space: normal;
+  text-align: left;
+}
+
 .rpl-years {
   display: flex;
   flex-wrap: wrap;

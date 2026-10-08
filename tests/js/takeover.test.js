@@ -361,9 +361,11 @@ describe('the HTTP check', () => {
     assert.deepEqual(applyHttpCheck(both, { outcome: 'in-use' }).reasons.map((r) => r.code), ['expiring']);
   });
 
-  test('the candidates are the findings the page decides, at most HTTP_CHECK_MAX', () => {
-    const many = Array.from({ length: HTTP_CHECK_MAX + 3 }, (_, i) => ({ ...finding, id: `f${i}` }));
+  test('the candidates are the findings the page decides, one per host, at most HTTP_CHECK_MAX', () => {
+    const many = Array.from({ length: HTTP_CHECK_MAX + 3 }, (_, i) => ({ ...finding, id: `f${i}`, host: `h${i}.example.com` }));
     assert.equal(httpCandidates(many).length, HTTP_CHECK_MAX);
+    assert.deepEqual(httpCandidates([finding, { ...finding, id: 'mta-sts|files.example.com|files.example.com.s3.amazonaws.com', kind: 'mta-sts' }]).map((f) => f.id), [finding.id],
+      'one page, one probe');
     assert.deepEqual(httpCandidates([{ ...finding, reasons: [{ code: 'nxdomain', severity: 'high' }] }]), []);
     assert.deepEqual(httpCandidates(null), []);
   });
@@ -491,7 +493,7 @@ describe('auditTakeover: every dependency kind', () => {
   test('one click asks every kind and finds what lapsed or dangles behind it', async () => {
     const { out, dns, rdap, progress } = await run();
     assert.deepEqual(out.findings.map(row), [
-      'critical acme _acme-challenge.example.com → _acme-challenge.gone.example: unregistered, nxdomain',
+      'critical acme _acme-challenge.example.com → _acme-challenge.gone.example: unregistered',
       'high dmarc _dmarc.example.com → reports.gone.example [rua]: unregistered',
       'high https example.com → edge.lapsed.example: unregistered',
       'high caa example.com → iodef.pending.example: pending-delete',
@@ -558,12 +560,97 @@ describe('auditTakeover: every dependency kind', () => {
     const dns = fakeDns({
       'example.com|TXT': ok('example.com', 'TXT', [rr('example.com', 'TXT', ['v=spf1 a:relay.gone.test -all'])]),
       '_dmarc.example.com|TXT': ok('_dmarc.example.com', 'TXT', [rr('_dmarc.example.com', 'TXT', ['v=DMARC1; p=none; rua=mailto:d@corp.internal'])]),
+      'selector1._domainkey.example.com|TXT': ok('selector1._domainkey.example.com', 'TXT', [rr('selector1._domainkey.example.com', 'CNAME', 'sel.gone.test')], 'NXDOMAIN'),
       '_acme-challenge.example.com|TXT': ok('_acme-challenge.example.com', 'TXT', [rr('_acme-challenge.example.com', 'CNAME', 'acme.gone.test')], 'NXDOMAIN')
     });
     const rdap = fakeRdap({});
     const out = await auditTakeover({ domains: ['example.com'] }, { dns, rdap, now: () => NOW });
     assert.deepEqual(rdap.calls, []);
     assert.ok(!dns.calls.some((c) => /\.(test|internal)$/.test(c.name)), dns.calls.map((c) => c.name).join(', '));
-    assert.deepEqual(out.findings.map(row), ['low acme _acme-challenge.example.com → acme.gone.test: nxdomain'], 'the dangling delegation still counts, from its own query');
+    assert.deepEqual(out.findings.map(row), ['low dkim selector1._domainkey.example.com → sel.gone.test: nxdomain'], 'the dangling DKIM key still counts, from its own query');
+  });
+
+  test('an _acme-challenge delegation is judged by its domain\'s registration alone: its TXT exists only while a validation runs', async () => {
+    // acme.sh --challenge-alias, lego following the CNAME: between renewals the name the delegation points to does not exist.
+    const between = { '_acme-challenge.example.com|TXT': ok('_acme-challenge.example.com', 'TXT', [
+      rr('_acme-challenge.example.com', 'CNAME', '_acme-challenge.example.com.validation.example.net')
+    ], 'NXDOMAIN') };
+    const quiet = await auditTakeover({ domains: ['example.com'] }, { dns: fakeDns(between), rdap: fakeRdap({}), now: () => NOW });
+    assert.deepEqual(quiet.findings.map(row), [], 'a working delegation between renewals is no finding');
+    const lapsed = await auditTakeover({ domains: ['example.com'] }, {
+      dns: fakeDns({ ...between, 'example.net|NS': ok('example.net', 'NS', [], 'NXDOMAIN') }), rdap: fakeRdap({ 'example.net': notFound('example.net') }), now: () => NOW
+    });
+    assert.deepEqual(lapsed.findings.map(row), ['critical acme _acme-challenge.example.com → _acme-challenge.example.com.validation.example.net: unregistered'],
+      'whoever registers the domain behind it passes DNS-01 for example.com');
+  });
+
+  test('mta-sts.<domain> among the hosts given is the domain\'s own reference: asked once, one finding, one page check', async () => {
+    const onPages = { 'mta-sts.example.com|A': ok('mta-sts.example.com', 'A', [rr('mta-sts.example.com', 'CNAME', 'example-sts.github.io'), rr('example-sts.github.io', 'A', '198.51.100.80')]) };
+    // A Subdomains scan finds it (CT always has it); the runner gets it from --names or --from-subdomains.
+    for (const given of [{ name: 'mta-sts.example.com', resolution: { cnames: ['example-sts.github.io'] } }, 'MTA-STS.example.com']) {
+      const dns = fakeDns(onPages);
+      const out = await auditTakeover({ hosts: [given], domains: ['example.com'] }, { dns, rdap: fakeRdap({}), now: () => NOW });
+      const label = typeof given === 'string' ? 'listed' : 'scanned';
+      assert.deepEqual(out.findings.map(row), ['info mta-sts mta-sts.example.com → example-sts.github.io: check-http'], label);
+      assert.deepEqual(httpCandidates(out.findings).map((f) => f.host), ['mta-sts.example.com'], `${label}: one probe`);
+      assert.equal(dns.calls.filter((c) => c.name === 'mta-sts.example.com').length, 1, `${label}: asked once`);
+      assert.equal(out.hosts, 1, `${label}: the host given counts as asked`);
+    }
+  });
+
+  test('a host given with the chain the scan saw stands in when the domain\'s own query for it fails', async () => {
+    const { out } = await run({
+      hosts: [{ name: 'mta-sts.example.com', resolution: { cnames: ['policy.lapsed.example'] } }],
+      dns: { 'mta-sts.example.com|A': fail('mta-sts.example.com', 'A') }
+    });
+    assert.deepEqual(out.findings.filter((f) => f.host === 'mta-sts.example.com').map(row), ['critical mta-sts mta-sts.example.com → policy.lapsed.example: unregistered']);
+    assert.ok(out.failures.some((f) => f.name === 'mta-sts.example.com A'));
+  });
+});
+
+describe('carried, never fixed: a failed lookup names every finding it hides', () => {
+  const rr = (name, type, data) => ({ name, type, ttl: 300, data });
+  // One reference of every kind, each into gone.example (RDAP 404 and NXDOMAIN: unregistered), so each is a finding.
+  const WORLD = {
+    'shop.example.com|A': ok('shop.example.com', 'A', [rr('shop.example.com', 'CNAME', 'shop.gone.example')]),
+    'example.com|NS': ok('example.com', 'NS', [rr('example.com', 'NS', 'ns.gone.example')]),
+    'example.com|MX': ok('example.com', 'MX', [rr('example.com', 'MX', { preference: 10, exchange: 'mx.gone.example' })]),
+    'example.com|TXT': ok('example.com', 'TXT', [rr('example.com', 'TXT', ['v=spf1 include:_spf.gone.example a:relay.gone.example -all'])]),
+    '_dmarc.example.com|TXT': ok('_dmarc.example.com', 'TXT', [rr('_dmarc.example.com', 'TXT', ['v=DMARC1; p=none; rua=mailto:d@reports.gone.example'])]),
+    'selector1._domainkey.example.com|TXT': ok('selector1._domainkey.example.com', 'TXT', [rr('selector1._domainkey.example.com', 'CNAME', 'sel.gone.example')]),
+    'example.com|CAA': ok('example.com', 'CAA', [rr('example.com', 'CAA', { flags: 0, tag: 'iodef', value: 'mailto:caa@iodef.gone.example' })]),
+    'mta-sts.example.com|A': ok('mta-sts.example.com', 'A', [rr('mta-sts.example.com', 'CNAME', 'mta.gone.example')]),
+    '_sip._tls.example.com|SRV': ok('_sip._tls.example.com', 'SRV', [rr('_sip._tls.example.com', 'SRV', { priority: 1, weight: 1, port: 443, target: 'sip.gone.example' })]),
+    'example.com|HTTPS': ok('example.com', 'HTTPS', [rr('example.com', 'HTTPS', { priority: 1, target: 'edge.gone.example', params: {} })]),
+    '_acme-challenge.example.com|TXT': ok('_acme-challenge.example.com', 'TXT', [rr('_acme-challenge.example.com', 'CNAME', '_acme-challenge.gone.example')]),
+    'gone.example|NS': ok('gone.example', 'NS', [], 'NXDOMAIN')
+  };
+  const audit = (dns, rdap) => auditTakeover({ hosts: ['shop.example.com'], domains: ['example.com'] }, { dns, rdap, now: () => NOW, skipTlds: [] });
+  const rankOf = (s) => TAKEOVER_SEVERITIES.indexOf(s);
+
+  test('whatever single lookup fails, a finding it hides or lowers names it among its lookups (findingLookups, REFERENCE_QUERIES)', async () => {
+    const dns = fakeDns(WORLD);
+    const rdap = fakeRdap({ 'gone.example': notFound('gone.example') });
+    const base = await audit(dns, rdap);
+    assert.deepEqual([...new Set(base.findings.map((f) => f.kind))].sort(), [...TAKEOVER_REF_KINDS].sort(), 'a finding of every kind');
+    assert.deepEqual(base.failures, []);
+    const lookups = [
+      ...[...new Set(dns.calls.map((c) => `${c.name}|${c.type}`))].map((q) => ({ q, dns: { [q]: () => fail(...q.split('|')) }, rdap: {} })),
+      ...[...new Set(rdap.calls)].map((d) => ({ q: `RDAP ${d}`, dns: {}, rdap: { [d]: rateLimited(d) } }))
+    ];
+    // The kinds hidden by a failure of one of example.com's own queries (not the RDAP or NS lookup of gone.example, which hide them all).
+    const hiddenByOwnQuery = new Set();
+    for (const one of lookups) {
+      const out = await audit(fakeDns({ ...WORLD, ...one.dns }), fakeRdap({ 'gone.example': notFound('gone.example'), ...one.rdap }));
+      const failed = new Set(out.failures.map((f) => f.name));
+      assert.ok(failed.size > 0, `${one.q}: its failure is reported`);
+      for (const f of base.findings) {
+        const now = out.findings.find((x) => x.id === f.id);
+        if (now && rankOf(now.severity) <= rankOf(f.severity)) continue;
+        if (/(^|\.)example\.com\|/.test(one.q)) hiddenByOwnQuery.add(f.kind);
+        assert.ok(findingLookups(f).some((name) => failed.has(name)), `${one.q} hides ${f.id}, whose lookups ${findingLookups(f).join(', ')} name none of ${[...failed].join(', ')}`);
+      }
+    }
+    assert.deepEqual([...hiddenByOwnQuery].sort(), [...TAKEOVER_REF_KINDS].sort(), 'every kind was hidden by a failure of its own record query');
   });
 });

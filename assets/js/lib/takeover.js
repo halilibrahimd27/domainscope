@@ -69,6 +69,12 @@ export const REFERENCE_QUERIES = Object.freeze({
 
 /** Kinds whose chain is a host of the domain: a catalogue service at its end can be claimed (nxdomain and the page check by service). */
 const HOST_KINDS = new Set(['cname', 'mta-sts']);
+/**
+ * Chains whose end exists only now and then, judged by registration alone: an `_acme-challenge`
+ * delegation's TXT is there only while a validation runs (acme.sh --challenge-alias, lego
+ * following the CNAME), so a name that does not exist between renewals is no finding.
+ */
+const TRANSIENT_KINDS = new Set(['acme']);
 /** Kinds where whoever registers an unregistered target serves the domain's names, answers for its zone or gets certificates for it. */
 const CRITICAL_KINDS = new Set(['cname', 'ns', 'mta-sts', 'acme']);
 /** Kinds whose single target is asked for its own existence (A: NXDOMAIN says it does not exist, whatever the type). */
@@ -634,12 +640,14 @@ export function findingLookups({ kind, host, target, chain }) {
  * {@link TAKEOVER_SRV_NAMES} SRV records, and the CNAME chains of `mta-sts.<domain>` (A),
  * `_acme-challenge.<domain>` (TXT) and every DKIM selector (TXT; {@link TAKEOVER_DKIM_SELECTORS}
  * and `extraDkimSelectors`), the chains asked without the cache; every host asked again (A, no
- * cache: the chain and whether its end exists today); every single target outside the domains
- * (NS, MX, SPF a / mx / exists / ptr, DMARC and iodef hosts, SRV and HTTPS targets) asked for its A
- * record (NXDOMAIN: it does not exist); then the registration of every registrable domain those
- * references name, outside the domains (`domains` and `ownDomains`) and the catalogue's providers,
- * through `rdap` (one lookup per domain; `known` carries earlier verdicts, and only failed ones
- * are asked again).
+ * cache: the chain and whether its end exists today) — a host named as one of those chain
+ * questions (`mta-sts.<domain>`, `_acme-challenge.<domain>`, `_dmarc.<domain>`, a selector's) is
+ * that reference, asked once, its scan chain standing in when the question fails; every single
+ * target outside the domains (NS, MX, SPF a / mx / exists / ptr, DMARC and iodef hosts, SRV and
+ * HTTPS targets) asked for its A record (NXDOMAIN: it does not exist); then the registration of
+ * every registrable domain those references name, outside the domains (`domains` and
+ * `ownDomains`) and the catalogue's providers, through `rdap` (one lookup per domain; `known`
+ * carries earlier verdicts, and only failed ones are asked again).
  *
  * @param {{ hosts?: Array<object|string>, domains?: string[] }} input scan HostRecords (name,
  *   resolution.cnames, wildcardSuspect: the ones with a CNAME chain are asked again) or host names
@@ -655,7 +663,8 @@ export function findingLookups({ kind, host, target, chain }) {
  * @returns {Promise<{ at: Date, domains: string[], references: number, findings: TakeoverFinding[],
  *   failures: TakeoverFailure[], registrations: Map<string, object>, checked: number, hosts: number, spfMacros: number }>}
  *   `registrations`: domain → { verdict, expires, rdap, ns } (pass back as `known` to retry);
- *   `checked`: registrable domains with a verdict; `hosts`: hosts whose chain was asked;
+ *   `checked`: registrable domains with a verdict; `hosts`: hosts whose chain was asked (one that is a domain's own
+ *   chain question counted once);
  *   `spfMacros`: SPF terms that build their domain from a macro (not checked)
  */
 export async function auditTakeover({ hosts = [], domains = [] } = {}, {
@@ -683,11 +692,18 @@ export async function auditTakeover({ hosts = [], domains = [] } = {}, {
   const refs = [];
   // A target the record names: asked for its existence (EXISTENCE_KINDS) unless it is the domain's own.
   const single = (kind, host, target, term = null) => refs.push({ kind, host, chain: [target], target, dangling: false, check: EXISTENCE_KINDS.has(kind), term });
-  // A CNAME chain from one of the domain's names: the chain query says whether its end exists.
+  // The names a domain's own chain question asks: a host given under one of them is that reference (one
+  // question, one finding of that kind), and the chain its scan saw stands in when the question fails.
+  const chainOwners = new Set(apexes.flatMap((apex) => [
+    `mta-sts.${apex}`, `_acme-challenge.${apex}`, `_dmarc.${apex}`, ...selectors.map((s) => `${s}._domainkey.${apex}`)
+  ]));
+  const scanChains = new Map();
+  // A CNAME chain from one of the domain's names: the chain query says whether its end exists
+  // (not for a transient end: an `_acme-challenge` TXT exists only during a validation).
   const chained = (kind, host, response) => {
-    if (!response.ok) return;
-    const chain = cnameChain(response, host);
-    if (chain.length) refs.push({ kind, host, chain, target: chain[chain.length - 1], dangling: response.rcode === 'NXDOMAIN', check: false, term: null });
+    const chain = response.ok ? cnameChain(response, host) : scanChains.get(host) || [];
+    const dangling = response.ok && response.rcode === 'NXDOMAIN' && !TRANSIENT_KINDS.has(kind);
+    if (chain.length) refs.push({ kind, host, chain, target: chain[chain.length - 1], dangling, check: false, term: null });
   };
 
   const cnameHosts = [];
@@ -699,7 +715,8 @@ export async function auditTakeover({ hosts = [], domains = [] } = {}, {
     const cnames = entry.resolution && Array.isArray(entry.resolution.cnames) ? entry.resolution.cnames : [];
     if (!name || hostNames.has(name) || !(entry.listed || cnames.length)) continue;
     hostNames.add(name);
-    cnameHosts.push({ name, cnames });
+    if (chainOwners.has(name)) scanChains.set(name, cnames.map(canon).filter(Boolean));
+    else cnameHosts.push({ name, cnames });
   }
   // NS, MX, TXT, _dmarc, CAA, HTTPS, mta-sts, _acme-challenge, the SRV names and the DKIM selectors.
   const perDomain = 8 + TAKEOVER_SRV_NAMES.length + selectors.length;
@@ -855,7 +872,7 @@ export async function auditTakeover({ hosts = [], domains = [] } = {}, {
     || TAKEOVER_REF_KINDS.indexOf(a.kind) - TAKEOVER_REF_KINDS.indexOf(b.kind));
   const checked = [...registrations.values()].filter((r) => r.verdict !== 'failed').length;
   return {
-    at: new Date(now()), domains: apexes, references: refs.length, findings, failures, registrations, checked, hosts: cnameHosts.length, spfMacros
+    at: new Date(now()), domains: apexes, references: refs.length, findings, failures, registrations, checked, hosts: hostNames.size, spfMacros
   };
 }
 
@@ -864,12 +881,18 @@ export async function auditTakeover({ hosts = [], domains = [] } = {}, {
 /* ------------------------------------------------------------------------ */
 
 /**
- * The findings whose service's page decides (reason check-http), at most {@link HTTP_CHECK_MAX}.
+ * The findings whose service's page decides (reason check-http), the first of each host (one
+ * page, one probe), at most {@link HTTP_CHECK_MAX}.
  * @param {TakeoverFinding[]} findings
  * @returns {TakeoverFinding[]}
  */
 export function httpCandidates(findings) {
-  return (Array.isArray(findings) ? findings : []).filter((f) => f.reasons.some((r) => r.code === 'check-http')).slice(0, HTTP_CHECK_MAX);
+  const hosts = new Set();
+  return (Array.isArray(findings) ? findings : []).filter((f) => {
+    if (!f.reasons.some((r) => r.code === 'check-http') || hosts.has(f.host)) return false;
+    hosts.add(f.host);
+    return true;
+  }).slice(0, HTTP_CHECK_MAX);
 }
 
 /**

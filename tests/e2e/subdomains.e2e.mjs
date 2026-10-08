@@ -589,6 +589,45 @@ async function main() {
       assertEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('ssds.subdomains.options')).locales), null, 'automatic is remembered as null');
     });
 
+    await run.step('Advanced: the plan line follows permutations, their budget and origin hints as they change, with no other keystroke', async () => {
+      await page.evaluate(() => { document.querySelector('.sub-advanced').open = true; });
+      const plan = () => page.evaluate(() => {
+        const p = document.querySelector('.sub-wl-plan');
+        return { min: Number(p.dataset.queriesMin), max: Number(p.dataset.queriesMax) };
+      });
+      const moved = (from, message) => page.waitFor((b) => {
+        const p = document.querySelector('.sub-wl-plan');
+        return Number(p.dataset.queriesMin) !== b.min || Number(p.dataset.queriesMax) !== b.max;
+      }, { args: [from], message });
+      const setBudget = (value) => page.evaluate((v) => {
+        const sel = document.querySelector('[data-role="sub-perm-budget"]');
+        sel.value = v;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      }, value);
+      const start = await plan();
+      await setBudget('5000');
+      await moved(start, 'a larger variation budget redraws the plan');
+      const larger = await plan();
+      assert(larger.max > start.max && larger.min === start.min, `5,000 variations: ${JSON.stringify([start, larger])}`);
+      await setBudget('1500');
+      await moved(larger, 'back to 1,500 variations');
+      assertEqual(await plan(), start, 'the 1,500 range again');
+      await page.click('.sub-perm .check-label');
+      await moved(start, 'no variations redraws the plan');
+      const noPerm = await plan();
+      assert(noPerm.max < start.max, `without variations: ${JSON.stringify([start, noPerm])}`);
+      await page.click('[data-role="sub-origin-hints"] + .check-label');
+      await moved(noPerm, 'no origin hints redraws the plan');
+      const neither = await plan();
+      assert(neither.max < noPerm.max && neither.min <= noPerm.min, `without origin hints: ${JSON.stringify([noPerm, neither])}`);
+      // the defaults back, for the steps after this one
+      await page.click('.sub-perm .check-label');
+      await page.click('[data-role="sub-origin-hints"] + .check-label');
+      await page.waitFor((b) => Number(document.querySelector('.sub-wl-plan').dataset.queriesMax) === b.max, { args: [start], message: 'the first range again' });
+      const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('ssds.subdomains.options')));
+      assertEqual([saved.permutations, saved.permutationBudget, saved.originHints], [true, 1500, true], 'the defaults remembered again');
+    });
+
     await run.step('Advanced: custom wordlist (paste + .txt upload read in the browser), accepted / rejected counts, clear', async () => {
       const status = () => page.evaluate(() => document.querySelector('.sub-custom-status').textContent);
       assertEqual(await status(), 'No custom names.', 'empty by default');

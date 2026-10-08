@@ -3340,6 +3340,7 @@ export function mount(container, ctx) {
       options = { ...options, permutations: on };
       saveOptions(options);
       budgetSelect.input.disabled = !on;
+      renderPlan();
       renderAdvSummary();
     }
   });
@@ -3353,6 +3354,7 @@ export function mount(container, ctx) {
     onChange: (v) => {
       options = { ...options, permutationBudget: Number(v) };
       saveOptions(options);
+      renderPlan();
     }
   });
   budgetSelect.input.dataset.role = 'sub-perm-budget';
@@ -3364,6 +3366,7 @@ export function mount(container, ctx) {
     onChange: (on) => {
       options = { ...options, originHints: on };
       saveOptions(options);
+      renderPlan();
       renderAdvSummary();
     }
   });

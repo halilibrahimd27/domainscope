@@ -24,6 +24,7 @@ import { passportDomain } from '../../assets/js/lib/passport.js';
 import { PORTFOLIO_DKIM_SELECTORS } from '../../assets/js/lib/portfolio.js';
 import { CT_WATCH_DEFAULT_DAYS, CT_WATCH_MAX_DAYS, CT_WATCH_MAX_THRESHOLDS, parseRadarDays } from '../../assets/js/lib/ctwatch.js';
 import { WORKSPACE_LIMITS, sanitizeExpectedCas } from '../../assets/js/lib/workspace.js';
+import { NOTIFY_FORMATS, NOTIFY_ENV, PAGERDUTY_MAX_EVENTS, NotifyConfigError, notifyRoutes } from './notify.mjs';
 
 /** The runner's name in reports and messages. */
 export const DS_TOOL = 'domainscope-ds';
@@ -34,8 +35,10 @@ export const DS_VERSION = '1.0.0';
  * Exit codes, numbered as the Python CLI's (cli/ssl_origin_scan.py); FAILED: an unexpected error
  * (printed). CHANGED: something changed since --baseline (with --fail-on-change) or, for `audit`,
  * a rule of the policy failed — 4, as the CLI's `--compare --fail-on-change` says "look here".
+ * NOTIFY: a notification was not delivered (with --fail-on-notify-error). When several apply: 3,
+ * then 5, then 4, as in the CLI.
  */
-export const EXIT = Object.freeze({ OK: 0, FAILED: 1, USAGE: 2, WRITE: 3, CHANGED: 4, INTERRUPTED: 130 });
+export const EXIT = Object.freeze({ OK: 0, FAILED: 1, USAGE: 2, WRITE: 3, CHANGED: 4, NOTIFY: 5, INTERRUPTED: 130 });
 
 /** The subcommands, in help order. */
 export const COMMANDS = Object.freeze(['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit', 'tls']);
@@ -191,11 +194,17 @@ const OPTION_SPEC = Object.freeze({
   preset: { type: 'string' },
   'no-dkim': { type: 'boolean' },
   ari: { type: 'boolean' },
-  revocation: { type: 'boolean' }
+  revocation: { type: 'boolean' },
+  notify: { type: 'string', multiple: true },
+  'notify-bad': { type: 'string', multiple: true },
+  'notify-format': { type: 'string' },
+  'notify-always': { type: 'boolean' },
+  'fail-on-notify-error': { type: 'boolean' }
 });
 
 /** Options every subcommand takes. */
-const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'resolver', 'concurrency', 'quiet', 'no-color', 'show-all', 'help', 'version']);
+const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'resolver', 'concurrency', 'quiet', 'no-color', 'show-all', 'help', 'version',
+  'notify', 'notify-bad', 'notify-format', 'notify-always', 'fail-on-notify-error']);
 
 /**
  * @typedef {object} DsOptions
@@ -226,6 +235,11 @@ const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'res
  * @property {boolean} dkim audit: look for DKIM keys at the common selectors (off with --no-dkim)
  * @property {boolean} ari tls: ask each certificate's CA for its ARI renewal window (--ari)
  * @property {boolean} revocation tls: read each certificate's CRL (--revocation)
+ * @property {string[]} notify `--notify` URLs (none: DOMAINSCOPE_NOTIFY_URL's; tools/ds/notify.mjs notifyRoutes)
+ * @property {string[]} notifyBad `--notify-bad` URLs, for the bad changes only (none: DOMAINSCOPE_NOTIFY_BAD_URL's)
+ * @property {string} notifyFormat NOTIFY_FORMATS: `auto` follows each URL
+ * @property {boolean} notifyAlways post after every run (the `--notify` routes), even when nothing counts
+ * @property {boolean} failOnNotifyError exit 5 when a notification was not delivered
  */
 
 /**
@@ -452,6 +466,21 @@ export function parseCommandLine(argv) {
   options.quiet = v.quiet === true;
   options.noColor = v['no-color'] === true;
   options.showAll = v['show-all'] === true;
+  options.notify = [...(v.notify || [])];
+  options.notifyBad = [...(v['notify-bad'] || [])];
+  if (v['notify-format'] !== undefined) {
+    // the value is never quoted back: it may be a webhook URL given to the wrong option
+    const format = String(v['notify-format']).trim().toLowerCase();
+    if (!NOTIFY_FORMATS.includes(format)) throw new UsageError(`--notify-format takes ${NOTIFY_FORMATS.join(', ')}`);
+    options.notifyFormat = format;
+  }
+  options.notifyAlways = v['notify-always'] === true;
+  options.failOnNotifyError = v['fail-on-notify-error'] === true;
+  try {
+    notifyRoutes(options, {}); // the URLs on the command line; the run reads the environment's
+  } catch (err) {
+    throw err instanceof NotifyConfigError ? new UsageError(err.message) : err;
+  }
 
   if (options.failOnChange && !options.baseline) throw new UsageError('--fail-on-change needs --baseline');
   if (options.json && options.md && samePath(options.json, options.md)) throw new UsageError('--json and --md name the same file');
@@ -551,7 +580,8 @@ function defaults() {
     concurrency: DEFAULT_SETTINGS.concurrency, lists: [], quiet: false, noColor: false, showAll: false,
     exact: null, level: DS_DEFAULT_LEVEL, sources: null, days: DS_DEFAULT_DAYS, radar: [...DS_DEFAULT_RADAR], expectedCas: [],
     origin: null, includeOrigins: false, maxQueries: DRIFT_DEFAULT_BUDGET, ca: null, challenge: 'unknown',
-    policy: null, preset: null, dkim: true, ari: false, revocation: false
+    policy: null, preset: null, dkim: true, ari: false, revocation: false,
+    notify: [], notifyBad: [], notifyFormat: 'auto', notifyAlways: false, failOnNotifyError: false
   };
 }
 
@@ -622,6 +652,21 @@ options:
   --show-all           list every change in the summary (not the first 50)
   -q, --quiet          no summary on stdout (errors still go to stderr)
   --no-color           no colours (also NO_COLOR=1, and whenever stdout is not a terminal)
+  --notify URL         post the changes that count to a webhook after the run (repeatable;
+                       without it, the URLs in ${NOTIFY_ENV.url}, separated by spaces).
+                       The URL picks the format: Slack, Teams / Power Automate, Discord,
+                       Telegram, Google Chat, PagerDuty (a trigger per bad change, a resolve
+                       once it is over) or ntfy (ntfy.sh); any other URL gets JSON, signed
+                       when ${NOTIFY_ENV.secret} is set. https:// only; http:// is
+                       refused but to this machine (localhost, 127.0.0.1, [::1])
+  --notify-bad URL     the same with the bad changes only: the pager route (repeatable;
+                       without it, the URLs in ${NOTIFY_ENV.bad})
+  --notify-format FMT  the format of every URL: auto (the default: each URL's own), slack,
+                       teams, discord, telegram, googlechat, json, pagerduty or ntfy (for a
+                       self-hosted ntfy server)
+  --notify-always      post after every run (--notify), even when nothing counts
+  --fail-on-notify-error
+                       exit 5 when a notification was not delivered
   -h, --help / --version
 
 what is sent: names and record types to the DoH resolvers (renew also asks Cloudflare,
@@ -655,11 +700,22 @@ ct watch: each domain's report keeps the ids of the certificates seen (the next 
   Cert Spotter's answers say which certificates are logged only as a precertificate; crt.sh's
   do not.
 
+notifications: a webhook URL works as a password (whoever has it can post), so it is never
+  printed or written: messages name its host only. Keep it in the environment (the nightly
+  template reads Actions secrets); with none set, the notify options change nothing.
+  ${NOTIFY_ENV.ntfyToken} goes to ntfy as a bearer token. 10 s timeout, one retry, no
+  redirects. When the --json file is also the baseline and a message with changes was not
+  delivered, the file keeps the previous report, so the next run reports them again.
+  PagerDuty: at most ${PAGERDUTY_MAX_EVENTS} events a run; the report keeps the keys still open
+  (notify.open), and a later run resolves each once its problem is over.
+
 exit codes: 0 done, 1 the run failed (an unexpected error, printed), 2 usage error (report
   files that cannot be written or that are one of the run's input files, and a baseline that
   cannot be compared, are refused before the run), 3 a report file could not be written
   after the run, 4 a rule of the policy failed (audit), or something changed since --baseline
-  (only with --fail-on-change), 130 interrupted (nothing written). When several apply: 3, then 4.
+  (only with --fail-on-change), 5 a notification was not delivered (only with
+  --fail-on-notify-error), 130 interrupted (nothing written). When several apply: 3, then 5,
+  then 4.
   A rule that could not be checked (a lookup failed, a TLD without RDAP) is no failure, unless it
   failed when last checked (--baseline): it still counts as failed.
 

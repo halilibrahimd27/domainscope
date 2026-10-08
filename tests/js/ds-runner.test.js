@@ -1753,11 +1753,13 @@ describe('the documented commands', () => {
     for (const [, name, command, rest] of lines) {
       assert.ok(COMMANDS.includes(command), command);
       const argv = [command, ...rest.trim().split(/\s+/).filter(Boolean).map(unquote), '--baseline', `results/${name}.json`,
-        '--json', `results/${name}.json`, '--md', `results/${name}.md`, '--fail-on-change', '--no-color'];
+        '--json', `results/${name}.json`, '--md', `results/${name}.md`, '--fail-on-change', '--fail-on-notify-error', '--no-color'];
       assert.doesNotThrow(() => parseCommandLine(argv), argv.join(' '));
     }
-    assert.match(yml, /timeout -s INT -k 60 "\$limit" node \.domainscope\/tools\/ds\.mjs "\$@" --baseline "results\/\$name\.json" --json "results\/\$name\.json" \\\n\s+--md "results\/\$name\.md" --fail-on-change --no-color/);
+    assert.match(yml, /timeout -s INT -k 60 "\$limit" node \.domainscope\/tools\/ds\.mjs "\$@" --baseline "results\/\$name\.json" --json "results\/\$name\.json" \\\n\s+--md "results\/\$name\.md" --fail-on-change --fail-on-notify-error --no-color/);
     assert.match(yml, /if \[ "\$code" -eq 4 \]; then changed\+=/);
+    // 5: a notification was not delivered — the changes still open the issue, and the job fails
+    assert.match(yml, /elif \[ "\$code" -eq 5 \]; then changed\+=\("\$name"\); failed\+=\("\$name:notify"\)\n/);
   });
 
   test('every check has a time limit inside the job\'s, and a night a check failed never closes the issue', () => {
@@ -1785,7 +1787,10 @@ describe('the documented commands', () => {
     assert.match(yml, /No secret is needed/);
     assert.match(yml, /^ {4}- cron: '\d+ \d+ \* \* \*'/m);
     assert.match(yml, /^permissions:\n {2}contents: write[^\n]*\n {2}issues: write[^\n]*\n\n/m);
-    assert.doesNotMatch(yml, /secrets\./, 'no secret');
+    // The only secrets are the optional alert channels (unset: empty, nothing is sent).
+    const secretNames = [...yml.matchAll(/\$\{\{ secrets\.([A-Z_]+) \}\}/g)].map((m) => m[1]);
+    assert.deepEqual(secretNames, ['DOMAINSCOPE_NOTIFY_URL', 'DOMAINSCOPE_NOTIFY_BAD_URL', 'DOMAINSCOPE_NOTIFY_SECRET', 'DOMAINSCOPE_NTFY_TOKEN']);
+    assert.equal((yml.match(/secrets\./g) || []).length, secretNames.length, 'no other secret');
     assert.match(yml, /repository: halilibrahimd27\/domainscope\n\s+ref: /);
     for (const cmd of ['gh issue list --label "\\$label" --state open', 'gh issue create', 'gh issue edit', 'gh issue comment', 'gh issue close']) assert.match(yml, new RegExp(cmd), cmd);
     assert.match(yml, /git add results\n/);
@@ -1796,7 +1801,10 @@ describe('the documented commands', () => {
     assert.match(steps.find((s) => s.includes('- name: Check out DomainScope')), /persist-credentials: false/);
     const withToken = steps.filter((s) => s.includes('github.token')).map((s) => /- name: ([^\n]+)/.exec(s)[1]);
     assert.deepEqual(withToken, ['Commit the results', 'Open, update or close the issue']);
-    assert.ok(!steps.find((s) => s.includes('- name: Run the checks')).includes('TOKEN'));
+    const checks = steps.find((s) => s.includes('- name: Run the checks'));
+    assert.doesNotMatch(checks, /github\.token|GH_TOKEN|GITHUB_TOKEN/, 'no GitHub token while the checks run');
+    // the alert secrets go to the checks step alone, as its environment
+    for (const name of secretNames) assert.match(checks, new RegExp(`\\n {10}${name}: \\$\\{\\{ secrets\\.${name} \\}\\}\\n`), name);
     const commit = steps.find((s) => s.includes('- name: Commit the results'));
     assert.match(commit, /auth="http\.\$GITHUB_SERVER_URL\/\.extraheader=AUTHORIZATION: basic \$\(printf 'x-access-token:%s' "\$GH_TOKEN" \| base64 -w0\)"\n\s+git -c "\$auth" pull -q --rebase\n\s+git -c "\$auth" push -q/);
     assert.match(yml, /ref: main {3}# pin a commit SHA \(or a release tag once there is one\)/);

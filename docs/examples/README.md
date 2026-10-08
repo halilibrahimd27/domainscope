@@ -12,8 +12,9 @@ records. **Never commit inventories or zone files unless you mean to**: the zone
 a zone export from the repository, so it stays commented out until that file belongs there (the
 origin addresses behind proxied names are hidden in the results unless you add
 `--include-origins`). **No secret is needed**: the job uses the workflow's own `GITHUB_TOKEN`, and
-the checks ask keyless public services only. The checkout keeps no token while the checks run
-(`persist-credentials: false`): only the commit step and the issue step are given it.
+the checks ask keyless public services only (the alerts below are optional secrets). The checkout
+keeps no token while the checks run (`persist-credentials: false`): only the commit step and the
+issue step are given it.
 
 1. Create a private repository with a `domains.txt`: one domain per line, `#` comments.
 2. Copy `nightly-domainscope.yml` to its `.github/workflows/`, and pin `ref:` to a DomainScope
@@ -37,6 +38,34 @@ both the baseline and the new report) and:
   naming the check;
 - fails the job when a check did not complete: a usage error, a report it could not write, or
   its time limit.
+
+**Alerts.** The issue keeps the record; an alert reaches you where you already look. Set any of
+these Actions secrets in the repository (Settings › Secrets and variables › Actions). A secret that
+is not set is empty, and then nothing is sent:
+
+- `DOMAINSCOPE_NOTIFY_URL`: the changes that count, posted on the nights there are any. The URL
+  picks the format: a Slack incoming webhook, a Teams or Power Automate workflow, a Discord
+  webhook, Telegram (`https://api.telegram.org/bot<token>/sendMessage?chat_id=<chat id>`), a
+  Google Chat space webhook, an ntfy topic (`https://ntfy.sh/<topic>`), or any other URL, which
+  gets JSON (`tool`, `command`, `run` — the Actions run's link —, `counts`, `changes` …). Several
+  URLs: separate them with spaces.
+- `DOMAINSCOPE_NOTIFY_BAD_URL`: only the changes that count and are bad, the pager route.
+  PagerDuty's Events API (`https://events.pagerduty.com/v2/enqueue?routing_key=<integration key>`)
+  gets one incident per problem — its `dedup_key` is the same every night, so a problem pages once
+  — with severity `critical` for a registrar, name server, DS, lock, expiry or trust change and
+  `error` for the rest, and a resolve on the night the problem is over (fixed, better, renewed).
+  `results/NAME.json` keeps the keys still open (`notify.open`); at most 50 events a night.
+- `DOMAINSCOPE_NOTIFY_SECRET`: signs the JSON webhook. `X-DomainScope-Timestamp` carries the Unix
+  time and `X-DomainScope-Signature` is `sha256=` and the hex HMAC-SHA256 of the timestamp, a dot
+  and the body: compute the same over the raw body, compare in constant time, and refuse an old
+  timestamp.
+- `DOMAINSCOPE_NTFY_TOKEN`: an ntfy access token (`Authorization: Bearer`). The message is plain
+  text with a title, priority 4 when a change is bad (else 3) and a tag.
+
+Webhook URLs work as passwords: they are never printed or written, and the log names their hosts
+only. https:// only. A notification that is not delivered (after one retry) fails the job — the
+check reads `NAME:notify` — while its changes still open the issue, and `results/NAME.json` keeps
+the night before, so the next night sends them again.
 
 Each check is stopped after `CHECK_MINUTES` (20) and all of them after `RUN_MINUTES` (45), well
 inside the job's `timeout-minutes` (60): on a slow night (crt.sh down, a large discovery) that
@@ -124,12 +153,23 @@ node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md 
 node tools/ds.mjs tls www.example.com example.com:8443 --ari --revocation --json tls.json
 ```
 
+Alerts outside the template: put the URLs in the environment rather than on the command line
+(where the shell history keeps them), or give them with `--notify URL` / `--notify-bad URL`
+(repeatable); `--notify-format` names the format for a self-hosted ntfy server or a
+Slack-compatible chat, `--notify-always` posts after every run.
+
+```sh
+export DOMAINSCOPE_NOTIFY_URL='https://ntfy.sh/your-topic'
+node tools/ds.mjs ct --list domains.txt --baseline ct.json --json ct.json --fail-on-notify-error
+```
+
 `node tools/ds.mjs --help` lists every option. Exit codes: 0 done, 1 the run failed (an
 unexpected error, printed), 2 usage error (report files that cannot be written, a report file
 that is one of the run's own input files, and a baseline that cannot be compared are refused
 before anything is sent), 3 a report could not be written after the run, 4 something changed
-since `--baseline` (only with `--fail-on-change`) or a rule of the policy failed (`audit`), 130
-interrupted (Ctrl-C, or `timeout -s INT`: nothing is written). DNS goes to the app's DoH resolvers (Cloudflare,
+since `--baseline` (only with `--fail-on-change`) or a rule of the policy failed (`audit`), 5 a
+notification was not delivered (only with `--fail-on-notify-error`), 130 interrupted (Ctrl-C, or
+`timeout -s INT`: nothing is written); when several apply, 3 comes first, then 5, then 4. DNS goes to the app's DoH resolvers (Cloudflare,
 Google, DNS.SB; Quad9 and CZ.NIC answer over HTTP/2 only, which Node's fetch does not speak) with
 the app's concurrency; nothing goes to Globalping. A discovery run prints its progress through
 the long stages and the scanner's own warnings (a list of names cut at 20,000, resolvers that

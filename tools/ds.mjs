@@ -20,7 +20,9 @@
  * (cli/ssl_origin_scan.py): the baseline is read and checked before the run, the same file may
  * be the `--json` report (replaced whole, through a temporary file, after the run), a missing
  * one is a first run only when it is that file, report files that cannot be written are refused
- * before the run.
+ * before the run. `--notify` / `--notify-bad` post the changes after the summary and before the
+ * `--json` report (tools/ds/notify.mjs): when the report is also the baseline and a message
+ * with changes was not delivered, the file keeps the previous report, as the CLI does.
  *
  * DNS goes through lib/doh.js's DohClient with the app's resolver chain (minus the resolvers
  * Node's fetch cannot read) and the app's concurrency; nothing goes to Globalping.
@@ -33,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 import { parseCommandLine, parseListText, samePath, UsageError, USAGE, EXIT, DS_TOOL, DS_VERSION, COMMAND_SPECS, TARGET_WHAT } from './ds/args.mjs';
 import { setupStrings, renderRunText, renderRunMarkdown, changeText } from './ds/render.mjs';
 import { baselineProblem, baselineInfo, baselineNotes, diffReports, notableChanges } from './ds/diff.mjs';
+import { notifyRoutes, sendNotifications, openKeysOf, NotifyConfigError, PAGERDUTY_MAX_EVENTS } from './ds/notify.mjs';
 import { DohClient } from '../assets/js/lib/doh.js';
 import { parseHostList } from '../assets/js/lib/domain.js';
 import { toJson } from '../assets/js/lib/export.js';
@@ -219,14 +222,15 @@ export function policyErrorText(e) {
  * @param {string[]} argv arguments after the script
  * @param {{ stdout?: { write: Function, isTTY?: boolean }, stderr?: { write: Function },
  *   fetchImpl?: typeof fetch, env?: Record<string, string|undefined>, now?: () => Date,
- *   signal?: AbortSignal, tls?: object }} [io] injected streams, fetch and clock (tests); `tls`: the
+ *   signal?: AbortSignal, tls?: object, notifyTiming?: { timeoutMs?: number, retryDelayMs?: number, sleep?: Function } }} [io]
+ *   injected streams, fetch and clock (tests), the notifications' timeout and retry delay (`notifyTiming`); `tls`: the
  *   `tls` command's hooks (tools/ds/tls.mjs runTls: a trust store, the issuer → CA mapping, ARI directories)
  * @returns {Promise<number>}
  */
 export async function main(argv, io = {}) {
   const {
     stdout = process.stdout, stderr = process.stderr, fetchImpl = globalThis.fetch,
-    env = process.env, now = () => new Date(), signal, tls: tlsHooks
+    env = process.env, now = () => new Date(), signal, tls: tlsHooks, notifyTiming = {}
   } = io;
   const say = (stream, text) => stream.write(text.endsWith('\n') ? text : `${text}\n`);
   const fail = (err) => {
@@ -263,8 +267,15 @@ export async function main(argv, io = {}) {
   let targets = cl.targets;
   const inputs = {};
   let baseline = null;
+  let routes = [];
   const jsonIsBaseline = !!(options.baseline && options.json && samePath(options.baseline, options.json));
   try {
+    // where the notifications go: the command line's URLs, else the environment's (secrets)
+    try {
+      routes = notifyRoutes(options, env);
+    } catch (err) {
+      throw err instanceof NotifyConfigError ? new UsageError(err.message) : err;
+    }
     for (const file of options.lists) {
       const { targets: listed, invalid } = parseListText(command, decodeText(await readInput(file, '--list')));
       const what = TARGET_WHAT[COMMAND_SPECS[command].targets];
@@ -288,6 +299,13 @@ export async function main(argv, io = {}) {
     if (options.baseline) baseline = await loadBaseline(options.baseline, command, { allowMissing: jsonIsBaseline });
   } catch (err) {
     return fail(err);
+  }
+  // A URL given on the command line for nothing to send (the environment's are set once for every job).
+  if (!options.baseline && routes.some((r) => r.source === '--notify') && !options.notifyAlways) {
+    warn('--notify sends a message only with --baseline (the changes since the last run) or --notify-always');
+  }
+  if (!options.baseline && routes.some((r) => r.source === '--notify-bad')) {
+    warn('--notify-bad sends a message only with --baseline (the changes since the last run)');
   }
 
   // --- the run --------------------------------------------------------------------------
@@ -355,9 +373,46 @@ export async function main(argv, io = {}) {
     }
   };
   await write(options.md, renderRunMarkdown(run, result.docs), 'Markdown summary');
-  await write(options.json, `${toJson(report)}\n`, 'JSON report');
+
+  // --- notifications (before the report: it may be the next run's baseline) ---------------
+  let notifyFailed = false;
+  let heldBack = false;
+  let open = openKeysOf(baseline); // PagerDuty's open keys go on while no PagerDuty URL is set
+  if (routes.length) {
+    const sent = await sendNotifications(report, routes, {
+      baseline, always: options.notifyAlways, env, now, fetchImpl, signal, timing: notifyTiming, tool: DS_TOOL, version: DS_VERSION
+    });
+    for (const r of sent.results) {
+      if (!r.total) continue;
+      const label = `${r.route.format}, ${r.host}${r.route.bad ? ', --notify-bad' : ''}`;
+      const events = r.route.format === 'pagerduty' ? `: ${r.triggered} triggered, ${r.resolved} resolved` : '';
+      if (r.interrupted) say(stderr, `${PROG}: error: notification (${label}) interrupted`);
+      else if (r.problem) say(stderr, `${PROG}: error: notification failed (${label}): ${r.problem}${r.sent ? ` (${r.sent} of ${r.total} events sent)` : ''}`);
+      else if (!quiet) say(stderr, `${PROG}: notification sent (${label})${events}`);
+    }
+    if (sent.cut && !quiet) {
+      say(stderr, `${PROG}: warning: PagerDuty: ${sent.cut} more bad change${sent.cut === 1 ? '' : 's'} not sent (at most ${PAGERDUTY_MAX_EVENTS} events a run)`);
+    }
+    if (sent.interrupted) {
+      say(stderr, `${PROG}: interrupted${options.json ? `: the JSON report is not written (${options.json})` : ''}`);
+      return EXIT.INTERRUPTED;
+    }
+    notifyFailed = sent.results.some((r) => r.problem);
+    if (sent.open) open = sent.open;
+    // This run's report would be the next baseline: the next run would compare with it, find
+    // nothing and never send what did not go out. Keep the previous one.
+    if (jsonIsBaseline && run.baseline && !run.baseline.missing && sent.results.some((r) => r.problem && r.carries)) {
+      heldBack = true;
+      const n = notableChanges(run.changes).length;
+      say(stderr, `${PROG}: kept the previous baseline in ${options.json} (this report is not written there): `
+        + (n ? `the ${n} change${n === 1 ? '' : 's'} will be reported again on the next run` : 'the next run sends again what was not delivered'));
+    }
+  }
+  if (open.length) report.notify = { open };
+  if (!heldBack) await write(options.json, `${toJson(report)}\n`, 'JSON report');
 
   if (writeFailed) return EXIT.WRITE;
+  if (notifyFailed && options.failOnNotifyError) return EXIT.NOTIFY;
   // audit: a rule of the policy failed (one that could not be checked is no failure, unless it
   // failed when last checked (--baseline): it still counts as failed)
   if (result.failed) return EXIT.CHANGED;

@@ -1,0 +1,797 @@
+/**
+ * tools/ds/notify.mjs — the headless runner's alert channels (`--notify`, `--notify-bad`): the
+ * format each URL gets (mirroring the Python CLI's NotifyFormatTests), the URL checks that never
+ * repeat a URL, the redaction, every format's payload and its cut at the service's limit, the
+ * signed JSON (a known-answer HMAC vector the Python tests share), PagerDuty's triggers and
+ * resolves over runs, ntfy, and runs of `main()` with a fake fetch: the --notify-bad filter, a
+ * retry after a 500, a timeout, the exit code order (3, then 5, then 4), a baseline kept when a
+ * message did not go out, and no URL in stdout, stderr or any file written. No network.
+ */
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash, createHmac } from 'node:crypto';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  NOTIFY_FORMATS, NOTIFY_TEXT_LIMITS, NOTIFY_MAX_CHANGES, NOTIFY_MAX_JSON_CHANGES, NOTIFY_LINE_LIMIT, NOTIFY_ENV, CRITICAL_TAGS,
+  PAGERDUTY_MAX_EVENTS, PAGERDUTY_SUMMARY_LIMIT, PAGERDUTY_MAX_OPEN, NTFY_MAX_BYTES, NotifyConfigError,
+  detectNotifyFormat, notifyUrlProblem, notifyHost, splitCredentials, redactUrl, runUrl, notifyRoutes, notificationMessage,
+  fitLines, buildRequest, signBody, dedupKey, eventSeverity, openKeysOf, problemOver, pagerDutyPlan, pagerDutyRequests,
+  responseDetail, deliver, sendNotifications, byteLength
+} from '../../tools/ds/notify.mjs';
+import { parseCommandLine, UsageError, EXIT, USAGE, DS_TOOL, DS_VERSION } from '../../tools/ds/args.mjs';
+import { main } from '../../tools/ds.mjs';
+import { zoneTable, createFakeFetch, CF_EXPORT } from './ds-fake-doh.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const NOW = new Date('2026-09-28T03:00:00Z');
+const FAST = Object.freeze({ timeoutMs: 2000, retryDelayMs: 1 });
+const tmp = () => mkdtempSync(join(tmpdir(), 'ds-notify-'));
+
+// Webhook URLs and keys are credentials: built in parts, never written whole (push protection).
+const TOKEN = 'SECRETTOKEN' + '0123456789';
+const SLACK_URL = 'https://hooks.slack.com/services/' + 'T00000000/B00000000/' + 'X'.repeat(24);
+const GCHAT_URL = 'https://chat.googleapis.com/v1/spaces/AAAAexample/messages' + '?key=KEYexample0123456789&token=TOKENexample0123456789';
+const TELEGRAM_URL = 'https://api.telegram.org/bot123456:' + 'TEST-token_value/sendMessage' + '?chat_id=-1001234567890';
+const ROUTING_KEY = 'R0UT1NGKEY' + 'x'.repeat(22);
+const PAGERDUTY_URL = 'https://events.pagerduty.com/v2/enqueue?routing_key=' + ROUTING_KEY;
+const NTFY_URL = 'https://ntfy.sh/' + 'domainscope-example-alerts';
+const HOOK_URL = 'https://hooks.example.com/hooks/' + TOKEN;
+
+/** A writable stream stand-in that keeps what it is given. */
+function sink() {
+  return { text: '', isTTY: false, write(s) { this.text += s; return true; } };
+}
+
+/** A fake webhook: records each request and answers from a script (a status, a Response or a function), then 200. */
+function webhook(script = []) {
+  const requests = [];
+  const queue = [...script];
+  return {
+    requests,
+    json: () => requests.map((r) => JSON.parse(r.body)),
+    fetch: async (url, init = {}) => {
+      requests.push({ url, method: init.method, headers: { ...init.headers }, body: init.body, redirect: init.redirect });
+      const next = queue.length ? queue.shift() : 200;
+      if (typeof next === 'function') return next(url, init);
+      if (typeof next === 'number') {
+        const body = next === 204 ? null : next < 300 ? 'ok' : `error ${next}`;
+        return new Response(body, { status: next, statusText: next < 300 ? 'OK' : 'Bad' });
+      }
+      return next;
+    }
+  };
+}
+
+/** `main()` with the fake DoH zone, a webhook for every other request and fast notification timing. */
+async function runDs(argv, { table = zoneTable(), hook = webhook(), env = {}, now = NOW, timing = FAST, signal } = {}) {
+  const stdout = sink();
+  const stderr = sink();
+  const code = await main(argv, { stdout, stderr, fetchImpl: createFakeFetch(table, { other: hook.fetch }), env, now: () => now, notifyTiming: timing, signal });
+  return { code, out: stdout.text, err: stderr.text, hook };
+}
+
+/** The zone of the second night: www's proxy is back on (BETTER, good), mail's address changed (WORSE, bad). */
+function movedZone() {
+  const table = zoneTable();
+  table['www.example.com'].A = ['104.16.1.1'];
+  table['mail.example.com'].A = ['198.51.100.26'];
+  return table;
+}
+
+/** A report of `command` with these changes (the runner's `changes` entries). */
+function reportOf(changes, extra = {}) {
+  return {
+    tool: DS_TOOL, version: DS_VERSION, command: 'health', startedAt: '2026-09-28T03:00:00.000Z', finishedAt: '2026-09-28T03:02:00.000Z', options: {},
+    targets: [{ target: 'example.com' }, { target: 'example.org' }],
+    baseline: { file: 'health.json', missing: false, version: DS_VERSION, startedAt: '2026-09-27T03:00:00.000Z', finishedAt: '2026-09-27T03:02:00.000Z' },
+    changes, ...extra
+  };
+}
+const change = (tag, tone, target, item, what, extra = {}) => ({
+  tag, tone, counts: true, target, item, kind: 'changed', before: null, after: null, text: `${target}: ${what}`, ...extra
+});
+const CHANGES = [
+  change('NEW', 'bad', 'example.com', 'dmarc.missing', 'error dmarc.missing — No DMARC record <!channel> <users/all> `x` & <@here>', { kind: 'appeared', after: 'error' }),
+  change('BETTER', 'good', 'example.org', 'spf.softfail', 'spf.softfail: warn → ok — SPF ends in ~all', { before: 'warn', after: 'ok' }),
+  change('SCORE', 'quiet', 'example.com', null, 'health score 80 → 70 (a lookup failed this run)', { counts: false, before: 80, after: 70 })
+];
+const ctx = { run: null, env: {}, now: () => NOW, tool: DS_TOOL, version: DS_VERSION };
+
+/* ------------------------------------------------------------------------ */
+/* Formats and URLs                                                         */
+/* ------------------------------------------------------------------------ */
+
+describe('formats and URLs', () => {
+  test('the format follows the URL (the Python CLI\'s table, plus PagerDuty and ntfy)', () => {
+    const table = {
+      [SLACK_URL]: 'slack',
+      'https://hooks.slack.com/triggers/T000/111/abc': 'slack',
+      'https://discord.com/api/webhooks/123/token-value': 'discord',
+      'https://discordapp.com/api/webhooks/123/token-value': 'discord',
+      'https://discord.com/api/webhooks/123/token-value/slack': 'slack',
+      'https://discord.com/api/v10/webhooks/123/token-value': 'discord',
+      'https://discord.com/api/v9/webhooks/123/token-value/slack': 'slack',
+      'https://discord.com/api/v10/channels/123/messages': 'json',
+      'https://discord.com/channels/123': 'json',
+      [GCHAT_URL]: 'googlechat',
+      [TELEGRAM_URL]: 'telegram',
+      'https://example.webhook.office.com/webhookb2/abc@def/IncomingWebhook/123/456': 'teams',
+      'https://outlook.office.com/webhook/abc/IncomingWebhook/def/ghi': 'teams',
+      'https://prod-00.westeurope.logic.azure.com:443/workflows/abc/triggers/manual/paths/invoke?api-version=2016-06-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=abc': 'teams',
+      'https://default0000.00.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/abc/triggers/manual/paths/invoke?sig=abc': 'teams',
+      'https://HOOKS.SLACK.COM/services/a/b/c': 'slack',
+      'https://example.com/hooks/ssl': 'json',
+      'http://127.0.0.1:8080/hook': 'json',
+      [PAGERDUTY_URL]: 'pagerduty',
+      ['https://events.eu.pagerduty.com/v2/enqueue?routing_key=' + ROUTING_KEY]: 'pagerduty',
+      [NTFY_URL]: 'ntfy',
+      'https://ntfy.example.com/alerts': 'json'
+    };
+    for (const [url, want] of Object.entries(table)) {
+      assert.equal(detectNotifyFormat(url), want, url);
+      assert.deepEqual(notifyRoutes({ notify: [url] }, {}).map((r) => r.format), [want], url);
+    }
+    assert.deepEqual(NOTIFY_FORMATS, ['auto', 'slack', 'teams', 'discord', 'telegram', 'googlechat', 'json', 'pagerduty', 'ntfy']);
+    assert.deepEqual(NOTIFY_TEXT_LIMITS, { slack: 3500, teams: 3500, discord: 1800, telegram: 3900, googlechat: 3500, json: 3500 });
+    assert.equal(NOTIFY_MAX_CHANGES, 20);
+    // --notify-format names it for every URL: a self-hosted ntfy server, a Slack-compatible chat
+    assert.deepEqual(notifyRoutes({ notify: ['https://ntfy.example.com/alerts'], notifyFormat: 'ntfy' }, {}).map((r) => r.format), ['ntfy']);
+    assert.throws(() => notifyRoutes({ notify: ['https://example.com/x'], notifyFormat: 'irc' }, {}), NotifyConfigError);
+  });
+
+  test('a URL that is refused is never repeated: https:// only (but to this machine), Telegram and PagerDuty need their parts', () => {
+    const secret = 'SECRET0token';
+    const cases = [
+      [`ftp://example.com/${secret}`, 'needs an https:// URL'],
+      [`file:///etc/${secret}`, 'needs an https:// URL'],
+      [`https://example.com:port/${secret}`, 'not a valid URL'],
+      [`https://example.com/${secret} x`, 'spaces or control characters'],
+      [`https://example.com/${secret}\n`, 'spaces or control characters'],
+      [`https://api.telegram.org/bot1:${secret}/sendMessage`, 'Telegram URL looks like'],
+      [`https://api.telegram.org/bot1:${secret}/getMe?chat_id=1`, 'Telegram URL looks like'],
+      [`http://hooks.example.com/${secret}`, 'http:// would send it unencrypted'],
+      [`http://192.0.2.10/${secret}`, 'http:// only to this machine'],
+      [`https://events.pagerduty.com/v2/enqueue?key=${secret}`, 'a PagerDuty URL looks like']
+    ];
+    for (const [url, needle] of cases) {
+      // the environment holds URLs separated by whitespace: a URL with a space is the command line's
+      if (!/\s/.test(url)) {
+        assert.throws(() => notifyRoutes({}, { [NOTIFY_ENV.url]: url }), (e) => {
+          assert.ok(e instanceof NotifyConfigError, url);
+          assert.ok(e.message.startsWith(`${NOTIFY_ENV.url}: `) && e.message.includes(needle), e.message);
+          assert.ok(!e.message.includes(secret), e.message);
+          return true;
+        }, url);
+      }
+      assert.throws(() => parseCommandLine(['health', 'example.com', '--notify', url]), (e) => {
+        assert.ok(e instanceof UsageError, url);
+        assert.ok(e.message.includes(needle), `${url}: ${e.message}`);
+        assert.ok(e.message.startsWith('--notify'), e.message);
+        assert.ok(!e.message.includes(secret), e.message);
+        return true;
+      }, url);
+    }
+    // which URL of several, by its place
+    assert.throws(() => notifyRoutes({}, { [NOTIFY_ENV.bad]: `${SLACK_URL}  http://hooks.example.com/${secret}` }), { message: /^DOMAINSCOPE_NOTIFY_BAD_URL \(URL 2 of 2\): needs an https:\/\/ URL/ });
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--notify-bad', SLACK_URL, '--notify-bad', 'nope']), { message: /^--notify-bad \(URL 2 of 2\): not a valid URL$/ });
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--notify=']), /--notify needs a URL/);
+    assert.throws(() => parseCommandLine(['health', 'example.com', '--notify-format', HOOK_URL]), (e) => !e.message.includes(TOKEN) && /--notify-format takes auto, slack/.test(e.message));
+    // http:// to this machine is fine: a local relay, a test receiver
+    for (const url of ['http://localhost:9/x', 'http://127.0.0.1/x', 'http://127.0.0.2:8080/x', 'http://[::1]:8080/x']) assert.equal(notifyUrlProblem(url, 'json'), null, url);
+    assert.equal(notifyUrlProblem(TELEGRAM_URL, 'telegram'), null);
+    assert.equal(notifyUrlProblem('http://127.0.0.1/bot1:x/sendMessage?chat_id=5', 'telegram'), null);
+  });
+
+  test('routes: the command line, else the environment (URLs separated by whitespace); a URL given twice is posted to once', () => {
+    const env = { [NOTIFY_ENV.url]: ` ${SLACK_URL}\n${NTFY_URL}\t`, [NOTIFY_ENV.bad]: `${PAGERDUTY_URL} ${SLACK_URL}` };
+    assert.deepEqual(notifyRoutes({}, env).map((r) => [r.format, r.bad, r.source]), [
+      ['slack', false, NOTIFY_ENV.url], ['ntfy', false, NOTIFY_ENV.url], ['pagerduty', true, NOTIFY_ENV.bad]
+    ]);
+    // the command line wins over the environment, route by route
+    assert.deepEqual(notifyRoutes({ notify: [HOOK_URL] }, env).map((r) => [r.format, r.bad, r.source]), [
+      ['json', false, '--notify'], ['pagerduty', true, NOTIFY_ENV.bad], ['slack', true, NOTIFY_ENV.bad]
+    ]);
+    assert.deepEqual(notifyRoutes({ notify: [HOOK_URL, HOOK_URL] }, {}).length, 1);
+    // nothing set: no route, and the other notify options change nothing
+    assert.deepEqual(notifyRoutes({ notifyFormat: 'ntfy' }, { [NOTIFY_ENV.url]: '', [NOTIFY_ENV.bad]: '  ' }), []);
+    const cl = parseCommandLine(['health', 'example.com', '--fail-on-notify-error', '--notify-always', '--notify-format', 'ntfy']);
+    assert.deepEqual([cl.options.notify, cl.options.notifyBad, cl.options.notifyFormat, cl.options.notifyAlways, cl.options.failOnNotifyError], [[], [], 'ntfy', true, true]);
+    // an ntfy token that cannot be a header is refused (only when an ntfy URL uses it)
+    assert.throws(() => notifyRoutes({}, { [NOTIFY_ENV.url]: NTFY_URL, [NOTIFY_ENV.ntfyToken]: 'tk_ab cd' }), /DOMAINSCOPE_NTFY_TOKEN: not an access token/);
+    assert.doesNotThrow(() => notifyRoutes({}, { [NOTIFY_ENV.url]: SLACK_URL, [NOTIFY_ENV.ntfyToken]: 'tk_ab cd' }));
+  });
+
+  test('redaction: the URL and its secret parts out of an answer, the host kept', () => {
+    const text = `POST ${SLACK_URL} failed: T00000000/B00000000 no_service ${'X'.repeat(24)}`;
+    const redacted = redactUrl(text, SLACK_URL);
+    assert.ok(!redacted.includes('X'.repeat(24)) && !redacted.includes('T00000000'), redacted);
+    assert.match(redacted, /no_service/);
+    const url = 'https://user:pa55word@example.com/hook?sig=s1gnature%2Fvalue&api-version=1';
+    const r2 = redactUrl('x user:pa55word s1gnature/value s1gnature%2Fvalue', url);
+    assert.ok(!r2.includes('pa55word') && !r2.includes('s1gnature'), r2);
+    const basicUrl = 'https://alerts:Hunter2%24ecret@hooks.example.com/hook';
+    assert.equal(redactUrl("nonnumeric port: 'Hunter2$ecret@hooks.example.com' Hunter2%24ecret, user alerts", basicUrl),
+      "nonnumeric port: '***@hooks.example.com' ***, user ***");
+    assert.equal(redactUrl('bad password x', 'https://u:x@example.com/'), 'bad password ***');
+    const basic = Buffer.from('alerts:Hunter2$ecret').toString('base64');
+    assert.equal(redactUrl(`got Authorization: Basic ${basic}; also ${basic}`, basicUrl), 'got Authorization: ***; also ***');
+    assert.equal(redactUrl('bot123456:TEST-token_value 123456:TEST-token_value 123456%3ATEST-token_value (TEST-token_value)', TELEGRAM_URL), '*** *** *** (***)');
+    for (const [u, t, want] of [
+      ['https://hooks.example.com/hook', 'hooks.example.com: 404 on hook', 'hooks.example.com: 404 on hook'],
+      [SLACK_URL, 'services webhooks hooks.slack.com', 'services webhooks hooks.slack.com'],
+      ['https://discord.com/api/v10/webhooks/123/tokentokentoken', 'v10 webhooks: tokentokentoken', 'v10 webhooks: ***'],
+      [GCHAT_URL, 'spaces/AAAAexample/messages: TOKENexample0123456789', 'spaces/***/messages: ***'],
+      [PAGERDUTY_URL, `v2 enqueue: invalid routing key ${ROUTING_KEY}`, 'v2 enqueue: invalid routing key ***'],
+      ['https://example.com/hooks/Zq8pLmW', 'unknown Zq8pLmW', 'unknown ***']
+    ]) assert.equal(redactUrl(t, u), want, u);
+    // what a request carries besides the URL: the ntfy token, the signing secret
+    assert.equal(redactUrl('echo tk_secretvalue', NTFY_URL, ['tk_secretvalue']), 'echo ***');
+    assert.deepEqual(splitCredentials('https://a%40b:p%3Ass@example.com:8443/x?y=1'),
+      { url: 'https://example.com:8443/x?y=1', authorization: `Basic ${Buffer.from('a@b:p:ss').toString('base64')}` });
+    assert.deepEqual(splitCredentials(SLACK_URL), { url: SLACK_URL, authorization: null });
+    assert.equal(notifyHost(SLACK_URL), 'hooks.slack.com');
+    assert.equal(notifyHost('http://[::1]:8080/x'), '[::1]:8080');
+    assert.equal(notifyHost(basicUrl), 'hooks.example.com');
+    assert.equal(responseDetail('{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}'), 'Bad Request: chat not found');
+    assert.equal(responseDetail('{"message": "Unknown Webhook", "code": 10015}'), 'Unknown Webhook');
+    assert.equal(responseDetail('{"error":{"code":"X","message":"The input body did not match"}}'), 'The input body did not match');
+    assert.equal(responseDetail('  line one\n\n  line two '), 'line one line two');
+    assert.equal(runUrl({}), null);
+    assert.equal(runUrl({ GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: 'example/nightly', GITHUB_RUN_ID: '42' }), 'https://github.com/example/nightly/actions/runs/42');
+    assert.equal(runUrl({ GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: 'example/nightly', GITHUB_RUN_ID: '4 2' }), null);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Messages and payloads                                                    */
+/* ------------------------------------------------------------------------ */
+
+describe('messages and payloads', () => {
+  const report = reportOf(CHANGES);
+
+  test('the message: the changes that count (the bad ones on the --notify-bad route), the run, the listed-only count', () => {
+    const all = notificationMessage(report, { bad: false }, { run: 'https://github.com/example/nightly/actions/runs/42' });
+    assert.equal(all.title, 'DomainScope health: 2 changes since 2026-09-27 03:02 UTC');
+    assert.deepEqual(all.items.map((l) => l.split(' ').slice(0, 3).join(' ')), ['- NEW example.com:', '- BETTER example.org:']);
+    assert.deepEqual(all.footer, ['Run of 2026-09-28 03:00 UTC: 2 domains (example.com, example.org); 1 change listed only (not counted).', 'Run: https://github.com/example/nightly/actions/runs/42']);
+    assert.equal(all.bad, true);
+    const bad = notificationMessage(report, { bad: true });
+    assert.equal(bad.title, 'DomainScope health: 1 bad change since 2026-09-27 03:02 UTC');
+    assert.equal(bad.items.length, 1);
+    assert.deepEqual(bad.footer, ['Run of 2026-09-28 03:00 UTC: 2 domains (example.com, example.org).']);
+    assert.equal(notificationMessage(reportOf([CHANGES[1]]), { bad: true }).title, 'DomainScope health: no bad changes since 2026-09-27 03:02 UTC');
+    assert.equal(notificationMessage(reportOf([], { baseline: { file: 'h.json', missing: true } }), { bad: false }).title, 'DomainScope health: first run, no baseline to compare yet');
+    assert.equal(notificationMessage({ ...reportOf([]), baseline: undefined, changes: undefined }, { bad: false }).title, 'DomainScope health: finished');
+    assert.equal(notificationMessage(reportOf([]), { bad: false }).title, 'DomainScope health: no changes since 2026-09-27 03:02 UTC');
+  });
+
+  test('each chat format: no mention, ping or link from a value; Telegram\'s chat_id moved from the query into the body', () => {
+    const slack = buildRequest({ url: SLACK_URL, format: 'slack', bad: false }, report, ctx);
+    assert.equal(slack.url, SLACK_URL);
+    assert.equal(slack.headers['Content-Type'], 'application/json; charset=utf-8');
+    assert.match(slack.headers['User-Agent'], /^domainscope-ds\/\d+\.\d+\.\d+ \(\+https:\/\/github\.com\/halilibrahimd27\/domainscope\)$/);
+    const s = JSON.parse(slack.body).text;
+    assert.ok(s.startsWith('*DomainScope health: 2 changes since 2026-09-27 03:02 UTC*\n```\n- NEW example.com: '), s);
+    assert.ok(s.endsWith('\n```'));
+    assert.match(s, /&lt;!channel&gt; &lt;users\/all&gt; ˋxˋ &amp; &lt;@here&gt;/);
+    assert.ok(!s.includes('<!channel>') && !/`x`/.test(s));
+
+    const discord = JSON.parse(buildRequest({ url: 'https://discord.com/api/webhooks/1/x', format: 'discord', bad: false }, report, ctx).body);
+    assert.deepEqual(discord.allowed_mentions, { parse: [] });
+    assert.ok(discord.content.startsWith('**DomainScope health: 2 changes'));
+    const block = discord.content.slice(discord.content.indexOf('```\n') + 4, discord.content.lastIndexOf('\n```'));
+    assert.ok(block.includes('dmarc.missing') && !block.includes('`'), 'no backtick closes the block');
+
+    const teams = JSON.parse(buildRequest({ url: 'https://example.webhook.office.com/x', format: 'teams', bad: false }, report, ctx).body);
+    assert.equal(teams.type, 'message');
+    const card = teams.attachments[0];
+    assert.equal(card.contentType, 'application/vnd.microsoft.card.adaptive');
+    assert.equal(card.content.type, 'AdaptiveCard');
+    assert.ok(card.content.body.every((b) => b.type === 'RichTextBlock' && b.inlines.every((i) => i.type === 'TextRun')));
+    assert.equal(card.content.body[0].inlines[0].weight, 'Bolder');
+    assert.equal(card.content.body.length, 1 + 2 + 1, 'title, two changes, the footer');
+
+    const gchat = buildRequest({ url: GCHAT_URL, format: 'googlechat', bad: false }, report, ctx);
+    assert.equal(gchat.url, GCHAT_URL);
+    const g = JSON.parse(gchat.body).text;
+    assert.match(g, /‹!channel> ‹users\/all> ˋxˋ & ‹@here>/);
+    assert.ok(!g.includes('&lt;') && !g.includes('<'));
+
+    const tg = buildRequest({ url: TELEGRAM_URL, format: 'telegram', bad: false }, report, ctx);
+    assert.equal(tg.url, TELEGRAM_URL.slice(0, TELEGRAM_URL.indexOf('?')));
+    const t = JSON.parse(tg.body);
+    assert.equal(t.chat_id, -1001234567890);
+    assert.ok(t.text.startsWith('DomainScope health: 2 changes since 2026-09-27 03:02 UTC\n\n- NEW '));
+    assert.deepEqual(t.link_preview_options, { is_disabled: true });
+    const channel = buildRequest({ url: 'https://api.telegram.org/bot1:x/sendMessage?chat_id=%40channel&message_thread_id=7', format: 'telegram', bad: false }, report, ctx);
+    assert.equal(channel.url, 'https://api.telegram.org/bot1:x/sendMessage?message_thread_id=7');
+    assert.equal(JSON.parse(channel.body).chat_id, '@channel');
+    // a chat id beyond a safe number stays text, as the Bot API takes it too
+    assert.equal(JSON.parse(buildRequest({ url: 'https://api.telegram.org/bot1:x/sendMessage?chat_id=-100123456789012345678', format: 'telegram', bad: false }, report, ctx).body).chat_id,
+      '-100123456789012345678');
+    // user:password@ goes as Basic authentication, never in the URL fetch is given
+    const withUser = buildRequest({ url: 'https://alerts:Hunter2@hooks.example.com/hook', format: 'slack', bad: false }, report, ctx);
+    assert.equal(withUser.url, 'https://hooks.example.com/hook');
+    assert.equal(withUser.headers.Authorization, `Basic ${Buffer.from('alerts:Hunter2').toString('base64')}`);
+  });
+
+  test('JSON: every change of the run (the bad ones on --notify-bad), the counts and the run\'s link; signed when a secret is set', () => {
+    const run = 'https://github.com/example/nightly/actions/runs/42';
+    const plain = buildRequest({ url: HOOK_URL, format: 'json', bad: false }, report, { ...ctx, run });
+    assert.equal(plain.headers['X-DomainScope-Signature'], undefined);
+    const doc = JSON.parse(plain.body);
+    assert.deepEqual(Object.keys(doc), ['tool', 'version', 'command', 'title', 'text', 'startedAt', 'finishedAt', 'run', 'baseline', 'counts', 'changes', 'changesTotal']);
+    assert.deepEqual([doc.tool, doc.version, doc.command, doc.run], [DS_TOOL, DS_VERSION, 'health', run]);
+    assert.deepEqual(doc.counts, { changes: 3, counted: 2, bad: 1 });
+    assert.deepEqual(doc.baseline, { file: 'health.json', missing: false, finishedAt: '2026-09-27T03:02:00.000Z' });
+    assert.deepEqual(doc.changes.map((c) => `${c.tag}${c.counts ? '' : '?'}`), ['NEW', 'BETTER', 'SCORE?']);
+    assert.deepEqual(Object.keys(doc.changes[0]), ['tag', 'tone', 'counts', 'target', 'item', 'text', 'before', 'after']);
+    assert.equal(doc.changesTotal, 3);
+    assert.ok(doc.text.startsWith(`${doc.title}\n- NEW example.com: `));
+    const bad = JSON.parse(buildRequest({ url: HOOK_URL, format: 'json', bad: true }, report, ctx).body);
+    assert.deepEqual(bad.changes.map((c) => c.tag), ['NEW']);
+    assert.deepEqual(bad.counts, { changes: 3, counted: 2, bad: 1 });
+
+    const secret = 'It\'s a Secret to Everybody';
+    const signed = buildRequest({ url: HOOK_URL, format: 'json', bad: false }, report, { ...ctx, env: { [NOTIFY_ENV.secret]: ` ${secret}\n` } });
+    assert.equal(signed.headers['X-DomainScope-Timestamp'], String(NOW.getTime() / 1000));
+    const want = `sha256=${createHmac('sha256', secret).update(`${NOW.getTime() / 1000}.${signed.body}`).digest('hex')}`;
+    assert.equal(signed.headers['X-DomainScope-Signature'], want);
+    assert.ok(signed.secrets.includes(secret), 'the secret is redacted from an answer too');
+    // only the JSON format is signed
+    assert.equal(buildRequest({ url: SLACK_URL, format: 'slack', bad: false }, report, { ...ctx, env: { [NOTIFY_ENV.secret]: secret } }).headers['X-DomainScope-Signature'], undefined);
+  });
+
+  test('signBody: a known-answer vector (the same in tests/python), over the exact bytes sent', () => {
+    // Python: hmac.new(b"It's a Secret to Everybody", b'1700000000.{"hello":"world"}', hashlib.sha256).hexdigest()
+    assert.equal(signBody('It\'s a Secret to Everybody', 1700000000, '{"hello":"world"}'), 'sha256=08c0aaa4721d7e090415dc782eb1818362b0e857612ef36e6dcf8c773571b03b');
+    assert.equal(signBody('It\'s a Secret to Everybody', '1700000000', Buffer.from('{"hello":"world"}')), 'sha256=08c0aaa4721d7e090415dc782eb1818362b0e857612ef36e6dcf8c773571b03b');
+    // RFC 4231 test case 2, the primitive: HMAC-SHA256("Jefe", "what do ya want for nothing?")
+    assert.equal(createHmac('sha256', 'Jefe').update('what do ya want for nothing?').digest('hex'), '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843');
+    assert.equal(signBody('Jefe', 1, 'ü'), `sha256=${createHmac('sha256', 'Jefe').update(Buffer.from('1.ü', 'utf8')).digest('hex')}`, 'UTF-8 bytes');
+  });
+
+  test('ntfy: plain text, a title, priority 4 when a change is bad (else 3), a tag, the run\'s link and the token', () => {
+    const run = 'https://github.com/example/nightly/actions/runs/42';
+    const req = buildRequest({ url: NTFY_URL, format: 'ntfy', bad: false }, report, { ...ctx, run, env: { [NOTIFY_ENV.ntfyToken]: 'tk_' + 'examplevalue' } });
+    assert.equal(req.url, NTFY_URL);
+    assert.deepEqual({ ...req.headers, 'User-Agent': undefined }, {
+      'Content-Type': 'text/plain; charset=utf-8', 'User-Agent': undefined, Title: 'DomainScope health: 2 changes since 2026-09-27 03:02 UTC',
+      Priority: '4', Tags: 'warning', Click: run, Authorization: 'Bearer tk_examplevalue'
+    });
+    assert.ok(req.body.startsWith('- NEW example.com: error dmarc.missing'), req.body);
+    assert.ok(req.body.endsWith(`Run: ${run}`));
+    assert.ok(req.secrets.includes('tk_examplevalue') && req.secrets.includes('domainscope-example-alerts'), 'the token and the topic are redacted from an answer');
+    const quiet = buildRequest({ url: NTFY_URL, format: 'ntfy', bad: false }, reportOf([CHANGES[1]]), ctx);
+    assert.equal(quiet.headers.Priority, '3');
+    assert.equal(quiet.headers.Authorization, undefined);
+    // a URL with user info authenticates itself; a title that is not ASCII goes RFC 2047 encoded
+    const own = buildRequest({ url: 'https://u:p@ntfy.example.com/alerts', format: 'ntfy', bad: false }, { ...reportOf([CHANGES[1]]), command: 'sağlık' }, { ...ctx, env: { [NOTIFY_ENV.ntfyToken]: 'tk_x' } });
+    assert.equal(own.headers.Authorization, `Basic ${Buffer.from('u:p').toString('base64')}`);
+    assert.match(own.headers.Title, /^=\?UTF-8\?B\?[A-Za-z0-9+/=]+\?=$/);
+    assert.equal(Buffer.from(own.headers.Title.slice(10, -2), 'base64').toString('utf8'), 'DomainScope sağlık: 1 change since 2026-09-27 03:02 UTC');
+  });
+
+  test('cuts at each limit: every format within its service\'s, ntfy in bytes, every line at 400 characters, PagerDuty\'s summary at 1,024', () => {
+    const long = (i) => change('WORSE', 'bad', 'example.com', `host-${i}.example.com`, `${'ğüşİ€😀'.repeat(60)} ${'x'.repeat(i % 7 ? 50 : 900)}`);
+    const many = Array.from({ length: 600 }, (_, i) => long(i));
+    const big = reportOf(many);
+    const caps = { slack: 4000, discord: 2000, telegram: 4096, googlechat: 4096 };
+    for (const [format, cap] of Object.entries(caps)) {
+      const doc = JSON.parse(buildRequest({ url: format === 'telegram' ? TELEGRAM_URL : HOOK_URL, format, bad: false }, big, ctx).body);
+      const text = doc.text || doc.content;
+      assert.ok(text.length <= cap, `${format}: ${text.length}`);
+      assert.match(text, /- \.\.\. and \d+ more (line|lines|changes)/, format);
+      assert.match(text, /Run of 2026-09-28 03:00 UTC/, `${format}: the footer always makes it`);
+    }
+    const teams = JSON.parse(buildRequest({ url: HOOK_URL, format: 'teams', bad: false }, big, ctx).body);
+    const runs = teams.attachments[0].content.body.flatMap((b) => b.inlines.map((i) => i.text));
+    assert.ok(runs.join('\n').length <= NOTIFY_TEXT_LIMITS.teams, 'teams');
+    assert.ok(runs.every((l) => l.length <= NOTIFY_LINE_LIMIT), 'every line cut at 400 characters');
+    const json = JSON.parse(buildRequest({ url: HOOK_URL, format: 'json', bad: false }, big, ctx).body);
+    assert.deepEqual([json.changes.length, json.changesTotal], [NOTIFY_MAX_JSON_CHANGES, 600]);
+    assert.ok(json.text.length <= NOTIFY_TEXT_LIMITS.json + 100, `${json.text.length}`);
+    const ntfy = buildRequest({ url: NTFY_URL, format: 'ntfy', bad: false }, big, ctx);
+    assert.ok(byteLength(ntfy.body) <= NTFY_MAX_BYTES, `${byteLength(ntfy.body)} bytes`);
+    assert.ok(!/[\ud800-\udfff]/.test(ntfy.body.replace(/[\ud800-\udbff][\udc00-\udfff]/g, '')), 'no lone surrogate');
+    // fitLines on its own: the items that fit, then how many more, the footer whole
+    assert.deepEqual(fitLines('title', ['- a', '- b'], ['x'.repeat(1000)], 1800), ['- a', '- b', `${'x'.repeat(397)}...`]);
+    assert.deepEqual(fitLines('t', ['- one', '- two'], ['end'], 72), ['- one', '- ... and 1 more line - see the --json report', 'end']);
+    // PagerDuty: the summary at 1,024 characters, never inside a character
+    const plan = pagerDutyPlan(reportOf([change('WORSE', 'bad', 'example.com', 'x', `${'😀'.repeat(600)}`)]), null);
+    const [event] = pagerDutyRequests({ url: PAGERDUTY_URL }, reportOf([]), plan, { tool: DS_TOOL, version: DS_VERSION }).map((r) => JSON.parse(r.body));
+    assert.ok(event.payload.summary.length <= PAGERDUTY_SUMMARY_LIMIT, `${event.payload.summary.length}`);
+    assert.ok(event.payload.summary.endsWith('...'));
+    assert.ok(!/[\ud800-\udfff]/.test(event.payload.summary.replace(/[\ud800-\udbff][\udc00-\udfff]/g, '')), 'no lone surrogate');
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* PagerDuty                                                                */
+/* ------------------------------------------------------------------------ */
+
+describe('PagerDuty', () => {
+  test('dedup_key: the first 32 hex characters of sha256(command|target|item|tag), the same in tests/python', () => {
+    assert.equal(dedupKey('drift', 'example.com', 'mail.example.com|A', 'WORSE'), '76ba01e87c44289e10e6ce396ed86f09');
+    assert.equal(dedupKey('health', 'example.com', null, 'SCORE'), createHash('sha256').update('health|example.com||SCORE').digest('hex').slice(0, 32));
+    assert.notEqual(dedupKey('health', 'example.com', 'a', 'NEW'), dedupKey('health', 'example.com', 'a', 'WORSE'));
+  });
+
+  test('severity: critical for registrar, name servers, DS, lock, expired and untrusted, and for a critical risk; error otherwise', () => {
+    assert.deepEqual(CRITICAL_TAGS, ['REGISTRAR', 'NS', 'DS', 'LOCK', 'EXPIRED', 'UNTRUSTED']);
+    for (const tag of CRITICAL_TAGS) assert.equal(eventSeverity({ tag }), 'critical', tag);
+    assert.equal(eventSeverity({ tag: 'TAKEOVER', after: 'critical' }), 'critical');
+    assert.equal(eventSeverity({ tag: 'TAKEOVER', after: { severity: 'critical', kind: 'cname' } }), 'critical');
+    assert.equal(eventSeverity({ tag: 'NEW', after: { risk: 'critical' } }), 'critical');
+    for (const c of [{ tag: 'WORSE', after: 'error' }, { tag: 'DANGLING' }, { tag: 'TAKEOVER', after: 'high' }, { tag: 'NEW', after: null }]) assert.equal(eventSeverity(c), 'error', c.tag);
+  });
+
+  test('a trigger per counted bad change, the key kept open; the next run resolves it once its problem is over', () => {
+    const worse = change('WORSE', 'bad', 'example.com', 'dmarc.policy', 'dmarc.policy: warn → error — DMARC p=none', { before: 'warn', after: 'error' });
+    const run1 = reportOf([worse, CHANGES[1], CHANGES[2], { ...worse, item: 'listed.only', counts: false, tone: 'quiet' }]);
+    const plan1 = pagerDutyPlan(run1, null);
+    const key = dedupKey('health', 'example.com', 'dmarc.policy', 'WORSE');
+    assert.deepEqual(plan1.triggers.map((t) => t.key), [key]);
+    assert.deepEqual(plan1.resolves, []);
+    assert.deepEqual(plan1.open, [{ key, target: 'example.com', item: 'dmarc.policy', tag: 'WORSE', since: '2026-09-28T03:00:00.000Z' }]);
+    const run = 'https://github.com/example/nightly/actions/runs/42';
+    const [req] = pagerDutyRequests({ url: PAGERDUTY_URL }, run1, plan1, { run, tool: DS_TOOL, version: DS_VERSION });
+    assert.equal(req.url, 'https://events.pagerduty.com/v2/enqueue', 'the routing key moves into the body');
+    assert.deepEqual(JSON.parse(req.body), {
+      routing_key: ROUTING_KEY,
+      event_action: 'trigger',
+      dedup_key: key,
+      payload: {
+        summary: 'WORSE example.com: dmarc.policy: warn → error — DMARC p=none',
+        source: 'domainscope:health',
+        severity: 'error',
+        component: 'example.com',
+        group: 'health',
+        custom_details: { tag: 'WORSE', item: 'dmarc.policy', before: 'warn', after: 'error', run }
+      },
+      client: 'DomainScope',
+      client_url: run
+    });
+
+    const baseline = { ...run1, notify: { open: plan1.open } };
+    // nothing moved: still open, nothing sent
+    const quiet = pagerDutyPlan(reportOf([]), baseline);
+    assert.deepEqual([quiet.triggers, quiet.resolves, quiet.open], [[], [], plan1.open]);
+    // fixed: the BETTER of the same finding resolves the key
+    const fixed = pagerDutyPlan(reportOf([change('BETTER', 'good', 'example.com', 'dmarc.policy', 'error → ok')]), baseline);
+    assert.deepEqual([fixed.triggers, fixed.resolves.map((e) => e.key), fixed.open], [[], [key], []]);
+    const [resolve] = pagerDutyRequests({ url: PAGERDUTY_URL }, reportOf([]), fixed, { tool: DS_TOOL, version: DS_VERSION });
+    assert.deepEqual(JSON.parse(resolve.body), { routing_key: ROUTING_KEY, event_action: 'resolve', dedup_key: key });
+    // triggered again (the same problem moved on): stays open with its first time
+    const again = pagerDutyPlan({ ...reportOf([worse]), startedAt: '2026-09-29T03:00:00.000Z' }, baseline);
+    assert.deepEqual([again.triggers.map((t) => t.key), again.resolves, again.open], [[key], [], plan1.open]);
+  });
+
+  test('when a problem is over: its target gone, a good move, back after GONE, another bad move (its own key now), a renewed or vanished CT certificate', () => {
+    const open = (target, item, tag) => ({ key: dedupKey('health', target, item, tag), target, item, tag, since: null });
+    const r = (changes, extra) => reportOf(changes, extra);
+    assert.equal(problemOver(open('example.net', 'x', 'NEW'), r([])), true, 'no longer checked');
+    assert.equal(problemOver(open('example.com', 'x', 'NEW'), r([])), false, 'no change: still there');
+    assert.equal(problemOver(open('example.com', 'x', 'NEW'), r([change('GONE', 'good', 'example.com', 'x', 'gone')])), true);
+    assert.equal(problemOver(open('example.com', 'x', 'NEW'), r([change('GONE', 'quiet', 'example.com', 'x', 'gone', { counts: false })])), false, 'listed only: its lookup failed');
+    assert.equal(problemOver(open('example.com', 'x', 'NEW'), r([change('BETTER', 'good', 'example.com', 'y', 'other item')])), false);
+    assert.equal(problemOver(open('example.com', null, 'SCORE'), r([change('SCORE', 'good', 'example.com', null, '70 → 80')])), true);
+    assert.equal(problemOver(open('example.com', 'h.example.com', 'GONE'), r([change('NEW', 'info', 'example.com', 'h.example.com', 'now resolves')])), true);
+    assert.equal(problemOver(open('example.com', 'h.example.com', 'DANGLING'), r([change('CHANGED', 'info', 'example.com', 'h.example.com', 'moved')])), false);
+    assert.equal(problemOver(open('example.com', 'x', 'NEW'), r([change('WORSE', 'bad', 'example.com', 'x', 'warn → error')])), true, 'superseded by its WORSE');
+    // ct: a certificate renewed (superseded by a newer one for its names) ends EXPIRING / CA / REVOKED;
+    // an issuer gone from a complete read ends ISSUER
+    const ct = (certificates, extra = {}) => ({ ...reportOf([]), command: 'ct', targets: [{ target: 'example.com', complete: true, issuers: [{ name: 'Example CA' }], certificates, ...extra }] });
+    const cert = { key: 'k'.repeat(32), target: 'example.com', item: 'aaaaaaaaaaaaaaaa', tag: 'EXPIRING', since: null };
+    assert.equal(problemOver(cert, ct([{ id: 'aaaaaaaaaaaaaaaa', flags: ['superseded'] }])), true);
+    assert.equal(problemOver(cert, ct([{ id: 'aaaaaaaaaaaaaaaa', flags: [] }])), false);
+    assert.equal(problemOver(cert, ct([])), false, 'a certificate no longer listed is no fix');
+    const issuer = { ...cert, item: 'Odd CA', tag: 'ISSUER' };
+    assert.equal(problemOver(issuer, ct([])), true);
+    assert.equal(problemOver(issuer, ct([], { issuers: [{ name: 'Odd CA' }] })), false);
+    assert.equal(problemOver(issuer, ct([], { complete: false })), false, 'a partial read proves nothing');
+  });
+
+  test('at most 50 events a run, triggers first; resolves left out stay open (over) and go with the next run; the open keys are capped', () => {
+    const open = Array.from({ length: 10 }, (_, i) => ({ key: dedupKey('health', 'example.com', `old-${i}`, 'NEW'), target: 'example.com', item: `old-${i}`, tag: 'NEW', since: null }));
+    const fixes = open.map((e) => change('GONE', 'good', 'example.com', e.item, 'gone'));
+    const bad = Array.from({ length: 45 }, (_, i) => change('NEW', 'bad', 'example.com', `new-${i}`, 'new'));
+    const plan = pagerDutyPlan(reportOf([...bad, ...fixes]), { notify: { open } });
+    assert.equal(PAGERDUTY_MAX_EVENTS, 50);
+    assert.deepEqual([plan.triggers.length, plan.resolves.length, plan.cut], [45, 5, 0]);
+    const deferred = plan.open.filter((e) => e.over);
+    assert.deepEqual(deferred.map((e) => e.item), ['old-5', 'old-6', 'old-7', 'old-8', 'old-9']);
+    assert.equal(plan.open.length, 5 + 45);
+    // the next run sends the deferred resolves whatever it finds
+    const next = pagerDutyPlan(reportOf([]), { notify: { open: plan.open } });
+    assert.deepEqual(next.resolves.map((e) => e.item), ['old-5', 'old-6', 'old-7', 'old-8', 'old-9']);
+    assert.equal(next.open.length, 45);
+    // a flood: the triggers past 50 are cut (said on stderr), never opened
+    const flood = pagerDutyPlan(reportOf(Array.from({ length: 70 }, (_, i) => change('NEW', 'bad', 'example.com', `f-${i}`, 'new'))), null);
+    assert.deepEqual([flood.triggers.length, flood.cut, flood.open.length], [50, 20, 50]);
+    // the open keys kept: the newest PAGERDUTY_MAX_OPEN
+    const many = Array.from({ length: PAGERDUTY_MAX_OPEN + 20 }, (_, i) => ({ key: dedupKey('health', 'example.com', `k-${i}`, 'NEW'), target: 'example.com', item: `k-${i}`, tag: 'NEW', since: null }));
+    const capped = pagerDutyPlan(reportOf([]), { notify: { open: many } });
+    assert.equal(capped.open.length, PAGERDUTY_MAX_OPEN);
+    assert.equal(capped.open[0].item, 'k-20');
+  });
+
+  test('a baseline\'s open keys are checked: anything else in the list is dropped', () => {
+    const good = { key: 'a'.repeat(32), target: 'example.com', item: null, tag: 'SCORE', since: '2026-09-27T03:00:00.000Z' };
+    assert.deepEqual(openKeysOf({ notify: { open: [good, { ...good }, { ...good, key: 'b'.repeat(32), over: true }, { ...good, key: 'xyz' }, { ...good, key: 'c'.repeat(32), tag: 'lower' },
+      { ...good, key: 'd'.repeat(32), target: 5 }, { ...good, key: 'e'.repeat(32), item: 7 }, null, 'text'] } }), [good, { ...good, key: 'b'.repeat(32), over: true }]);
+    for (const doc of [null, {}, { notify: null }, { notify: { open: 'x' } }, { notify: [] }]) assert.deepEqual(openKeysOf(doc), []);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Delivery                                                                 */
+/* ------------------------------------------------------------------------ */
+
+describe('delivery', () => {
+  const request = { url: HOOK_URL, headers: { 'Content-Type': 'application/json; charset=utf-8' }, body: '{}', secrets: [] };
+
+  test('one retry for a 5xx, a 429 and a network error, after Retry-After; a 4xx is the webhook\'s answer; no redirect followed', async () => {
+    const slept = [];
+    const sleep = async (ms) => { slept.push(ms); };
+    let hook = webhook([500, 200]);
+    assert.equal(await deliver(request, HOOK_URL, { fetchImpl: hook.fetch, sleep }), null);
+    assert.deepEqual([hook.requests.length, slept], [2, [2000]]);
+    assert.equal(hook.requests[0].redirect, 'manual');
+    assert.equal(hook.requests[0].method, 'POST');
+    hook = webhook([new Response('slow down', { status: 429, headers: { 'Retry-After': '7' } }), 204]);
+    assert.equal(await deliver(request, HOOK_URL, { fetchImpl: hook.fetch, sleep }), null);
+    assert.equal(slept.at(-1), 7000);
+    hook = webhook([new Response('slow', { status: 429, headers: { 'Retry-After': '120' } }), 200]);
+    await deliver(request, HOOK_URL, { fetchImpl: hook.fetch, sleep });
+    assert.equal(slept.at(-1), 10000, 'at most 10 s');
+    hook = webhook([503, 503, 200]);
+    assert.deepEqual(await deliver(request, HOOK_URL, { fetchImpl: hook.fetch, sleep }), { problem: 'HTTP 503 Bad: error 503' });
+    assert.equal(hook.requests.length, 2, 'one retry, not more');
+    hook = webhook([new Response(`no_service for /hooks/${TOKEN}`, { status: 404, statusText: 'Not Found' })]);
+    assert.deepEqual(await deliver(request, HOOK_URL, { fetchImpl: hook.fetch, sleep }), { problem: 'HTTP 404 Not Found: no_service for ***' });
+    assert.equal(hook.requests.length, 1, 'a 4xx is not retried');
+    hook = webhook([new Response('', { status: 302, statusText: 'Found', headers: { Location: '/elsewhere' } })]);
+    assert.deepEqual(await deliver(request, HOOK_URL, { fetchImpl: hook.fetch, sleep }), { problem: 'HTTP 302 Found (a redirect; not followed)' });
+    let calls = 0;
+    const refused = async () => {
+      calls += 1;
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error(`connect ECONNREFUSED ${HOOK_URL}`), { code: 'ECONNREFUSED' }) });
+    };
+    const failed = await deliver(request, HOOK_URL, { fetchImpl: refused, sleep });
+    assert.equal(calls, 2);
+    assert.equal(failed.problem, 'connect ECONNREFUSED ***');
+  });
+
+  test('a webhook that never answers times out (twice: one retry); the run\'s signal stops it as interrupted', async () => {
+    const hang = (url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
+    let calls = 0;
+    const counted = (url, init) => {
+      calls += 1;
+      return hang(url, init);
+    };
+    assert.deepEqual(await deliver(request, HOOK_URL, { fetchImpl: counted, timeoutMs: 30, retryDelayMs: 1 }), { problem: 'timed out' });
+    assert.equal(calls, 2);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 30);
+    assert.deepEqual(await deliver(request, HOOK_URL, { fetchImpl: hang, signal: controller.signal, timeoutMs: 5000 }), { problem: 'interrupted', interrupted: true });
+  });
+
+  test('sendNotifications: --notify when a change counts (or always), --notify-bad when one is bad, PagerDuty when it has events; a route stops at its first failure', async () => {
+    const report = reportOf(CHANGES);
+    const hook = webhook([200, 200, 500, 500]);
+    const routes = [
+      { url: SLACK_URL, format: 'slack', bad: false, source: '--notify' },
+      { url: HOOK_URL, format: 'json', bad: true, source: '--notify-bad' },
+      { url: PAGERDUTY_URL, format: 'pagerduty', bad: true, source: NOTIFY_ENV.bad }
+    ];
+    const sent = await sendNotifications(report, routes, { fetchImpl: hook.fetch, timing: FAST, tool: DS_TOOL, version: DS_VERSION });
+    assert.deepEqual(sent.results.map((r) => [r.route.format, r.total, r.sent, r.carries, r.problem]), [
+      ['slack', 1, 1, true, null], ['json', 1, 1, true, null], ['pagerduty', 1, 0, true, 'HTTP 500 Bad: error 500']
+    ]);
+    assert.equal(sent.open.length, 1, 'the planned keys: the report is held back when a PagerDuty event failed');
+    // nothing that counts: only --notify-always posts, on the --notify route
+    const none = reportOf([CHANGES[2]]);
+    const quiet = webhook();
+    const r1 = await sendNotifications(none, routes, { fetchImpl: quiet.fetch, tool: DS_TOOL, version: DS_VERSION });
+    assert.deepEqual([quiet.requests.length, r1.results.map((r) => r.total)], [0, [0, 0, 0]]);
+    const r2 = await sendNotifications(none, routes, { always: true, fetchImpl: quiet.fetch, tool: DS_TOOL, version: DS_VERSION });
+    assert.deepEqual([quiet.requests.length, r2.results.map((r) => [r.total, r.carries])], [1, [[1, false], [0, false], [0, false]]]);
+    assert.match(JSON.parse(quiet.requests[0].body).text, /^\*DomainScope health: no changes since /);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Runs of the runner                                                       */
+/* ------------------------------------------------------------------------ */
+
+describe('runs of the runner (main)', () => {
+  test('two nights of drift: the chat gets every change, the pager the bad one only; PagerDuty triggers, then resolves', async () => {
+    const dir = tmp();
+    try {
+      const json = join(dir, 'drift.json');
+      const env = { [NOTIFY_ENV.url]: SLACK_URL, [NOTIFY_ENV.bad]: `${PAGERDUTY_URL} ${HOOK_URL}`, GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: 'example/nightly', GITHUB_RUN_ID: '42' };
+      const argv = ['drift', CF_EXPORT, '--baseline', json, '--json', json, '--fail-on-notify-error'];
+      const first = await runDs(argv, { env });
+      assert.equal(first.code, EXIT.OK, first.err);
+      assert.equal(first.hook.requests.length, 0, 'a first run has nothing to say');
+
+      const second = await runDs([...argv, '--fail-on-change'], { table: movedZone(), env });
+      assert.equal(second.code, EXIT.CHANGED, second.err);
+      const [chat, pager, hook] = second.hook.requests;
+      assert.equal(second.hook.requests.length, 3);
+      assert.match(JSON.parse(chat.body).text, /^\*DomainScope drift: 2 changes since 2026-09-28 03:00 UTC\*\n```\n- BETTER example\.com: www\.example\.com A — .*\n- WORSE example\.com: mail\.example\.com A — Matches → Differs\nRun of 2026-09-28 03:00 UTC: 1 zone \(example\.com\)\.\nRun: https:\/\/github\.com\/example\/nightly\/actions\/runs\/42\n```$/);
+      const trigger = JSON.parse(pager.body);
+      assert.equal(pager.url, 'https://events.pagerduty.com/v2/enqueue');
+      assert.deepEqual([trigger.event_action, trigger.dedup_key, trigger.payload.severity, trigger.payload.component, trigger.payload.source, trigger.client_url],
+        ['trigger', '76ba01e87c44289e10e6ce396ed86f09', 'error', 'example.com', 'domainscope:drift', 'https://github.com/example/nightly/actions/runs/42']);
+      const bad = JSON.parse(hook.body);
+      assert.deepEqual(bad.changes.map((c) => `${c.tag} ${c.item}`), ['WORSE mail.example.com|A'], 'the bad route: the bad change only');
+      assert.equal(bad.run, 'https://github.com/example/nightly/actions/runs/42');
+      assert.match(second.err, /ds: notification sent \(slack, hooks\.slack\.com\)\nds: notification sent \(pagerduty, events\.pagerduty\.com, --notify-bad\): 1 triggered, 0 resolved\nds: notification sent \(json, hooks\.example\.com, --notify-bad\)\nds: JSON report written to /);
+      const doc = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(doc.notify, { open: [{ key: '76ba01e87c44289e10e6ce396ed86f09', target: 'example.com', item: 'mail.example.com|A', tag: 'WORSE', since: NOW.toISOString() }] });
+
+      // the third night mail is back: the chat says so, PagerDuty resolves the incident
+      const third = await runDs(argv, { table: Object.assign(movedZone(), { 'mail.example.com': zoneTable()['mail.example.com'] }), env });
+      assert.equal(third.code, EXIT.OK, third.err);
+      assert.equal(third.hook.requests.length, 2, 'the slack message and the resolve; the bad route has no bad change');
+      assert.deepEqual(JSON.parse(third.hook.requests[1].body), { routing_key: ROUTING_KEY, event_action: 'resolve', dedup_key: '76ba01e87c44289e10e6ce396ed86f09' });
+      assert.match(third.err, /notification sent \(pagerduty, events\.pagerduty\.com, --notify-bad\): 0 triggered, 1 resolved/);
+      assert.equal(JSON.parse(readFileSync(json, 'utf8')).notify, undefined, 'no key open any more');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('no URL in stdout, stderr, the JSON report or the Markdown, whether the messages go out or fail', async () => {
+    const secrets = [TOKEN, ROUTING_KEY, 'domainscope-example-alerts', 'tk_' + 'examplevalue', 'Signing' + 'Secret0', HOOK_URL, PAGERDUTY_URL, NTFY_URL];
+    for (const fail of [false, true]) {
+      const dir = tmp();
+      try {
+        const json = join(dir, 'drift.json');
+        const md = join(dir, 'drift.md');
+        const echo = (url, init) => new Response(`refused ${url} ${JSON.stringify(init.headers)} ${init.body}`, { status: 400, statusText: 'Bad Request' });
+        const env = { [NOTIFY_ENV.bad]: PAGERDUTY_URL, [NOTIFY_ENV.url]: NTFY_URL, [NOTIFY_ENV.ntfyToken]: 'tk_' + 'examplevalue', [NOTIFY_ENV.secret]: 'Signing' + 'Secret0' };
+        // the command line's --notify URLs (the environment's are then left out), the environment's --notify-bad one
+        const argv = ['drift', CF_EXPORT, '--baseline', json, '--json', json, '--md', md, '--notify', HOOK_URL, '--notify', NTFY_URL, '--notify-always'];
+        const first = await runDs(argv, { env });
+        const second = await runDs([...argv, '--show-all'], { table: movedZone(), env, hook: webhook(fail ? [echo, echo, echo, echo, echo, echo] : []) });
+        assert.equal(second.code, EXIT.OK, second.err);
+        assert.equal(second.hook.requests.length, 3, 'json, ntfy and the PagerDuty trigger');
+        if (fail) assert.equal((second.err.match(/error: notification failed/g) || []).length, 3, second.err);
+        const files = readdirSync(dir).map((f) => readFileSync(join(dir, f), 'utf8')).join('\n');
+        const seen = [first.out, first.err, second.out, second.err, files].join('\n');
+        for (const s of secrets) assert.ok(!seen.includes(s), `${fail ? 'failed' : 'sent'}: ${s.slice(0, 12)}… leaked`);
+        assert.match(second.err, /\((json|ntfy|pagerduty), (hooks\.example\.com|ntfy\.sh|events\.pagerduty\.com)/, 'the hosts are named');
+        // the signed JSON message went out with its signature
+        const sent = second.hook.requests.find((r) => r.url === HOOK_URL);
+        assert.equal(sent.headers['X-DomainScope-Signature'], signBody('Signing' + 'Secret0', sent.headers['X-DomainScope-Timestamp'], sent.body));
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('a message with changes that did not go out keeps the previous baseline; the next run sends them again', async () => {
+    const dir = tmp();
+    try {
+      const json = join(dir, 'drift.json');
+      const argv = ['drift', CF_EXPORT, '--baseline', json, '--json', json, '--notify', HOOK_URL, '--fail-on-notify-error', '--fail-on-change'];
+      await runDs(argv);
+      const previous = readFileSync(json);
+      const down = await runDs(argv, { table: movedZone(), hook: webhook([503, 503]) });
+      assert.equal(down.code, EXIT.NOTIFY, down.err);
+      assert.equal(down.hook.requests.length, 2, 'one retry');
+      assert.match(down.err, /ds: error: notification failed \(json, hooks\.example\.com\): HTTP 503 Bad: error 503\n/);
+      assert.match(down.err, /ds: kept the previous baseline in .*drift\.json \(this report is not written there\): the 2 changes will be reported again on the next run/);
+      assert.ok(!down.err.includes('JSON report written'));
+      assert.deepEqual(readFileSync(json), previous);
+      assert.deepEqual(readdirSync(dir), ['drift.json'], 'no temporary file left');
+      // the webhook is back: the same changes go out, then the report moves on
+      const back = await runDs(argv, { table: movedZone() });
+      assert.equal(back.code, EXIT.CHANGED, back.err);
+      assert.equal(JSON.parse(back.hook.requests[0].body).changesTotal, 2);
+      assert.ok(back.err.indexOf('notification sent') < back.err.indexOf('JSON report written'));
+      const after = await runDs(argv, { table: movedZone() });
+      assert.deepEqual([after.code, after.hook.requests.length], [EXIT.OK, 0]);
+      // a report that is not the baseline is written all the same
+      const other = join(dir, 'other.json');
+      const failed = await runDs(['drift', CF_EXPORT, '--baseline', json, '--json', other, '--notify', HOOK_URL, '--notify-always'], { hook: webhook([400]) });
+      assert.equal(failed.code, EXIT.OK, 'without --fail-on-notify-error');
+      assert.ok(existsSync(other));
+      assert.doesNotMatch(failed.err, /kept the previous baseline/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('exit codes: 3, then 5, then 4', async () => {
+    const dir = tmp();
+    try {
+      const base = join(dir, 'base.json');
+      await runDs(['drift', CF_EXPORT, '--json', base]);
+      const argv = (out) => ['drift', CF_EXPORT, '--baseline', base, '--json', out, '--notify', HOOK_URL, '--fail-on-change'];
+      const changed = await runDs([...argv(join(dir, 'a.json'))], { table: movedZone(), hook: webhook([400]) });
+      assert.equal(changed.code, EXIT.CHANGED, 'a failed notification alone changes nothing');
+      const five = await runDs([...argv(join(dir, 'b.json')), '--fail-on-notify-error'], { table: movedZone(), hook: webhook([400]) });
+      assert.equal(five.code, EXIT.NOTIFY, '5 before 4');
+      // the report's directory goes while the message is posted: the report cannot be written
+      const outDir = join(dir, 'out');
+      mkdirSync(outDir);
+      const gone = webhook([() => {
+        rmSync(outDir, { recursive: true, force: true });
+        return new Response('no', { status: 400 });
+      }]);
+      const three = await runDs([...argv(join(outDir, 'c.json')), '--fail-on-notify-error'], { table: movedZone(), hook: gone });
+      assert.equal(three.code, EXIT.WRITE, `3 before 5: ${three.err}`);
+      assert.equal(EXIT.NOTIFY, 5);
+      assert.match(USAGE, /5 a notification was not delivered \(only with\n {2}--fail-on-notify-error\), 130 interrupted \(nothing written\)\. When several apply: 3, then 5,\n {2}then 4\./);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a timeout, a run stopped while it posts, a URL on the command line with nothing to send, the environment\'s URLs', async () => {
+    const dir = tmp();
+    try {
+      const json = join(dir, 'drift.json');
+      await runDs(['drift', CF_EXPORT, '--json', json]);
+      const hang = (url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
+      const slow = await runDs(['drift', CF_EXPORT, '--baseline', json, '--notify', HOOK_URL, '--fail-on-notify-error'],
+        { table: movedZone(), hook: webhook([hang, hang]), timing: { timeoutMs: 40, retryDelayMs: 1 } });
+      assert.equal(slow.code, EXIT.NOTIFY);
+      assert.match(slow.err, /ds: error: notification failed \(json, hooks\.example\.com\): timed out/);
+      assert.equal(slow.hook.requests.length, 2);
+
+      // Ctrl-C while the message is posted: exit 130, the report not written
+      const out = join(dir, 'stopped.json');
+      const controller = new AbortController();
+      const stop = webhook([(url, init) => {
+        setTimeout(() => controller.abort(), 5);
+        return hang(url, init);
+      }]);
+      const stopped = await runDs(['drift', CF_EXPORT, '--baseline', json, '--json', out, '--notify', HOOK_URL], { table: movedZone(), hook: stop, signal: controller.signal });
+      assert.equal(stopped.code, EXIT.INTERRUPTED);
+      assert.match(stopped.err, /ds: error: notification \(json, hooks\.example\.com\) interrupted\nds: interrupted: the JSON report is not written/);
+      assert.ok(!existsSync(out));
+
+      // --notify on the command line without --baseline has nothing to send: a warning
+      const lone = await runDs(['drift', CF_EXPORT, '--notify', HOOK_URL, '--json', join(dir, 'lone.json')]);
+      assert.match(lone.err, /ds: warning: --notify sends a message only with --baseline \(the changes since the last run\) or --notify-always/);
+      assert.equal(lone.hook.requests.length, 0);
+      assert.deepEqual(JSON.parse(readFileSync(join(dir, 'lone.json'), 'utf8')).warnings, ['--notify sends a message only with --baseline (the changes since the last run) or --notify-always']);
+      // the environment's URLs are set once for every job: no warning
+      const quiet = await runDs(['drift', CF_EXPORT], { env: { [NOTIFY_ENV.url]: HOOK_URL } });
+      assert.doesNotMatch(quiet.err, /warning/);
+      // a URL in the environment is checked before anything is sent
+      const refused = await runDs(['drift', CF_EXPORT], { env: { [NOTIFY_ENV.url]: `http://hooks.example.com/${TOKEN}` } });
+      assert.equal(refused.code, EXIT.USAGE);
+      assert.match(refused.err, /^ds: error: DOMAINSCOPE_NOTIFY_URL: needs an https:\/\/ URL/);
+      assert.ok(!refused.err.includes(TOKEN));
+      assert.equal(refused.hook.requests.length, 0);
+      // -q: the failures still printed, the deliveries not
+      const q = await runDs(['drift', CF_EXPORT, '--baseline', json, '-q'], { table: movedZone(), env: { [NOTIFY_ENV.url]: HOOK_URL } });
+      assert.equal(q.err, '');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('the help and the nightly template name the alert options and secrets', () => {
+    for (const s of ['--notify URL', '--notify-bad URL', '--notify-format FMT', '--notify-always', '--fail-on-notify-error', NOTIFY_ENV.url, NOTIFY_ENV.bad, NOTIFY_ENV.secret, NOTIFY_ENV.ntfyToken]) {
+      assert.ok(USAGE.includes(s), s);
+    }
+    const formats = USAGE.slice(USAGE.indexOf('--notify-format FMT'), USAGE.indexOf('--notify-always')).replace(/\s+/g, ' ');
+    for (const format of NOTIFY_FORMATS) assert.match(formats, new RegExp(`\\b${format}\\b`), format);
+    // the help stays within 100 columns
+    for (const line of USAGE.split('\n').filter((l) => l.includes('notif') || l.includes('NOTIFY'))) assert.ok(line.length <= 100, line);
+    const yml = readFileSync(join(ROOT, 'docs', 'examples', 'nightly-domainscope.yml'), 'utf8').replace(/\r\n/g, '\n');
+    for (const name of Object.values(NOTIFY_ENV)) assert.ok(yml.includes(`${name}: \${{ secrets.${name} }}`), name);
+    const readme = readFileSync(join(ROOT, 'docs', 'examples', 'README.md'), 'utf8');
+    for (const name of Object.values(NOTIFY_ENV)) assert.ok(readme.includes(name), name);
+  });
+});

@@ -20,6 +20,19 @@
 #   Globalping: the checks that need a probe stay in the web app, behind a click. The checkout
 #   keeps no token while the checks run (persist-credentials: false): only the commit step and
 #   the issue step are given it.
+# - Alerts are optional, from Actions secrets of this repository (Settings > Secrets and
+#   variables > Actions); a secret that is not set is empty, and then nothing is sent:
+#   DOMAINSCOPE_NOTIFY_URL     the changes that count, to Slack, Teams, Discord, Telegram,
+#                              Google Chat, ntfy (ntfy.sh) or your own JSON webhook; several URLs
+#                              separated by spaces
+#   DOMAINSCOPE_NOTIFY_BAD_URL the bad changes only: the pager route (PagerDuty's Events API
+#                              URL, https://events.pagerduty.com/v2/enqueue?routing_key=KEY,
+#                              opens an incident per problem and resolves it once it is over)
+#   DOMAINSCOPE_NOTIFY_SECRET  signs the JSON webhook (X-DomainScope-Signature, HMAC-SHA256)
+#   DOMAINSCOPE_NTFY_TOKEN     an ntfy access token
+#   The URLs are never printed: the log names their hosts only. A notification that was not
+#   delivered fails the job and keeps last night's results/NAME.json, so the next night sends
+#   those changes again.
 # - GitHub's hosted runners share their IP addresses, and the anonymous quotas of the passive
 #   sources are per address: a source may answer "rate limited" on some night. The report says
 #   so, nothing a source could not read counts as a change, and the next night compares with the
@@ -80,14 +93,21 @@ jobs:
         env:
           CHECK_MINUTES: 20   # one check at most; then it is stopped and counts as failed
           RUN_MINUTES: 45     # every check together; keep it under timeout-minutes
+          # Optional alerts (see the top of this file): unset secrets are empty, which sends nothing.
+          DOMAINSCOPE_NOTIFY_URL: ${{ secrets.DOMAINSCOPE_NOTIFY_URL }}
+          DOMAINSCOPE_NOTIFY_BAD_URL: ${{ secrets.DOMAINSCOPE_NOTIFY_BAD_URL }}
+          DOMAINSCOPE_NOTIFY_SECRET: ${{ secrets.DOMAINSCOPE_NOTIFY_SECRET }}
+          DOMAINSCOPE_NTFY_TOKEN: ${{ secrets.DOMAINSCOPE_NTFY_TOKEN }}
         run: |
           mkdir -p results
           changed=()
           failed=()
           end=$(( $(date +%s) + RUN_MINUTES * 60 ))
           # ds NAME COMMAND ARGS...: results/NAME.json is both last night's baseline and tonight's
-          # report. Exit 4 means "changed since last night"; anything but 0 or 4 is a failure
-          # (124: stopped at its time limit), which leaves last night's files as they were.
+          # report. Exit 4 means "changed since last night"; 5 that a notification was not
+          # delivered (the changes still open the issue, last night's NAME.json is kept so the next
+          # night sends them again, and the job fails); anything else but 0 is a failure (124:
+          # stopped at its time limit), which leaves last night's files as they were.
           ds() {
             local name=$1
             shift
@@ -97,8 +117,10 @@ jobs:
             if [ "$left" -lt "$limit" ]; then limit=$left; fi
             if [ "$limit" -lt 60 ]; then failed+=("$name:no-time-left"); return; fi
             timeout -s INT -k 60 "$limit" node .domainscope/tools/ds.mjs "$@" --baseline "results/$name.json" --json "results/$name.json" \
-              --md "results/$name.md" --fail-on-change --no-color || code=$?
-            if [ "$code" -eq 4 ]; then changed+=("$name"); elif [ "$code" -ne 0 ]; then failed+=("$name:$code"); fi
+              --md "results/$name.md" --fail-on-change --fail-on-notify-error --no-color || code=$?
+            if [ "$code" -eq 4 ]; then changed+=("$name")
+            elif [ "$code" -eq 5 ]; then changed+=("$name"); failed+=("$name:notify")
+            elif [ "$code" -ne 0 ]; then failed+=("$name:$code"); fi
           }
           ds health health --list domains.txt
           # More than about 10 domains: Cert Spotter's hourly quota runs out (see above); --sources crtsh leaves it out.
@@ -160,7 +182,7 @@ jobs:
               echo "Changed since the previous nightly run: $CHANGED. Results: $RESULTS · run: $RUN"
               if [ -n "$FAILED" ]; then
                 echo
-                echo "These checks did not complete (name:exit code), so nothing of theirs was compared: $FAILED."
+                echo "These checks did not complete (name:exit code), so nothing of theirs was compared, or could not send their notification (name:notify): $FAILED."
               fi
               echo
               for name in $CHANGED; do
@@ -191,5 +213,5 @@ jobs:
         env:
           FAILED: ${{ steps.ds.outputs.failed }}
         run: |
-          echo "::error::These checks did not complete (name:exit code; 124: stopped at its time limit): $FAILED. See the log of 'Run the checks'."
+          echo "::error::These checks did not complete (name:exit code; 124: stopped at its time limit) or could not send their notification (name:notify): $FAILED. See the log of 'Run the checks'."
           exit 1

@@ -20,7 +20,7 @@
  * validates user lists; a per-browser learned store lives in `learned.js`.
  */
 
-// (no external fetch helper needed; tiers load via fetch/fs directly)
+import { fetchAndRead } from './util.js';
 
 // Most common labels: web/mail/DNS, remote-access + platform infra, environments,
 // apps, and the top-ranked global labels. This core is tried on EVERY domain, so
@@ -451,6 +451,9 @@ const IS_NODE = typeof import.meta.url === 'string' && import.meta.url.startsWit
 /** Per-file cache of parsed labels (plain and gzipped files alike). */
 const fileCache = new Map();
 
+/** How long one data file may take over fetch, body included (the huge tier is about 600 KB). */
+const DATA_TIMEOUT_MS = 60000;
+
 /** Is `err` a cancellation we must not swallow? */
 function isAbort(err) {
   return !!err && typeof err === 'object' && err.name === 'AbortError';
@@ -472,12 +475,13 @@ async function gunzipToText(bytes) {
 
 /**
  * Load and parse a plain-text data file from `assets/data/`. Browser: `fetch`
- * relative to this module; Node: `fs`. Cached. Abort errors propagate.
+ * relative to this module, within `timeoutMs` (the body too); Node: `fs`. Cached.
+ * Abort errors propagate.
  * @param {string} relPath e.g. 'wordlist-base.txt' or 'locale/tr.txt'
- * @param {{ fetchImpl?: typeof fetch, signal?: AbortSignal }} [opts]
+ * @param {{ fetchImpl?: typeof fetch, signal?: AbortSignal, preferFetch?: boolean, timeoutMs?: number }} [opts]
  * @returns {Promise<string[]>}
  */
-async function loadTextFile(relPath, { fetchImpl, signal, preferFetch } = {}) {
+async function loadTextFile(relPath, { fetchImpl, signal, preferFetch, timeoutMs = DATA_TIMEOUT_MS } = {}) {
   const key = `text:${relPath}`;
   if (fileCache.has(key)) return fileCache.get(key);
   const url = new URL(`../../data/${relPath}`, import.meta.url);
@@ -487,9 +491,10 @@ async function loadTextFile(relPath, { fetchImpl, signal, preferFetch } = {}) {
     text = await readFile(url, 'utf8');
   } else {
     const impl = typeof fetchImpl === 'function' ? fetchImpl : globalThis.fetch;
-    const res = await impl(url, { signal, headers: { accept: 'text/plain' } });
-    if (!res || !res.ok) throw new Error(`Failed to load ${relPath}: HTTP ${res ? res.status : '?'}`);
-    text = await res.text();
+    text = await fetchAndRead(url, { fetchImpl: impl, signal, timeoutMs, headers: { accept: 'text/plain' } }, (res) => {
+      if (!res || !res.ok) throw new Error(`Failed to load ${relPath}: HTTP ${res ? res.status : '?'}`);
+      return res.text();
+    });
   }
   const parsed = parseHostLabels(text);
   fileCache.set(key, parsed);
@@ -500,12 +505,13 @@ async function loadTextFile(relPath, { fetchImpl, signal, preferFetch } = {}) {
  * Load and parse a gzipped data file from `assets/data/`. Node reads bytes with
  * `fs`; the browser fetches bytes and either decompresses them (gzip magic
  * present) or, if GitHub Pages already decoded a `Content-Encoding: gzip`
- * response, reads them as text directly. Cached. Abort errors propagate.
+ * response, reads them as text directly; the fetch, body included, within `timeoutMs`.
+ * Cached. Abort errors propagate.
  * @param {string} relPath e.g. 'wordlist-large.txt.gz'
- * @param {{ fetchImpl?: typeof fetch, signal?: AbortSignal }} [opts]
+ * @param {{ fetchImpl?: typeof fetch, signal?: AbortSignal, preferFetch?: boolean, timeoutMs?: number }} [opts]
  * @returns {Promise<string[]>}
  */
-async function loadGzFile(relPath, { fetchImpl, signal, preferFetch } = {}) {
+async function loadGzFile(relPath, { fetchImpl, signal, preferFetch, timeoutMs = DATA_TIMEOUT_MS } = {}) {
   const key = `gz:${relPath}`;
   if (fileCache.has(key)) return fileCache.get(key);
   const url = new URL(`../../data/${relPath}`, import.meta.url);
@@ -516,9 +522,10 @@ async function loadGzFile(relPath, { fetchImpl, signal, preferFetch } = {}) {
     text = await gunzipToText(buf);
   } else {
     const impl = typeof fetchImpl === 'function' ? fetchImpl : globalThis.fetch;
-    const res = await impl(url, { signal, headers: { accept: 'application/gzip, text/plain' } });
-    if (!res || !res.ok) throw new Error(`Failed to load ${relPath}: HTTP ${res ? res.status : '?'}`);
-    const bytes = new Uint8Array(await res.arrayBuffer());
+    const bytes = await fetchAndRead(url, { fetchImpl: impl, signal, timeoutMs, headers: { accept: 'application/gzip, text/plain' } }, async (res) => {
+      if (!res || !res.ok) throw new Error(`Failed to load ${relPath}: HTTP ${res ? res.status : '?'}`);
+      return new Uint8Array(await res.arrayBuffer());
+    });
     // 0x1f 0x8b = gzip magic. If absent, the layer below already decompressed it.
     text = (bytes[0] === 0x1f && bytes[1] === 0x8b) ? await gunzipToText(bytes)
       : new TextDecoder().decode(bytes);
@@ -595,14 +602,15 @@ function smallerLevel(level) {
  * @param {'small'|'smart'|'large'|'huge'} [level='small']
  * @param {{ domain?: string, locales?: string[], extra?: string[],
  *           fetchImpl?: typeof fetch, signal?: AbortSignal,
- *           onInfo?: (info: object) => void, preferFetch?: boolean }} [opts]
+ *           onInfo?: (info: object) => void, preferFetch?: boolean, timeoutMs?: number }} [opts]
  *   `preferFetch` forces the browser fetch/decompress path even under Node
- *   (used by tests to exercise the gzip/degrade branches with a mock fetch).
+ *   (used by tests to exercise the gzip/degrade branches with a mock fetch);
+ *   `timeoutMs`: how long each fetched file may take, body included (a stalled one degrades).
  * @returns {Promise<string[]>} a fresh array (the caller may mutate it)
  */
 export async function loadWordlist(level = 'small', opts = {}) {
-  const { domain, locales, extra, fetchImpl, signal, onInfo, preferFetch } = opts;
-  const io = { fetchImpl, signal, preferFetch };
+  const { domain, locales, extra, fetchImpl, signal, onInfo, preferFetch, timeoutMs } = opts;
+  const io = { fetchImpl, signal, preferFetch, timeoutMs };
   const lvl = WORDLIST_LEVELS.includes(level) ? level : 'small';
 
   const extraLabels = cleanExtra(extra);

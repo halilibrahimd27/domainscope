@@ -144,6 +144,23 @@ describe('loadWordlist — browser fetch / gzip / degrade (mock fetchImpl)', () 
     assert.ok(list.includes('largeone'), 'served the large tier');
   });
 
+  test('a stalled response or body ends in a timeout: the tier degrades instead of hanging the scan', async () => {
+    let info = null;
+    const onInfo = (i) => { if (i.type === 'degrade') info = i; };
+    // No answer at all (a fetch that ignores its signal too).
+    const silent = makeFetch({ huge: () => new Promise(() => {}) });
+    const list = await loadWordlist('huge', { preferFetch: true, fetchImpl: silent, timeoutMs: 50, onInfo });
+    assert.ok(info && info.requested === 'huge' && info.served === 'large', JSON.stringify(info));
+    assert.ok(list.includes('largeone'), 'served the large tier');
+    // Headers, then a body that never ends.
+    clearWordlistCache();
+    info = null;
+    const stuck = makeFetch({ large: () => new Response(new ReadableStream({ start() {} }), { status: 200 }) });
+    const smart = await loadWordlist('large', { preferFetch: true, fetchImpl: stuck, timeoutMs: 50, onInfo });
+    assert.ok(info && info.requested === 'large' && info.served === 'smart', JSON.stringify(info));
+    assert.ok(smart.includes('gamma'), 'served the base tier');
+  });
+
   test('degrade all the way to small when every tier fails', async () => {
     const fail = () => { throw new TypeError('offline'); };
     const fetchImpl = makeFetch({ base: fail, large: fail, huge: fail });

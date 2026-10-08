@@ -474,7 +474,7 @@ export const WORDLIST_MEDIUM     // 1,146 labels, strict superset of SMALL (SMAL
 export function getWordlist(size = 'small') -> string[]           // 'small'|'medium'; [] for 'off'/unknown
 export const WORDLIST_LEVELS = ['small', 'smart', 'large', 'huge']
 export const LOCALE_PACK_CODES = ['tr','de','fr','es','pt','it','nl','pl','ru','ar','ja','zh']
-export async function loadWordlist(level = 'small', { domain, locales, extra, fetchImpl, signal, onInfo, preferFetch } = {}) -> string[]
+export async function loadWordlist(level = 'small', { domain, locales, extra, fetchImpl, signal, onInfo, preferFetch, timeoutMs } = {}) -> string[]
   // Ordered, de-duplicated: extra → WORDLIST_SMALL → locale packs → base (smart, ≈7,000) → large (≈50,000, gzip) → huge (≈130,000, gzip).
   // 'small' does no I/O and loads no locale packs (extra + WORDLIST_SMALL only); an unknown level behaves as 'small'.
   // The tiers are self-hosted in assets/data/ (fetch + DecompressionStream in browsers, fs + zlib in Node).
@@ -482,7 +482,8 @@ export async function loadWordlist(level = 'small', { domain, locales, extra, fe
   // `extra` (learned / custom labels) is validated and tried first; multi-label prefixes like 'dev.api' are allowed.
   // A tier that fails to load degrades to the next smaller one: onInfo({ type: 'degrade', requested, served, reason });
   // a missing locale pack is skipped: onInfo({ type: 'locale-missing', locale }). AbortError always propagates.
-  // preferFetch is test-only (forces the browser path under Node).
+  // preferFetch is test-only (forces the browser path under Node). A fetched file has timeoutMs (60 s) for its response and body
+  // (util.fetchAndRead): a stalled one fails, and its tier degrades like any other failure.
 export function wordlistInfo() -> { levels: { small, smart, large, huge }, locales: { [cc]: … } }   // each { id, approxCount, bytes, sources, licence }; build-time constants, no download
 export function parseCustomWordlist(text) -> { labels: string[], rejected: string[] }   // one entry per line / comma / whitespace, '#' comment lines skipped, lowercased, IDN labels converted to punycode ('şube' → 'xn--ube-rza'), deduped, capped at 200,000
 export function localesForDomain(domain) -> string[]   // from the last label (the ccTLD), e.g. 'example.com.tr' → ['tr'], 'example.ch' → ['de','fr','it'], 'example.com' / 'example.co.uk' → []

@@ -46,10 +46,14 @@ const KEY_TAG = decodeMessage(encodeMessage({ answers: [{ name: 'example.com', t
 const DOMAINS = ['example.com', 'example.org', 'example.net', 'example-test.com.tr'];
 const DKIM_KEY = 'v=DKIM1; k=rsa; p=MIIBIjANBgkqh';
 
-/** Four zones: every measure met, few met, a parked domain on its own name servers, a .tr domain. */
+/**
+ * Four zones: every measure met, few met, a parked domain on its own name servers, a .tr domain. A
+ * second DNS provider is example-test.com.tr's name servers: example.net's and example.org's are
+ * example.com's own name at other suffixes (one provider, as a company's own name servers are).
+ */
 const ZONE = {
   'example.com': {
-    NS: ['ns1.example.net', 'ns1.example.org'],
+    NS: ['ns1.example.net', 'ns1.example-test.com.tr'],
     DS: [{ keyTag: KEY_TAG, algorithm: 13, digestType: 2, digest: 'ab'.repeat(32) }],
     DNSKEY: [DNSKEY],
     CAA: [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }],
@@ -66,9 +70,9 @@ const ZONE = {
   },
   'mx.example.org': { A: ['192.0.2.26'] },
   '_dmarc.example.org': { TXT: [['v=DMARC1; p=none']] },
-  // parked: null MX, -all, p=reject, CAA that allows no CA; its own name server and example.org's
+  // parked: null MX, -all, p=reject, CAA that allows no CA; its own name server and example-test.com.tr's
   'example.net': {
-    NS: ['ns1.example.net', 'ns1.example.org'],
+    NS: ['ns1.example.net', 'ns1.example-test.com.tr'],
     CAA: [{ flags: 0, tag: 'issue', value: ';' }],
     MX: [{ preference: 0, exchange: '.' }],
     TXT: [['v=spf1 -all']]
@@ -297,7 +301,8 @@ async function main() {
       assertEqual(evidence['example.org'].registryLock, 'a partial registry lock, server transfer prohibited only: a registry lock is server transfer, update and delete prohibited together', 'the partial lock said');
       assertEqual(evidence['example.org'].registrar, 'not a corporate registrar: Example Registrar, Inc. (IANA ID 1068)', 'a retail registrar');
       assertEqual(evidence['example.net'].registrar, 'IANA ID 9999 is a reserved one (such as the registry acting as registrar): whether the registrar is corporate is not known', 'a reserved ID');
-      assertEqual(evidence['example.net'].dnsRedundancy, '2 DNS providers: example.net, example.org', 'its own name server and example.org\'s');
+      assertEqual(evidence['example.net'].dnsRedundancy, '2 DNS providers: example-test.com.tr, example.net', 'its own name server and example-test.com.tr\'s');
+      assertEqual(evidence['example.org'].dnsRedundancy, '1 DNS provider: example.org', 'example.net\'s name servers: its own name at another suffix');
       assertEqual(evidence['example.com'].registrar, 'a corporate registrar: Example Corporate Registrar (IANA ID 292)', 'a corporate registrar');
       await shot(page, opts, 'secscore-security-desktop-light-en');
     });

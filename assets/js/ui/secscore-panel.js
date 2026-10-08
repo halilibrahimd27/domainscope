@@ -56,9 +56,9 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'sec.title': 'Alan adı güvenliği',
-  'sec.intro': 'CSC’nin Domain Security Report çalışması şirketlerin alan adlarını sekiz ölçüte göre puanlar. Burada yukarıdaki kontrolün her alan adı için gösteriliyorlar: karşılanıyor, karşılanmıyor ya da bir sorgu sonuç vermediğinde bilinmiyor (bilinmeyen bir ölçüt hiçbir zaman karşılanmış sayılmaz). Başka hiçbir şey gönderilmez.',
+  'sec.intro': 'CSC’nin Domain Security Report çalışması, şirketlerin alan adlarını sekiz ölçüte göre puanlar. Bu ölçütler burada, yukarıdaki kontroldeki her alan adı için gösterilir: karşılanıyor, karşılanmıyor ya da bir sorgu sonuç vermediğinde bilinmiyor (bilinmeyen bir ölçüt hiçbir zaman karşılanmış sayılmaz). Başka hiçbir şey gönderilmez.',
   'sec.noRun': 'Önce bir portföyü kontrol edin: puan onun sonuçlarını kullanır ve başka bir şey göndermez.',
-  'sec.running': 'Portföy hâlâ kontrol ediliyor: puanlar, sorgular geldikçe dolar.',
+  'sec.running': 'Portföy hâlâ kontrol ediliyor: sorgu sonuçları geldikçe puanlar güncellenir.',
   'sec.domains': '{count} alan adı',
   'sec.average': 'ortalama puan {max} üzerinden {score}',
   'sec.full': { zero: 'sekizini birden karşılayan yok', other: '{count} tanesi sekizini birden karşılıyor' },

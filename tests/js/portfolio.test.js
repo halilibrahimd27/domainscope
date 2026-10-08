@@ -317,19 +317,43 @@ describe('lock depth, registrar class, DNS providers', () => {
     assert.equal(statusRisk(epp('server', ['transfer', 'delete'])).registryLock, false, 'two of the three: no registry lock');
   });
 
-  test('nsProviders: a known provider once whatever its TLDs, an unknown one by its registrable domain, the domain\'s own name servers as one', () => {
+  test('nsProviders: a known provider once whatever its TLDs, an unknown one by its name before the public suffix, the domain\'s own name servers as one', () => {
     const route53 = nsProviders(['ns-1.awsdns-01.com', 'NS-2.AWSDNS-02.NET.', 'ns-3.awsdns-03.org', 'ns-4.awsdns-04.co.uk']);
     assert.deepEqual([route53.count, route53.providers[0].id, route53.providers[0].known, route53.providers[0].hosts.length], [1, 'route53', true, 4]);
-    const mixed = nsProviders(['ns2.example.net', 'ns1.example.net', 'ns.example.com', 'ns1.example.org', 'ns-1.awsdns-01.com'], { domain: 'example.com' });
+    // corporate DNS platforms spread their name servers over several TLDs on purpose: one provider each
+    for (const [id, hosts] of [
+      ['csc', ['udns1.cscudns.com', 'udns2.cscudns.org', 'pdns1.cscdns.net', 'udns2.cscdns.uk']],
+      ['comlaude', ['dns1.comlaude-dns.com', 'dns2.comlaude-dns.net', 'dns3.comlaude-dns.co.uk', 'dns4.comlaude-dns.eu']],
+      ['markmonitor', ['ns1.markmonitor.com', 'ha2.markmonitor.zone']],
+      ['safenames', ['dns1.safenames.com', 'dns2.safenames.net', 'dns3.safenames.org']],
+      ['nameshield', ['nsa.perf1.fr', 'nsb.perf1.com']],
+      ['easydns', ['dns1.easydns.com', 'dns2.easydns.net', 'dns3.easydns.org', 'dns4.easydns.info']],
+      ['constellix', ['ns11.constellix.com', 'ns41.constellix.net']]
+    ]) {
+      const p = nsProviders(hosts, { domain: 'example.com' });
+      assert.deepEqual([p.count, p.providers[0].id, p.providers[0].known, p.providers[0].hosts.length], [1, id, true, hosts.length], hosts.join(' '));
+    }
+    // a known provider's name at a suffix the table does not list (the reserved .example TLD): that provider still
+    assert.deepEqual(nsProviders(['pns1.cloudns.net', 'pns2.cloudns.example']).providers.map((p) => [p.id, p.known, p.hosts]),
+      [['cloudns', true, ['pns1.cloudns.net', 'pns2.cloudns.example']]]);
+    // a provider the table does not know, under one name at several suffixes: one, named by its domains
+    assert.deepEqual(nsProviders(['ns3.example.co.uk', 'ns1.example.net', 'NS2.EXAMPLE.ORG.']), {
+      count: 1, providers: [{ id: 'domain:example', name: 'example.co.uk / example.net / example.org', known: false, hosts: ['ns1.example.net', 'ns2.example.org', 'ns3.example.co.uk'] }]
+    });
+    // the domain's own name at another suffix is its own name servers too
+    const mixed = nsProviders(['ns2.example.net', 'ns1.example.net', 'ns.example.com', 'ns1.example.org', 'ns1.example-test.com.tr', 'ns-1.awsdns-01.com'], { domain: 'example.com' });
     assert.deepEqual(mixed.providers.map((p) => [p.id, p.name, p.known, p.hosts]), [
       ['route53', 'Amazon Route 53', true, ['ns-1.awsdns-01.com']],
-      ['self', 'example.com', false, ['ns.example.com']],
-      ['domain:example.net', 'example.net', false, ['ns1.example.net', 'ns2.example.net']],
-      ['domain:example.org', 'example.org', false, ['ns1.example.org']]
+      ['self', 'example.com', false, ['ns.example.com', 'ns1.example.net', 'ns1.example.org', 'ns2.example.net']],
+      ['domain:example-test', 'example-test.com.tr', false, ['ns1.example-test.com.tr']]
     ]);
-    assert.equal(mixed.count, 4);
+    assert.equal(mixed.count, 3);
     assert.deepEqual(nsProviders(['ns1.example.net', 'ns2.example.net']).count, 1, 'two hosts of one domain: one provider');
     assert.deepEqual(nsProviders(['ns1.example.com', 'ns2.example.com'], { domain: 'example.com' }).providers.map((p) => p.id), ['self'], 'in-bailiwick only: one');
+    assert.deepEqual(nsProviders(['ns1.example.com', 'ns2.example.net', 'ns3.example.co.uk'], { domain: 'example.com' }).providers.map((p) => [p.id, p.name]),
+      [['self', 'example.com']], 'the domain\'s own name servers under its name at other suffixes: one');
+    assert.deepEqual(nsProviders(['ns1.markmonitor.com', 'ha2.markmonitor.zone'], { domain: 'markmonitor.com' }).providers.map((p) => p.id), ['self'],
+      'a provider\'s own zone: its own name servers, never itself and its platform');
     assert.deepEqual(nsProviders([]), { count: 0, providers: [] });
   });
 
@@ -345,11 +369,12 @@ describe('lock depth, registrar class, DNS providers', () => {
     const com = run.facts('example.com', { now: NOW });
     assert.deepEqual([com.registration.lockLevel, com.registration.registryLock, com.registration.registrarClass, com.registration.ianaId],
       ['registry', true, 'corporate', '292']);
-    assert.deepEqual(com.ns.providers, { count: 1, providers: [{ id: 'domain:example.net', name: 'example.net', known: false, hosts: ['ns1.example.net', 'ns2.example.net'] }] });
+    assert.deepEqual(com.ns.providers, { count: 1, providers: [{ id: 'self', name: 'example.com', known: false, hosts: ['ns1.example.net', 'ns2.example.net'] }] },
+      'ns*.example.net: the domain\'s own name at another suffix');
     const org = run.facts('example.org', { now: NOW });
     assert.deepEqual([org.registration.lockLevel, org.registration.registryLock, org.registration.serverLocks, org.registration.registrarClass],
       ['registry-partial', false, ['server transfer prohibited'], 'retail']);
-    assert.deepEqual(org.ns.providers.providers.map((p) => p.id), ['self', 'domain:example.net'],'its own name server and example.net\'s: two');
+    assert.deepEqual(org.ns.providers.providers.map((p) => p.id), ['self'], 'its own name server and example.net\'s, its name at another suffix: one');
     assert.equal(run.facts('example.net', { now: NOW }).registration.registrarClass, 'unknown', 'an IANA ID that is no number');
     const tr = run.facts('example-test.com.tr', { now: NOW });
     assert.deepEqual([tr.registration.registrarClass, tr.registration.lockLevel, tr.ns.providers.count], [undefined, undefined, 1], 'no RDAP: nothing said');
@@ -524,7 +549,7 @@ describe('the calendar and the exports', () => {
       caaIssuers: 'letsencrypt.org sectigo.com', mx: 'some', spf: 'ok', spfAll: '-all', spfLookups: 3, dmarc: 'p=reject', dkim: 'google', mtaSts: 'present',
       tlsRpt: 'present', parked: 'receives-mail', failed: ''
     }, 'IANA ID 9999 is a reserved one: the class is not known');
-    assert.deepEqual([rows[1].lockLevel, rows[1].nsProviders], ['none', 2], 'example.org: no transfer prohibition; example.net\'s and its own name servers');
+    assert.deepEqual([rows[1].lockLevel, rows[1].nsProviders], ['none', 1], 'example.org: no transfer prohibition; its own name servers, under its name at two suffixes');
     assert.deepEqual([rows[3].registrarClass, rows[3].lockLevel], [null, null], 'no RDAP for .tr: neither is known');
     assert.equal(rows[2].failed, 'caa');
     assert.equal(rows[1].parked, 'locked');

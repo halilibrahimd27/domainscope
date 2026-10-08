@@ -10,6 +10,7 @@ import {
   SECURITY_MEASURES, SECURITY_MAX, SECURITY_I18N, securityScore, securityScores, securityAdoption, securityTotals, scoreBand, securityCsv, securityExport
 } from '../../assets/js/lib/secscore.js';
 import { POLICY_I18N, POLICY_PRESETS, evaluatePolicy, parsePolicy, policyRule, presetPolicy, evidenceText } from '../../assets/js/lib/policy.js';
+import { portfolioFacts } from '../../assets/js/lib/portfolio.js';
 
 /** `t` over SECURITY_I18N and POLICY_I18N (plural objects: one / other / zero). */
 function makeT(lang = 'en') {
@@ -105,6 +106,25 @@ describe('the measures', () => {
     // nothing landed yet: every measure not known, none of them failed
     const none = securityScore({ domain: 'example.com' });
     assert.deepEqual([none.score, none.fail, none.unknown], [0, 0, 8]);
+  });
+
+  test('DNS redundancy from the name servers as lib/portfolio.js reads them: one platform over several TLDs is one provider', () => {
+    const ns = (hosts, domain = 'example.com') => portfolioFacts({ domain, ns: { ok: true, rcode: 'NOERROR', flags: { ad: false }, answers: hosts.map((data) => ({ type: 'NS', data })) } },
+      { now: new Date('2026-10-09T00:00:00Z') });
+    const redundancy = (hosts, domain) => {
+      const m = securityScore(ns(hosts, domain)).measures.find((x) => x.id === 'dnsRedundancy');
+      return [m.status, m.actual, evidenceText(m, t)];
+    };
+    const corporate = (hosts) => evaluatePolicy(presetPolicy('corporate'), ns(hosts)).find((c) => c.id === 'ns.providers').status;
+    // CSC's name servers under cscudns.com and cscudns.org: one provider, not two
+    assert.deepEqual(redundancy(['udns1.cscudns.com', 'udns2.cscudns.org']), ['fail', 1, '1 DNS provider: CSC']);
+    assert.equal(corporate(['udns1.cscudns.com', 'udns2.cscudns.org']), 'fail', 'the corporate preset says the same');
+    // a provider the table does not know, under one name at several TLDs; the domain's own name elsewhere
+    assert.deepEqual(redundancy(['ns1.example.net', 'ns2.example.org'], 'example-test.com.tr'), ['fail', 1, '1 DNS provider: example.net / example.org']);
+    assert.deepEqual(redundancy(['ns1.example.com', 'ns2.example.net', 'ns3.example.org']), ['fail', 1, '1 DNS provider: example.com']);
+    // two providers indeed
+    assert.deepEqual(redundancy(['udns1.cscudns.com', 'udns2.cscudns.org', 'ns-1.awsdns-01.com']), ['pass', 2, '2 DNS providers: Amazon Route 53, CSC']);
+    assert.equal(corporate(['udns1.cscudns.com', 'ns-1.awsdns-01.com']), 'pass');
   });
 
   test('scores of a list, in its order; a score\'s band', () => {

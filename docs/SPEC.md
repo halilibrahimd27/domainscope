@@ -2152,7 +2152,8 @@ export const HEALTH_LOOKUPS = ['ns', 'soa', 'ds', 'dnskey', 'mx', 'txt', 'dmarc'
 export const LOOKUP_SOURCES  // lookup → 'rdap' | 'doh'
 export function passportDomain(input) -> { domain, host } | null   // the registrable domain of a host, URL or *.name; host set when reduced; null for IPs, suffixes, junk
 export const DNS_PROVIDERS   // NS host → provider by suffix or pattern: Cloudflare (incl. Foundation DNS), Route 53, Azure DNS, Google Cloud DNS, NS1, Akamai, UltraDNS, Dyn,
-                             // Oracle, Microsoft 365, DigitalOcean, Hetzner, OVHcloud, GoDaddy, Namecheap, IONOS, STRATO, Gandi, Hostinger, Natro, Turhost, İsimtescil, Wix,
+                             // Oracle, CSC, MarkMonitor, Com Laude, Safenames, Nameshield, easyDNS, Constellix (the corporate platforms spread their name servers
+                             // over several TLDs on purpose), Microsoft 365, DigitalOcean, Hetzner, OVHcloud, GoDaddy, Namecheap, IONOS, STRATO, Gandi, Hostinger, Natro, Turhost, İsimtescil, Wix,
                              // Squarespace, Vercel, Linode, Vultr, Porkbun, ClouDNS, DNS Made Easy, Hurricane Electric, deSEC, Yandex, Alibaba, DNSPod, Network Solutions, WordPress.com
 export function dnsProviderOf(nsHost, { domain }) -> { id, name } | { id: 'self' } | null ; export function dnsHosting(nsHosts, { domain }) -> { providers: [{ id, name, hosts }], self, other }
 export const MAIL_PLATFORMS  // { id, name, kind: 'mailbox'|'gateway'|'forwarding'|'sending', mx (suffixes), mxPatterns, spf (include suffixes) }: Microsoft 365, Google Workspace,
@@ -2638,14 +2639,18 @@ export function statusRisk(statuses) -> { flags, critical, transferLock: boolean
   // codes, the facts' `statuses`) is said in its RDAP spelling (RFC 8056 / RFC 9083: 'client transfer prohibited'), each once: EPP's
   // 'clientTransferProhibited' arrives lower-cased from §5.14
 export const LOCK_LEVELS = ['none', 'registrar-transfer', 'registrar-full', 'registry-partial', 'registry']   // weakest first: what policy `lock.level` orders
+  // (any server prohibition outranks the registrar's lock: registry-partial, serverTransferProhibited alone too, ranks above registrar-full)
 export function lockLevel(statuses) -> 'none'|'registrar-transfer'|'registrar-full'|'registry-partial'|'registry'   // 'registry': server transfer, update
   // and delete prohibited; 'registry-partial': some server prohibition, not all three; 'registrar-full': client transfer, update and delete prohibited;
   // 'registrar-transfer': client transfer prohibited without both of the others; 'none': no transfer prohibition at all, whatever else is set (a server
   // delete prohibition alone leaves the domain transferable). RFC 8056 spellings with spaces and EPP camelCase, any case; RFC 9083's plain prohibitions
   // ("transfer prohibited") count as the registrar's: who set them is not said
-export function nsProviders(hosts, { domain }) -> { count, providers: [{ id, name, known, hosts }] }   // a host's DNS provider by §5.46 dnsProviderOf
-  // (Route 53's awsdns hosts under four TLDs are one), an unknown host by its registrable domain (id 'domain:<domain>'), the hosts under the zone itself
-  // as one ('self', named by the zone); in the order of the sorted hosts. Two or more: CSC's DNS redundancy
+export function nsProviders(hosts, { domain }) -> { count, providers: [{ id, name, known, hosts }] }   // one name under several public suffixes is one
+  // provider (DNS platforms spread their name servers over TLDs on purpose): the hosts under the zone itself and under its name at another suffix
+  // (example.com's ns2.example.net, a company's own name servers) as one ('self', named by the zone); a known host by §5.46 dnsProviderOf (Route 53's
+  // awsdns hosts, CSC's cscdns / cscudns, Com Laude's comlaude-dns under four TLDs: one each), a host under the same name as one of its hosts at
+  // another suffix with it; any other host by its registrable domain's name before the public suffix (id 'domain:<name>', named by its domains:
+  // 'example.net / example.org'); in the order of the sorted hosts. Two or more: CSC's DNS redundancy
 export function nsDomainsOf(hosts, domain) -> [{ domain, hosts, own }]   // a zone's name servers by registrable domain, its own first
 export async function runPortfolioLookup(id, domain, { dns, fetchImpl, signal, raw, rdapFor, dkim, noCache })
 export function createPortfolio({ domains, dns, fetchImpl, dkim = true, concurrency, rdapConcurrency, rdapOptions, onEvent }) -> run
@@ -2680,7 +2685,9 @@ export const POLICY_VERSION = 1, POLICY_MAX_CHARS = 16384, POLICY_MAX_RULES = 40
 export const POLICY_STATUSES = ['pass', 'fail', 'unknown'], POLICY_ERRORS = ['not-json', 'not-object', 'too-large', 'too-many', 'unknown-rule', 'outside-rules', 'bad-value', 'empty']
 export const POLICY_RULES = [{ id, kind: 'number'|'ordered'|'bool'|'enum'|'list', op?, min?, max?, levels?, values?, area, example, health /* Domain Health check ids */ }]
   // expiryDays (number, >=) · transferLock (bool: any transfer prohibition, the registrar's or the registry's) · lock.level (ordered over §5.63 LOCK_LEVELS: none <
-  // registrar-transfer < registrar-full < registry-partial < registry; a partial lock's evidence names its server prohibitions) · registryLock (bool: server transfer,
+  // registrar-transfer < registrar-full < registry-partial < registry; any server prohibition outranks the registrar's lock, so registry-partial —
+  // serverTransferProhibited alone too, a dispute's or the 60-day lock after a transfer, with updates and deletion not locked — passes >= registrar-full
+  // (the rule's name says so; registryLock asks for all three server prohibitions); a partial lock's evidence names its server prohibitions) · registryLock (bool: server transfer,
   // update and delete prohibited, all three) · status.critical (bool) · registrar (list: a part of the RDAP registrar's name) · registrar.class (enum: corporate — by
   // the IANA ID, §5.92; retail fails, no ID or a reserved one is not known) · nsExpiryDays (number, >=; the name servers' other domains: in-bailiwick ones expire with the
   // domain, which expiryDays reads, so only those pass it; one the registry does not know fails it — anyone can register it and take over DNS) · ns.providers (number,

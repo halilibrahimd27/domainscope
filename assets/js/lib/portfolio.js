@@ -210,36 +210,52 @@ export function statusRisk(statuses) {
   };
 }
 
+/** A host's registrable domain without its public suffix ('example' for ns1.example.net and example.org), or null. */
+function nameBeforeSuffix(host) {
+  const d = registryDomain(host);
+  return d ? d.slice(0, d.indexOf('.')) : null;
+}
+
 /**
- * The DNS providers of a zone's name servers: a host's provider by lib/passport.js dnsProviderOf
- * (Route 53's awsdns-NN hosts under four TLDs are one provider, Cloudflare's too), a host it does
- * not know by its registrable domain (ns1.example.net and ns2.example.net: one), the hosts under
- * the domain itself as its own name servers ('self'). Two providers or more: an outage at one
- * leaves the zone answering — CSC's "DNS redundancy" (lib/secscore.js).
+ * The DNS providers of a zone's name servers. DNS platforms spread their name servers over
+ * several TLDs on purpose, so one name under several public suffixes is one provider:
+ * - the domain's own name servers ('self'): the hosts under the domain itself, and under its name
+ *   at another suffix (example.com's ns2.example.net, a company's own name servers);
+ * - a known provider by lib/passport.js dnsProviderOf (Route 53's awsdns-NN hosts, CSC's
+ *   cscdns / cscudns hosts, Com Laude's comlaude-dns ones under four TLDs: one each), and a host
+ *   under the same name as one of its hosts at another suffix with it;
+ * - any other host by its registrable domain's name before the public suffix: ns1.example.net,
+ *   ns2.example.net and ns3.example.org are one provider.
+ * Two providers or more: an outage at one leaves the zone answering — CSC's "DNS redundancy"
+ * (lib/secscore.js).
  * @param {string[]} hosts name server host names
  * @param {{ domain?: string|null }} [opts] the zone's domain
  * @returns {{ count: number, providers: Array<{ id: string, name: string, known: boolean, hosts: string[] }> }}
- *   `id`: a lib/passport.js DNS_PROVIDERS id, 'self', or 'domain:' and the registrable domain;
- *   `name`: the provider's name, else that domain (the zone's own for 'self'); `known`: in the
- *   provider table; in the order of the sorted hosts
+ *   `id`: a lib/passport.js DNS_PROVIDERS id, 'self', or 'domain:' and that name ('domain:example');
+ *   `name`: the provider's name, the zone's domain for 'self', else the registrable domains its
+ *   hosts are under ('example.net / example.org'); `known`: in the provider table; in the order
+ *   of the sorted hosts
  */
 export function nsProviders(hosts, { domain = null } = {}) {
   const own = canon(domain);
+  const ownName = own ? nameBeforeSuffix(own) : null;
+  const list = uniq((hosts || []).map(canon).filter(Boolean)).sort().map((host) => {
+    const name = nameBeforeSuffix(host);
+    const self = !!own && (isSubdomainOf(host, own) || (!!ownName && name === ownName));
+    return { host, name, self, domain: registryDomain(host) || host, provider: self ? null : dnsProviderOf(host) };
+  });
+  // a name the table knows at one suffix is that provider at every suffix (cloudns.net, cloudns.uk)
+  const knownNames = new Map(list.filter((x) => x.provider && x.name).map((x) => [x.name, x.provider]));
   const by = new Map();
-  for (const host of uniq((hosts || []).map(canon).filter(Boolean)).sort()) {
-    const p = dnsProviderOf(host, { domain: own || null });
-    let id;
-    let name;
-    if (p && p.id === 'self') [id, name] = ['self', own];
-    else if (p) [id, name] = [p.id, p.name];
-    else {
-      const d = registryDomain(host) || host;
-      [id, name] = [`domain:${d}`, d];
-    }
-    if (!by.has(id)) by.set(id, { id, name, known: !!p && p.id !== 'self', hosts: [] });
-    by.get(id).hosts.push(host);
+  for (const x of list) {
+    const p = x.provider || (!x.self && x.name && knownNames.get(x.name)) || null;
+    const id = x.self ? 'self' : p ? p.id : `domain:${x.name || x.domain}`;
+    if (!by.has(id)) by.set(id, { id, name: x.self ? own : p ? p.name : null, known: !!p, hosts: [], domains: [] });
+    const g = by.get(id);
+    g.hosts.push(x.host);
+    if (!g.domains.includes(x.domain)) g.domains.push(x.domain);
   }
-  const providers = [...by.values()];
+  const providers = [...by.values()].map(({ domains, ...g }) => ({ ...g, name: g.name ?? domains.sort().join(' / ') }));
   return { count: providers.length, providers };
 }
 

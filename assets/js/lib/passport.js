@@ -135,7 +135,9 @@ const freezeTable = (rows) => Object.freeze(rows.map((r) => Object.freeze({
 
 /**
  * Name-server host → DNS provider: a host equal to or under one of `suffixes`, or matching one
- * of `patterns` (lowercase, no trailing dot). Checked against live NS answers on 2026-09-28.
+ * of `patterns` (lowercase, no trailing dot). Checked against live NS answers on 2026-09-28; the
+ * corporate platforms (CSC, MarkMonitor, Com Laude, Safenames, Nameshield, easyDNS, Constellix),
+ * which spread their name servers over several TLDs on purpose, on 2026-10-09.
  * @type {ReadonlyArray<{ id: string, name: string, suffixes?: string[], patterns?: RegExp[] }>}
  */
 export const DNS_PROVIDERS = freezeTable([
@@ -145,9 +147,16 @@ export const DNS_PROVIDERS = freezeTable([
   { id: 'google-cloud', name: 'Google Cloud DNS', patterns: [/^ns-cloud-[a-z]\d+\.googledomains\.com$/] },
   { id: 'ns1', name: 'IBM NS1 Connect', suffixes: ['nsone.net'] },
   { id: 'akamai', name: 'Akamai Edge DNS', suffixes: ['akam.net'] },
-  { id: 'ultradns', name: 'UltraDNS', suffixes: ['ultradns.com', 'ultradns.net', 'ultradns.org', 'ultradns.info', 'ultradns.biz', 'ultradns.co.uk'] },
+  { id: 'ultradns', name: 'UltraDNS', suffixes: ['ultradns.com', 'ultradns.net', 'ultradns.org', 'ultradns.info', 'ultradns.biz', 'ultradns.co.uk', 'ultradns2.com', 'ultradns2.org'] },
   { id: 'dyn', name: 'Oracle Dyn', suffixes: ['dynect.net'] },
   { id: 'oracle', name: 'Oracle Cloud DNS', suffixes: ['dns.oraclecloud.net'] },
+  { id: 'csc', name: 'CSC', suffixes: ['cscdns.net', 'cscdns.uk', 'cscudns.com', 'cscudns.org'] },
+  { id: 'markmonitor', name: 'MarkMonitor', suffixes: ['markmonitor.com', 'markmonitor.zone'] },
+  { id: 'comlaude', name: 'Com Laude', suffixes: ['comlaude-dns.com', 'comlaude-dns.net', 'comlaude-dns.co.uk', 'comlaude-dns.eu'] },
+  { id: 'safenames', name: 'Safenames', suffixes: ['safenames.com', 'safenames.net', 'safenames.org'] },
+  { id: 'nameshield', name: 'Nameshield', suffixes: ['perf1.com', 'perf1.fr'] },
+  { id: 'easydns', name: 'easyDNS', suffixes: ['easydns.com', 'easydns.net', 'easydns.org', 'easydns.info'] },
+  { id: 'constellix', name: 'Constellix', suffixes: ['constellix.com', 'constellix.net'] },
   { id: 'microsoft365', name: 'Microsoft 365', suffixes: ['bdm.microsoftonline.com'] },
   { id: 'digitalocean', name: 'DigitalOcean', suffixes: ['digitalocean.com'] },
   { id: 'hetzner', name: 'Hetzner', suffixes: ['ns.hetzner.com', 'ns.hetzner.de', 'first-ns.de', 'second-ns.de', 'second-ns.com', 'your-server.de'] },
@@ -167,7 +176,7 @@ export const DNS_PROVIDERS = freezeTable([
   { id: 'linode', name: 'Akamai Cloud (Linode)', suffixes: ['linode.com'] },
   { id: 'vultr', name: 'Vultr', suffixes: ['vultr.com'] },
   { id: 'porkbun', name: 'Porkbun', suffixes: ['porkbun.com'] },
-  { id: 'cloudns', name: 'ClouDNS', suffixes: ['cloudns.net'] },
+  { id: 'cloudns', name: 'ClouDNS', suffixes: ['cloudns.net', 'cloudns.uk'] },
   { id: 'dnsmadeeasy', name: 'DNS Made Easy', suffixes: ['dnsmadeeasy.com'] },
   { id: 'he', name: 'Hurricane Electric', suffixes: ['he.net'] },
   { id: 'desec', name: 'deSEC', suffixes: ['desec.io', 'desec.org'] },

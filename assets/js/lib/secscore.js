@@ -178,7 +178,7 @@ const STRINGS = [
   ['sec.d.dnssec', ['The zone is signed: a DS record at the parent.', 'Zone imzalı: üst zone’da DS kaydı var.']],
   ['sec.d.spf', ['One valid SPF record.', 'Geçerli tek bir SPF kaydı.']],
   ['sec.d.dkim', ['A DKIM key at one of the common selectors.', 'Yaygın seçicilerden birinde DKIM anahtarı.']],
-  ['sec.d.dmarc', ['A DMARC policy of quarantine or reject.', 'quarantine ya da reject DMARC politikası.']],
+  ['sec.d.dmarc', ['A DMARC policy of quarantine or reject.', 'Politikası quarantine ya da reject olan bir DMARC kaydı.']],
 
   ['sec.csv.domain', ['Domain', 'Alan adı']],
   ['sec.csv.score', ['Score (of {max})', 'Puan ({max} üzerinden)']],

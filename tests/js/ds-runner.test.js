@@ -1568,13 +1568,15 @@ describe('offline runs (fake DoH)', () => {
     const dir = tmp();
     try {
       const zone = portfolioZone({ now: NOW.getTime() });
-      // example.com: a corporate registrar (IANA 299), a registry lock, name servers at two DNS providers
+      // example.com: a corporate registrar (IANA 299), a registry lock, name servers at two DNS providers (its own, under its
+      // name at another suffix, and example-test.com.tr's: example.net's and example.org's would be its own name alike)
       const registrar = zone.rdap['example.com'].entities[0];
       registrar.publicIds = [{ type: 'IANA Registrar ID', identifier: '299' }];
       zone.rdap['example.com'].status = ['server transfer prohibited', 'server update prohibited', 'server delete prohibited', 'client transfer prohibited'];
-      zone.table['example.com'].NS = ['ns1.example.net', 'ns1.example.org'];
-      // example.org: a retail registrar
+      zone.table['example.com'].NS = ['ns1.example.net', 'ns1.example-test.com.tr'];
+      // example.org: a retail registrar; name servers at two DNS providers too
       zone.rdap['example.org'].entities[0].publicIds = [{ type: 'IANA Registrar ID', identifier: '1068' }];
+      zone.table['example.org'].NS = ['ns.example.org', 'ns1.example-test.com.tr'];
       const json = join(dir, 'audit.json');
       const md = join(dir, 'audit.md');
       const res = await runMain(['audit', '--preset', 'corporate', 'example.com', 'example.org', 'example-test.com.tr', '--json', json, '--md', md], { fetchImpl: createPortfolioFetch(zone) });

@@ -22,6 +22,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -379,6 +380,17 @@ class ZoneFileTests(unittest.TestCase):
                          'RFC 9460 A.1: "f\\oo,bar" and "h2"')
         with self.assertRaises(ValueError):
             dp.file_value(by['c.example.com'], zone.origin)
+
+    def test_a_long_digit_run_is_no_ttl_at_once(self):
+        # a hex digest wrapped onto a blank-owner line: the TTL test ran in 2^n steps
+        start = time.monotonic()
+        zone = dp.parse_zone('$ORIGIN example.com.\n@ IN SOA ns1.example.org. h. 1 2 3 4 5\n'
+                             '   %sf\n' % ('1' * 26))
+        self.assertLess(time.monotonic() - start, 0.5)
+        self.assertIsNone(dp.parse_ttl('1' * 26 + 'f'))
+        self.assertEqual([dp.parse_ttl(t) for t in ('3600', '1h30m', '2D', '1w2d3h4m5s', '1hh', 'h1')],
+                         [3600, 5400, 172800, 788645, None, None])
+        self.assertEqual(len(zone.records), 1)
 
     def test_names(self):
         self.assertEqual(dp.canonical_name('A\\046b.Example.COM.'), 'a\\046b.example.com')

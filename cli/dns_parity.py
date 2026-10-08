@@ -348,7 +348,9 @@ def split_entries(text: str) -> Tuple[List[Entry], List[str]]:
     return entries, warnings
 
 
-_TTL_RE = re.compile(r'^(?:\d+[smhdw]?)+$', re.I)
+# Digit runs with a unit between them and maybe one at the end; never (\d+)+, which takes 2^n
+# steps to refuse a run of n digits and a letter.
+_TTL_RE = re.compile(r'^\d+(?:[smhdw]\d+)*[smhdw]?$', re.I)
 _TTL_UNITS = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}
 
 

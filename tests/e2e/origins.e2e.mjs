@@ -407,15 +407,19 @@ async function main() {
         [null, null], 'no second live region');
     });
 
-    await run.step('switching remembering off asks first and keeps the entries; the form is disabled', async () => {
+    await run.step('switching remembering off asks first and keeps the entries, also one written while it asks; the form is disabled', async () => {
       await toggleRemember(page);
       await page.waitFor(() => document.querySelector('dialog.modal[open] .modal-foot .btn-primary'), { message: 'confirmation' });
       const text = await page.evaluate(() => document.querySelector('dialog.modal[open] .modal-message')?.textContent);
       assert(/The 2 origins it holds stay and are still used/.test(text), text);
+      // A Verify batch ends while the dialog is open (the call its panel makes): its entry stays.
+      await page.evaluate(() => import('./assets/js/ui/origin-map.js').then(({ recordOrigins }) => recordOrigins(
+        [{ name: 'verify-batch.example.net', ip: '192.0.2.77', port: 443, outcome: 'hosted' }], { source: 'verify', at: new Date().toISOString() }).done));
       await page.click('dialog.modal[open] .modal-foot .btn-primary');
       await page.waitFor(() => !document.querySelector('dialog.modal[open]') && document.querySelector('[data-role="om-off"]'), { message: 'off' });
       const map = await mapOf(page);
-      assertEqual([map.remember, map.entries.length], [false, 2], 'off, entries kept');
+      assertEqual([map.remember, map.entries.length], [false, 3], 'off, entries kept');
+      assert(map.entries.some((e) => e.name === 'verify-batch.example.net'), 'the entry written meanwhile is kept');
       assert(/still used for hints until you delete them/.test(await page.evaluate(() => document.querySelector('[data-role="om-off"]').textContent)), 'the note says the entries stay');
       assertEqual(await page.evaluate(() => document.querySelector('[data-action="om-add"]').disabled), true, 'Add disabled');
       await toggleRemember(page);

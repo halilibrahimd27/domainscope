@@ -202,17 +202,18 @@ export function OriginMapPanel({ ctx }) {
   }
 
   async function toggle(on) {
-    const m = map();
-    if (!on && m.entries.length) {
+    const count = map().entries.length;
+    if (!on && count) {
       const ok = await confirmDialog({
-        title: t('omp.stopTitle'), message: t('omp.stopBody', { count: m.entries.length }), confirmLabel: t('omp.stop')
+        title: t('omp.stopTitle'), message: t('omp.stopBody', { count }), confirmLabel: t('omp.stop')
       });
       if (!ok) {
         render();
         return;
       }
     }
-    save(setRemember(m, on));
+    // The map as it is now: a Verify batch or another tab may have written it while the dialog was open.
+    save(setRemember(map(), on));
     render();
   }
 

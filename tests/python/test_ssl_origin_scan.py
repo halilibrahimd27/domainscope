@@ -793,6 +793,18 @@ class InventoryTests(unittest.TestCase):
                        'ansible_host', 'private_ip_addresses'):
             self.assertTrue(sos._is_ip_header(header), header)
 
+    def test_csv_without_a_server_ip_column_never_takes_a_management_address(self):
+        # gateway, iLO, DNS, subnet ... are never the server's address, an IP column or not: the
+        # row's own name is resolved instead, and a subnet is never swept
+        for header, cell in (('ilo_ip', '10.0.9.21'), ('gateway', '10.0.5.1'), ('subnet', '10.1.0.0/16'),
+                             ('dns', '10.0.0.53')):
+            inv = sos.parse_inventory('hostname,%s,vlan\nweb01.example.com,%s,100\n' % (header, cell))
+            self.assertEqual([(s.name, s.ips, s.hostnames) for s in inv.servers],
+                             [('web01.example.com', [], ['web01.example.com'])], header)
+        inv = sos.parse_inventory('hostname,notes\nweb01.example.com,10.0.0.7\n')
+        self.assertEqual([(s.name, s.ips) for s in inv.servers], [('web01.example.com', ['10.0.0.7'])],
+                         'without an IP column another column still gives the address')
+
     def test_email_addresses_are_never_resolved(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'inv.csv')

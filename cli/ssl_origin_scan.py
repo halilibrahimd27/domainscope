@@ -2398,6 +2398,10 @@ def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder, sta
     ip_idx = [i for i, h in enumerate(header)
               if _is_ip_header(h) and i != name_idx and i not in topology_idx]
     group_idx = [i for i, h in enumerate(header) if h in _GROUP_HEADERS]
+    # Without an IP column the other columns are read for addresses, never a gateway / DNS /
+    # iLO / subnet / MAC / e-mail column: such a row's own name is resolved instead.
+    other_idx = [i for i, h in enumerate(header) if i != name_idx and i not in topology_idx
+                 and not _IP_HEADER_EXCLUDE_RE.search(h)]
     for h in header:
         if h in _NEAR_MISS:
             builder.warn(content[0][0], 'TOPOLOGY', 'column %s is no topology key - did you mean '
@@ -2405,8 +2409,7 @@ def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder, sta
     for number, row in content[1:]:
         cells = [cell.strip() for cell in row]
         name = cells[name_idx] if name_idx is not None and name_idx < len(cells) else ''
-        columns = ip_idx or [i for i in range(len(cells))
-                             if i != name_idx and i not in topology_idx]
+        columns = ip_idx or other_idx + list(range(len(header), len(cells)))
         values = []  # type: List[str]
         for i in columns:
             if i < len(cells) and cells[i]:

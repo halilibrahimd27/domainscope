@@ -349,8 +349,12 @@ describe('mail, CAA, TTL, SOA and NS rules', () => {
   });
 
   test('SOA_NEGATIVE_TTL and SINGLE_NS', () => {
-    const z = zone([['@', 'SOA', { mname: 'ns1.example.net', rname: 'h.example.com', serial: 1, refresh: 1, retry: 1, expire: 1, minimum: 172800 }], ['@', 'NS', 'ns1.example.net.']]);
-    assert.deepEqual(find(z, 'SOA_NEGATIVE_TTL')[0].params, { name: 'example.com', minimum: 172800 });
+    const soa = { mname: 'ns1.example.net', rname: 'h.example.com', serial: 1, refresh: 1, retry: 1, expire: 1, minimum: 172800 };
+    const z = zone([['@', 'SOA', soa, { ttl: 259200 }], ['@', 'NS', 'ns1.example.net.']]);
+    assert.deepEqual(find(z, 'SOA_NEGATIVE_TTL')[0].params, { name: 'example.com', seconds: 172800 });
+    // RFC 2308 §5: a negative answer is cached for the lower of the SOA minimum and the SOA's own TTL.
+    assert.deepEqual(find(zone([['@', 'SOA', { ...soa, minimum: 604800 }, { ttl: 3600 }]]), 'SOA_NEGATIVE_TTL'), []);
+    assert.deepEqual(find(zone([['@', 'SOA', { ...soa, minimum: 604800 }, { ttl: 172800 }]]), 'SOA_NEGATIVE_TTL')[0].params, { name: 'example.com', seconds: 172800 });
     assert.deepEqual(find(z, 'SINGLE_NS')[0].params, { name: 'example.com' });
     assert.deepEqual(find(zone([['@', 'NS', 'a.example.net.'], ['@', 'NS', 'b.example.net.']]), 'SINGLE_NS'), []);
   });

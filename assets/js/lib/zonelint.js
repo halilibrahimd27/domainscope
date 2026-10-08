@@ -101,7 +101,7 @@ export const LONG_CHAIN_HOPS = 8;
 export const TTL_LOW = 30;
 export const TTL_HIGH = 172800;
 export const TTL_OUTLIER_FACTOR = 20;
-/** SOA_NEGATIVE_TTL above this SOA minimum (RFC 2308 suggests 1–3 hours). */
+/** SOA_NEGATIVE_TTL above this negative-caching time: the SOA minimum, or the SOA's TTL if lower (RFC 2308 suggests 1–3 hours). */
 export const SOA_NEGATIVE_TTL_MAX = 86400;
 
 const ADDRESS_TYPES = new Set(['A', 'AAAA']);
@@ -166,7 +166,7 @@ const LINT_TEXT = {
   CAA_FLAGS: [['Unusual CAA flags', 'The CAA record of {name} has flags {flags}; a critical flag on an unknown tag blocks every CA.'], ['Olağan dışı CAA işaretleri', '{name} CAA kaydının işaretleri {flags}; bilinmeyen bir etikette kritik işaret tüm CA’ları engeller.']],
   TTL_OUTLIER: [['Unusually long TTL', '{name} has a TTL of {ttl} s, while {median} s is typical in this zone: a change takes that long to reach everyone.'], ['Alışılmadık uzun TTL', '{name} için TTL {ttl} sn; bu zone’da tipik olan {median} sn: bir değişikliğin herkese ulaşması bu kadar sürer.']],
   TTL_TOO_LOW: [['Very short TTL', '{name} has a TTL of {ttl} s; resolvers query it constantly and some raise it anyway.'], ['Çok kısa TTL', '{name} için TTL {ttl} sn; çözümleyiciler onu sürekli sorgular, bazıları yine de yükseltir.']],
-  SOA_NEGATIVE_TTL: [['Long negative-caching TTL', 'The SOA minimum of {name} is {minimum} s: a newly added name may stay “missing” that long.'], ['Uzun negatif önbellek TTL’i', '{name} SOA minimumu {minimum} sn: yeni eklenen bir ad bu kadar süre “yok” görünebilir.']],
+  SOA_NEGATIVE_TTL: [['Long negative-caching TTL', 'Negative answers for {name} are cached for {seconds} s (the lower of the SOA minimum and the SOA record’s TTL): a newly added name may stay “missing” that long.'], ['Uzun negatif önbellek TTL’i', '{name} için olumsuz yanıtlar {seconds} sn önbellekte kalır (SOA minimumu ile SOA kaydının TTL’inden küçük olanı): yeni eklenen bir ad bu kadar süre “yok” görünebilir.']],
   SINGLE_NS: [['Only one name server', '{name} lists a single name server; if it fails the whole zone is unreachable.'], ['Yalnızca bir ad sunucusu', '{name} tek bir ad sunucusu listeliyor; o çökerse tüm zone erişilemez olur.']],
   ALIAS_TARGET_MISSING: [['Alias target not in the file', 'The alias of {name} points to {target} in this zone, which has no such record.'], ['Alias hedefi dosyada yok', '{name} alias’ı bu zone’daki {target} adına işaret ediyor, ama böyle bir kayıt yok.']]
 };
@@ -388,9 +388,9 @@ export function lintZone(zone) {
       if (flags !== 0 && flags !== 128) push('CAA_FLAGS', r, { name: r.name, flags }, `CAA flags ${flags}`);
     }
 
-    if (r.type === 'SOA' && r.data && Number(r.data.minimum) > SOA_NEGATIVE_TTL_MAX) {
-      push('SOA_NEGATIVE_TTL', r, { name: r.name, minimum: Number(r.data.minimum) }, 'negative-cache TTL over one day');
-    }
+    // RFC 2308 §5: a negative answer is cached for the lower of the SOA minimum and the SOA's TTL.
+    const negative = r.type === 'SOA' && r.data ? Math.min(Number(r.data.minimum), Number.isFinite(r.ttl) ? r.ttl : Infinity) : 0;
+    if (negative > SOA_NEGATIVE_TTL_MAX) push('SOA_NEGATIVE_TTL', r, { name: r.name, seconds: negative }, 'negative-cache TTL over one day');
 
     if (r.alias && r.alias.provider === 'same-zone' && !idx.partial) {
       const t = canonName(r.alias.target);

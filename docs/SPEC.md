@@ -1168,7 +1168,7 @@ The rules:
   - proxied MX targets, and proxied SRV targets off the proxy's ports.
 - Mail and certificates: SPF (multiple, invalid, SPF RR type), DMARC, CAA tags and flags (a critical flag on an unknown tag is an error, CAA_CRITICAL_UNKNOWN_TAG: no CA may issue, RFC 8659 §4.1).
 - TXT strings longer than 255 bytes (the bytes the record holds, read from its text: a character split across two strings is not counted twice).
-- TTL outliers and very low TTLs, the SOA negative TTL, a single NS.
+- TTL outliers and very low TTLs, the SOA negative TTL (the lower of the SOA minimum and the SOA record's TTL, RFC 2308 §5), a single NS.
 - Route 53 alias targets missing from the zone.
 
 The zone index is shared with `zoneorigins.js`, so lint findings and the origin map's `exposure` come from one source.

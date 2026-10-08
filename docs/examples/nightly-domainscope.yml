@@ -34,6 +34,9 @@
 #   three together when you switch more checks on.
 # - Pin the DomainScope version: set `ref:` below to a commit SHA of DomainScope (or to a release
 #   tag once there is one). On `main` every night runs whatever was pushed last.
+# - The actions are pinned to commit SHAs too, their versions in comments: a moved tag changes
+#   nothing in a job that can write to this repository. Update a SHA and its comment together
+#   (Dependabot does both).
 name: DomainScope nightly
 
 on:
@@ -55,19 +58,19 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Check out this repository (domains.txt and last night's results)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false   # no token in .git/config while the checks run
 
       - name: Check out DomainScope
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: halilibrahimd27/domainscope
           ref: main   # pin a commit SHA (or a release tag once there is one)
           path: .domainscope
           persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 

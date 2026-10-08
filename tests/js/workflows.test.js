@@ -159,8 +159,18 @@ describe('pages.yml', () => {
 
   test('publishes the versioned bundle of tools/assemble-site.mjs', () => {
     assert.match(j.deploy, /run: node tools\/assemble-site\.mjs _site "\$\{GITHUB_SHA::12\}"/);
-    assert.match(j.deploy, /upload-pages-artifact@v\d+\n {8}with:\n {10}path: _site\n {10}include-hidden-files: true/);
+    assert.match(j.deploy, /upload-pages-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+\n {8}with:\n {10}path: _site\n {10}include-hidden-files: true/);
     assert.doesNotMatch(j.deploy, /cp -r assets/, 'assets/ is copied under v/<commit>/ by the tool, not at the root');
     assert.ok(existsSync(join(ROOT, 'tools', 'assemble-site.mjs')));
   });
+});
+
+test('every action of the workflows and the nightly template is pinned to a commit SHA, its version in a comment', () => {
+  // A tag can be moved; a commit cannot. The deploy job can write to Pages, the bot job to this
+  // repository, and the template's copies to their users' repositories.
+  for (const file of ['.github/workflows/ci.yml', '.github/workflows/intermediates.yml', '.github/workflows/pages.yml', 'docs/examples/nightly-domainscope.yml']) {
+    const uses = [...read(file).matchAll(/^ +(?:- )?uses: (.+)$/gm)].map((m) => m[1]).filter((u) => !u.startsWith('./'));
+    assert.ok(uses.length >= 2, file);
+    for (const u of uses) assert.match(u, /^actions\/[a-z-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/, `${file}: ${u}`);
+  }
 });

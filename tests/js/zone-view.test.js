@@ -92,6 +92,19 @@ describe('zone view: samples and parsing', () => {
     assert.equal(new Set(keys).size, keys.length, 'no duplicates');
   });
 
+  test('every page of a DigitalOcean listing dropped together is the whole listing, as pasted, not an incomplete export', () => {
+    const pages = [fixture('digitalocean-api-page1.json'), fixture('digitalocean-api-page2.json')];
+    const z = V.parseFiles(pages.map((text, i) => ({ name: `page${i + 1}.json`, text })), { origin: 'example.com' });
+    const pasted = V.parseFiles([{ name: 'pasted.json', text: pages.join('\n') }], { origin: 'example.com' });
+    assert.equal(z.fatal, null);
+    assert.equal(z.format, 'digitalocean-api');
+    assert.equal(z.partial, false);
+    assert.deepEqual(z.warnings.filter((w) => w.code === 'PARTIAL_EXPORT'), []);
+    assert.equal(z.records.length, pasted.records.length);
+    // One page alone still says it is incomplete.
+    assert.equal(V.parseFiles([{ name: 'page1.json', text: pages[0] }], { origin: 'example.com' }).partial, true);
+  });
+
   test('a BIND secondary dump ($ORIGIN .) is analysed as its SOA zone, not the root', () => {
     const text = '$ORIGIN .\n$TTL 3600\nexample.com IN SOA ns1.example.com. hostmaster.example.com. 1 7200 900 1209600 300\n' +
       '\t\t\tNS ns1.example.com.\n\t\t\tNS ns2.example.net.\n\t\t\tA 192.0.2.10\n$ORIGIN example.com.\n' +

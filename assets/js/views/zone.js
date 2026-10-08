@@ -958,8 +958,9 @@ const baseName = (p) => String(p || '').split(/[\\/]/).pop().toLowerCase();
 
 /**
  * Parse one or several loaded files into one zone (zone spec §6.1.1 multi-file rule): when
- * every file is Cloudflare API JSON (or every one Route 53 JSON) the texts are joined and parsed
- * once (pages merged, PARTIAL_EXPORT over all pages); otherwise each file is parsed alone and
+ * every file is Cloudflare API JSON (or every one Route 53 JSON, or every one a DigitalOcean API
+ * page) the texts are joined and parsed once (pages merged, PARTIAL_EXPORT over all pages: each
+ * DigitalOcean page counts the whole listing); otherwise each file is parsed alone and
  * the results are merged in drop order (same origin required). The lead file names the zone
  * whatever the drop order: one whose origin comes from the user / an SOA / `$ORIGIN` / a header
  * (the main file of an `$INCLUDE` tree first), else the main file. A part it `$INCLUDE`s (also
@@ -980,7 +981,7 @@ export function parseFiles(files, { origin = null, format = 'auto' } = {}) {
   const total = list.reduce((n, f) => n + f.text.length, 0);
   if (total > ZONE_LIMITS.maxChars) return parseZone(list.map((f) => f.text).join('\n'), { origin: o, format });
   const formats = list.map((f) => detectZoneFormat(f.text, { filename: f.name }).format);
-  if (formats.every((x) => x === 'cloudflare-api') || formats.every((x) => x === 'route53')) {
+  if (['cloudflare-api', 'route53', 'digitalocean-api'].some((f) => formats.every((x) => x === f))) {
     return parseZone(list.map((f) => f.text).join('\n'), { origin: o, filename: list[0].name, format });
   }
   const alone = list.map((f, i) => parseZone(f.text, { origin: o, filename: f.name, format, source: i }));

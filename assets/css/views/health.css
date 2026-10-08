@@ -842,3 +842,49 @@
     print-color-adjust: exact;
   }
 }
+
+/* Delegation card (ui/delegation-panel.js, .dlg-*): the findings, the server and glue tables. */
+.dlg-findings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dlg-servers,
+.dlg-refs {
+  margin-top: 0.25rem;
+  overflow-wrap: anywhere;
+}
+
+.dlg-table td {
+  vertical-align: top;
+}
+
+.dlg-table .mono,
+.dlg-provider-list .mono {
+  overflow-wrap: anywhere;
+}
+
+.dlg-options {
+  gap: 0.5rem 1.25rem;
+}
+
+.dlg-provider-list {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+@media (max-width: 640px) {
+  .dlg-options {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+@media print {
+  .dlg-actions,
+  .dlg-options,
+  .dlg-cli {
+    display: none;
+  }
+}

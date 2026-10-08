@@ -58,6 +58,8 @@ before(async () => {
   await imp('assets/js/ui/related-domains.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
+  // Domain Health › Delegation: loaded on the first "Check the delegation".
+  await imp('assets/js/ui/delegation-panel.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -337,6 +339,9 @@ describe('i18n coverage', () => {
     const [pp, oc, zd] = await Promise.all([imp('assets/js/ui/parity-panel.js'), imp('assets/js/ui/origin-compare.js'), imp('assets/js/lib/zonedrift.js')]);
     for (const k of [...pp.generatedKeys(), ...oc.generatedKeys()]) add(k);
     for (const r of zd.DRIFT_REASONS) add(pp.reasonKey(r));
+    // Domain Health › Delegation (ui/delegation-panel.js over lib/delegation.js): every server, NS-set,
+    // recursion, parent and glue state, finding, stop, plan failure, takeover risk, reference and verdict.
+    for (const k of (await imp('assets/js/ui/delegation-panel.js')).generatedKeys()) add(k);
     // Zone File › Compare and Convert (ui/zone-tools.js over lib/zonediff.js and lib/zoneconvert.js):
     // every status, reason, note and option of a comparison, every target and every pitfall text
     // a conversion can raise for it (a code worded per target, or once for all).

@@ -97,21 +97,22 @@ export const SITTING_DUCKS_REFERENCES = Object.freeze([
  * 2026-10-08, hand-curated: names and name-server patterns only), an account holder could create
  * a zone for a domain they do not own: `claimable` (any account), `purchase` (an account with a
  * paid plan) or `edge` (only when the provider hands out the same name servers again, which can
- * take many tries). A provider can fix this at any time: a match is a reason to check, not a verdict.
+ * take many tries). `hosts` is the name-server pattern as shown. A provider can fix this at any time:
+ * a match is a reason to check, not a verdict.
  */
 export const SITTING_DUCKS_PROVIDERS = Object.freeze([
-  { id: 'digitalocean', name: 'DigitalOcean', risk: 'claimable', pattern: /^ns[1-3]\.digitalocean\.com$/ },
-  { id: 'dnsmadeeasy', name: 'DNS Made Easy', risk: 'claimable', pattern: /^ns\d+\.dnsmadeeasy\.com$/ },
-  { id: 'he', name: 'Hurricane Electric', risk: 'claimable', pattern: /^ns[1-5]\.he\.net$/ },
-  { id: 'linode', name: 'Linode', risk: 'claimable', pattern: /^ns[1-5]\.linode\.com$/ },
-  { id: 'regru', name: 'Reg.ru', risk: 'claimable', pattern: /^ns[12]\.reg\.ru$/ },
-  { id: 'tierranet', name: 'TierraNet', risk: 'claimable', pattern: /^ns[12]\.domaindiscover\.com$/ },
-  { id: 'domaincom', name: 'Domain.com', risk: 'purchase', pattern: /^ns[12]\.domain\.com$/ },
-  { id: 'namecom', name: 'Name.com', risk: 'purchase', pattern: /^ns[1-4][a-z0-9]*\.name\.com$/ },
-  { id: 'yahoo', name: 'Yahoo Small Business', risk: 'purchase', pattern: /^yns[12]\.yahoo\.com$/ },
-  { id: 'azure', name: 'Azure DNS', risk: 'edge', pattern: /^ns[1-4]-\d+\.azure-dns\.(?:com|net|org|info)$/ },
-  { id: 'googlecloud', name: 'Google Cloud DNS', risk: 'edge', pattern: /^ns-cloud-[a-z]\d+\.googledomains\.com$/ },
-  { id: 'dreamhost', name: 'DreamHost', risk: 'edge', pattern: /^ns[1-3]\.dreamhost\.com$/ }
+  { id: 'digitalocean', name: 'DigitalOcean', risk: 'claimable', hosts: 'ns1–ns3.digitalocean.com', pattern: /^ns[1-3]\.digitalocean\.com$/ },
+  { id: 'dnsmadeeasy', name: 'DNS Made Easy', risk: 'claimable', hosts: 'ns<n>.dnsmadeeasy.com', pattern: /^ns\d+\.dnsmadeeasy\.com$/ },
+  { id: 'he', name: 'Hurricane Electric', risk: 'claimable', hosts: 'ns1–ns5.he.net', pattern: /^ns[1-5]\.he\.net$/ },
+  { id: 'linode', name: 'Linode', risk: 'claimable', hosts: 'ns1–ns5.linode.com', pattern: /^ns[1-5]\.linode\.com$/ },
+  { id: 'regru', name: 'Reg.ru', risk: 'claimable', hosts: 'ns1–ns2.reg.ru', pattern: /^ns[12]\.reg\.ru$/ },
+  { id: 'tierranet', name: 'TierraNet', risk: 'claimable', hosts: 'ns1–ns2.domaindiscover.com', pattern: /^ns[12]\.domaindiscover\.com$/ },
+  { id: 'domaincom', name: 'Domain.com', risk: 'purchase', hosts: 'ns1–ns2.domain.com', pattern: /^ns[12]\.domain\.com$/ },
+  { id: 'namecom', name: 'Name.com', risk: 'purchase', hosts: 'ns1…–ns4….name.com', pattern: /^ns[1-4][a-z0-9]*\.name\.com$/ },
+  { id: 'yahoo', name: 'Yahoo Small Business', risk: 'purchase', hosts: 'yns1–yns2.yahoo.com', pattern: /^yns[12]\.yahoo\.com$/ },
+  { id: 'azure', name: 'Azure DNS', risk: 'edge', hosts: 'ns1-<n>.azure-dns.com / .net / .org / .info', pattern: /^ns[1-4]-\d+\.azure-dns\.(?:com|net|org|info)$/ },
+  { id: 'googlecloud', name: 'Google Cloud DNS', risk: 'edge', hosts: 'ns-cloud-<x><n>.googledomains.com', pattern: /^ns-cloud-[a-z]\d+\.googledomains\.com$/ },
+  { id: 'dreamhost', name: 'DreamHost', risk: 'edge', hosts: 'ns1–ns3.dreamhost.com', pattern: /^ns[1-3]\.dreamhost\.com$/ }
 ].map((p) => Object.freeze(p)));
 
 const RCODES = Object.freeze({ 0: 'NOERROR', 1: 'FORMERR', 2: 'SERVFAIL', 3: 'NXDOMAIN', 4: 'NOTIMP', 5: 'REFUSED', 9: 'NOTAUTH' });

@@ -2,8 +2,10 @@
  * views/ip.js — "IP Intel": paste IP addresses (and/or host names, which are resolved first)
  * and get, per address: reverse DNS (PTR), origin ASN and AS holder, announced prefix,
  * country / city, the CDN / platform that operates it (Cloudflare, Fastly …), whether it is
- * private, and which of the user's servers (inventory) owns it. A per-row "reverse IP"
- * button lists other domains on the address (HackerTarget; small shared daily quota).
+ * private, and which of the user's servers (inventory) owns it. A per-row "Find domains" opens
+ * Domains on this IP (ui/reverse-ip-panel.js over lib/reverseip.js, loaded on first use): every
+ * name tied to the address from passive DNS, reverse DNS and the workspace, checked in DNS now;
+ * the row's cell keeps the count and the first names.
  *
  * Data: lib/ipintel.js (RIPEstat + ipwho.is fallback + DoH PTR). Private addresses never
  * leave the browser. Results stream into the table; CSV/JSON export.
@@ -24,7 +26,7 @@
  * matches them against the servers as they are then.
  */
 
-import { h, clear } from '../ui/dom.js';
+import { h, clear, scrollBehavior } from '../ui/dom.js';
 import {
   Alert, Badge, Button, Card, CopyButton, DataTable, EmptyState, ExternalLink, KeyValueList, KindBadge, ProgressBar, StatCard,
   TruncatedList, announce, ipSortValue, setButtonBusy, textarea
@@ -38,7 +40,8 @@ import { classifyResolution, ipVersion, isPrivateIP, normalizeIP } from '../lib/
 import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
 import { Flag } from '../ui/flag.js';
-import { mergeSignals, splitList } from '../lib/util.js';
+import { mergeSignals, onceAsync, splitList } from '../lib/util.js';
+import { originIndex } from '../lib/originmap.js';
 import { commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
 import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
@@ -111,11 +114,12 @@ registerStrings('en', {
 
   'ipi.rev.button': 'Find domains',
   'ipi.rev.count': { zero: 'No domains found', one: '{count} domain', other: '{count} domains' },
-  'ipi.rev.limited': 'Daily quota used up',
-  'ipi.rev.limitedTitle': 'HackerTarget’s free quota (about 50 lookups a day, shared with the SSL Targets scan) is used up. Try again tomorrow.',
   'ipi.rev.failed': 'Failed',
-  'ipi.rev.private': 'not for private IPs',
-  'ipi.quota': 'Reverse IP lookups use HackerTarget’s free API: about 50 per day from your IP address, shared with the SSL Targets scan. Use the button only where you need it.',
+  'ipi.rev.failedTitle': 'No source answered: the chips of Domains on this IP say why.',
+  'ipi.rev.private': 'your workspace only',
+  'ipi.rev.all': 'Domains on these addresses',
+  'ipi.rev.loadFailed': 'Domains on this IP could not be loaded.',
+  'ipi.quota': 'Find domains asks HackerTarget (about 50 lookups a day from your IP address, shared with the SSL Targets scan), ip.thc.org, AlienVault OTX, Robtex and Shodan InternetDB about the address. Use it only where you need it.',
 
   'ipi.det.rir': 'Registry (RIR)',
   'ipi.det.announced': 'Announced on the Internet',
@@ -195,11 +199,12 @@ registerStrings('tr', {
 
   'ipi.rev.button': 'Alan adlarını bul',
   'ipi.rev.count': { zero: 'Alan adı bulunamadı', other: '{count} alan adı' },
-  'ipi.rev.limited': 'Günlük kota doldu',
-  'ipi.rev.limitedTitle': 'HackerTarget’ın ücretsiz kotası (günde yaklaşık 50 sorgu, SSL Hedefleri taramasıyla ortak) doldu. Yarın tekrar deneyin.',
   'ipi.rev.failed': 'Başarısız',
-  'ipi.rev.private': 'özel IP’ler için yapılmaz',
-  'ipi.quota': 'Ters IP sorguları HackerTarget’ın ücretsiz API’sini kullanır: IP adresiniz başına günde yaklaşık 50 sorgu, SSL Hedefleri taramasıyla ortak. Düğmeyi yalnızca gerektiğinde kullanın.',
+  'ipi.rev.failedTitle': 'Hiçbir kaynak yanıt vermedi: nedenini Bu IP’deki alan adları bölümündeki kaynak etiketleri söyler.',
+  'ipi.rev.private': 'yalnızca çalışma alanınız',
+  'ipi.rev.all': 'Bu adreslerdeki alan adları',
+  'ipi.rev.loadFailed': 'Bu IP’deki alan adları bölümü yüklenemedi.',
+  'ipi.quota': 'Alan adlarını bul, adresi HackerTarget’a (IP adresiniz başına günde yaklaşık 50 sorgu, SSL Hedefleri taramasıyla ortak), ip.thc.org’a, AlienVault OTX’e, Robtex’e ve Shodan InternetDB’ye sorar. Yalnızca gerektiğinde kullanın.',
 
   'ipi.det.rir': 'Kayıt kuruluşu (RIR)',
   'ipi.det.announced': 'İnternet’te duyuruluyor',
@@ -285,6 +290,10 @@ export function classifyIp(ip, cnames = []) {
 
 let intelService = null;
 let intelDns = null;
+/** ui/reverse-ip-panel.js (Domains on this IP), loaded on the first "Find domains". */
+const loadReversePanel = onceAsync(() => import('../ui/reverse-ip-panel.js'));
+/** Addresses handed to Domains on this IP at most (lib/reverseip.js MAX_REVERSE_IPS). */
+const MAX_REVERSE = 10;
 
 function getIntel(dns) {
   if (!intelService || intelDns !== dns) {
@@ -529,9 +538,15 @@ export function mount(container, ctx) {
       exclude: [...ctx.getInventoryIndex().keys(), ...(current ? current.rows.filter((r) => r.servers.length).map((r) => r.ip) : [])]
     }))
   });
+  // Domains on this IP: the panel loads on the first "Find domains" (ui/reverse-ip-panel.js).
+  const reverseHost = h('div', { class: 'ipi-reverse-host', hidden: true });
+  const reverseAllBtn = Button({
+    label: t('ipi.rev.all'), icon: 'globe', size: 'sm', variant: 'ghost', dataset: { action: 'reverse-all' },
+    onClick: () => openReverse((current ? current.rows : []).map((r) => r.ip), { run: false })
+  });
   const results = h('div', { class: 'stack ipi-results', hidden: true, dataset: { shortcutScope: 'results' } },
-    progress, notesEl, h('div', { class: 'ipi-results-bar' }, summary.el), statsGrid, zeroNote, quotaNote, sourcesEl, table);
-  container.append(h('div', { class: 'stack-lg ipi-view' }, formCard, emptyEl, results));
+    progress, notesEl, h('div', { class: 'ipi-results-bar' }, summary.el, reverseAllBtn), statsGrid, zeroNote, quotaNote, sourcesEl, table);
+  container.append(h('div', { class: 'stack-lg ipi-view' }, formCard, emptyEl, results, reverseHost));
 
   /* --- cell renderers ----------------------------------------------------------------- */
   /** "⚠ n/a" when a failed source left `field` empty (null for a real "none" or a pending row). */
@@ -569,30 +584,31 @@ export function mount(container, ctx) {
     return h('span', { class: 'ipi-pending' }, h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }), t('ipi.pending'));
   }
 
+  /**
+   * "Other domains on this IP": Find domains (Domains on this IP below the table, for this address),
+   * then the count and the first names its sources gave. A private address is answered from the
+   * workspace alone (the panel says so); nothing about it is sent.
+   */
   function renderReverse(r) {
-    if (isPrivateIP(r.ip)) return h('span', { class: 'muted text-xs' }, t('ipi.rev.private'));
     const rev = r.reverse;
+    const local = isPrivateIP(r.ip) ? h('span', { class: 'muted text-xs' }, t('ipi.rev.private')) : null;
     if (!rev || rev.state === 'loading') {
       const btn = Button({
-        label: t('ipi.rev.button'), icon: 'search', size: 'sm', variant: 'secondary', dataset: { action: 'reverse', ip: r.ip },
-        onClick: () => reverseLookup(r)
+        label: t('ipi.rev.button'), icon: 'search', size: 'sm', variant: local ? 'ghost' : 'secondary', dataset: { action: 'reverse', ip: r.ip },
+        onClick: () => openReverse([r.ip])
       });
       if (rev && rev.state === 'loading') setButtonBusy(btn, true);
-      return btn;
+      return local ? h('div', { class: 'ipi-rev', dataset: { state: 'button' } }, btn, local) : btn;
     }
     const res = rev.result;
     if (res.ok) {
       return h('div', { class: 'ipi-rev', dataset: { state: 'done', count: res.domains.length } },
         Badge(t('ipi.rev.count', { count: res.domains.length }), { variant: res.domains.length ? 'accent' : 'neutral', icon: 'globe' }),
-        res.domains.length ? TruncatedList(res.domains, { max: 5, render: hostLink }) : null);
+        res.domains.length ? TruncatedList(res.domains, { max: 5, render: hostLink }) : null, local);
     }
-    if (res.limited) {
-      return h('div', { class: 'ipi-rev', dataset: { state: 'limited' } }, Badge(t('ipi.rev.limited'), { variant: 'warn', icon: 'alert', title: t('ipi.rev.limitedTitle') }));
-    }
-    const st = sourceStatus({ source: 'hackertarget', error: res.error, errorKind: res.errorKind });
     return h('div', { class: 'ipi-rev', dataset: { state: 'error' } },
-      Badge(t('ipi.rev.failed'), { variant: 'error', icon: 'x-circle', title: statusText(st) }),
-      RetryButton({ sources: ['hackertarget'], target: r.ip, onClick: () => reverseLookup(r) }));
+      Badge(t('ipi.rev.failed'), { variant: 'error', icon: 'x-circle', title: t('ipi.rev.failedTitle') }),
+      RetryButton({ sources: ['hackertarget', 'thc', 'otx', 'robtex', 'internetdb'], target: r.ip, onClick: () => openReverse([r.ip]) }));
   }
 
   function renderDetails(r) {
@@ -965,25 +981,69 @@ export function mount(container, ctx) {
     }
   }
 
-  async function reverseLookup(row) {
-    if (!ctx.requireOnline()) return;
-    row.reverse = { state: 'loading', result: null };
-    table.updateRow(row);
-    try {
-      const dns = await ctx.getDns();
-      const result = await getIntel(dns).reverseIp(row.ip, { signal: ctx.signal });
-      row.reverse = { state: 'done', result };
-    } catch (err) {
-      if (err && err.name === 'AbortError') {
-        row.reverse = null; // cancelled with the view: the button is offered again
-        return;
-      }
-      row.reverse = { state: 'done', result: { ok: false, domains: [], error: err && err.message ? err.message : String(err), limited: false } };
+  /* --- Domains on this IP (ui/reverse-ip-panel.js, loaded on first use) ------------------ */
+  let reversePanel = null;
+
+  /** What the workspace knows of an address: the servers holding it, the origin map entries at it. */
+  function workspaceFor(ip) {
+    const servers = serversOf(ip).map((s) => s.name);
+    const { map } = originIndex(ctx.state.workspaceData('origins'));
+    const origins = (map ? map.entries : []).filter((e) => e.ip === ip && !e.stale).map((e) => ({ name: e.name, first: e.firstSeen, last: e.lastConfirmed }));
+    return { servers, origins };
+  }
+
+  /** An address's names as the panel found them, into its row's cell (and the export). */
+  function onNames(ip, names, st) {
+    if (!current) return;
+    for (const row of current.rows.filter((x) => x.ip === ip)) {
+      row.reverse = st === 'idle' ? null : st === 'loading' ? { state: 'loading', result: null }
+        : { state: 'done', result: { ok: st === 'done', domains: names || [], error: st === 'done' ? null : 'failed', limited: false } };
+      table.updateRow(row);
     }
-    table.updateRow(row);
+  }
+
+  /** The panel, created once (null when the view went away while it loaded). */
+  async function ensureReversePanel() {
+    if (reversePanel) return reversePanel;
+    // A failed import (a tab left open across a deploy): the shell offers a reload (views/subdomains.js loadOnFirstUse).
+    const mod = await loadReversePanel().catch((err) => {
+      ctx.checkOutdated();
+      throw err;
+    });
+    if (ctx.signal.aborted) return null;
+    if (!reversePanel) {
+      reversePanel = mod.ReverseIpPanel({ ctx, getIntel: async () => getIntel(await ctx.getDns()), workspaceFor, onNames });
+      reverseHost.append(reversePanel.el);
+    }
+    return reversePanel;
+  }
+
+  /** Domains on this IP for `ips`, scrolled to; `run`: look them up, else only fill them in. */
+  async function openReverse(ips, { run = true } = {}) {
+    let panel;
+    try {
+      panel = await ensureReversePanel();
+    } catch {
+      ctx.toast(t('ipi.rev.loadFailed'), { type: 'error' });
+      return;
+    }
+    if (!panel) return;
+    reverseHost.hidden = false;
+    reverseHost.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
+    panel.focus();
+    if (run) await panel.lookup(ips.slice(0, MAX_REVERSE));
+    else panel.fill(ips.slice(0, MAX_REVERSE));
   }
 
   /* --- initial state ---------------------------------------------------------------- */
+  if (restored && restored.reverse) {
+    // Domains on this IP as it was before a re-mount: shown again, nothing sent.
+    ensureReversePanel().then((panel) => {
+      if (!panel) return;
+      panel.restore(restored.reverse);
+      reverseHost.hidden = false;
+    }).catch(() => {});
+  }
   if (restored && Array.isArray(restored.rows) && restored.rows.length) {
     const text = restored.query ?? restored.text ?? '';
     run(parseIpInput(text), restored.rows, { text, at: restored.at, stopped: restored.stopped });
@@ -1008,7 +1068,11 @@ export function mount(container, ctx) {
       const rows = current && !current.controller
         ? current.rows.map((r) => ({ ...r, retrying: false, reverse: r.reverse && r.reverse.state === 'loading' ? null : r.reverse }))
         : null;
-      return { text: input.value, carried, rows, query: rows ? current.text : null, at: rows ? current.finishedAt : null, stopped: !!(rows && current.stopped) };
+      return {
+        text: input.value, carried, rows, query: rows ? current.text : null, at: rows ? current.finishedAt : null, stopped: !!(rows && current.stopped),
+        // Domains on this IP: its finished lookup (never a typed key).
+        reverse: reversePanel ? reversePanel.snapshot() : null
+      };
     },
     result() {
       if (!current || current.controller || !current.finishedAt || !current.rows.length) return null;

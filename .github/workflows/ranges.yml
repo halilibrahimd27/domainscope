@@ -1,0 +1,60 @@
+name: Ranges
+
+# Weekly rebuild of assets/data/ranges (the provider IP ranges behind lib/netinfo.js's answer
+# classification) with tools/build-ranges.mjs. When the data changed, the job checks it, pushes it
+# to the bot/ranges branch and opens a pull request (or updates the open one); it never commits to
+# main. The builder writes nothing when a download looks wrong, and keeps the dataset's date when
+# nothing changed, so a quiet week opens nothing.
+on:
+  schedule:
+    - cron: '23 5 * * 2'   # Tuesdays, 05:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ranges
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    name: Rebuild the provider ranges
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build from the published provider lists
+        run: node tools/build-ranges.mjs
+      # the builder's own checks, netinfo reading the dataset, the precache rule and the hygiene scan
+      - name: Check the dataset
+        run: node --test tests/js/build-ranges.test.js tests/js/netinfo.test.js tests/js/pwa.test.js tests/js/repo-hygiene.test.js
+      # A pull request opened with this workflow's token does not start CI by itself: close and
+      # reopen it (or run CI by hand) before merging. The repository must allow GitHub Actions to
+      # create pull requests (Settings › Actions › General).
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$(git status --porcelain -- assets/data/ranges)" ]; then
+            echo "The provider ranges did not change."
+            exit 0
+          fi
+          branch=bot/ranges
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add -- assets/data/ranges
+          git commit -m "data(ranges): weekly refresh from provider lists"
+          git push --force origin "$branch"
+          if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --head "$branch" --base main \
+              --title "data(ranges): weekly refresh from provider lists" \
+              --body "The weekly rebuild of assets/data/ranges by tools/build-ranges.mjs from the providers' published IP lists (see assets/data/ranges/manifest.json for the sources and counts). Close and reopen this pull request to run CI before merging."
+          fi

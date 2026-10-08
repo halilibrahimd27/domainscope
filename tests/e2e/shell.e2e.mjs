@@ -610,6 +610,10 @@ async function paletteGroup(browser, server) {
     await search('zzzz');
     assertEqual(await entries(), [], 'nothing');
     assert(/Nothing matches “zzzz”/.test(await pal.evaluate(() => document.querySelector('.pal-status').textContent)), 'says so');
+    assertEqual(await pal.evaluate(() => {
+      const input = document.querySelector('[data-role="palette-input"]');
+      return [input.getAttribute('aria-expanded'), input.hasAttribute('aria-activedescendant')];
+    }), ['false', false], 'an empty list is collapsed, with no active entry');
   });
 
   await step('Esc closes the palette and gives the focus back, also to the field it was opened from (⌘+K)', async () => {

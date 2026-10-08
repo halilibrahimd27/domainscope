@@ -213,6 +213,7 @@ export function openPalette({ views, navigate, href, state, session, done = () =
     });
     list.append(...options);
     list.hidden = !options.length;
+    input.setAttribute('aria-expanded', String(options.length > 0));
     status.textContent = options.length ? t('pal.count', { count: options.length }) : t('pal.none', { query: query.trim() });
     status.classList.toggle('pal-status-none', !options.length);
     setActive(0);

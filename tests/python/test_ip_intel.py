@@ -502,6 +502,27 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(times), 3)
         self.assertTrue(all(gap >= 0.15 for gap in gaps), gaps)
 
+    def test_a_slow_source_holds_no_worker(self):
+        calls = []  # type: List[Tuple[str, float]]
+
+        def stamp(url: str) -> Any:
+            calls.append(('source', time.monotonic()))
+            return 200, ''
+
+        def ptr(ip: str) -> List[str]:
+            calls.append(('ptr', time.monotonic()))
+            return []
+
+        slow = ii.Source('hackertarget', 'HackerTarget', (), False, 0.4, source('hackertarget').request,
+                         ii.parse_hackertarget)
+        start = time.monotonic()
+        run(['203.0.113.%d' % n for n in range(10, 14)], sources=[slow], pace=True, workers=1, ptr_lookup=ptr,
+            http=FakeHttp([('https://api.hackertarget.com/', stamp)]))
+        ptr_done = max(t for kind, t in calls if kind == 'ptr') - start
+        source_done = max(t for kind, t in calls if kind == 'source') - start
+        self.assertLess(ptr_done, 0.5, 'PTR waited for the paced source')
+        self.assertGreaterEqual(source_done, 1.15)
+
     def test_names_are_merged_and_checked_where_they_point_now(self):
         http = FakeHttp([('https://otx.alienvault.com/', (200, OTX_BODY)),
                          ('https://freeapi.robtex.com/', (200, ROBTEX_BODY)),

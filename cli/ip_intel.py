@@ -1188,8 +1188,8 @@ def ask_source(source: Source, ip: str, keys: Optional[Mapping[str, str]] = None
 
 
 class _Gate:
-    """One source's pace and breaker for a run: one request per ``interval`` seconds across
-    the workers, and none after it answered RATE_LIMITED or REFUSED."""
+    """One source's pace and breaker for a run: one request per ``interval`` seconds, and none
+    after it answered RATE_LIMITED or REFUSED."""
 
     def __init__(self, interval: float, stop: threading.Event,
                  clock: Callable[[], float] = time.monotonic) -> None:
@@ -1430,9 +1430,10 @@ def run_domains(addresses: Sequence[str], ports: Sequence[int] = DEFAULT_PORTS, 
                 public: Optional[Callable[[str], bool]] = None, pace: bool = True,
                 progress: Optional[Callable[[str, int, int], None]] = None,
                 stop: Optional[threading.Event] = None) -> IntelReport:
-    """The names of every address: (1) TLS without SNI, PTR and the sources, at once; (2) SNI
-    handshakes for the names found; (3) a forward lookup of every name. A private or
-    reserved address (``public`` False) is asked of no source."""
+    """The names of every address: (1) TLS without SNI and PTR on ``workers`` threads while
+    each source asks for one address after the other at its own pace; (2) SNI handshakes for
+    the names found; (3) a forward lookup of every name. A private or reserved address
+    (``public`` False) is asked of no source."""
     stop = stop or threading.Event()
     keys = dict(keys or {})
     shake = handshake or tls_handshake
@@ -1491,7 +1492,8 @@ def run_domains(addresses: Sequence[str], ports: Sequence[int] = DEFAULT_PORTS, 
             return result
         return job
 
-    # 1. TLS without SNI, PTR and the sources
+    # 1. TLS without SNI and PTR on the workers; meanwhile each source in a lane of its own, one
+    # address at a time at its pace, so a slow source (VirusTotal's 15 s) holds no worker.
     jobs = []  # type: List[Callable[[], Any]]
     plan = []  # type: List[Tuple[AddressReport, str, Any]]
     for rep in reports:
@@ -1501,17 +1503,40 @@ def run_domains(addresses: Sequence[str], ports: Sequence[int] = DEFAULT_PORTS, 
         if ptr:
             plan.append((rep, 'ptr', None))
             jobs.append(ptr_job(rep.ip))
-        for source in sources:
-            plan.append((rep, 'source', source))
-            jobs.append(source_job(source, rep))
+    tick = ticker('lookups', len(jobs) + len(reports) * len(sources))
+    lanes = {s.id: [None] * len(reports) for s in sources}  # type: Dict[str, List[Any]]
+
+    def lane(source: Source) -> None:
+        for index, rep in enumerate(reports):
+            if stop.is_set():
+                return
+            lanes[source.id][index] = source_job(source, rep)()
+            tick()
+
+    lane_pool = ThreadPoolExecutor(max_workers=len(sources)) if sources else None
+    try:
+        lane_futures = [lane_pool.submit(lane, s) for s in sources] if lane_pool else []
+        local = _parallel(jobs, workers, stop, tick)
+        for future in lane_futures:
+            future.result()
+    except BaseException:
+        stop.set()
+        raise
+    finally:
+        if lane_pool is not None:
+            lane_pool.shutdown(wait=True)
     found = {}  # type: Dict[str, List[SourceResult]]
-    for (rep, kind, item), result in zip(plan, _parallel(jobs, workers, stop, ticker('lookups', len(jobs)))):
+    for (rep, kind, item), result in zip(plan, local):
         if kind == 'tls':
             state, der, detail = result
             rep.ports.append(PortState(item, state, detail))
             if der:
                 _add_certificate(rep, item, der, '')
         else:
+            found.setdefault(rep.ip, []).append(result)
+    for index, rep in enumerate(reports):
+        for source in sources:
+            result = lanes[source.id][index]
             found.setdefault(rep.ip, []).append(result)
             if result.source == 'internetdb' and result.status == OK and result.intel:
                 rep.intel = dict(result.intel, source='internetdb')
@@ -1889,7 +1914,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help='per request and handshake (default: %(default)s); name lookups keep the '
                              'system resolver\'s own timeouts')
     limits.add_argument('-w', '--workers', type=int, default=DEFAULT_WORKERS, metavar='N',
-                        help='lookups in flight (default: %(default)s); each source keeps its own pace')
+                        help='TLS handshakes and lookups in flight (default: %(default)s); each source '
+                             'asks for one address after the other, at its own pace')
     out = domains.add_argument_group('output')
     out.add_argument('--json', metavar='FILE', help='write a JSON report ("-" = stdout)')
     out.add_argument('--csv', metavar='FILE', help='write a CSV report ("-" = stdout)')

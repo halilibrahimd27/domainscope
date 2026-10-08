@@ -80,6 +80,16 @@ export const TAKEOVER_PURPOSE = 'takeover-http';
 /** At most this many hosts are checked over HTTP in one batch (one probe each). */
 export const HTTP_CHECK_MAX = 10;
 
+/**
+ * Suffixes nobody can register — the special-use names (RFC 2606, 6761, 6762, 7686, 9476), the
+ * private-use `.internal` and `.home.arpa` (so all of `.arpa`), and the private TLDs ICANN will not
+ * delegate (`.corp`, `.home`, `.lan` …): a name under one is never sent anywhere (no RDAP, no DNS
+ * question of its own) and never called registrable.
+ */
+export const UNREGISTRABLE_TLDS = Object.freeze([
+  'test', 'example', 'invalid', 'localhost', 'local', 'onion', 'alt', 'internal', 'arpa', 'corp', 'home', 'lan', 'intranet', 'private'
+]);
+
 const DAY = 86400000;
 const MAX_CHAIN = 16;
 
@@ -441,16 +451,19 @@ export function worstSeverity(list) {
  *   wildcardSuspect) and the scanned domains
  * @param {{ dns: { query: Function }, rdap: (domain: string, opts: object) => Promise<object>, signal?: AbortSignal,
  *   now?: () => number, known?: Map<string, object>|null, onProgress?: (done: number, total: number) => void,
- *   concurrency?: number, rdapConcurrency?: number, expiringDays?: number }} opts
+ *   concurrency?: number, rdapConcurrency?: number, expiringDays?: number, skipTlds?: ReadonlyArray<string> }} opts
+ *   `skipTlds`: the suffixes never looked up ({@link UNREGISTRABLE_TLDS}; tests that stand in `.test` for public domains clear it)
  * @returns {Promise<{ at: Date, domains: string[], references: number, findings: TakeoverFinding[],
  *   failures: TakeoverFailure[], registrations: Map<string, object>, checked: number }>}
  *   `registrations`: domain → { verdict, expires, rdap, ns } (pass back as `known` to retry);
  *   `checked`: registrable domains with a verdict
  */
 export async function auditTakeover({ hosts = [], domains = [] } = {}, {
-  dns, rdap, signal, now = Date.now, known = null, onProgress = null, concurrency = 6, rdapConcurrency = 4, expiringDays = EXPIRING_DAYS
+  dns, rdap, signal, now = Date.now, known = null, onProgress = null, concurrency = 6, rdapConcurrency = 4, expiringDays = EXPIRING_DAYS,
+  skipTlds = UNREGISTRABLE_TLDS
 } = {}) {
   throwIfAborted(signal);
+  const unregistrable = (name) => skipTlds.some((s) => isSubdomainOf(name, s));
   const apexes = [...new Set((Array.isArray(domains) ? domains : []).map((d) => normalizeHostname(canon(d))).filter(Boolean))];
   const failures = [];
   const limiter = createLimiter(concurrency);
@@ -491,7 +504,7 @@ export async function auditTakeover({ hosts = [], domains = [] } = {}, {
 
   // 2. Every CNAME chain again, and whether each NS / MX target exists.
   const outside = (name) => !apexes.some((a) => isSubdomainOf(name, a));
-  const targets = refs.filter((r) => (r.kind === 'ns' || r.kind === 'mx') && outside(r.target));
+  const targets = refs.filter((r) => (r.kind === 'ns' || r.kind === 'mx') && outside(r.target) && !unregistrable(r.target));
   total += targets.length;
   await Promise.all([
     ...cnameHosts.map(async (x) => {
@@ -521,7 +534,7 @@ export async function auditTakeover({ hosts = [], domains = [] } = {}, {
   for (const ref of refs) {
     for (const name of ref.chain) {
       const d = registryDomainOf(name);
-      if (d && outside(d) && !PROVIDER_DOMAINS.has(d)) wanted.add(d);
+      if (d && outside(d) && !PROVIDER_DOMAINS.has(d) && !unregistrable(d)) wanted.add(d);
     }
   }
   const rdapLimiter = createLimiter(rdapConcurrency);

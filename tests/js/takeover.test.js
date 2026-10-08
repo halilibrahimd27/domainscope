@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 import {
   TAKEOVER_SERVICES, TAKEOVER_STATUSES, TAKEOVER_SIGNALS, TAKEOVER_SEVERITIES, TAKEOVER_REASONS, REGISTRATION_VERDICTS,
-  HTTP_CHECK_OUTCOMES, HTTP_CHECK_MAX, matchesPattern, matchService, chainService, fingerprintMatches, registryDomainOf,
+  HTTP_CHECK_OUTCOMES, HTTP_CHECK_MAX, UNREGISTRABLE_TLDS, matchesPattern, matchService, chainService, fingerprintMatches, registryDomainOf,
   cnameChain, spfTargets, registrationVerdict, reasonSeverity, worstSeverity, auditTakeover, httpCandidates,
   httpCheckOutcome, applyHttpCheck
 } from '../../assets/js/lib/takeover.js';
@@ -241,7 +241,7 @@ describe('auditTakeover', () => {
     const dns = fakeDns(DNS);
     const rdap = fakeRdap(RDAP);
     const progress = [];
-    const out = await auditTakeover({ hosts: HOSTS, domains: ['Example.com'] }, { dns, rdap, now: () => NOW, onProgress: (d, t) => progress.push([d, t]) });
+    const out = await auditTakeover({ hosts: HOSTS, domains: ['Example.com'] }, { dns, rdap, now: () => NOW, skipTlds: [], onProgress: (d, t) => progress.push([d, t]) });
     const byHost = Object.fromEntries(out.findings.map((f) => [`${f.kind} ${f.host} ${f.target}`, f]));
 
     const cdn = byHost['cname cdn.example.com cdn.gone.test'];
@@ -283,10 +283,10 @@ describe('auditTakeover', () => {
   });
 
   test('Retry asks only the registrations that failed, and a fixed one becomes a finding', async () => {
-    const first = await auditTakeover({ hosts: HOSTS, domains: ['example.com'] }, { dns: fakeDns(DNS), rdap: fakeRdap(RDAP), now: () => NOW });
+    const first = await auditTakeover({ hosts: HOSTS, domains: ['example.com'] }, { dns: fakeDns(DNS), rdap: fakeRdap(RDAP), now: () => NOW, skipTlds: [] });
     const rdap = fakeRdap({ ...RDAP, 'lapsed.test': notFound('lapsed.test') });
     const again = await auditTakeover({ hosts: HOSTS, domains: ['example.com'] }, {
-      dns: fakeDns({ ...DNS, 'lapsed.test|NS': ok('lapsed.test', 'NS', [], 'NXDOMAIN') }), rdap, now: () => NOW, known: first.registrations
+      dns: fakeDns({ ...DNS, 'lapsed.test|NS': ok('lapsed.test', 'NS', [], 'NXDOMAIN') }), rdap, now: () => NOW, skipTlds: [], known: first.registrations
     });
     assert.deepEqual(rdap.calls, ['lapsed.test']);
     const spf = again.findings.find((f) => f.kind === 'spf' && f.target === 'spf.lapsed.test');
@@ -297,7 +297,7 @@ describe('auditTakeover', () => {
 
   test('a failed NS check after an RDAP 404 is a DNS failure, not a finding', async () => {
     const out = await auditTakeover({ hosts: [host('cdn.example.com', ['cdn.gone.test'])], domains: [] }, {
-      dns: fakeDns({ ...DNS, 'gone.test|NS': fail('gone.test', 'NS') }), rdap: fakeRdap(RDAP), now: () => NOW
+      dns: fakeDns({ ...DNS, 'gone.test|NS': fail('gone.test', 'NS') }), rdap: fakeRdap(RDAP), now: () => NOW, skipTlds: []
     });
     assert.deepEqual(out.failures.map((f) => [f.source, f.name]), [['doh', 'gone.test NS']]);
     assert.deepEqual(out.findings.map((f) => f.reasons.map((r) => r.code)), [['nxdomain']]);
@@ -309,6 +309,21 @@ describe('auditTakeover', () => {
     const ac = new AbortController();
     ac.abort();
     await assert.rejects(auditTakeover({ hosts: HOSTS, domains: ['example.com'] }, { dns: fakeDns(DNS), rdap: fakeRdap(RDAP), signal: ac.signal }), { name: 'AbortError' });
+  });
+
+  test('by default a name under a suffix nobody can register is never looked up, nor called registrable', async () => {
+    const dns = fakeDns({
+      ...DNS,
+      'example.com|NS': ok('example.com', 'NS', [{ name: 'example.com', type: 'NS', ttl: 300, data: 'ns.dns.test' }]),
+      'example.com|MX': ok('example.com', 'MX', [{ name: 'example.com', type: 'MX', ttl: 300, data: { preference: 10, exchange: 'mx.corp.internal' } }]),
+      'example.com|TXT': ok('example.com', 'TXT', [])
+    });
+    const rdap = fakeRdap(RDAP);
+    const out = await auditTakeover({ hosts: [host('cdn.example.com', ['cdn.gone.test'])], domains: ['example.com'] }, { dns, rdap, now: () => NOW });
+    assert.deepEqual(rdap.calls, [], 'no RDAP lookup');
+    assert.ok(!dns.calls.some((c) => /\.(test|internal)$/.test(c.name)), `no DNS question of its own: ${dns.calls.map((c) => c.name).join(', ')}`);
+    assert.deepEqual(out.findings.map((f) => [f.host, f.reasons.map((r) => r.code)]), [['cdn.example.com', ['nxdomain']]], 'the dangling CNAME still counts');
+    assert.ok(UNREGISTRABLE_TLDS.includes('internal') && UNREGISTRABLE_TLDS.includes('arpa'));
   });
 });
 

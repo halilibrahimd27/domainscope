@@ -221,17 +221,18 @@ const maxTime = (a, b) => (a === null ? b : b === null ? a : Math.max(a, b));
  * Read an OTX passive-DNS answer for an address.
  * @param {unknown} json
  * @param {{ now?: number }} [opts]
- * @returns {{ ok: boolean, names: NameHit[], total: number|null, error: string|null }}
+ * @returns {{ ok: boolean, names: NameHit[], total: number|null, listed: number, error: string|null }} `total`: the
+ *   records OTX holds (its `count`), `listed`: the records it sent — more held than sent means a cut list
  */
 export function parseOtxPassiveDns(json, { now = Date.now() } = {}) {
   if (!json || typeof json !== 'object' || !Array.isArray(json.passive_dns)) {
-    return { ok: false, names: [], total: null, error: 'Unexpected OTX response (no passive_dns list)' };
+    return { ok: false, names: [], total: null, listed: 0, error: 'Unexpected OTX response (no passive_dns list)' };
   }
   const names = hitsOf(json.passive_dns.filter((r) => r && typeof r === 'object').map((r) => ({
     name: r.hostname, first: seenTime(r.first, { now }), last: seenTime(r.last, { now })
   })));
   const total = Number.isFinite(json.count) ? json.count : null;
-  return { ok: true, names, total, error: null };
+  return { ok: true, names, total, listed: json.passive_dns.length, error: null };
 }
 
 /**
@@ -531,7 +532,9 @@ export function createReverseIp({
             const json = await fetchJson(otxUrl(ip), { fetchImpl, signal, timeoutMs: slowTimeoutMs, headers: { accept: 'application/json' } });
             const p = parseOtxPassiveDns(json, { now: now() });
             if (!p.ok) return failed(source, { error: p.error, errorKind: 'parse' });
-            return result(source, { names: p.names, total: p.total, truncated: p.total !== null && p.total > p.names.length });
+            // `count` counts records (duplicates and junk too): only more records than sent is a cut list.
+            const cut = p.total !== null && p.total > p.listed;
+            return result(source, { names: p.names, total: cut ? p.total : null, truncated: cut });
           } catch (err) {
             return fromError(source, err);
           }

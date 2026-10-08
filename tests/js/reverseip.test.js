@@ -150,7 +150,7 @@ describe('parsers', () => {
     const p = parseOtxPassiveDns(OTX_BODY, { now: NOW });
     assert.equal(p.ok, true);
     assert.deepEqual(p.names, [{ name: 'www.example.com', first: Date.UTC(2025, 0, 1), last: Date.UTC(2026, 9, 3, 7, 53, 19) }]);
-    assert.equal(p.total, 3);
+    assert.deepEqual([p.total, p.listed], [3, 3], 'three records held, three sent: not cut');
     assert.equal(parseOtxPassiveDns({ detail: 'nope' }).ok, false);
     assert.equal(parseOtxPassiveDns(null).ok, false);
   });
@@ -267,6 +267,7 @@ describe('createReverseIp', () => {
     assert.deepEqual(r.results.ptr.names.map((n) => n.name), ['host-10.example.net']);
     assert.deepEqual([r.results.thc.total, r.results.thc.truncated], [250, true]);
     assert.deepEqual(r.results.internetdb.extra.ports, [80, 443]);
+    assert.deepEqual([r.results.otx.total, r.results.otx.truncated], [null, false], 'OTX counts records: two names of three records is no cut list');
     const rows = mergeNames([r]);
     assert.deepEqual(rows.map((x) => x.name), ['api.example.com', 'blog.example.com', 'origin.example.com', 'www.example.com', 'host-10.example.net', 'shop.example.net', 'cdn.example.org', 'mail.example.org']);
   });

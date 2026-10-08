@@ -12,7 +12,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 - **Wave 6 — shipping feature by feature (2026-10-08)** ([what shipped and where](#wave-6--shipping-feature-by-feature-2026-10-08)): a start route back under its budget, with a Subdomains scan's results loading with the first scan, and a sidebar with room for 24 tools; Domains on this IP (reverse IP v2) in IP Intel; the CLI's reverse IP from inside your network (`cli/ip_intel.py`) with the sources a browser cannot call; the CLI's STARTTLS on mail, directory, chat and database ports with a `--tls-audit` of the TLS versions, weak cipher suites and certificate key types each endpoint serves; the in-browser DNSSEC chain-of-trust validator in DNS Lookup; the Domain overview's Lookalike domains panel — dnstwist-style typosquat and lookalike candidates, a DoH / RDAP / crt.sh check and a risk score; the Domain portfolio's Certificates (CT) tab — each domain's publicly-logged certificates watched for expiry, a configurable radar, new issuance since the last check, unexpected CAs, wildcards and precertificate-only entries, with a CSV and an expiry calendar; the cutover assistant on the "is it live?" check page — watch mode on the cache-aware schedule, each resolver's live cache countdown, and the TTL planner with its checklist; real-ISP DNS propagation in Global DNS — Globalping probes asking their own resolvers, their rows judged with the check and "stale at these ISPs" when only they still cache an older answer; Domain Health v2 — a weighted score and A–F letter grade, the checks shown problems first by category with fix advice, a Web category and the HTTP security grade from Mozilla's HTTP Observatory; the Rollout tab of SSL Targets — a per-workspace checklist of the servers that need the new certificate with the Verify tab marking rows verified, and deploy snippets per server and platform; the command palette (Ctrl/⌘+K); self-refreshing provider IP ranges with a two-tier Cloudflare classification.
 - **P0** — high value, verified feasible, next iteration
   - [P0.1 Verify the served certificate from the internet (Globalping SNI probe)](#p01-verify-the-served-certificate-from-the-internet-globalping-sni-probe)
-  - [P0.2 Origin exposure audit for Cloudflare/CDN-proxied hosts](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts)
+  - [P0.2 Origin exposure audit for Cloudflare/CDN-proxied hosts](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts) — **shipped (Servers › Exposure audit, 2026-10-08)**
   - [P0.3 Rollout Board: per-server certificate rollout checklist](#p03-rollout-board-per-server-certificate-rollout-checklist) — **shipped (2026-10-08)**
   - [P0.4 Per-server deploy snippet + verify-command generator](#p04-per-server-deploy-snippet--verify-command-generator) — **shipped (2026-10-08)**
   - [P0.5 Old-vs-new certificate diff and pre-install lint](#p05-old-vs-new-certificate-diff-and-pre-install-lint) — **pre-install lint shipped (`bundle-check`); old-vs-new diff shipped (Certificate › Compare)**
@@ -23,18 +23,18 @@ Constraints every item respects: runs in a browser from a static page (only CORS
   - [P0.10 Dangling-reference registrability check (SubdoMailing)](#p010-dangling-reference-registrability-check-subdomailing) — **shipped in Subdomains (2026-10-08)**
   - [P0.11 World map + relationship graph + aggregate mini-bars (inline SVG, vendored)](#p011-world-map--relationship-graph--aggregate-mini-bars-inline-svg-vendored)
   - [P0.12 Universal search, command palette and keyboard shortcuts](#p012-universal-search-command-palette-and-keyboard-shortcuts) — **keyboard shortcuts and the command palette shipped**
-  - [P0.13 Health v2: score, problems-first, fix advice, Web category](#p013-health-v2-score-problems-first-fix-advice-web-category)
+  - [P0.13 Health v2: score, problems-first, fix advice, Web category](#p013-health-v2-score-problems-first-fix-advice-web-category) — **shipped (2026-10-08)**
   - [P0.14 Share snapshot link + customer report (print/PDF + self-contained HTML)](#p014-share-snapshot-link--customer-report-printpdf--self-contained-html) — **shipped**
-- **Next up:** adaptive locale packs (see [P1.9](#p19-permutation-discovery-from-found-names-multi-level-wildcard-filtering): the library is ready but not wired in), then the P1.2 follow-ups listed under its status.
+- **Next up:** see [Wave 6 — deferred and follow-ups](#wave-6--deferred-and-follow-ups) for the pick-up list — directory & content discovery in the CLI, adaptive locale packs ([P1.9](#p19-permutation-discovery-from-found-names-multi-level-wildcard-filtering)), and readable records / the SPF evaluator ([P1.5](#p15-readable-records-txt-vendor-chips-spf-plain-english--ip-evaluator-httpssvcbech-decode)) all began in wave 6 but did not land.
 - **P1** — next
   - [P1.1 Source status, quota meter and optional user keys](#p11-source-status-quota-meter-and-optional-user-keys) — **partly shipped**
   - [P1.2 Zone import: exact seeds, proxied-origin map, lint and live drift](#p12-zone-import-exact-seeds-proxied-origin-map-lint-and-live-drift) — **MVP shipped; fetch from deSEC / DigitalOcean shipped**
   - [P1.3 Real-ISP DNS propagation in Global DNS (Globalping probes)](#p13-real-isp-dns-propagation-in-global-dns-globalping-probes) — **shipped (Global DNS › ISP resolvers)**
-  - [P1.4 Delegation &amp; authoritative consistency (serial drift, lame NS, Sitting Ducks, AXFR)](#p14-delegation--authoritative-consistency-serial-drift-lame-ns-sitting-ducks-axfr)
+  - [P1.4 Delegation &amp; authoritative consistency (serial drift, lame NS, Sitting Ducks, AXFR)](#p14-delegation--authoritative-consistency-serial-drift-lame-ns-sitting-ducks-axfr) — **shipped (Domain Health › Delegation; `dns_parity.py --axfr`, 2026-10-08)**
   - [P1.5 Readable records: TXT vendor chips, SPF plain-English + IP evaluator, HTTPS/SVCB/ECH decode](#p15-readable-records-txt-vendor-chips-spf-plain-english--ip-evaluator-httpssvcbech-decode) — **TXT vendor names shipped (Domain overview)**
   - [P1.6 Mail identity: FCrDNS, generic-PTR policy, DMARC external-report authorisation (ruf)](#p16-mail-identity-fcrdns-generic-ptr-policy-dmarc-external-report-authorisation-ruf) — **FCrDNS part shipped**
   - [P1.7 Takeover fingerprints and cloud-IP ownership hints](#p17-takeover-fingerprints-and-cloud-ip-ownership-hints) — **fingerprints shipped (2026-10-08)**
-  - [P1.8 Blacklist &amp; filtering-resolver reputation over DoH (honest about Spamhaus)](#p18-blacklist--filtering-resolver-reputation-over-doh-honest-about-spamhaus)
+  - [P1.8 Blacklist &amp; filtering-resolver reputation over DoH (honest about Spamhaus)](#p18-blacklist--filtering-resolver-reputation-over-doh-honest-about-spamhaus) — **shipped (IP Intel › Blocklists, 2026-10-08)**
   - [P1.9 Permutation discovery from found names, multi-level wildcard filtering](#p19-permutation-discovery-from-found-names-multi-level-wildcard-filtering)
   - [P1.10 CLI: TLS on mail, database and other non-HTTPS ports](#p110-cli-tls-on-mail-database-and-other-non-https-ports) — **STARTTLS shipped (wave 6)**
   - [P1.11 CLI: TLS audit, dual RSA/ECDSA certs, fleet consistency](#p111-cli-tls-audit-dual-rsaecdsa-certs-fleet-consistency) — **`--tls-audit` shipped (wave 6); fleet inventory shipped (`--estate`)**
@@ -50,7 +50,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
   - [P2.6 Domain portfolio view: many domains, one row each](#p26-domain-portfolio-view-many-domains-one-row-each) — **shipped (Domain portfolio)**
   - [P2.7 Extra passive source: ip.thc.org (+ opt-in Common Crawl)](#p27-extra-passive-source-ipthcorg--opt-in-common-crawl)
   - [P2.8 Lookalike / typosquat watch (locale-aware dnstwist-lite)](#p28-lookalike--typosquat-watch-locale-aware-dnstwist-lite) — **shipped (Domain overview › Lookalike domains)**
-  - [P2.9 SCT / CT-policy panel in the Certificate view](#p29-sct--ct-policy-panel-in-the-certificate-view)
+  - [P2.9 SCT / CT-policy panel in the Certificate view](#p29-sct--ct-policy-panel-in-the-certificate-view) — **shipped (Certificate › Transparency, 2026-10-08)**
   - [P2.10 Self-refreshing provider ranges + two-tier Cloudflare classification](#p210-self-refreshing-provider-ranges--two-tier-cloudflare-classification) — **shipped (2026-10-08)**
   - [P2.11 CLI DNS mode: split-horizon diff, per-NS consistency, AXFR check](#p211-cli-dns-mode-split-horizon-diff-per-ns-consistency-axfr-check) — **per-NS parity shipped (`dns_parity.py`)**
   - [P2.12 CLI mail checks: MTA-STS, MX STARTTLS certs, DNSBL incl. Spamhaus, FCrDNS](#p212-cli-mail-checks-mta-sts-mx-starttls-certs-dnsbl-incl-spamhaus-fcrdns)
@@ -140,6 +140,31 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 **Status (2026-10-08): the start route is at 339,887 bytes gzip of its 370 KB budget (379,552 before the diet), and the sidebar keeps 24 tools in view at 1366 × 768.**
 
 **Status (2026-10-08): shipped in wave 6 (SPEC §7.2).** The free sources' answers were checked live against 1.1.1.1; the key services answered 401 / 403 without a key, which proves their paths, but no key was at hand to check a full answer (the parsers follow each service's documentation and accept a missing field). Censys says its Search v2 API shuts down on 2026-09-30 and still answered on 2026-10-08: the Platform API (a personal access token) is the follow-up. Still open: more than one page per source.
+
+## Wave 6 — deferred and follow-ups
+
+The pick-up list for the next session. Nothing here is a regression; it is work wave 6 scoped out or could not finish.
+
+**Began in wave 6 but did not land** (the session limit killed these before they committed; no branch exists):
+
+- **Directory & content discovery in the CLI** — audit your own servers for forgotten paths, backup files and exposed config (open `.git`, `.env`, editor leftovers, admin/debug panels) over the targets a scan already covers, with a baseline request per host to suppress catch-all 200 pages, a per-host rate cap and the usual JSON/CSV. It belongs in the CLI because a browser page cannot read a cross-origin response's status. (Explicitly requested.)
+- **Adaptive locale packs** ([P1.9](#p19-permutation-discovery-from-found-names-multi-level-wildcard-filtering)) — when the TLD is generic, pick locale wordlist packs from evidence (the languages of discovered labels, the ccTLDs of the NS and MX hosts) instead of none, and explain the choice in the plan line. New `lib/localeevidence.js`, wired into `lib/wordlist.js localesForDomain` and the scanner. A draft may be uncommitted on the Windows PC — check there before rebuilding.
+- **Readable records / SPF evaluator** ([P1.5](#p15-readable-records-txt-vendor-chips-spf-plain-english--ip-evaluator-httpssvcbech-decode)) — a DNS Lookup › Explain panel: SPF explained mechanism by mechanism with an RFC 7208 `check_host()` "is this IP allowed to send?" evaluator (reuse the SPF code in `lib/health.js` / `lib/retire.js`), DMARC/CAA tag-by-tag, and HTTPS/SVCB/ECH decoded. (TXT vendor names already shipped in the Domain overview.)
+
+**Shipped in wave 6, with follow-ups left:**
+
+- **Provider network-tier label not surfaced** — `classifyResolution().network` (the two-tier provider label from the weekly ranges, [P2.10](#p210-self-refreshing-provider-ranges--two-tier-cloudflare-classification)) is computed but no view reads it yet; wire it into IP Intel and SSL Targets' Behind-CDN rows.
+- **CT watchlist, runner side** ([P0.7](#p07-ct-watchlist-expiry-radar-and-new-issuance-alerts)) — `tools/ds.mjs ct` does not yet emit the "new since baseline" / "unexpected CA" signals the browser tab does; it needs a per-run baseline store in the runner.
+- **Cutover assistant** ([P0.6](#p06-cutover-assistant-expected-value-watch-mode-cache-countdown-ttl-planner)) — add an "expected value" (exact / contains / regex) input in Global DNS with match/mismatch rows; a worst-case ETA from the maximum authoritative-NS TTL via a Globalping SOA probe; and an `.ics` export of the cutover timeline with provider cache-flush links.
+- **CLI TLS audit** ([P1.10](#p110-cli-tls-on-mail-database-and-other-non-https-ports) / [P1.11](#p111-cli-tls-audit-dual-rsaecdsa-certs-fleet-consistency)) — RDP (3389) STARTTLS, `--profile web|mail|all` presets, a fleet serial-mismatch check (a missed load-balancer pool member), and full TLS chain validation.
+
+**Housekeeping:**
+
+- **Time-bomb tests** — two `notify` tests begin failing on 2034-05-26 and two `bundle-check` tests on 2035-01-01 (they read the wall-clock `Date`); give them a fixed injected clock as the estate e2e suite now has.
+- **`bot/intermediates` PR** — the weekly CCADB refresh (2026-10-05) is still unmerged on `origin/bot/intermediates`; per `intermediates.yml` close and reopen the PR to run CI, then merge.
+
+**Still open from earlier priorities, not attempted in wave 6:** [P0.9](#p09-zonemaster-deep-delegation-test-in-domain-health) Zonemaster deep delegation · [P0.11](#p011-world-map--relationship-graph--aggregate-mini-bars-inline-svg-vendored) world map + relationship graph · [P1.1](#p11-source-status-quota-meter-and-optional-user-keys) quota meter + optional user-key UI · [P1.6](#p16-mail-identity-fcrdns-generic-ptr-policy-dmarc-external-report-authorisation-ruf) generic-PTR policy + DMARC `ruf` authorisation · [P1.12](#p112-cli-local-certs-finder--generated-fleet-one-liners) CLI local-cert finder · [P2.1](#p21-copy-as-command--provenance-on-every-row) copy-as-command + provenance · [P2.2](#p22-run-history-and-diff-between-scans) run history + scan diff · [P2.7](#p27-extra-passive-source-ipthcorg--opt-in-common-crawl) Common Crawl source · [P2.12](#p212-cli-mail-checks-mta-sts-mx-starttls-certs-dnsbl-incl-spamhaus-fcrdns) CLI mail checks (MX STARTTLS certs, DNSBL incl. Spamhaus).
+
 
 ## P0 — next iteration
 

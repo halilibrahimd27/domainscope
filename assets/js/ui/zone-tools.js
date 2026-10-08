@@ -386,14 +386,16 @@ const OTHER_PROBLEMS = 20;
  * The Compare tab body.
  * @param {{ ctx: object, zone: object, C: object, parse: (files: object[], opts: { origin: string|null }) => object,
  *   samples: Array<{ id: string, file: string, text: string }>, formatLabel: (zone: object) => string,
- *   redact: (values: string[], include: boolean) => string[], issue: (w: object) => { text: string, where: string } }} opts
+ *   redact: (values: string[], include: boolean) => string[], issue: (w: object) => { text: string, where: string },
+ *   fatalKey: (fatal: object) => string }} opts
  *   `C`: the view's holder ({ files, zone, readWith, originInput, options, filter, includeOrigins, cache }; `readWith`: the
  *   first zone's name the second was read with); `parse`:
  *   views/zone.js parseFiles; `redact`: the origin addresses of both zones hidden unless `include`; `issue`: a parse
- *   issue worded as the Problems tab words it, and where it is
+ *   issue worded as the Problems tab words it, and where it is; `fatalKey`: views/zone.js fatalKey (a deSEC or
+ *   DigitalOcean API error has its own words)
  * @returns {HTMLElement}
  */
-export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact, issue }) {
+export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact, issue, fatalKey }) {
   ensureCompare(C);
   const box = h('div', { class: 'stack zcmp', dataset: { role: 'zcmp' } });
   // A new first zone (another import) can name the kept second file otherwise: read it again.
@@ -565,7 +567,7 @@ export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact, 
 
   function fatalAlert(fatal) {
     return h('div', { class: 'zcmp-fatal', dataset: { code: fatal.code } },
-      Alert({ variant: 'error', title: t('zcmp.fatal'), message: t(`zone.fatal.${fatal.code}`, fatal.params || {}) }));
+      Alert({ variant: 'error', title: t('zcmp.fatal'), message: t(fatalKey(fatal), fatal.params || {}) }));
   }
 
   /* --- the result ---------------------------------------------------------- */

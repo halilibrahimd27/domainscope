@@ -1208,6 +1208,16 @@ async function main() {
       await shot(page, opts, 'zone-compare-partial-desktop-light-en');
     });
 
+    await run.step('Compare: a deSEC or DigitalOcean error saved as the second file is named after that provider, with its own words', async () => {
+      for (const [doc, provider, words] of [['{"detail":"Invalid token."}', 'deSEC', 'Invalid token.'],
+        ['{"id":"unauthorized","message":"Unable to authenticate you"}', 'DigitalOcean', 'Unable to authenticate you']]) {
+        await pasteOther(doc);
+        await page.waitFor((p) => (document.querySelector('.zcmp-fatal')?.textContent || '').includes(p), { args: [provider], message: `${provider} error` });
+        const alert = await text(page, '.zcmp-fatal');
+        assert(alert.includes(`This is a ${provider} API error, not a record listing: “${words}”`) && !/Cloudflare/.test(alert), alert);
+      }
+    });
+
     await run.step('Compare: a long owner name wraps in its column: the table fits its card at 1280 and 1440 px', async () => {
       const long = `${'x'.repeat(60)}.${'y'.repeat(30)}`;
       await pasteOther(`$ORIGIN example.com.\n$TTL 300\n${long} 300 IN TXT "v=spf1 -all"\nwww 300 IN CNAME example.com.\n`);

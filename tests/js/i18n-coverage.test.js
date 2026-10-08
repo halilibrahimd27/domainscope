@@ -481,6 +481,10 @@ describe('i18n coverage', () => {
     const hv2 = await imp('assets/js/ui/health-v2.js');
     const [hweb, hadv] = await Promise.all([imp('assets/js/lib/healthweb.js'), imp('assets/js/lib/healthadvice.js')]);
     for (const k of [...hv2.generatedKeys(), ...Object.keys(hweb.HEALTH_WEB_I18N.en), ...Object.keys(hadv.HEALTH_ADVICE_I18N.en)]) add(k);
+    // The origin exposure audit (ui/exposure-panel.js over lib/exposure.js, Servers › Exposure):
+    // every finding kind, severity, reachability result, advice and skip reason it words from a code.
+    const exp = await imp('assets/js/ui/exposure-panel.js');
+    for (const k of exp.generatedKeys()) add(k);
     assert.deepEqual(missingIn(keys), []);
   });
 

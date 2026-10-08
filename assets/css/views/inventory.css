@@ -272,3 +272,74 @@
   flex-wrap: nowrap;
   gap: 2px;
 }
+
+/* Servers › Exposure audit (ui/exposure-panel.js, .exp-*): the stats and controls, then the
+   findings worst-first and the audited origins, each finding row ruled at its left by severity. */
+.exp-controls {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 4px;
+}
+
+.exp-progress {
+  min-height: 1.25rem;
+}
+
+.exp-advice {
+  margin: 0;
+  padding-left: 1.1em;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-2);
+}
+
+.exp-where {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 10rem;
+}
+
+.exp-rt {
+  flex: none;
+}
+
+.exp-detail {
+  overflow-wrap: anywhere;
+}
+
+/* The severity ruling of a findings row: a coloured left edge echoing its badge. */
+.exp-table tbody tr.dt-row {
+  border-left: 3px solid transparent;
+}
+
+.exp-row-critical { border-left-color: var(--error-solid); }
+.exp-row-high { border-left-color: var(--warn-solid); }
+.exp-row-medium { border-left-color: var(--accent); }
+.exp-row-low { border-left-color: var(--border-strong); }
+.exp-row-info { border-left-color: var(--info-solid); }
+
+.exp-advice-legend {
+  color: var(--text-2);
+}
+
+@media (max-width: 640px) {
+  .exp-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .exp-where {
+    min-width: 0;
+  }
+}
+
+@media print {
+  .exp-controls,
+  .exp-advice-legend {
+    display: none;
+  }
+}

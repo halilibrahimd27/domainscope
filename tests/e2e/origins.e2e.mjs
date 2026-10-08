@@ -8,8 +8,9 @@
  *   node tests/e2e/origins.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots] [--shots-dir <dir>]
  *
  * What is checked, on a 1440 px desktop:
- *   - Servers has two tabs, Inventory and Origin map (`tab=origins`); remembering is off by
- *     default, the tab says nothing is written, and nothing is: the workspace has no map;
+ *   - Servers has three tabs, Inventory, Origin map (`tab=origins`) and Exposure audit
+ *     (`tab=exposure`); remembering is off by default, the tab says nothing is written, and nothing
+ *     is: the workspace has no map;
  *   - Zone File › Origins & servers says remembering is off (no button); once it is switched on,
  *     "Remember these 2 origins" puts the file's exact origins into the map (source zone);
  *   - a Subdomains scan of example.net (the zone forgotten) lists the remembered origins first
@@ -24,6 +25,9 @@
  *     elsewhere keeps the focus on the same row's Edit button; switching remembering off asks first
  *     and keeps the entries, one written while it asks too; "Delete all local data" removes the map;
  *   - Turkish and dark, 375 px and 320 px: no horizontal scroll; screenshots of each state;
+ *   - Servers › Exposure audit (a second page, its own guard): a remembered origin that a DNS
+ *     record points straight at is a critical leak, the audited origin shown reserved (DNS leaks
+ *     only), the panel holding a phone in Turkish dark — all with the zone answered in the browser;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; nothing sent.
  */
 
@@ -195,10 +199,10 @@ async function main() {
     }, SOURCES.map((s) => s.id));
 
     run.group('Servers › Origin map, off by default (desktop 1440×900, English, light)');
-    await run.step('two tabs; remembering is off, the tab says so, and the workspace holds no map', async () => {
+    await run.step('three tabs; remembering is off, the tab says so, and the workspace holds no map', async () => {
       await gotoRoute(page, 'inventory');
       const tabs = await page.evaluate(() => [...document.querySelectorAll('.inv-tabs > .tablist-scroll .tab')].map((b) => `${b.dataset.tab}:${b.getAttribute('aria-selected')}`));
-      assertEqual(tabs, ['inventory:true', 'origins:false'], 'tabs');
+      assertEqual(tabs, ['inventory:true', 'origins:false', 'exposure:false'], 'tabs');
       assert(await page.evaluate(() => !!document.querySelector('[data-role="inventory-text"]')), 'the inventory editor is the first tab');
       await page.click('.inv-tabs .tab[data-tab="origins"]');
       await page.waitFor(() => /[?&]tab=origins/.test(location.hash) && document.querySelector('[data-role="origin-map"]'), { message: 'tab=origins in the route' });
@@ -542,6 +546,70 @@ async function main() {
         await assertNoMissingKeys(memory);
       } finally {
         await memory.close();
+      }
+    });
+
+    run.group('Origin exposure audit (Servers › Exposure, offline)');
+    await run.step('a remembered origin a DNS record points straight at is a critical leak; nothing is sent', async () => {
+      // A fresh page with its own network guard: example.net is answered in it, everything else fails.
+      const expHits = [];
+      const expPage = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      try {
+        expPage.conn.on('Fetch.requestPaused', (p) => {
+          expHits.push(p.request.url);
+          expPage.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'BlockedByClient' }).catch(() => {});
+        }, expPage.sessionId);
+        await expPage.send('Fetch.enable', { patterns: [{ urlPattern: 'https://*' }] });
+        await expPage.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(APEX, ZONE_HANDOFF_DNS) });
+        await expPage.emulateMedia({ 'prefers-color-scheme': 'light' });
+        await expPage.goto(`${server.url}#/about`);
+        await waitReady(expPage);
+        await setLangUi(expPage, 'en');
+        // Start from a clean workspace, then remember api's exact origin by hand (api.example.net
+        // resolves straight to 203.0.113.14 in the emulated zone, so the proxy is defeated in DNS).
+        await deleteAllLocalData(expPage);
+        await setLangUi(expPage, 'en');
+        await openOriginMap(expPage);
+        if (!(await expPage.evaluate(() => document.querySelector('[data-role="om-remember"]')?.checked))) await toggleRemember(expPage);
+        await expPage.waitFor(() => document.querySelector('[data-role="om-remember"]')?.checked, { message: 'remembering on' });
+        await expPage.type('[data-role="om-name"]', `api.${APEX}`);
+        await expPage.type('[data-role="om-ip"]', '203.0.113.14');
+        await expPage.press('Enter');
+        await expPage.waitFor(() => /Remembered api\.example\.net → 203\.0\.113\.14\b/.test(document.querySelector('[data-role="om-outcome"] .alert')?.textContent || ''), { message: 'remembered' });
+        // The Exposure tab lists the audited origin; a documentation address is never probed.
+        await gotoRoute(expPage, 'inventory?tab=exposure');
+        await expPage.waitFor(() => document.querySelector('.exp-panel [data-action="exp-audit"]'), { message: 'exposure tab' });
+        const targets = await expPage.evaluate(() => [...document.querySelectorAll('.exp-targets-table tbody tr.dt-row')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent.trim())));
+        assertEqual(targets.length, 1, 'one audited origin');
+        assertEqual([targets[0][0], targets[0][1]], [`api.${APEX}`, '203.0.113.14'], 'the name and its origin');
+        assert(/DNS leaks only/.test(targets[0][4] || ''), `reserved status: ${targets[0][4]}`);
+        await shotPage(expPage, opts, 'exposure-targets-desktop-light-en');
+        // Audit DNS leaks: the record resolves to the remembered origin → a critical A-record leak.
+        await expPage.click('[data-action="exp-audit"]');
+        await expPage.waitFor(() => document.querySelector('.exp-findings .exp-table tbody tr.dt-row'), { message: 'a finding', timeout: 20000 });
+        const findings = await expPage.evaluate(() => [...document.querySelectorAll('.exp-table tbody tr.dt-row')].map((tr) => {
+          const c = [...tr.querySelectorAll('td')].map((td) => td.textContent.trim());
+          return { severity: c[0], name: c[2], origin: c[3] };
+        }));
+        assert(findings.some((f) => /Critical/.test(f.severity) && f.name === `api.${APEX}` && f.origin === '203.0.113.14'),
+          `a critical api leak, got ${JSON.stringify(findings)}`);
+        const stats = await expPage.evaluate(() => document.querySelector('.exp-stats')?.textContent || '');
+        assert(/Critical/.test(stats), `the Worst stat reads Critical: ${stats}`);
+        await shotPage(expPage, opts, 'exposure-findings-desktop-light-en');
+        // Turkish, dark, on a phone: the panel holds the viewport.
+        await setLangUi(expPage, 'tr');
+        await expPage.emulateMedia({ 'prefers-color-scheme': 'dark' });
+        await expPage.setViewport({ width: 375, height: 760 });
+        await frames(expPage);
+        await assertNoHorizontalScroll(expPage, 'exposure 375 tr dark');
+        await shotPage(expPage, opts, 'exposure-findings-phone-dark-tr');
+        await assertNoMissingKeys(expPage);
+        // Nothing left the page: the audit's DNS was answered in the browser.
+        await assertClean(expPage, 'origins', origin);
+        assertEqual(expHits, [], 'https requests that reached the network');
+        assertEqual(await expPage.evaluate(() => window.__zoneBlocked), [], 'requests the page script blocked');
+      } finally {
+        await expPage.close().catch(() => {});
       }
     });
 

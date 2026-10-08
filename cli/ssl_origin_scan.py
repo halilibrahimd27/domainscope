@@ -22,7 +22,8 @@ Pipeline:
   5. phase 2  -> TLS handshake per open ip:port x name (SNI) + one probe without SNI
   6. verdict  -> UPDATED / NEEDS_UPDATE / ORIGIN_CERT / PRIVATE_CERT / NOT_HOSTED /
                  TLS_ERROR / TIMEOUT / CLOSED
-  7. monitor  -> changes since a --baseline report, --warn-days expiry, --notify webhook
+  7. status   -> --ari / --revocation: each served certificate's ARI window and CRL entry
+  8. monitor  -> changes since a --baseline report, --warn-days expiry, --notify webhook
 
 --compare OLD_IP NEW_IP -n NAME runs instead of a scan: one GET over TLS (SNI and Host =
 NAME) against each address, the two answers side by side (before DNS moves the name).
@@ -43,6 +44,7 @@ import binascii
 import bisect
 import codecs
 import csv
+import email.utils
 import hashlib
 import http.client
 import io
@@ -410,6 +412,7 @@ _OID_SKI = '2.5.29.14'
 _OID_AKI = '2.5.29.35'
 _OID_AIA = '1.3.6.1.5.5.7.1.1'
 _OID_CA_ISSUERS = '1.3.6.1.5.5.7.48.2'
+_OID_CRL_DP = '2.5.29.31'
 _OID_CT_POISON = '1.3.6.1.4.1.11129.2.4.3'   # RFC 6962: a precertificate
 _OID_PKCS7_DATA = '1.2.840.113549.1.7.1'
 _OID_PKCS7_SIGNED = '1.2.840.113549.1.7.2'
@@ -710,6 +713,7 @@ class CertInfo:
     ca_issuers: List[str] = field(default_factory=list)  # AIA "CA Issuers" URLs
     key_cert_sign: Optional[bool] = None     # keyUsage keyCertSign (None: no keyUsage extension)
     precert: bool = False                    # the CT poison extension: a precertificate, never served
+    crl_urls: List[str] = field(default_factory=list)  # CRL distribution point URIs (--revocation)
 
     def public_key(self) -> Optional[PublicKey]:
         """The certificate's :class:`PublicKey`, or None when its key cannot be read."""
@@ -852,6 +856,7 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
     subject_key_id = None  # type: Optional[str]
     authority_key_id = None  # type: Optional[str]
     ca_issuers = []  # type: List[str]
+    crl_urls = []  # type: List[str]
     key_cert_sign = None  # type: Optional[bool]
     precert = False
     for extra in fields[index + 6:]:
@@ -910,6 +915,25 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
                             ca_issuers.append(_content(buf, location).decode('ascii', 'replace'))
                 except (DerError, ValueError):
                     pass
+            elif ext_oid == _OID_CRL_DP:
+                # CRLDistributionPoints: the URIs of each distributionPoint's fullName (what
+                # --revocation reads). A malformed entry is skipped, never fatal.
+                try:
+                    points = _expect(_read_tlv(buf, value[2], value[3]), 0x30,
+                                     'CRLDistributionPoints')
+                    for point in _children(buf, points[2], points[3]):
+                        for part in _children(buf, *_expect(point, 0x30, 'DistributionPoint')[2:4]):
+                            if part[0] != 0xA0:  # distributionPoint [0]
+                                continue
+                            for name in _children(buf, part[2], part[3]):
+                                if name[0] != 0xA0:  # fullName [0] GeneralNames
+                                    continue
+                                for general in _children(buf, name[2], name[3]):
+                                    if general[0] == 0x86:  # uniformResourceIdentifier
+                                        crl_urls.append(_content(buf, general).decode('ascii',
+                                                                                      'replace'))
+                except (DerError, ValueError):
+                    pass
 
     spki_der = buf[spki[1]:spki[3]]
     return CertInfo(
@@ -947,6 +971,7 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
         ca_issuers=ca_issuers,
         key_cert_sign=key_cert_sign,
         precert=precert,
+        crl_urls=crl_urls,
     )
 
 
@@ -3839,6 +3864,10 @@ class ScanReport:
     include_backends: bool = False                                 # --include-backends
     audit: Optional['TlsAudit'] = None                             # --tls-audit
     profiles: List[str] = field(default_factory=list)              # --profile web|mail|all
+    ari: bool = False                                              # --ari
+    revocation: bool = False                                       # --revocation
+    # sha256 -> {'ari': ..., 'revocation': ...} of every served certificate (check_certificate_status)
+    cert_status: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def protocol_of(self, ip: str, port: int) -> str:
         """The protocol endpoint ``ip:port`` was scanned with (tls when it is no endpoint)."""
@@ -5931,6 +5960,8 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
         kind, ca = report.cert_kind(cert)
         entry['kind'] = kind  # origin-ca | self-signed | private-ca | other
         entry['privateCa'] = ca.subject_dn if ca is not None else None
+        # --ari / --revocation: the CA's renewal window and the CRL's answer (served ones only)
+        entry.update(report.cert_status.get(sha) or {})
         certificates[sha] = entry
     doc = {
         'tool': 'ssl_origin_scan',
@@ -5985,6 +6016,10 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
         doc['options']['portProtocols'] = {str(port): named[port] for port in sorted(named)}
     if report.profiles:  # --profile: where options.ports came from
         doc['options']['profiles'] = list(report.profiles)
+    if report.ari:
+        doc['options']['ari'] = True
+    if report.revocation:
+        doc['options']['revocation'] = True
     if estate:
         doc['options']['estate'] = True
         doc['estate'] = estate_from_report(doc, report.finished_at)
@@ -6068,7 +6103,8 @@ def render_csv(report: ScanReport, lineterminator: str = '\r\n',
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator=lineterminator)
     several = report.several_new_certs
-    columns = CSV_COLUMNS + ((NEW_CERT_CSV_COLUMN,) if several else ())
+    columns = CSV_COLUMNS + ((NEW_CERT_CSV_COLUMN,) if several else ()) \
+        + (ARI_CSV_COLUMNS if report.ari else ()) + (REVOCATION_CSV_COLUMNS if report.revocation else ())
     writer.writerow(columns)
     for row in report.results:
         data = _row_dict(row, report.finished_at)
@@ -6084,6 +6120,9 @@ def render_csv(report: ScanReport, lineterminator: str = '\r\n',
         ]  # type: List[Any]
         if several:
             values.append(report.new_cert_file(row.cert) or '')
+        if report.ari or report.revocation:
+            values.extend(status_csv_cells(report.cert_status.get(row.cert.sha256) if row.cert else None,
+                                           report.ari, report.revocation))
         writer.writerow([_csv_cell(value, terminal) for value in values])
     for entry in report.excluded:
         row = dict.fromkeys(columns, '')  # type: Dict[str, Any]
@@ -6604,6 +6643,7 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
                                      % '; '.join(hidden), 'dim'))
             lines.append('')
 
+    lines.extend(render_cert_status(report, style, width, show_all))  # --ari / --revocation
     counts = report.status_counts()
     # ORIGIN_CERT / PRIVATE_CERT only when there are any: the line stays short otherwise.
     shown = [status for status in (NEEDS_UPDATE, UPDATED, ORIGIN_CERT, PRIVATE_CERT, NOT_HOSTED,
@@ -6938,7 +6978,9 @@ def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
       certificate with the same status (``cert``: only for rows whose certificate
       covers the name - UPDATED, NEEDS_UPDATE or a status of a later version - also
       for the no-SNI probe, ``name`` None; a NOT_HOSTED row's fallback certificate is not
-      a change), or a row only one report has.
+      a change), or a row only one report has;
+    * scope ``certificate`` - with --ari / --revocation, a certificate served now
+      (:func:`_status_changes`): ``renew-now``, ``moved-up``, ``ca-notice``, ``revoked``.
 
     Order: names, then endpoints in the order of ``after`` followed by the ones only
     ``before`` has, each with its rows in probe order.
@@ -6988,6 +7030,8 @@ def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
             change = _row_change(old['rows'].get(name), new['rows'].get(name), ip, port, name)
             if change is not None:
                 changes.append(change)
+    # --ari / --revocation: what the CAs say about the certificates served now
+    changes.extend(_status_changes(before, after))
     return changes
 
 
@@ -7089,12 +7133,18 @@ def build_monitor(report: ScanReport, baseline: Optional[Dict[str, Any]] = None,
 
 # --- change and expiry text (summary and --notify) --------------------------------------
 
-_CHANGE_TAGS = {'appeared': 'NEW', 'disappeared': 'GONE', 'cert': 'CERT'}
+_CHANGE_TAGS = {'appeared': 'NEW', 'disappeared': 'GONE', 'cert': 'CERT',
+                # --ari / --revocation (the runner's tags, tools/ds/tlsdiff.mjs)
+                'renew-now': 'RENEW-NOW', 'moved-up': 'MOVED-UP', 'ca-notice': 'CA-NOTICE',
+                'revoked': 'REVOKED'}
 _TAG_STYLES = {'FAILED': ('red', 'bold'), 'REGRESSED': ('red', 'bold'), 'UNHOSTED': ('red',),
                'GONE': ('red',), 'RECOVERED': ('green',), 'UPDATED': ('green', 'bold'),
                'HOSTED': ('green',), 'NEW': ('cyan',), 'CERT': ('yellow',),
-               'CHANGED': ('yellow',), 'FAILING': ('dim',), SKIPPED: ('dim',)}
-_BAD_TAGS = ('FAILED', 'REGRESSED', 'UNHOSTED', 'GONE')
+               'CHANGED': ('yellow',), 'FAILING': ('dim',), SKIPPED: ('dim',),
+               'RENEW-NOW': ('red', 'bold'), 'MOVED-UP': ('red', 'bold'),
+               'CA-NOTICE': ('red', 'bold'), 'REVOKED': ('red', 'bold')}
+_BAD_TAGS = ('FAILED', 'REGRESSED', 'UNHOSTED', 'GONE', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE',
+             'REVOKED')
 _TAG_WIDTH = max(len(tag) for tag in _TAG_STYLES)
 
 
@@ -7190,6 +7240,8 @@ def change_text(change: Dict[str, Any]) -> str:
     escaped with :func:`display_text`."""
     kind, scope = change.get('kind'), change.get('scope')
     before, after = change.get('before') or {}, change.get('after') or {}
+    if scope == 'certificate':  # --ari / --revocation
+        return _status_change_text(change)
     if scope == 'name':
         where = 'name %s' % change.get('name')
         if kind == 'appeared':
@@ -8107,6 +8159,8 @@ def _estate_entry(sha: str, row: Dict[str, Any], info: Any, probes: Sequence[Tup
     algorithm = text('keyAlgorithm')
     signature = text('signatureAlgorithm')
     spki = text('spkiSha256')
+    # --ari / --revocation: carried along only when the report has them (lib/estate.js alike)
+    extra = {key: info[key] for key in ('ari', 'revocation') if isinstance(info.get(key), dict)}
     return {
         'sha256': sha,
         'subjectCN': text('subjectCN', row.get('certSubjectCN')),
@@ -8130,6 +8184,7 @@ def _estate_entry(sha: str, row: Dict[str, Any], info: Any, probes: Sequence[Tup
         'isCA': info.get('isCA') is True,
         'weak': weak_reasons(algorithm, bits, signature),
         'coversAsked': [name for name, sni in probes if cert_covers(hostnames, sni)[0]],
+        **extra,
         'flags': [],
         'endpoints': [],
     }
@@ -8208,11 +8263,24 @@ ESTATE_CSV_COLUMNS = ('sha256', 'subject_cn', 'issuer', 'kind', 'not_after', 'da
                       'flags', 'weak')
 
 
+def estate_status_columns(estate: Dict[str, Any]) -> Tuple[str, ...]:
+    """The columns --ari / --revocation add to the estate CSV: :data:`ARI_CSV_COLUMNS` when a
+    certificate has an ``ari`` record, :data:`REVOCATION_CSV_COLUMNS` when one has a
+    ``revocation`` record (lib/estate.js estateStatusColumns)."""
+    certs = estate.get('certificates') or []
+    return (ARI_CSV_COLUMNS if any('ari' in cert for cert in certs) else ()) + \
+        (REVOCATION_CSV_COLUMNS if any('revocation' in cert for cert in certs) else ())
+
+
 def estate_csv_rows(estate: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """One row per certificate, endpoint and server (:data:`ESTATE_CSV_COLUMNS`), in the
-    estate's order; lib/estate.js estateCsvRows gives the same rows."""
+    """One row per certificate, endpoint and server (:data:`ESTATE_CSV_COLUMNS`, then
+    :func:`estate_status_columns`), in the estate's order; lib/estate.js estateCsvRows gives
+    the same rows."""
     rows = []
+    extra = estate_status_columns(estate)
     for cert in estate.get('certificates') or []:
+        status = dict(zip(extra, status_csv_cells(cert, ARI_CSV_COLUMNS[0] in extra,
+                                                  REVOCATION_CSV_COLUMNS[0] in extra)))
         for endpoint in cert['endpoints']:
             for server in endpoint['servers'] or ['']:
                 rows.append({
@@ -8228,6 +8296,7 @@ def estate_csv_rows(estate: Dict[str, Any]) -> List[Dict[str, Any]]:
                     'default_cert': 'yes' if endpoint['defaultCert'] else 'no',
                     'served_for': ' '.join(endpoint['names']),
                     'flags': ' '.join(cert['flags']), 'weak': ' '.join(cert['weak']),
+                    **status,
                 })
     return rows
 
@@ -8238,9 +8307,10 @@ def render_estate_csv(estate: Dict[str, Any], lineterminator: str = '\r\n',
     every text cell spreadsheet-safe (:func:`_csv_cell`)."""
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator=lineterminator)
-    writer.writerow(ESTATE_CSV_COLUMNS)
+    columns = ESTATE_CSV_COLUMNS + estate_status_columns(estate)
+    writer.writerow(columns)
     for row in estate_csv_rows(estate):
-        writer.writerow([_csv_cell(row[column], terminal) for column in ESTATE_CSV_COLUMNS])
+        writer.writerow([_csv_cell(row[column], terminal) for column in columns])
     return buffer.getvalue()
 
 
@@ -8308,6 +8378,14 @@ def render_estate(report: ScanReport, estate: Dict[str, Any], color: bool = Fals
         for b in ESTATE_BUCKETS)))
     lines.append('Kinds: %s' % ', '.join('%s %d' % (_KIND_TEXT[k], counts['kinds'][k])
                                          for k in ESTATE_KINDS))
+    status_certs = [e for e in estate['certificates'] if 'ari' in e or 'revocation' in e]
+    if status_certs:  # --ari / --revocation
+        revoked = sum(1 for e in status_certs if (e.get('revocation') or {}).get('status') == 'revoked')
+        due = sum(1 for e in status_certs if window_state(e.get('ari'), now) in ('open', 'past'))
+        lines.append('Renewal windows and revocation: %s, %s' % (
+            style.paint('%d revoked' % revoked, 'red', 'bold') if revoked else '0 revoked',
+            style.paint('%d to renew now (ARI window open or ended)' % due, 'red', 'bold') if due
+            else '0 to renew now (ARI)'))
     if not estate['namesAsked']:
         lines.append(style.paint('No names asked: every server was asked without SNI only. Give '
                                  'your host names with -n (or targets by host name) to see the '
@@ -8406,6 +8484,10 @@ def render_estate(report: ScanReport, estate: Dict[str, Any], color: bool = Fals
             lines.extend(_wrap('    ', 4, display_text('names: ' + ', '.join(shown) + more), width))
         lines.extend(_wrap('    ', 4, display_text('served: ' + _estate_where(entry['endpoints'],
                                                                            show_all)), width))
+        if isinstance(entry.get('ari'), dict):  # --ari
+            lines.extend(_wrap('    ', 4, ari_text(entry['ari'], now, style), width))
+        if isinstance(entry.get('revocation'), dict):  # --revocation
+            lines.extend(_wrap('    ', 4, revocation_text(entry['revocation'], style), width))
     lines.append('')
 
     with_cert = {(e['ip'], e['port']) for c in estate['certificates'] for e in c['endpoints']}
@@ -8434,6 +8516,900 @@ def render_estate(report: ScanReport, estate: Dict[str, Any], color: bool = Fals
                                                style.status(status),
                                                style.paint(display_text(error or ''), 'dim')))
     return '\n'.join(lines) + '\n'
+
+
+# =====================================================================================
+# --ari / --revocation: the issuing CA's renewal window and revocation list of every
+# certificate the scan found served
+# =====================================================================================
+# ARI (ACME Renewal Information, RFC 9773): the CA's ACME directory names its renewalInfo URL,
+# and GET <renewalInfo>/<CertID> answers the window in which the CA wants the certificate
+# renewed - a CA moves it earlier before a mass revocation. The CertID is the issuer's key
+# identifier and the serial number, both public. Revocation: the CRL the certificate names,
+# read with the DER reader above (Let's Encrypt has been CRL-only since 2025-08-06; OCSP is
+# not asked). Python's standard library cannot check the CRL's signature, so the report says
+# "CRL signature not verified" (the headless runner, tools/ds.mjs tls --revocation, checks it).
+# The directories are the runner's (tools/ds/ari.mjs); tests/js/ds-tls.test.js keeps them in step.
+
+ARI_DIRECTORIES = {
+    'letsencrypt': ({'url': 'https://acme-v02.api.letsencrypt.org/directory',
+                     'hosts': ('acme-v02.api.letsencrypt.org',)},),
+    'google': ({'url': 'https://dv.acme-v02.api.pki.goog/directory',
+                'hosts': ('dv.acme-v02.api.pki.goog',)},),
+    'zerossl': ({'url': 'https://acme.zerossl.com/v2/DV90',
+                 'hosts': ('ari.trust-provider.com',)},),
+    'sectigo': ({'url': 'https://acme.sectigo.com/v2/DV', 'hosts': ('ari.sectigo.com',)},),
+    # one directory per key type; its renewalInfo answered 403 (not routed) on 2026-10-09
+    'sslcom': ({'url': 'https://acme.ssl.com/sslcom-dv-rsa', 'hosts': ('acme.ssl.com',),
+                'keyType': 'RSA'},
+               {'url': 'https://acme.ssl.com/sslcom-dv-ecc', 'hosts': ('acme.ssl.com',),
+                'keyType': 'EC'}),
+}  # type: Dict[str, Tuple[Dict[str, Any], ...]]
+
+# The issuer -> CA mapping of lib/renewal.js caForIssuer for these CAs: the first match in the
+# order of lib/health.js CAA_ISSUERS (ZeroSSL first: it issues from Sectigo intermediates); None
+# for a CA without an ARI server here (DigiCert, GlobalSign ...) or a private one.
+_ARI_CA_PATTERNS = (
+    ('zerossl', re.compile(r'zerossl', re.I)),
+    ('letsencrypt', re.compile(r"let'?s\s*encrypt|\bISRG\b", re.I)),
+    ('google', re.compile(r'google trust services|\bGTS CA\b', re.I)),
+    (None, re.compile(r'digicert|geotrust|rapidssl|thawte|symantec|verisign|encryption everywhere'
+                      r'|cloudflare inc (?:ecc|rsa) ca', re.I)),
+    ('sectigo', re.compile(r'sectigo|comodo|usertrust|gogetssl|cpanel', re.I)),
+    (None, re.compile(r'globalsign|go\s*daddy|starfield|\bamazon\b|buypass', re.I)),
+    ('sslcom', re.compile(r'ssl\.com|ssl corporation', re.I)),
+)
+ARI_TIMEOUT = 10.0                 # seconds per ARI request
+ARI_MAX_RETRY = 7 * 86400          # a longer Retry-After (a broken header) is cut to a week
+ARI_BENCH = 3600                   # a rate-limited CA without Retry-After: not asked for this long
+CRL_MAX_BYTES = 20 << 20           # a larger CRL is not read
+CRL_TIMEOUT = 15.0                 # seconds per socket operation of a CRL download
+STATUS_WORKERS = 4                 # ARI requests and CRL downloads in flight
+MOVED_UP_SECONDS = 24 * 3600       # a window starting this much earlier than before: MOVED-UP
+# RFC 5280 section 5.3.1 CRLReason (also what Cert Spotter's revocation.reason holds).
+REVOCATION_REASONS = {0: 'unspecified', 1: 'keyCompromise', 2: 'cACompromise',
+                      3: 'affiliationChanged', 4: 'superseded', 5: 'cessationOfOperation',
+                      6: 'certificateHold', 8: 'removeFromCRL', 9: 'privilegeWithdrawn',
+                      10: 'aACompromise'}
+_OID_CRL_REASON = '2.5.29.21'
+_OID_INVALIDITY = '2.5.29.24'
+_OID_CRL_NUMBER = '2.5.29.20'
+_OID_IDP = '2.5.29.28'
+_OID_DELTA_CRL = '2.5.29.27'
+_OID_FRESHEST_CRL = '2.5.29.46'
+_KNOWN_CRL_EXTENSIONS = frozenset((_OID_AKI, _OID_CRL_NUMBER, _OID_IDP, _OID_DELTA_CRL,
+                                   _OID_FRESHEST_CRL, _OID_AIA))
+_KNOWN_ENTRY_EXTENSIONS = frozenset((_OID_CRL_REASON, _OID_INVALIDITY))
+# The CSV columns --ari / --revocation add (after the others, the scan's and --estate's alike).
+ARI_CSV_COLUMNS = ('ari_start', 'ari_end', 'ari_explanation', 'ari_error')
+REVOCATION_CSV_COLUMNS = ('revocation', 'revoked_at', 'revocation_reason', 'revocation_error')
+_RFC3339_RE = re.compile(r'^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?'
+                         r'([Zz]|[+-]\d{2}:\d{2})$')
+
+
+def ari_ca_for_issuer(issuer_dn: Optional[str]) -> Optional[str]:
+    """The ARI CA (an :data:`ARI_DIRECTORIES` key) of an issuer DN, or None."""
+    for ca, pattern in _ARI_CA_PATTERNS:
+        if pattern.search(issuer_dn or ''):
+            return ca
+    return None
+
+
+def ari_directory_for(ca: Optional[str], key_algorithm: Optional[str],
+                      directories: Optional[Dict[str, Tuple[Dict[str, Any], ...]]] = None
+                      ) -> Optional[Dict[str, Any]]:
+    """The ACME directory entry of ``ca`` for a certificate's key type, or None."""
+    table = ARI_DIRECTORIES if directories is None else directories
+    entries = table.get(ca) if ca else None
+    if not entries:
+        return None
+    if len(entries) == 1:
+        return entries[0]
+    for entry in entries:
+        if entry.get('keyType') == key_algorithm:
+            return entry
+    return None
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode('ascii').rstrip('=')
+
+
+def ari_cert_id(cert: CertInfo) -> Optional[str]:
+    """The RFC 9773 CertID: base64url of the AKI keyIdentifier, a dot, base64url of the serial
+    number's DER content (a leading zero byte when its high bit is set); None without both."""
+    if not cert.authority_key_id or not cert.serial_hex:
+        return None
+    try:
+        key_id = bytes.fromhex(cert.authority_key_id)
+        serial = bytes.fromhex(cert.serial_hex if len(cert.serial_hex) % 2 == 0
+                               else '0' + cert.serial_hex)
+    except ValueError:
+        return None
+    if not key_id or not serial:
+        return None
+    serial = serial.lstrip(b'\x00') or b'\x00'
+    if serial[0] & 0x80:
+        serial = b'\x00' + serial
+    return '%s.%s' % (_b64url(key_id), _b64url(serial))
+
+
+def _parse_rfc3339(value: Any) -> Optional[datetime]:
+    """An RFC 3339 time as ARI writes it (``2026-11-02T17:18:36Z``), or None."""
+    match = _RFC3339_RE.match(value) if isinstance(value, str) else None
+    if not match:
+        return None
+    parts = [int(part) for part in match.groups()[:6]]
+    micro = int((match.group(7) or '0')[:6].ljust(6, '0'))
+    try:
+        when = datetime(*parts, micro, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    zone = match.group(8)
+    if zone not in ('Z', 'z'):
+        offset = timedelta(hours=int(zone[1:3]), minutes=int(zone[4:6]))
+        when = when - offset if zone[0] == '+' else when + offset
+    return when
+
+
+def _parse_retry_after(value: Optional[str], now: datetime) -> Optional[float]:
+    """A Retry-After header (seconds, or an HTTP date) in seconds from ``now``, or None."""
+    text = (value or '').strip()
+    if not text:
+        return None
+    if re.match(r'^\d+(?:\.\d+)?$', text):
+        return float(text)
+    try:
+        when = email.utils.parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - now).total_seconds())
+
+
+class StatusFetchError(Exception):
+    """A request of --ari / --revocation that brought no answer: ``code`` is ``timeout``,
+    ``network``, ``too-large``, ``http`` or ``parse``; ``status`` the HTTP status if any."""
+
+    def __init__(self, code: str, message: str = '', status: Optional[int] = None) -> None:
+        Exception.__init__(self, message or code)
+        self.code = code
+        self.status = status
+
+
+FetchFn = Callable[[str, float, Optional[int]], Tuple[int, Dict[str, str], bytes]]
+
+
+def http_get(url: str, timeout: float, max_bytes: Optional[int] = None
+             ) -> Tuple[int, Dict[str, str], bytes]:
+    """GET ``url`` (http or https, redirects followed): ``(status, headers, body)`` for any
+    answer - a 4xx / 5xx one with its first 4 KiB -, :class:`StatusFetchError` for none or a
+    body larger than ``max_bytes``. Header names are lower case."""
+    if not re.match(r'^https?://', url, re.I):
+        raise StatusFetchError('network', 'not an http(s) URL')
+    request = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT, 'Accept': '*/*'})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+            headers = {key.lower(): value for key, value in response.headers.items()}
+            declared = headers.get('content-length', '')
+            if max_bytes is not None and declared.isdigit() and int(declared) > max_bytes:
+                raise StatusFetchError('too-large', '%s bytes' % declared, response.status)
+            body = response.read(max_bytes + 1 if max_bytes is not None else -1)
+            if max_bytes is not None and len(body) > max_bytes:
+                raise StatusFetchError('too-large', 'more than %d bytes' % max_bytes,
+                                       response.status)
+            return response.status, headers, body
+    except urllib.error.HTTPError as exc:
+        headers = {key.lower(): value for key, value in (exc.headers.items() if exc.headers
+                                                           else [])}
+        try:
+            body = exc.read(4096)
+        except Exception:  # noqa: BLE001 - the status is what matters
+            body = b''
+        finally:
+            exc.close()
+        return exc.code, headers, body
+    except StatusFetchError:
+        raise
+    except urllib.error.URLError as exc:
+        reason = exc.reason
+        code = 'timeout' if isinstance(reason, (socket.timeout, TimeoutError)) else 'network'
+        raise StatusFetchError(code, str(reason))
+    except (socket.timeout, TimeoutError) as exc:
+        raise StatusFetchError('timeout', str(exc))
+    except (OSError, http.client.HTTPException, ValueError) as exc:
+        raise StatusFetchError('network', str(exc))
+
+
+class AriClient:
+    """The ARI requests of one run: each directory read once, each certificate asked once, a
+    CA not asked again in the run after it answered "rate limited", and a certificate not
+    asked before the Retry-After its last answer gave (``prev``: that answer is carried).
+
+    ``fetch``, ``directories``, ``ca_of`` and ``now`` are for tests."""
+
+    def __init__(self, fetch: Optional[FetchFn] = None,
+                 directories: Optional[Dict[str, Tuple[Dict[str, Any], ...]]] = None,
+                 ca_of: Optional[Callable[[CertInfo], Optional[str]]] = None,
+                 now: Optional[Callable[[], datetime]] = None, timeout: float = ARI_TIMEOUT
+                 ) -> None:
+        self._fetch = fetch or http_get
+        self._directories = ARI_DIRECTORIES if directories is None else directories
+        self._ca_of = ca_of or (lambda cert: ari_ca_for_issuer(cert.issuer_dn))
+        self._now = now or _utcnow
+        self._timeout = timeout
+        self._lock = threading.Lock()
+        self._bases = {}  # type: Dict[str, Optional[str]]
+        self._benched = {}  # type: Dict[str, datetime]
+        self._done = {}  # type: Dict[str, Dict[str, Any]]
+        self.requests = 0
+
+    def _renewal_info(self, entry: Dict[str, Any]) -> Optional[str]:
+        url = entry['url']
+        with self._lock:
+            if url in self._bases:
+                return self._bases[url]
+        status, _headers, body = self._fetch(url, self._timeout, 1 << 20)
+        if status != 200:
+            raise StatusFetchError('http', 'the directory answered HTTP %d' % status, status)
+        try:
+            data = json.loads(body.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
+            raise StatusFetchError('parse', 'the directory is not JSON')
+        info = data.get('renewalInfo') if isinstance(data, dict) else None
+        base = None
+        if isinstance(info, str):
+            parts = urllib.parse.urlsplit(info)
+            secure = parts.scheme == 'https' or (parts.scheme == 'http' and url.startswith('http://'))
+            if secure and parts.netloc.lower() in entry['hosts']:
+                base = info.rstrip('/')
+        with self._lock:
+            self._bases[url] = base
+        return base
+
+    def check(self, cert: CertInfo, prev: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """The ``ari`` record of ``cert``: ``{ca, certId, start, end, explanationURL, checkedAt,
+        retryAfter, status, error}`` (+ ``carried: {from}`` when not asked this run)."""
+        now = self._now()
+        ca = self._ca_of(cert)
+        record = {'ca': ca, 'certId': None, 'start': None, 'end': None, 'explanationURL': None,
+                  'checkedAt': iso_utc(now), 'retryAfter': None, 'status': None,
+                  'error': None}  # type: Dict[str, Any]
+        entry = ari_directory_for(ca, cert.key_algorithm, self._directories)
+        if entry is None:
+            record['error'] = 'unsupported'
+            return record
+        cert_id = ari_cert_id(cert)
+        if cert_id is None:
+            record['error'] = 'no-key-id'
+            return record
+        record['certId'] = cert_id
+        with self._lock:
+            if cert_id in self._done:
+                return self._done[cert_id]
+        same = isinstance(prev, dict) and prev.get('certId') == cert_id
+
+        def carried() -> Dict[str, Any]:
+            out = dict(prev or {})
+            out['carried'] = {'from': ((prev or {}).get('carried') or {}).get('from')
+                              or (prev or {}).get('checkedAt')}
+            return out
+
+        retry = _parse_iso_utc(prev.get('retryAfter')) if same else None
+        if retry is not None and retry > now:
+            return carried()
+        with self._lock:
+            bench = self._benched.get(entry['url'])
+        if bench is not None and bench > now:
+            if same:
+                return carried()
+            record.update(error='rate-limit', retryAfter=iso_utc(bench),
+                          carried={'from': iso_utc(now)})
+            return record
+        try:
+            base = self._renewal_info(entry)
+            if base is None:
+                record['error'] = 'no-renewal-info'
+                return record
+            with self._lock:
+                self.requests += 1
+            status, headers, body = self._fetch('%s/%s' % (base, cert_id), self._timeout, 1 << 20)
+        except StatusFetchError as exc:
+            record.update(error=exc.code if exc.code in ('timeout', 'network', 'http', 'parse')
+                          else 'network', status=exc.status)
+            return record
+        checked = self._now()
+        record.update(status=status, checkedAt=iso_utc(checked))
+        wait = _parse_retry_after(headers.get('retry-after'), checked)
+        if wait:
+            wait = min(wait, ARI_MAX_RETRY)
+            record['retryAfter'] = iso_utc(checked + timedelta(seconds=wait))
+        if status == 404:
+            record['error'] = 'not-found'
+        elif status == 429 or (status == 503 and wait):
+            record['error'] = 'rate-limit' if status == 429 else 'http'
+            with self._lock:
+                self._benched[entry['url']] = checked + timedelta(seconds=wait or ARI_BENCH)
+        elif status != 200:
+            record['error'] = 'http'
+        else:
+            self._window(record, body)
+        with self._lock:
+            self._done[cert_id] = record
+        return record
+
+    @staticmethod
+    def _window(record: Dict[str, Any], body: bytes) -> None:
+        try:
+            data = json.loads(body.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
+            record['error'] = 'parse'
+            return
+        window = data.get('suggestedWindow') if isinstance(data, dict) else None
+        start = _parse_rfc3339(window.get('start')) if isinstance(window, dict) else None
+        end = _parse_rfc3339(window.get('end')) if isinstance(window, dict) else None
+        if start is None or end is None or end <= start:  # RFC 9773 4.2: end after start
+            record['error'] = 'bad-window'
+            return
+        record['start'], record['end'] = iso_utc(start), iso_utc(end)
+        explanation = data.get('explanationURL')
+        if isinstance(explanation, str) and re.match(r'^https://\S+$', explanation):
+            record['explanationURL'] = explanation
+
+
+def window_state(ari: Optional[Dict[str, Any]], at: datetime) -> Optional[str]:
+    """Where ``at`` is in an ARI window: ``before``, ``open``, ``past``, or None without one."""
+    if not isinstance(ari, dict) or ari.get('error'):
+        return None
+    start, end = _parse_iso_utc(ari.get('start')), _parse_iso_utc(ari.get('end'))
+    if start is None or end is None:
+        return None
+    if at < start:
+        return 'before'
+    return 'open' if at <= end else 'past'
+
+
+# --- certificate revocation lists ---------------------------------------------------------
+
+def _serial_text(raw: bytes) -> str:
+    """An INTEGER's content as the serial_hex of :class:`CertInfo` (no leading 00 bytes)."""
+    text = raw.hex()
+    while len(text) > 2 and text.startswith('00'):
+        text = text[2:]
+    return text
+
+
+def _normal_serial(text: Optional[str]) -> str:
+    text = (text or '').lower()
+    text = text if len(text) % 2 == 0 else '0' + text
+    while len(text) > 2 and text.startswith('00'):
+        text = text[2:]
+    return text
+
+
+def _extensions(buf: bytes, tlv: Tlv) -> List[Tuple[str, bool, Tlv]]:
+    """``(oid, critical, extnValue)`` of an Extensions SEQUENCE."""
+    out = []
+    for ext in _children(buf, *_expect(tlv, 0x30, 'Extensions')[2:4]):
+        parts = _children(buf, *_expect(ext, 0x30, 'Extension')[2:4])
+        if len(parts) < 2 or len(parts) > 3:
+            raise DerError('malformed Extension')
+        critical = len(parts) == 3 and any(_content(buf, _expect(parts[1], 0x01, 'BOOLEAN')))
+        out.append((_oid(buf, parts[0]), critical, _expect(parts[-1], 0x04, 'extnValue')))
+    return out
+
+
+def _parse_idp(buf: bytes, value: Tlv) -> Dict[str, Any]:
+    """IssuingDistributionPoint: its URLs and which certificates the CRL covers."""
+    idp = {'urls': [], 'onlyUser': False, 'onlyCA': False, 'onlySomeReasons': False,
+           'indirect': False, 'onlyAttribute': False}  # type: Dict[str, Any]
+    seq = _expect(_read_tlv(buf, value[2], value[3]), 0x30, 'IssuingDistributionPoint')
+    flags = {0x81: 'onlyUser', 0x82: 'onlyCA', 0x84: 'indirect', 0x85: 'onlyAttribute'}
+    for item in _children(buf, seq[2], seq[3]):
+        if item[0] == 0xA0:  # distributionPoint [0]: fullName [0] GeneralNames
+            for choice in _children(buf, item[2], item[3]):
+                if choice[0] == 0xA0:
+                    for general in _children(buf, choice[2], choice[3]):
+                        if general[0] == 0x86:
+                            idp['urls'].append(_content(buf, general).decode('ascii', 'replace'))
+        elif item[0] in flags:
+            idp[flags[item[0]]] = any(_content(buf, item))
+        elif item[0] == 0x83:
+            idp['onlySomeReasons'] = True
+    return idp
+
+
+def parse_crl(der: Union[bytes, bytearray, memoryview],
+              serials: Optional[Iterable[str]] = None) -> Dict[str, Any]:
+    """A DER CRL (RFC 5280 section 5): ``{version, issuerDN, thisUpdate, nextUpdate, entries,
+    count, crlNumber, authorityKeyId, idp, delta, unsupportedCritical}``; ``entries`` are
+    ``{serialHex, revocationDate, reasonCode, reason, unsupportedCritical}``, only for the
+    ``serials`` given (every entry is counted). Raises :class:`DerError`. The signature is
+    not checked (stdlib)."""
+    buf = bytes(der)
+    if not buf:
+        raise DerError('empty CRL')
+    top = _expect(_read_tlv(buf, 0, len(buf)), 0x30, 'CertificateList')
+    if top[3] != len(buf):
+        raise DerError('data after the CRL')
+    parts = _children(buf, top[2], top[3])
+    if len(parts) != 3:
+        raise DerError('a CRL has 3 elements, found %d' % len(parts))
+    tbs = _expect(parts[0], 0x30, 'TBSCertList')
+    outer = _children(buf, *_expect(parts[1], 0x30, 'signatureAlgorithm')[2:4])
+    _expect(parts[2], 0x03, 'signatureValue')
+    fields = _children(buf, tbs[2], tbs[3])
+    index = 0
+    version = 1
+    if fields and fields[0][0] == 0x02:
+        version = int.from_bytes(_content(buf, fields[0]), 'big', signed=True) + 1
+        index = 1
+        if version != 2:
+            raise DerError('unsupported CRL version %d' % version)
+    if len(fields) < index + 3 or not outer:
+        raise DerError('TBSCertList is missing fields')
+    inner = _children(buf, *_expect(fields[index], 0x30, 'signature')[2:4])
+    if not inner or _oid(buf, inner[0]) != _oid(buf, outer[0]):
+        raise DerError("the CRL's two signature algorithms differ")
+    issuer_rdns = _parse_name(buf, _expect(fields[index + 1], 0x30, 'issuer Name'))
+    this_update = _parse_time(fields[index + 2][0], _content(buf, fields[index + 2]))
+    index += 3
+    next_update = None
+    if index < len(fields) and fields[index][0] in (0x17, 0x18):
+        next_update = _parse_time(fields[index][0], _content(buf, fields[index]))
+        index += 1
+    wanted = None if serials is None else {_normal_serial(s) for s in serials}
+    entries = []  # type: List[Dict[str, Any]]
+    count = 0
+    if index < len(fields) and fields[index][0] == 0x30:
+        listing = fields[index]
+        index += 1
+        pos = listing[2]
+        while pos < listing[3]:
+            entry = _expect(_read_tlv(buf, pos, listing[3]), 0x30, 'revokedCertificate')
+            pos = entry[3]
+            count += 1
+            serial = _expect(_read_tlv(buf, entry[2], entry[3]), 0x02, 'userCertificate')
+            serial_hex = _serial_text(_content(buf, serial))
+            if wanted is not None and serial_hex not in wanted:
+                continue
+            items = _children(buf, entry[2], entry[3])
+            if len(items) not in (2, 3):
+                raise DerError('malformed revokedCertificate')
+            record = {'serialHex': serial_hex,
+                      'revocationDate': _parse_time(items[1][0], _content(buf, items[1])),
+                      'reasonCode': None, 'reason': None,
+                      'unsupportedCritical': []}  # type: Dict[str, Any]
+            if len(items) == 3:
+                for oid, critical, value in _extensions(buf, items[2]):
+                    if oid == _OID_CRL_REASON:
+                        code = _content(buf, _expect(_read_tlv(buf, value[2], value[3]), 0x0A,
+                                                     'ENUMERATED'))
+                        record['reasonCode'] = int.from_bytes(code, 'big') if code else 0
+                        record['reason'] = REVOCATION_REASONS.get(record['reasonCode'])
+                    elif critical and oid not in _KNOWN_ENTRY_EXTENSIONS:
+                        record['unsupportedCritical'].append(oid)
+            entries.append(record)
+    crl_number = authority_key_id = idp = None
+    delta = False
+    unsupported = []  # type: List[str]
+    if index < len(fields) and fields[index][0] == 0xA0:
+        wrapper = _children(buf, fields[index][2], fields[index][3])
+        index += 1
+        if len(wrapper) != 1:
+            raise DerError('malformed crlExtensions')
+        for oid, critical, value in _extensions(buf, wrapper[0]):
+            if oid == _OID_CRL_NUMBER:
+                crl_number = _content(buf, _expect(_read_tlv(buf, value[2], value[3]), 0x02,
+                                                   'CRLNumber')).hex()
+            elif oid == _OID_AKI:
+                aki = _expect(_read_tlv(buf, value[2], value[3]), 0x30, 'AuthorityKeyIdentifier')
+                for item in _children(buf, aki[2], aki[3]):
+                    if item[0] == 0x80:
+                        authority_key_id = _content(buf, item).hex()
+            elif oid == _OID_IDP:
+                idp = _parse_idp(buf, value)
+            elif oid == _OID_DELTA_CRL:
+                delta = True
+            elif critical and oid not in _KNOWN_CRL_EXTENSIONS:
+                unsupported.append(oid)
+    if index != len(fields):
+        raise DerError('unexpected field in TBSCertList')
+    return {'version': version, 'issuerDN': _dn_string(issuer_rdns), 'thisUpdate': this_update,
+            'nextUpdate': next_update, 'entries': entries, 'count': count,
+            'filtered': wanted, 'crlNumber': crl_number, 'authorityKeyId': authority_key_id,
+            'idp': idp, 'delta': delta, 'unsupportedCritical': unsupported}
+
+
+def crl_urls_of(cert: CertInfo) -> List[str]:
+    """The http(s) CRL distribution points of a certificate, in order, each once."""
+    out = []  # type: List[str]
+    for url in cert.crl_urls:
+        if re.match(r'^https?://\S+$', url, re.I) and url not in out:
+            out.append(url)
+    return out
+
+
+def _same_url(a: str, b: str) -> bool:
+    x, y = urllib.parse.urlsplit(a), urllib.parse.urlsplit(b)
+    return (x.scheme.lower(), x.netloc.lower(), x.path, x.query) == \
+        (y.scheme.lower(), y.netloc.lower(), y.path, y.query)
+
+
+def crl_status(crl: Dict[str, Any], cert: CertInfo, url: Optional[str] = None,
+               now: Optional[datetime] = None) -> Dict[str, Any]:
+    """What a CRL says about ``cert`` (lib/crl.js crlStatus): ``{status: good|revoked|unknown,
+    code, reasonCode, reason, time}`` - unknown for another CA's CRL, an unknown critical
+    extension, a delta CRL, a CRL for other certificates or reasons, or a stale one."""
+    now = now or _utcnow()
+    serial = _normal_serial(cert.serial_hex)
+    if crl['filtered'] is not None and serial not in crl['filtered']:
+        raise ValueError('the CRL was read for other serial numbers')
+    out = {'status': 'unknown', 'code': None, 'reasonCode': None, 'reason': None,
+           'time': None}  # type: Dict[str, Any]
+
+    def unknown(code: str) -> Dict[str, Any]:
+        out['code'] = code
+        return out
+
+    aki = crl['authorityKeyId']
+    if crl['issuerDN'] != cert.issuer_dn or (aki and cert.authority_key_id
+                                             and aki != cert.authority_key_id.lower()):
+        return unknown('issuer-mismatch')
+    if crl['unsupportedCritical']:
+        return unknown('critical-extension')
+    if crl['delta']:
+        return unknown('delta')
+    idp = crl['idp']
+    if idp and (idp['onlyCA'] or idp['onlyAttribute'] or idp['indirect']
+                or (idp['onlyUser'] and cert.is_ca)):
+        return unknown('scope')
+    if idp and url and idp['urls'] and not any(_same_url(u, url) for u in idp['urls']):
+        return unknown('scope')
+    entry = next((e for e in crl['entries'] if e['serialHex'] == serial), None)
+    if entry is not None and entry['unsupportedCritical']:
+        return unknown('critical-extension')
+    if entry is not None and entry['reasonCode'] != 8:  # removeFromCRL: no longer on hold
+        out.update(status='revoked', reasonCode=entry['reasonCode'], reason=entry['reason'],
+                   time=entry['revocationDate'])
+        return out
+    if idp and idp['onlySomeReasons']:
+        return unknown('reasons')
+    if crl['nextUpdate'] is not None and crl['nextUpdate'] < now:
+        return unknown('stale')
+    out['status'] = 'good'
+    return out
+
+
+class RevocationChecker:
+    """The CRL downloads of one run: each URL read once (at most :data:`CRL_MAX_BYTES`) and
+    parsed once for the serial numbers of every certificate that names it. ``fetch`` and
+    ``now`` are for tests."""
+
+    def __init__(self, fetch: Optional[FetchFn] = None,
+                 now: Optional[Callable[[], datetime]] = None, timeout: float = CRL_TIMEOUT,
+                 max_bytes: int = CRL_MAX_BYTES, workers: int = STATUS_WORKERS) -> None:
+        self._fetch = fetch or http_get
+        self._now = now or _utcnow
+        self._timeout = timeout
+        self._max_bytes = max_bytes
+        self._workers = workers
+        self.downloads = 0
+
+    def _load(self, item: Tuple[str, Set[str]]) -> Tuple[str, Any]:
+        url, serials = item
+        self.downloads += 1
+        try:
+            status, _headers, body = self._fetch(url, self._timeout, self._max_bytes)
+        except StatusFetchError as exc:
+            return ('error', exc.code)
+        if status != 200:
+            return ('error', 'http')
+        try:
+            return ('ok', parse_crl(body, serials))
+        except _CERT_PARSE_ERRORS:
+            return ('error', 'parse')
+
+    def check(self, certs: Dict[str, CertInfo]) -> Dict[str, Dict[str, Any]]:
+        """The ``revocation`` record of every certificate (by SHA-256): ``{status, reason,
+        reasonCode, time, crl, checkedAt, thisUpdate, nextUpdate, signature, error}``."""
+        serials_of = {}  # type: Dict[str, Set[str]]
+        for cert in certs.values():
+            for url in crl_urls_of(cert):
+                serials_of.setdefault(url, set()).add(_normal_serial(cert.serial_hex))
+        loaded = {}  # type: Dict[str, Any]
+        if serials_of:
+            _parallel(self._load, list(serials_of.items()), self._workers,
+                      lambda item, result: loaded.__setitem__(item[0], result), threading.Event())
+        out = {}  # type: Dict[str, Dict[str, Any]]
+        for sha, cert in certs.items():
+            urls = crl_urls_of(cert)
+            if not urls:
+                out[sha] = self._record(error='no-crl')
+                continue
+            first = None  # type: Optional[Dict[str, Any]]
+            for url in urls:
+                got = loaded.get(url, ('error', 'network'))
+                if got[0] != 'ok':
+                    record = self._record(crl=url, error=got[1])
+                else:
+                    crl = got[1]
+                    verdict = crl_status(crl, cert, url, self._now())
+                    record = self._record(crl=url, thisUpdate=iso_utc(crl['thisUpdate']),
+                                          nextUpdate=iso_utc(crl['nextUpdate']),
+                                          signature='not-verified')
+                    if verdict['status'] == 'unknown':
+                        record['error'] = verdict['code']
+                        if verdict['code'] == 'issuer-mismatch':
+                            record['signature'] = None
+                    else:
+                        record.update(status=verdict['status'], reason=verdict['reason'],
+                                      reasonCode=verdict['reasonCode'],
+                                      time=iso_utc(verdict['time']))
+                if record['status'] != 'unknown':
+                    out[sha] = record
+                    break
+                first = first or record
+            else:
+                out[sha] = first or self._record(error='network')
+        return out
+
+    def _record(self, **fields: Any) -> Dict[str, Any]:
+        record = {'status': 'unknown', 'reason': None, 'reasonCode': None, 'time': None,
+                  'crl': None, 'checkedAt': iso_utc(self._now()), 'thisUpdate': None,
+                  'nextUpdate': None, 'signature': None, 'error': None}  # type: Dict[str, Any]
+        record.update(fields)
+        return record
+
+
+def check_certificate_status(report: ScanReport, ari: bool = False, revocation: bool = False,
+                             baseline: Optional[Dict[str, Any]] = None,
+                             ari_client: Optional[AriClient] = None,
+                             revocation_checker: Optional[RevocationChecker] = None,
+                             workers: int = STATUS_WORKERS) -> Dict[str, Dict[str, Any]]:
+    """``--ari`` / ``--revocation`` for every certificate the scan found served (by SHA-256):
+    ``{sha256: {'ari': ..., 'revocation': ...}}``. The baseline's ``ari`` of the same
+    certificate is honoured: not asked again before its ``retryAfter``."""
+    served = {}  # type: Dict[str, CertInfo]
+    for row in report.results:
+        if row.cert is not None and row.cert.sha256 not in served:
+            served[row.cert.sha256] = row.cert
+    status = {sha: {} for sha in served}  # type: Dict[str, Dict[str, Any]]
+    if not served:
+        return status
+    if revocation:
+        checker = revocation_checker or RevocationChecker()
+        for sha, record in checker.check(served).items():
+            status[sha]['revocation'] = record
+    if ari:
+        client = ari_client or AriClient()
+        prev_certs = baseline.get('certificates') if isinstance(baseline, dict) else None
+        prev_certs = prev_certs if isinstance(prev_certs, dict) else {}
+
+        def ask(sha: str) -> Dict[str, Any]:
+            prev = prev_certs.get(sha)
+            prev_ari = prev.get('ari') if isinstance(prev, dict) else None
+            return client.check(served[sha], prev_ari if isinstance(prev_ari, dict) else None)
+
+        _parallel(ask, list(served), workers,
+                  lambda sha, record: status[sha].__setitem__('ari', record), threading.Event())
+    return status
+
+
+# --- the CSV cells, the changes and the summary lines ---------------------------------------
+
+def status_csv_cells(entry: Optional[Dict[str, Any]], ari: bool, revocation: bool) -> List[str]:
+    """The :data:`ARI_CSV_COLUMNS` and / or :data:`REVOCATION_CSV_COLUMNS` cells of a
+    certificate's records (empty cells without them)."""
+    entry = entry or {}
+    cells = []  # type: List[str]
+    if ari:
+        record = entry.get('ari') if isinstance(entry.get('ari'), dict) else {}
+        cells += [record.get('start') or '', record.get('end') or '',
+                  record.get('explanationURL') or '', record.get('error') or '']
+    if revocation:
+        record = entry.get('revocation') if isinstance(entry.get('revocation'), dict) else {}
+        cells += [record.get('status') or '', record.get('time') or '',
+                  record.get('reason') or '', record.get('error') or '']
+    return cells
+
+
+def _status_changes(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The certificate changes of --ari / --revocation (the runner's tools/ds/tlsdiff.mjs):
+    RENEW-NOW (the window opened, or ended, since the baseline knew it; or a certificate first
+    seen in it), MOVED-UP (it starts over :data:`MOVED_UP_SECONDS` earlier), CA-NOTICE (an
+    explanation URL the baseline's answers did not carry) and REVOKED (listed on the CRL now,
+    not then). Only certificates served in ``after``."""
+    old = before.get('certificates') if isinstance(before.get('certificates'), dict) else {}
+    new = after.get('certificates') if isinstance(after.get('certificates'), dict) else {}
+    served = {}  # type: Dict[str, Dict[str, Any]]
+    for row in after.get('results') or []:
+        sha = row.get('certSha256') if isinstance(row, dict) else None
+        if not isinstance(sha, str) or row.get('probe') not in _ROW_PROBES:
+            continue
+        where = served.setdefault(sha, {'servers': [], 'ip': row.get('ip'), 'port': row.get('port')})
+        server = row.get('server')
+        if isinstance(server, str) and server and server not in where['servers']:
+            where['servers'].append(server)
+    at = _parse_iso_utc(after.get('finishedAt')) or _utcnow()
+    before_at = _parse_iso_utc(before.get('finishedAt'))
+    ok = lambda record: isinstance(record, dict) and not record.get('error')  # noqa: E731
+    known_urls = set()  # type: Set[str]
+    read_before = False
+    for info in old.values():
+        record = info.get('ari') if isinstance(info, dict) else None
+        if ok(record):
+            read_before = True
+            if record.get('explanationURL'):
+                known_urls.add(record['explanationURL'])
+    changes = []  # type: List[Dict[str, Any]]
+    ranks = {'before': 0, 'open': 1, 'past': 2}
+    for sha, where in served.items():
+        info = new.get(sha) if isinstance(new.get(sha), dict) else {}
+        prev = old.get(sha) if isinstance(old.get(sha), dict) else {}
+        view = {'sha256': sha, 'subjectCN': info.get('subjectCN'), 'notAfter': info.get('notAfter')}
+
+        def add(kind: str, **detail: Any) -> None:
+            changes.append(_change(kind, 'certificate', where['servers'], where['ip'], where['port'],
+                                   before=None, after=dict(view, **detail)))
+
+        ari, prev_ari = info.get('ari'), prev.get('ari')
+        if ok(ari):
+            state = window_state(ari, at)
+            prev_state = None
+            if ok(prev_ari):
+                prev_state = window_state(prev_ari, _parse_iso_utc(prev_ari.get('checkedAt'))
+                                          or before_at or at)
+            if state in ('open', 'past') and ranks[state] > ranks.get(prev_state or '', -1):
+                add('renew-now', state=state, start=ari.get('start'), end=ari.get('end'))
+            start, prev_start = _parse_iso_utc(ari.get('start')), \
+                _parse_iso_utc(prev_ari.get('start')) if ok(prev_ari) else None
+            if start and prev_start and (prev_start - start).total_seconds() > MOVED_UP_SECONDS:
+                add('moved-up', start=ari.get('start'), was=prev_ari.get('start'))
+            url = ari.get('explanationURL')
+            if url and read_before and url not in known_urls:
+                add('ca-notice', explanationURL=url)
+        rev, prev_rev = info.get('revocation'), prev.get('revocation')
+        if isinstance(rev, dict) and rev.get('status') == 'revoked' and not (
+                isinstance(prev_rev, dict) and prev_rev.get('status') == 'revoked'):
+            add('revoked', time=rev.get('time'), reason=rev.get('reason'))
+    return changes
+
+
+def _status_change_text(change: Dict[str, Any]) -> str:
+    after = change.get('after') or {}
+    kind = change.get('kind')
+    label = 'CN %s (sha256 %s)' % (after.get('subjectCN') or '(none)', str(after.get('sha256'))[:8])
+    if kind == 'renew-now':
+        what = ("the CA's renewal window opened (%s - %s): renew it now" % (
+            _iso_day(after.get('start')), _iso_day(after.get('end'))) if after.get('state') == 'open'
+                else "the CA's renewal window ended on %s: the renewal is overdue"
+                % _iso_day(after.get('end')))
+    elif kind == 'moved-up':
+        start, was = _parse_iso_utc(after.get('start')), _parse_iso_utc(after.get('was'))
+        # half a day up, as the runner's Math.round (Python's round() goes to the even number)
+        days = int(math.floor((was - start).total_seconds() / 86400.0 + 0.5)) if start and was else 0
+        what = ('the CA moved its renewal window %d day%s earlier (starts %s, was %s), as CAs do '
+                'before a mass revocation' % (days, '' if days == 1 else 's',
+                                              _iso_day(after.get('start')), _iso_day(after.get('was'))))
+    elif kind == 'ca-notice':
+        what = 'the CA explains its renewal window: %s' % after.get('explanationURL')
+    else:
+        what = 'revoked by its CA on %s (%s), still served' % (
+            _iso_day(after.get('time')), after.get('reason') or 'no reason given')
+    where = _endpoint_label(str(change.get('ip')), change.get('port') or 0)
+    servers = _servers_label(change.get('servers') or [], change.get('ip'))
+    return display_text('%s: %s; served by %s' % (label, what, '%s %s' % (servers, where)
+                                                  if servers else where))
+
+
+def _minute(value: Any) -> str:
+    when = _parse_iso_utc(value)
+    return when.strftime('%Y-%m-%d %H:%M UTC') if when else '?'
+
+
+_ARI_WHY = {'not-found': 'the CA does not know this certificate (404)',
+            'unsupported': 'no ARI server is known for this issuer',
+            'no-key-id': 'the certificate has no authority key identifier',
+            'no-renewal-info': "the CA's directory names no renewalInfo URL",
+            'bad-window': "the CA's answer is no window",
+            'rate-limit': 'the CA answered "rate limited"',
+            'http': "the CA's ARI server answered an HTTP error",
+            'timeout': "the CA's ARI server timed out",
+            'network': "the CA's ARI server could not be reached",
+            'parse': "the CA's answer could not be read"}
+_REVOCATION_WHY = {'no-crl': 'the certificate names no CRL to read (OCSP is not asked)',
+                   'too-large': 'its CRL is larger than %d MB' % (CRL_MAX_BYTES >> 20),
+                   'http': 'its CRL could not be downloaded (HTTP error)',
+                   'timeout': 'its CRL download timed out',
+                   'network': 'its CRL could not be downloaded',
+                   'parse': 'what its CRL URL returned is not a CRL',
+                   'issuer-mismatch': "the CRL is another CA's",
+                   'critical-extension': 'the CRL has a critical extension this tool does not read',
+                   'delta': 'it is a delta CRL', 'scope': 'the CRL covers other certificates',
+                   'reasons': 'the CRL covers some revocation reasons only',
+                   'stale': 'the CRL is out of date (its nextUpdate has passed)'}
+
+
+def ari_text(record: Dict[str, Any], now: datetime, style: Style) -> str:
+    """One line of a certificate's ARI record for the summary."""
+    head = 'ARI (%s): ' % display_text(str(record['ca'])) if record.get('ca') else 'ARI: '
+    carried = record.get('carried')
+    tail = (' (as of %s; not asked again before %s, as the CA asked)' % (
+        _minute(carried.get('from')), _minute(record.get('retryAfter')))
+            if isinstance(carried, dict) and record.get('retryAfter') else
+            ' (as of %s)' % _minute(carried.get('from')) if isinstance(carried, dict) else '')
+    if record.get('error'):
+        status = ' %s' % record['status'] if record.get('error') == 'http' and record.get('status') else ''
+        return head + _ARI_WHY.get(record['error'], "the CA's answer could not be read") + status + tail
+    text = head + 'renew between %s and %s' % (_minute(record.get('start')), _minute(record.get('end')))
+    state = window_state(record, now)
+    if state == 'before':
+        start = _parse_iso_utc(record.get('start'))
+        days = int(math.ceil((start - now).total_seconds() / 86400.0)) if start else 0
+        text += ' - opens in %d day%s' % (days, '' if days == 1 else 's')
+    elif state == 'open':
+        text += ' - ' + style.paint('RENEW NOW: the window is open', 'red', 'bold')
+    elif state == 'past':
+        text += ' - ' + style.paint('the window has ended: the renewal is overdue', 'red', 'bold')
+    if record.get('explanationURL'):  # the CA's text: escaped for the terminal
+        text += '; the CA explains: %s' % display_text(str(record['explanationURL']))
+    return text + tail
+
+
+def revocation_text(record: Dict[str, Any], style: Style) -> str:
+    """One line of a certificate's revocation record for the summary."""
+    crl = 'CRL of %s' % _minute(record.get('thisUpdate')) if record.get('thisUpdate') else 'CRL'
+    if record.get('status') == 'revoked':
+        return '%s on %s (%s); %s, CRL signature not verified' % (
+            style.paint('REVOKED', 'red', 'bold'), _minute(record.get('time')),
+            record.get('reason') or 'no reason given', crl)
+    if record.get('status') == 'good':
+        return 'Not revoked (%s; CRL signature not verified)' % crl
+    why = _REVOCATION_WHY.get(record.get('error') or '', 'the CRL could not be read')
+    # the CRL URL comes from the certificate: escaped for the terminal
+    return 'Revocation unknown: %s%s' % (why, ' (%s)' % display_text(str(record['crl']))
+                                         if record.get('crl') else '')
+
+
+def render_cert_status(report: ScanReport, style: Style, width: int = 100,
+                       show_all: bool = False) -> List[str]:
+    """The summary's "Renewal windows and revocation" section (--ari / --revocation): every
+    served certificate, revoked ones first, then the windows open or past, then by window."""
+    if not report.cert_status:
+        return []
+    now = report.finished_at
+    asked = ' and '.join(what for what, on in (('ARI', report.ari), ('revocation', report.revocation))
+                         if on)
+
+    def rank(sha: str) -> Tuple[int, str]:
+        entry = report.cert_status[sha]
+        if (entry.get('revocation') or {}).get('status') == 'revoked':
+            return (0, sha)
+        state = window_state(entry.get('ari'), now)
+        return ({'past': 1, 'open': 2, 'before': 3}.get(state or '', 4),
+                (entry.get('ari') or {}).get('start') or sha)
+
+    shas = sorted(report.cert_status, key=rank)
+    limit = len(shas) if show_all else MAX_SUMMARY_CHANGES
+    lines = [style.paint('Renewal windows and revocation (%s): %d certificate(s) served' % (
+        asked, len(shas)), 'bold')]
+    for sha in shas[:limit]:
+        cert = report.certificates.get(sha)
+        entry = report.cert_status[sha]
+        lines.extend(_wrap('  ', 2, cert_line(cert, now, style) if cert else sha, width))
+        if 'ari' in entry:
+            lines.extend(_wrap('    ', 4, ari_text(entry['ari'], now, style), width))
+        if 'revocation' in entry:
+            lines.extend(_wrap('    ', 4, revocation_text(entry['revocation'], style), width))
+    if len(shas) > limit:
+        lines.append(style.paint('  ... and %d more - use --show-all or the --json report to list '
+                                 'them.' % (len(shas) - limit), 'dim'))
+    lines.append('')
+    return lines
 
 
 # =====================================================================================
@@ -9787,7 +10763,7 @@ def _run_compare(args: argparse.Namespace) -> int:
         ('--baseline', args.baseline), ('--warn-days', args.warn_days is not None), ('--notify', args.notify),
         ('--strict-public', args.strict_public), ('--fail-on-needs-update', args.fail_on_needs_update),
         ('--estate', args.estate), ('--include-backends', args.include_backends),
-        ('--profile', args.profile)) if used]
+        ('--profile', args.profile), ('--ari', args.ari), ('--revocation', args.revocation)) if used]
     if unsupported:
         raise UsageError('--compare does not take %s' % ', '.join(unsupported))
     ips = []
@@ -9895,6 +10871,11 @@ examples:
     python3 ssl_origin_scan.py -t mail.txt --cert new.pem --profile mail
     python3 ssl_origin_scan.py -t hosts.ini -n names.txt --profile all --tls-audit
 
+  What the CAs say about every certificate your servers serve: the renewal window
+  (ARI) and the revocation list, compared with last night's run:
+    python3 ssl_origin_scan.py -t hosts.ini -n names.txt --estate --ari --revocation \\
+      --baseline estate.json --json estate.json
+
   Before installing - the certificate, its chain, key and CSR checked together, and
   fullchain.pem / chain.pem written in the order servers send them:
     python3 ssl_origin_scan.py bundle-check cert.pem ca-bundle.crt private.key -o out/
@@ -9982,6 +10963,27 @@ tls audit (--tls-audit): after the scan, every endpoint where a handshake comple
   RSA and an ECDSA --cert cover), with a broken chain, and the names served with different
   certificates; the JSON gets a "tlsAudit" section (tlsAudit.summary for the fleet -
   chainProblems, serialMismatches too -, tlsAudit.endpoints for every check and its chain).
+
+renewal windows and revocation (--ari, --revocation; with a scan or --estate): every
+  certificate the scan found served is asked of its CA once. --ari reads the CA's ACME
+  Renewal Information (RFC 9773) window - Let's Encrypt, Google Trust Services, ZeroSSL,
+  Sectigo, SSL.com (by key type) - sending the CertID (the issuer's key identifier and the
+  serial number, both public); a 404 means the CA does not know the certificate. A CA is
+  not asked again before the Retry-After of its last answer (the --baseline report's): the
+  last answer is carried, as of its time. --revocation downloads the CRL the certificate
+  names (at most 20 MB; OCSP is never asked) and says revoked with the reason and the time,
+  good, or unknown with why (another CA's CRL, a CRL for other certificates, a stale one, no
+  CRL named ...); this Python cannot check the CRL's signature: "CRL signature not
+  verified" (the web app's headless runner, tools/ds.mjs tls --revocation, checks it). The
+  summary lists them revoked first, the JSON gives each certificate "ari" {ca, certId,
+  start, end, explanationURL, checkedAt, retryAfter, status, error} and "revocation"
+  {status, reason, reasonCode, time, crl, checkedAt, thisUpdate, nextUpdate, signature,
+  error}, the CSV (the scan's and --estate's) adds ari_start, ari_end, ari_explanation,
+  ari_error and revocation, revoked_at, revocation_reason, revocation_error. With
+  --baseline these count as changes: RENEW-NOW (the window opened, or ended, since the
+  last run), MOVED-UP (it starts more than a day earlier than before: CAs do that before a
+  mass revocation), CA-NOTICE (an explanation URL the last run's answers did not carry)
+  and REVOKED (a certificate still served is on its CRL).
 
 topology (keys on a server's line in an inventory file, or CSV columns, Ansible host
   variables, JSON keys; the web app's Servers view reads the same): where TLS terminates.
@@ -10280,6 +11282,16 @@ def build_parser() -> argparse.ArgumentParser:
                            'RSA + ECDSA pairs served by halves, broken chains, and one name '
                            'served with different certificates across the endpoints (a pool '
                            'member the renewal missed)')
+    scan.add_argument('--ari', action='store_true',
+                      help='ask the issuing CA of every certificate served for its renewal window '
+                           '(ACME Renewal Information, RFC 9773: Let\'s Encrypt, Google Trust '
+                           'Services, ZeroSSL, Sectigo, SSL.com); sends each certificate\'s CertID '
+                           '(the issuer\'s key identifier and the serial number), never again '
+                           'before the Retry-After of its last answer (--baseline)')
+    scan.add_argument('--revocation', action='store_true',
+                      help='read the CRL every certificate served names (at most %d MB each; '
+                           'no OCSP): revoked, with the reason and the time; this Python cannot '
+                           'check the CRL\'s signature and says so' % (CRL_MAX_BYTES >> 20))
     scan.add_argument('-w', '--workers', type=int, default=DEFAULT_WORKERS, metavar='N',
                       help='parallel connections (default: %%(default)s; at most %d at a '
                            'time to one ip:port)' % MAX_PER_ENDPOINT)
@@ -10850,6 +11862,17 @@ def _run(args: argparse.Namespace) -> int:
                                          progress=progress.update)
     finally:
         progress.finish()
+    if args.ari or args.revocation:
+        served = len({row.cert.sha256 for row in report.results if row.cert is not None})
+        if not quiet:
+            print('Asking the CAs about %d certificate(s) served: %s ...' % (served, ' and '.join(
+                what for what, on in (('the renewal window (ARI)', args.ari),
+                                      ('the revocation list (CRL)', args.revocation)) if on)),
+                  file=err)
+        report.ari, report.revocation = bool(args.ari), bool(args.revocation)
+        report.cert_status = check_certificate_status(report, ari=args.ari,
+                                                      revocation=args.revocation,
+                                                      baseline=baseline)
     monitor = None  # type: Optional[MonitorResult]
     if args.baseline or args.warn_days is not None:
         monitor = build_monitor(report, baseline, args.baseline, args.warn_days)

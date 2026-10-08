@@ -4389,9 +4389,10 @@ class MonitorCliTests(unittest.TestCase):
         epilog = sos.EPILOG.replace('\\\n', ' ')
         helped = re.findall(r'^ +(python3 ssl_origin_scan\.py .+)$', epilog, re.M)
         self.assertGreaterEqual(len(helped), 8)
-        # the cron examples keep their "\" line breaks (a lone backslash in the source
-        # would join the lines) and send the summary to a file
-        self.assertEqual(sos.EPILOG.count(' \\\n'), 2)
+        # the cron examples and the --ari / --revocation one keep their "\" line breaks (a
+        # lone backslash in the source would join the lines); the cron ones send the summary
+        # to a file
+        self.assertEqual(sos.EPILOG.count(' \\\n'), 3)
         self.assertLessEqual(max(len(line) for line in sos.EPILOG.splitlines()), 100)
         self.assertEqual(sum(' > last.txt' in c or ' > son.txt' in c for c in commands + helped),
                          3)
@@ -4942,7 +4943,7 @@ class CompatibilityTests(unittest.TestCase):
                   'textwrap', 'threading', 'time', 'concurrent.futures', 'dataclasses',
                   'datetime', 'typing', 'ctypes', 'msvcrt', 'codecs', 'stat', 'unicodedata',
                   'encodings', 'http.client', 'urllib.error', 'urllib.parse',
-                  'urllib.request', 'warnings'}
+                  'urllib.request', 'warnings', 'email.utils'}
         self.assertLessEqual(imports, stdlib, imports - stdlib)
 
 

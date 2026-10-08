@@ -7822,6 +7822,8 @@ def page_title(body: bytes, charset: Optional[str] = None) -> Optional[str]:
 
     def numeric(m: 're.Match[str]', base: int) -> str:
         value = int(m.group(1), base)
+        if 0xD800 <= value <= 0xDFFF:
+            return '�'   # a UTF-16 surrogate, as HTML reads it: never written as UTF-8
         return chr(value) if 0 < value < 0x110000 else m.group(0)
 
     text = re.sub(r'&#(\d{1,6});', lambda m: numeric(m, 10), text)

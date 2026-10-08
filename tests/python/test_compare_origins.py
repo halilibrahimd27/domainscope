@@ -411,6 +411,11 @@ class CompareUnitTests(unittest.TestCase):
         self.assertEqual(sos.page_title('<title>\xe7</title>'.encode('cp1254'), 'windows-1254'), '\xe7')
         self.assertIsNone(sos.page_title(b'<p>no title</p>'))
         self.assertEqual(len(sos.page_title(b'<title>' + b'x' * 300 + b'</title>')), 200)
+        # an emoji written as two UTF-16 surrogate references (Java's escapeHtml): U+FFFD each, as
+        # in a browser, so the --json report can be written as UTF-8
+        title = sos.page_title(b'<title>Welcome &#55357;&#56832; &#xDFFF;</title>')
+        self.assertEqual(title, 'Welcome �� �')
+        self.assertEqual(title.encode('utf-8').decode('utf-8'), title)
 
 
 class CompareUsageTests(unittest.TestCase):

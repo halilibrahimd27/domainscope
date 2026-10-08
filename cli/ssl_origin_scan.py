@@ -133,17 +133,29 @@ NOTIFY_RETRY_DELAY = 2.0    # seconds before the one retry
 # port names it for any number: -p 2525/smtp, a target 203.0.113.10:2525/smtp, 25/tls.
 PROTO_TLS = 'tls'
 PROTO_SMTP, PROTO_IMAP, PROTO_POP3, PROTO_FTP = 'smtp', 'imap', 'pop3', 'ftp'
-PROTO_LDAP, PROTO_XMPP, PROTO_POSTGRES = 'ldap', 'xmpp', 'postgres'
+PROTO_LDAP, PROTO_XMPP, PROTO_POSTGRES, PROTO_RDP = 'ldap', 'xmpp', 'postgres', 'rdp'
 STARTTLS_PROTOCOLS = (PROTO_SMTP, PROTO_IMAP, PROTO_POP3, PROTO_FTP, PROTO_LDAP, PROTO_XMPP,
-                      PROTO_POSTGRES)
+                      PROTO_POSTGRES, PROTO_RDP)
 PROTOCOLS = (PROTO_TLS,) + STARTTLS_PROTOCOLS
 PORT_PROTOCOLS = {25: PROTO_SMTP, 587: PROTO_SMTP, 143: PROTO_IMAP, 110: PROTO_POP3,
-                  21: PROTO_FTP, 389: PROTO_LDAP, 5222: PROTO_XMPP, 5432: PROTO_POSTGRES}
+                  21: PROTO_FTP, 389: PROTO_LDAP, 5222: PROTO_XMPP, 5432: PROTO_POSTGRES,
+                  3389: PROTO_RDP}
 _PROTOCOL_ALIASES = {'submission': PROTO_SMTP, 'pop': PROTO_POP3, 'postgresql': PROTO_POSTGRES,
-                     'pgsql': PROTO_POSTGRES, 'xmpp-client': PROTO_XMPP}
+                     'pgsql': PROTO_POSTGRES, 'xmpp-client': PROTO_XMPP,
+                     'ms-wbt-server': PROTO_RDP}
 PROTOCOL_LABELS = {PROTO_TLS: 'TLS', PROTO_SMTP: 'SMTP', PROTO_IMAP: 'IMAP', PROTO_POP3: 'POP3',
                    PROTO_FTP: 'FTP', PROTO_LDAP: 'LDAP', PROTO_XMPP: 'XMPP',
-                   PROTO_POSTGRES: 'PostgreSQL'}
+                   PROTO_POSTGRES: 'PostgreSQL', PROTO_RDP: 'RDP'}
+# --profile: the ports of a kind of server, in place of -p's default (443); -p adds its own.
+# all: every port whose protocol the scan speaks by default (web, mail, file transfer,
+# directory, chat, database, remote desktop).
+PORT_PROFILES = {
+    'web': (443, 8443),
+    'mail': (25, 587, 465, 143, 993, 110, 995),
+    'all': (443, 8443, 25, 587, 465, 143, 993, 110, 995, 21, 990, 389, 636, 5222, 5223, 5432,
+            3389),
+}
+PROFILE_NAMES = ('web', 'mail', 'all')
 
 
 class UsageError(Exception):
@@ -1627,9 +1639,10 @@ TOPOLOGY_KEYS = ('ports', 'tls_ports', 'terminates_tls', 'vip', 'backends', 'nat
 _PORTS_KEYS = ('ports', 'tls_ports')
 _TOPOLOGY_MALFORMED = {'ports': 'ports', 'tls_ports': 'ports', 'terminates_tls': 'terminatesTls',
                        'vip': 'vip', 'nat': 'nat', 'backends': 'backends'}
-# Ports that carry no TLS the scan can reach: kept in a ports= list, warned about. The STARTTLS
-# ports (PORT_PROTOCOLS: 21, 25, 110, 143, 389, 587, 5222, 5432) are scanned with STARTTLS.
-_PLAIN_PORTS = frozenset((20, 22, 23, 53, 80, 119, 3306, 3389, 6379, 8080, 27017))
+# Ports that carry no TLS the scan can reach: kept in a ports= list, warned about. The ports
+# PORT_PROTOCOLS names (21, 25, 110, 143, 389, 587, 3389, 5222, 5432) are scanned through their
+# protocol (STARTTLS, RDP's negotiation).
+_PLAIN_PORTS = frozenset((20, 22, 23, 53, 80, 119, 3306, 6379, 8080, 27017))
 _TOPOLOGY_HELP = {
     'ports': 'ports= takes TLS ports 1-65535, comma separated (ports=443,8443)',
     'tls_ports': 'tls_ports= takes TLS ports 1-65535, comma separated (tls_ports=443,8443)',
@@ -3825,6 +3838,7 @@ class ScanReport:
     skipped_backends: List[Server] = field(default_factory=list)
     include_backends: bool = False                                 # --include-backends
     audit: Optional['TlsAudit'] = None                             # --tls-audit
+    profiles: List[str] = field(default_factory=list)              # --profile web|mail|all
 
     def protocol_of(self, ip: str, port: int) -> str:
         """The protocol endpoint ``ip:port`` was scanned with (tls when it is no endpoint)."""
@@ -4297,9 +4311,47 @@ def _starttls_postgres(channel: _PlainChannel, sni: Optional[str]) -> None:
         raise channel.fail('unexpected answer to the SSLRequest')
 
 
+# RDP (MS-RDPBCGR, the connection request and confirm PDUs): an X.224 Connection Request in a
+# TPKT carrying an RDP_NEG_REQ that asks for TLS or CredSSP (requestedProtocols PROTOCOL_SSL |
+# PROTOCOL_HYBRID); the Connection Confirm's RDP_NEG_RSP names the one chosen, and the TLS
+# handshake follows on the same connection (CredSSP runs over TLS). A server on the RDP Security
+# Layer alone answers RDP_NEG_FAILURE, or a Connection Confirm without negotiation data: no TLS.
+_RDP_REQUEST = (b'\x03\x00\x00\x13'                # TPKT: version 3, 19 bytes
+                b'\x0e\xe0\x00\x00\x00\x00\x00'      # X.224 CR, LI 14, class 0
+                b'\x01\x00\x08\x00\x03\x00\x00\x00')  # RDP_NEG_REQ: SSL | HYBRID
+_RDP_TLS_PROTOCOLS = {1: 'TLS', 2: 'CredSSP', 8: 'CredSSP'}   # PROTOCOL_SSL, _HYBRID, _HYBRID_EX
+_RDP_FAILURES = {1: 'SSL_REQUIRED_BY_SERVER', 2: 'SSL_NOT_ALLOWED_BY_SERVER',
+                 3: 'SSL_CERT_NOT_ON_SERVER', 4: 'INCONSISTENT_FLAGS',
+                 5: 'HYBRID_REQUIRED_BY_SERVER', 6: 'SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER'}
+
+
+def _starttls_rdp(channel: _PlainChannel, sni: Optional[str]) -> None:
+    channel.send(_RDP_REQUEST)
+    head = channel.exact(4)
+    size = int.from_bytes(head[2:4], 'big')
+    if head[0] != 3 or not 11 <= size <= 512:
+        raise channel.fail('not an RDP answer (no TPKT header)')
+    body = channel.exact(size - 4)
+    # X.224 Connection Confirm: LI, CC (0xD0), DST-REF, SRC-REF, class; then RDP_NEG data
+    if body[1] & 0xF0 != 0xD0:
+        raise channel.fail('not an X.224 Connection Confirm')
+    neg = body[7:15]
+    if len(neg) < 8:
+        raise channel.fail('the server offers only Standard RDP Security (no TLS)')
+    kind, value = neg[0], int.from_bytes(neg[4:8], 'little')
+    if kind == 0x03:
+        raise channel.fail('the server refused TLS (%s)'
+                           % _RDP_FAILURES.get(value, 'failure code %d' % value))
+    if kind != 0x02:
+        raise channel.fail('not an RDP negotiation response')
+    if value not in _RDP_TLS_PROTOCOLS:
+        raise channel.fail('the server chose Standard RDP Security (no TLS)' if value == 0 else
+                           'the server chose an unknown security protocol (0x%x)' % value)
+
+
 _STARTTLS = {PROTO_SMTP: _starttls_smtp, PROTO_IMAP: _starttls_imap, PROTO_POP3: _starttls_pop3,
              PROTO_FTP: _starttls_ftp, PROTO_LDAP: _starttls_ldap, PROTO_XMPP: _starttls_xmpp,
-             PROTO_POSTGRES: _starttls_postgres}
+             PROTO_POSTGRES: _starttls_postgres, PROTO_RDP: _starttls_rdp}
 
 
 def starttls(sock: socket.socket, protocol: str, sni: Optional[str] = None) -> None:
@@ -4307,8 +4359,9 @@ def starttls(sock: socket.socket, protocol: str, sni: Optional[str] = None) -> N
 
     SMTP: greeting, EHLO, STARTTLS; IMAP: ``STARTTLS``; POP3: ``STLS``; FTP: ``AUTH TLS``
     (RFC 4217); LDAP: the StartTLS extended operation; XMPP: the client stream to the domain
-    ``sni`` and ``<starttls/>``; PostgreSQL: the SSLRequest. Raises :class:`StartTlsError`
-    (or the socket's OSError / timeout).
+    ``sni`` and ``<starttls/>``; PostgreSQL: the SSLRequest; RDP: the X.224 connection request
+    asking for TLS or CredSSP. Raises :class:`StartTlsError` (or the socket's OSError /
+    timeout).
     """
     if protocol == PROTO_TLS:
         return
@@ -4731,6 +4784,22 @@ AUDIT_STATUSES = (AUDIT_DONE, AUDIT_TIMEOUT, AUDIT_NOT_TLS)
 # Raised by the local TLS library before anything is sent: the check cannot be made from here
 _LOCAL_SSL_REASONS = ('NO_PROTOCOLS_AVAILABLE', 'NO_CIPHERS_AVAILABLE')
 MAX_AUDIT_LINES = 10   # endpoints per audit finding in the summary without --show-all
+# The chain check (one more handshake per endpoint, two when it is not trusted): whether this
+# machine's trust store accepts the chain the endpoint sends for the name asked (OpenSSL decides
+# trust; nothing here verifies a signature), and that chain read in order (Python 3.10+). What a
+# client fails on comes first; the last three (CHAIN_WARNINGS) only cost bytes or old clients.
+CHAIN_PROBLEMS = ('expired', 'not-yet-valid', 'name-mismatch', 'self-signed',
+                  'missing-intermediate', 'untrusted-root', 'unknown-issuer', 'expired-chain',
+                  'untrusted', 'wrong-order', 'extra-root', 'unrelated')
+CHAIN_WARNINGS = ('wrong-order', 'extra-root', 'unrelated')
+CHAIN_TRUSTED, CHAIN_UNTRUSTED, CHAIN_UNTESTED = 'trusted', 'untrusted', 'untested'
+# OpenSSL verify codes (X509_V_ERR_*) the chain check reads
+_V_NOT_YET_VALID, _V_EXPIRED, _V_SELF_SIGNED, _V_SELF_SIGNED_IN_CHAIN = 9, 10, 18, 19
+_V_LOCAL_ISSUER, _V_LEAF_SIGNATURE, _V_HOSTNAME = 20, 21, 62
+# Python 3.10+ reads the certificates a server sends (SSLSocket.get_unverified_chain from 3.13,
+# the SSL object's before); older versions see the leaf alone.
+CAN_READ_CHAIN = hasattr(getattr(getattr(ssl, '_ssl', None), '_SSLSocket', None),
+                         'get_unverified_chain')
 
 
 @dataclass
@@ -4744,11 +4813,59 @@ class AuditCheck:
     key_algorithm: Optional[str] = None
     error: Optional[str] = None
     timed_out: bool = False
+    cert: Optional[CertInfo] = field(default=None, repr=False)   # the certificate served (not in the JSON)
 
     def to_dict(self) -> Dict[str, Any]:
         return {'outcome': self.outcome, 'version': self.version, 'cipher': self.cipher,
                 'certSha256': self.cert_sha256, 'keyAlgorithm': self.key_algorithm,
                 'error': self.error}
+
+
+@dataclass
+class ChainProbe:
+    """One handshake of the chain check: the certificates the server sent (DER, as sent; None
+    where this Python cannot read them) and its leaf, the chain OpenSSL built when it trusted it,
+    and how verification ended (``verified`` None: no verifying handshake, ``error`` why)."""
+
+    verified: Optional[bool] = None
+    verify_code: Optional[int] = None
+    verify_message: Optional[str] = None
+    chain: Optional[List[bytes]] = None
+    leaf: Optional[bytes] = None
+    built: Optional[List[bytes]] = None
+    error: Optional[str] = None
+    timed_out: bool = False
+
+
+@dataclass
+class ChainCheck:
+    """The chain an endpoint sends: trusted by this machine for the name asked (or through a
+    --private-ca), and what is wrong with it (:data:`CHAIN_PROBLEMS`, each with a sentence)."""
+
+    status: str = CHAIN_UNTESTED
+    problems: List[str] = field(default_factory=list)
+    notes: Dict[str, str] = field(default_factory=dict)
+    verify_code: Optional[int] = None
+    verify_message: Optional[str] = None
+    sent: Optional[List[CertInfo]] = None      # what the server sent, as sent (Python 3.10+)
+    private_ca: Optional[str] = None           # trusted through this --private-ca (its subject DN)
+    error: Optional[str] = None
+    timed_out: bool = False
+
+    @property
+    def breaking(self) -> List[str]:
+        """The problems a client fails on (not :data:`CHAIN_WARNINGS`)."""
+        return [p for p in self.problems if p not in CHAIN_WARNINGS]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {'status': self.status, 'problems': list(self.problems),
+                'notes': {p: self.notes[p] for p in self.problems if p in self.notes},
+                'verifyCode': self.verify_code, 'verifyMessage': self.verify_message,
+                'privateCa': self.private_ca, 'error': self.error,
+                'sent': None if self.sent is None else [{
+                    'subjectCN': c.subject_cn, 'issuerCN': c.issuer_cn, 'serialHex': c.serial_hex,
+                    'notAfter': iso_utc(c.not_after), 'selfSigned': c.self_signed, 'isCA': c.is_ca,
+                    'sha256': c.sha256} for c in self.sent]}
 
 
 @dataclass
@@ -4765,6 +4882,7 @@ class EndpointAudit:
     versions: Dict[str, AuditCheck] = field(default_factory=dict)
     ciphers: Dict[str, AuditCheck] = field(default_factory=dict)
     key_types: Dict[str, AuditCheck] = field(default_factory=dict)
+    chain: Optional[ChainCheck] = None
 
     @property
     def label(self) -> str:
@@ -4844,10 +4962,25 @@ def _cipher_context(spec: str, label: str) -> AuditContext:
     return context, None
 
 
+def verify_context(check_hostname: bool = True) -> ssl.SSLContext:
+    """The chain check's verifying client: this machine's trust store (ssl.create_default_context)
+    and, with ``check_hostname``, the name asked. VERIFY_X509_STRICT (on from Python 3.13) is
+    taken off: clients do not refuse what it adds, so neither does the check."""
+    context = ssl.create_default_context()
+    context.check_hostname = check_hostname
+    strict = getattr(ssl, 'VERIFY_X509_STRICT', 0)
+    if strict and context.verify_flags & strict:
+        context.verify_flags &= ~strict
+    context.options |= getattr(ssl, 'OP_LEGACY_SERVER_CONNECT', 0)
+    return context
+
+
 class AuditContexts:
     """The audit's client contexts, made once in the calling thread (setting TLS 1.0 / 1.1
     warns on Python 3.10 and later): one per version, weak cipher family and key type, each
-    with why this Python cannot make it when it cannot."""
+    with why this Python cannot make it when it cannot; and the chain check's: a verifying one
+    with and one without the name check (an endpoint asked without SNI), and a permissive one
+    that reads what a server sends."""
 
     def __init__(self) -> None:
         self.library = ssl.OPENSSL_VERSION
@@ -4859,14 +4992,24 @@ class AuditContexts:
                             for group, spec in WEAK_CIPHER_GROUPS}  # type: Dict[str, AuditContext]
             self.key_types = {key: _cipher_context(spec, key)
                               for key, spec in AUDIT_KEY_TYPES}  # type: Dict[str, AuditContext]
+            self.verify = {True: verify_context(True), False: verify_context(False)}
+            self.plain = make_client_context()
+        self.chain_why = None if CAN_READ_CHAIN else (
+            'Python %d.%d cannot read the certificates a server sends (3.10 and later can): a '
+            'missing intermediate and a root this machine does not trust look alike'
+            % sys.version_info[:2])
 
-    def untestable(self) -> Dict[str, Dict[str, str]]:
-        """What this Python cannot offer, and why: ``{versions, weakCiphers, keyTypes}``."""
-        return {'versions': {k: why for k, (c, why) in self.versions.items() if c is None and why},
-                'weakCiphers': {k: why for k, (c, why) in self.ciphers.items()
-                                if c is None and why},
-                'keyTypes': {k: why for k, (c, why) in self.key_types.items()
-                             if c is None and why}}
+    def untestable(self) -> Dict[str, Any]:
+        """What this Python cannot offer, and why: ``{versions, weakCiphers, keyTypes}``, and
+        ``chain`` when it cannot read the certificates a server sends."""
+        out = {'versions': {k: why for k, (c, why) in self.versions.items() if c is None and why},
+               'weakCiphers': {k: why for k, (c, why) in self.ciphers.items()
+                               if c is None and why},
+               'keyTypes': {k: why for k, (c, why) in self.key_types.items()
+                            if c is None and why}}  # type: Dict[str, Any]
+        if getattr(self, 'chain_why', None):
+            out['chain'] = self.chain_why
+        return out
 
 
 def _audit_failure(exc: BaseException) -> AuditCheck:
@@ -4907,7 +5050,8 @@ def audit_handshake(ip: str, port: int, protocol: str, sni: Optional[str],
         if der:
             try:
                 cert = parse_certificate(der)
-                check.cert_sha256, check.key_algorithm = cert.sha256, cert.key_algorithm
+                check.cert_sha256, check.key_algorithm, check.cert = (
+                    cert.sha256, cert.key_algorithm, cert)
             except _CERT_PARSE_ERRORS:
                 pass
         return check
@@ -4921,10 +5065,249 @@ def audit_handshake(ip: str, port: int, protocol: str, sni: Optional[str],
                 pass
 
 
+def _chain_ders(tls: ssl.SSLSocket, verified: bool = False) -> Optional[List[bytes]]:
+    """The certificates the server sent, as sent (``verified``: the chain OpenSSL built, ending
+    at a certificate of this machine's store), DER; None where this Python cannot read them."""
+    name = 'get_verified_chain' if verified else 'get_unverified_chain'
+    method = getattr(tls, name, None) or getattr(getattr(tls, '_sslobj', None), name, None)
+    if method is None:
+        return None
+    try:
+        chain = method()
+    except (ssl.SSLError, ValueError, TypeError, AttributeError):
+        return None
+    encoding = getattr(getattr(ssl, '_ssl', None), 'ENCODING_DER', 2)
+    out = []  # type: List[bytes]
+    for cert in chain or []:
+        if isinstance(cert, (bytes, bytearray)):
+            out.append(bytes(cert))
+            continue
+        try:
+            out.append(cert.public_bytes(encoding))
+        except (AttributeError, ValueError, TypeError, ssl.SSLError):
+            return None
+    return out
+
+
+ChainAttempt = Callable[[str, int, str, Optional[str], ssl.SSLContext, float], ChainProbe]
+
+
+def chain_probe(ip: str, port: int, protocol: str, sni: Optional[str], context: ssl.SSLContext,
+                timeout: float) -> ChainProbe:
+    """One handshake of the chain check with ``context`` (after STARTTLS where ``protocol``
+    says so): what the server sent and, with a verifying context, whether this machine trusts it
+    for ``sni`` (OpenSSL's verify code and message when not)."""
+    probe = ChainProbe()
+    sock = None
+    try:
+        sock = socket.create_connection((_connect_address(ip), port), timeout=timeout)
+        starttls(sock, protocol, sni)
+        tls = context.wrap_socket(sock, server_hostname=sni, do_handshake_on_connect=False)
+        sock = tls
+        tls.settimeout(timeout)
+        tls.do_handshake()
+        probe.leaf = tls.getpeercert(binary_form=True)
+        probe.chain = _chain_ders(tls)
+        if context.verify_mode == ssl.CERT_REQUIRED:
+            probe.verified = True
+            probe.built = _chain_ders(tls, verified=True)
+    except ssl.SSLCertVerificationError as exc:
+        probe.verified = False
+        probe.verify_code = getattr(exc, 'verify_code', None)
+        probe.verify_message = getattr(exc, 'verify_message', None) or _clean_ssl_message(exc)
+    except Exception as exc:  # noqa: BLE001 - every failure becomes an outcome
+        failure = _audit_failure(exc)
+        probe.error, probe.timed_out = failure.error, failure.timed_out
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    return probe
+
+
+def _cert_name(cert: CertInfo) -> str:
+    """A certificate in a sentence: its subject CN (or DN), with the organisation when it adds one."""
+    org = cert.subject.get('O')
+    label = cert.short_label()
+    return '%s (%s)' % (label, org) if org and org not in label else label
+
+
+def _ca_key(cert: CertInfo) -> Tuple[str, Optional[str]]:
+    """A CA's identity across its cross-signed copies: its subject and public key."""
+    return _dn_key(cert.subject_dn), cert.spki_sha256
+
+
+def analyze_chain(trusted: Optional[bool], verify_code: Optional[int] = None,
+                  verify_message: Optional[str] = None, sent: Optional[Sequence[bytes]] = None,
+                  leaf: Optional[bytes] = None, built: Optional[Sequence[bytes]] = None,
+                  sni: Optional[str] = None, private_cas: Sequence[CertInfo] = (),
+                  now: Optional[datetime] = None) -> ChainCheck:
+    """What the chain check found. ``trusted``: the verifying handshake (this machine's trust
+    store and the name ``sni``) completed (True) or failed verification with OpenSSL's
+    ``verify_code`` / ``verify_message`` (False); None: it did not complete. ``sent``: the
+    certificates the server sent, as sent (DER; None before Python 3.10, then the ``leaf`` alone);
+    ``built``: the chain OpenSSL built when it trusted it.
+
+    Read from what was sent: the leaf's dates, the issuing path through the certificates sent
+    (:func:`issued_by`: names and key identifiers), an expired certificate on it, the order
+    (the leaf first, then each issuer), a root sent along, certificates that are no part of it,
+    and a missing intermediate - the leaf sent alone while its issuer is no root this machine
+    trusts, or an intermediate OpenSSL took from this machine's store because the server did not
+    send it. OpenSSL's verdict names the rest: a self-signed leaf, a root this machine does not
+    trust (on Windows possibly a public root it has not fetched yet), another name. A chain a
+    ``--private-ca`` issued is trusted through it (its dates still count)."""
+    now = now or _utcnow()
+    check = ChainCheck(status=(CHAIN_UNTESTED if trusted is None else
+                               CHAIN_TRUSTED if trusted else CHAIN_UNTRUSTED),
+                       verify_code=verify_code, verify_message=verify_message)
+
+    def parse(ders: Optional[Sequence[bytes]]) -> List[CertInfo]:
+        out = []  # type: List[CertInfo]
+        for der in ders or []:
+            try:
+                out.append(parse_certificate(der))
+            except _CERT_PARSE_ERRORS:
+                continue
+        return out
+
+    def add(code: str, note: str) -> None:
+        if code not in check.problems:
+            check.problems.append(code)
+            check.notes[code] = note
+
+    sent_certs = parse(sent) if sent is not None else None
+    check.sent = sent_certs
+    leaf_cert = (parse([leaf]) or [None])[0] if leaf else None
+    if leaf_cert is None and sent_certs:
+        leaf_cert = sent_certs[0]
+    if trusted is None:
+        return check
+    day = lambda when: when.strftime('%Y-%m-%d')  # noqa: E731
+    path = [leaf_cert] if leaf_cert is not None else []  # type: List[CertInfo]
+    if leaf_cert is not None:
+        if leaf_cert.not_after < now:
+            add('expired', 'the certificate expired on %s' % day(leaf_cert.not_after))
+        elif leaf_cert.not_before > now:
+            add('not-yet-valid', 'the certificate is not valid before %s' % day(leaf_cert.not_before))
+    if leaf_cert is not None and sent_certs is not None:
+        others = [c for c in sent_certs if c.sha256 != leaf_cert.sha256]
+        while not path[-1].self_signed:
+            issuer = next((c for c in others if c not in path and issued_by(path[-1], c)), None)
+            if issuer is None:
+                break
+            path.append(issuer)
+        in_path = {c.sha256 for c in path}
+        for cert in path[1:]:
+            if cert.not_after < now:
+                add('expired-chain', '%s in the chain expired on %s'
+                    % (_cert_name(cert), day(cert.not_after)))
+        order = []  # type: List[str]
+        for cert in sent_certs:
+            if cert.sha256 in in_path and cert.sha256 not in order:
+                order.append(cert.sha256)
+        if order != [c.sha256 for c in path]:
+            add('wrong-order', 'the chain is sent out of order (the certificate comes first, then '
+                'each certificate\'s issuer)')
+        if len(path) > 1 and path[-1].self_signed:
+            add('extra-root', 'the root %s is sent too: clients use their own copy'
+                % _cert_name(path[-1]))
+        extra = [c for c in others if c.sha256 not in in_path]
+        if extra:
+            add('unrelated', '%s %s sent but no part of the chain' % (
+                ', '.join(_cert_name(c) for c in extra[:3]) + (' +%d' % (len(extra) - 3)
+                                                               if len(extra) > 3 else ''),
+                'is' if len(extra) == 1 else 'are'))
+        if trusted and built:
+            sent_keys = {_ca_key(c) for c in sent_certs}
+            lacking = [c for c in parse(built)[1:] if not c.self_signed
+                       and _ca_key(c) not in sent_keys]
+            if lacking:
+                add('missing-intermediate', 'the server does not send %s: this machine had it, a '
+                    'client without it fails' % ', '.join(_cert_name(c) for c in lacking))
+    top = path[-1] if path else None
+    issuer_text = display_text(leaf_cert.issuer_label()) if leaf_cert is not None else 'its issuer'
+    aia = (' (the CA publishes it at %s)' % display_text(', '.join(leaf_cert.ca_issuers))
+           if leaf_cert is not None and leaf_cert.ca_issuers else '')
+    if not trusted:
+        code = verify_code
+        if code in (_V_EXPIRED, _V_NOT_YET_VALID):
+            if not {'expired', 'not-yet-valid', 'expired-chain'} & set(check.problems):
+                add('untrusted', 'not trusted: %s' % (verify_message or 'a date is out of range'))
+        elif code == _V_HOSTNAME:
+            add('name-mismatch', 'the certificate does not cover %s' % (sni or 'the name asked'))
+        elif code == _V_SELF_SIGNED:
+            add('self-signed', 'self-signed: clients trust it only when told to (here: '
+                '--private-ca)')
+        elif code == _V_SELF_SIGNED_IN_CHAIN:
+            add('untrusted-root', 'the chain ends at %s, a root this machine does not trust'
+                % (_cert_name(top) if top is not None and len(path) > 1 else 'a root'))
+        elif code in (_V_LOCAL_ISSUER, _V_LEAF_SIGNATURE):
+            if sent_certs is None and code == _V_LOCAL_ISSUER:
+                add('unknown-issuer', 'this machine has no issuer for it (%s): a missing '
+                    'intermediate or a root it does not trust; Python 3.10 and later tell which'
+                    % issuer_text)
+            elif top is not None and (len(path) > 1 or top.self_signed):
+                add('untrusted-root', 'the chain ends at %s, issued by %s, which this machine '
+                    'does not trust: a private CA (give it with --private-ca) or, on Windows, a '
+                    'public root Windows has not fetched yet' % (
+                        _cert_name(top), display_text(top.issuer_label())))
+            else:
+                add('missing-intermediate', 'the server does not send %s, the issuer of its '
+                    'certificate%s' % (issuer_text, aia))
+        else:
+            add('untrusted', 'not trusted: %s' % (verify_message or 'verify error %s' % code))
+        dated = {'expired', 'not-yet-valid', 'expired-chain', 'name-mismatch'}
+        ca = next((ca for cert in path for ca in private_cas
+                   if issued_by(cert, ca) or cert.sha256 == ca.sha256), None)
+        if ca is not None and not dated & set(check.problems):
+            check.status, check.private_ca = CHAIN_TRUSTED, ca.subject_dn
+            keep = []  # type: List[str]
+            for problem in check.problems:
+                if problem in ('untrusted-root', 'unknown-issuer', 'self-signed', 'untrusted'):
+                    continue
+                # the private CA issued the leaf directly: a root needs no intermediate sent
+                if problem == 'missing-intermediate' and ca.self_signed:
+                    continue
+                keep.append(problem)
+            check.problems = keep
+    check.problems.sort(key=CHAIN_PROBLEMS.index)   # what a client fails on first
+    return check
+
+
+def check_chain(target: EndpointAudit, contexts: AuditContexts, timeout: float,
+                probe: Optional[ChainAttempt] = None, private_cas: Sequence[CertInfo] = (),
+                now: Optional[datetime] = None) -> ChainCheck:
+    """The chain check of one endpoint (:func:`analyze_chain`): a verifying handshake for the
+    name it was asked for, then, when that fails verification, one that reads what it sends."""
+    verify = getattr(contexts, 'verify', None)
+    if not verify:
+        return ChainCheck(error='no chain check with these contexts')
+    probe = probe or chain_probe
+    first = probe(target.ip, target.port, target.protocol, target.sni,
+                  verify[bool(target.sni)], timeout)
+    if first.verified is None:
+        return ChainCheck(error=first.error or 'the handshake did not complete',
+                          timed_out=first.timed_out)
+    if first.verified:
+        return analyze_chain(True, sent=first.chain, leaf=first.leaf, built=first.built,
+                             sni=target.sni, private_cas=private_cas, now=now)
+    second = probe(target.ip, target.port, target.protocol, target.sni, contexts.plain, timeout)
+    check = analyze_chain(False, first.verify_code, first.verify_message, sent=second.chain,
+                          leaf=second.leaf, sni=target.sni, private_cas=private_cas, now=now)
+    check.timed_out = second.timed_out
+    return check
+
+
 def audit_endpoint(target: EndpointAudit, contexts: AuditContexts, timeout: float,
-                   attempt: Optional[AuditAttempt] = None) -> EndpointAudit:
+                   attempt: Optional[AuditAttempt] = None,
+                   chain_attempt: Optional[ChainAttempt] = None,
+                   private_cas: Sequence[CertInfo] = (),
+                   now: Optional[datetime] = None) -> EndpointAudit:
     """Fill ``target``: each TLS version, each weak cipher family and each key type, one
-    handshake at a time (``attempt``, :func:`audit_handshake` by default). After a timeout the
+    handshake at a time (``attempt``, :func:`audit_handshake` by default), then its chain
+    (:func:`check_chain`, ``chain_attempt``: :func:`chain_probe`). After a timeout the
     remaining checks are skipped (status ``timeout``); when TLS 1.2 and older are refused (TLS
     1.3 only) no weak suite can be agreed on and the key types cannot be told apart."""
     attempt = attempt or audit_handshake
@@ -4955,6 +5338,11 @@ def audit_endpoint(target: EndpointAudit, contexts: AuditContexts, timeout: floa
                 AUDIT_UNTESTED, error='TLS 1.3 only: Python cannot ask for one key type there')
         else:
             target.key_types[key_type] = check(contexts.key_types[key_type])
+    if timed_out[0]:
+        target.chain = ChainCheck(error='skipped after a timeout')
+    else:
+        target.chain = check_chain(target, contexts, timeout, chain_attempt, private_cas, now)
+        timed_out[0] = target.chain.timed_out
     target.status = AUDIT_TIMEOUT if timed_out[0] else AUDIT_DONE
     return target
 
@@ -4989,25 +5377,29 @@ class TlsAudit:
     """--tls-audit: the audit of every open endpoint, and what this Python could not test."""
 
     library: str
-    untestable: Dict[str, Dict[str, str]]
+    untestable: Dict[str, Any]
     endpoints: List[EndpointAudit]
     new_certs: List[CertInfo] = field(default_factory=list)   # --cert: an RSA + ECDSA pair?
+    mismatches: List[Dict[str, Any]] = field(default_factory=list)   # serial_mismatches()
 
 
 def run_tls_audit(report: ScanReport, timeout: float = DEFAULT_TIMEOUT,
                   workers: int = DEFAULT_WORKERS, attempt: Optional[AuditAttempt] = None,
                   contexts: Optional[AuditContexts] = None,
                   progress: Optional[ProgressCallback] = None,
-                  cancel: Optional[threading.Event] = None) -> TlsAudit:
+                  cancel: Optional[threading.Event] = None,
+                  chain_attempt: Optional[ChainAttempt] = None) -> TlsAudit:
     """Audit the open endpoints of ``report`` (:func:`audit_targets`): endpoints in parallel,
-    one handshake at a time to each. ``progress('audit', done, total, {})``."""
+    one handshake at a time to each, then the fleet's certificates per name
+    (:func:`serial_mismatches`). ``progress('audit', done, total, {})``."""
     contexts = contexts or AuditContexts()
     targets = audit_targets(report)
     todo = [target for target in targets if target.status != AUDIT_NOT_TLS]
     done = [0]
 
     def run(target: EndpointAudit) -> EndpointAudit:
-        return audit_endpoint(target, contexts, timeout, attempt)
+        return audit_endpoint(target, contexts, timeout, attempt, chain_attempt,
+                              report.private_cas, report.finished_at)
 
     def on_done(_target: EndpointAudit, _result: EndpointAudit) -> None:
         done[0] += 1
@@ -5016,7 +5408,86 @@ def run_tls_audit(report: ScanReport, timeout: float = DEFAULT_TIMEOUT,
 
     if todo:
         _parallel(run, todo, workers, on_done, cancel or threading.Event())
-    return TlsAudit(contexts.library, contexts.untestable(), targets, list(report.new_certs))
+    return TlsAudit(contexts.library, contexts.untestable(), targets, list(report.new_certs),
+                    serial_mismatches(report, targets))
+
+
+KEY_TYPE_LABELS = {'RSA': 'RSA', 'EC': 'ECDSA'}
+
+
+def serial_mismatches(report: ScanReport, audits: Sequence[EndpointAudit] = ()
+                      ) -> List[Dict[str, Any]]:
+    """One name served with different certificates of one key type and kind (public, the
+    Cloudflare Origin CA's, private) on different endpoints: a load-balancer pool member or a
+    server the last renewal missed. An RSA + ECDSA pair, or an Origin CA certificate next to a
+    public one, is no mismatch. The scan's rows give the certificate each endpoint serves for
+    each name; the audit's key-type handshakes add the other half of a pair (for the name an
+    endpoint was asked for). Per name and key type: the certificates newest first (``older``:
+    another of them was issued later), each with the endpoints serving it, their servers and
+    the load balancers (``behind``) and VIPs they sit behind."""
+    hosted = (UPDATED,) + HOSTED_STATUSES
+    certs = {}  # type: Dict[str, CertInfo]
+    served = {}  # type: Dict[str, Dict[str, Set[Tuple[str, int]]]]  name -> sha256 -> endpoints
+    servers_of = {}  # type: Dict[Tuple[str, int], List[str]]
+    names_of = {}  # type: Dict[str, str]  sni -> name
+    for row in report.results:
+        key = (row.ip, row.port)
+        if row.server and row.server not in servers_of.setdefault(key, []):
+            servers_of[key].append(row.server)
+        if (row.probe not in (PROBE_SNI, PROBE_WILDCARD) or not row.name or row.cert is None
+                or row.status not in hosted):
+            continue
+        names_of.setdefault(row.sni or row.name, row.name)
+        certs[row.cert.sha256] = row.cert
+        served.setdefault(row.name, {}).setdefault(row.cert.sha256, set()).add(key)
+    for target in audits:
+        name = names_of.get(target.sni or '')
+        for check in target.key_types.values():
+            cert = check.cert
+            if name and check.outcome == AUDIT_ACCEPTED and cert is not None \
+                    and cert.covers(target.sni or '')[0]:
+                certs[cert.sha256] = cert
+                served[name].setdefault(cert.sha256, set()).add((target.ip, target.port))
+    behind = {}  # type: Dict[str, List[str]]
+    vips = {}  # type: Dict[str, List[str]]
+    for server in list(report.servers) + list(report.skipped_backends):
+        vips[server.name.lower()] = list(server.vips)
+        for backend in server.backends:
+            behind.setdefault(backend.lower(), []).append(server.name)
+    order = {(e.ip, e.port): i for i, e in enumerate(report.endpoints)}
+    probe_order = {p.name: i for i, p in enumerate(report.probes)}
+
+    def endpoint(key: Tuple[str, int]) -> Dict[str, Any]:
+        names = servers_of.get(key, [])
+        lbs, shared = [], []  # type: List[str], List[str]
+        for name in names:
+            lbs.extend(lb for lb in behind.get(name.lower(), []) if lb not in lbs)
+            shared.extend(vip for vip in vips.get(name.lower(), []) if vip not in shared)
+        return {'ip': key[0], 'port': key[1], 'protocol': report.protocol_of(*key),
+                'servers': list(names), 'behind': lbs, 'vips': shared}
+
+    out = []  # type: List[Dict[str, Any]]
+    for name in sorted(served, key=lambda n: (probe_order.get(n, len(probe_order)), n)):
+        families = {}  # type: Dict[Tuple[str, str], List[CertInfo]]
+        for sha in served[name]:
+            cert = certs[sha]
+            family = (KEY_TYPE_LABELS.get(cert.key_algorithm, cert.key_algorithm or '?'),
+                      _kind_family(report.cert_kind(cert)[0]))
+            families.setdefault(family, []).append(cert)
+        for (key_type, kind), group in sorted(families.items()):
+            if len(group) < 2:
+                continue
+            group.sort(key=lambda c: (c.not_before, c.not_after, c.sha256), reverse=True)
+            newest = group[0]
+            out.append({'name': name, 'keyType': key_type, 'kind': kind, 'certificates': [{
+                'sha256': cert.sha256, 'serialHex': cert.serial_hex,
+                'issuer': cert.issuer_label(), 'notBefore': iso_utc(cert.not_before),
+                'notAfter': iso_utc(cert.not_after),
+                'older': (newest.not_before, newest.not_after) > (cert.not_before, cert.not_after),
+                'endpoints': [endpoint(key) for key in sorted(
+                    served[name][cert.sha256], key=lambda k: (order.get(k, len(order)), k))],
+            } for cert in group]})
+    return out
 
 
 def _expected_pairs(audit: TlsAudit) -> Set[Optional[str]]:
@@ -5053,7 +5524,7 @@ def audit_summary(audit: TlsAudit) -> Dict[str, Any]:
             entry['served'] = served[0]
             entry['missing'] = [k for k, _spec in AUDIT_KEY_TYPES if k not in served][0]
             halves.append(entry)
-    legacy, weak = [], []  # type: List[Dict[str, Any]], List[Dict[str, Any]]
+    legacy, weak, chains = [], [], []  # type: List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]
     for e in audited:
         if e.legacy_versions:
             entry = where(e)
@@ -5064,12 +5535,24 @@ def audit_summary(audit: TlsAudit) -> Dict[str, Any]:
             entry['groups'] = e.weak_ciphers
             entry['ciphers'] = [e.ciphers[g].cipher for g in e.weak_ciphers if e.ciphers[g].cipher]
             weak.append(entry)
+        if e.chain is not None and e.chain.problems:
+            entry = where(e)
+            entry.update({'status': e.chain.status, 'problems': list(e.chain.problems),
+                          'notes': {p: e.chain.notes.get(p, p) for p in e.chain.problems},
+                          'verifyMessage': e.chain.verify_message,
+                          'privateCa': e.chain.private_ca})
+            chains.append(entry)
+    checked = [e for e in audited if e.chain is not None and e.chain.status != CHAIN_UNTESTED]
     return {'endpoints': len(audit.endpoints), 'audited': len(audited),
             'notAudited': len(audit.endpoints) - len(audited),
             'timedOut': sum(1 for e in audited if e.status == AUDIT_TIMEOUT),
             'acceptingTls10': sum(1 for e in audited if 'TLSv1.0' in e.legacy_versions),
             'acceptingTls11': sum(1 for e in audited if 'TLSv1.1' in e.legacy_versions),
-            'legacyVersions': legacy, 'weakCiphers': weak, 'oneKeyType': halves}
+            'legacyVersions': legacy, 'weakCiphers': weak, 'oneKeyType': halves,
+            'chainsChecked': len(checked),
+            'chainsBroken': sum(1 for e in checked if e.chain.breaking),
+            'chainProblems': chains,
+            'serialMismatches': [dict(m) for m in audit.mismatches]}
 
 
 def audit_to_dict(audit: TlsAudit) -> Dict[str, Any]:
@@ -5086,6 +5569,7 @@ def audit_to_dict(audit: TlsAudit) -> Dict[str, Any]:
             'keyTypes': {k: c.to_dict() for k, c in e.key_types.items()},
             'legacyVersions': e.legacy_versions, 'weakCipherGroups': e.weak_ciphers,
             'keyTypesServed': e.key_types_served,
+            'chain': e.chain.to_dict() if e.chain is not None else None,
         } for e in audit.endpoints],
     }
 
@@ -5131,6 +5615,27 @@ def render_tls_audit(audit: TlsAudit, color: bool = False, show_all: bool = Fals
             lambda e: '%s only, no %s certificate%s' % (
                 e['served'], e['missing'], ' for %s' % display_text(e['sni']) if e['sni'] else ''),
             'Every RSA + ECDSA pair is served whole')
+
+    def chain_detail(e: Dict[str, Any]) -> str:
+        notes = [display_text(e['notes'][p]) for p in e['problems'] if p not in CHAIN_WARNINGS]
+        notes += [display_text(e['notes'][p]) for p in e['problems'] if p in CHAIN_WARNINGS]
+        via = (' (trusted through the --private-ca %s)' % display_text(e['privateCa'])
+               if e.get('privateCa') else '')
+        return '; '.join(notes) + via
+
+    if summary['chainsChecked']:
+        broken = [e for e in summary['chainProblems']
+                  if any(p not in CHAIN_WARNINGS for p in e['problems'])]
+        finding('Certificate chain not trusted or incomplete', broken, chain_detail,
+                'Every chain checked (%d) is trusted for its name and complete'
+                % summary['chainsChecked'])
+        finding('Chain sent with extra or misordered certificates',
+                [e for e in summary['chainProblems'] if e not in broken], chain_detail,
+                'Every chain is sent in order, without certificates it does not need')
+    else:
+        lines.append('  ' + style.paint('Certificate chains not checked: no verifying handshake '
+                                        'completed', 'dim'))
+    render_serial_mismatches(summary['serialMismatches'], lines, style, limit)
     gaps = ['%s (%s)' % (', '.join(_version_text(v) for v in untestable['versions']),
                          'versions')] if untestable.get('versions') else []
     if untestable.get('weakCiphers'):
@@ -5141,6 +5646,8 @@ def render_tls_audit(audit: TlsAudit, color: bool = False, show_all: bool = Fals
     if gaps:
         lines.append('  ' + style.paint('Not tested - this Python (%s) cannot offer: %s'
                                         % (display_text(audit.library), '; '.join(gaps)), 'dim'))
+    if untestable.get('chain'):
+        lines.append('  ' + style.paint('Chains read in part - %s' % untestable['chain'], 'dim'))
     if summary['notAudited']:
         lines.append('  ' + style.paint('%d endpoint(s) not audited: no TLS handshake completed '
                                         'there in the scan' % summary['notAudited'], 'dim'))
@@ -5153,10 +5660,53 @@ def render_tls_audit(audit: TlsAudit, color: bool = False, show_all: bool = Fals
                 continue
             versions = [_version_text(v) for v in AUDIT_VERSIONS
                         if e.versions[v].outcome == AUDIT_ACCEPTED]
-            lines.append('    %s  %s  versions: %s | weak: %s | keys: %s' % (
+            chain = e.chain.status if e.chain is not None else CHAIN_UNTESTED
+            if e.chain is not None and e.chain.problems:
+                chain += ' (%s)' % ', '.join(e.chain.problems)
+            lines.append('    %s  %s  versions: %s | weak: %s | keys: %s | chain: %s' % (
                 e.label, display_text(', '.join(e.servers)), ', '.join(versions) or 'none',
-                ', '.join(e.weak_ciphers) or 'none', ', '.join(e.key_types_served) or 'none'))
+                ', '.join(e.weak_ciphers) or 'none', ', '.join(e.key_types_served) or 'none',
+                chain))
     return '\n'.join(lines) + '\n'
+
+
+_MISMATCH_KINDS = {KIND_ORIGIN_CA: ', Cloudflare Origin CA', 'private': ', private'}
+
+
+def render_serial_mismatches(mismatches: Sequence[Dict[str, Any]], lines: List[str], style: Style,
+                             limit: Optional[int] = MAX_AUDIT_LINES) -> None:
+    """The audit's fleet check in the summary (:func:`serial_mismatches`): each name and key
+    type served with several certificates, newest first, an older one marked OLDER, with the
+    endpoints serving it and the load balancers or VIPs they sit behind."""
+    if not mismatches:
+        lines.append('  ' + style.paint('Every name is served with one certificate per key type '
+                                        'across the endpoints', 'green'))
+        return
+    lines.append('  ' + style.paint('One name served with different certificates of one key type: '
+                                    '%d name(s)' % len(mismatches), 'yellow', 'bold'))
+
+    def where(endpoint: Dict[str, Any]) -> str:
+        text = endpoint_text(endpoint['ip'], endpoint['port'], endpoint['protocol'])
+        if endpoint['servers']:
+            text += ' ' + display_text(', '.join(endpoint['servers']))
+        pools = ['behind %s' % display_text(lb) for lb in endpoint['behind']]
+        pools += ['VIP %s' % vip for vip in endpoint['vips']]
+        return text + (' (%s)' % ', '.join(pools) if pools else '')
+
+    for mismatch in list(mismatches)[:limit]:
+        lines.append('    %s (%s%s)' % (display_text(mismatch['name']), mismatch['keyType'],
+                                        _MISMATCH_KINDS.get(mismatch['kind'], '')))
+        for cert in mismatch['certificates']:
+            endpoints = cert['endpoints']
+            shown = endpoints if limit is None else endpoints[:limit]
+            more = len(endpoints) - len(shown)
+            lines.append('      %s%s %s, issued %s, expires %s: %s%s' % (
+                style.paint('OLDER ', 'red', 'bold') if cert['older'] else '',
+                'serial', display_text(cert['serialHex'] or '?'), _iso_day(cert['notBefore']),
+                _iso_day(cert['notAfter']), '; '.join(where(e) for e in shown),
+                ' +%d more' % more if more else ''))
+    if limit is not None and len(mismatches) > limit:
+        lines.append('    ... and %d more (--show-all lists them)' % (len(mismatches) - limit))
 
 
 def _row_dict(row: ProbeResult, now: datetime) -> Dict[str, Any]:
@@ -5309,6 +5859,8 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
     named = port_protocols(report.ports)
     if named:  # -p 2525/smtp: the protocol each such port number speaks
         doc['options']['portProtocols'] = {str(port): named[port] for port in sorted(named)}
+    if report.profiles:  # --profile: where options.ports came from
+        doc['options']['profiles'] = list(report.profiles)
     if estate:
         doc['options']['estate'] = True
         doc['estate'] = estate_from_report(doc, report.finished_at)
@@ -9110,7 +9662,8 @@ def _run_compare(args: argparse.Namespace) -> int:
         ('-t/--targets', args.targets), ('--exclude', args.exclude), ('--cert', args.cert), ('--csv', args.csv),
         ('--baseline', args.baseline), ('--warn-days', args.warn_days is not None), ('--notify', args.notify),
         ('--strict-public', args.strict_public), ('--fail-on-needs-update', args.fail_on_needs_update),
-        ('--estate', args.estate), ('--include-backends', args.include_backends)) if used]
+        ('--estate', args.estate), ('--include-backends', args.include_backends),
+        ('--profile', args.profile)) if used]
     if unsupported:
         raise UsageError('--compare does not take %s' % ', '.join(unsupported))
     ips = []
@@ -9124,7 +9677,7 @@ def _run_compare(args: argparse.Namespace) -> int:
     names, _warnings = load_names(args.names)
     if len(names) != 1 or names[0].startswith('*'):
         raise UsageError('--compare needs exactly one host name: -n www.example.com')
-    ports = parse_ports(args.ports)
+    ports = parse_ports(args.ports if args.ports is not None else DEFAULT_PORTS)
     if len(ports) != 1:
         raise UsageError('--compare takes one port (-p 443)')
     if port_protocols(ports).get(ports[0], PROTO_TLS) != PROTO_TLS:
@@ -9209,8 +9762,14 @@ examples:
   on 5432 and SMTP on 2525 too (the protocol follows the port; PORT/PROTOCOL names it):
     python3 ssl_origin_scan.py -t mail.txt --cert new.pem -p 25,587,993,5432,2525/smtp
 
-  A TLS audit: TLS 1.0 / 1.1 still accepted, weak cipher suites, RSA + ECDSA pairs:
+  A TLS audit: TLS 1.0 / 1.1 still accepted, weak cipher suites, RSA + ECDSA pairs, broken
+  chains, a server of a pool still serving last year's certificate:
     python3 ssl_origin_scan.py -t hosts.ini -n names.txt --tls-audit --json audit.json
+
+  Every port a mail server uses (25, 587, 465, 143, 993, 110, 995), or every port the scan
+  speaks (web, mail, FTP, LDAP, XMPP, PostgreSQL, RDP), with the audit:
+    python3 ssl_origin_scan.py -t mail.txt --cert new.pem --profile mail
+    python3 ssl_origin_scan.py -t hosts.ini -n names.txt --profile all --tls-audit
 
   Before installing - the certificate, its chain, key and CSR checked together, and
   fullchain.pem / chain.pem written in the order servers send them:
@@ -9255,16 +9814,24 @@ targets (-t, repeatable):
 
 starttls (the protocol follows the port): SMTP on 25 and 587 (EHLO, STARTTLS), IMAP 143
   (STARTTLS), POP3 110 (STLS), FTP 21 (AUTH TLS), LDAP 389 (the StartTLS extended
-  operation), XMPP 5222 (a client stream to the name asked for, then <starttls/>) and
-  PostgreSQL 5432 (the SSLRequest); every other port - 443, and the implicit-TLS 465, 993,
-  995, 636, 990 and 5223 - speaks TLS from the first byte. PORT/PROTOCOL names it for
-  another number: -p 2525/smtp (port 2525 throughout the scan, an inventory's ports=2525
-  too), a target 10.0.0.5:2525/smtp (that endpoint only), 25/tls (TLS from the first byte
-  on 25). Protocols: tls, smtp, imap, pop3, ftp, ldap, xmpp, postgres. Inventory files keep
+  operation), XMPP 5222 (a client stream to the name asked for, then <starttls/>),
+  PostgreSQL 5432 (the SSLRequest) and RDP 3389 (the X.224 connection request asking for
+  TLS or CredSSP); every other port - 443, and the implicit-TLS 465, 993, 995, 636, 990 and
+  5223 - speaks TLS from the first byte. PORT/PROTOCOL names it for another number: -p
+  2525/smtp (port 2525 throughout the scan, an inventory's ports=2525 too), a target
+  10.0.0.5:2525/smtp (that endpoint only), 25/tls (TLS from the first byte on 25).
+  Protocols: tls, smtp, imap, pop3, ftp, ldap, xmpp, postgres, rdp. Inventory files keep
   plain port numbers (the web app reads them too). The statuses apply unchanged: a mail
   server serving the old certificate is NEEDS_UPDATE, one that offers no STARTTLS is a
-  TLS_ERROR that says so. The JSON names the protocol of such an endpoint
-  (endpoints[].protocol) and what -p named (options.portProtocols).
+  TLS_ERROR that says so (an RDP server on the RDP Security Layer alone too). The JSON
+  names the protocol of such an endpoint (endpoints[].protocol) and what -p named
+  (options.portProtocols).
+
+profiles (--profile, repeatable): the ports of a kind of server instead of 443 - web: 443,
+  8443; mail: 25, 587, 465, 143, 993, 110, 995; all: those and FTP 21 / 990, LDAP 389 /
+  636, XMPP 5222 / 5223, PostgreSQL 5432 and RDP 3389. -p adds its own ports (a port in
+  both is scanned once, with the protocol -p writes), and an inventory's ports= still
+  replaces them for its server. The JSON says which (options.profiles).
 
 tls audit (--tls-audit): after the scan, every endpoint where a handshake completed is
   checked one handshake at a time (after STARTTLS where the port speaks it), asked for the
@@ -9272,11 +9839,23 @@ tls audit (--tls-audit): after the scan, every endpoint where a handshake comple
   alone), weak cipher suites (NULL, anonymous, export, RC4, DES, 3DES, family by family
   with TLS 1.2 at most) and the key types it serves (RSA and ECDSA, by offering only the
   suites one key type signs; a TLS 1.3-only server cannot be asked). What this Python's
-  OpenSSL / LibreSSL cannot offer is listed as not tested, never as refused. The summary
-  lists the endpoints still accepting TLS 1.0 / 1.1, accepting weak suites, and serving
-  half of an RSA + ECDSA pair (a name another endpoint serves with both, or that an RSA and
-  an ECDSA --cert cover); the JSON gets a "tlsAudit" section (tlsAudit.summary for the
-  fleet, tlsAudit.endpoints for every check).
+  OpenSSL / LibreSSL cannot offer is listed as not tested, never as refused. Then the chain
+  it sends: one handshake verifying it against this machine's trust store for the name (one
+  more reading what it sends when that fails), and the chain read in order (Python 3.10+):
+  expired, not valid yet, another name, self-signed, a missing intermediate (also one this
+  machine had but the server did not send), a root this machine does not trust (a private
+  CA - --private-ca trusts it - or, on Windows, a public root Windows has not fetched yet),
+  an expired intermediate; and, harmless but wasteful, a chain out of order, a root sent
+  along, certificates no part of it. Last the fleet: one name served with different
+  certificates of one key type and kind (an RSA + ECDSA pair or an Origin CA certificate
+  next to a public one is none) on different endpoints - the scan's certificates and the
+  audit's RSA / ECDSA handshakes - newest first, the older one marked OLDER, with the load
+  balancer (backends=) or VIP each endpoint sits behind: the pool member a renewal missed.
+  The summary lists the endpoints still accepting TLS 1.0 / 1.1, accepting weak suites,
+  serving half of an RSA + ECDSA pair (a name another endpoint serves with both, or that an
+  RSA and an ECDSA --cert cover), with a broken chain, and the names served with different
+  certificates; the JSON gets a "tlsAudit" section (tlsAudit.summary for the fleet -
+  chainProblems, serialMismatches too -, tlsAudit.endpoints for every check and its chain).
 
 topology (keys on a server's line in an inventory file, or CSV columns, Ansible host
   variables, JSON keys; the web app's Servers view reads the same): where TLS terminates.
@@ -9500,12 +10079,18 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   python3 ssl_origin_scan.py --compare 10.0.0.5 10.0.0.6 -n www.example.com
   Posta, dizin ve veritabanı portlarında TLS, STARTTLS ile başlar; protokol porta göre
   seçilir: SMTP 25 ve 587, IMAP 143, POP3 110, FTP 21, LDAP 389, XMPP 5222, PostgreSQL
-  5432. 465, 993, 995, 636, 990, 5223 ve diğer portlar doğrudan TLS'tir. Başka bir port
-  için PORT/PROTOKOL yazın: -p 2525/smtp ya da 10.0.0.5:2525/smtp.
+  5432, RDP 3389. 465, 993, 995, 636, 990, 5223 ve diğer portlar doğrudan TLS'tir. Başka
+  bir port için PORT/PROTOKOL yazın: -p 2525/smtp ya da 10.0.0.5:2525/smtp.
   --tls-audit her uç noktanın kabul ettiği TLS sürümlerini (1.0-1.3), zayıf şifre
   takımlarını ve sunduğu anahtar türlerini (RSA, ECDSA) denetler; bu Python'un
-  sunamadığı sürüm ve takımlar "denenmedi" olarak yazılır:
+  sunamadığı sürüm ve takımlar "denenmedi" olarak yazılır. Sunulan sertifika zincirine de
+  bakar: bu makine ad için ona güveniyor mu, eksik ara sertifika, güvenilmeyen kök, sırası
+  bozuk ya da gereksiz sertifika var mı. Aynı adı aynı anahtar türünde farklı sertifikayla
+  sunan uç noktaları (yenilemede unutulan havuz üyesi) yük dengeleyicisiyle birlikte yazar:
   python3 ssl_origin_scan.py -t sunucular.txt -n adlar.txt --tls-audit --json denetim.json
+  --profile bir sunucu türünün portlarını 443 yerine tarar: web (443, 8443), mail (25, 587,
+  465, 143, 993, 110, 995) ya da all (bunlar ve FTP, LDAP, XMPP, PostgreSQL, RDP 3389):
+  python3 ssl_origin_scan.py -t posta.txt --cert yeni.pem --profile mail
 """
 
 
@@ -9544,20 +10129,29 @@ def build_parser() -> argparse.ArgumentParser:
                            'several hosts, weak keys and certificates covering none of the '
                            'names')
     scan = parser.add_argument_group('scan options')
-    scan.add_argument('-p', '--ports', default=DEFAULT_PORTS, metavar='LIST',
-                      help='TLS ports, comma separated, ranges allowed (default: 443); a '
-                           'target written with its own port (10.0.0.5:8443) keeps that one. '
-                           'STARTTLS follows the port: SMTP on 25 and 587, IMAP 143, POP3 110, '
-                           'FTP 21, LDAP 389, XMPP 5222, PostgreSQL 5432; name it for another '
-                           'number with PORT/PROTOCOL (2525/smtp, also 10.0.0.5:2525/smtp; '
-                           '25/tls for TLS from the first byte)')
+    scan.add_argument('-p', '--ports', default=None, metavar='LIST',
+                      help='TLS ports, comma separated, ranges allowed (default: 443, or the '
+                           '--profile ports); a target written with its own port '
+                           '(10.0.0.5:8443) keeps that one. STARTTLS follows the port: SMTP on 25 '
+                           'and 587, IMAP 143, POP3 110, FTP 21, LDAP 389, XMPP 5222, PostgreSQL '
+                           '5432, RDP 3389; name it for another number with PORT/PROTOCOL '
+                           '(2525/smtp, also 10.0.0.5:2525/smtp; 25/tls for TLS from the first '
+                           'byte)')
+    scan.add_argument('--profile', action='append', default=[], choices=PROFILE_NAMES,
+                      help='the ports of a kind of server instead of 443 (repeatable; -p adds '
+                           'more): web 443, 8443; mail 25, 587, 465, 143, 993, 110, 995; all of '
+                           'those and FTP 21 / 990, LDAP 389 / 636, XMPP 5222 / 5223, PostgreSQL '
+                           '5432, RDP 3389')
     scan.add_argument('--tls-audit', action='store_true',
                       help='also audit every endpoint that answered TLS: the versions it '
                            'accepts (TLS 1.0 to 1.3, as far as this Python can offer them), '
-                           'weak cipher suites (NULL, anonymous, export, RC4, DES, 3DES) and the '
-                           'key types it serves (RSA, ECDSA); the summary and the JSON '
-                           '("tlsAudit") list the fleet\'s legacy versions, weak suites and '
-                           'RSA + ECDSA pairs served by halves')
+                           'weak cipher suites (NULL, anonymous, export, RC4, DES, 3DES), the '
+                           'key types it serves (RSA, ECDSA) and its certificate chain (trusted '
+                           'by this machine for the name, complete, in order); the summary and '
+                           'the JSON ("tlsAudit") list the fleet\'s legacy versions, weak suites, '
+                           'RSA + ECDSA pairs served by halves, broken chains, and one name '
+                           'served with different certificates of one key type (a pool member '
+                           'the renewal missed)')
     scan.add_argument('-w', '--workers', type=int, default=DEFAULT_WORKERS, metavar='N',
                       help='parallel connections (default: %%(default)s; at most %d at a '
                            'time to one ip:port)' % MAX_PER_ENDPOINT)
@@ -9639,6 +10233,20 @@ def parse_ports(text: str) -> List[int]:
     if not ports:
         raise UsageError('no ports given')
     return ports
+
+
+def resolve_ports(text: Optional[str], profiles: Sequence[str] = ()) -> List[int]:
+    """The ports of a scan: each ``--profile``'s (:data:`PORT_PROFILES`), then ``-p``'s; a port
+    named twice is scanned once (the protocol -p writes with it wins); without either, -p's
+    default (443). UsageError for an unknown profile or a bad -p."""
+    parts = []  # type: List[str]
+    for name in profiles:
+        if name not in PORT_PROFILES:
+            raise UsageError('unknown --profile %r (one of %s)' % (name, ', '.join(PROFILE_NAMES)))
+        parts.append(','.join(str(port) for port in PORT_PROFILES[name]))
+    if text is not None:
+        parts.append(text)
+    return parse_ports(','.join(parts) if parts else DEFAULT_PORTS)
 
 
 def port_protocols(ports: Sequence[int]) -> Dict[int, str]:
@@ -9995,7 +10603,7 @@ def _run(args: argparse.Namespace) -> int:
         if len(messages) > MAX_PRINTED_WARNINGS:
             warn('... and %d more warnings' % (len(messages) - MAX_PRINTED_WARNINGS))
 
-    ports = parse_ports(args.ports)
+    ports = resolve_ports(args.ports, args.profile)
     if not 1 <= args.workers <= MAX_WORKERS:
         raise UsageError('--workers must be between 1 and %d' % MAX_WORKERS)
     if not (args.timeout > 0 and args.timeout <= MAX_TIMEOUT):
@@ -10107,6 +10715,8 @@ def _run(args: argparse.Namespace) -> int:
                           warnings=all_warnings, exclude=exclude_rules,
                           private_cas=private_cas, strict_public=args.strict_public,
                           new_cert_files=new_cert_files, include_backends=args.include_backends)
+        report.profiles = [name for i, name in enumerate(args.profile)
+                           if name not in args.profile[:i]]
         if args.tls_audit:
             report.audit = run_tls_audit(report, timeout=args.timeout, workers=args.workers,
                                          progress=progress.update)

@@ -64,7 +64,10 @@ const JS = join(ASSETS, 'js');
  * shell, the workspace's inventory and the Copy summary need are in lib/ip.js (4 KB), which
  * netinfo.js re-exports: ≈ 364 KB (372,300 bytes). The origin map (lib/originmap.js, which the
  * workspace store and every scan read, and the Subdomains view's rows of remembered origins) added
- * ≈ 5.5 KB: ≈ 369 KB (377,888 bytes), 992 bytes under the budget.
+ * ≈ 5.5 KB: ≈ 369 KB (377,888 bytes), 992 bytes under the budget. The command palette keeps only
+ * its key (Ctrl/Cmd+K, lib/shellnav.js), the header button, the shortcut list's row, the lazy import
+ * and i18n.js's `stringIn` on the route; ui/palette.js, lib/palette.js and palette.css load on its
+ * first use: 380 bytes, ≈ 369 KB (378,268 bytes), 612 bytes under the budget.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

@@ -8559,11 +8559,11 @@ _ARI_CA_PATTERNS = (
     (None, re.compile(r'globalsign|go\s*daddy|starfield|\bamazon\b|buypass', re.I)),
     ('sslcom', re.compile(r'ssl\.com|ssl corporation', re.I)),
 )
-ARI_TIMEOUT = 10.0                 # seconds per ARI request
+ARI_TIMEOUT = 10.0                 # seconds per ARI request (the whole of it, as http_get)
 ARI_MAX_RETRY = 7 * 86400          # a longer Retry-After (a broken header) is cut to a week
 ARI_BENCH = 3600                   # a rate-limited CA without Retry-After: not asked for this long
 CRL_MAX_BYTES = 20 << 20           # a larger CRL is not read
-CRL_TIMEOUT = 15.0                 # seconds per socket operation of a CRL download
+CRL_TIMEOUT = 15.0                 # seconds for a CRL download, its body included
 STATUS_WORKERS = 4                 # ARI requests and CRL downloads in flight
 MOVED_UP_SECONDS = 24 * 3600       # a window starting this much earlier than before: MOVED-UP
 # RFC 5280 section 5.3.1 CRLReason (also what Cert Spotter's revocation.reason holds).
@@ -8683,13 +8683,35 @@ class StatusFetchError(Exception):
 FetchFn = Callable[[str, float, Optional[int]], Tuple[int, Dict[str, str], bytes]]
 
 
+def _read_body(response: Any, size: Optional[int], deadline: float) -> Tuple[bytes, bool]:
+    """At most ``size`` bytes of a response body (all of it with None), one socket read at a
+    time until ``deadline`` (``time.monotonic()``): ``(body, done)``, ``done`` False when the
+    deadline came first. A server that sends a byte now and then keeps each read under the
+    socket timeout, never the download past its deadline."""
+    read = getattr(response, 'read1', None) or response.read
+    chunks = []  # type: List[bytes]
+    total = 0
+    while size is None or total < size:
+        if time.monotonic() >= deadline:
+            return b''.join(chunks), False
+        chunk = read(65536 if size is None else min(65536, size - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b''.join(chunks), True
+
+
 def http_get(url: str, timeout: float, max_bytes: Optional[int] = None
              ) -> Tuple[int, Dict[str, str], bytes]:
     """GET ``url`` (http or https, redirects followed): ``(status, headers, body)`` for any
-    answer - a 4xx / 5xx one with its first 4 KiB -, :class:`StatusFetchError` for none or a
-    body larger than ``max_bytes``. Header names are lower case."""
+    answer - a 4xx / 5xx one with its first 4 KiB -, :class:`StatusFetchError` for none, a
+    body larger than ``max_bytes``, or one still arriving ``timeout`` seconds after the request
+    began (``timeout`` bounds each socket operation and the whole download). Header names are
+    lower case."""
     if not re.match(r'^https?://', url, re.I):
         raise StatusFetchError('network', 'not an http(s) URL')
+    deadline = time.monotonic() + timeout
     request = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT, 'Accept': '*/*'})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
@@ -8697,7 +8719,10 @@ def http_get(url: str, timeout: float, max_bytes: Optional[int] = None
             declared = headers.get('content-length', '')
             if max_bytes is not None and declared.isdigit() and int(declared) > max_bytes:
                 raise StatusFetchError('too-large', '%s bytes' % declared, response.status)
-            body = response.read(max_bytes + 1 if max_bytes is not None else -1)
+            body, done = _read_body(response, max_bytes + 1 if max_bytes is not None else None,
+                                    deadline)
+            if not done:
+                raise StatusFetchError('timeout', 'the answer took more than %g s' % timeout)
             if max_bytes is not None and len(body) > max_bytes:
                 raise StatusFetchError('too-large', 'more than %d bytes' % max_bytes,
                                        response.status)
@@ -8706,7 +8731,7 @@ def http_get(url: str, timeout: float, max_bytes: Optional[int] = None
         headers = {key.lower(): value for key, value in (exc.headers.items() if exc.headers
                                                            else [])}
         try:
-            body = exc.read(4096)
+            body = _read_body(exc, 4096, deadline)[0]
         except Exception:  # noqa: BLE001 - the status is what matters
             body = b''
         finally:
@@ -9034,9 +9059,14 @@ def crl_urls_of(cert: CertInfo) -> List[str]:
 
 
 def _same_url(a: str, b: str) -> bool:
-    x, y = urllib.parse.urlsplit(a), urllib.parse.urlsplit(b)
-    return (x.scheme.lower(), x.netloc.lower(), x.path, x.query) == \
-        (y.scheme.lower(), y.netloc.lower(), y.path, y.query)
+    """Whether two URLs name the same resource (lib/crl.js sameUrl): the same text when one of
+    them cannot be split - a CRL's IDP is whatever its issuer wrote, its signature unchecked."""
+    try:
+        x, y = urllib.parse.urlsplit(a), urllib.parse.urlsplit(b)
+        return (x.scheme.lower(), x.netloc.lower(), x.path, x.query) == \
+            (y.scheme.lower(), y.netloc.lower(), y.path, y.query)
+    except ValueError:
+        return a == b
 
 
 def crl_status(crl: Dict[str, Any], cert: CertInfo, url: Optional[str] = None,
@@ -9136,19 +9166,10 @@ class RevocationChecker:
                 if got[0] != 'ok':
                     record = self._record(crl=url, error=got[1])
                 else:
-                    crl = got[1]
-                    verdict = crl_status(crl, cert, url, self._now())
-                    record = self._record(crl=url, thisUpdate=iso_utc(crl['thisUpdate']),
-                                          nextUpdate=iso_utc(crl['nextUpdate']),
-                                          signature='not-verified')
-                    if verdict['status'] == 'unknown':
-                        record['error'] = verdict['code']
-                        if verdict['code'] == 'issuer-mismatch':
-                            record['signature'] = None
-                    else:
-                        record.update(status=verdict['status'], reason=verdict['reason'],
-                                      reasonCode=verdict['reasonCode'],
-                                      time=iso_utc(verdict['time']))
+                    try:
+                        record = self._judge(got[1], cert, url)
+                    except Exception:  # noqa: BLE001 - one CRL it cannot judge never loses the scan
+                        record = self._record(crl=url, error='unknown')
                 if record['status'] != 'unknown':
                     out[sha] = record
                     break
@@ -9156,6 +9177,20 @@ class RevocationChecker:
             else:
                 out[sha] = first or self._record(error='network')
         return out
+
+    def _judge(self, crl: Dict[str, Any], cert: CertInfo, url: str) -> Dict[str, Any]:
+        """What one CRL read for ``cert`` says, as its ``revocation`` record."""
+        verdict = crl_status(crl, cert, url, self._now())
+        record = self._record(crl=url, thisUpdate=iso_utc(crl['thisUpdate']),
+                              nextUpdate=iso_utc(crl['nextUpdate']), signature='not-verified')
+        if verdict['status'] == 'unknown':
+            record['error'] = verdict['code']
+            if verdict['code'] == 'issuer-mismatch':
+                record['signature'] = None
+        else:
+            record.update(status=verdict['status'], reason=verdict['reason'],
+                          reasonCode=verdict['reasonCode'], time=iso_utc(verdict['time']))
+        return record
 
     def _record(self, **fields: Any) -> Dict[str, Any]:
         record = {'status': 'unknown', 'reason': None, 'reasonCode': None, 'time': None,
@@ -9219,10 +9254,12 @@ def status_csv_cells(entry: Optional[Dict[str, Any]], ari: bool, revocation: boo
 
 def _status_changes(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[str, Any]]:
     """The certificate changes of --ari / --revocation (the runner's tools/ds/tlsdiff.mjs):
-    RENEW-NOW (the window opened, or ended, since the baseline knew it; or a certificate first
-    seen in it), MOVED-UP (it starts over :data:`MOVED_UP_SECONDS` earlier), CA-NOTICE (an
-    explanation URL the baseline's answers did not carry) and REVOKED (listed on the CRL now,
-    not then). Only certificates served in ``after``."""
+    RENEW-NOW (the window opened, or ended, since the baseline's run - the window its answer
+    gave, at that run's time, never at the answer's ``checkedAt``: an answer carried past its
+    Retry-After keeps that time -; or a certificate first seen in it), MOVED-UP (it starts
+    over :data:`MOVED_UP_SECONDS` earlier), CA-NOTICE (an explanation URL the baseline's
+    answers did not carry) and REVOKED (listed on the CRL now, not then). Only certificates
+    served in ``after``, an endpoint new to the baseline's included."""
     old = before.get('certificates') if isinstance(before.get('certificates'), dict) else {}
     new = after.get('certificates') if isinstance(after.get('certificates'), dict) else {}
     served = {}  # type: Dict[str, Dict[str, Any]]
@@ -9235,7 +9272,8 @@ def _status_changes(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
         if isinstance(server, str) and server and server not in where['servers']:
             where['servers'].append(server)
     at = _parse_iso_utc(after.get('finishedAt')) or _utcnow()
-    before_at = _parse_iso_utc(before.get('finishedAt'))
+    # the baseline's run saw the certificates it lists served at its end
+    before_at = _parse_iso_utc(before.get('finishedAt')) or _parse_iso_utc(before.get('startedAt'))
     ok = lambda record: isinstance(record, dict) and not record.get('error')  # noqa: E731
     known_urls = set()  # type: Set[str]
     read_before = False
@@ -9261,8 +9299,8 @@ def _status_changes(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
             state = window_state(ari, at)
             prev_state = None
             if ok(prev_ari):
-                prev_state = window_state(prev_ari, _parse_iso_utc(prev_ari.get('checkedAt'))
-                                          or before_at or at)
+                prev_state = window_state(prev_ari, before_at
+                                          or _parse_iso_utc(prev_ari.get('checkedAt')) or at)
             if state in ('open', 'past') and ranks[state] > ranks.get(prev_state or '', -1):
                 add('renew-now', state=state, start=ari.get('start'), end=ari.get('end'))
             start, prev_start = _parse_iso_utc(ari.get('start')), \
@@ -9343,7 +9381,9 @@ def ari_text(record: Dict[str, Any], now: datetime, style: Style) -> str:
             if isinstance(carried, dict) and record.get('retryAfter') else
             ' (as of %s)' % _minute(carried.get('from')) if isinstance(carried, dict) else '')
     if record.get('error'):
-        status = ' %s' % record['status'] if record.get('error') == 'http' and record.get('status') else ''
+        code = record.get('status')  # a number, unless a hand-made baseline carried something else
+        status = ' %d' % code if record.get('error') == 'http' and isinstance(code, int) \
+            and not isinstance(code, bool) else ''
         return head + _ARI_WHY.get(record['error'], "the CA's answer could not be read") + status + tail
     text = head + 'renew between %s and %s' % (_minute(record.get('start')), _minute(record.get('end')))
     state = window_state(record, now)

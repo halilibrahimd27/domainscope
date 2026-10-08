@@ -20,6 +20,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
@@ -62,6 +63,16 @@ class FakeFetch:
         if max_bytes is not None and len(body) > max_bytes:
             raise sos.StatusFetchError('too-large', '', status)
         return status, headers, body
+
+
+def idp_crl() -> bytes:
+    """The empty CRL with its issuing distribution point made ``http://[rl.example.com/...``: as
+    long, so the DER stays valid; a URL urllib cannot split (the tool cannot check the signature)."""
+    crl = bytearray(fixture_bytes('crl_empty.der'))
+    at = crl.find(DP.encode())
+    assert at > 0, 'the IDP URL'
+    crl[at + 7:at + 8] = b'['
+    return bytes(crl)
 
 
 def leaf_scan(der: bytes = LEAF.der, now: datetime = NOW):
@@ -156,6 +167,14 @@ class CrlTests(unittest.TestCase):
         self.assertEqual(sos.crl_status(revoked, rekeyed, DP, NOW)['code'], 'issuer-mismatch')
         with self.assertRaises(ValueError):
             sos.crl_status(sos.parse_crl(fixture_bytes('crl_revoked.der'), serials=['ff']), LEAF, DP, NOW)
+
+    def test_an_idp_url_urllib_cannot_split_is_another_scope(self):
+        crl = sos.parse_crl(idp_crl())
+        self.assertEqual(crl['idp']['urls'], ['http://[rl.example.com/test-ca.crl'])
+        verdict = sos.crl_status(crl, LEAF, DP, NOW)
+        self.assertEqual((verdict['status'], verdict['code']), ('unknown', 'scope'))
+        self.assertEqual(sos.crl_status(crl, LEAF, 'http://[rl.example.com/test-ca.crl', NOW)['status'], 'good',
+                         'the same text is the same URL')
 
     def test_input_that_is_no_crl(self):
         good = fixture_bytes('crl_empty.der')
@@ -258,6 +277,62 @@ class RevocationCheckerTests(unittest.TestCase):
         no_crl = LEAF.__class__(**dict(LEAF.__dict__, crl_urls=[]))
         record = sos.RevocationChecker(fetch=FakeFetch({}), now=lambda: NOW).check({'a': no_crl})['a']
         self.assertEqual((record['error'], record['crl']), ('no-crl', None))
+
+    def test_one_certificate_a_crl_cannot_judge_never_loses_the_others(self):
+        out = sos.RevocationChecker(fetch=FakeFetch({DP: (200, {}, idp_crl())}), now=lambda: NOW).check({'a': LEAF})
+        self.assertEqual((out['a']['status'], out['a']['error'], out['a']['crl']), ('unknown', 'scope', DP))
+        real = sos.crl_status
+
+        def flaky(crl, cert, url=None, now=None):
+            if cert is LEAF:
+                raise RuntimeError('a CRL this version cannot judge')
+            return real(crl, cert, url, now)
+
+        with mock.patch.object(sos, 'crl_status', flaky):
+            out = sos.RevocationChecker(fetch=FakeFetch({DP: (200, {}, fixture_bytes('crl_revoked.der'))}),
+                                        now=lambda: NOW).check({'a': LEAF, 'b': LEAF2})
+        self.assertEqual((out['a']['status'], out['a']['error'], out['a']['crl'], out['a']['signature']),
+                         ('unknown', 'unknown', DP, None))
+        self.assertEqual((out['b']['status'], out['b']['reason']), ('revoked', 'superseded'))
+        self.assertIn('the CRL could not be read', sos.revocation_text(out['a'], sos.Style(False)))
+
+    def test_http_get_gives_up_on_a_body_that_trickles(self):
+        """A byte every 0.2 s keeps each socket read under the timeout: the download still ends
+        at the deadline (``timeout`` for the whole of it: 1 s here, CRL_TIMEOUT for a CRL)."""
+        stop = threading.Event()
+
+        class Trickle(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - the stdlib's name
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/pkix-crl')
+                self.end_headers()
+                try:
+                    for _ in range(40):  # 8 s at most
+                        if stop.is_set():
+                            return
+                        self.wfile.write(b'0')
+                        self.wfile.flush()
+                        time.sleep(0.2)
+                except OSError:  # the client gave up
+                    pass
+
+            def log_message(self, *args):  # quiet
+                pass
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Trickle)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            began = time.monotonic()
+            with self.assertRaises(sos.StatusFetchError) as caught:
+                sos.http_get('http://127.0.0.1:%d/test-ca.crl' % server.server_address[1], 1.0, sos.CRL_MAX_BYTES)
+            self.assertEqual(caught.exception.code, 'timeout')
+            self.assertLess(time.monotonic() - began, 4.0)
+        finally:
+            stop.set()
+            server.shutdown()
+            server.server_close()
 
     def test_http_get_reads_a_local_server(self):
         body = fixture_bytes('crl_empty.der')
@@ -373,6 +448,41 @@ class ScanTests(unittest.TestCase):
         ari = read_json(self.json)['certificates'][LEAF.sha256]['ari']
         self.assertEqual((ari['start'], ari['carried']), ('2026-10-09T12:00:00.000Z', {'from': '2026-10-10T03:00:00.000Z'}))
         self.assertIn('(as of 2026-10-10 03:00 UTC; not asked again before 2026-10-11 03:00 UTC, as the CA asked)', out)
+
+    def test_renew_now_once_across_a_carried_answer(self):
+        # 03:00 asked (the window opens at 05:00; Retry-After 6 h), 06:00 the answer carried:
+        # RENEW-NOW; 03:00 the next day asked again: the baseline saw the window open, no change
+        body = window('2026-10-09T05:00:00Z', '2026-10-12T00:00:00Z')
+        nights = ((datetime(2026, 10, 9, 3, 0, tzinfo=timezone.utc), True, sos.EXIT_OK, []),
+                  (datetime(2026, 10, 9, 6, 0, tzinfo=timezone.utc), False, sos.EXIT_CHANGED, ['RENEW-NOW']),
+                  (datetime(2026, 10, 10, 3, 0, tzinfo=timezone.utc), True, sos.EXIT_OK, []))
+        for now, asked, exit_code, tags in nights:
+            fetch = night_fetch(body, 'crl_empty.der', retry_after='21600')
+            code, _out, err = self.night(fetch, now, '--fail-on-change')
+            self.assertEqual(code, exit_code, (now, err))
+            self.assertEqual(any(u.startswith(RI) for u in fetch.calls), asked, now)
+            self.assertEqual([sos.change_tag(c) for c in read_json(self.json).get('changes') or []], tags, now)
+
+    def test_a_crl_that_cannot_be_judged_never_loses_the_scan(self):
+        with mock.patch.object(sos, 'run_scan', return_value=leaf_scan()), \
+                mock.patch.object(sos, 'http_get', FakeFetch({DP: (200, {}, idp_crl())})):
+            code, out, err = run_main('-t', '192.0.2.10', '-n', 'www.example.com', '--revocation', '--no-color',
+                                      '--json', self.json, now=NOW)
+        self.assertEqual(code, sos.EXIT_OK, err)
+        record = read_json(self.json)['certificates'][LEAF.sha256]['revocation']
+        self.assertEqual((record['status'], record['error']), ('unknown', 'scope'))
+        self.assertIn('Revocation unknown: the CRL covers other certificates', ' '.join(out.split()))
+
+    def test_a_carried_answer_from_the_baseline_reaches_the_terminal_escaped(self):
+        record = {'ca': 'letsencrypt\x1b[2J', 'certId': 'x.y', 'start': None, 'end': None, 'explanationURL': None,
+                  'checkedAt': '2026-10-09T02:00:00.000Z', 'retryAfter': '2026-10-12T00:00:00.000Z',
+                  'status': '\x1b]0;pwned\x07\x1b[2J', 'error': 'http', 'carried': {'from': '2026-10-09T02:00:00.000Z'}}
+        text = sos.ari_text(record, NOW, sos.Style(False))
+        self.assertNotIn('\x1b', text)
+        self.assertNotIn('\x07', text)
+        self.assertTrue(text.startswith("ARI (letsencrypt\\x1b[2J): the CA's ARI server answered an HTTP error (as of"), text)
+        self.assertIn('answered an HTTP error 403 (as of', sos.ari_text(dict(record, ca='letsencrypt', status=403), NOW, sos.Style(False)))
+        self.assertNotIn('True', sos.ari_text(dict(record, status=True), NOW, sos.Style(False)))
 
     def test_estate_carries_both_and_its_csv_has_the_columns(self):
         fetch = night_fetch(window('2026-11-01T00:00:00Z', '2026-11-03T00:00:00Z'), 'crl_revoked.der')

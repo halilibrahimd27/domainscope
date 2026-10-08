@@ -43,6 +43,14 @@ INTER = _certs('bundle_inter.pem')[0]
 ROOT = _certs('bundle_root.pem')[0]
 OTHER = fixture_cert('bundle_ec_leaf.pem')        # api.example.net, the same intermediate
 SELF_SIGNED = fixture_cert('starttls_ec_leaf.pem')
+# gen_cross_fixtures.sh: the Cross Root (the client trusts it) and its name and key cross-signed by
+# an Old Root, expired on 2024-09-30, as the AddTrust and DST Root CA X3 cross-signs expired
+X_ROOT = _certs('cross_root.pem')[0]
+X_OLD_ROOT = _certs('cross_old_root.pem')[0]
+X_CROSS = _certs('cross_root_by_old.pem')[0]
+X_INTER = _certs('cross_inter.pem')[0]
+X_INTER_OLD = _certs('cross_inter_old.pem')[0]   # the Issuing CA's name and key, expired 2024-09-30
+X_LEAF = fixture_cert('cross_leaf.pem')           # EC, www.example.com and example.com
 
 
 def ders(*certs: sos.CertInfo) -> List[bytes]:
@@ -291,14 +299,78 @@ class AnalyzeChainTests(unittest.TestCase):
         self.assertEqual(odd.notes, {'untrusted': 'not trusted: EE certificate key too weak'})
 
     def test_before_python_3_10_the_leaf_alone_speaks(self):
-        unknown = sos.analyze_chain(False, 20, 'unable to get local issuer certificate',
-                                    sent=None, leaf=LEAF.der, now=NOW)
+        with mock.patch.object(sos, 'CAN_READ_CHAIN', False):
+            unknown = sos.analyze_chain(False, 20, 'unable to get local issuer certificate',
+                                        sent=None, leaf=LEAF.der, now=NOW)
         self.assertEqual(unknown.problems, ['unknown-issuer'])
+        self.assertEqual(unknown.notes['unknown-issuer'],
+                         'this machine has no issuer for it (Example Test Bundle Intermediate CA '
+                         '(Example Test PKI)): a missing intermediate or a root it does not trust; '
+                         'Python 3.10 and later tell which')
         self.assertIsNone(unknown.to_dict()['sent'])
+        # a Python that reads chains but did not get this one: no word of the version
+        with mock.patch.object(sos, 'CAN_READ_CHAIN', True):
+            unread = sos.analyze_chain(False, 20, 'unable to get local issuer certificate',
+                                       sent=None, leaf=LEAF.der, now=NOW)
+        self.assertEqual(unread.notes['unknown-issuer'],
+                         'this machine has no issuer for it (Example Test Bundle Intermediate CA '
+                         '(Example Test PKI)): a missing intermediate or a root it does not trust; '
+                         'the chain it sends could not be read')
         self.assertEqual(sos.analyze_chain(False, 21, 'unable to verify the first certificate',
                                            sent=None, leaf=LEAF.der, now=NOW).problems,
                          ['missing-intermediate'])
+        self.assertEqual(sos.analyze_chain(False, 19, 'self-signed certificate in certificate chain',
+                                           sent=None, leaf=LEAF.der, now=NOW).notes,
+                         {'untrusted-root': 'the chain ends at a root this machine does not trust'})
         self.assertEqual(sos.analyze_chain(True, sent=None, leaf=LEAF.der, now=NOW).problems, [])
+
+    def test_a_trusted_chain_sending_an_expired_cross_sign_in_either_order(self):
+        # this machine trusts the Cross Root and builds the chain without its expired cross-signed
+        # copy; only an old client, which lacks the Cross Root, goes through it and fails
+        built = ders(X_LEAF, X_INTER, X_ROOT)
+        cross = sos.analyze_chain(True, sent=ders(X_LEAF, X_INTER, X_CROSS), built=built,
+                                  sni='www.example.com', now=NOW)
+        self.assertEqual((cross.status, cross.problems, cross.breaking),
+                         ('trusted', ['expired-extra'], []))
+        self.assertEqual(cross.notes['expired-extra'],
+                         'Example Test Cross Root (Example Test PKI), issued by Example Test Cross '
+                         'Old Root (Example Test PKI), expired on 2024-09-30: this machine trusts '
+                         'the chain without it, older clients that build through it fail')
+        # the root sent too, before or after the cross-sign: the same verdict
+        for sent in ((X_LEAF, X_INTER, X_CROSS, X_ROOT), (X_LEAF, X_INTER, X_ROOT, X_CROSS)):
+            check = sos.analyze_chain(True, sent=ders(*sent), built=built, now=NOW)
+            self.assertEqual((check.problems, check.breaking),
+                             (['expired-extra', 'extra-root'], []), [c.issuer_cn for c in sent])
+            self.assertEqual(check.notes['extra-root'], 'the root Example Test Cross Root (Example '
+                             'Test PKI) is sent too: clients use their own copy')
+        # the old clients' path sent whole: the old root is the root sent along
+        old_path = sos.analyze_chain(True, sent=ders(X_LEAF, X_INTER, X_CROSS, X_OLD_ROOT),
+                                     built=built, now=NOW)
+        self.assertEqual(old_path.problems, ['expired-extra', 'extra-root'])
+        self.assertIn('Example Test Cross Old Root', old_path.notes['extra-root'])
+        # both roots and the cross-sign: no certificate there is unrelated
+        everything = sos.analyze_chain(True, sent=ders(X_LEAF, X_INTER, X_ROOT, X_CROSS, X_OLD_ROOT),
+                                       built=built, now=NOW)
+        self.assertEqual(everything.problems, ['expired-extra', 'extra-root'])
+        self.assertEqual(everything.notes['extra-root'],
+                         'the roots Example Test Cross Root (Example Test PKI), Example Test Cross '
+                         'Old Root (Example Test PKI) are sent too: clients use their own copies')
+        # not trusted here: the expired cross-sign on the chain breaks it
+        untrusted = sos.analyze_chain(False, 10, 'certificate has expired',
+                                      sent=ders(X_LEAF, X_INTER, X_CROSS), now=NOW)
+        self.assertEqual(untrusted.problems, ['expired-chain'])
+
+    def test_an_expired_copy_of_an_intermediate(self):
+        built = ders(X_LEAF, X_INTER, X_ROOT)
+        # sent instead of the current copy, which this machine had: a client without it fails
+        stale = sos.analyze_chain(True, sent=ders(X_LEAF, X_INTER_OLD), built=built, now=NOW)
+        self.assertEqual((stale.problems, stale.breaking), (['expired-chain'], ['expired-chain']))
+        self.assertEqual(stale.notes['expired-chain'], 'Example Test Cross Issuing CA (Example Test '
+                                                       'PKI) in the chain expired on 2024-09-30')
+        # sent next to the current copy: an extra certificate, in either order
+        for sent in ((X_LEAF, X_INTER_OLD, X_INTER), (X_LEAF, X_INTER, X_INTER_OLD)):
+            both = sos.analyze_chain(True, sent=ders(*sent), built=built, now=NOW)
+            self.assertEqual((both.problems, both.breaking), (['expired-extra'], []))
 
     def test_a_private_ca_trusts_what_it_issued(self):
         leaf, ca = fixture_cert('cli_private_wild.pem'), fixture_cert('cli_private_ca.pem')
@@ -436,6 +508,31 @@ class AuditChainTests(unittest.TestCase):
         full = sos.render_tls_audit(self.report.audit, show_all=True)
         self.assertIn('| chain: untrusted (missing-intermediate)', full)
 
+    def test_a_chain_that_could_not_be_read_keeps_the_verdict(self):
+        # the verifying handshake fails verification, then the one reading the chain times out
+        target = sos.EndpointAudit('203.0.113.22', 443, 'tls', ['web02'], 'www.example.com')
+        probe = FakeChainProbe({'203.0.113.22': (
+            sos.ChainProbe(verified=False, verify_code=20,
+                           verify_message='unable to get local issuer certificate'),
+            sos.ChainProbe(error='timed out', timed_out=True))})
+        for can_read in (True, False):
+            with mock.patch.object(sos, 'CAN_READ_CHAIN', can_read):
+                check = sos.check_chain(target, _audit_contexts(), 5.0, probe, now=NOW)
+            self.assertEqual((check.status, check.problems, check.verify_code, check.error,
+                              check.timed_out), ('untrusted', ['untrusted'], 20, 'timed out', True))
+            self.assertEqual(check.notes, {'untrusted': (
+                'not trusted: unable to get local issuer certificate; the chain it sends could not '
+                'be read (a second handshake failed: timed out)')})
+        # a name OpenSSL refused needs no chain
+        named = FakeChainProbe({'203.0.113.22': (
+            sos.ChainProbe(verified=False, verify_code=62, verify_message='Hostname mismatch'),
+            sos.ChainProbe(error='connection reset'))})
+        check = sos.check_chain(target, _audit_contexts(), 5.0, named, now=NOW)
+        self.assertEqual(check.notes, {'name-mismatch': (
+            'the certificate does not cover www.example.com; the chain it sends could not be read '
+            '(a second handshake failed: connection reset)')})
+        self.assertFalse(check.timed_out)
+
     def test_a_fleet_whose_chains_cannot_be_checked_says_so(self):
         report = _report([('web01', '203.0.113.21', 443, 'www.example.com', LEAF)])
         report.audit = sos.run_tls_audit(report, attempt=_all_accepted,
@@ -488,8 +585,11 @@ class SerialMismatchTests(unittest.TestCase):
         lines = []  # type: List[str]
         sos.render_serial_mismatches(mismatches, lines, sos.Style(False))
         text = '\n'.join(lines)
-        self.assertIn('One name served with different certificates of one key type: 1 name(s)', text)
+        self.assertIn('One name served with different certificates across the endpoints: 1 name(s)',
+                      text)
         self.assertIn('    a.wild.example.net (ECDSA, private)', text)
+        self.assertFalse(m['keyTypeChanged'])
+        self.assertEqual({c['keyType'] for c in m['certificates']}, {'ECDSA'})
         self.assertIn('      OLDER serial %s, issued 2025-01-01, expires 2051-01-01: 10.0.0.23:443 '
                       'web03 (behind lb01)' % self.OLD.serial_hex, text)
         self.assertIn('10.0.0.21:443 web01 (behind lb01); 10.0.0.22:443 web02 (behind lb01); '
@@ -529,8 +629,9 @@ class SerialMismatchTests(unittest.TestCase):
 
         report.audit = sos.run_tls_audit(report, attempt=attempt, contexts=_fake_contexts())
         summary = sos.audit_summary(report.audit)
-        self.assertEqual([(m['name'], m['keyType']) for m in summary['serialMismatches']],
-                         [('example.com', 'RSA')])
+        self.assertEqual([(m['name'], m['keyType'], m['keyTypeChanged'])
+                          for m in summary['serialMismatches']],
+                         [('example.com', 'RSA', False)])
         certs = summary['serialMismatches'][0]['certificates']
         self.assertEqual([(c['serialHex'], c['older'], [e['servers'] for e in c['endpoints']])
                           for c in certs],
@@ -539,6 +640,57 @@ class SerialMismatchTests(unittest.TestCase):
         doc = json.loads(sos.render_json(report))
         self.assertEqual(doc['tlsAudit']['summary']['serialMismatches'][0]['name'], 'example.com')
         self.assertNotIn('cert', doc['tlsAudit']['endpoints'][0]['keyTypes']['RSA'])
+
+    def test_a_renewal_that_changed_the_key_type_and_missed_a_pool_member(self):
+        # the renewal moved example.com from RSA to ECDSA: web01 serves the new ECDSA certificate
+        # alone, web02 still last year's RSA one alone, and each refuses the other key type. No
+        # endpoint serves both, so the two are no RSA + ECDSA pair: web02 was missed
+        old_rsa, new_ecdsa = fixture_cert('certdiff_old.pem'), fixture_cert('certdiff_new.pem')
+        lb = sos.Server('lb01', ['203.0.113.2'], backends=['web01', 'web02'])
+        report = _report([('web01', '203.0.113.21', 443, 'example.com', new_ecdsa),
+                          ('web02', '203.0.113.22', 443, 'example.com', old_rsa)], servers=[lb])
+        serves = {'203.0.113.21': new_ecdsa, '203.0.113.22': old_rsa}
+
+        def attempt(ip: str, port: int, protocol: str, sni: Optional[str], context: str,
+                    timeout: float) -> sos.AuditCheck:
+            kind, _, what = str(context).partition(':')
+            if kind != 'k':  # TLS 1.2 and 1.3 only, no weak suite
+                accepted = kind == 'v' and what in ('TLSv1.2', 'TLSv1.3')
+                return sos.AuditCheck(sos.AUDIT_ACCEPTED if accepted else sos.AUDIT_REFUSED,
+                                      version=what if accepted else None)
+            cert = serves[ip]
+            if (what == 'ECDSA') != (cert.key_algorithm == 'EC'):
+                return sos.AuditCheck(sos.AUDIT_REFUSED, error='no shared cipher')
+            return sos.AuditCheck(sos.AUDIT_ACCEPTED, version='TLSv1.2', cert_sha256=cert.sha256,
+                                  key_algorithm=cert.key_algorithm, cert=cert)
+
+        report.audit = sos.run_tls_audit(report, attempt=attempt, contexts=_fake_contexts())
+        summary = sos.audit_summary(report.audit)
+        self.assertEqual(summary['oneKeyType'], [], 'no RSA + ECDSA pair is expected here')
+        self.assertEqual(len(summary['serialMismatches']), 1)
+        m = summary['serialMismatches'][0]
+        self.assertEqual((m['name'], m['keyType'], m['keyTypeChanged'], m['kind']),
+                         ('example.com', 'ECDSA', True, 'other'))
+        self.assertEqual([(c['keyType'], c['serialHex'], c['older'],
+                           [e['servers'] for e in c['endpoints']]) for c in m['certificates']],
+                         [('ECDSA', new_ecdsa.serial_hex, False, [['web01']]),
+                          ('RSA', old_rsa.serial_hex, True, [['web02']])])
+        text = sos.render_tls_audit(report.audit)
+        self.assertIn('One name served with different certificates across the endpoints: 1 name(s)',
+                      text)
+        self.assertIn('    example.com (RSA to ECDSA: the key type changed, no endpoint serves both)',
+                      text)
+        self.assertIn('      OLDER serial %s (RSA), issued %s, expires %s: 203.0.113.22:443 web02 '
+                      '(behind lb01)' % (old_rsa.serial_hex, old_rsa.not_before.strftime('%Y-%m-%d'),
+                                         old_rsa.not_after.strftime('%Y-%m-%d')), text)
+        self.assertIn('      serial %s (ECDSA), issued 2026-09-01' % new_ecdsa.serial_hex, text)
+        self.assertNotIn('Every name is served with one certificate per key type', text)
+        # the scan alone cannot tell this from an RSA + ECDSA pair: no mismatch then
+        self.assertEqual(sos.serial_mismatches(report), [])
+        # an RSA + ECDSA pair the --cert files hold covers the name: two halves of a pair (the
+        # summary's oneKeyType), no key type changed
+        report.new_certs = [fixture_cert('certdiff_renewed.pem'), new_ecdsa]
+        self.assertEqual(sos.serial_mismatches(report, report.audit.endpoints), [])
 
 
 # --- the chain check against local servers -------------------------------------------------------
@@ -614,6 +766,59 @@ class LocalChainTests(unittest.TestCase):
         self.assertEqual((chains['alone']['status'], chains['alone']['problems']),
                          ('trusted', ['missing-intermediate']))
         self.assertEqual(chains['complete']['problems'], [])
+
+
+class LocalCrossSignTests(unittest.TestCase):
+    """Real handshakes: servers sending an expired cross-signed copy of the root the client
+    trusts, with and without that root, in either order. OpenSSL builds the chain to its own copy
+    of the root, so the chain is trusted and the cross-sign only a warning."""
+
+    SHAPES = (('cross', [X_LEAF, X_INTER, X_CROSS]),
+              ('cross-root', [X_LEAF, X_INTER, X_CROSS, X_ROOT]),
+              ('root-cross', [X_LEAF, X_INTER, X_ROOT, X_CROSS]))
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.servers = {}  # type: Dict[str, TlsResponder]
+        for shape, certs in cls.SHAPES:
+            path = os.path.join(cls.tmp.name, shape + '.pem')
+            with open(path, 'w', encoding='ascii') as handle:
+                handle.write(''.join(ssl.DER_cert_to_PEM_cert(c.der) for c in certs))
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(path, str(FIXTURES / 'cross_leaf.key'))
+            cls.servers[shape] = TlsResponder(context)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        for server in cls.servers.values():
+            server.close()
+        cls.tmp.cleanup()
+
+    def test_trusted_with_the_expired_cross_sign_as_a_warning(self):
+        targets = ['%s=127.0.0.1:%d' % (shape, server.port) for shape, server in self.servers.items()]
+        report = os.path.join(self.tmp.name, 'audit.json')
+        with mock.patch.object(sos, 'verify_context', side_effect=_trusting(X_ROOT)):
+            code, out, err = run_main('-t', *targets, '-n', 'www.example.com', '--tls-audit',
+                                      '--json', report, '--no-color')
+        self.assertEqual(code, 0, err)
+        with open(report, encoding='utf-8') as handle:
+            audit = json.load(handle)['tlsAudit']
+        chains = {e['servers'][0]: e['chain'] for e in audit['endpoints']}
+        self.assertEqual({shape: chain['status'] for shape, chain in chains.items()},
+                         {'cross': 'trusted', 'cross-root': 'trusted', 'root-cross': 'trusted'})
+        self.assertEqual((audit['summary']['chainsChecked'], audit['summary']['chainsBroken']), (3, 0))
+        self.assertIn('Every chain checked (3) is trusted for its name and complete', out)
+        if not sos.CAN_READ_CHAIN:
+            self.assertEqual([chain['problems'] for chain in chains.values()], [[], [], []])
+            return
+        self.assertEqual({shape: chain['problems'] for shape, chain in chains.items()},
+                         {'cross': ['expired-extra'], 'cross-root': ['expired-extra', 'extra-root'],
+                          'root-cross': ['expired-extra', 'extra-root']})
+        self.assertIn('Chain sent with extra or misordered certificates: 3 endpoint(s)', out)
+        self.assertIn('Example Test Cross Root (Example Test PKI), issued by Example Test Cross Old '
+                      'Root (Example Test PKI), expired on 2024-09-30: this machine trusts the chain '
+                      'without it, older clients that build through it fail', out)
 
 
 if __name__ == '__main__':

@@ -147,7 +147,7 @@ PROTOCOL_LABELS = {PROTO_TLS: 'TLS', PROTO_SMTP: 'SMTP', PROTO_IMAP: 'IMAP', PRO
                    PROTO_FTP: 'FTP', PROTO_LDAP: 'LDAP', PROTO_XMPP: 'XMPP',
                    PROTO_POSTGRES: 'PostgreSQL', PROTO_RDP: 'RDP'}
 # --profile: the ports of a kind of server, in place of -p's default (443); -p adds its own.
-# all: every port whose protocol the scan speaks by default (web, mail, file transfer,
+# all: every port whose protocol the scan supports by default (web, mail, file transfer,
 # directory, chat, database, remote desktop).
 PORT_PROFILES = {
     'web': (443, 8443),
@@ -4787,11 +4787,13 @@ MAX_AUDIT_LINES = 10   # endpoints per audit finding in the summary without --sh
 # The chain check (one more handshake per endpoint, two when it is not trusted): whether this
 # machine's trust store accepts the chain the endpoint sends for the name asked (OpenSSL decides
 # trust; nothing here verifies a signature), and that chain read in order (Python 3.10+). What a
-# client fails on comes first; the last three (CHAIN_WARNINGS) only cost bytes or old clients.
+# client fails on comes first; the last four (CHAIN_WARNINGS) only cost bytes or old clients:
+# expired-extra is an expired certificate sent that a trusted chain does without (a cross-signed
+# copy of a root this machine trusts, as the AddTrust and DST Root CA X3 cross-signs expired).
 CHAIN_PROBLEMS = ('expired', 'not-yet-valid', 'name-mismatch', 'self-signed',
                   'missing-intermediate', 'untrusted-root', 'unknown-issuer', 'expired-chain',
-                  'untrusted', 'wrong-order', 'extra-root', 'unrelated')
-CHAIN_WARNINGS = ('wrong-order', 'extra-root', 'unrelated')
+                  'untrusted', 'expired-extra', 'wrong-order', 'extra-root', 'unrelated')
+CHAIN_WARNINGS = ('expired-extra', 'wrong-order', 'extra-root', 'unrelated')
 CHAIN_TRUSTED, CHAIN_UNTRUSTED, CHAIN_UNTESTED = 'trusted', 'untrusted', 'untested'
 # OpenSSL verify codes (X509_V_ERR_*) the chain check reads
 _V_NOT_YET_VALID, _V_EXPIRED, _V_SELF_SIGNED, _V_SELF_SIGNED_IN_CHAIN = 9, 10, 18, 19
@@ -4965,12 +4967,15 @@ def _cipher_context(spec: str, label: str) -> AuditContext:
 def verify_context(check_hostname: bool = True) -> ssl.SSLContext:
     """The chain check's verifying client: this machine's trust store (ssl.create_default_context)
     and, with ``check_hostname``, the name asked. VERIFY_X509_STRICT (on from Python 3.13) is
-    taken off: clients do not refuse what it adds, so neither does the check."""
+    taken off: clients do not refuse what it adds, so neither does the check. Like today's
+    clients it stops at the first certificate it trusts (VERIFY_X509_TRUSTED_FIRST, OpenSSL's
+    default from 1.1.0): an expired cross-signed copy of a trusted root is not followed."""
     context = ssl.create_default_context()
     context.check_hostname = check_hostname
     strict = getattr(ssl, 'VERIFY_X509_STRICT', 0)
     if strict and context.verify_flags & strict:
         context.verify_flags &= ~strict
+    context.verify_flags |= getattr(ssl, 'VERIFY_X509_TRUSTED_FIRST', 0)
     context.options |= getattr(ssl, 'OP_LEGACY_SERVER_CONNECT', 0)
     return context
 
@@ -5151,13 +5156,21 @@ def analyze_chain(trusted: Optional[bool], verify_code: Optional[int] = None,
     ``built``: the chain OpenSSL built when it trusted it.
 
     Read from what was sent: the leaf's dates, the issuing path through the certificates sent
-    (:func:`issued_by`: names and key identifiers), an expired certificate on it, the order
-    (the leaf first, then each issuer), a root sent along, certificates that are no part of it,
-    and a missing intermediate - the leaf sent alone while its issuer is no root this machine
-    trusts, or an intermediate OpenSSL took from this machine's store because the server did not
-    send it. OpenSSL's verdict names the rest: a self-signed leaf, a root this machine does not
-    trust (on Windows possibly a public root it has not fetched yet), another name. A chain a
-    ``--private-ca`` issued is trusted through it (its dates still count)."""
+    (:func:`issued_by`: names and key identifiers; in a trusted chain along the one OpenSSL
+    built, another copy of one of its CAs - the same subject and key, a cross-sign - standing in
+    for it), an expired certificate on it, the order (the leaf first, then each issuer), a root
+    sent along, certificates that are no part of it (another copy of a CA on the path, and what
+    issued that copy, are part of it), and a missing intermediate - the leaf sent alone while
+    its issuer is no root this machine trusts, or an intermediate OpenSSL took from this
+    machine's store because the server did not send it. In a trusted chain an expired
+    certificate a client needs is ``expired-chain`` (a copy of an intermediate whose current one
+    came from this machine's store), and one the chain does without is the warning
+    ``expired-extra`` (a cross-signed copy of the root OpenSSL trusted, a second copy of a CA
+    sent, a certificate past that root): only old clients that build through it fail. OpenSSL's
+    verdict names the rest: a self-signed leaf, a root this machine does not trust (on Windows
+    possibly a public root it has not fetched yet), another name; with nothing read at all its
+    message alone. A chain a ``--private-ca`` issued is trusted through it (its dates still
+    count)."""
     now = now or _utcnow()
     check = ChainCheck(status=(CHAIN_UNTESTED if trusted is None else
                                CHAIN_TRUSTED if trusted else CHAIN_UNTRUSTED),
@@ -5193,14 +5206,57 @@ def analyze_chain(trusted: Optional[bool], verify_code: Optional[int] = None,
             add('not-yet-valid', 'the certificate is not valid before %s' % day(leaf_cert.not_before))
     if leaf_cert is not None and sent_certs is not None:
         others = [c for c in sent_certs if c.sha256 != leaf_cert.sha256]
+        built_certs = parse(built) if trusted and built else []
+        built_shas = {c.sha256 for c in built_certs}
+        built_keys = {_ca_key(c) for c in built_certs[1:]}
+        sent_shas = {c.sha256 for c in sent_certs}
+
+        def rank(cert: CertInfo) -> int:
+            """The issuer OpenSSL used first, then another copy of one of its CAs, then the
+            order sent."""
+            return 0 if cert.sha256 in built_shas else 1 if _ca_key(cert) in built_keys else 2
+
+        in_path = {leaf_cert.sha256}
         while not path[-1].self_signed:
-            issuer = next((c for c in others if c not in path and issued_by(path[-1], c)), None)
-            if issuer is None:
+            issuers = [c for c in others if c.sha256 not in in_path and issued_by(path[-1], c)]
+            if not issuers:
                 break
-            path.append(issuer)
-        in_path = {c.sha256 for c in path}
-        for cert in path[1:]:
-            if cert.not_after < now:
+            path.append(min(issuers, key=rank))
+            in_path.add(path[-1].sha256)
+        # another copy of a CA on the path or of one OpenSSL used (a cross-sign), then what
+        # issued each copy: no part of the path, yet no unrelated certificate either
+        keys = {_ca_key(c) for c in path[1:]} | built_keys
+        copies = [c for c in others if c.sha256 not in in_path and _ca_key(c) in keys]
+        related = in_path | {c.sha256 for c in copies}
+        index = 0
+        while index < len(copies):
+            for issuer in others:
+                if issuer.sha256 not in related and issued_by(copies[index], issuer):
+                    copies.append(issuer)
+                    related.add(issuer.sha256)
+            index += 1
+        anchor = built_certs[-1] if built_certs else None
+
+        def needed(cert: CertInfo) -> bool:
+            """Whether a client lacking this machine's store needs ``cert`` (a trusted chain):
+            OpenSSL used it, or it is the copy sent of an intermediate OpenSSL took from the
+            store. A copy of the root OpenSSL trusted (a cross-sign), a CA sent twice and what
+            lies past the root are not needed."""
+            if cert.sha256 in built_shas:
+                return True
+            if anchor is not None and anchor.self_signed and _ca_key(cert) == _ca_key(anchor):
+                return False
+            used = next((c for c in built_certs[1:] if _ca_key(c) == _ca_key(cert)), None)
+            return used is not None and used.sha256 not in sent_shas
+
+        for cert in path[1:] + copies:
+            if cert.not_after >= now:
+                continue
+            if built_certs and not needed(cert):
+                add('expired-extra', '%s, issued by %s, expired on %s: this machine trusts the '
+                    'chain without it, older clients that build through it fail'
+                    % (_cert_name(cert), cert.issuer_label(), day(cert.not_after)))
+            elif built_certs or cert.sha256 in in_path:
                 add('expired-chain', '%s in the chain expired on %s'
                     % (_cert_name(cert), day(cert.not_after)))
         order = []  # type: List[str]
@@ -5210,18 +5266,22 @@ def analyze_chain(trusted: Optional[bool], verify_code: Optional[int] = None,
         if order != [c.sha256 for c in path]:
             add('wrong-order', 'the chain is sent out of order (the certificate comes first, then '
                 'each certificate\'s issuer)')
-        if len(path) > 1 and path[-1].self_signed:
+        roots = [c for c in path[1:] + copies if c.self_signed]
+        if len(roots) == 1:
             add('extra-root', 'the root %s is sent too: clients use their own copy'
-                % _cert_name(path[-1]))
-        extra = [c for c in others if c.sha256 not in in_path]
+                % _cert_name(roots[0]))
+        elif roots:
+            add('extra-root', 'the roots %s are sent too: clients use their own copies'
+                % ', '.join(_cert_name(c) for c in roots))
+        extra = [c for c in others if c.sha256 not in related]
         if extra:
             add('unrelated', '%s %s sent but no part of the chain' % (
                 ', '.join(_cert_name(c) for c in extra[:3]) + (' +%d' % (len(extra) - 3)
                                                                if len(extra) > 3 else ''),
                 'is' if len(extra) == 1 else 'are'))
-        if trusted and built:
+        if built_certs:
             sent_keys = {_ca_key(c) for c in sent_certs}
-            lacking = [c for c in parse(built)[1:] if not c.self_signed
+            lacking = [c for c in built_certs[1:] if not c.self_signed
                        and _ca_key(c) not in sent_keys]
             if lacking:
                 add('missing-intermediate', 'the server does not send %s: this machine had it, a '
@@ -5242,12 +5302,16 @@ def analyze_chain(trusted: Optional[bool], verify_code: Optional[int] = None,
                 '--private-ca)')
         elif code == _V_SELF_SIGNED_IN_CHAIN:
             add('untrusted-root', 'the chain ends at %s, a root this machine does not trust'
-                % (_cert_name(top) if top is not None and len(path) > 1 else 'a root'))
+                % _cert_name(top) if top is not None and len(path) > 1 else
+                'the chain ends at a root this machine does not trust')
         elif code in (_V_LOCAL_ISSUER, _V_LEAF_SIGNATURE):
-            if sent_certs is None and code == _V_LOCAL_ISSUER:
+            if leaf_cert is None:   # nothing read: OpenSSL's verdict alone
+                add('untrusted', 'not trusted: %s' % (verify_message or 'verify error %s' % code))
+            elif sent_certs is None and code == _V_LOCAL_ISSUER:
                 add('unknown-issuer', 'this machine has no issuer for it (%s): a missing '
-                    'intermediate or a root it does not trust; Python 3.10 and later tell which'
-                    % issuer_text)
+                    'intermediate or a root it does not trust; %s' % (
+                        issuer_text, 'the chain it sends could not be read' if CAN_READ_CHAIN
+                        else 'Python 3.10 and later tell which'))
             elif top is not None and (len(path) > 1 or top.self_signed):
                 add('untrusted-root', 'the chain ends at %s, issued by %s, which this machine '
                     'does not trust: a private CA (give it with --private-ca) or, on Windows, a '
@@ -5280,7 +5344,9 @@ def check_chain(target: EndpointAudit, contexts: AuditContexts, timeout: float,
                 probe: Optional[ChainAttempt] = None, private_cas: Sequence[CertInfo] = (),
                 now: Optional[datetime] = None) -> ChainCheck:
     """The chain check of one endpoint (:func:`analyze_chain`): a verifying handshake for the
-    name it was asked for, then, when that fails verification, one that reads what it sends."""
+    name it was asked for, then, when that fails verification, one that reads what it sends.
+    When that second one fails too, OpenSSL's verdict stands and each note says the chain could
+    not be read (``error``: why)."""
     verify = getattr(contexts, 'verify', None)
     if not verify:
         return ChainCheck(error='no chain check with these contexts')
@@ -5296,6 +5362,11 @@ def check_chain(target: EndpointAudit, contexts: AuditContexts, timeout: float,
     second = probe(target.ip, target.port, target.protocol, target.sni, contexts.plain, timeout)
     check = analyze_chain(False, first.verify_code, first.verify_message, sent=second.chain,
                           leaf=second.leaf, sni=target.sni, private_cas=private_cas, now=now)
+    if second.error:
+        check.error = second.error
+        for problem in check.problems:
+            check.notes[problem] += ('; the chain it sends could not be read (a second handshake '
+                                     'failed: %s)' % second.error)
     check.timed_out = second.timed_out
     return check
 
@@ -5415,6 +5486,17 @@ def run_tls_audit(report: ScanReport, timeout: float = DEFAULT_TIMEOUT,
 KEY_TYPE_LABELS = {'RSA': 'RSA', 'EC': 'ECDSA'}
 
 
+def _key_type(cert: CertInfo) -> str:
+    """``RSA`` / ``ECDSA`` (:data:`KEY_TYPE_LABELS`), else the key algorithm itself."""
+    return KEY_TYPE_LABELS.get(cert.key_algorithm, cert.key_algorithm or '?')
+
+
+def _pair_covers(certs: Sequence[CertInfo], name: str) -> bool:
+    """An RSA and an ECDSA certificate of ``certs`` (the --cert files) both cover ``name``."""
+    return (any(c.key_algorithm == 'RSA' and c.covers(name)[0] for c in certs)
+            and any(c.key_algorithm == 'EC' and c.covers(name)[0] for c in certs))
+
+
 def serial_mismatches(report: ScanReport, audits: Sequence[EndpointAudit] = ()
                       ) -> List[Dict[str, Any]]:
     """One name served with different certificates of one key type and kind (public, the
@@ -5422,14 +5504,18 @@ def serial_mismatches(report: ScanReport, audits: Sequence[EndpointAudit] = ()
     server the last renewal missed. An RSA + ECDSA pair, or an Origin CA certificate next to a
     public one, is no mismatch. The scan's rows give the certificate each endpoint serves for
     each name; the audit's key-type handshakes add the other half of a pair (for the name an
-    endpoint was asked for). Per name and key type: the certificates newest first (``older``:
-    another of them was issued later), each with the endpoints serving it, their servers and
-    the load balancers (``behind``) and VIPs they sit behind."""
+    endpoint was asked for) and tell a pair from a renewal that changed the key type: where the
+    audit tried both key types at the endpoints serving a name and none serves it with both (nor
+    does an RSA + ECDSA pair of --cert cover it), its certificates are compared across key types
+    (``keyTypeChanged``). Per name and key type: the certificates newest first (``older``:
+    another of them was issued later), each with its key type, the endpoints serving it, their
+    servers and the load balancers (``behind``) and VIPs they sit behind."""
     hosted = (UPDATED,) + HOSTED_STATUSES
     certs = {}  # type: Dict[str, CertInfo]
     served = {}  # type: Dict[str, Dict[str, Set[Tuple[str, int]]]]  name -> sha256 -> endpoints
     servers_of = {}  # type: Dict[Tuple[str, int], List[str]]
     names_of = {}  # type: Dict[str, str]  sni -> name
+    sni_of = {}  # type: Dict[str, str]  name -> sni
     for row in report.results:
         key = (row.ip, row.port)
         if row.server and row.server not in servers_of.setdefault(key, []):
@@ -5438,16 +5524,39 @@ def serial_mismatches(report: ScanReport, audits: Sequence[EndpointAudit] = ()
                 or row.status not in hosted):
             continue
         names_of.setdefault(row.sni or row.name, row.name)
+        sni_of.setdefault(row.name, row.sni or row.name)
         certs[row.cert.sha256] = row.cert
         served.setdefault(row.name, {}).setdefault(row.cert.sha256, set()).add(key)
+    key_sets = {}  # type: Dict[str, List[Set[str]]]  name -> the key types each endpoint serves
     for target in audits:
         name = names_of.get(target.sni or '')
-        for check in target.key_types.values():
+        if not name:
+            continue
+        served_with = set()  # type: Set[str]
+        tried = True
+        for key_type, _spec in AUDIT_KEY_TYPES:
+            check = target.key_types.get(key_type)
+            if check is None or check.outcome not in (AUDIT_ACCEPTED, AUDIT_REFUSED):
+                tried = False
+                continue
             cert = check.cert
-            if name and check.outcome == AUDIT_ACCEPTED and cert is not None \
-                    and cert.covers(target.sni or '')[0]:
+            if check.outcome != AUDIT_ACCEPTED or (
+                    cert is not None and not cert.covers(target.sni or '')[0]):
+                continue
+            served_with.add(key_type)
+            if cert is not None:
                 certs[cert.sha256] = cert
                 served[name].setdefault(cert.sha256, set()).add((target.ip, target.port))
+        if tried:
+            key_sets.setdefault(name, []).append(served_with)
+
+    def key_type_changed(name: str) -> bool:
+        """No endpoint serves ``name`` with both key types where the audit tried both: one key
+        type replaced the other (the scan alone cannot tell this from an RSA + ECDSA pair)."""
+        sets = key_sets.get(name, [])
+        return (any(sets) and all(len(s) < len(AUDIT_KEY_TYPES) for s in sets)
+                and not _pair_covers(report.new_certs, sni_of.get(name, name)))
+
     behind = {}  # type: Dict[str, List[str]]
     vips = {}  # type: Dict[str, List[str]]
     for server in list(report.servers) + list(report.skipped_backends):
@@ -5468,25 +5577,31 @@ def serial_mismatches(report: ScanReport, audits: Sequence[EndpointAudit] = ()
 
     out = []  # type: List[Dict[str, Any]]
     for name in sorted(served, key=lambda n: (probe_order.get(n, len(probe_order)), n)):
+        across = key_type_changed(name)
         families = {}  # type: Dict[Tuple[str, str], List[CertInfo]]
         for sha in served[name]:
             cert = certs[sha]
-            family = (KEY_TYPE_LABELS.get(cert.key_algorithm, cert.key_algorithm or '?'),
-                      _kind_family(report.cert_kind(cert)[0]))
+            family = ('' if across else _key_type(cert), _kind_family(report.cert_kind(cert)[0]))
             families.setdefault(family, []).append(cert)
-        for (key_type, kind), group in sorted(families.items()):
+        for (_key, kind), group in sorted(families.items()):
             if len(group) < 2:
                 continue
             group.sort(key=lambda c: (c.not_before, c.not_after, c.sha256), reverse=True)
             newest = group[0]
-            out.append({'name': name, 'keyType': key_type, 'kind': kind, 'certificates': [{
-                'sha256': cert.sha256, 'serialHex': cert.serial_hex,
+            types = []  # type: List[str]  newest first
+            for cert in group:
+                if _key_type(cert) not in types:
+                    types.append(_key_type(cert))
+            entries = [{
+                'sha256': cert.sha256, 'serialHex': cert.serial_hex, 'keyType': _key_type(cert),
                 'issuer': cert.issuer_label(), 'notBefore': iso_utc(cert.not_before),
                 'notAfter': iso_utc(cert.not_after),
                 'older': (newest.not_before, newest.not_after) > (cert.not_before, cert.not_after),
                 'endpoints': [endpoint(key) for key in sorted(
                     served[name][cert.sha256], key=lambda k: (order.get(k, len(order)), k))],
-            } for cert in group]})
+            } for cert in group]
+            out.append({'name': name, 'keyType': types[0], 'keyTypeChanged': len(types) > 1,
+                        'kind': kind, 'certificates': entries})
     return out
 
 
@@ -5496,11 +5611,8 @@ def _expected_pairs(audit: TlsAudit) -> Set[Optional[str]]:
     covering it."""
     pairs = {e.sni for e in audit.endpoints
              if len(e.key_types_served) == len(AUDIT_KEY_TYPES)}  # type: Set[Optional[str]]
-    rsa = [c for c in audit.new_certs if c.key_algorithm == 'RSA']
-    ecdsa = [c for c in audit.new_certs if c.key_algorithm == 'EC']
     for e in audit.endpoints:
-        if e.sni and any(c.covers(e.sni)[0] for c in rsa) and any(
-                c.covers(e.sni)[0] for c in ecdsa):
+        if e.sni and _pair_covers(audit.new_certs, e.sni):
             pairs.add(e.sni)
     return pairs
 
@@ -5676,14 +5788,15 @@ _MISMATCH_KINDS = {KIND_ORIGIN_CA: ', Cloudflare Origin CA', 'private': ', priva
 def render_serial_mismatches(mismatches: Sequence[Dict[str, Any]], lines: List[str], style: Style,
                              limit: Optional[int] = MAX_AUDIT_LINES) -> None:
     """The audit's fleet check in the summary (:func:`serial_mismatches`): each name and key
-    type served with several certificates, newest first, an older one marked OLDER, with the
-    endpoints serving it and the load balancers or VIPs they sit behind."""
+    type served with several certificates (each name, where the key type changed), newest
+    first, an older one marked OLDER, with the endpoints serving it and the load balancers or
+    VIPs they sit behind."""
     if not mismatches:
         lines.append('  ' + style.paint('Every name is served with one certificate per key type '
                                         'across the endpoints', 'green'))
         return
-    lines.append('  ' + style.paint('One name served with different certificates of one key type: '
-                                    '%d name(s)' % len(mismatches), 'yellow', 'bold'))
+    lines.append('  ' + style.paint('One name served with different certificates across the '
+                                    'endpoints: %d name(s)' % len(mismatches), 'yellow', 'bold'))
 
     def where(endpoint: Dict[str, Any]) -> str:
         text = endpoint_text(endpoint['ip'], endpoint['port'], endpoint['protocol'])
@@ -5694,15 +5807,26 @@ def render_serial_mismatches(mismatches: Sequence[Dict[str, Any]], lines: List[s
         return text + (' (%s)' % ', '.join(pools) if pools else '')
 
     for mismatch in list(mismatches)[:limit]:
-        lines.append('    %s (%s%s)' % (display_text(mismatch['name']), mismatch['keyType'],
-                                        _MISMATCH_KINDS.get(mismatch['kind'], '')))
+        kind = _MISMATCH_KINDS.get(mismatch['kind'], '')
+        changed = mismatch.get('keyTypeChanged')
+        if changed:   # RSA to ECDSA: the older key types, then the newest one's
+            before = []  # type: List[str]
+            for cert in mismatch['certificates']:
+                if cert['keyType'] != mismatch['keyType'] and cert['keyType'] not in before:
+                    before.append(cert['keyType'])
+            label = '%s to %s%s: the key type changed, no endpoint serves both' % (
+                '/'.join(before), mismatch['keyType'], kind)
+        else:
+            label = mismatch['keyType'] + kind
+        lines.append('    %s (%s)' % (display_text(mismatch['name']), label))
         for cert in mismatch['certificates']:
             endpoints = cert['endpoints']
             shown = endpoints if limit is None else endpoints[:limit]
             more = len(endpoints) - len(shown)
-            lines.append('      %s%s %s, issued %s, expires %s: %s%s' % (
+            lines.append('      %sserial %s%s, issued %s, expires %s: %s%s' % (
                 style.paint('OLDER ', 'red', 'bold') if cert['older'] else '',
-                'serial', display_text(cert['serialHex'] or '?'), _iso_day(cert['notBefore']),
+                display_text(cert['serialHex'] or '?'),
+                ' (%s)' % cert['keyType'] if changed else '', _iso_day(cert['notBefore']),
                 _iso_day(cert['notAfter']), '; '.join(where(e) for e in shown),
                 ' +%d more' % more if more else ''))
     if limit is not None and len(mismatches) > limit:
@@ -9767,7 +9891,7 @@ examples:
     python3 ssl_origin_scan.py -t hosts.ini -n names.txt --tls-audit --json audit.json
 
   Every port a mail server uses (25, 587, 465, 143, 993, 110, 995), or every port the scan
-  speaks (web, mail, FTP, LDAP, XMPP, PostgreSQL, RDP), with the audit:
+  supports (web, mail, FTP, LDAP, XMPP, PostgreSQL, RDP), with the audit:
     python3 ssl_origin_scan.py -t mail.txt --cert new.pem --profile mail
     python3 ssl_origin_scan.py -t hosts.ini -n names.txt --profile all --tls-audit
 
@@ -9845,12 +9969,14 @@ tls audit (--tls-audit): after the scan, every endpoint where a handshake comple
   expired, not valid yet, another name, self-signed, a missing intermediate (also one this
   machine had but the server did not send), a root this machine does not trust (a private
   CA - --private-ca trusts it - or, on Windows, a public root Windows has not fetched yet),
-  an expired intermediate; and, harmless but wasteful, a chain out of order, a root sent
-  along, certificates no part of it. Last the fleet: one name served with different
-  certificates of one key type and kind (an RSA + ECDSA pair or an Origin CA certificate
-  next to a public one is none) on different endpoints - the scan's certificates and the
-  audit's RSA / ECDSA handshakes - newest first, the older one marked OLDER, with the load
-  balancer (backends=) or VIP each endpoint sits behind: the pool member a renewal missed.
+  an expired intermediate; and, as warnings, an expired cross-signed copy of a root this
+  machine trusts (only old clients fail), a chain out of order, a root sent along,
+  certificates no part of it. Last the fleet: one name served with different certificates
+  of one key type and kind (an RSA + ECDSA pair or an Origin CA certificate next to a public
+  one is none, unless no endpoint serves both key types: then the renewal changed the key
+  type) on different endpoints - the scan's certificates and the audit's RSA / ECDSA
+  handshakes - newest first, the older one marked OLDER, with the load balancer
+  (backends=) or VIP each endpoint sits behind: the pool member a renewal missed.
   The summary lists the endpoints still accepting TLS 1.0 / 1.1, accepting weak suites,
   serving half of an RSA + ECDSA pair (a name another endpoint serves with both, or that an
   RSA and an ECDSA --cert cover), with a broken chain, and the names served with different
@@ -10084,9 +10210,11 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   --tls-audit her uç noktanın kabul ettiği TLS sürümlerini (1.0-1.3), zayıf şifre
   takımlarını ve sunduğu anahtar türlerini (RSA, ECDSA) denetler; bu Python'un
   sunamadığı sürüm ve takımlar "denenmedi" olarak yazılır. Sunulan sertifika zincirine de
-  bakar: bu makine ad için ona güveniyor mu, eksik ara sertifika, güvenilmeyen kök, sırası
-  bozuk ya da gereksiz sertifika var mı. Aynı adı aynı anahtar türünde farklı sertifikayla
-  sunan uç noktaları (yenilemede unutulan havuz üyesi) yük dengeleyicisiyle birlikte yazar:
+  bakar: bu makine zincire o ad için güveniyor mu, eksik ara sertifika, güvenilmeyen kök,
+  süresi dolmuş çapraz imza, sırası bozuk ya da gereksiz sertifika var mı. Aynı adı farklı
+  sertifikalarla sunan uç noktaları (yenilemede unutulan havuz üyesi) yük dengeleyicisiyle
+  birlikte yazar; bir RSA + ECDSA ikilisi buna girmez, ama hiçbir uç nokta ikisini birden
+  sunmuyorsa anahtar türü değişmiş sayılır:
   python3 ssl_origin_scan.py -t sunucular.txt -n adlar.txt --tls-audit --json denetim.json
   --profile bir sunucu türünün portlarını 443 yerine tarar: web (443, 8443), mail (25, 587,
   465, 143, 993, 110, 995) ya da all (bunlar ve FTP, LDAP, XMPP, PostgreSQL, RDP 3389):
@@ -10150,8 +10278,8 @@ def build_parser() -> argparse.ArgumentParser:
                            'by this machine for the name, complete, in order); the summary and '
                            'the JSON ("tlsAudit") list the fleet\'s legacy versions, weak suites, '
                            'RSA + ECDSA pairs served by halves, broken chains, and one name '
-                           'served with different certificates of one key type (a pool member '
-                           'the renewal missed)')
+                           'served with different certificates across the endpoints (a pool '
+                           'member the renewal missed)')
     scan.add_argument('-w', '--workers', type=int, default=DEFAULT_WORKERS, metavar='N',
                       help='parallel connections (default: %%(default)s; at most %d at a '
                            'time to one ip:port)' % MAX_PER_ENDPOINT)

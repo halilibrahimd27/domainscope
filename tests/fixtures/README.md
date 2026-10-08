@@ -64,6 +64,15 @@ made `starttls_ec_leaf.pem`, a self-signed EC P-256 certificate for `www.example
 `example.com`, with its throwaway key `starttls_ec_leaf.key`: with `bundle_leaf.pem` (RSA, the same
 names) a test server serves an RSA + ECDSA pair, the way a dual-certificate nginx or HAProxy does.
 
+An expired cross-sign (the chain check of the CLI's `--tls-audit`, `tests/python/test_tls_audit_fleet.py`):
+`gen_cross_fixtures.sh` made a throwaway PKI (EC P-256, valid 2025-01-01 .. 2060-01-01 unless noted, the
+CA keys never kept) — `cross_root.pem` (Example Test Cross Root, the root the test client trusts),
+`cross_old_root.pem` (an older root, valid from 2010), `cross_root_by_old.pem` (the Cross Root's name and
+key cross-signed by the old root, expired on 2024-09-30, the way the AddTrust and DST Root CA X3
+cross-signs expired), `cross_inter.pem` (the Issuing CA under the Cross Root) and `cross_inter_old.pem`
+(its first copy: the same name and key, expired on 2024-09-30) — and the leaf `cross_leaf.pem`
+(`www.example.com`, `example.com`) with its throwaway key `cross_leaf.key`.
+
 `estate/report-a.json` and `estate/report-b.json` are `--estate --json` reports of the CLI over a
 made-up network (two sites a week apart; documentation addresses only), written by
 `python tests/python/test_estate.py --write-fixtures`: `tests/python/test_estate.py` checks that they

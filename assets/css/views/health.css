@@ -869,9 +869,15 @@
   gap: 0.5rem 1.25rem;
 }
 
-.hlt-dlg .btn {
+.hlt-dlg .btn,
+.hlt-dep .btn {
   white-space: normal;
   max-width: 100%;
+}
+
+/* Dependencies (ui/takeover-panel.js DependencyPanel): its table needs the whole row. */
+.hlt-details .hlt-dep {
+  grid-column: 1 / -1;
 }
 
 .dlg-provider-list {

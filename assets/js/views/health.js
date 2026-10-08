@@ -88,6 +88,8 @@ export const FIXABLE_CHECKS = Object.freeze(['caa.cert-denied', 'caa.critical-un
 const loadFixPanel = onceAsync(() => import('../ui/fix-panel.js'));
 /** ui/delegation-panel.js with lib/delegation.js, on the first "Check the delegation" (the Delegation card). */
 const loadDelegation = onceAsync(() => import('../ui/delegation-panel.js'));
+/** ui/takeover-panel.js, on the first "Check dependencies (RDAP)" (the Dependencies card); lib/takeover.js and lib/rdap.js load with its check. */
+const loadDependencies = onceAsync(() => import('../ui/takeover-panel.js'));
 /** ui/health-v2.js (SPEC §5.78): the Web step, problems first and the Web card, with the first report. */
 const loadV2 = onceAsync(() => import('../ui/health-v2.js'));
 
@@ -268,6 +270,11 @@ registerStrings('en', {
   'hlt.dlg.check': 'Check the delegation',
   'hlt.dlg.cost': { one: 'About {count} Globalping probe.', other: 'About {count} Globalping probes.' },
   'hlt.dlg.loadFailed': 'The delegation check could not be loaded',
+  'hlt.dep.title': 'Dependencies',
+  'hlt.dep.intro': 'The domains {domain} depends on through its records: its name servers and mail servers, the domains its SPF record names, its DMARC report addresses, the DKIM keys at the common selectors and at the ones you added, the CAA iodef addresses, MTA-STS, the Autodiscover and SIP SRV records, the HTTPS record and the _acme-challenge delegation. Whoever registers one that lapses can answer for the zone, receive the mail or the reports, send or sign as {domain}, or get certificates for it.',
+  'hlt.dep.sends': 'Runs only when you click: DNS queries go to your resolver, and RDAP lookups of those domains go to their registries.',
+  'hlt.dep.check': 'Check dependencies (RDAP)',
+  'hlt.dep.loadFailed': 'The dependency check could not be loaded',
   'hlt.mtasts.txt': 'TXT record',
   'hlt.mtasts.txtInvalid': 'not valid: senders ignore it',
   'hlt.mtasts.url': 'Policy URL',
@@ -482,6 +489,11 @@ registerStrings('tr', {
   'hlt.dlg.check': 'Delegasyonu kontrol et',
   'hlt.dlg.cost': 'Yaklaşık {count} Globalping ölçümü.',
   'hlt.dlg.loadFailed': 'Delegasyon kontrolü yüklenemedi',
+  'hlt.dep.title': 'Bağımlılıklar',
+  'hlt.dep.intro': '{domain} alan adının kayıtları aracılığıyla bağlı olduğu alan adları: ad sunucuları ve posta sunucuları, SPF kaydında geçen alan adları, DMARC rapor adresleri, yaygın seçicilerdeki ve kendi eklediğiniz seçicilerdeki DKIM anahtarları, CAA iodef adresleri, MTA-STS, Autodiscover ve SIP SRV kayıtları, HTTPS kaydı ve _acme-challenge yetkilendirmesi. Süresi dolan birini kaydeden kişi zone adına yanıt verebilir, postayı ya da raporları alabilir, {domain} adına e-posta gönderebilir ya da imzalayabilir veya onun için sertifika alabilir.',
+  'hlt.dep.sends': 'Yalnızca tıkladığınızda çalışır: DNS sorguları çözümleyicinize, bu alan adlarının RDAP sorguları da kayıt kuruluşlarına gider.',
+  'hlt.dep.check': 'Bağımlılıkları kontrol et (RDAP)',
+  'hlt.dep.loadFailed': 'Bağımlılık kontrolü yüklenemedi',
   'hlt.mtasts.txt': 'TXT kaydı',
   'hlt.mtasts.txtInvalid': 'geçersiz: gönderenler yok sayar',
   'hlt.mtasts.url': 'Politika adresi',
@@ -1458,9 +1470,46 @@ export function mount(container, ctx) {
     return Card({ title: t('hlt.dlg.title'), icon: 'server', className: 'hlt-card hlt-dlg', children: body });
   }
 
+  /**
+   * The Dependencies card: the domains the report's records point to, looked up in their
+   * registries — the Takeover risks audit of Subdomains for this domain alone (ui/takeover-panel.js
+   * DependencyPanel, loaded on the first click, with the report's extra DKIM selectors). The job
+   * is the holder kept with the report on screen (`current.dependencies`): a re-render mounts the
+   * panel on it again.
+   */
+  function dependencyCard(report) {
+    if (!current || current.report !== report) return null;
+    const s = current;
+    const domain = report.domain;
+    const body = h('div', { class: 'stack-sm hlt-dep-body', dataset: { dependencies: 'card' } });
+    const mountPanel = async (start) => {
+      try {
+        const { DependencyPanel, freshDependencies } = await loadDependencies();
+        if (s.dependencies?.domain !== domain) s.dependencies = freshDependencies(domain, s.selectors || []);
+        clear(body);
+        body.append(DependencyPanel({ ctx, holder: s.dependencies, start, runKey: 'hlt.dep.check' }));
+      } catch (err) {
+        ctx.checkOutdated();
+        clear(body);
+        body.append(ErrorBanner(err, { title: t('hlt.dep.loadFailed'), compact: true }));
+      }
+    };
+    if (s.dependencies?.domain === domain) mountPanel(false);
+    else {
+      body.append(h('p', { class: 'text-sm' }, t('hlt.dep.sends')), h('div', null, Button({
+        label: t('hlt.dep.check'), icon: 'shield', size: 'sm', variant: 'primary', dataset: { action: 'dep-open' },
+        onClick: (e) => { setButtonBusy(e.currentTarget, true); mountPanel(true); }
+      })));
+    }
+    return Card({
+      title: t('hlt.dep.title'), icon: 'shield', className: 'hlt-card hlt-dep',
+      children: [h('p', { class: 'muted text-sm' }, t('hlt.dep.intro', { domain })), body]
+    });
+  }
+
   function renderDetails(report) {
     clear(detailsEl);
-    detailsEl.append(...[rdapCard, dnssecCard, mailCard, mtaStsCard, caaCard, dnsCard, delegationCard].map((card) => card(report)).filter(Boolean));
+    detailsEl.append(...[rdapCard, dnssecCard, mailCard, mtaStsCard, caaCard, dnsCard, delegationCard, dependencyCard].map((card) => card(report)).filter(Boolean));
   }
 
   /**
@@ -1590,6 +1639,7 @@ export function mount(container, ctx) {
     if (current && current.policy && current.policy.controller) current.policy.controller.abort();
     if (current && current.rdapRetry) current.rdapRetry.abort();
     if (current && current.delegation && current.delegation.controller) current.delegation.controller.abort();
+    if (current && current.dependencies && current.dependencies.controller) current.dependencies.controller.abort();
     if (current && current.observatory && current.observatory.controller) current.observatory.controller.abort();
     const controller = new AbortController();
     const state = {
@@ -1657,7 +1707,8 @@ export function mount(container, ctx) {
       controller: null, report: restored.report, selectorCount: restored.selectorCount,
       finishedAt: restored.at ? new Date(restored.at) : new Date(),
       policy: policy && policy.status !== 'running' ? policy : null,
-      delegation: restored.delegation && restored.delegation.zone === restored.report.zone ? restored.delegation : null
+      delegation: restored.delegation && restored.delegation.zone === restored.report.zone ? restored.delegation : null,
+      dependencies: restored.dependencies && restored.dependencies.domain === restored.report.domain ? restored.dependencies : null
     };
     renderReport(restored.report, current.selectors);
     // A policy fetch that was in flight: its measurement is paid for, so read it (GETs are free).
@@ -1704,7 +1755,10 @@ export function mount(container, ctx) {
         selectorCount: current ? current.selectorCount : null,
         policy,
         // A finished delegation check stays with its report; one in flight stops with the view.
-        delegation: report && current.delegation && !current.delegation.controller ? { ...current.delegation, view: null } : null
+        delegation: report && current.delegation && !current.delegation.controller ? { ...current.delegation, view: null } : null,
+        // The same for the dependency check (its page check too: one in flight stops with the view).
+        dependencies: report && current.dependencies && !current.dependencies.controller
+          ? { ...current.dependencies, view: null, http: current.dependencies.http && current.dependencies.http.status === 'running' ? null : current.dependencies.http } : null
       };
     },
     result() {

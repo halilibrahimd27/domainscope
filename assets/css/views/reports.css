@@ -342,6 +342,23 @@
   max-width: 14rem;
 }
 
+/* An address and the service behind it, in one cell: the address stays on one line, the service
+   wraps within the address's width when the table is tight and takes up to 12rem when it is not. */
+.rpt-addr {
+  display: grid;
+  gap: 2px;
+}
+
+.rpt-addr .rpt-svc {
+  min-width: 0;
+  max-width: 12rem;
+  white-space: normal;
+}
+
+.rpt-addr .rpt-svc-none {
+  white-space: normal;
+}
+
 .rpt-svc-name {
   font-weight: 600;
   overflow-wrap: anywhere;

@@ -3,21 +3,23 @@
  * passed aligned, the parameters of a fix text, the facts Copy summary gets (the domain on screen,
  * the TLS summary of the same domain, whether the classes rest on the current SPF), and that
  * every source class, SPF line state and advice link has its look, and which rows of the sources
- * table a new classification redraws; the Service column's words and the service view's groups,
- * in English and Turkish, and what an Identify senders lookup keeps. The module is DOM-free at
- * import. Pure Node, no network; documentation data only.
+ * table a new classification redraws; the service line's words and the service view's groups,
+ * in English and Turkish, why a source has no service yet, what an Identify senders lookup keeps
+ * and whom its button says it asks. The module is DOM-free at import. Pure Node, no network;
+ * documentation data only.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   id, titleKey, icon, alignedState, fixParams, headlineShare, summaryFacts, verdictLook, CLASS_STYLE, TLS_TOOLS, SPF_LINE_STATES, VERDICT_EXTRA_KEYS,
-  INTEL_MAX, FIX_FIRST_MAX, IDENTIFY_CONCURRENCY, GROUP_LIST_MAX, SOURCE_VIEWS, result, sourceRowChanged, serviceLabel, serviceHow, groupName, ptrFact
+  INTEL_MAX, FIX_FIRST_MAX, IDENTIFY_CONCURRENCY, GROUP_LIST_MAX, SOURCE_VIEWS, result, sourceRowChanged, serviceLabel, serviceHow, groupName, ptrFact,
+  unnamedHint
 } from '../../assets/js/views/reports.js';
 import { SOURCE_CLASSES, FIX_CODES, DMARC_VERDICTS, aggregateDmarc, parseAggregateReport, classifySources } from '../../assets/js/lib/dmarcreport.js';
 import { buildIpIndex, parseInventory } from '../../assets/js/lib/inventory.js';
 import { TLS_RESULT_TYPES, tlsAdvice } from '../../assets/js/lib/tlsrpt.js';
 import { reportsSummary } from '../../assets/js/lib/reportsummary.js';
-import { identifySource, groupSources, SENDER_TYPES, SENDER_VIAS, IDENTIFY_MAX } from '../../assets/js/lib/senders.js';
+import { identifySource, groupSources, spfPathOf, SENDER_TYPES, SENDER_VIAS, IDENTIFY_MAX } from '../../assets/js/lib/senders.js';
 import { FCRDNS_STATUSES } from '../../assets/js/lib/ptrsweep.js';
 import { t, setLang } from '../../assets/js/i18n.js';
 
@@ -212,4 +214,40 @@ test('ptrFact: the name that points back first, its status, an unknown status as
   assert.deepEqual(ptrFact({ status: 'odd' }), { status: 'error', name: null, confirmed: false });
   assert.deepEqual(ptrFact(null), { status: 'error', name: null, confirmed: false });
   for (const st of FCRDNS_STATUSES) assert.equal(ptrFact({ status: st }).status, st);
+});
+
+test('the words a service rests on: the SPF term as it is, a forwarder\'s guide that credits no one, every recipient of Identify senders', () => {
+  // the a / mx host that matched (or a redirect) is no include
+  const viaHost = { result: 'pass', term: 'a:mail.zendesk.com', holder: 'example.com', path: ['example.com'], via: { host: 'mail.zendesk.com', address: '192.0.2.10' } };
+  const byHost = identifySource(srcRow({ spfNow: viaHost }), { spfPath: spfPathOf(srcRow({ spfNow: viaHost })) });
+  assert.equal(byHost.via, 'spf-include');
+  assert.equal(inLang('en', () => serviceHow(byHost, t)), 'Named from your SPF, which authorizes it through mail.zendesk.com');
+  assert.equal(inLang('tr', () => serviceHow(byHost, t)), 'Adresi mail.zendesk.com üzerinden yetkilendiren SPF kaydınızdan');
+  for (const lang of ['en', 'tr']) {
+    inLang(lang, () => {
+      // a forwarder only relayed the mail: its guide names no service as the sender
+      const fwd = t('rpt.guide.forwarded', { service: 'Example Mailbox', domain: 'example.com' });
+      assert.ok(!fwd.includes('Example Mailbox') && fwd.includes('example.com') && fwd.includes('DKIM'), `${lang}: ${fwd}`);
+      const authorized = t('rpt.guide.authorized', { service: 'Example Mail Hosting', domain: 'example.com' });
+      assert.ok(authorized.includes('Example Mail Hosting') && authorized.includes('example.com') && !/spoof|sahte/i.test(authorized), `${lang}: ${authorized}`);
+      // the button names every service the network lookup may ask, as Look up's does
+      const bulk = t('rpt.id.bulkTitle', { max: '200', intel: '25' });
+      for (const who of ['RIPEstat', 'ipwho.is']) {
+        assert.ok(bulk.includes(who), `${lang}: ${who} in ${bulk}`);
+        assert.ok(t('rpt.intel.bulkTitle', { max: '25' }).includes(who), `${lang}: ${who} in Look up's`);
+      }
+    });
+  }
+});
+
+test('unnamedHint: why a source has no service yet', () => {
+  inLang('en', () => {
+    assert.equal(unnamedHint(srcRow({ cls: 'unknown' }), {}, t), 'Not named by the reports: Identify senders looks up its reverse DNS.');
+    assert.equal(unnamedHint(srcRow({ cls: 'yours' }), {}, t), 'Your own server: Identify senders leaves it out.');
+    assert.equal(unnamedHint(srcRow({ ip: '10.1.2.3', private: true, cls: 'unknown' }), {}, t), 'A private address: Identify senders leaves it out.');
+    assert.equal(unnamedHint(srcRow({ cls: 'yours' }), { looked: true }, t), 'Neither the reports nor its reverse DNS name the service behind this address.');
+    assert.equal(unnamedHint(srcRow({ cls: 'unknown' }), { failed: true }, t), 'Reverse DNS: could not be looked up');
+  });
+  assert.equal(inLang('tr', () => unnamedHint(srcRow({ cls: 'yours' }), {}, t)), 'Kendi sunucunuz: Göndericileri tanımla ona bakmaz.');
+  assert.equal(inLang('tr', () => unnamedHint(srcRow({ ip: '10.1.2.3', private: true }), {}, t)), 'Özel bir adres: Göndericileri tanımla ona bakmaz.');
 });

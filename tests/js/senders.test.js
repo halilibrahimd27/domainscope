@@ -13,9 +13,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   SENDER_SERVICES, SENDER_TYPES, SENDER_VIAS, CONFIDENCES, SERVICE_GUIDES, SENDER_GUIDES, PTR_TYPE_MAP, PASSPORT_KINDS, SENDERS_FILES,
-  IDENTIFY_MAX, SERVICE_CSV_COLUMNS, passportKind, suffixesOf, serviceById, serviceBySpf, serviceByDkim, serviceByReturnPath, serviceByPtr,
-  lookupMap, spfPathOf, identifySource, senderGuide, identifyCandidates, groupKey, groupSources, serviceCsvRows, installSenderMaps,
-  loadSenderMaps, resetSenderMaps
+  IDENTIFY_MAX, SERVICE_CSV_COLUMNS, UNAUTHORIZED_GUIDES, passportKind, suffixesOf, serviceById, serviceBySpf, serviceByDkim, serviceByReturnPath,
+  serviceByPtr, lookupMap, spfPathOf, identifySource, senderGuide, identifyCandidates, groupKey, groupSources, groupGuide, serviceCsvRows,
+  installSenderMaps, loadSenderMaps, resetSenderMaps
 } from '../../assets/js/lib/senders.js';
 import { MAIL_PLATFORMS } from '../../assets/js/lib/passport.js';
 import { aggregateDmarc, parseAggregateReport, loadSpfContext, classifySources } from '../../assets/js/lib/dmarcreport.js';
@@ -52,7 +52,8 @@ describe('the table', () => {
     }
     // the services with their own guide exist; every type has one too
     for (const g of SERVICE_GUIDES) assert.ok(serviceById(g) && serviceById(g).guide === g, g);
-    assert.deepEqual(SENDER_GUIDES, [...SERVICE_GUIDES, ...SENDER_TYPES, 'forwarded']);
+    assert.deepEqual(SENDER_GUIDES, [...SERVICE_GUIDES, ...SENDER_TYPES, 'forwarded', 'authorized']);
+    for (const g of UNAUTHORIZED_GUIDES) assert.ok(SENDER_TYPES.includes(g), g);
     for (const v of [SENDER_TYPES, SENDER_VIAS, CONFIDENCES, SERVICE_GUIDES, SENDER_GUIDES, PASSPORT_KINDS, SENDERS_FILES, SERVICE_CSV_COLUMNS, PTR_TYPE_MAP]) {
       assert.ok(Object.isFrozen(v));
     }
@@ -199,14 +200,66 @@ describe('identifySource', () => {
     assert.equal(identifySource(null), null);
   });
 
-  test('senderGuide: a forwarder named by the signature it carries gets "forwarded"', () => {
+  test('senderGuide: a forwarder gets "forwarded" whatever named it', () => {
     const id = identifySource(row({ dkimAuth: [{ domain: 'sendgrid.net', result: 'pass' }] }));
     assert.equal(senderGuide(id, { cls: 'forwarder' }), 'forwarded');
     assert.equal(senderGuide(id, { cls: 'third-party' }), 'sendgrid');
     const byPtr = identifySource(row(), { ptrName: 'a8-31.smtp-out.amazonses.com', ptrConfirmed: true });
-    assert.equal(senderGuide(byPtr, { cls: 'forwarder' }), 'amazonses', 'a reverse name is the address\'s own');
+    assert.equal(senderGuide(byPtr, { cls: 'forwarder' }), 'forwarded', 'its reverse name names the forwarder, which only relayed the mail');
+    // a forwarder that carried the domain's own DKIM, named by its reverse name in the bundled map
+    const mailbox = identifySource(row({ cls: 'forwarder' }), { ptrName: 'relay-1.mailbox.example.net', ptrConfirmed: true,
+      maps: { ...MAPS, ptr: new Map([...MAPS.ptr, ['mailbox.example.net', ['Example Mailbox', 'mailbox']]]) } });
+    assert.deepEqual([mailbox.via, mailbox.guide, senderGuide(mailbox, { cls: 'forwarder' })], ['ptr', 'mailbox', 'forwarded']);
+    // … and one named by the return-path its forwarding rewrote
+    const rewritten = identifySource(row({ cls: 'forwarder', spfAuth: [{ domain: 'srs.esp.example.org', scope: 'mfrom', result: 'pass' }] }), { maps: MAPS });
+    assert.deepEqual([rewritten.via, senderGuide(rewritten, { cls: 'forwarder' })], ['return-path', 'forwarded']);
     assert.equal(senderGuide(null, { cls: 'forwarder' }), null);
     for (const s of SENDER_SERVICES) assert.ok(SENDER_GUIDES.includes(senderGuide({ ...s, via: 'dkim' }, { cls: 'forwarder' })));
+  });
+
+  test('senderGuide: none for your own servers; a third party never gets the words meant for a server nothing authorizes', () => {
+    const isp = identifySource(row(), { ptrName: 'static-203-0-113-5.broadband.example.net', ptrConfirmed: true, maps: MAPS });
+    const host = identifySource(row(), { ptrName: 'web42.mailhost.example.net', ptrConfirmed: true, maps: MAPS });
+    const network = identifySource(row(), { holder: { name: 'Example Hosting Ltd', asn: 64496 } });
+    const sendgrid = identifySource(row({ dkimAuth: [{ domain: 'sendgrid.net', result: 'pass' }] }));
+    // a server of your list, or one your own SPF terms authorize: the class says it all
+    for (const id of [isp, host, network, sendgrid]) assert.equal(senderGuide(id, { cls: 'yours' }), null, id.service);
+    // an authorized third party: never "spoofing", never "authorize it in SPF"
+    assert.deepEqual(UNAUTHORIZED_GUIDES, ['cloud', 'hosting', 'msp', 'technology', 'isp', 'network']);
+    assert.ok(Object.isFrozen(UNAUTHORIZED_GUIDES));
+    for (const id of [isp, host, network]) assert.equal(senderGuide(id, { cls: 'third-party' }), 'authorized', id.service);
+    for (const g of UNAUTHORIZED_GUIDES) assert.equal(senderGuide({ guide: g, via: 'spf-include' }, { cls: 'third-party' }), 'authorized', g);
+    assert.equal(senderGuide(sendgrid, { cls: 'third-party' }), 'sendgrid', 'a service\'s own guide');
+    assert.equal(senderGuide({ guide: 'mailbox', via: 'spf-include' }, { cls: 'third-party' }), 'mailbox');
+    // only an unknown sender gets the spoofing or ISP words
+    assert.deepEqual([isp, host, network].map((id) => senderGuide(id, { cls: 'unknown' })), ['isp', 'hosting', 'network']);
+    assert.equal(senderGuide(isp), 'isp', 'without a row: the identification\'s own');
+    assert.ok(SENDER_GUIDES.includes('authorized') && SENDER_GUIDES.includes('forwarded'));
+  });
+
+  test('within a step the table comes first, then the most messages: the name never depends on the order the reports were read', () => {
+    const esp = { domain: 'esp.example.org', selector: 's1', result: 'pass', messages: 90 };
+    const ses = { domain: 'amazonses.com', selector: 'x', result: 'pass', messages: 10 };
+    const sg = { domain: 'sendgrid.net', selector: 's1', result: 'pass', messages: 30 };
+    const name = (over) => identifySource(row(over), { maps: MAPS })?.service;
+    // DKIM: a signature only the bundled map knows, and one of the table, in both orders
+    assert.equal(name({ dkimAuth: [esp, ses] }), 'Amazon SES');
+    assert.equal(name({ dkimAuth: [ses, esp] }), 'Amazon SES');
+    // two of the table: the one with the most messages
+    assert.equal(name({ dkimAuth: [ses, sg] }), 'SendGrid');
+    assert.equal(name({ dkimAuth: [sg, ses] }), 'SendGrid');
+    assert.equal(name({ dkimAuth: [{ ...ses, messages: 30 }, sg] }), 'Amazon SES', 'as many: by name');
+    assert.equal(name({ dkimAuth: [sg, { ...ses, messages: 30 }] }), 'Amazon SES');
+    // the bundled map only when the table names none
+    assert.equal(name({ dkimAuth: [esp] }), 'Example ESP');
+    // return-path: the same
+    const rpEsp = { domain: 'bounce.esp.example.org', scope: 'mfrom', result: 'pass', messages: 90 };
+    const rpPm = { domain: 'pm.mtasv.net', scope: 'mfrom', result: 'pass', messages: 10 };
+    assert.equal(name({ spfAuth: [rpEsp, rpPm] }), 'Postmark');
+    assert.equal(name({ spfAuth: [rpPm, rpEsp] }), 'Postmark');
+    // the SPF path: the table across the path before the map
+    assert.equal(identifySource(row(), { spfPath: ['example.com', 'spf.esp.example.org', '_spf.google.com'], maps: MAPS }).id, 'google');
+    assert.equal(identifySource(row(), { spfPath: ['example.com', 'spf.esp.example.org'], maps: MAPS }).service, 'Example ESP');
   });
 });
 
@@ -228,6 +281,10 @@ describe('Identify senders', () => {
     assert.deepEqual(pick({ max: 2 }), ['192.0.2.5', '192.0.2.4']);
     weak.set('192.0.2.5', { via: 'ptr', confidence: 'medium' });
     assert.deepEqual(pick(), ['192.0.2.4', '192.0.2.1', '192.0.2.6'], 'a confirmed reverse name needs no second look');
+    // your own servers (the server list, your own SPF terms) are never looked up: they would only use up the click
+    rows.push(row({ ip: '192.0.2.7', messages: 900, cls: 'yours' }), row({ ip: '192.0.2.8', messages: 800, cls: 'forwarder' }));
+    weak.set('192.0.2.7', { via: 'isp', confidence: 'low' });
+    assert.deepEqual(pick(), ['192.0.2.8', '192.0.2.4', '192.0.2.1', '192.0.2.6'], 'a forwarder yes, your own server no');
   });
 
   test('groupSources: one row per service with totals, every ISP together, the unnamed last', () => {
@@ -257,6 +314,27 @@ describe('Identify senders', () => {
     assert.equal(groupKey({ id: null, via: 'asn', service: 'Example Hosting Ltd' }), 'net:example hosting ltd');
     assert.equal(groupKey({ id: null, via: 'ptr', service: 'Example Mail Hosting' }), 'name:example mail hosting');
     assert.deepEqual(groupSources([], identOf), { groups: [], totals: { services: 0, addresses: 0, messages: 0, unnamedAddresses: 0, unnamedMessages: 0 } });
+  });
+
+  test('groupGuide: from the classes of the group\'s sources, none when every one is yours', () => {
+    const isp = (ip, cls) => row({ ip, cls });
+    const ptr = (r) => identifySource(r, { ptrName: `host-${r.ip.split('.').pop()}.broadband.example.net`, ptrConfirmed: true, maps: MAPS });
+    const guideOf = (rows, identOf = ptr) => groupGuide(groupSources(rows, identOf).groups[0]);
+    // ISP or home networks: your own server alone gets no guide; with an unknown one, the ISP words
+    assert.equal(guideOf([isp('192.0.2.1', 'yours')]), null);
+    assert.equal(guideOf([isp('192.0.2.1', 'yours'), isp('192.0.2.2', 'unknown')]), 'isp');
+    assert.equal(guideOf([isp('192.0.2.1', 'forwarder')]), 'forwarded');
+    assert.equal(guideOf([isp('192.0.2.1', 'third-party')]), 'authorized');
+    // the unknown ones first, then the third parties, then the forwarders
+    assert.equal(guideOf([isp('192.0.2.1', 'forwarder'), isp('192.0.2.2', 'third-party')]), 'authorized');
+    const sg = (ip, cls) => row({ ip, cls, dkimAuth: [{ domain: 'sendgrid.net', result: 'pass' }] });
+    assert.equal(guideOf([sg('192.0.2.1', 'forwarder'), sg('192.0.2.2', 'third-party')], (r) => identifySource(r)), 'sendgrid');
+    assert.equal(guideOf([sg('192.0.2.1', 'forwarder')], (r) => identifySource(r)), 'forwarded');
+    // the unnamed group has the view's own words; no group, no guide
+    assert.equal(guideOf([row({ ip: '192.0.2.9', cls: 'unknown' })], () => null), null);
+    assert.equal(groupGuide(null), null);
+    // a group whose sources carry no class: the identification's own
+    assert.equal(groupGuide({ key: 'isp', guide: 'isp', classes: {} }), 'isp');
   });
 
   test('serviceCsvRows: one row per group with every column', () => {

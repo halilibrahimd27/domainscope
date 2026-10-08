@@ -46,7 +46,7 @@ import {
 import { summarizeTls, tlsAdvice, tlsCsvRows, TLS_CSV_COLUMNS, TLS_RESULT_TYPES, TLS_POLICY_TYPES } from '../lib/tlsrpt.js';
 import { createIpIntel } from '../lib/ipintel.js';
 import {
-  identifySource, spfPathOf, senderGuide, identifyCandidates, groupSources, serviceCsvRows, loadSenderMaps, IDENTIFY_MAX, SERVICE_CSV_COLUMNS
+  identifySource, spfPathOf, senderGuide, groupGuide, identifyCandidates, groupSources, serviceCsvRows, loadSenderMaps, IDENTIFY_MAX, SERVICE_CSV_COLUMNS
 } from '../lib/senders.js';
 import { checkFcrdns, FCRDNS_STATUSES } from '../lib/ptrsweep.js';
 import { ipFieldStatus } from '../lib/sourcestatus.js';
@@ -361,6 +361,8 @@ registerStrings('en', {
   'rpt.svc.none': 'not identified',
   'rpt.svc.noneTitle': 'Neither the reports nor its reverse DNS name the service behind this address.',
   'rpt.svc.unchecked': 'Not named by the reports: Identify senders looks up its reverse DNS.',
+  'rpt.svc.yours': 'Your own server: Identify senders leaves it out.',
+  'rpt.svc.private': 'A private address: Identify senders leaves it out.',
   'rpt.svc.unconfirmed': 'not confirmed',
   'rpt.svcType.mailbox': 'Mailbox provider',
   'rpt.svcType.security': 'Email security',
@@ -382,7 +384,7 @@ registerStrings('en', {
   'rpt.svcVia.asn': 'RIPEstat',
   'rpt.svcHow.dkim': 'Named from its DKIM signature, which verified: d={detail}',
   'rpt.svcHow.return-path': 'Named from its return-path, which passed SPF: {detail}',
-  'rpt.svcHow.spf-include': 'Named from the SPF include that authorizes it: include:{detail}',
+  'rpt.svcHow.spf-include': 'Named from your SPF, which authorizes it through {detail}',
   'rpt.svcHow.ptr': 'Named from its reverse DNS: {detail}',
   'rpt.svcHow.isp': 'An ISP or home network by its reverse DNS ({detail}): spoofing, or a user forwarding their own mail',
   'rpt.svcHow.asn': 'Only its network is known: {detail}',
@@ -413,7 +415,8 @@ registerStrings('en', {
   'rpt.guide.technology': 'Mail from {service}’s own servers. If you use one of its services, set up its domain authentication for {domain}; if not, it is spoofing.',
   'rpt.guide.isp': 'An ISP or home network: spoofing, or a user forwarding their own mail. Nothing to authorize; p=reject turns spoofed mail away.',
   'rpt.guide.network': 'Only the network is known ({service}). If no server of yours is there, this is spoofing; p=reject turns it away.',
-  'rpt.guide.forwarded': 'Mail sent through {service} and forwarded from here: SPF breaks on the way, but the original DKIM signature survives, so mail signed as {domain} keeps passing DMARC.',
+  'rpt.guide.forwarded': 'Forwarded mail: a mailbox or a mailing list relayed messages of {domain} to another address. Forwarding breaks SPF; mail stays aligned when it carries a DKIM signature of {domain} that survives the relay. Nothing to authorize: sign all your mail with DKIM.',
+  'rpt.guide.authorized': 'An authorized sender ({service}): have it sign its mail with DKIM as {domain} and, where it can, use a return-path under {domain}, so SPF aligns too.',
   'rpt.det.service': 'Service',
   'rpt.det.serviceHow': 'How it was named',
   'rpt.det.guide': 'To align it',
@@ -424,7 +427,7 @@ registerStrings('en', {
   'rpt.ptrState.servfail': 'the reverse zone did not answer (SERVFAIL)',
   'rpt.ptrState.error': 'could not be looked up',
   'rpt.id.bulk': { one: 'Identify {count} sender', other: 'Identify {count} senders' },
-  'rpt.id.bulkTitle': 'Looks up the reverse DNS of up to {max} sending addresses that no report names, over your DoH resolvers, checks that each name points back to its address and matches it against the sender lists this site bundles; then the network (RIPEstat) of at most {intel} still unnamed.',
+  'rpt.id.bulkTitle': 'Looks up the reverse DNS of up to {max} sending addresses that no report names (not your own servers), over your DoH resolvers, checks that each name points back to its address and matches it against the sender lists this site bundles; then the network (RIPEstat, ipwho.is) of at most {intel} still unnamed.',
   'rpt.id.busy': 'Identifying… {done} / {total}',
   'rpt.id.started': { one: 'Identifying {count} sender…', other: 'Identifying {count} senders…' },
   'rpt.id.done': { one: 'Identified {named} of {count} sender.', other: 'Identified {named} of {count} senders.' },
@@ -705,6 +708,8 @@ registerStrings('tr', {
   'rpt.svc.none': 'tanımlanamadı',
   'rpt.svc.noneTitle': 'Bu adresin arkasındaki hizmeti ne raporlar ne de ters DNS kaydı söylüyor.',
   'rpt.svc.unchecked': 'Raporlar hizmetini söylemiyor: Göndericileri tanımla, ters DNS kaydına bakar.',
+  'rpt.svc.yours': 'Kendi sunucunuz: Göndericileri tanımla ona bakmaz.',
+  'rpt.svc.private': 'Özel bir adres: Göndericileri tanımla ona bakmaz.',
   'rpt.svc.unconfirmed': 'doğrulanmadı',
   'rpt.svcType.mailbox': 'E-posta sağlayıcısı',
   'rpt.svcType.security': 'E-posta güvenliği',
@@ -726,7 +731,7 @@ registerStrings('tr', {
   'rpt.svcVia.asn': 'RIPEstat',
   'rpt.svcHow.dkim': 'Doğrulanan DKIM imzasından: d={detail}',
   'rpt.svcHow.return-path': 'SPF’ten geçen return-path adresinden: {detail}',
-  'rpt.svcHow.spf-include': 'Onu yetkilendiren SPF include’undan: include:{detail}',
+  'rpt.svcHow.spf-include': 'Adresi {detail} üzerinden yetkilendiren SPF kaydınızdan',
   'rpt.svcHow.ptr': 'Ters DNS kaydından: {detail}',
   'rpt.svcHow.isp': 'Ters DNS kaydına göre bir İSS ya da ev ağı ({detail}): sahte gönderim ya da kendi e-postasını yönlendiren bir kullanıcı',
   'rpt.svcHow.asn': 'Yalnızca ağı biliniyor: {detail}',
@@ -757,7 +762,8 @@ registerStrings('tr', {
   'rpt.guide.technology': '{service} şirketinin kendi sunucularından gelen e-posta. Onun bir hizmetini kullanıyorsanız {domain} için alan adı doğrulamasını kurun; kullanmıyorsanız bu sahte gönderimdir.',
   'rpt.guide.isp': 'Bir İSS ya da ev ağı: sahte gönderim ya da kendi e-postasını yönlendiren bir kullanıcı. Yetkilendirilecek bir şey yok; p=reject sahte e-postayı geri çevirir.',
   'rpt.guide.network': 'Yalnızca ağ biliniyor ({service}). Orada sizin bir sunucunuz yoksa bu sahte gönderimdir; p=reject onu geri çevirir.',
-  'rpt.guide.forwarded': '{service} üzerinden gönderilip buradan yönlendirilen e-posta: SPF yolda bozulur ama özgün DKIM imzası korunur; bu yüzden {domain} olarak imzalanan e-posta DMARC’den geçmeye devam eder.',
+  'rpt.guide.forwarded': 'Yönlendirilen e-posta: bir posta kutusu ya da e-posta listesi {domain} adına gönderilen iletileri başka bir adrese aktarmış. Yönlendirme SPF’i bozar; aktarımda bozulmayan bir {domain} DKIM imzası taşıyan e-posta hizalı kalır. Yetkilendirilecek bir şey yok: tüm e-postanızı DKIM ile imzalayın.',
+  'rpt.guide.authorized': 'Yetkili bir gönderici ({service}): e-postasını DKIM ile {domain} olarak imzalamasını ve mümkünse {domain} altında bir return-path kullanmasını sağlayın; böylece SPF de hizalanır.',
   'rpt.det.service': 'Hizmet',
   'rpt.det.serviceHow': 'Nasıl adlandırıldı',
   'rpt.det.guide': 'Hizalamak için',
@@ -768,7 +774,7 @@ registerStrings('tr', {
   'rpt.ptrState.servfail': 'ters bölge yanıt vermedi (SERVFAIL)',
   'rpt.ptrState.error': 'sorgulanamadı',
   'rpt.id.bulk': '{count} göndericiyi tanımla',
-  'rpt.id.bulkTitle': 'Hiçbir raporun adını vermediği en fazla {max} gönderen adresin ters DNS kaydını DoH çözümleyicileriniz üzerinden sorgular, her adın kendi adresine geri çözümlendiğini kontrol eder ve bu sitenin paketle getirdiği gönderici listeleriyle eşleştirir; ardından hâlâ adı bilinmeyenlerden en fazla {intel} tanesinin ağını (RIPEstat) sorar.',
+  'rpt.id.bulkTitle': 'Hiçbir raporun adını vermediği en fazla {max} gönderen adresin (kendi sunucularınız dışında) ters DNS kaydını DoH çözümleyicileriniz üzerinden sorgular, her adın kendi adresine geri çözümlendiğini kontrol eder ve bu sitenin paketle getirdiği gönderici listeleriyle eşleştirir; ardından hâlâ adı bilinmeyenlerden en fazla {intel} tanesinin ağını (RIPEstat, ipwho.is) sorar.',
   'rpt.id.busy': 'Tanımlanıyor… {done} / {total}',
   'rpt.id.started': '{count} gönderici tanımlanıyor…',
   'rpt.id.done': '{count} göndericiden {named} tanesi tanımlandı.',
@@ -895,9 +901,10 @@ export function summaryFacts({ agg, overview, spfState, tls, problems, at }) {
 }
 
 /**
- * The Service cell of a source: the name, and under it the type and the evidence ("not
- * confirmed" for a reverse name that does not point back); an ISP or home network is named so,
- * with its base domain under it. Null when nothing names the source.
+ * The service line of a source (under its address; a service group's name): the name, and under
+ * it the type and the evidence ("not confirmed" for a reverse name that does not point back); an
+ * ISP or home network is named so, with its base domain under it. Null when nothing names the
+ * source.
  * @param {import('../lib/senders.js').SenderIdentification|null} ident
  * @param {(key: string, params?: object) => string} t
  * @returns {{ name: string, meta: string }|null}
@@ -913,7 +920,7 @@ export function serviceLabel(ident, t) {
 }
 
 /**
- * How a source was named, as a sentence (its details, and the Service cell's tooltip).
+ * How a source was named, as a sentence (its details, and the service line's tooltip).
  * @param {import('../lib/senders.js').SenderIdentification|null} ident
  * @param {(key: string, params?: object) => string} t
  * @returns {string}
@@ -924,6 +931,23 @@ export function serviceHow(ident, t) {
   const text = t(`rpt.svcHow.${ident.via}`, { detail });
   if (ident.via !== 'ptr' && ident.via !== 'isp') return text;
   return `${text} (${t(ident.confidence === 'low' ? 'rpt.svcHow.unconfirmed' : 'rpt.svcHow.confirmed')})`;
+}
+
+/**
+ * Why a source has no service yet (its service line's tooltip and its details): looked up in vain,
+ * a lookup that got no answer (the next click asks again), an address Identify senders leaves out
+ * (a private one, your own server), or not looked up yet.
+ * @param {{ private?: boolean, cls?: string }} r a lib/dmarcreport.js classifySources row
+ * @param {{ looked?: boolean, failed?: boolean }} state
+ * @param {(key: string, params?: object) => string} t
+ * @returns {string}
+ */
+export function unnamedHint(r, { looked = false, failed = false } = {}, t) {
+  if (looked) return t('rpt.svc.noneTitle');
+  if (failed) return `${t('rpt.det.ptr')}: ${t('rpt.ptrState.error')}`;
+  if (r && r.private) return t('rpt.svc.private');
+  if (r && r.cls === 'yours') return t('rpt.svc.yours');
+  return t('rpt.svc.unchecked');
 }
 
 /**
@@ -1894,7 +1918,7 @@ export function mount(container, ctx) {
     const ident = identOf(r);
     const fact = S.ptr.get(r.ip);
     const ptr = fact ? [t('rpt.det.ptr'), t(`rpt.ptrState.${fact.status}`, { name: fact.name || '' })] : null;
-    if (!ident) return [[t('rpt.det.service'), h('span', { class: 'muted' }, lookedUp.has(r.ip) ? t('rpt.svc.noneTitle') : t('rpt.svc.unchecked'))], ptr].filter(Boolean);
+    if (!ident) return [[t('rpt.det.service'), h('span', { class: 'muted' }, unnamedHint(r, unnamedState(r), t))], ptr].filter(Boolean);
     const label = serviceLabel(ident, t);
     const guide = senderGuide(ident, r);
     return [
@@ -1905,16 +1929,20 @@ export function mount(container, ctx) {
     ].filter(Boolean);
   }
 
-  /** The Service cell: the name, its type and evidence under it; "not identified" once looked up in vain. */
+  /** Whether a source's reverse DNS was looked up for good, or got no answer (the next click asks again). */
+  function unnamedState(r) {
+    const looked = lookedUp.has(r.ip);
+    return { looked, failed: !looked && S.ptr.has(r.ip) };
+  }
+
+  /** The service line under an address: the name, its type and evidence under it; "not identified" once looked up in vain. */
   function serviceCell(r) {
     const ident = identOf(r);
     if (!ident) {
       // Looked up for good: "not identified"; never, or a lookup that got no answer: "—", the next click asks.
-      const looked = lookedUp.has(r.ip);
-      const failed = !looked && S.ptr.has(r.ip);
-      return h('span', { class: 'rpt-svc-none text-sm', dataset: { service: 'none' },
-        title: looked ? t('rpt.svc.noneTitle') : failed ? `${t('rpt.det.ptr')}: ${t('rpt.ptrState.error')}` : t('rpt.svc.unchecked') },
-      looked ? t('rpt.svc.none') : '—');
+      const state = unnamedState(r);
+      return h('span', { class: 'rpt-svc-none text-sm', dataset: { service: 'none' }, title: unnamedHint(r, state, t) },
+        state.looked ? t('rpt.svc.none') : '—');
     }
     const label = serviceLabel(ident, t);
     return h('div', { class: 'rpt-svc', dataset: { service: ident.id || '', via: ident.via, confidence: ident.confidence }, title: serviceHow(ident, t) },
@@ -2019,12 +2047,13 @@ export function mount(container, ctx) {
 
   /** A service group's details: how to align it, what named it, and its sending addresses. */
   function groupDetails(agg, g) {
-    const guide = g.key === 'unnamed' ? null : g.key === 'isp' ? 'isp' : g.guide;
+    // From the classes of its sources: none when every one is yours (lib/senders.js groupGuide).
+    const guide = groupGuide(g);
     const shown = g.rows.slice(0, GROUP_LIST_MAX);
     const items = [
       g.key === 'unnamed'
         ? [t('rpt.det.guide'), h('span', { class: 'rpt-guide', dataset: { guide: 'unnamed' } }, t('rpt.grp.unnamedHint'))]
-        : [t('rpt.det.guide'), h('span', { class: 'rpt-guide', dataset: { guide } }, t(`rpt.guide.${guide}`, { service: g.service || '', domain: agg.domain }))],
+        : guide ? [t('rpt.det.guide'), h('span', { class: 'rpt-guide', dataset: { guide } }, t(`rpt.guide.${guide}`, { service: g.service || '', domain: agg.domain }))] : null,
       g.vias.length ? [t('rpt.grp.via'), g.vias.map((v) => t(`rpt.svcVia.${v}`)).join(', ')] : null,
       g.evidence.length ? [t('rpt.grp.evidence'), h('span', { class: 'mono text-sm' }, g.evidence.slice(0, 8).join(', '), g.evidence.length > 8 ? ` ${t('common.moreCount', { count: g.evidence.length - 8 })}` : '')] : null,
       [t('rpt.grp.list'), h('ul', { class: 'rpt-grp-list' }, shown.map((r) => h('li', { dataset: { ip: r.ip } },
@@ -2071,24 +2100,20 @@ export function mount(container, ctx) {
       },
       rowClass: (r) => `rpt-row-${r.cls}`,
       columns: [
-        { key: 'ip', label: t('rpt.col.ip'), sortable: true, sortValue: (r) => ipSortValue(r.ip), searchValue: (r) => `${r.ip} ${r.servers.join(' ')}`,
-          render: (r) => h('span', { class: 'mono rpt-ip', dataset: { ip: r.ip } }, r.ip) },
+        // The service behind the address under it, in the same cell: a column of its own made the table some 220 px wider,
+        // Network off the screen even at 1920 px.
+        { key: 'ip', label: t('rpt.col.ip'), sortable: true, sortValue: (r) => ipSortValue(r.ip),
+          searchValue: (r) => {
+            const label = serviceLabel(identOf(r), t);
+            return [r.ip, ...r.servers, label ? `${label.name} ${label.meta}` : ''].join(' ');
+          },
+          render: (r) => h('div', { class: 'rpt-addr' }, h('span', { class: 'mono rpt-ip', dataset: { ip: r.ip } }, r.ip), serviceCell(r)) },
         { key: 'cls', label: t('rpt.col.cls'), sortable: true, sortValue: (r) => SOURCE_CLASSES.indexOf(r.cls), searchValue: (r) => t(`rpt.cls.${r.cls}`),
           render: (r) => {
             const b = Badge(t(`rpt.clsOne.${r.cls}`), { variant: CLASS_STYLE[r.cls].variant, icon: CLASS_STYLE[r.cls].icon, title: t(`rpt.clsDesc.${r.cls}`) });
             b.dataset.cls = r.cls;
             return b;
           } },
-        { key: 'service', label: t('rpt.col.service'), sortable: true, wrap: true,
-          sortValue: (r) => {
-            const label = serviceLabel(identOf(r), t);
-            return label ? label.name.toLowerCase() : null;
-          },
-          searchValue: (r) => {
-            const label = serviceLabel(identOf(r), t);
-            return label ? `${label.name} ${label.meta}` : '';
-          },
-          render: (r) => serviceCell(r) },
         { key: 'messages', label: t('rpt.col.messages'), sortable: true, defaultDir: 'desc', align: 'end' },
         { key: 'pass', label: t('rpt.col.pass'), sortable: true, defaultDir: 'desc', align: 'end', sortValue: (r) => (r.messages ? r.pass / r.messages : 0),
           render: (r) => h('span', { class: ['rpt-pct', `rpt-pct-${alignedState(r.pass, r.messages).state}`] }, r.messages ? share(r.pass / r.messages) : '—') },

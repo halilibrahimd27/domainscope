@@ -17,6 +17,8 @@
  * - {@link loadSenderMaps}: the bundled lists (assets/data/senders: `ptr-map.json`, the
  *   mail-relevant reverse-DNS base domains of parsedmarc's map, and `isp.json`, its ISP base
  *   domains; tools/build-senders.mjs writes them), read once from this site on first use.
+ * - {@link senderGuide} / {@link groupGuide}: how to align a source or a service group, chosen by
+ *   the sources' classes too (none for your own servers, the forwarder's for a forwarder).
  * - {@link groupSources}: the sources folded per service, with totals; {@link serviceCsvRows}.
  *
  * Nothing is sent by this module except the bundled lists, read from this site.
@@ -53,10 +55,16 @@ export const SERVICE_GUIDES = Object.freeze([
 ]);
 /**
  * Every guide text (`rpt.guide.<id>`, params `{ service, domain }`): a service's own, one per
- * type, and `forwarded` — mail sent through a service and forwarded from the address shown, whose
- * original DKIM signature survived.
+ * type, `forwarded` — a forwarder relayed the domain's mail, whose DKIM signature survived (it
+ * names no sender: the service named may be the forwarder or the signer) — and `authorized` — an
+ * authorized third party whose type's guide is worded for a server nothing authorizes.
  */
-export const SENDER_GUIDES = Object.freeze([...SERVICE_GUIDES, ...SENDER_TYPES, 'forwarded']);
+export const SENDER_GUIDES = Object.freeze([...SERVICE_GUIDES, ...SENDER_TYPES, 'forwarded', 'authorized']);
+/**
+ * The type guides worded for a server nothing authorizes ("authorize it in SPF", "if not, it is
+ * spoofing"): an authorized third party gets `authorized` instead ({@link senderGuide}).
+ */
+export const UNAUTHORIZED_GUIDES = Object.freeze(['cloud', 'hosting', 'msp', 'technology', 'isp', 'network']);
 /**
  * The mail-relevant types of parsedmarc's reverse-DNS map (base_reverse_dns_map.csv) → ours.
  * tools/build-senders.mjs keeps only these in ptr-map.json; the map's `ISP` rows go to isp.json.
@@ -300,6 +308,29 @@ const fromService = (s, via, confidence, domain) => ({ id: s.id, service: s.name
 const fromMap = (hit, via, confidence, domain) => ({ id: null, service: hit.name, type: hit.type, via, confidence, domain, guide: hit.type });
 
 /**
+ * The first of `names` this table names (`byTable`), else the first the bundled map names: the
+ * table always before the map, whatever the order of `names`.
+ */
+function firstNamed(names, byTable, map, via) {
+  for (const d of names) {
+    const s = byTable(d);
+    if (s) return fromService(s, via, 'high', canon(d));
+  }
+  for (const d of names) {
+    const hit = lookupMap(map, d);
+    if (hit) return fromMap(hit, via, 'high', canon(d));
+  }
+  return null;
+}
+
+/** The domains of a source's passing results (DKIM or SPF) of another organisation: the most messages first, then by name. */
+function passingForeign(list, foreign) {
+  return (list || []).filter((a) => a && a.result === 'pass' && foreign(a.domain))
+    .sort((a, b) => (b.messages || 0) - (a.messages || 0) || (canon(a.domain) < canon(b.domain) ? -1 : canon(a.domain) > canon(b.domain) ? 1 : 0))
+    .map((a) => a.domain);
+}
+
+/**
  * The path of the SPF verdict that authorizes a source: the checked domain first, then each
  * include / redirect domain on the way (lib/health.js spfEvaluate `path`), then the `a` / `mx`
  * host that matched. The current verdict when it passes, else — when the record gives a
@@ -331,7 +362,9 @@ export function spfPathOf(row) {
  * Steps 1–3 are `high` confidence (authenticated); 4 and 5 `medium` when the reverse name is
  * forward-confirmed (`ptrConfirmed`), else `low`; 6 `low`. A domain of the header From's own
  * organisation (or the policy domain's) never names a service: that is the domain itself. Within
- * a step this table comes before the bundled map.
+ * a step this table comes before the bundled map, across every candidate of the step: the
+ * signatures (return-paths) the most messages first, then by name, so the name never depends on
+ * the order the reports were read; the SPF path in its order, nearest the domain first.
  * @param {{ headerFrom?: string[], dkimAuth?: object[], spfAuth?: object[] }} row a lib/dmarcreport.js source row
  * @param {{ domain?: string|null, spfPath?: string[]|null, ptrName?: string|null, ptrConfirmed?: boolean,
  *   maps?: { ptr?: Map<string, [string, string]>, isp?: Set<string> }|null, holder?: { name: string, asn?: number|null }|null }} [opts]
@@ -344,27 +377,10 @@ export function identifySource(row, { domain = null, spfPath = null, ptrName = n
   const orgs = new Set([...(row.headerFrom || []), domain].filter(Boolean).map(orgOf));
   const foreign = (d) => !!canon(d) && !orgs.has(orgOf(d));
   const ptrMap = maps && maps.ptr;
-  for (const a of row.dkimAuth || []) {
-    if (!a || a.result !== 'pass' || !foreign(a.domain)) continue;
-    const s = serviceByDkim(a.domain);
-    if (s) return fromService(s, 'dkim', 'high', canon(a.domain));
-    const hit = lookupMap(ptrMap, a.domain);
-    if (hit) return fromMap(hit, 'dkim', 'high', canon(a.domain));
-  }
-  for (const a of row.spfAuth || []) {
-    if (!a || a.result !== 'pass' || !foreign(a.domain)) continue;
-    const s = serviceByReturnPath(a.domain);
-    if (s) return fromService(s, 'return-path', 'high', canon(a.domain));
-    const hit = lookupMap(ptrMap, a.domain);
-    if (hit) return fromMap(hit, 'return-path', 'high', canon(a.domain));
-  }
-  for (const d of (spfPath || []).slice(1)) {
-    if (!foreign(d)) continue;
-    const s = serviceBySpf(d);
-    if (s) return fromService(s, 'spf-include', 'high', canon(d));
-    const hit = lookupMap(ptrMap, d);
-    if (hit) return fromMap(hit, 'spf-include', 'high', canon(d));
-  }
+  const authenticated = firstNamed(passingForeign(row.dkimAuth, foreign), serviceByDkim, ptrMap, 'dkim')
+    || firstNamed(passingForeign(row.spfAuth, foreign), serviceByReturnPath, ptrMap, 'return-path')
+    || firstNamed((spfPath || []).slice(1).filter(foreign), serviceBySpf, ptrMap, 'spf-include');
+  if (authenticated) return authenticated;
   const ptr = canon(ptrName);
   if (ptr && foreign(ptr)) {
     const confidence = ptrConfirmed ? 'medium' : 'low';
@@ -383,31 +399,38 @@ export function identifySource(row, { domain = null, spfPath = null, ptrName = n
 }
 
 /**
- * The guide that fits a named source (`rpt.guide.<key>`): `forwarded` for a forwarder named by
- * the DKIM signature or return-path it carries (the service sent it, the address only relayed
- * it), else the identification's own.
+ * The guide that fits a named source (`rpt.guide.<key>`), from its class (lib/dmarcreport.js
+ * SOURCE_CLASSES) as much as from the service: none for your own server (the class and its fixes
+ * say what it needs); `forwarded` for a forwarder, whatever named it (its reverse name and the
+ * return-path its forwarding rewrote name the forwarder; a DKIM signature, the sender); for an
+ * authorized third party, `authorized` in place of a guide worded for a server nothing authorizes
+ * ({@link UNAUTHORIZED_GUIDES}); else — an unknown sender, or no class — the identification's own.
  * @param {SenderIdentification|null} ident
  * @param {{ cls?: string }} [row]
  * @returns {string|null}
  */
 export function senderGuide(ident, row = null) {
   if (!ident) return null;
-  if (row && row.cls === 'forwarder' && (ident.via === 'dkim' || ident.via === 'return-path')) return 'forwarded';
+  const cls = row ? row.cls : null;
+  if (cls === 'yours') return null;
+  if (cls === 'forwarder') return 'forwarded';
+  if (cls === 'third-party' && UNAUTHORIZED_GUIDES.includes(ident.guide)) return 'authorized';
   return ident.guide;
 }
 
 /**
  * The sources an "Identify senders" click looks up: public addresses that nothing in the reports
- * names, or that only an unconfirmed reverse name, the ISP list or the network names, and that
- * no click has looked up yet; the most messages first, at most `max`.
- * @param {Array<{ ip: string, private?: boolean, messages: number }>} rows
+ * names, or that only an unconfirmed reverse name, the ISP list or the network names, that are
+ * not your own (the server list or your own SPF terms already say whose they are) and that no
+ * click has looked up yet; the most messages first, at most `max`.
+ * @param {Array<{ ip: string, private?: boolean, messages: number, cls?: string }>} rows
  * @param {{ identOf: (row: object) => SenderIdentification|null, checked?: { has(ip: string): boolean }, max?: number }} opts
  * @returns {object[]}
  */
 export function identifyCandidates(rows, { identOf, checked = new Set(), max = IDENTIFY_MAX } = {}) {
   const weak = (id) => !id || id.via === 'asn' || ((id.via === 'ptr' || id.via === 'isp') && id.confidence === 'low');
   return (rows || [])
-    .filter((r) => r && !r.private && !checked.has(r.ip) && weak(identOf(r)))
+    .filter((r) => r && !r.private && r.cls !== 'yours' && !checked.has(r.ip) && weak(identOf(r)))
     .sort((a, b) => b.messages - a.messages || String(a.ip).localeCompare(String(b.ip)))
     .slice(0, Math.max(0, max));
 }
@@ -518,6 +541,25 @@ export function groupSources(rows, identOf) {
       unnamedMessages: unnamed ? unnamed.messages : 0
     }
   };
+}
+
+/** The class whose guide a service group shows: the unknown senders first, then the third parties, then the forwarders. */
+const GROUP_GUIDE_CLASSES = Object.freeze(['unknown', 'third-party', 'forwarder']);
+
+/**
+ * The guide of a service group ({@link groupSources}): {@link senderGuide} for the first class
+ * among its sources of unknown senders, authorized third parties and forwarders; none when every
+ * source is yours, and for the unnamed group (the view words it). A group whose sources carry no
+ * class gets the identification's own.
+ * @param {ServiceGroup|null} group
+ * @returns {string|null}
+ */
+export function groupGuide(group) {
+  if (!group || group.key === 'unnamed' || !group.guide) return null;
+  const classes = group.classes || {};
+  if (!Object.values(classes).some((n) => n > 0)) return group.guide;
+  const cls = GROUP_GUIDE_CLASSES.find((c) => classes[c] > 0);
+  return cls ? senderGuide({ guide: group.guide }, { cls }) : null;
 }
 
 /**

@@ -780,6 +780,11 @@ async function main() {
           '192.0.2.62': 'Postmark|return-path',
           '192.0.2.70': '—', '198.51.100.71': '—', '203.0.113.72': '—', '10.1.2.3': '—'
         }, 'named from the report and the SPF');
+        assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rpt-sources tbody tr.dt-row')]
+          .filter((tr) => !tr.querySelector('.rpt-addr .rpt-ip') || !tr.querySelector('.rpt-addr .rpt-svc, .rpt-addr .rpt-svc-none')).length), 0,
+        'the service under each address, in the same cell: no column of its own');
+        assertEqual(await page.evaluate(() => document.querySelector('.rpt-sources tbody tr.dt-row .rpt-ip[data-ip="10.1.2.3"]')?.closest('tr').querySelector('.rpt-svc-none')?.title),
+          'A private address: Identify senders leaves it out.', 'a source Identify leaves out says so');
         assertEqual(await page.evaluate(() => [...new Set(window.__dnsLog.map((q) => `${q.name}|${q.type}`))].sort()), ['_spf.google.com|TXT', 'example.org|TXT'], 'only the SPF tree: nothing about the senders');
         assertEqual(await text(page, '[data-action="rpt-identify"]'), 'Identify 3 senders', 'the unnamed public sources');
         await shot(page, opts, 'reports-senders-desktop-light-en');

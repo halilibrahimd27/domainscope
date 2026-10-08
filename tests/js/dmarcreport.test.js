@@ -204,6 +204,28 @@ describe('parseXml — a minimal reader for data-only XML', () => {
     assert.equal(r.report.messages, 50000);
     assert.ok(Date.now() - t0 < 5000, `${Date.now() - t0} ms`);
   });
+
+  test('aggregating is linear in what a report lists: one address with 20,000 distinct names, results and error notes', () => {
+    const rec = '<record><row><source_ip>192.0.2.1</source_ip><count>1</count><policy_evaluated><disposition>none</disposition><dkim>pass</dkim><spf>pass</spf></policy_evaluated></row><identifiers><header_from>example.com</header_from></identifiers><auth_results><spf><domain>example.com</domain><result>pass</result></spf></auth_results></record>';
+    const one = parseAggregateReport(`<feedback><report_metadata><org_name>x</org_name><report_id>1</report_id><date_range><begin>1790380800</begin><end>1790467199</end></date_range></report_metadata><policy_published><domain>example.com</domain><p>none</p></policy_published>${rec}</feedback>`).report;
+    const n = 20000;
+    const records = Array.from({ length: n }, (_, i) => ({
+      ...one.records[0], headerFrom: `h${i}.example.com`, envelopeFrom: `e${i}.example.com`,
+      spfAuth: [{ domain: `s${i}.example.com`, scope: 'mfrom', result: 'pass' }],
+      dkimAuth: [{ domain: `d${i}.example.com`, selector: 's1', result: 'pass', human: null }],
+      reasons: [{ type: 'forwarded', comment: `c${i}` }]
+    }));
+    records.push({ ...records[0], count: 2 });
+    const big = { ...one, records, errors: [...Array.from({ length: n }, (_, i) => `note ${i}`), 'note 0'] };
+    const t0 = performance.now();
+    const [d] = aggregateDmarc([big]).domains;
+    const ms = performance.now() - t0;
+    const s = d.sources[0];
+    assert.deepEqual([d.errors.length, s.headerFrom.length, s.envelopeFrom.length, s.spfAuth.length, s.dkimAuth.length, s.overrides.length], [n, n, n, n, n, n]);
+    assert.deepEqual([s.spfAuth[0].messages, s.dkimAuth[0].messages, s.overrides[0].messages, s.spfAuth[1].messages], [3, 3, 3, 1], 'a repeated result adds its messages');
+    // The linear scans of every list gathered so far took seconds here; the margin is for shared CI runners.
+    assert.ok(ms < 1500, `${Math.round(ms)} ms`);
+  });
 });
 
 /* ---- the schema ----------------------------------------------------------------------------- */

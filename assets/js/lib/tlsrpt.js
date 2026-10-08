@@ -231,8 +231,15 @@ const bump = (map, key, make) => {
   if (!map.has(key)) map.set(key, make());
   return map.get(key);
 };
+/** What each list addUnique fills holds: a report with many distinct values stays linear. */
+const listIndex = new WeakMap();
 const addUnique = (arr, v) => {
-  if (v && !arr.includes(v)) arr.push(v);
+  if (!listIndex.has(arr)) listIndex.set(arr, new Set());
+  const seen = listIndex.get(arr);
+  if (v && !seen.has(v)) {
+    seen.add(v);
+    arr.push(v);
+  }
 };
 const earliest = (a, b) => (!a ? b : !b ? a : a < b ? a : b);
 const latest = (a, b) => (!a ? b : !b ? a : a > b ? a : b);

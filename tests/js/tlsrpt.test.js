@@ -113,6 +113,24 @@ describe('summarizeTls — a policy domain\'s reports together', () => {
     const r = parseTlsReport({ 'organization-name': 'x', 'report-id': 'y', policies: [{ policy: { 'policy-type': 'sts', 'policy-domain': 'example.net' }, summary: {} }] });
     assert.equal(summarizeTls([r.report]).domains[0].rate, null);
   });
+
+  test('summarizing is linear in what a report lists: 50,000 failure details with distinct hosts, addresses and reasons', () => {
+    const n = 50000;
+    const details = Array.from({ length: n }, (_, i) => ({
+      'result-type': 'certificate-expired', 'failed-session-count': 1, 'receiving-mx-hostname': `mx${i}.example.net`,
+      'receiving-ip': `2001:db8::${(i + 1).toString(16)}`, 'failure-reason-code': `r${i}`
+    }));
+    details.push({ ...details[0] });
+    const r = parseTlsReport({ 'organization-name': 'x', 'report-id': 'y', policies: [{
+      policy: { 'policy-type': 'sts', 'policy-domain': 'example.net' }, summary: { 'total-failure-session-count': n + 1 }, 'failure-details': details
+    }] });
+    const t0 = performance.now();
+    const [ty] = summarizeTls([r.report]).domains[0].byType;
+    const ms = performance.now() - t0;
+    assert.deepEqual([ty.sessions, ty.mx.length, ty.receivingIps.length, ty.reasons.length, ty.orgs.length], [n + 1, n, n, n, 1]);
+    // The linear scans of every list gathered so far took seconds here; the margin is for shared CI runners.
+    assert.ok(ms < 1500, `${Math.round(ms)} ms`);
+  });
 });
 
 test('tlsAdvice: every RFC 8460 type points at what to fix and the check that goes deeper', () => {

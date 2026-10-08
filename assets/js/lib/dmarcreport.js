@@ -640,8 +640,18 @@ function readOne(f, out, maxBytes) {
 
 const earliest = (a, b) => (!a ? b : !b ? a : a < b ? a : b);
 const latest = (a, b) => (!a ? b : !b ? a : a > b ? a : b);
+/** What each list addUnique / addAuth fills holds, by value: a report with many distinct values stays linear. */
+const listIndex = new WeakMap();
+const indexOf = (list) => {
+  if (!listIndex.has(list)) listIndex.set(list, new Map());
+  return listIndex.get(list);
+};
 const addUnique = (arr, v) => {
-  if (v && !arr.includes(v)) arr.push(v);
+  const index = indexOf(arr);
+  if (v && !index.has(v)) {
+    index.set(v, v);
+    arr.push(v);
+  }
 };
 const bump = (map, key, make) => {
   if (!map.has(key)) map.set(key, make());
@@ -658,9 +668,15 @@ function newSource(ip) {
 }
 
 function addAuth(list, entry, count, keys) {
-  const found = list.find((x) => keys.every((k) => x[k] === entry[k]));
+  const index = indexOf(list);
+  const key = JSON.stringify(keys.map((k) => entry[k] ?? null));
+  const found = index.get(key);
   if (found) found.messages += count;
-  else list.push({ ...Object.fromEntries(keys.map((k) => [k, entry[k]])), messages: count });
+  else {
+    const row = { ...Object.fromEntries(keys.map((k) => [k, entry[k]])), messages: count };
+    index.set(key, row);
+    list.push(row);
+  }
 }
 
 /**

@@ -1498,7 +1498,16 @@ def run_parity(zone: Zone, nameservers: Sequence[NameServer], timeout: float = D
             results = list(pool.map(lambda r: step(compare_rrset(asker, r, zone, ns_names)), asked))
             found = list(pool.map(lambda q: step(extra_row(asker, q[0], q[1])), extra_q))
         rows.extend(results)
-        rows.extend(r for r in found if r is not None)
+        # A CNAME answers every type asked at its name: one EXTRA row for it, and none where a
+        # compared record set says already that a CNAME is served instead.
+        cnames = {row.name for row in results if 'cname' in row.notes}
+        for row in found:
+            if row is not None and row.status == EXTRA and row.rtype == 'CNAME':
+                if row.name in cnames:
+                    continue
+                cnames.add(row.name)
+            if row is not None:
+                rows.append(row)
     return ParityReport(zone, source, list(nameservers), rows, datetime.now(timezone.utc),
                         len(asked) + len(skipped))
 

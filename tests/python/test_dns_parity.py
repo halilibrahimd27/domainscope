@@ -627,6 +627,22 @@ class ParityRunTests(unittest.TestCase):
         https_row = rows[('ns1.example.net', 'example.com', 'HTTPS', False)]
         self.assertEqual(https_row.file, ['1 . alpn="h3,h2" port=443 ipv4hint=192.0.2.1,192.0.2.2'])
 
+    def test_a_cname_at_the_new_provider_is_one_row(self):
+        # a CNAME answers every type asked at its name: one EXTRA row (www, asked A and AAAA), none
+        # where a compared record set says it already (shop, asked AAAA, MX, TXT and CAA as well)
+        text = ('$ORIGIN example.com.\n$TTL 3600\n@ IN SOA ns1.example.org. h. 1 2 3 4 5\n'
+                '@ IN NS ns1.example.net.\nshop IN A 192.0.2.20\n')
+        server = FakeAuthority('example.com', {('example.com', 'NS'): [(3600, 'ns1.example.net')],
+                                               ('shop.example.com', 'CNAME'): [(3600, 'stores.example.org')],
+                                               ('www.example.com', 'CNAME'): [(3600, 'example.org')]})
+        try:
+            report, rows = self.run_zone(server, text=text, names=['ns1.example.net'])
+        finally:
+            server.close()
+        self.assertEqual(self.status(rows, 'shop.example.com', 'A'), ('DIFFERENT', ['cname']))
+        self.assertEqual([(r.name, r.rtype, r.new) for r in report.rows if r.status == 'EXTRA'],
+                         [('www.example.com', 'CNAME', ['example.org.'])])
+
     def test_servers_that_do_not_serve_the_zone(self):
         refusing = FakeAuthority('example.com', GOOD, refuse=True)
         cache = FakeAuthority('example.com', GOOD, authoritative=False)

@@ -562,6 +562,8 @@ const CALL_SITES = {
   // the Domain portfolio: hands its fetch to lib/rdap.js (and its DNS client to lib/passport.js)
   'assets/js/lib/portfolio.js': [],
   'assets/js/lib/keycontinuity.js': ['crtsh'],
+  // Domain overview › Lookalike domains: crt.sh for the top hits; its fetch goes on to lib/rdap.js
+  'assets/js/lib/lookalike.js': ['crtsh', 'rdap'],
   // Zone File › Fetch from deSEC / DigitalOcean, with the user's token
   'assets/js/lib/zonefetch.js': ['desec', 'digitalocean'],
   // the CCADB intermediate list, from this site (assets/data/intermediates/)

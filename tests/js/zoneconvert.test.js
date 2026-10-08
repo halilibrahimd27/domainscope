@@ -440,6 +440,15 @@ describe('pitfalls', () => {
     assert.deepEqual([pit(out.bind, 'r53-alias').severity, pit(out.octodns, 'r53-alias').severity], ['warn', 'warn']);
   });
 
+  test('octoDNS: a name whose label is __proto__ is written and read back like any other', () => {
+    const z = bind('__proto__ 300 IN A 192.0.2.10\nwww 300 IN A 192.0.2.11');
+    const out = convertZone(z, 'octodns');
+    assert.match(out.text, /^__proto__:$/m);
+    const back = parseZone(out.text, { origin: 'example.com', format: 'octodns' });
+    assert.deepEqual(back.records.filter((r) => r.type === 'A').map((r) => `${r.name} ${r.data}`).sort(),
+      ['__proto__.example.com 192.0.2.10', 'www.example.com 192.0.2.11']);
+  });
+
   test('alias variants a change batch cannot route (geoproximity): the first alias written, the others left out and listed', () => {
     const alias = (id, region, target) => ({
       Name: 'www.example.com.', Type: 'A', SetIdentifier: id, GeoProximityLocation: { AWSRegion: region },

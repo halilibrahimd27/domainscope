@@ -995,7 +995,8 @@ function octodnsText(zone, steps, sets, pits, about) {
     if (!byName.has(key)) byName.set(key, []);
     byName.get(key).push(rec);
   }
-  const doc = {};
+  // Keyed by the zone's names: no prototype, so a `__proto__` label is a key like any other.
+  const doc = Object.create(null);
   for (const [key, recs] of byName) {
     recs.sort((a, b) => (a.type < b.type ? -1 : a.type > b.type ? 1 : 0));
     doc[key] = recs.length === 1 ? recs[0] : recs;

@@ -1932,6 +1932,10 @@ async function analyzeDmarc(name, dmarcR, d) {
   const polSeverity = { none: 'warn', quarantine: 'ok', reject: 'ok' };
   checks.push(makeCheck(`dmarc.policy-${policy}`, polSeverity[policy], { policy, record: recs[0] }));
   if (parsed.pct < 100 && policy !== 'none') checks.push(makeCheck('dmarc.pct', 'warn', { pct: parsed.pct }));
+  // DMARCbis t=y (test mode, the successor of pct): receivers apply the next lower policy.
+  if (String(parsed.tags.t || '').toLowerCase() === 'y' && policy !== 'none') {
+    checks.push(makeCheck('dmarc.testing', 'warn', { policy, applied: policy === 'reject' ? 'quarantine' : 'none' }));
+  }
   if (!out.inherited && parsed.policy !== 'none' && parsed.subdomainPolicy === 'none') {
     checks.push(makeCheck('dmarc.sp-none', 'warn', { policy: parsed.policy }));
   }
@@ -2805,6 +2809,9 @@ const STRINGS = [
   ['dmarc.pct', ['DMARC applies to {pct}% of mail', 'DMARC e-postaların %{pct} kadarına uygulanıyor'],
     ['pct={pct}: the policy covers only part of the failing mail. Raise it to 100 when ready.',
       'pct={pct}: politika başarısız e-postaların yalnızca bir kısmını kapsıyor. Hazır olduğunuzda 100’e çıkarın.']],
+  ['dmarc.testing', ['DMARC policy in test mode (t=y)', 'DMARC politikası test modunda (t=y)'],
+    ['t=y asks receivers to apply the next lower policy: {applied} instead of {policy}. Remove t=y once reports show that all legitimate senders pass.',
+      't=y, alıcılardan bir alt politikayı uygulamalarını ister: {policy} yerine {applied}. Raporlar tüm meşru gönderenlerin geçtiğini gösterince t=y’yi kaldırın.']],
   ['dmarc.sp-none', ['Subdomains are not protected', 'Alt alan adları korunmuyor'],
     ['p={policy} but sp=none: spoofed mail from subdomains is still delivered.', 'p={policy} ancak sp=none: alt alan adlarından sahte e-postalar yine teslim edilir.']],
   ['dmarc.rua-missing', ['No DMARC aggregate reports', 'DMARC toplu raporu yok'],

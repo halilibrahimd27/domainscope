@@ -1171,6 +1171,25 @@ test('DMARC checks: missing, multiple, invalid, none, quarantine, pct, sp=none, 
   has(r, 'dmarc.error');
 });
 
+test('DMARC t=y: a policy in test mode is not enforced, receivers apply the next lower one', async () => {
+  const zone = goodZone();
+  const testing = [
+    ['v=DMARC1; p=reject; t=y; rua=mailto:d@example.com', { policy: 'reject', applied: 'quarantine' }],
+    ['v=DMARC1; p=quarantine; t=Y; rua=mailto:d@example.com', { policy: 'quarantine', applied: 'none' }]
+  ];
+  for (const [txt, params] of testing) {
+    zone['_dmarc.example.com'].TXT = [txt];
+    const r = await run('example.com', fakeDns(zone));
+    assertRenderable(r);
+    has(r, `dmarc.policy-${params.policy}`, 'ok');
+    assert.deepEqual(has(r, 'dmarc.testing', 'warn').params, params);
+  }
+  for (const txt of ['v=DMARC1; p=reject; t=n; rua=mailto:d@example.com', 'v=DMARC1; p=none; t=y; rua=mailto:d@example.com']) {
+    zone['_dmarc.example.com'].TXT = [txt];
+    lacks(await run('example.com', fakeDns(zone)), 'dmarc.testing');
+  }
+});
+
 test('DMARC: external report authorization and organizational-domain inheritance', async () => {
   const zone = goodZone();
   zone['_dmarc.example.com'].TXT = ['v=DMARC1; p=reject; rua=mailto:a@reports.vendor.net,mailto:b@other.vendor.org,mailto:c@sub.example.com'];

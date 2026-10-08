@@ -1132,7 +1132,7 @@ describe('octoDNS YAML', () => {
     const cases = [
       ['a: &x 1\n', 'anchor'], ['a: *x\n', 'alias'], ['a: !include b.yaml\n', 'tag'], ['a: |\n  x\n', 'block-scalar'],
       ['a: >-\n  x\n', 'block-scalar'], ['a: {b: 1}\n', 'flow-mapping'], ['a: 1\n---\nb: 2\n', 'multiple-documents'],
-      ['a:\n\tb: 1\n', 'tab-indent'], ['a: [1, [2]]\n', 'nested-flow'], ['a: "open\n  still"\n', 'multi-line-scalar']
+      ['a:\n\tb: 1\n', 'tab-indent'], ['a: [1, [2]]\n', 'nested-flow'], ['a: "open\n  still\n', 'multi-line-scalar']
     ];
     for (const [text, feature] of cases) {
       const z = P(text, { filename: 'example.com.yaml' });
@@ -1143,6 +1143,50 @@ describe('octoDNS YAML', () => {
     const deep = `${Array.from({ length: 40 }, (_, i) => `${' '.repeat(i * 2)}k${i}:`).join('\n')}\n`;
     assert.equal(P(deep, { filename: 'example.com.yaml' }).fatal.params.feature, 'depth');
     assert.equal(parseYamlSubset(deep, { limits: { maxYamlDepth: 64 } }).error, null);
+  });
+
+  test('octoDNS YAML as octodns-dump writes it (PyYAML wraps at 80 columns): plain and quoted values over several lines, as PyYAML reads them', () => {
+    const y = [
+      '---',
+      "? ''",
+      ': type: TXT',
+      '  values:',
+      "  - 'google-site-verification: abcdefghijklmnopqrstuvwxyz0123456789 and some more",
+      "    words'",
+      '  - v=spf1 include:_spf.example.net include:mail.example.org include:servers.example.com',
+      '    -all',
+      '_dmarc:',
+      '  type: TXT',
+      '  value: v=DMARC1\\; p=reject\\; rua=mailto:dmarc-reports@example.com\\; ruf=mailto:dmarc-forensics@example.com\\;',
+      '    fo=1',
+      'tab:',
+      '  type: TXT',
+      '  value: "tab\\there and then quite a few more words to make this wrap past eighty\\',
+      '    \\ columns"',
+      ''
+    ].join('\n');
+    // yaml.safe_load (PyYAML 6.0.3) of the same text
+    const expected = {
+      '': { type: 'TXT', values: ['google-site-verification: abcdefghijklmnopqrstuvwxyz0123456789 and some more words',
+        'v=spf1 include:_spf.example.net include:mail.example.org include:servers.example.com -all'] },
+      _dmarc: { type: 'TXT', value: 'v=DMARC1\\; p=reject\\; rua=mailto:dmarc-reports@example.com\\; ruf=mailto:dmarc-forensics@example.com\\; fo=1' },
+      tab: { type: 'TXT', value: 'tab\there and then quite a few more words to make this wrap past eighty columns' }
+    };
+    const r = parseYamlSubset(y);
+    assert.equal(r.error, null);
+    assert.deepEqual(JSON.parse(JSON.stringify(r.value)), expected);
+    const z = P(y, { filename: 'example.com.yaml' });
+    assert.equal(z.fatal, null);
+    assert.equal(find(z, '_dmarc.example.com', 'TXT').data.join(''), expected._dmarc.value.replace(/\\;/g, ';'));
+    // PyYAML's folding: an empty line is a line break, a quoted scalar goes on at any indent and
+    // holds a "#"; a comment or a "key: value" ends a plain scalar, an unclosed quote is refused.
+    const one = (text) => JSON.parse(JSON.stringify(parseYamlSubset(text).value));
+    assert.deepEqual([one('a: b\n\n  c\n'), one("a: 'x\n# not a comment\n  y'\n"), one("a: 'x\n\n\n  y'\n"), one('a: b\n  - c\n'), one('- b\n  c\n')],
+      [{ a: 'b\nc' }, { a: 'x # not a comment y' }, { a: 'x\n\ny' }, { a: 'b - c' }, ['b c']]);
+    for (const [text, feature] of [['a: b\n  c: d\n', 'syntax'], ['a: b\n  # note\n  c\n', 'multi-line-scalar'], ['a: b # c\n  d\n', 'multi-line-scalar'],
+      ['a: "open\n  still\n', 'multi-line-scalar'], ['a: [1,\n  2]\n', 'multi-line-scalar']]) {
+      assert.equal(parseYamlSubset(text).error?.feature, feature, text);
+    }
   });
 
   test('parseYamlSubset: null-prototype maps, "? key" at the parent indent, "---" header', () => {

@@ -3492,9 +3492,22 @@ function yamlFlowSeq(s, line) {
   return items.filter((x, i) => x !== '' || i < items.length - 1).map((x) => yamlScalar(x, line));
 }
 
+/** Where the quoted scalar `s` opens (its first character) closes, from `from`; -1 when not on this line. */
+function closingQuote(s, from = 1, q = s[0]) {
+  for (let i = from; i < s.length; i++) {
+    if (q === "'" && s[i] === "'") {
+      if (s[i + 1] !== "'") return i;
+      i++;
+    } else if (q === '"' && s[i] === '\\') i++;
+    else if (q === '"' && s[i] === '"') return i;
+  }
+  return -1;
+}
+
 /**
  * Parse the YAML subset octoDNS files use: block mappings and sequences (also at the parent
- * key's indent), `? key` complex keys, plain / single / double-quoted scalars, flow sequences,
+ * key's indent), `? key` complex keys, plain / single / double-quoted scalars (also over several
+ * lines, as PyYAML wraps a long one past 80 columns in octodns-dump's files), flow sequences,
  * quote-aware `#` comments and a leading `---`. Anchors, aliases, tags, block scalars, flow
  * mappings and further documents are rejected. Maps are null-prototype objects.
  * @param {string} text
@@ -3509,13 +3522,22 @@ export function parseYamlSubset(text, { limits = ZONE_LIMITS } = {}) {
     const raw = splitLines(String(text ?? ''));
     let content = false;
     let ended = false;
+    // Before each line: the empty lines (a line break in a scalar that goes on) and whether a
+    // comment line came (it ends a plain scalar).
+    let blank = 0;
+    let commentBefore = false;
     for (let i = 0; i < raw.length; i++) {
       const s = raw[i];
       let indent = 0;
       while (indent < s.length && s.charCodeAt(indent) === 32) indent++;
       if (s.charCodeAt(indent) === 9 && s.slice(indent).trim() && !s.slice(indent).trim().startsWith('#')) throw new YamlError('tab-indent', i + 1);
-      const t = stripYamlComment(s).trimEnd();
-      if (!t.trim()) continue;
+      const stripped = stripYamlComment(s);
+      const t = stripped.trimEnd();
+      if (!t.trim()) {
+        if (s.trim()) commentBefore = true;
+        else blank++;
+        continue;
+      }
       const body = t.slice(indent);
       if (indent === 0 && /^---(?:\s|$)/.test(body)) {
         if (content || ended) throw new YamlError('multiple-documents', i + 1);
@@ -3528,7 +3550,9 @@ export function parseYamlSubset(text, { limits = ZONE_LIMITS } = {}) {
       }
       if (ended) throw new YamlError('multiple-documents', i + 1);
       if (indent === 0 && body.startsWith('%')) throw new YamlError('directive', i + 1);
-      lines.push({ n: i + 1, indent, text: body });
+      lines.push({ n: i + 1, indent, text: body, comment: stripped.length < s.length, blank, commentBefore });
+      blank = 0;
+      commentBefore = false;
       content = true;
     }
     let pos = 0;
@@ -3543,15 +3567,69 @@ export function parseYamlSubset(text, { limits = ZONE_LIMITS } = {}) {
       Object.defineProperty(o, YAML_KEY_LINES, { value: Object.create(null), enumerable: false });
       return o;
     };
-    const node = (depth) => {
+    /**
+     * A quoted scalar with no closing quote on its line `l`: it goes on over the next lines (any
+     * indent, a `#` is text) up to that quote, folded as YAML does (a line break is a space, each
+     * empty line a line break; in double quotes a `\` at the end of a line joins the lines).
+     */
+    const quotedLines = (first, l, line) => {
+      const q = first[0];
+      let acc = first;
+      let gap = 0;
+      for (let i = l.n; i < raw.length; i++) {
+        const s = raw[i].trim();
+        if (!s) {
+          gap++;
+          continue;
+        }
+        if (q === '"' && /(?:^|[^\\])(?:\\\\)*\\$/.test(acc)) acc = `${acc.slice(0, -1)}${'\n'.repeat(gap)}`;
+        else acc += gap ? '\n'.repeat(gap) : ' ';
+        gap = 0;
+        const end = closingQuote(s, 0, q);
+        if (end < 0) {
+          acc += s;
+          continue;
+        }
+        const after = s.slice(end + 1);
+        if (after.trim() && !/^\s+#/.test(after)) throw new YamlError('syntax', i + 1);
+        while (pos < lines.length && lines[pos].n <= i + 1) pos++;
+        return yamlScalar(acc + s.slice(0, end + 1), line);
+      }
+      throw new YamlError('multi-line-scalar', line);
+    };
+    /**
+     * The scalar `text` starts on line `l` (`pos` is the line after it): a quoted one up to its
+     * closing quote, a plain one with the lines indented under `parent` folded in (a comment, or a
+     * `key: value` line, ends it, as in PyYAML). Lines indented under `parent` after it are refused.
+     */
+    const scalarAt = (text, l, parent, line = l.n) => {
+      const q = text[0];
+      let v;
+      if ((q === "'" || q === '"') && closingQuote(text) < 0) v = quotedLines(text, l, line);
+      else {
+        v = yamlScalar(text, line); // an anchor, a tag, a block scalar … refused first
+        let folded = text;
+        if (q !== "'" && q !== '"' && q !== '[' && !l.comment) {
+          while (pos < lines.length && lines[pos].indent > parent && !lines[pos].commentBefore) {
+            const c = lines[pos];
+            if (splitYamlKey(c.text)) throw new YamlError('syntax', c.n);
+            folded += `${c.blank ? '\n'.repeat(c.blank) : ' '}${c.text.trim()}`;
+            pos++;
+            if (c.comment) break;
+          }
+        }
+        if (folded !== text) v = yamlScalar(folded, line);
+      }
+      if (pos < lines.length && lines[pos].indent > parent) throw new YamlError('multi-line-scalar', lines[pos].n);
+      return v;
+    };
+    const node = (depth, parent = -1) => {
       if (depth > L.maxYamlDepth) throw new YamlError('depth', lines[pos].n);
       const l = lines[pos];
       if (isSeqItem(l.text)) return seq(l.indent, depth);
       if (l.text === '?' || l.text.startsWith('? ') || splitYamlKey(l.text)) return map(l.indent, depth);
       pos++;
-      const v = yamlScalar(l.text, l.n);
-      if (pos < lines.length && lines[pos].indent > l.indent) throw new YamlError('multi-line-scalar', lines[pos].n);
-      return v;
+      return scalarAt(l.text, l, parent);
     };
     const seq = (indent, depth) => {
       const arr = [];
@@ -3561,16 +3639,15 @@ export function parseYamlSubset(text, { limits = ZONE_LIMITS } = {}) {
         const off = l.text.length - rest.length;
         if (rest === '') {
           pos++;
-          if (pos < lines.length && lines[pos].indent > indent) arr.push(node(depth + 1));
+          if (pos < lines.length && lines[pos].indent > indent) arr.push(node(depth + 1, indent));
           else arr.push(null);
         } else if (isSeqItem(rest) || rest === '?' || rest.startsWith('? ') || splitYamlKey(rest)) {
           l.indent = indent + off;
           l.text = rest;
-          arr.push(node(depth + 1));
+          arr.push(node(depth + 1, indent));
         } else {
           pos++;
-          arr.push(yamlScalar(rest, l.n));
-          if (pos < lines.length && lines[pos].indent > indent) throw new YamlError('multi-line-scalar', lines[pos].n);
+          arr.push(scalarAt(rest, l, indent));
         }
       }
       return arr;
@@ -3581,6 +3658,7 @@ export function parseYamlSubset(text, { limits = ZONE_LIMITS } = {}) {
         const l = lines[pos];
         let key;
         let valueText;
+        let valueLine = l;
         const keyLine = l.n;
         if (l.text === '?' || l.text.startsWith('? ')) {
           const kt = l.text.slice(1).trim();
@@ -3593,10 +3671,11 @@ export function parseYamlSubset(text, { limits = ZONE_LIMITS } = {}) {
             continue;
           }
           valueText = vl.text.slice(1).replace(/^[ \t]+/, '');
+          valueLine = vl;
           if (valueText && (isSeqItem(valueText) || valueText.startsWith('? ') || splitYamlKey(valueText))) {
             vl.indent = indent + (vl.text.length - valueText.length);
             vl.text = valueText;
-            setKey(obj, key, node(depth + 1), keyLine);
+            setKey(obj, key, node(depth + 1, indent), keyLine);
             continue;
           }
           pos++;
@@ -3609,12 +3688,11 @@ export function parseYamlSubset(text, { limits = ZONE_LIMITS } = {}) {
         }
         let value;
         if (valueText === '') {
-          if (pos < lines.length && lines[pos].indent > indent) value = node(depth + 1);
+          if (pos < lines.length && lines[pos].indent > indent) value = node(depth + 1, indent);
           else if (pos < lines.length && lines[pos].indent === indent && isSeqItem(lines[pos].text)) value = seq(indent, depth + 1);
           else value = null;
         } else {
-          value = yamlScalar(valueText, keyLine);
-          if (pos < lines.length && lines[pos].indent > indent) throw new YamlError('multi-line-scalar', lines[pos].n);
+          value = scalarAt(valueText, valueLine, indent, keyLine);
         }
         setKey(obj, key, value, keyLine);
       }

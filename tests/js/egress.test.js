@@ -610,6 +610,8 @@ const LINK_HOSTS = {
     'tiarap.org', 'www.alidns.com'
   ],
   'assets/js/lib/sourceinfo.js': ['hackertarget.com', 'sslmate.com'],
+  // Domain Health › Delegation: the public write-ups of the Sitting Ducks attack and the provider list
+  'assets/js/lib/delegation.js': ['blogs.infoblox.com', 'eclypsium.com', 'github.com'],
   // where a DNS provider's read-only token is made, and how (deSEC's token page is on its API host,
   // desec.io/tokens: a desec URL the registry gives no endpoint)
   'assets/js/lib/zonefetch.js': ['desec.readthedocs.io', 'cloud.digitalocean.com', 'docs.digitalocean.com'],

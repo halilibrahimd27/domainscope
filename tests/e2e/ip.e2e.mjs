@@ -5,12 +5,14 @@
  *
  *   node tests/e2e/ip.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots] [--no-quota-apis] [--offline]
  *
- * OFFLINE group (always runs; --offline skips the live ones): RIPEstat, ipwho.is and reverse DNS
- * answered in the page (nothing leaves it). A source that answers 429 or fails marks only the
+ * OFFLINE group (always runs; --offline skips the live ones): RIPEstat, ipwho.is, HackerTarget and
+ * reverse DNS answered in the page (nothing leaves it). A source that answers 429 or fails marks only the
  * cells it leaves empty "⚠ n/a" (tooltip: which source, what error), a chip per service sums the
  * failures up, and Retry — per row, or per chip for every row it failed on — asks exactly those
  * sources again; a reverse lookup answered SERVFAIL says so; Stop leaves no chip "asking…"; a
- * Retry still in flight when a new lookup starts never draws over the new run's row; the CSV
+ * Retry or a reverse IP answer still in flight when a new lookup starts never draws over the new
+ * run's row; Copy summary and the print header link to the rows shown, never to an address
+ * carried into the box; the CSV
  * says "n/a" in every language; stat cards with a zero count fold into one sentence; Copy
  * summary says how many lookups failed when every source failed (EN + TR); 1440 and 375 px,
  * light and dark, English and Turkish.
@@ -243,15 +245,16 @@ const PTR_ZONE = {
 };
 
 /**
- * RIPEstat and ipwho.is answered in the page (installed after the zone script, which blocks
+ * RIPEstat, ipwho.is and HackerTarget answered in the page (installed after the zone script, which blocks
  * every other request): addresses in `window.__ipFake.limited` when the request is made get
  * HTTP 429 from RIPEstat, an address in `window.__ipFake.slow` (ip → ms) is answered that much
- * later (an abort still ends the wait), and ipwho.is always says its quota is used up. `calls` lists "<dataset> <ip>" per
+ * later (an abort still ends the wait), and ipwho.is always says its quota is used up. HackerTarget's
+ * reverse IP names two domains, `window.__ipFake.htDelay` ms later. `calls` lists "<dataset> <ip>" per
  * request.
  */
 const IP_FAKE_SCRIPT = `(() => {
   const inner = window.fetch;
-  const fake = window.__ipFake = { limited: [], calls: [], slow: {} };
+  const fake = window.__ipFake = { limited: [], calls: [], slow: {}, htDelay: 0 };
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   const wait = (ms, signal) => new Promise((resolve, reject) => {
     if (signal && signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
@@ -280,6 +283,11 @@ const IP_FAKE_SCRIPT = `(() => {
     if (u.hostname === 'ipwho.is') {
       fake.calls.push('ipwhois ' + u.pathname.slice(1));
       return json({ success: false, message: 'You have exceeded the rate limit' });
+    }
+    if (u.hostname === 'api.hackertarget.com') {
+      fake.calls.push('hackertarget ' + u.searchParams.get('q'));
+      if (fake.htDelay) await wait(fake.htDelay, (init && init.signal) || null);
+      return new Response('site-a.example.org\\nsite-b.example.org\\n', { status: 200, headers: { 'content-type': 'text/plain' } });
     }
     return inner(input, init);
   };
@@ -584,6 +592,42 @@ async function offlineGroup(browser, server) {
       await page.waitFor(() => window.__clip.length === 1, { message: 'summary copied' });
       const [md] = await takeClipboard(page);
       assert(md.startsWith('**IP Intel · `203.0.113.7`**') && md.trim().endsWith('#/ip?ips=203.0.113.7'), `summary: ${md}`);
+    });
+
+    await step('a reverse IP answer that lands after a new lookup of the same address never replaces the new run’s row', async () => {
+      const ip = '203.0.113.7';
+      const reverseCalls = async () => (await calls()).filter((c) => c.startsWith('hackertarget ')).length;
+      const row = () => page.evaluate(() => {
+        const btn = document.querySelector('.ipi-row [data-action="reverse"]');
+        return { button: btn ? { busy: btn.getAttribute('aria-busy'), disabled: btn.disabled } : null, shown: !!document.querySelector('.ipi-row .ipi-rev') };
+      });
+      await page.evaluate(() => { window.__ipFake.limited = []; window.__ipFake.htDelay = 2500; });
+      try {
+        await gotoHash(page, '#/about', 'about');
+        await gotoHash(page, `#/ip?ips=${ip}`, 'ip');
+        await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows shown' });
+        const lookUp = async (message) => {
+          await page.evaluate(() => document.querySelector('[data-action="run"]').click());
+          await page.waitFor(ROWS_DONE, { timeout: 30000, message });
+        };
+        await lookUp('first lookup');
+        await page.evaluate(() => document.querySelector('.ipi-row [data-action="reverse"]').click());
+        await page.waitFor(() => document.querySelector('.ipi-row [data-action="reverse"]')?.getAttribute('aria-busy') === 'true', { message: 'reverse IP in flight' });
+        // The same address again while that answer is on its way.
+        await lookUp('second lookup');
+        await new Promise((resolve) => { setTimeout(resolve, 3200); });
+        assertEqual(await row(), { button: { busy: null, disabled: false }, shown: false }, 'the new run’s row: its own Find domains, ready');
+        const files = await exportFiles(page);
+        const exported = JSON.parse(files[1].text).find((r) => r.ip === ip);
+        assert(!(exported.reverseIp && exported.reverseIp.length), `the export has no domains the table never showed: ${JSON.stringify(exported.reverseIp)}`);
+        // The first answer was kept: the new row's Find domains shows it without another request.
+        const before = await reverseCalls();
+        await page.evaluate(() => document.querySelector('.ipi-row [data-action="reverse"]').click());
+        await page.waitFor(() => /site-a\.example\.org/.test(document.querySelector('.ipi-row .ipi-rev')?.textContent || ''), { message: 'domains shown' });
+        assertEqual(await reverseCalls(), before, 'no second HackerTarget request');
+      } finally {
+        await page.evaluate(() => { window.__ipFake.htDelay = 0; });
+      }
     });
 
     for (const [n, scheme, lang, width] of [[30, 'dark', 'tr', 1440], [31, 'light', 'en', 375], [32, 'dark', 'tr', 375]]) {

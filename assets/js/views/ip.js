@@ -968,6 +968,9 @@ export function mount(container, ctx) {
 
   async function reverseLookup(row) {
     if (!ctx.requireOnline()) return;
+    // The run whose table holds the row: an answer that lands after a new lookup never draws
+    // over that run's row for the same address (the answer is cached for its Find domains).
+    const run = current;
     row.reverse = { state: 'loading', result: null };
     table.updateRow(row);
     try {
@@ -981,7 +984,7 @@ export function mount(container, ctx) {
       }
       row.reverse = { state: 'done', result: { ok: false, domains: [], error: err && err.message ? err.message : String(err), limited: false } };
     }
-    table.updateRow(row);
+    if (current === run) table.updateRow(row);
   }
 
   /* --- initial state ---------------------------------------------------------------- */

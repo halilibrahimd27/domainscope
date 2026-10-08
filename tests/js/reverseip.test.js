@@ -331,6 +331,11 @@ describe('createReverseIp', () => {
     assert.deepEqual(calls, [internetDbUrl(IP)], 'the second address is not sent while locked');
     assert.equal(b.results.internetdb.skip, 'locked');
     assert.deepEqual(sourceStatus(b.results.internetdb.failure, { now }).params, { minutes: 50 });
+    const lock = { until: NOW + INTERNETDB_LOCK_MS };
+    const other = createReverseIp({ fetchImpl, now: () => now, lock });
+    const d = await other.lookup(IP2, { sources: ['internetdb'], noCache: true });
+    assert.equal(d.results.internetdb.skip, 'locked', 'a shared lock outlives the service that saw the 429');
+    assert.deepEqual(calls, [internetDbUrl(IP)]);
     now = NOW + INTERNETDB_LOCK_MS + 1;
     const c = await svc.lookup(IP2, { sources: ['internetdb'] });
     assert.equal(c.results.internetdb.state, 'ok', 'asked again once the lock is over');

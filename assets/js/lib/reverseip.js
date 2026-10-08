@@ -438,21 +438,22 @@ function redact(message, keys) {
  * and the DNS check of the merged names.
  * @param {{ fetchImpl?: typeof fetch, dns?: { ptr?: Function, resolveHost?: Function }|null,
  *   intel?: { reverseIp: Function, reverseIpThc: Function }|null, timeoutMs?: number, slowTimeoutMs?: number,
- *   now?: () => number, classify?: Function|null, concurrency?: number, shodanPaceMs?: number }} [opts]
+ *   now?: () => number, classify?: Function|null, concurrency?: number, shodanPaceMs?: number, lock?: { until: number|null } }} [opts]
  *   intel: a lib/ipintel.js service (HackerTarget, ip.thc.org); classify: lib/netinfo.js
- *   classifyResolution (loaded on first use when not given); concurrency: DNS checks at once.
+ *   classifyResolution (loaded on first use when not given); concurrency: DNS checks at once; lock:
+ *   where InternetDB's lockout is kept (`until`, ms) — pass one object for the page session so a
+ *   new service (another DNS client, a re-mount) still honours it.
  * @returns {{ lookup: Function, retry: Function, verify: Function, lockedUntil: () => number|null }}
  */
 export function createReverseIp({
   fetchImpl = globalThis.fetch, dns = null, intel = null, timeoutMs = DEFAULT_TIMEOUT_MS, slowTimeoutMs = SLOW_TIMEOUT_MS,
-  now = Date.now, classify = null, concurrency = 8, shodanPaceMs = 1100
+  now = Date.now, classify = null, concurrency = 8, shodanPaceMs = 1100, lock = { until: null }
 } = {}) {
   const verifyLimiter = createLimiter(concurrency);
   // InternetDB one address at a time (a burst locks a client out); Shodan's API takes one a second.
   const internetdbLimiter = createLimiter(1);
   const shodanLimiter = createLimiter(1);
   const cache = createCache({ maxEntries: 500, ttlMs: CACHE_TTL_MS, now });
-  let internetdbLock = null;
   let lastShodan = 0;
 
   const result = (source, fields = {}) => ({
@@ -562,7 +563,7 @@ export function createReverseIp({
             if (err instanceof HttpError && err.status === 404) return result(source, { extra: { ports: [], tags: [], vulns: [], cpes: [] } });
             if (err instanceof HttpError && err.status === 429) {
               const wait = Number.isFinite(err.retryAfterMs) && err.retryAfterMs > 0 ? err.retryAfterMs : INTERNETDB_LOCK_MS;
-              internetdbLock = now() + wait;
+              lock.until = now() + wait;
               return failed(source, { error: 'HTTP 429', errorKind: 'rate-limit', status: 429, retryAfterMs: wait, limited: true });
             }
             return fromError(source, err);
@@ -607,10 +608,10 @@ export function createReverseIp({
 
   /** InternetDB's lockout as a failure ("rate limited — try again in N min"), or null when it is over. */
   function lockedFailure() {
-    if (internetdbLock === null) return null;
-    const left = internetdbLock - now();
+    if (!Number.isFinite(lock.until)) return null;
+    const left = lock.until - now();
     if (left <= 0) {
-      internetdbLock = null;
+      lock.until = null;
       return null;
     }
     return { ...failed('internetdb', { error: 'HTTP 429', errorKind: 'rate-limit', status: 429, retryAfterMs: left, limited: true }), skip: 'locked' };
@@ -680,5 +681,5 @@ export function createReverseIp({
     return batch.length;
   }
 
-  return { lookup, retry, verify, lockedUntil: () => (internetdbLock !== null && internetdbLock > now() ? internetdbLock : null) };
+  return { lookup, retry, verify, lockedUntil: () => (Number.isFinite(lock.until) && lock.until > now() ? lock.until : null) };
 }

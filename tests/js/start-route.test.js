@@ -85,6 +85,10 @@ const JS = join(ASSETS, 'js');
  * hooks in lib/wordlist.js, lib/dnsmine.js, lib/scanplan.js and the Subdomains view added 2,013 bytes; their
  * panel (ui/locale-evidence.js) loads with the run header of a scan, and DNS Lookup's Explain and Global DNS's
  * name server probe load on first use too.
+ * With wave 7b merged (the domain security score and the DMARC sender names): ≈ 335 KB (342,650 bytes), 36,230 bytes
+ * under the budget. The one start-route file that grew is lib/pwa.js (127 bytes): its precache skip list names the two
+ * sender lists. The score's panel and libraries load with the portfolio's Domain security tab, and lib/senders.js with
+ * the views that use it.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

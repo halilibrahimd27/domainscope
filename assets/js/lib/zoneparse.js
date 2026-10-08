@@ -2412,7 +2412,7 @@ function parseBind(text, lines, zone, b, opts) {
 
   // ---- main pass ----
   const st = {
-    origin: initial, lastOwner: null, defaultTtl: opts.defaultTtl, lastTtl: null, soaMinimum,
+    origin: initial, lastOwner: null, defaultTtl: opts.defaultTtl, lastTtl: null, soaMinimum, soaDefaultTtl: null,
     genTotal: 0, relFail: 0, structural: 0
   };
   const ctxFor = () => ({ origin: st.origin, base: 10, absolute: false });
@@ -2512,9 +2512,13 @@ function parseBind(text, lines, zone, b, opts) {
       const v = parseTtlValue(s.ttlTok.t);
       if (applyTtl(rec, v, issues, e.line)) st.lastTtl = v;
     } else if (st.defaultTtl !== null && st.defaultTtl !== undefined) rec.ttl = st.defaultTtl;
+    else if (st.soaDefaultTtl !== null) rec.ttl = st.soaDefaultTtl;
     else if (st.lastTtl !== null) rec.ttl = st.lastTtl;
     else if (st.soaMinimum !== null) {
       rec.ttl = st.soaMinimum;
+      // BIND (master.c): an SOA with no TTL known yet takes its minimum, which then stays the
+      // default of every record without a TTL (an explicit TTL after it does not carry on).
+      if (type === 'SOA') st.soaDefaultTtl = st.soaMinimum;
       issues.addOnce('ttl-defaulted', 'TTL_DEFAULTED', e.line, { ttl: st.soaMinimum }, 'no $TTL: SOA minimum used as the default TTL');
     }
     if (dialect === 'cloudflare' && rec.ttl === 1) {

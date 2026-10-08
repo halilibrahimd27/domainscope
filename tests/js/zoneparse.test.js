@@ -1682,6 +1682,18 @@ describe('limits', () => {
     assert.ok(ms < budget(1500), `${Math.round(ms)} ms`);
   });
 
+  test('no $TTL: an SOA without a TTL takes its minimum and makes it the default, as BIND does, even after an explicit TTL', () => {
+    const soa = '@ IN SOA ns1 hostmaster ( 2024010101 28800 14400 3600000 86400 )';
+    const ttls = (text) => P(`$ORIGIN example.com.\n${text}`).records.map((r) => `${r.name.split('.')[0]} ${r.type} ${r.ttl}`);
+    assert.deepEqual(ttls(`${soa}\n@ IN NS ns1\nmail 300 IN A 192.0.2.25\nwww IN A 192.0.2.10\n`),
+      ['example SOA 86400', 'example NS 86400', 'mail A 300', 'www A 86400']);
+    // An SOA with its own TTL: no default, the last TTL goes on (RFC 1035), as in BIND.
+    assert.deepEqual(ttls(`${soa.replace('@ IN', '@ 3600 IN')}\nmail 300 IN A 192.0.2.25\nwww IN A 192.0.2.10\n`),
+      ['example SOA 3600', 'mail A 300', 'www A 300']);
+    // A $TTL later replaces it.
+    assert.deepEqual(ttls(`${soa}\n$TTL 600\nwww IN A 192.0.2.10\n`), ['example SOA 86400', 'www A 600']);
+  });
+
   test('a cli53 "; AWS" comment of one long run of letters is read in linear time (it was quadratic: 2 s a line)', () => {
     const run = 'a'.repeat(60000);
     const text = `$ORIGIN example.com.\n$TTL 300\n${Array.from({ length: 5 }, (_, i) => `h${i} IN A 192.0.2.${i + 1} ; AWS ${run}`).join('\n')}\n` +

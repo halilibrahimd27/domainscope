@@ -29,7 +29,9 @@ export const STATUS_SOURCES = Object.freeze({
   // Certificate Transparency (the Domain overview's issuer lookup): Cert Spotter's anonymous
   // single-host quota is hourly; crt.sh has no published quota.
   certspotter: Object.freeze({ period: 'hour' }),
-  crtsh: Object.freeze({ period: null })
+  crtsh: Object.freeze({ period: null }),
+  // Renewal readiness › Plan: Let's Encrypt's ARI window (no published quota for it)
+  ari: Object.freeze({ period: null })
 });
 
 /** Every reason code {@link sourceStatus} can return (`srcst.reason.<code>` in the UI). */

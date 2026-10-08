@@ -38,7 +38,7 @@ import { GP_LIMITS } from '../lib/globalping.js';
 import { getResolver } from '../lib/resolvers.js';
 import { toCsv, toJson } from '../lib/export.js';
 import { permalinkParams } from '../ui/view-summaries.js';
-import { errorKind, mergeSignals } from '../lib/util.js';
+import { errorKind, mergeSignals, onceAsync } from '../lib/util.js';
 import { fillReplaces, isFillOnly, commonTarget } from '../lib/session.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from '../ui/globalping-gate.js';
@@ -248,6 +248,11 @@ export function localParams(f, t) {
   return p;
 }
 
+// The Plan panel — lifetimes, renewal window, coverage and CSR (ui/renewal-planner.js) — loads on its first open.
+const loadPlanner = onceAsync(() => import('../ui/renewal-planner.js'));
+registerStrings('en', { 'rnw.plan': 'Plan: lifetimes, renewal window, coverage and CSR', 'rnw.planFailed': 'The planner could not be loaded' });
+registerStrings('tr', { 'rnw.plan': 'Plan: ömürler, yenileme aralığı, kapsam ve CSR', 'rnw.planFailed': 'Planlayıcı yüklenemedi' });
+
 let active = null;
 // A switch to another workspace ends a running HTTP-01 test with the report it belongs to: the shell names it first.
 registerRunning('nav.renew', () => !!(active && active.testRunning()));
@@ -284,7 +289,10 @@ export function mount(container, ctx) {
     value: restored ? restored.ca : routeCa || '',
     hint: t('rnw.caHint'),
     className: 'rnw-ca',
-    onChange: () => setCaHint(null)
+    onChange: () => {
+      setCaHint(null);
+      if (planner) planner.refresh();
+    }
   });
   caField.input.dataset.role = 'renew-ca';
   const challengeField = select({
@@ -344,7 +352,28 @@ export function mount(container, ctx) {
   const results = h('div', { class: 'stack-lg rnw-results', hidden: true, dataset: { shortcutScope: 'results' } },
     heroEl, testEl,
     h('section', { class: 'stack rnw-names-section' }, h('h2', { class: 'section-title' }, t('rnw.namesTitle')), listEl));
-  container.append(h('div', { class: 'stack-lg rnw-view' }, formCard, progress.el, errorEl, emptyEl, results));
+  // The Plan panel reads the certificate, the names and the CA above; nothing it shows is sent.
+  const planHost = h('div', { class: 'rnw-plan-host' });
+  const planBlock = Disclosure({ summary: t('rnw.plan'), className: 'card rnw-plan', heading: 2, children: planHost });
+  let planner = null;
+  planBlock.addEventListener('toggle', () => {
+    if (!planBlock.open || planner || planHost.dataset.loading) return;
+    planHost.dataset.loading = '1';
+    clear(planHost);
+    planHost.append(Spinner({ showLabel: true }));
+    loadPlanner().then(({ RenewalPlanner }) => {
+      if (ctx.signal.aborted) return;
+      planner = RenewalPlanner({ ctx, cert: () => getCurrentCert(ctx.state), names: () => namesField.value, ca: () => caField.value });
+      clear(planHost);
+      planHost.append(planner.el);
+    }).catch((err) => {
+      ctx.checkOutdated();
+      clear(planHost);
+      planHost.append(ErrorBanner(err, { title: t('rnw.planFailed'), compact: true }));
+    }).finally(() => { delete planHost.dataset.loading; });
+  });
+  ctx.onCleanup(() => { if (planner) planner.destroy(); });
+  container.append(h('div', { class: 'stack-lg rnw-view' }, formCard, progress.el, errorEl, emptyEl, results, planBlock));
 
   /* --- state ----------------------------------------------------------------------- */
   // current = { names, ca, challenge, text, controller, report, finishedAt, test }
@@ -439,6 +468,7 @@ export function mount(container, ctx) {
     setCurrentCert(ctx.state, load);
     if (load) useCert(load);
     renderCert();
+    if (planner) planner.refresh();
   }
 
   function renderCert() {

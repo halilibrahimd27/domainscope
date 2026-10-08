@@ -9,6 +9,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 - **Wave 3 — shipped 2026-09-28** ([what shipped and where](#wave-3--shipped-2026-09-28)): customer workspaces with a hand-over file and expected CAs, several certificates at once in SSL Targets (a renewal week) with the CLI's repeated `--cert`, Renewal readiness, Retire an IP, the Domain overview, and PFX / PKCS#12 import.
 - **Wave 4 — shipped 2026-10-01** ([what shipped and where](#wave-4--shipped-2026-10-01)): the headless runner with a nightly GitHub Actions template, the CLI's certificate estate and `bundle-check` with a Certificate estate view and a CSR check, the missing intermediate from a bundled CCADB list with root-store warnings, DNS change requests with an "is it live?" link and fix-as-code, DNS provider moves (new name servers, `dns_parity.py`, the old and the new server side by side), a ledger of what the page sent with related domains and key continuity, and DMARC & TLS reports.
 - **Wave 5 — shipping feature by feature (2026-10-03)** ([what shipped and where](#wave-5--shipping-feature-by-feature-2026-10-03)): a zone fetched from deSEC or DigitalOcean, Global DNS's mainland China locations, the Domain portfolio with a policy audit and the runner's `audit`, Zone File's Compare and Convert, load balancers, VIPs and NAT in the inventory, and a per-workspace origin map.
+- **Wave 6 — shipping feature by feature (2026-10-08)** ([what shipped and where](#wave-6--shipping-feature-by-feature-2026-10-08)): Domains on this IP (reverse IP v2) in IP Intel.
 - **P0** — high value, verified feasible, next iteration
   - [P0.1 Verify the served certificate from the internet (Globalping SNI probe)](#p01-verify-the-served-certificate-from-the-internet-globalping-sni-probe)
   - [P0.2 Origin exposure audit for Cloudflare/CDN-proxied hosts](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts)
@@ -118,6 +119,12 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 | A per-workspace origin map (opt-in): which server and port really serves a proxied name, remembered from a zone file, imported CLI reports, Verify's checks of exact origins and the old / new server comparison, with stale marks and merge rules that give the same map whatever order the reports arrive in; Subdomains and SSL Targets rank a remembered origin first as `known`, Behind CDN lists it, and the CLI sweep command and `targets.txt` carry it on its own port | Servers › Origin map, Subdomains, SSL Targets, Zone File, Retire an IP | follow-up of [P0.2](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts) and [P1.2](#p12-zone-import-exact-seeds-proxied-origin-map-lint-and-live-drift) |
 | Integration: one number per section for the three (SPEC §5.66–§5.70), the IP half of netinfo in lib/ip.js so the provider ranges stay off the start route (377,888 bytes of its 370 KB budget), a remembered origin counting like DNS and the zone file where TLS terminates | Shell, SSL Targets, Servers | — |
 
+## Wave 6 — shipping feature by feature (2026-10-08)
+
+| Feature | Where | Roadmap item |
+| --- | --- | --- |
+| Domains on this IP (reverse IP v2): every name tied to an address (up to 10) from HackerTarget, ip.thc.org, AlienVault OTX, Robtex, Shodan InternetDB, reverse DNS and the workspace (the origin map, the servers there), and with a key typed in the panel the Shodan API and WhoisXML; names normalised and merged with their sources and first / last seen, checked in DNS now (here, moved elsewhere, behind a CDN, does not resolve, failed; 300 at a time), a chip per source with "n/a" and Retry, InternetDB's lockout honoured, filters, CSV / JSON and hand-offs to Subdomains, SSL Targets and Retire an IP; a private or reserved address never leaves the browser | IP Intel › Find domains (`ui/reverse-ip-panel.js`, `lib/reverseip.js`; SPEC §5.71) | P0.8 (hostnames), P2.7 |
+
 ## P0 — next iteration
 
 ### P0.1 Verify the served certificate from the internet (Globalping SNI probe)
@@ -207,6 +214,8 @@ Behaviour: a watchlist of domains in localStorage. On open, query certspotter pe
 ### P0.8 IP Intel enrichment: open ports, RPKI, routing, abuse, exposure matrix
 
 id `ip-enrichment` · where: **browser** · effort: **S**
+
+**Status (2026-10-08): the hostnames part shipped in wave 6** as IP Intel › Domains on this IP (`lib/reverseip.js`, SPEC §5.71): InternetDB's host names join the reverse-IP sources (asked once per address on a click, its burst lockout honoured), and its open ports, tags and vulnerability ids are shown per address in the panel; RPKI, routing sanity, abuse contact, PeeringDB and the exposure matrix are not started.
 
 Behaviour: extend the IP Intel view per IP with InternetDB ports/tags/CVE-ids/hostnames (Shodan hostnames = extra IP→name evidence for inventory mapping), RPKI status of the announced prefix+origin AS (valid/invalid/unknown), routing sanity (not announced / multiple origins / more-specifics), abuse contact, PeeringDB network type, and a clickable CIDR breadcrumb (/8›/16›/24›announced prefix›IP) to surface sibling inventory servers. Inventory-wide 'exposure matrix' of risky open ports (22,3389,3306,5432,6379,9200,27017,2375,5900,11211) + a hint for which --ports to pass the CLI. Extends lib/ipintel.js createIpIntel with rpki(asn,pfx), routingStatus(pfx), abuseContact(ip), peeringdb(asn), internetdb(ip). Update RIPESTAT_SOURCEAPP to 'domainscope'. Edge cases: InternetDB is the fragile one — a short burst locks the IP for ~1h (429, Retry-After not JS-exposed), so make it per-IP on demand, stop at first 429, show a ~1h lockout, and route inventory-wide sweeps to the CLI --ports; RIPEstat is robust (200 IPs in ~3s, batch per prefix/ASN, sourceapp etiquette, email stat@ripe.net above 1k/day); PeeringDB throttles at ~16 rapid calls (429 Retry-After 10) → ~1 req/4s or per-ASN dedupe; ARIN RDAP 303-redirects to the RIR keeping CORS. About: 'InternetDB by Shodan, weekly data, non-commercial use only.' Test: parse fixtures for each RIPEstat call; RPKI valid/invalid_asn cases; InternetDB 404 + private skip + 429 lockout state; CIDR breadcrumb math.
 
@@ -563,6 +572,8 @@ Paste many domains → one row each: RDAP expiry countdown + status flags (clien
 ### P2.7 Extra passive source: ip.thc.org (+ opt-in Common Crawl)
 
 id `extra-passive-sources` · where: **browser**
+
+**Status (2026-10-08): reverse IP shipped in wave 6.** IP Intel › Domains on this IP asks ip.thc.org's reverse lookup (one page) next to HackerTarget, AlienVault OTX and Robtex passive DNS, Shodan InternetDB and, with the user's key, the Shodan API and WhoisXML, and checks every name in DNS (SPEC §5.71). Common Crawl is still not started.
 
 **Status (2026-09-23): partly shipped.** ip.thc.org is the `thc` source in `lib/sources.js` (default-enabled; paged, 100 names per page, at most 10 pages / 1,000 names per domain, pages 2 s apart; `lastSeen` per name, `truncated` / `available` when capped) and appears in the Subdomains / SSL Targets source lists and About. Common Crawl and the runtime PSL refresh are still open.
 

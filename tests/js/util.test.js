@@ -224,7 +224,17 @@ test('fetchWithTimeout rejects a pre-aborted caller signal without calling fetch
 });
 
 test('fetchWithTimeout wraps a missing fetch as TypeError', async () => {
-  await assert.rejects(fetchWithTimeout('https://x/', { fetchImpl: undefined }), (e) => e instanceof TypeError);
+  const missing = { name: 'TypeError', message: 'fetch is not available in this environment' };
+  // a fetchImpl that is no function (an undefined one falls back to the global fetch)
+  await assert.rejects(fetchWithTimeout('https://x/', { fetchImpl: null }), missing);
+  // no global fetch at all
+  const saved = globalThis.fetch;
+  globalThis.fetch = undefined;
+  try {
+    await assert.rejects(fetchWithTimeout('https://x/'), missing);
+  } finally {
+    globalThis.fetch = saved;
+  }
 });
 
 test('fetchAndRead: read() gets any status, and the timeout covers a body that stalls after the headers', async () => {

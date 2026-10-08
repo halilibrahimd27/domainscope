@@ -16,6 +16,7 @@ import copy
 import csv
 import dataclasses
 import hashlib
+import hmac
 import http.server
 import importlib.util
 import io
@@ -4001,7 +4002,7 @@ class NotifyDeliveryTests(unittest.TestCase):
         # "Hunter2Secret@hooks.example.com" for a port and print it
         posted = []
 
-        def post_once(opener, url, body, timeout, auth=None):
+        def post_once(opener, url, body, timeout, auth=None, extra=None):
             posted.append((url, auth))
             return "nonnumeric port: '%s@hooks.example.com'" % password, False, None
 
@@ -4076,6 +4077,265 @@ class NotifyDeliveryTests(unittest.TestCase):
             problem = sos.send_notification(hook.url('/hook'), {'text': 'x'}, retries=0)
         self.assertEqual(len(hook.requests), 1)
         self.assertIsNotNone(problem)
+
+
+ROUTING_KEY = 'R0UT1NGKEY' + 'x' * 22
+PAGERDUTY_URL = 'https://events.pagerduty.com/v2/enqueue?routing_key=' + ROUTING_KEY
+NTFY_URL = 'https://ntfy.sh/' + 'domainscope-example-alerts'
+
+
+class NotifyChannelTests(unittest.TestCase):
+    """PagerDuty, ntfy and the signed JSON webhook: the formats the headless runner
+    (tools/ds/notify.mjs) has too, with the same dedup keys and signature."""
+
+    TOKEN = 'SECRETTOKEN0123456789'
+
+    @classmethod
+    def setUpClass(cls):
+        cls.report = fleet_after(now=BEFORE_RSA_EXPIRY)
+        cls.monitor = sos.build_monitor(cls.report, sos.report_to_dict(fleet_before()),
+                                        'last.json', warn_days=30)
+        cls.doc = sos.report_to_dict(cls.report, cls.monitor)
+
+    def test_formats_and_urls(self):
+        self.assertEqual(sos.NOTIFY_FORMATS, ('auto', 'slack', 'teams', 'discord', 'telegram',
+                                              'googlechat', 'json', 'pagerduty', 'ntfy'))
+        for url, want in ((PAGERDUTY_URL, 'pagerduty'),
+                          ('https://events.eu.pagerduty.com/v2/enqueue?routing_key=' + ROUTING_KEY,
+                           'pagerduty'),
+                          (NTFY_URL, 'ntfy'), ('https://ntfy.example.com/alerts', 'json')):
+            self.assertEqual(sos.detect_notify_format(url), want, url)
+            self.assertEqual(sos.check_notify_url(url), want, url)
+        self.assertEqual(sos.check_notify_url('https://ntfy.example.com/alerts', 'ntfy'), 'ntfy')
+        for url in ('https://events.pagerduty.com/v2/enqueue?key=SECRET0token',
+                    'https://events.pagerduty.com/v2/enqueue?routing_key='):
+            with self.assertRaises(sos.UsageError) as ctx:
+                sos.check_notify_url(url, source=sos.NOTIFY_ENV)
+            self.assertIn('a PagerDuty URL looks like', str(ctx.exception))
+            self.assertNotIn('SECRET0token', str(ctx.exception))
+        # the path word of the Events API stays in an error text, the key does not
+        self.assertEqual(sos.redact_url('enqueue: invalid key %s' % ROUTING_KEY, PAGERDUTY_URL),
+                         'enqueue: invalid key ***')
+        self.assertEqual(sos.redact_url('echo tk_secretvalue', NTFY_URL, ['tk_secretvalue']),
+                         'echo ***')
+
+    def test_signature_and_dedup_key_known_answers(self):
+        # the same vectors as tests/js/ds-notify.test.js
+        self.assertEqual(sos.sign_body("It's a Secret to Everybody", 1700000000,
+                                       b'{"hello":"world"}'),
+                         'sha256=08c0aaa4721d7e090415dc782eb1818362b0e857612ef36e6dcf8c773571b03b')
+        self.assertEqual(sos.pagerduty_dedup_key('drift', 'example.com', 'mail.example.com|A',
+                                                 'WORSE'), '76ba01e87c44289e10e6ce396ed86f09')
+        self.assertEqual(sos.pagerduty_dedup_key('scan', '10.0.0.4:443', None, 'GONE'),
+                         hashlib.sha256(b'scan|10.0.0.4:443||GONE').hexdigest()[:32])
+        # json: signed with the secret (surrounding whitespace ignored) at the clock given
+        url, body, headers = sos.notify_request('json', 'https://example.com/hook', self.doc,
+                                                self.monitor,
+                                                env={sos.NOTIFY_SECRET_ENV: ' s3cret\n'}, now=NOW)
+        self.assertEqual(url, 'https://example.com/hook')
+        self.assertEqual(headers['X-DomainScope-Timestamp'], str(int(NOW.timestamp())))
+        want = hmac.new(b's3cret', headers['X-DomainScope-Timestamp'].encode('ascii') + b'.' + body,
+                        hashlib.sha256).hexdigest()
+        self.assertEqual(headers['X-DomainScope-Signature'], 'sha256=' + want)
+        self.assertEqual(json.loads(body.decode('utf-8'))['changesTotal'], 9)
+        # no secret, or another format: nothing added
+        self.assertEqual(sos.notify_request('json', 'https://example.com/hook', self.doc,
+                                            self.monitor, env={})[2], {})
+        self.assertEqual(sos.notify_request('slack', SLACK_URL, self.doc, self.monitor,
+                                            env={sos.NOTIFY_SECRET_ENV: 's3cret'})[2], {})
+
+    def test_ntfy_message(self):
+        url, body, headers = sos.build_ntfy(NTFY_URL, self.doc, self.monitor, token='tk_example')
+        self.assertEqual(url, NTFY_URL)
+        title = sos.notification_message(self.doc, self.monitor)[0]
+        self.assertEqual(headers, {'Content-Type': 'text/plain; charset=utf-8', 'Title': title,
+                                   'Priority': '4', 'Tags': 'warning',
+                                   'Authorization': 'Bearer tk_example'})
+        text = body.decode('utf-8')
+        self.assertTrue(text.startswith('- NEW name extra.example.com: now probed'), text[:80])
+        self.assertIn('\nScan of 2034-05-20 00:00 UTC: 8 server(s)', text)
+        self.assertNotIn(title, text)  # the title is the header
+        # nothing bad: priority 3; a URL with user info authenticates itself
+        report = fleet_before(now=NOW)
+        quiet = sos.build_monitor(report, sos.report_to_dict(report), 'last.json', warn_days=5)
+        _, _, headers = sos.build_ntfy('https://u:p@ntfy.example.com/alerts',
+                                       sos.report_to_dict(report, quiet), quiet, token='tk_x')
+        self.assertEqual(headers['Priority'], '3')
+        self.assertNotIn('Authorization', headers)
+        # many changes with wide characters: within 4,000 bytes, never inside a character
+        many = [dict(self.monitor.changes[1], name='höst-çş\U0001f600-%03d.example.com' % i)
+                for i in range(300)]
+        monitor = sos.MonitorResult(baseline=self.monitor.baseline, changes=many)
+        _, body, _ = sos.build_ntfy(NTFY_URL, sos.report_to_dict(self.report, monitor), monitor)
+        self.assertLessEqual(len(body), sos.NTFY_MAX_BYTES)
+        self.assertIn('more line(s)', body.decode('utf-8'))
+        # a title that is not ASCII goes RFC 2047 encoded
+        self.assertEqual(sos._header_text('ok title'), 'ok title')
+        self.assertEqual(sos._header_text('ç'), '=?UTF-8?B?w6c=?=')
+
+    def test_pagerduty_trigger_then_resolve(self):
+        plan = sos.pagerduty_plan(self.monitor, None, '2034-05-20T00:00:00.000Z')
+        self.assertEqual([(t['tag'], t['target'], t['item']) for t in plan['triggers']], [
+            ('REGRESSED', '10.0.0.2:443', WILD), ('FAILED', '10.0.0.3:443', None),
+            ('FAILED', '10.0.0.6:443', WILD), ('UNHOSTED', '10.0.0.7:443', WILD),
+            ('GONE', '10.0.0.4:443', None),
+            ('EXPIRES', WWW, self.monitor.expiring[0]['sha256'])])
+        self.assertEqual((plan['resolves'], plan['cut']), ([], 0))
+        self.assertEqual([entry['key'] for entry in plan['open']],
+                         [t['key'] for t in plan['triggers']])
+        self.assertTrue(all(entry['since'] == '2034-05-20T00:00:00.000Z' for entry in plan['open']))
+        post_url, events = sos.pagerduty_events(PAGERDUTY_URL, plan)
+        self.assertEqual(post_url, 'https://events.pagerduty.com/v2/enqueue')
+        first = events[0]
+        self.assertEqual(set(first), {'routing_key', 'event_action', 'dedup_key', 'payload', 'client'})
+        self.assertEqual((first['routing_key'], first['event_action'], first['dedup_key']),
+                         (ROUTING_KEY, 'trigger', sos.pagerduty_dedup_key('scan', '10.0.0.2:443',
+                                                                         WILD, 'REGRESSED')))
+        payload = first['payload']
+        self.assertTrue(payload['summary'].startswith('REGRESSED upd 10.0.0.2:443 a.wild.example.net: '
+                                                      'UPDATED -> NEEDS_UPDATE'))
+        self.assertEqual((payload['source'], payload['severity'], payload['component'],
+                          payload['group']), ('domainscope:scan', 'error', '10.0.0.2:443', 'scan'))
+        self.assertEqual(payload['custom_details']['before']['status'], 'UPDATED')
+        self.assertEqual(events[-1]['payload']['severity'], 'error')  # EXPIRES; EXPIRED is critical
+        self.assertEqual(sos.PAGERDUTY_CRITICAL_TAGS,
+                         ('REGISTRAR', 'NS', 'DS', 'LOCK', 'EXPIRED', 'UNTRUSTED'))
+        json.dumps(events)  # serialisable
+        # a summary is cut at 1,024 characters
+        long_plan = dict(plan, triggers=[dict(plan['triggers'][0], summary='x' * 5000)])
+        self.assertEqual(len(sos.pagerduty_events(PAGERDUTY_URL, long_plan)[1][0]['payload']
+                             ['summary']), 1024)
+
+        baseline = dict(self.doc, notify={'open': plan['open']})
+        # the next run, nothing moved: the expiring certificate is said again (the same key),
+        # every key stays open
+        same = sos.build_monitor(self.report, sos.report_to_dict(self.report), 'last.json',
+                                 warn_days=30)
+        again = sos.pagerduty_plan(same, baseline, '2034-05-21T00:00:00.000Z')
+        self.assertEqual([t['tag'] for t in again['triggers']], ['EXPIRES'])
+        self.assertEqual((again['resolves'], again['open']), ([], plan['open']))
+        # the fleet back as it was: every problem is over, each key resolved
+        back_report = fleet_before(now=NOW)
+        back = sos.build_monitor(back_report, sos.report_to_dict(self.report), 'last.json',
+                                 warn_days=30)
+        over = sos.pagerduty_plan(back, baseline, '2034-05-21T00:00:00.000Z')
+        self.assertEqual(sorted(entry['key'] for entry in over['resolves']),
+                         sorted(entry['key'] for entry in plan['open']))
+        _, events = sos.pagerduty_events(PAGERDUTY_URL, over)
+        resolves = [event for event in events if event['event_action'] == 'resolve']
+        self.assertEqual(resolves[0], {'routing_key': ROUTING_KEY, 'event_action': 'resolve',
+                                       'dedup_key': over['resolves'][0]['key']})
+        self.assertNotIn(plan['open'][0]['key'], [entry['key'] for entry in over['open']])
+
+    def test_pagerduty_budget_and_open_keys(self):
+        self.assertEqual(sos.NOTIFY_MAX_EVENTS, 50)
+        change = self.monitor.changes[2]  # REGRESSED on a row
+        many = [dict(change, name='host-%02d.example.com' % i) for i in range(60)]
+        open_keys = [{'key': '%032x' % i, 'target': '10.0.0.9:443', 'item': 'x%d' % i,
+                      'tag': 'FAILED', 'since': None, 'over': True} for i in range(3)]
+        plan = sos.pagerduty_plan(sos.MonitorResult(changes=many), {'notify': {'open': open_keys}})
+        self.assertEqual((len(plan['triggers']), plan['cut'], plan['resolves']), (50, 10, []))
+        self.assertEqual([entry.get('over') for entry in plan['open'][:3]], [True] * 3)
+        # what a baseline keeps is checked: anything else is dropped
+        good = {'key': 'a' * 32, 'target': '10.0.0.1:443', 'item': None, 'tag': 'GONE',
+                'since': None}
+        self.assertEqual(sos.open_keys_of({'notify': {'open': [
+            good, dict(good), dict(good, key='xyz'), dict(good, key='b' * 32, tag='bad'),
+            dict(good, key='c' * 32, item=5), None, 'text']}}), [good])
+        for doc in (None, {}, {'notify': None}, {'notify': {'open': 'x'}}):
+            self.assertEqual(sos.open_keys_of(doc), [])
+
+    def run_cli(self, *args, report, script=(), path='/hook', env=None):
+        """run_main with a scan that returns ``report`` and a local webhook at ``path``
+        (``URL`` in ``args``); ``env`` added to the environment."""
+        with WebhookReceiver(script) as hook, no_proxy(), contextlib.ExitStack() as stack:
+            url = hook.url(path)
+            stack.enter_context(mock.patch.object(sos, 'run_scan', return_value=report))
+            stack.enter_context(mock.patch.object(sos, 'NOTIFY_RETRY_DELAY', 0.01))
+            stack.enter_context(mock.patch.dict(os.environ, dict({sos.NOTIFY_ENV: ''},
+                                                                 **(env or {}))))
+            args = tuple(url if arg == 'URL' else arg for arg in args)
+            code, out, err = run_main('-t', '127.0.0.1', '-n', WILD, '--no-color', *args)
+        return code, out, err, hook
+
+    def test_pagerduty_through_a_local_webhook(self):
+        before, after = fleet_before(now=NOW), fleet_after(now=NOW + timedelta(days=1))
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, 'state.json')
+            Path(state).write_text(sos.render_json(before), encoding='utf-8')
+            previous = Path(state).read_bytes()
+            path = '/v2/enqueue?routing_key=%s' % ROUTING_KEY
+            args = ('--baseline', state, '--json', state, '--notify', 'URL', '--notify-format',
+                    'pagerduty', '--fail-on-notify-error')
+            # PagerDuty is down: exit 5, the baseline kept for the next run
+            code, out, err, hook = self.run_cli(*args, report=after, script=[503, 503], path=path)
+            self.assertEqual((code, len(hook.requests)), (sos.EXIT_NOTIFY_ERROR, 2), err)
+            self.assertIn('error: notification failed (pagerduty, 127.0.0.1:', err)
+            self.assertIn('kept the previous baseline in %s' % state, err)
+            self.assertEqual(Path(state).read_bytes(), previous)
+            # delivered: a trigger per bad change, the keys kept open in the report
+            code, out, err, hook = self.run_cli(*args, report=after, path=path)
+            self.assertEqual(code, 0, err)
+            events = hook.payloads()
+            self.assertEqual([event['event_action'] for event in events], ['trigger'] * 5)
+            self.assertTrue(all(r['path'] == '/v2/enqueue' for r in hook.requests))
+            self.assertTrue(all(event['routing_key'] == ROUTING_KEY for event in events))
+            self.assertIn('Notification sent (pagerduty, 127.0.0.1:', err)
+            self.assertIn('5 triggered, 0 resolved', err)
+            self.assertNotIn(ROUTING_KEY, out + err)
+            opened = read_json(state)['notify']['open']
+            self.assertEqual([entry['key'] for entry in opened],
+                             [event['dedup_key'] for event in events])
+            self.assertEqual(opened[0]['since'], sos.iso_utc(after.finished_at))
+            # the fleet as it was: each incident resolved (and the reverse moves triggered)
+            code, out, err, hook = self.run_cli(*args, report=before, path=path)
+            self.assertEqual(code, 0, err)
+            resolved = [event['dedup_key'] for event in hook.payloads()
+                        if event['event_action'] == 'resolve']
+            self.assertEqual(sorted(resolved), sorted(entry['key'] for entry in opened))
+            self.assertNotIn(opened[0]['key'],
+                             [entry['key'] for entry in read_json(state)['notify']['open']])
+            self.assertNotIn(ROUTING_KEY, Path(state).read_text(encoding='utf-8'))
+
+    def test_ntfy_and_signed_json_through_a_local_webhook(self):
+        before, after = fleet_before(now=NOW), fleet_after(now=NOW + timedelta(days=1))
+        with tempfile.TemporaryDirectory() as tmp:
+            base = os.path.join(tmp, 'base.json')
+            Path(base).write_text(sos.render_json(before), encoding='utf-8')
+            code, out, err, hook = self.run_cli(
+                '--baseline', base, '--notify', 'URL', '--notify-format', 'ntfy', report=after,
+                path='/alerts-%s' % self.TOKEN, env={sos.NTFY_TOKEN_ENV: 'tk_' + 'examplevalue'})
+            self.assertEqual(code, 0, err)
+            request = hook.requests[0]
+            headers = {k.lower(): v for k, v in request['headers'].items()}
+            self.assertEqual(headers['content-type'], 'text/plain; charset=utf-8')
+            self.assertEqual((headers['priority'], headers['tags']), ('4', 'warning'))
+            self.assertTrue(headers['title'].startswith('SSL origin scan: 9 changes since '))
+            self.assertEqual(headers['authorization'], 'Bearer tk_examplevalue')
+            self.assertTrue(request['body'].decode('utf-8').startswith('- NEW name extra.example.com'))
+            self.assertIn('Notification sent (ntfy, 127.0.0.1:', err)
+            self.assertNotIn(self.TOKEN, out + err)
+            # a refused message names neither the topic nor the token
+            echo = (403, {}, ('forbidden /alerts-%s tk_examplevalue' % self.TOKEN).encode('ascii'))
+            code, out, err, hook = self.run_cli(
+                '--baseline', base, '--notify', 'URL', '--notify-format', 'ntfy', report=after,
+                script=[echo], path='/alerts-%s' % self.TOKEN,
+                env={sos.NTFY_TOKEN_ENV: 'tk_' + 'examplevalue'})
+            self.assertIn('HTTP 403 Forbidden: forbidden ***', err)
+            self.assertNotIn('examplevalue', err)
+            self.assertNotIn(self.TOKEN, err)
+            # the JSON webhook, signed: the timestamp from the CLI's clock (run_main holds it)
+            code, out, err, hook = self.run_cli(
+                '--baseline', base, '--notify', 'URL', report=after,
+                env={sos.NOTIFY_SECRET_ENV: 'Signing' + 'Secret0'})
+            self.assertEqual(code, 0, err)
+            request = hook.requests[0]
+            headers = {k.lower(): v for k, v in request['headers'].items()}
+            self.assertEqual(headers['x-domainscope-timestamp'], str(int(NOW.timestamp())))
+            self.assertEqual(headers['x-domainscope-signature'],
+                             sos.sign_body('Signing' + 'Secret0', int(NOW.timestamp()),
+                                           request['body']))
+            self.assertEqual(json.loads(request['body'].decode('utf-8'))['changesTotal'], 9)
 
 
 class MonitorCliTests(unittest.TestCase):
@@ -4938,8 +5198,8 @@ class CompatibilityTests(unittest.TestCase):
         source = CLI_PATH.read_text(encoding='utf-8')
         self.assertTrue(source.startswith('#!/usr/bin/env python3'))
         imports = set(re.findall(r'^(?:from|import) ([a-zA-Z_][\w.]*)', source, re.M))
-        stdlib = {'__future__', 'argparse', 'base64', 'binascii', 'bisect', 'csv', 'hashlib', 'io',
-                  'ipaddress', 'json', 'math', 'os', 're', 'shutil', 'socket', 'ssl', 'sys',
+        stdlib = {'__future__', 'argparse', 'base64', 'binascii', 'bisect', 'csv', 'hashlib', 'hmac',
+                  'io', 'ipaddress', 'json', 'math', 'os', 're', 'shutil', 'socket', 'ssl', 'sys',
                   'textwrap', 'threading', 'time', 'concurrent.futures', 'dataclasses',
                   'datetime', 'typing', 'ctypes', 'msvcrt', 'codecs', 'stat', 'unicodedata',
                   'encodings', 'http.client', 'urllib.error', 'urllib.parse',

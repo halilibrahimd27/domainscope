@@ -32,8 +32,9 @@ The module is importable: parse_certificate(), load_certificates(),
 parse_inventory(), load_targets(), load_excludes(), apply_excludes(),
 is_numeric_host(), build_probe_names(), run_scan(), report_to_dict(), render_csv(),
 render_summary(), load_baseline(), compare_reports(), expiring_certificates(),
-build_monitor(), build_notification(), send_notification(), fetch_side(),
-compare_sides(), render_compare() and main() are the public API.
+build_monitor(), build_notification(), notify_request(), pagerduty_plan(),
+pagerduty_events(), send_notification(), fetch_side(), compare_sides(), render_compare() and
+main() are the public API.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ import codecs
 import csv
 import email.utils
 import hashlib
+import hmac
 import http.client
 import io
 import ipaddress
@@ -128,6 +130,8 @@ MAX_WARN_DAYS = 3650        # --warn-days ceiling (ten years)
 NOTIFY_ENV = 'DOMAINSCOPE_NOTIFY_URL'   # --notify URL, kept out of the shell history
 NOTIFY_TIMEOUT = 10.0       # seconds per webhook POST
 NOTIFY_RETRY_DELAY = 2.0    # seconds before the one retry
+NOTIFY_SECRET_ENV = 'DOMAINSCOPE_NOTIFY_SECRET'   # signs the json format (HMAC-SHA256)
+NTFY_TOKEN_ENV = 'DOMAINSCOPE_NTFY_TOKEN'         # an ntfy access token (Authorization: Bearer)
 
 # What an endpoint speaks before TLS starts. The protocol follows the port (PORT_PROTOCOLS);
 # every other port speaks TLS from the first byte, the implicit-TLS ports of mail, directory,
@@ -6005,6 +6009,8 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
             doc['changes'] = monitor.changes
         if monitor.expiring is not None:
             doc['expiring'] = monitor.expiring
+        if monitor.notify_open:
+            doc['notify'] = {'open': monitor.notify_open}
     if report.has_topology:
         # where TLS terminates: the servers with terminates_tls=no left out of the scan
         doc['options']['includeBackends'] = report.include_backends
@@ -6714,13 +6720,15 @@ class MonitorResult:
 
     ``changes`` (:func:`compare_reports`, the ones that count first: :func:`order_changes`)
     and ``baseline`` (:func:`baseline_info`) are None without a baseline, ``expiring`` (:func:`expiring_certificates`) is None
-    without ``--warn-days``; the JSON keys follow the same rule.
+    without ``--warn-days``; the JSON keys follow the same rule. ``notify_open``: the PagerDuty
+    keys still open after this run (:func:`pagerduty_plan`), the JSON's ``notify.open``.
     """
 
     baseline: Optional[Dict[str, Any]] = None
     changes: Optional[List[Dict[str, Any]]] = None
     warn_days: Optional[int] = None
     expiring: Optional[List[Dict[str, Any]]] = None
+    notify_open: Optional[List[Dict[str, Any]]] = None
 
 
 def _baseline_row_problem(row: Any) -> Optional[str]:
@@ -7145,6 +7153,7 @@ _TAG_STYLES = {'FAILED': ('red', 'bold'), 'REGRESSED': ('red', 'bold'), 'UNHOSTE
                'CA-NOTICE': ('red', 'bold'), 'REVOKED': ('red', 'bold')}
 _BAD_TAGS = ('FAILED', 'REGRESSED', 'UNHOSTED', 'GONE', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE',
              'REVOKED')
+_GOOD_TAGS = ('RECOVERED', 'UPDATED', 'HOSTED')
 _TAG_WIDTH = max(len(tag) for tag in _TAG_STYLES)
 
 
@@ -7417,7 +7426,8 @@ def _render_expiring(report: ScanReport, monitor: MonitorResult, style: Style,
 
 # --- --notify: webhook formats and delivery ---------------------------------------------
 
-NOTIFY_FORMATS = ('auto', 'slack', 'teams', 'discord', 'telegram', 'googlechat', 'json')
+NOTIFY_FORMATS = ('auto', 'slack', 'teams', 'discord', 'telegram', 'googlechat', 'json',
+                  'pagerduty', 'ntfy')
 # Message text per format: Discord allows 2,000 characters, Telegram 4,096; Slack, Teams
 # and Google Chat take more, but a longer chat message is not read either.
 _NOTIFY_TEXT_LIMITS = {'slack': 3500, 'teams': 3500, 'discord': 1800, 'telegram': 3900,
@@ -7429,6 +7439,17 @@ NOTIFY_MAX_JSON_EXPIRING = 50     # expiring certificates in the generic JSON pa
 NOTIFY_MAX_JSON_ENDPOINTS = 20    # endpoints per expiring certificate there
 _NOTIFY_LINE_LIMIT = 400
 _NOTIFY_MAX_PORT_GROUPS = 8   # ports / port ranges named in a message footer
+NOTIFY_MAX_EVENTS = 50        # PagerDuty events a run sends (triggers first)
+PAGERDUTY_MAX_OPEN = 500      # PagerDuty keys a report keeps open (the oldest dropped)
+_PAGERDUTY_SUMMARY_LIMIT = 1024
+NTFY_MAX_BYTES = 4000         # a longer ntfy message is turned into an attachment
+_PAGERDUTY_HOSTS = ('events.pagerduty.com', 'events.eu.pagerduty.com')
+_NTFY_HOSTS = ('ntfy.sh',)
+# PagerDuty severity critical (else error); the headless runner's tags of registration,
+# delegation and trust changes, and an expired certificate here.
+PAGERDUTY_CRITICAL_TAGS = ('REGISTRAR', 'NS', 'DS', 'LOCK', 'EXPIRED', 'UNTRUSTED')
+_DEDUP_KEY_RE = re.compile(r'^[0-9a-f]{32}$')
+_EVENT_TAG_RE = re.compile(r'^[A-Z][A-Z0-9_-]{0,23}$')
 _DISCORD_HOSTS = ('discord.com', 'discordapp.com', 'ptb.discord.com', 'canary.discord.com')
 _TEAMS_HOSTS = ('outlook.office.com', 'outlook.office365.com')
 # Teams incoming webhooks, Power Automate / Logic Apps workflow triggers
@@ -7437,9 +7458,9 @@ _TELEGRAM_PATH_RE = re.compile(r'^/bot[^/]+/sendMessage$')
 _DISCORD_PATH_RE = re.compile(r'^/api/(?:v\d{1,2}/)?webhooks/')   # also /api/v10/webhooks/
 # Path words of the webhook services above: not secrets, kept in error texts.
 _NOTIFY_PATH_WORDS = frozenset((
-    'api', 'automations', 'direct', 'hook', 'hooks', 'incomingwebhook', 'invoke', 'manual',
-    'messages', 'paths', 'powerautomate', 'sendmessage', 'services', 'slack', 'spaces',
-    'triggers', 'webhook', 'webhookb2', 'webhooks', 'workflows'))
+    'api', 'automations', 'direct', 'enqueue', 'hook', 'hooks', 'incomingwebhook', 'invoke',
+    'manual', 'messages', 'paths', 'powerautomate', 'sendmessage', 'services', 'slack',
+    'spaces', 'triggers', 'webhook', 'webhookb2', 'webhooks', 'workflows'))
 _API_VERSION_RE = re.compile(r'^v\d{1,2}$')   # /api/v10/, /v1/spaces/: not a token either
 _USER_AGENT = 'ssl_origin_scan/%s (+https://github.com/halilibrahimd27/domainscope)' % __version__
 
@@ -7449,7 +7470,8 @@ def detect_notify_format(url: str) -> str:
     Slack-compatible ``.../slack`` endpoint), ``discord`` (``/api/webhooks/``, also with
     an API version: ``/api/v10/webhooks/``), ``telegram`` (api.telegram.org), ``teams``
     (Teams incoming webhooks, Power Automate / Logic Apps workflows), ``googlechat``
-    (chat.googleapis.com) or ``json`` for anything else."""
+    (chat.googleapis.com), ``pagerduty`` (PagerDuty's Events API v2), ``ntfy`` (ntfy.sh; a
+    self-hosted server needs ``--notify-format ntfy``) or ``json`` for anything else."""
     parts = urllib.parse.urlsplit(url)
     host = (parts.hostname or '').rstrip('.')
     if host in ('hooks.slack.com', 'hooks.slack-gov.com'):
@@ -7462,7 +7484,18 @@ def detect_notify_format(url: str) -> str:
         return 'teams'
     if host == 'chat.googleapis.com':
         return 'googlechat'
+    if host in _PAGERDUTY_HOSTS:
+        return 'pagerduty'
+    if host in _NTFY_HOSTS:
+        return 'ntfy'
     return 'json'
+
+
+def _pagerduty_routing_key(query: str) -> Optional[str]:
+    for key, value in urllib.parse.parse_qsl(query, keep_blank_values=True):
+        if key == 'routing_key' and value:
+            return value
+    return None
 
 
 def _telegram_chat_id(query: str) -> Optional[Union[int, str]]:
@@ -7510,6 +7543,9 @@ def check_notify_url(url: str, fmt: str = 'auto', source: str = '--notify') -> s
                                      and _telegram_chat_id(parts.query) is not None):
         raise UsageError('%s: a Telegram URL looks like https://api.telegram.org/bot<token>/'
                          'sendMessage?chat_id=<chat id>' % source)
+    if chosen == 'pagerduty' and _pagerduty_routing_key(parts.query) is None:
+        raise UsageError('%s: a PagerDuty URL looks like https://events.pagerduty.com/v2/enqueue'
+                         '?routing_key=<integration key>' % source)
     return chosen
 
 
@@ -7576,13 +7612,13 @@ def _segment_forms(segment: str) -> List[str]:
     return forms
 
 
-def redact_url(text: str, url: str) -> str:
+def redact_url(text: str, url: str, extra: Sequence[str] = ()) -> str:
     """``text`` (an error message, a response body) without the secret parts of ``url``:
     the URL (also without its user info), its path, query and fragment, the query
     values, the path segments that may be tokens (:func:`_secret_segment`, in the forms
-    of :func:`_segment_forms`), the user name and password, and the Basic
-    authentication header made of them (:func:`split_credentials`). Webhook URLs are
-    credentials - whoever has one can post."""
+    of :func:`_segment_forms`), the user name and password, the Basic
+    authentication header made of them (:func:`split_credentials`) and ``extra`` (the ntfy
+    token, the signing secret). Webhook URLs are credentials - whoever has one can post."""
     unquote = urllib.parse.unquote
     parts = urllib.parse.urlsplit(url)
     target, auth = split_credentials(url)
@@ -7603,6 +7639,7 @@ def redact_url(text: str, url: str) -> str:
         always.update((password, unquote(password)) if colon else (user, unquote(user)))
     if auth:  # an error body that echoes the request headers
         always.update((auth, auth.split(' ', 1)[1]))
+    always.update(secret for secret in extra if secret)
     found = {secret for secret in secrets if len(secret) >= 4} | {s for s in always if s}
     for secret in sorted(found, key=len, reverse=True):
         text = text.replace(secret, '***')
@@ -7693,21 +7730,22 @@ def _clip(line: str, limit: int = _NOTIFY_LINE_LIMIT) -> str:
 
 
 def _fit_lines(title: str, items: Sequence[str], footer: Sequence[str],
-               limit: int) -> List[str]:
-    """``items`` then ``footer``, as many items as fit in ``limit`` characters with
-    the title; the rest are counted in a last "... and N more" line. Every line is cut
-    at :data:`_NOTIFY_LINE_LIMIT` characters, the footer's too."""
+               limit: int, measure: Callable[[str], int] = len) -> List[str]:
+    """``items`` then ``footer``, as many items as fit in ``limit`` characters (or what
+    ``measure`` counts: UTF-8 bytes for ntfy) with the title; the rest are counted in a last
+    "... and N more" line. Every line is cut at :data:`_NOTIFY_LINE_LIMIT` characters, the
+    footer's too."""
     footer = [_clip(line) for line in footer]
-    budget = limit - len(title) - sum(len(line) + 1 for line in footer) - 60
+    budget = limit - measure(title) - sum(measure(line) + 1 for line in footer) - 60
     out = []  # type: List[str]
     for index, line in enumerate(items):
         line = _clip(line)
-        if len(line) + 1 > budget:
+        if measure(line) + 1 > budget:
             out.append('- ... and %d more line(s) - see the --json report'
                        % (len(items) - index))
             break
         out.append(line)
-        budget -= len(line) + 1
+        budget -= measure(line) + 1
     return out + list(footer)
 
 
@@ -7804,6 +7842,221 @@ def build_notification(fmt: str, url: str, doc: Dict[str, Any],
     }
 
 
+def sign_body(secret: str, timestamp: Union[int, str], body: bytes) -> str:
+    """``sha256=`` and the hex HMAC-SHA256 of ``timestamp + "." + body`` with ``secret``: the
+    X-DomainScope-Signature header of a signed JSON message (X-DomainScope-Timestamp carries
+    ``timestamp``, Unix seconds). A receiver computes the same over the raw body it got, compares
+    in constant time and refuses an old timestamp."""
+    message = str(timestamp).encode('ascii') + b'.' + body
+    return 'sha256=' + hmac.new(secret.encode('utf-8'), message, hashlib.sha256).hexdigest()
+
+
+def _header_text(text: str) -> str:
+    """A header value as it is when it is ASCII, else RFC 2047 encoded (ntfy decodes it)."""
+    if text.isascii() and text.isprintable():
+        return text
+    return '=?UTF-8?B?%s?=' % base64.b64encode(text.encode('utf-8')).decode('ascii')
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode('utf-8'))
+
+
+def _bad_tag(change: Dict[str, Any]) -> bool:
+    """A change that counts and whose tag the summary paints red (FAILED, REGRESSED,
+    UNHOSTED, GONE)."""
+    return counts_as_change(change) and change_tag(change) in _BAD_TAGS
+
+
+def build_ntfy(url: str, doc: Dict[str, Any], monitor: Optional[MonitorResult] = None,
+               token: Optional[str] = None) -> Tuple[str, bytes, Dict[str, str]]:
+    """``(URL, body, headers)`` of an ntfy message: the lines in plain text (at most
+    :data:`NTFY_MAX_BYTES` bytes), ``Title``, ``Priority`` 4 when a change is bad or a
+    certificate expires (else 3), ``Tags: warning`` and ``Authorization: Bearer <token>``
+    when a token is given and the URL carries no user info of its own."""
+    title, items, footer = notification_message(doc, monitor)
+    body = '\n'.join(_fit_lines('', items, footer, NTFY_MAX_BYTES, _utf8_len)).encode('utf-8')
+    if len(body) > NTFY_MAX_BYTES:  # a footer line of wide characters
+        body = body[:NTFY_MAX_BYTES].decode('utf-8', 'ignore').encode('utf-8')
+    bad = monitor is not None and (any(_bad_tag(change) for change in monitor.changes or [])
+                                   or bool(monitor.expiring))
+    headers = {'Content-Type': 'text/plain; charset=utf-8', 'Title': _header_text(title),
+               'Priority': '4' if bad else '3', 'Tags': 'warning'}
+    if token and '@' not in urllib.parse.urlsplit(url).netloc:
+        headers['Authorization'] = 'Bearer ' + token
+    return url, body, headers
+
+
+def notify_request(fmt: str, url: str, doc: Dict[str, Any],
+                   monitor: Optional[MonitorResult] = None,
+                   env: Optional[Dict[str, str]] = None,
+                   now: Optional[datetime] = None) -> Tuple[str, bytes, Dict[str, str]]:
+    """``(URL to POST to, body, extra headers)`` of a --notify message in a chat, JSON or
+    ntfy format: :func:`build_ntfy` with :data:`NTFY_TOKEN_ENV` for ntfy, else
+    :func:`build_notification`'s JSON - signed in the json format when
+    :data:`NOTIFY_SECRET_ENV` is set (:func:`sign_body`, ``now`` the timestamp's clock)."""
+    env = os.environ if env is None else env
+    if fmt == 'ntfy':
+        return build_ntfy(url, doc, monitor, (env.get(NTFY_TOKEN_ENV) or '').strip() or None)
+    post_url, payload = build_notification(fmt, url, doc, monitor)
+    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    secret = (env.get(NOTIFY_SECRET_ENV) or '').strip()
+    if fmt != 'json' or not secret:
+        return post_url, body, {}
+    timestamp = str(int((now or _utcnow()).timestamp()))
+    return post_url, body, {'X-DomainScope-Timestamp': timestamp,
+                            'X-DomainScope-Signature': sign_body(secret, timestamp, body)}
+
+
+def pagerduty_dedup_key(command: str, target: str, item: Optional[str], tag: str) -> str:
+    """A PagerDuty dedup_key: the first 32 hex characters of the SHA-256 of
+    ``command|target|item|tag`` (no item: an empty one), as the headless runner's."""
+    text = '%s|%s|%s|%s' % (command, target, item or '', tag)
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()[:32]
+
+
+def _change_where(change: Dict[str, Any]) -> Tuple[str, Optional[str]]:
+    """A change's ``(target, item)`` for PagerDuty: the name (scope ``name``), else the
+    ip:port endpoint and, for a row, its name (``(no SNI)`` for the probe without one)."""
+    if change.get('scope') == 'name':
+        return str(change.get('name')), None
+    target = _endpoint_label(str(change.get('ip')), change.get('port') or 0)
+    if change.get('scope') == 'row':
+        name = change.get('name')
+        return target, str(name) if name is not None else '(no SNI)'
+    return target, None
+
+
+def open_keys_of(doc: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The PagerDuty keys a baseline left open (its ``notify.open``), each checked:
+    ``{key, target, item, tag, since, over?}``; anything else in the list is dropped."""
+    notify = doc.get('notify') if isinstance(doc, dict) else None
+    entries = notify.get('open') if isinstance(notify, dict) else None
+    out, seen = [], set()  # type: List[Dict[str, Any]], Set[str]
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        key, tag, item = entry.get('key'), entry.get('tag'), entry.get('item')
+        if (not isinstance(key, str) or not _DEDUP_KEY_RE.match(key) or key in seen
+                or not isinstance(entry.get('target'), str) or not isinstance(tag, str)
+                or not _EVENT_TAG_RE.match(tag) or not (item is None or isinstance(item, str))):
+            continue
+        seen.add(key)
+        clean = {'key': key, 'target': entry['target'], 'item': item, 'tag': tag,
+                 'since': entry.get('since') if isinstance(entry.get('since'), str) else None}
+        if entry.get('over') is True:
+            clean['over'] = True
+        out.append(clean)
+    return out
+
+
+def _problem_over(entry: Dict[str, Any], monitor: MonitorResult) -> bool:
+    """Is the problem of an open PagerDuty key over? An expiring certificate's when this run
+    lists it no longer (it was renewed or replaced; a run without --warn-days says nothing);
+    a change's when the same endpoint and name moved again - to a good state (RECOVERED,
+    UPDATED, HOSTED), back after GONE (NEW), or bad in another way (its own key now) -, when
+    its endpoint moved as a whole, or when its name is no longer probed."""
+    if entry['tag'] in ('EXPIRES', 'EXPIRED'):
+        return monitor.expiring is not None
+    for change in notable_changes(monitor.changes):
+        target, item = _change_where(change)
+        tag = change_tag(change)
+        if change.get('scope') == 'name' and change.get('kind') == 'disappeared':
+            if entry['item'] == target or entry['target'] == target:
+                return True
+            continue
+        if target != entry['target']:
+            continue
+        if item is None and entry['item'] is not None and (tag in _BAD_TAGS
+                                                           or tag in _GOOD_TAGS):
+            return True
+        if item != entry['item']:
+            continue
+        if (tag in _GOOD_TAGS or (tag in _BAD_TAGS and tag != entry['tag'])
+                or (tag == 'NEW' and entry['tag'] == 'GONE')):
+            return True
+    return False
+
+
+def pagerduty_plan(monitor: MonitorResult, baseline: Optional[Dict[str, Any]] = None,
+                   since: Optional[str] = None,
+                   max_events: int = NOTIFY_MAX_EVENTS) -> Dict[str, Any]:
+    """What a run sends to PagerDuty and the keys it leaves open, as the headless runner's
+    plan: a trigger per change that counts with a red tag (FAILED, REGRESSED, UNHOSTED, GONE)
+    and per expiring certificate (EXPIRED, severity critical, or EXPIRES), one per
+    :func:`pagerduty_dedup_key`; a resolve per open key of the baseline whose problem is over
+    (:func:`_problem_over`) or whose resolve a run could not send yet (``over``). At most
+    ``max_events``: triggers first, the triggers left out are not sent (``cut``), the
+    resolves left out stay open with ``over``. ``open``: the baseline's keys still open (a
+    key triggered again keeps its ``since``), then the new ones, at most
+    :data:`PAGERDUTY_MAX_OPEN`. -> ``{triggers, resolves, cut, open}``."""
+    triggered = {}  # type: Dict[str, Dict[str, Any]]
+    for change in notable_changes(monitor.changes):
+        tag = change_tag(change)
+        if tag not in _BAD_TAGS:
+            continue
+        target, item = _change_where(change)
+        key = pagerduty_dedup_key('scan', target, item, tag)
+        triggered.setdefault(key, {
+            'key': key, 'tag': tag, 'target': target, 'item': item,
+            'summary': '%s %s' % (tag, change_text(change)),
+            'details': {'tag': tag, 'item': item, 'before': change.get('before'),
+                        'after': change.get('after'), 'run': None}})
+    for entry in monitor.expiring or []:
+        tag = 'EXPIRED' if entry.get('expired') else 'EXPIRES'
+        target = str(entry.get('subjectCN') or str(entry.get('sha256'))[:16])
+        item = str(entry.get('sha256'))
+        key = pagerduty_dedup_key('scan', target, item, tag)
+        triggered.setdefault(key, {
+            'key': key, 'tag': tag, 'target': target, 'item': item,
+            'summary': '%s %s' % (tag, expiring_text(entry)),
+            'details': {'tag': tag, 'item': item, 'before': None,
+                        'after': {'notAfter': entry.get('notAfter'),
+                                  'daysLeft': entry.get('daysLeft')}, 'run': None}})
+    previous = open_keys_of(baseline)
+    keep, ending = [], []  # type: List[Dict[str, Any]], List[Dict[str, Any]]
+    for entry in previous:
+        if entry['key'] in triggered:
+            keep.append({k: v for k, v in entry.items() if k != 'over'})
+        elif entry.get('over') or _problem_over(entry, monitor):
+            ending.append(entry)
+        else:
+            keep.append(entry)
+    triggers = list(triggered.values())[:max(0, max_events)]
+    resolves = ending[:max(0, max_events - len(triggers))]
+    deferred = [dict(entry, over=True) for entry in ending[len(resolves):]]
+    known = {entry['key'] for entry in previous}
+    added = [{'key': t['key'], 'target': t['target'], 'item': t['item'], 'tag': t['tag'],
+              'since': since} for t in triggers if t['key'] not in known]
+    keys = keep + deferred + added
+    return {'triggers': triggers, 'resolves': resolves, 'cut': len(triggered) - len(triggers),
+            'open': keys[max(0, len(keys) - PAGERDUTY_MAX_OPEN):]}
+
+
+def pagerduty_events(url: str, plan: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
+    """``(URL to POST to, events)`` of a PagerDuty Events API v2 URL for a
+    :func:`pagerduty_plan`: the triggers, then the resolves; ``routing_key`` moved from the
+    query into each event."""
+    parts = urllib.parse.urlsplit(url)
+    routing_key = _pagerduty_routing_key(parts.query)
+    query = [(key, value) for key, value in
+             urllib.parse.parse_qsl(parts.query, keep_blank_values=True) if key != 'routing_key']
+    post_url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path,
+                                        urllib.parse.urlencode(query), ''))
+    events = [{'routing_key': routing_key, 'event_action': 'trigger', 'dedup_key': t['key'],
+               'payload': {'summary': _clip(display_text(t['summary']),
+                                            _PAGERDUTY_SUMMARY_LIMIT),
+                           'source': 'domainscope:scan',
+                           'severity': 'critical' if t['tag'] in PAGERDUTY_CRITICAL_TAGS
+                           else 'error',
+                           'component': t['target'], 'group': 'scan',
+                           'custom_details': t['details']},
+               'client': 'DomainScope'} for t in plan['triggers']]
+    events.extend({'routing_key': routing_key, 'event_action': 'resolve',
+                   'dedup_key': entry['key']} for entry in plan['resolves'])
+    return post_url, events
+
+
 def _payload_baseline(info: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """The ``baseline`` block of a JSON webhook: the state file's base name only, never
     its local path, which a third-party endpoint has no use for."""
@@ -7848,10 +8101,12 @@ def _network_error_text(reason: Any) -> str:
 
 
 def _post_once(opener: urllib.request.OpenerDirector, url: str, body: bytes,
-               timeout: float, auth: Optional[str] = None
+               timeout: float, auth: Optional[str] = None,
+               extra: Optional[Dict[str, str]] = None
                ) -> Tuple[Optional[str], bool, Optional[float]]:
     """One POST -> ``(error or None, worth a retry, Retry-After seconds)``."""
     headers = {'Content-Type': 'application/json; charset=utf-8', 'User-Agent': _USER_AGENT}
+    headers.update(extra or {})
     if auth:
         headers['Authorization'] = auth
     request = urllib.request.Request(url, data=body, method='POST', headers=headers)
@@ -7885,30 +8140,35 @@ def _post_once(opener: urllib.request.OpenerDirector, url: str, body: bytes,
         return 'not a valid URL', False, None
 
 
-def send_notification(url: str, payload: Dict[str, Any], timeout: float = NOTIFY_TIMEOUT,
-                      retries: int = 1, retry_delay: float = NOTIFY_RETRY_DELAY,
-                      sleep: Callable[[float], None] = time.sleep) -> Optional[str]:
-    """POST ``payload`` as JSON to ``url`` -> None when delivered, else what went wrong.
+def send_notification(url: str, payload: Optional[Dict[str, Any]],
+                      timeout: float = NOTIFY_TIMEOUT, retries: int = 1,
+                      retry_delay: float = NOTIFY_RETRY_DELAY,
+                      sleep: Callable[[float], None] = time.sleep,
+                      data: Optional[bytes] = None, headers: Optional[Dict[str, str]] = None,
+                      secrets: Sequence[str] = ()) -> Optional[str]:
+    """POST ``payload`` as JSON (or the bytes ``data``, with ``headers`` added: ntfy's
+    plain text, a signed body) to ``url`` -> None when delivered, else what went wrong.
 
     Certificate-verified HTTPS (the system proxy settings apply), no redirects,
     ``timeout`` seconds per attempt, ``retries`` more attempts after ``retry_delay``
     seconds (a 429's Retry-After, up to 10 s) for network errors, 5xx and 429 - a 4xx
     is the webhook's answer. A ``user:password@`` in the URL is sent as Basic
-    authentication. The message never contains the URL (:func:`redact_url`).
+    authentication. The message never contains the URL nor ``secrets``
+    (:func:`redact_url`).
     """
-    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    body = data if data is not None else json.dumps(payload, ensure_ascii=False).encode('utf-8')
     opener = urllib.request.build_opener(
         urllib.request.HTTPSHandler(context=ssl.create_default_context()), _NoRedirect)
     target, auth = split_credentials(url)
     problem = None  # type: Optional[str]
     for attempt in range(1 + max(0, retries)):
-        problem, retry, retry_after = _post_once(opener, target, body, timeout, auth)
+        problem, retry, retry_after = _post_once(opener, target, body, timeout, auth, headers)
         if problem is None:
             return None
         if not retry or attempt >= retries:
             break
         sleep(min(10.0, max(retry_delay, retry_after or 0.0)))
-    return display_text(redact_url(problem or 'failed', url))
+    return display_text(redact_url(problem or 'failed', url, secrets))
 
 
 # =====================================================================================
@@ -11136,8 +11396,16 @@ monitoring (--baseline, --warn-days, --notify; for cron and scheduled tasks):
   (also Discord's .../slack endpoint), Microsoft Teams incoming webhooks and Power
   Automate / Logic Apps workflows (an Adaptive Card), Discord webhooks, Telegram
   (https://api.telegram.org/bot<token>/sendMessage?chat_id=<chat id>), Google Chat
-  space webhooks, and JSON with the changes for any other URL; --notify-format
-  overrides the choice (e.g. slack for a Slack-compatible Mattermost). A Slack
+  space webhooks, PagerDuty's Events API v2
+  (https://events.pagerduty.com/v2/enqueue?routing_key=<integration key>: an incident
+  per bad change - FAILED, REGRESSED, UNHOSTED, GONE - and per expiring certificate,
+  resolved on the run its problem is over; the JSON keeps the keys still open in
+  "notify", at most 50 events a run), ntfy (https://ntfy.sh/<topic>: plain text, priority
+  4 when something is bad; DOMAINSCOPE_NTFY_TOKEN as a bearer token), and JSON with the
+  changes for any other URL, signed when DOMAINSCOPE_NOTIFY_SECRET is set
+  (X-DomainScope-Timestamp, and X-DomainScope-Signature: sha256= and the hex HMAC-SHA256
+  of the timestamp, a dot and the body); --notify-format overrides the choice (e.g.
+  slack for a Slack-compatible Mattermost, ntfy for a self-hosted ntfy server). A Slack
   Workflow Builder webhook (hooks.slack.com/triggers/...) gets the message in the
   variable "text": add it to the workflow. Set the URL in DOMAINSCOPE_NOTIFY_URL rather
   than on the command line, where it ends up in the shell history: whoever has it can
@@ -11227,7 +11495,10 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   (sunulan sertifika, durum, yeni ya da kaybolan satırlar) listeler; --warn-days N,
   süresi N gün içinde dolan sertifikaları gösterir; --notify (ya da
   DOMAINSCOPE_NOTIFY_URL) değişiklik ya da uyarı olunca Slack, Teams, Discord,
-  Telegram veya Google Chat'e kısa bir özet gönderir. Aynı dosya hem --baseline
+  Telegram, Google Chat, ntfy veya PagerDuty'ye kısa bir özet gönderir. PagerDuty'de
+  her sorun için bir olay açılır, sorun giderildiğinde olay kapatılır. Başka bir
+  adrese JSON gider; DOMAINSCOPE_NOTIFY_SECRET tanımlıysa ileti HMAC-SHA256 ile
+  imzalanır (X-DomainScope-Signature). Aynı dosya hem --baseline
   hem --json ise ve bildirim gönderilemezse önceki rapor korunur; değişiklikler
   bir sonraki çalıştırmada yeniden bildirilir. Özet dosyaya yazılırsa cron
   yalnızca hataları e-postayla gönderir. Örnek:
@@ -11916,6 +12187,13 @@ def _run(args: argparse.Namespace) -> int:
     monitor = None  # type: Optional[MonitorResult]
     if args.baseline or args.warn_days is not None:
         monitor = build_monitor(report, baseline, args.baseline, args.warn_days)
+    pd_plan = None  # type: Optional[Dict[str, Any]]
+    if monitor is not None:
+        if notify_url and notify_format == 'pagerduty':
+            pd_plan = pagerduty_plan(monitor, baseline, iso_utc(report.finished_at))
+            monitor.notify_open = pd_plan['open']
+        else:  # carried while no PagerDuty URL is set
+            monitor.notify_open = open_keys_of(baseline)
 
     failed, held_back = [], []  # type: List[str], List[str]
 
@@ -11963,36 +12241,65 @@ def _run(args: argparse.Namespace) -> int:
             text += '\n' + render_tls_audit(report.audit, color=color, show_all=args.show_all)
         write_report('-', text)
 
-    notify_failed = interrupted = False
-    if notify_url and notify_format and should_notify(monitor, args.notify_always):
-        post_url, payload = build_notification(notify_format, notify_url,
+    notify_failed = interrupted = pd_failed = False
+    posts = []  # type: List[Tuple[str, Any, Optional[bytes], Dict[str, str]]]
+    secrets = []  # type: List[str]
+    if notify_url and notify_format == 'pagerduty':
+        # PagerDuty: a trigger per bad change or expiring certificate, a resolve once it is over
+        if pd_plan is not None:
+            post_url, events = pagerduty_events(notify_url, pd_plan)
+            posts = [(post_url, event, None, {}) for event in events]
+            if pd_plan['cut'] and not quiet:
+                print('%s: warning: PagerDuty: %d more bad change(s) not sent (at most %d events '
+                      'a run)' % (PROG, pd_plan['cut'], NOTIFY_MAX_EVENTS), file=err)
+    elif notify_url and notify_format and should_notify(monitor, args.notify_always):
+        post_url, data, extra = notify_request(notify_format, notify_url,
                                                report_to_dict(report, monitor), monitor)
+        posts = [(post_url, None, data, extra)]
+        secrets = [(os.environ.get(name) or '').strip()
+                   for name in (NTFY_TOKEN_ENV, NOTIFY_SECRET_ENV)]
+        if notify_format == 'ntfy':  # the topic: whoever knows it reads the messages
+            secrets.extend(segment for segment in urllib.parse.unquote(
+                urllib.parse.urlsplit(notify_url).path).split('/') if len(segment) >= 4)
+    if posts:
         host = notify_host(notify_url)
         problem = None  # type: Optional[str]
+        sent = 0
         try:
-            problem = send_notification(post_url, payload, timeout=NOTIFY_TIMEOUT,
-                                        retry_delay=NOTIFY_RETRY_DELAY)
+            for post_url, payload, data, extra in posts:
+                problem = send_notification(post_url, payload, timeout=NOTIFY_TIMEOUT,
+                                            retry_delay=NOTIFY_RETRY_DELAY, data=data,
+                                            headers=extra, secrets=secrets)
+                if problem:
+                    break
+                sent += 1
         except KeyboardInterrupt:
             interrupted = True
             print('\n%s: error: notification (%s, %s) interrupted' % (PROG, notify_format, host),
                   file=err)
         else:
             if problem:
-                print('%s: error: notification failed (%s, %s): %s' % (
-                    PROG, notify_format, host, redact_url(problem, notify_url)), file=err)
+                print('%s: error: notification failed (%s, %s): %s%s' % (
+                    PROG, notify_format, host, redact_url(problem, notify_url, secrets),
+                    ' (%d of %d events sent)' % (sent, len(posts)) if sent else ''), file=err)
             elif not quiet:
-                print('Notification sent (%s, %s)' % (notify_format, host), file=err)
+                print('Notification sent (%s, %s)%s' % (
+                    notify_format, host, ': %d triggered, %d resolved' % (
+                        len(pd_plan['triggers']), len(pd_plan['resolves']))
+                    if notify_format == 'pagerduty' and pd_plan else ''), file=err)
         notify_failed = interrupted or bool(problem)
+        pd_failed = notify_failed and notify_format == 'pagerduty'
 
     if json_text is not None and json_is_baseline:
         undelivered = len(notable_changes(monitor.changes)) if notify_failed and monitor else 0
-        if undelivered:
+        if undelivered or pd_failed:
             # This run's report would be the next baseline: the next run would compare
             # with it, find nothing and never send these changes. Keep the previous one.
             held_back.append(args.json)
-            print('%s: kept the previous baseline in %s (this report is not written there): '
-                  'the %d change%s will be reported again on the next run' % (
-                      PROG, args.json, undelivered, '' if undelivered == 1 else 's'), file=err)
+            print('%s: kept the previous baseline in %s (this report is not written there): %s'
+                  % (PROG, args.json, 'the %d change%s will be reported again on the next run'
+                     % (undelivered, '' if undelivered == 1 else 's') if undelivered else
+                     'the next run sends again what was not delivered'), file=err)
         else:
             # Replaced whole or not at all: a half-written baseline would stop every
             # later run with a usage error.

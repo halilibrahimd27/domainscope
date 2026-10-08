@@ -4470,6 +4470,34 @@ class LimitedTlsServer(TlsServer):
                 self.active -= 1
 
 
+class MutualTlsServer(_Listener):
+    """TLS 1.2 only, with a vhost a name: the ClientHello's server name picks the certificate
+    before the handshake, as Apache, HAProxy and Envoy do. A ``mutual`` vhost requires a client
+    certificate (``SSLVerifyClient require``, ``verify required``): it sends its certificate
+    and a CertificateRequest, then a handshake_failure alert when none comes."""
+
+    def __init__(self, default: str, vhosts: Dict[str, Tuple[str, bool]]) -> None:
+        self.default = self._context(default, False)
+        self.vhosts = [(name.encode('ascii'), self._context(cert, mutual))
+                       for name, (cert, mutual) in vhosts.items()]
+        super().__init__()
+
+    @staticmethod
+    def _context(fixture: str, mutual: bool) -> ssl.SSLContext:
+        context = _server_context(fixture)
+        context.maximum_version = ssl.TLSVersion.TLSv1_2
+        if mutual:
+            context.verify_mode = ssl.CERT_REQUIRED
+            context.load_verify_locations(str(FIXTURES / 'cli_private_ca.pem'))
+        return context
+
+    def handle(self, conn: socket.socket) -> None:
+        hello = conn.recv(4096, socket.MSG_PEEK)
+        context = next((ctx for name, ctx in self.vhosts if name in hello), self.default)
+        with context.wrap_socket(conn, server_side=True):
+            pass
+
+
 class PlainServer(_Listener):
     """Speaks HTTP, not TLS -> the client handshake fails (TLS_ERROR)."""
 
@@ -4637,6 +4665,28 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn('HANDSHAKE_FAILURE', rows[(port, 'nothere.example.com')]['error'])
         self.assertEqual(rows[(port, '(default)')]['status'], 'NOT_HOSTED')
         self.assertIn('server requires SNI', rows[(port, '(default)')]['error'])
+
+    def test_a_vhost_that_requires_a_client_certificate_is_judged_by_the_certificate_it_sent(self):
+        # TLS 1.2: the mutual-TLS vhost sends its (old) certificate before it asks for ours and
+        # aborts; that is no refusal of the name, whatever other names on the port do.
+        server = MutualTlsServer('cn_only', {'www.wild.example.net': ('cli_renewed_wild', False),
+                                             'api.wild.example.net': ('ec_wildcard', True)})
+        try:
+            code, out, err = run_main('-t', 'gw01=127.0.0.1', '-p', str(server.port),
+                                      '-n', 'www.wild.example.net', 'api.wild.example.net',
+                                      '--cert', self.renewed, '--json', '-', '-q',
+                                      '--fail-on-needs-update')
+        finally:
+            server.close()
+        doc = json.loads(out)
+        rows = self.index(doc)
+        port = server.port
+        self.assertEqual(rows[(port, 'www.wild.example.net')]['status'], 'UPDATED')
+        api = rows[(port, 'api.wild.example.net')]
+        self.assertEqual((api['status'], api['certSha256'], api['tlsVersion']),
+                         ('NEEDS_UPDATE', EXPECTED['ec_wildcard.pem']['sha256'], 'TLSv1.2'), api)
+        self.assertEqual(doc['servers'][0]['status'], 'NEEDS_UPDATE')
+        self.assertEqual(code, 1, err)
 
     def test_connection_limiter_does_not_turn_hosted_names_into_not_hosted(self):
         server = LimitedTlsServer('cn_only', WILD_OLD, limit=2)

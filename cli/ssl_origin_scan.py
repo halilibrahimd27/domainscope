@@ -3863,15 +3863,60 @@ def classify_connect_exception(exc: BaseException) -> Tuple[str, str]:
     return CLOSED, '%s: %s' % (type(exc).__name__, exc)
 
 
+_TLS_HANDSHAKE, _TLS_CERTIFICATE, _TLS_CERTIFICATE_REQUEST = 22, 11, 13
+
+
+def _watch_server_certificate(context: ssl.SSLContext, seen: threading.local) -> None:
+    """Keep the server's Certificate and CertificateRequest messages of the handshake that runs
+    on this thread in ``seen.messages`` (``SSLContext._msg_callback``, Python 3.8 and later; a
+    no-op where it is missing)."""
+    def callback(_conn: Any, direction: str, version: Any, content_type: int, msg_type: int,
+                 data: bytes) -> None:
+        try:
+            messages = getattr(seen, 'messages', None)
+            if (messages is not None and direction == 'read' and content_type == _TLS_HANDSHAKE
+                    and msg_type in (_TLS_CERTIFICATE, _TLS_CERTIFICATE_REQUEST)):
+                messages.append((int(msg_type), getattr(version, 'name', ''), bytes(data)))
+        except Exception:  # noqa: BLE001 - an exception here would fail the handshake
+            pass
+    try:
+        context._msg_callback = callback  # type: ignore[attr-defined]
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+
+def _certificate_before_client_request(messages: List[Tuple[int, str, bytes]]
+                                       ) -> Tuple[Optional[bytes], Optional[str]]:
+    """The server's leaf (DER) and TLS version when it sent its certificate and then asked for a
+    client certificate (mutual TLS): in TLS 1.2 such a vhost aborts the handshake once the client
+    has none, but the certificate it serves for the name has arrived."""
+    if not any(msg_type == _TLS_CERTIFICATE_REQUEST for msg_type, _, _ in messages):
+        return None, None
+    for msg_type, version, data in messages:
+        if msg_type != _TLS_CERTIFICATE:
+            continue
+        body = data[4:]  # type (1 byte) and length (3) of the handshake message
+        if version == 'TLSv1_3' and body:
+            body = body[1 + body[0]:]  # certificate_request_context
+        size = int.from_bytes(body[3:6], 'big') if len(body) >= 6 else 0
+        der = body[6:6 + size]
+        if size and len(der) == size:
+            return der, version.replace('_', '.') or None
+    return None, None
+
+
 class TlsProber:
     """Phase 2: TLS handshake with optional SNI, returning the peer certificate (DER)."""
 
     def __init__(self, context: Optional[ssl.SSLContext] = None) -> None:
         self.context = context or make_client_context()
+        self._seen = threading.local()
+        _watch_server_certificate(self.context, self._seen)
 
     def __call__(self, ip: str, port: int, sni: Optional[str], timeout: float) -> TlsResult:
         started = time.monotonic()
         sock = None
+        self._seen.messages = []
         try:
             sock = socket.create_connection((_connect_address(ip), port), timeout=timeout)
             tls = self.context.wrap_socket(sock, server_hostname=sni,
@@ -3887,9 +3932,15 @@ class TlsProber:
                 result = TlsResult(status=TLS_ERROR, error='server sent no certificate')
         except Exception as exc:  # noqa: BLE001 - every failure becomes a status
             status, message = classify_exception(exc)
-            result = TlsResult(status=status, error=message, refused=is_refusal(exc),
-                               transient=is_transient(exc))
+            der, version = _certificate_before_client_request(self._seen.messages)
+            if der and is_refusal(exc):
+                # mutual TLS: the vhost hosts the name and serves this certificate for it
+                result = TlsResult(der=der, version=version)
+            else:
+                result = TlsResult(status=status, error=message, refused=is_refusal(exc),
+                                   transient=is_transient(exc))
         finally:
+            self._seen.messages = None
             if sock is not None:
                 try:
                     sock.close()

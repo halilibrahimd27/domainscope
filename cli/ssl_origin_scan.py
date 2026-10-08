@@ -335,6 +335,7 @@ _OID_SKI = '2.5.29.14'
 _OID_AKI = '2.5.29.35'
 _OID_AIA = '1.3.6.1.5.5.7.1.1'
 _OID_CA_ISSUERS = '1.3.6.1.5.5.7.48.2'
+_OID_CT_POISON = '1.3.6.1.4.1.11129.2.4.3'   # RFC 6962: a precertificate
 _OID_PKCS7_DATA = '1.2.840.113549.1.7.1'
 _OID_PKCS7_SIGNED = '1.2.840.113549.1.7.2'
 
@@ -633,6 +634,7 @@ class CertInfo:
     spki_sha256: Optional[str] = None        # lowercase hex SHA-256 of spki_der (key pinning)
     ca_issuers: List[str] = field(default_factory=list)  # AIA "CA Issuers" URLs
     key_cert_sign: Optional[bool] = None     # keyUsage keyCertSign (None: no keyUsage extension)
+    precert: bool = False                    # the CT poison extension: a precertificate, never served
 
     def public_key(self) -> Optional[PublicKey]:
         """The certificate's :class:`PublicKey`, or None when its key cannot be read."""
@@ -776,6 +778,7 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
     authority_key_id = None  # type: Optional[str]
     ca_issuers = []  # type: List[str]
     key_cert_sign = None  # type: Optional[bool]
+    precert = False
     for extra in fields[index + 6:]:
         if extra[0] != 0xA3:
             continue  # issuerUniqueID [1] / subjectUniqueID [2]
@@ -811,6 +814,8 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
                 # unused-bits count). `openssl req -x509` leaves the extension out by default.
                 bits = _content(buf, _expect(_read_tlv(buf, value[2], value[3]), 0x03, 'KeyUsage'))
                 key_cert_sign = len(bits) > 1 and bool(bits[1] & 0x04)
+            elif ext_oid == _OID_CT_POISON:
+                precert = True
             elif ext_oid == _OID_SKI:
                 key_id = _expect(_read_tlv(buf, value[2], value[3]), 0x04, 'SubjectKeyIdentifier')
                 subject_key_id = _content(buf, key_id).hex()
@@ -866,6 +871,7 @@ def parse_certificate(der: Union[bytes, bytearray, memoryview]) -> CertInfo:
         spki_sha256=hashlib.sha256(spki_der).hexdigest(),
         ca_issuers=ca_issuers,
         key_cert_sign=key_cert_sign,
+        precert=precert,
     )
 
 
@@ -8707,9 +8713,17 @@ def load_new_certificate(path: str, now: Optional[datetime] = None
                         'secret)' % path)
     leaf = select_leaf(certs)
     assert leaf is not None
+    if leaf.precert:
+        raise UsageError('%s is a CT precertificate (it carries the CT poison extension), which no '
+                         'server serves: give the issued certificate of serial %s instead (from your '
+                         'CA or ACME client, such as cert.pem or fullchain.pem)' % (path, leaf.serial_hex))
     if len(certs) > 1:
         messages.append('%s holds %d certificates; using the leaf %s' % (path, len(certs),
                                                                          leaf.short_label()))
+    if leaf.is_ca and not (leaf.dns_names or leaf.ip_addresses):
+        messages.append('the new certificate %s is a CA certificate that names no host, which no '
+                        'server serves as its own: check that %s holds the server certificate'
+                        % (leaf.short_label(), path))
     now = now or _utcnow()
     if leaf.not_after < now:
         messages.append('the new certificate %s EXPIRED on %s' % (

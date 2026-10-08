@@ -2470,6 +2470,18 @@ class CliArgumentTests(unittest.TestCase):
                                                datetime(2025, 1, 1, tzinfo=timezone.utc))
         self.assertTrue(any('not valid before' in m for m in messages))
 
+    def test_a_precertificate_is_refused_and_a_ca_certificate_warned_about_as_the_new_certificate(self):
+        # No server serves a CT precertificate (its poison extension) or a CA certificate as its
+        # own: every server would be NEEDS_UPDATE, those already on the issued certificate too.
+        with self.assertRaisesRegex(sos.UsageError, 'precertificate.*issued certificate of serial'):
+            sos.load_new_certificate(str(FIXTURES / 'x509_ext_torture.pem'), NOW)
+        first = lambda name: sos.load_certificates((FIXTURES / name).read_bytes())[0][0]
+        self.assertEqual((first('x509_ext_torture.pem').precert, first('cli_renewed_wild.pem').precert), (True, False))
+        _, messages = sos.load_new_certificate(str(FIXTURES / 'bundle_inter.pem'), NOW)
+        self.assertTrue(any('is a CA certificate' in m for m in messages), messages)
+        _, messages = sos.load_new_certificate(str(FIXTURES / 'cli_renewed_wild.pem'), NOW)
+        self.assertFalse(any('CA certificate' in m for m in messages), messages)
+
 
 class ExcludeCliTests(unittest.TestCase):
     """--exclude end to end through main(), with the network replaced by a recorder."""

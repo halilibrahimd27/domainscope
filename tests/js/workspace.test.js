@@ -769,15 +769,84 @@ describe('degraded storage', () => {
     assert.equal(new Map(backend.entries()).get(`wsmeta/${later.meta.id}`), undefined, 'a deleted one is not stored afterwards');
   });
 
-  test('a failed read of one workspace opens it empty rather than failing the switch', async () => {
+  test('a failed read of one workspace fails the switch: the page stays in its workspace, nothing is written over it', async () => {
     const backend = createMemoryBackend([], { persistent: true });
     const store = makeStore({ backend });
     await store.open();
-    const { meta } = await store.create('Acme');
+    await store.save('notes', 'Default notes');
+    const { meta } = await store.create('Acme', { inventory: 'web01 192.0.2.5', notes: 'Acme notes' });
     backend.fail.add('get');
+    await assert.rejects(store.switchTo(meta.id), { name: 'UnknownError' });
+    assert.equal(store.active.id, DEFAULT_WORKSPACE_ID);
+    assert.equal(store.data.notes, 'Default notes');
+    assert.equal(store.lastError.name, 'UnknownError');
+    await assert.rejects(store.load(meta.id), { name: 'UnknownError' }, 'never an empty copy for the hand-over file');
+    backend.fail.delete('get');
     await store.switchTo(meta.id);
-    assert.deepEqual(store.data, emptyWorkspaceData());
-    assert.ok(store.lastError);
+    assert.equal(store.data.inventory.text, 'web01 192.0.2.5');
+    assert.equal(store.data.notes, 'Acme notes');
+  });
+
+  test('a workspace whose parts cannot be read is never saved over: the page opens in Default, and a Default it must enter keeps its saves in memory', async () => {
+    const backend = createMemoryBackend([], { persistent: true });
+    const first = makeStore({ backend });
+    await first.open();
+    await first.recordRecent('example.org');
+    const { meta } = await first.create('Acme', { inventory: 'web01 192.0.2.5', notes: 'Acme notes' });
+    await first.switchTo(meta.id);
+    await first.recordRecent('shop.example.com');
+    await first.recordRecent('example.com');
+    const stored = (id, part) => new Map(backend.entries()).get(`wsdata/${id}/${part}`);
+    const snapshot = (id) => ['inventory', 'notes', 'recent'].map((part) => stored(id, part));
+    const acme = snapshot(meta.id);
+    const def = snapshot(DEFAULT_WORKSPACE_ID);
+    /** The backend, with the reads of these workspaces' parts failing. */
+    const flaky = (...broken) => ({
+      ...backend,
+      async get(keys) {
+        if (keys.some((k) => broken.some((id) => k.startsWith(`wsdata/${id}/`)))) {
+          const err = new Error('read failed');
+          err.name = 'UnknownError';
+          throw err;
+        }
+        return backend.get(keys);
+      }
+    });
+    const pointer = { get: () => meta.id, set() {} };
+
+    // The page was in Acme: it opens in Default rather than in an empty-looking Acme.
+    const store = makeStore({ backend: flaky(meta.id), pointer });
+    await store.open();
+    assert.equal(store.active.id, DEFAULT_WORKSPACE_ID);
+    assert.deepEqual(store.data.recent.map((r) => r.value), ['example.org']);
+    await assert.rejects(store.switchTo(meta.id), { name: 'UnknownError' });
+    assert.equal(await store.recordRecent('example.net'), true, 'Default was read: it is written');
+    assert.deepEqual(snapshot(meta.id), acme);
+
+    // Default cannot be read either: it is entered, and what is saved to it stays in memory.
+    const both = makeStore({ backend: flaky(meta.id, DEFAULT_WORKSPACE_ID), pointer });
+    await both.open();
+    assert.equal(both.active.id, DEFAULT_WORKSPACE_ID);
+    const defNow = snapshot(DEFAULT_WORKSPACE_ID);
+    assert.equal(await both.recordRecent('example.com'), false, 'not written over what could not be read');
+    assert.equal(await both.save('notes', 'typed here'), false);
+    assert.equal(both.data.notes, 'typed here', 'kept in memory');
+    assert.equal(both.lastError.name, 'UnknownError');
+    await assert.rejects(both.load(DEFAULT_WORKSPACE_ID), { name: 'UnknownError' }, 'never an empty hand-over file');
+    assert.deepEqual(snapshot(DEFAULT_WORKSPACE_ID), defNow);
+    assert.deepEqual(snapshot(meta.id), acme);
+
+    // Deleting the active workspace enters Default all the same, read or not.
+    const deleting = makeStore({ backend: flaky(DEFAULT_WORKSPACE_ID), pointer });
+    await deleting.open();
+    assert.equal(deleting.active.id, meta.id);
+    const { meta: initech } = await deleting.create('Initech');
+    await deleting.switchTo(initech.id);
+    assert.equal((await deleting.remove(initech.id)).switched, true);
+    assert.equal(deleting.active.id, DEFAULT_WORKSPACE_ID);
+    assert.equal(await deleting.recordRecent('example.com'), false);
+    assert.deepEqual(snapshot(DEFAULT_WORKSPACE_ID), defNow);
+    assert.notDeepEqual(defNow, def, 'the first store wrote Default meanwhile');
   });
 });
 

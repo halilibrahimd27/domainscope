@@ -510,13 +510,14 @@ function sanitizeMeta(value) {
  * @property {ReturnType<typeof emptyWorkspaceData>} data  the active workspace's parts (treat as read-only)
  * @property {() => WorkspaceMeta[]} list  Default first, then by name
  * @property {(part: string, value: any) => Promise<boolean>} save  write one part of the active workspace
+ *   (false, in memory only, while its parts could not be read)
  * @property {(value: string, at?: Date) => Promise<boolean>} recordRecent
- * @property {(id: string) => Promise<WorkspaceMeta>} switchTo
+ * @property {(id: string) => Promise<WorkspaceMeta>} switchTo  rejects (nothing switched) when its parts could not be read
  * @property {(name: string, data?: object) => Promise<{ meta: WorkspaceMeta, persisted: boolean }>} create
  * @property {(id: string, name: string) => Promise<{ meta: WorkspaceMeta, persisted: boolean }>} rename
  * @property {(id: string) => Promise<{ switched: boolean, persisted: boolean }>} remove
  * @property {(id: string, data: object) => Promise<{ meta: WorkspaceMeta, persisted: boolean }>} replace
- * @property {(id: string) => Promise<ReturnType<typeof emptyWorkspaceData>>} load  a workspace's parts (a copy)
+ * @property {(id: string) => Promise<ReturnType<typeof emptyWorkspaceData>>} load  a workspace's parts (a copy; rejects unread)
  * @property {() => Promise<boolean>} destroy  delete everything; memory is reset at once
  *   (`lastError` null once it succeeded)
  * @property {() => Promise<void>} idle  every write started so far has settled (before a reload, an export)
@@ -552,6 +553,8 @@ export function createWorkspaceStore({
   let pendingLegacy = null;
   /** A migration whose write failed (persistent store): the next write that commits carries it. */
   let unmigrated = null;
+  /** Workspaces whose parts could not be read (id → error): never saved over until a read succeeds. */
+  const unread = new Map();
   let opening = null;
   const listeners = new Set();
   /** Writes not settled yet. */
@@ -638,7 +641,7 @@ export function createWorkspaceStore({
     return out;
   }
 
-  /** A workspace's parts from the backend (every value sanitized); a failed read is empty. */
+  /** A workspace's parts from the backend (every value sanitized); a failed read is empty, and {@link unread}. */
   async function loadData(id) {
     const out = emptyWorkspaceData();
     try {
@@ -646,8 +649,10 @@ export function createWorkspaceStore({
       WORKSPACE_PARTS.forEach((part, i) => {
         if (values[i] !== undefined) out[part] = sanitizePart(part, values[i]);
       });
+      unread.delete(id);
     } catch (err) {
       lastError = err;
+      unread.set(id, err);
     }
     return withPending(id, out);
   }
@@ -823,6 +828,11 @@ export function createWorkspaceStore({
     activeId = wanted && metas.has(wanted) ? wanted : DEFAULT_WORKSPACE_ID;
     // No database and nothing written to one: nothing to read either (a read would create it).
     data = exists === false && !initialised ? withPending(activeId, emptyWorkspaceData()) : await loadData(activeId);
+    if (unread.has(activeId) && activeId !== DEFAULT_WORKSPACE_ID) {
+      // Not opened empty (see switchTo): Default is, as for a deleted one.
+      activeId = DEFAULT_WORKSPACE_ID;
+      data = await loadData(activeId);
+    }
     if (channel && typeof channel.addEventListener === 'function') {
       channel.addEventListener('message', (event) => {
         onMessage(event && 'data' in event ? event.data : event).catch((err) => {
@@ -876,6 +886,7 @@ export function createWorkspaceStore({
     initialised = false;
     pendingLegacy = null;
     unmigrated = null;
+    unread.clear();
     generation += 1;
     slots.clear();
     unwritten.clear();
@@ -942,6 +953,11 @@ export function createWorkspaceStore({
       } else {
         data = { ...data, [part]: clean };
       }
+      if (unread.has(activeId)) {
+        // This copy would replace the parts that could not be read: kept in memory only.
+        lastError = unread.get(activeId);
+        return false;
+      }
       return schedule(activeId, part, clean);
     },
 
@@ -953,6 +969,8 @@ export function createWorkspaceStore({
     async switchTo(id) {
       if (!metas.has(id)) throw new WorkspaceError('not-found');
       const next = await loadData(id);
+      // Not opened empty: its saves would replace what is stored.
+      if (unread.has(id)) throw unread.get(id);
       activeId = id;
       data = next;
       writePointer(id);
@@ -990,6 +1008,7 @@ export function createWorkspaceStore({
         unwritten.delete(slotKey(id, part));
       }
       uncreated.delete(id);
+      unread.delete(id);
       let persisted = true;
       try {
         await track(db.write([], [metaKey(id), ...WORKSPACE_PARTS.map((part) => dataKey(id, part))]));
@@ -999,7 +1018,12 @@ export function createWorkspaceStore({
         persisted = false;
       }
       const switched = activeId === id;
-      if (switched) await api.switchTo(DEFAULT_WORKSPACE_ID);
+      if (switched) {
+        // Default is entered, read or not (then never saved over).
+        data = await loadData(DEFAULT_WORKSPACE_ID);
+        activeId = DEFAULT_WORKSPACE_ID;
+        writePointer(DEFAULT_WORKSPACE_ID);
+      }
       return { switched, persisted };
     },
 
@@ -1007,6 +1031,7 @@ export function createWorkspaceStore({
       if (!metas.has(id)) throw new WorkspaceError('not-found');
       const clean = sanitizeWorkspaceData(parts);
       if (id === activeId) data = clean;
+      unread.delete(id);
       // A save still waiting for this workspace writes the new value, not the one it replaced.
       for (const part of WORKSPACE_PARTS) {
         const slot = slots.get(slotKey(id, part));
@@ -1018,7 +1043,9 @@ export function createWorkspaceStore({
 
     async load(id) {
       if (!metas.has(id)) throw new WorkspaceError('not-found');
-      return copy(id === activeId ? data : await loadData(id));
+      const out = copy(id === activeId ? data : await loadData(id));
+      if (unread.has(id)) throw unread.get(id);
+      return out;
     },
 
     destroy() {

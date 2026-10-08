@@ -485,6 +485,7 @@ export function createState({
      * and 'workspace' are emitted.
      * @param {string} id
      * @returns {Promise<ActiveWorkspace>}
+     * @throws {Error} the read error when its data could not be read (nothing changes)
      */
     async switchWorkspace(id) {
       await store.switchTo(id);

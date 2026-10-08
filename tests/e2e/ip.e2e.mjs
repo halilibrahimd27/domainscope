@@ -564,6 +564,28 @@ async function offlineGroup(browser, server) {
       await setLangUi(page, 'en');
     });
 
+    await step('under an address carried over from another tool, Copy summary and the print header link to the rows shown, never the box', async () => {
+      await page.evaluate(() => { window.__ipFake.limited = []; });
+      await gotoHash(page, '#/ip?ips=203.0.113.7', 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows looked up' });
+      await gotoHash(page, '#/about', 'about');
+      // Another tool's target (run=0): the kept rows come back and only the box takes the address.
+      await gotoHash(page, '#/ip?ips=198.51.100.20&run=0', 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'kept rows shown' });
+      const shown = await page.evaluate(() => ({
+        rows: [...document.querySelectorAll('.ipi-row .ipi-ip')].map((e) => e.textContent),
+        box: document.querySelector('[data-role="ip-input"]').value.trim()
+      }));
+      assertEqual(shown, { rows: ['203.0.113.7'], box: '198.51.100.20' }, 'the kept rows under the carried address');
+      const header = await page.evaluate(async () => (await import('./assets/js/ui/summary-button.js')).resultPermalink(document.querySelector('#page-body')));
+      assert(header && header.endsWith('#/ip?ips=203.0.113.7'), `print header link: ${header}`);
+      await stubClipboard(page);
+      await page.click('[data-summary="ip"] [data-action="copy-summary"]');
+      await page.waitFor(() => window.__clip.length === 1, { message: 'summary copied' });
+      const [md] = await takeClipboard(page);
+      assert(md.startsWith('**IP Intel · `203.0.113.7`**') && md.trim().endsWith('#/ip?ips=203.0.113.7'), `summary: ${md}`);
+    });
+
     for (const [n, scheme, lang, width] of [[30, 'dark', 'tr', 1440], [31, 'light', 'en', 375], [32, 'dark', 'tr', 375]]) {
       await step(`[${scheme}, ${lang.toUpperCase()}, ${width} px] the failed state reads well and fits`, async () => {
         const ip = `203.0.113.${n}`;

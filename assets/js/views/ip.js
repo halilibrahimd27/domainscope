@@ -520,14 +520,15 @@ export function mount(container, ctx) {
   const emptyEl = h('div', { class: 'card ipi-empty' }, EmptyState({ icon: 'network', title: t('ipi.emptyTitle'), message: t('ipi.emptyBody', { max: formatNumber(MAX_IPS) }) }));
   // No part of the form: Ctrl/Cmd+Enter in the table's filter starts no new run.
   // "Copy summary": one line (lib/summary.js); the link leaves out private and inventory addresses.
+  // The link is the run's own (never the route, which a carried address may have changed).
   const summary = SummaryButton({
     kind: 'ip',
     disabled: true,
     inventory: 'count',
     facts: () => (current && !current.controller && current.rows.length ? { rows: current.rows, at: current.finishedAt, stopped: current.stopped } : null),
-    url: () => ctx.shareUrl(permalinkParams('ip', ctx.params, {
-      exclude: [...ctx.getInventoryIndex().keys(), ...(current ? current.rows.filter((r) => r.servers.length).map((r) => r.ip) : [])]
-    }))
+    url: () => (current ? ctx.shareUrl(permalinkParams('ip', lookupParams(current.text), {
+      exclude: [...ctx.getInventoryIndex().keys(), ...current.rows.filter((r) => r.servers.length).map((r) => r.ip)]
+    })) : null)
   });
   const results = h('div', { class: 'stack ipi-results', hidden: true, dataset: { shortcutScope: 'results' } },
     progress, notesEl, h('div', { class: 'ipi-results-bar' }, summary.el), statsGrid, zeroNote, quotaNote, sourcesEl, table);

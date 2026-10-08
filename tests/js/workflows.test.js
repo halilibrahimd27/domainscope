@@ -70,6 +70,10 @@ describe('ci.yml', () => {
     assert.match(j.e2e, /timeout-minutes: \d+/, 'a hung browser must not hold the deploy');
   });
 
+  test('npm run test:py calls python3, which macOS and Linux have (the CLI job gets python from setup-python)', () => {
+    assert.equal(pkg.scripts['test:py'], 'python3 -m unittest discover -s tests/python -v');
+  });
+
   test('the offline E2E script runs exactly the suites that need no network', () => {
     const cmd = pkg.scripts['test:e2e:offline'];
     assert.match(cmd, /^node tests\/e2e\/run-all\.mjs --only shell,subdomains,zone,scan,verify,renewal,dane,pfx,chainfix,renew,estate,global,ptr,retire,carry,ip,lookup,health,workspaces,origins,domain,change,privacy,reports,portfolio --offline --no-shots$/);

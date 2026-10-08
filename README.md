@@ -414,7 +414,7 @@ No build step and no dependencies. Serve the folder with any static server:
 ```bash
 git clone https://github.com/halilibrahimd27/domainscope.git
 cd domainscope
-npm run serve            # or: python -m http.server 8080
+npm run serve            # or: python3 -m http.server 8080 (python on Windows)
 ```
 
 To host your own copy, fork the repo, enable workflows on the fork's **Actions** tab (GitHub turns them off in new forks) and set **Settings → Pages → Source: GitHub Actions**. Then push to `main`, or run **Deploy to GitHub Pages** once from the Actions tab. The included workflow deploys every push to `main` once CI passes (unit, CLI and offline E2E tests); a red commit is never published. It copies `assets/` under `v/<commit>/` ([`tools/assemble-site.mjs`](tools/assemble-site.mjs)), so browsers never mix cached modules of two deploys, a tab left open across a deploy offers a reload, and the installed app shows "Update ready" (the list of files the service worker keeps offline is written into `sw.js` at deploy time). It also writes `v/<commit>/assets/version.json` (the version, the commit from `GITHUB_SHA` and a digest), which About › What this page sent shows with a link to the commit. Nothing is built; locally the repository is served as it is. The GitHub links in the app point to `REPO_URL` in `assets/js/app.js`; change it in your fork. The weekly intermediate-list rebuild (`.github/workflows/intermediates.yml`) opens a pull request: allow it under Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests", and close and reopen such a pull request before merging it, since one opened with the workflow's token does not start CI.
@@ -478,7 +478,7 @@ docs/                    SPEC (module contracts), ROADMAP, RESEARCH; examples/: 
 
 ```bash
 npm test                 # JavaScript unit tests (node --test "tests/js/*.test.js"; `node --test tests/js/` is equivalent)
-npm run test:py          # CLI tests
+npm run test:py          # CLI tests (python3; on Windows: python -m unittest discover -s tests/python -v)
 npm run test:e2e:offline # the offline E2E suites (shell, zone, verify, renewal, dane, pfx, chainfix, renew, estate, ptr, retire, carry, workspaces, origins, domain, change, privacy, reports, portfolio, and the offline steps of subdomains, scan, global, ip, lookup and health; needs Chrome or Edge), as CI runs them
 node tests/e2e/run-all.mjs   # every E2E suite, most against live APIs; verify, renewal, dane, pfx, chainfix, renew, estate, ptr, retire, carry, workspaces, origins, domain, change, privacy, reports and portfolio are offline (verify: 0 Globalping probes; renew, zone and retire: a fake DoH and a fake Globalping)
 node tools/assemble-site.mjs _site && node tests/e2e/serve.mjs --root _site   # preview the Pages bundle (installs its service worker on 127.0.0.1:8080)

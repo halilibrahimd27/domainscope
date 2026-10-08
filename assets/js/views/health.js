@@ -84,6 +84,8 @@ export const FIXABLE_CHECKS = Object.freeze(['caa.cert-denied', 'caa.critical-un
 
 /** ui/fix-panel.js with lib/fixes.js (the zone parser and linter come along), on the first "Show the fix". */
 const loadFixPanel = onceAsync(() => import('../ui/fix-panel.js'));
+/** ui/delegation-panel.js with lib/delegation.js, on the first "Check the delegation" (the Delegation card). */
+const loadDelegation = onceAsync(() => import('../ui/delegation-panel.js'));
 
 // Every health.<id>.title / .detail string (EN + TR) ships with lib/health.js, every
 // mtasts.<finding>.title / .detail and mtasts.head.<key> with lib/mtasts.js.
@@ -255,6 +257,11 @@ registerStrings('en', {
   'hlt.caa.rfc8657': 'accounturi and validationmethods (RFC 8657) limit a CA to one ACME account or to some validation methods. They bind only CAs that support RFC 8657; the others may ignore them.',
 
   'hlt.mtasts.title': 'MTA-STS policy',
+  'hlt.dlg.title': 'Delegation',
+  'hlt.dlg.intro': 'Asks every name server of {zone} directly, through Globalping: lame servers, SOA serial drift, NS sets, glue, open recursion and the Sitting Ducks risk. Nothing is sent before the click.',
+  'hlt.dlg.check': 'Check the delegation',
+  'hlt.dlg.cost': { one: 'About {count} Globalping probe.', other: 'About {count} Globalping probes.' },
+  'hlt.dlg.loadFailed': 'The delegation check could not be loaded',
   'hlt.mtasts.txt': 'TXT record',
   'hlt.mtasts.txtInvalid': 'not valid: senders ignore it',
   'hlt.mtasts.url': 'Policy URL',
@@ -462,6 +469,11 @@ registerStrings('tr', {
   'hlt.caa.rfc8657': 'accounturi ve validationmethods (RFC 8657) bir otoriteyi tek bir ACME hesabıyla ya da belirli doğrulama yöntemleriyle sınırlar. Yalnızca RFC 8657’yi destekleyen otoriteleri bağlarlar; diğerleri bunları yok sayabilir.',
 
   'hlt.mtasts.title': 'MTA-STS politikası',
+  'hlt.dlg.title': 'Delegasyon',
+  'hlt.dlg.intro': '{zone} zone’unun her ad sunucusunu Globalping üzerinden doğrudan sorar: bozuk sunucular, SOA seri numarası kayması, NS kümeleri, glue kayıtları, açık özyineleme ve Sitting Ducks riski. Tıklamadan önce hiçbir şey gönderilmez.',
+  'hlt.dlg.check': 'Delegasyonu kontrol et',
+  'hlt.dlg.cost': 'Yaklaşık {count} Globalping ölçümü.',
+  'hlt.dlg.loadFailed': 'Delegasyon kontrolü yüklenemedi',
   'hlt.mtasts.txt': 'TXT kaydı',
   'hlt.mtasts.txtInvalid': 'geçersiz: gönderenler yok sayar',
   'hlt.mtasts.url': 'Politika adresi',
@@ -1400,9 +1412,42 @@ export function mount(container, ctx) {
     });
   }
 
+  /**
+   * The Delegation card: every name server of the report's zone asked through Globalping
+   * (ui/delegation-panel.js, loaded on the first click). The job is the holder kept with the
+   * report on screen (`current.delegation`): a re-render mounts the panel on it again.
+   */
+  function delegationCard(report) {
+    const zone = report.zone;
+    if (!zone || !current || current.report !== report) return null;
+    const s = current;
+    const body = h('div', { class: 'stack-sm hlt-dlg-body', dataset: { delegation: 'card' } });
+    const mountPanel = async (start) => {
+      try {
+        const { DelegationPanel, freshDelegation } = await loadDelegation();
+        if (s.delegation?.zone !== zone) s.delegation = freshDelegation(zone);
+        clear(body);
+        body.append(DelegationPanel({ ctx, holder: s.delegation, start }));
+      } catch (err) {
+        ctx.checkOutdated();
+        clear(body);
+        body.append(ErrorBanner(err, { title: t('hlt.dlg.loadFailed'), compact: true }));
+      }
+    };
+    if (s.delegation?.zone === zone) mountPanel(false);
+    else {
+      const count = Math.min(8, report.records.ns.length || 2) * 3 + 1;
+      body.append(h('p', { class: 'muted text-sm' }, t('hlt.dlg.intro', { zone }), ' ', t('hlt.dlg.cost', { count })), h('div', null, Button({
+        label: t('hlt.dlg.check'), icon: 'globe', size: 'sm', variant: 'primary', dataset: { action: 'dlg-open' },
+        onClick: (e) => { setButtonBusy(e.currentTarget, true); mountPanel(true); }
+      })));
+    }
+    return Card({ title: t('hlt.dlg.title'), icon: 'server', className: 'hlt-card hlt-dlg', children: body });
+  }
+
   function renderDetails(report) {
     clear(detailsEl);
-    detailsEl.append(...[rdapCard, dnssecCard, mailCard, mtaStsCard, caaCard, dnsCard].map((card) => card(report)).filter(Boolean));
+    detailsEl.append(...[rdapCard, dnssecCard, mailCard, mtaStsCard, caaCard, dnsCard, delegationCard].map((card) => card(report)).filter(Boolean));
   }
 
   function renderReport(report, selectors) {
@@ -1504,6 +1549,7 @@ export function mount(container, ctx) {
     if (current && current.controller) current.controller.abort();
     if (current && current.policy && current.policy.controller) current.policy.controller.abort();
     if (current && current.rdapRetry) current.rdapRetry.abort();
+    if (current && current.delegation && current.delegation.controller) current.delegation.controller.abort();
     const controller = new AbortController();
     const state = {
       domain, selectors: extraSelectors.slice(), controller, report: null, finishedAt: null,
@@ -1559,7 +1605,8 @@ export function mount(container, ctx) {
       domain: restored.report.domain, selectors: Array.isArray(restored.runSelectors) ? restored.runSelectors : [],
       controller: null, report: restored.report, selectorCount: restored.selectorCount,
       finishedAt: restored.at ? new Date(restored.at) : new Date(),
-      policy: policy && policy.status !== 'running' ? policy : null
+      policy: policy && policy.status !== 'running' ? policy : null,
+      delegation: restored.delegation && restored.delegation.zone === restored.report.zone ? restored.delegation : null
     };
     renderReport(restored.report, current.selectors);
     // A policy fetch that was in flight: its measurement is paid for, so read it (GETs are free).
@@ -1603,7 +1650,9 @@ export function mount(container, ctx) {
         at: report ? current.finishedAt : null,
         runSelectors: report ? current.selectors : null,
         selectorCount: current ? current.selectorCount : null,
-        policy
+        policy,
+        // A finished delegation check stays with its report; one in flight stops with the view.
+        delegation: report && current.delegation && !current.delegation.controller ? { ...current.delegation, view: null } : null
       };
     },
     result() {

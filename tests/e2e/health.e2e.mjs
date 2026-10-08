@@ -911,6 +911,271 @@ async function mtaStsGroup(browser, server) {
   }
 }
 
+/* ------------------------------------------------------------------------ */
+/* Offline: Delegation (fake DoH + fake Globalping DNS)                     */
+/* ------------------------------------------------------------------------ */
+
+const DLG_ZONE_NAME = 'example.org';
+const DLG_SOA = { mname: 'ns1.example.org', rname: 'hostmaster.example.org', serial: 2026100801, refresh: 3600, retry: 900, expire: 1209600, minimum: 300 };
+/** example.org as the resolvers see it: three name servers (one inside the zone), and the parent's server. */
+const DLG_DNS = {
+  'example.org': { SOA: [DLG_SOA], NS: ['ns1.example.org', 'ns2.example.net', 'ns1.digitalocean.com'], A: ['192.0.2.80'] },
+  'ns1.example.org': { A: ['192.0.2.53'], AAAA: ['2001:db8::53'] },
+  'ns2.example.net': { A: ['198.51.100.53'] },
+  'ns1.digitalocean.com': { A: ['203.0.113.10'] },
+  org: { NS: ['a0.org-servers.example.net'] }
+};
+const DLG_NS = ['ns1.example.org', 'ns2.example.net', 'ns1.digitalocean.com'];
+const dlgSoa = (serial) => [['example.org', 'SOA', `ns1.example.org. hostmaster.example.org. ${serial} 3600 900 1209600 300`]];
+const dlgNs = DLG_NS.map((n) => ['example.org', 'NS', `${n}.`]);
+/**
+ * What each server answers (`<resolver>|<name>|<type>`): ns2 serves an older serial and answers an
+ * unrelated name (an open resolver), the DigitalOcean server refuses the zone (a lame delegation
+ * at a provider of the Sitting Ducks list) and the parent hands out a stale glue address.
+ */
+const DLG_ROUTES = {
+  'ns1.example.org|example.org|SOA': { answer: dlgSoa(2026100801), nsid: 'ns1-ams' },
+  'ns1.example.org|example.org|NS': { answer: dlgNs },
+  'ns1.example.org|example.net|A': { rcode: 'REFUSED', flags: 'qr rd' },
+  'ns2.example.net|example.org|SOA': { answer: dlgSoa(2026100700) },
+  'ns2.example.net|example.org|NS': { answer: dlgNs },
+  'ns2.example.net|example.net|A': { flags: 'qr rd ra', answer: [['example.net', 'A', '192.0.2.80']] },
+  'ns1.digitalocean.com|example.org|SOA': { rcode: 'REFUSED', flags: 'qr rd' },
+  'ns1.digitalocean.com|example.net|A': { rcode: 'REFUSED', flags: 'qr rd' },
+  'a0.org-servers.example.net|example.org|NS': { flags: 'qr rd', authority: dlgNs, additional: [['ns1.example.org', 'A', '192.0.2.99']] }
+};
+
+/**
+ * Fake DoH for the delegation group: `?dns=` queries answered from DLG_DNS (a name without the
+ * type is NOERROR / no data, an unknown name NXDOMAIN with the zone's SOA); every question is
+ * kept in window.__dlgDns.
+ */
+const delegationDnsScript = (table, apex, soa) => `(() => {
+  const TABLE = ${JSON.stringify(table)};
+  const APEX = ${JSON.stringify(apex)};
+  const SOA = ${JSON.stringify(soa)};
+  const realFetch = window.fetch.bind(window);
+  let wire = null;
+  window.__dlgDns = [];
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    const m = /[?&]dns=([^&]+)/.exec(url);
+    if (!m) return realFetch(input, init);
+    wire = wire || await import(new URL('assets/js/lib/dnswire.js', document.baseURI).href);
+    const q = wire.decodeMessage(wire.base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
+    const name = String(q.name).toLowerCase().replace(/[.]$/, '');
+    window.__dlgDns.push(name + '|' + q.type);
+    const node = TABLE[name];
+    const exists = !!node || Object.keys(TABLE).some((k) => k.endsWith('.' + name));
+    const answers = node && node[q.type] ? node[q.type].map((data) => ({ name, type: q.type, ttl: 300, data })) : [];
+    const authorities = answers.length ? [] : [{ name: APEX, type: 'SOA', ttl: 300, data: SOA }];
+    return new Response(wire.encodeMessage({
+      id: 0, flags: { qr: true, rd: true, ra: true }, rcode: exists ? 'NOERROR' : 'NXDOMAIN',
+      questions: [{ name: q.name, type: q.type }], answers, authorities, edns: {}
+    }), { headers: { 'content-type': 'application/dns-message' } });
+  };
+})();`;
+
+/**
+ * Fake Globalping v1 API for DNS measurements (the outermost window.fetch wrapper): /limits
+ * (window.__gp.limitsRemaining), POST /measurements (202 + quota headers) and GET
+ * /measurements/:id, finished at once with the dig text of the route the body names
+ * (`<resolver>|<target>|<type>`, DLG_ROUTES; an unknown one times out). Calls in window.__gp.calls.
+ */
+const fakeDnsGlobalpingScript = (routes, probe) => `(() => {
+  const API = 'https://api.globalping.io/v1';
+  const ROUTES = ${JSON.stringify(routes)};
+  const PROBE = ${JSON.stringify(probe)};
+  const gp = window.__gp = { calls: [], n: 0, limitsRemaining: 250, measurements: {} };
+  const json = (status, body, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8', ...headers } });
+  const line = (r) => r[0] + '.\\t\\t3600\\tIN\\t' + r[1] + '\\t' + r[2];
+  const hex = (s) => [...s].map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join(' ');
+  const dig = (target, type, resolver, spec) => {
+    const flags = spec.flags || 'qr aa rd';
+    const out = ['', '; <<>> DiG 9.18.49 <<>> -t ' + type + ' ' + target + ' @' + resolver + ' -p 53 -4 +nsid', ';; global options: +cmd', ';; Got answer:',
+      ';; ->>HEADER<<- opcode: QUERY, status: ' + (spec.rcode || 'NOERROR') + ', id: 1',
+      ';; flags: ' + flags + '; QUERY: 1, ANSWER: ' + (spec.answer || []).length + ', AUTHORITY: ' + (spec.authority || []).length + ', ADDITIONAL: 1', '',
+      ';; OPT PSEUDOSECTION:', '; EDNS: version: 0, flags:; udp: 1232'];
+    if (spec.nsid) out.push('; NSID: ' + hex(spec.nsid) + ' ("' + spec.nsid + '")');
+    out.push(';; QUESTION SECTION:', ';' + target + '.\\t\\t\\tIN\\t' + type, '');
+    for (const [title, list] of [['ANSWER', spec.answer], ['AUTHORITY', spec.authority], ['ADDITIONAL', spec.additional]]) {
+      if (list && list.length) out.push(';; ' + title + ' SECTION:', ...list.map(line), '');
+    }
+    out.push(';; Query time: 9 msec', ';; SERVER: 192.0.2.53#53(' + resolver + ') (UDP)', '');
+    return out.join('\\n');
+  };
+  const inner = window.fetch;
+  window.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (!url.startsWith('https://api.globalping.io/')) return inner(input, init);
+    const method = String(init.method || 'GET').toUpperCase();
+    let body = null;
+    try { body = typeof init.body === 'string' ? JSON.parse(init.body) : null; } catch { body = null; }
+    const p = url.startsWith(API) ? url.slice(API.length) : url;
+    gp.calls.push({ method, path: p, body });
+    if (init.signal && init.signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+    if (p === '/limits' && method === 'GET') {
+      return json(200, { rateLimit: { measurements: { create: { type: 'ip', limit: 250, remaining: gp.limitsRemaining, reset: 1800 } } } });
+    }
+    if (p === '/measurements' && method === 'POST') {
+      gp.limitsRemaining = Math.max(0, gp.limitsRemaining - 1);
+      gp.n += 1;
+      const id = 'fakeDelegation' + String(gp.n).padStart(6, '0');
+      gp.measurements[id] = body;
+      return json(202, { id, probesCount: 1 }, {
+        'x-ratelimit-limit': '250', 'x-ratelimit-consumed': String(250 - gp.limitsRemaining), 'x-ratelimit-remaining': String(gp.limitsRemaining),
+        'x-ratelimit-reset': '1800', 'x-request-cost': '1'
+      });
+    }
+    const m = /^\\/measurements\\/([A-Za-z0-9]+)$/.exec(p);
+    if (m && method === 'GET') {
+      const b = gp.measurements[m[1]];
+      if (!b) return json(404, { error: { type: 'not_found', message: 'Not Found.' } });
+      const resolver = b.measurementOptions.resolver;
+      const type = b.measurementOptions.query.type;
+      const spec = ROUTES[resolver + '|' + b.target + '|' + type];
+      const result = spec
+        ? { status: 'finished', rawOutput: dig(b.target, type, resolver, spec), statusCodeName: spec.rcode || 'NOERROR', statusCode: spec.rcode === 'REFUSED' ? 5 : 0,
+          answers: (spec.answer || []).map((r) => ({ name: r[0] + '.', type: r[1], ttl: 3600, class: 'IN', value: r[2] })), timings: { total: 9 }, resolver }
+        : { status: 'failed', rawOutput: ';; communications error to 192.0.2.53#53: timed out\\n;; no servers could be reached', resolver };
+      return json(200, { id: m[1], type: 'dns', status: 'finished', target: b.target, probesCount: 1, results: [{ probe: PROBE, result }] });
+    }
+    return json(404, { error: { type: 'not_found', message: 'Not Found.' } });
+  };
+})();`;
+
+/** What the Delegation card shows. */
+function delegationInfo() {
+  const card = document.querySelector('[data-delegation="card"]');
+  if (!card) return null;
+  const panel = card.querySelector('[data-delegation="panel"]');
+  return {
+    state: panel ? panel.dataset.state : 'hook',
+    button: (card.querySelector('[data-action="dlg-open"], [data-action="dlg-run"]')?.textContent || '').trim(),
+    verdict: card.querySelector('[data-dlg-verdict]')?.dataset.dlgVerdict ?? null,
+    findings: [...card.querySelectorAll('[data-finding]')].map((li) => `${li.dataset.finding}:${li.dataset.severity}`),
+    servers: [...card.querySelectorAll('tr[data-ns]')].map((tr) => `${tr.dataset.ns}=${tr.dataset.state}`),
+    glue: [...card.querySelectorAll('tr[data-glue]')].map((tr) => `${tr.dataset.host}=${tr.dataset.glue}`),
+    parent: card.querySelector('[data-parent]')?.dataset.parent ?? null,
+    refs: card.querySelectorAll('[data-finding="sitting-ducks"] .dlg-refs a').length,
+    links: [...card.querySelectorAll('tr[data-ns] a[href]')].map((a) => a.getAttribute('href')),
+    text: card.textContent.replace(/\s+/g, ' ')
+  };
+}
+
+async function delegationGroup(browser, server) {
+  group('Offline: Delegation (emulated example.org, fake Globalping DNS)');
+  const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+  const netHits = await networkGuard(page);
+  const probe = { continent: 'EU', region: 'Western Europe', country: 'NL', city: 'Amsterdam', asn: 64500, network: 'Example Net', tags: ['datacenter-network'] };
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: delegationDnsScript(DLG_DNS, DLG_ZONE_NAME, DLG_SOA) });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeDnsGlobalpingScript(DLG_ROUTES, probe) });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: RDAP_FAKE_SCRIPT });
+  await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+  const gpCalls = () => page.evaluate(() => window.__gp.calls.map((c) => ({ method: c.method, path: c.path, body: c.body })));
+  const posts = async () => (await gpCalls()).filter((c) => c.method === 'POST')
+    .map((c) => `${c.body.measurementOptions.resolver}|${c.body.target}|${c.body.measurementOptions.query.type}`).sort();
+  const card = () => page.evaluate(delegationInfo);
+  const panelState = (want, message) => page.waitFor((w) => document.querySelector('[data-delegation="panel"]')?.dataset.state === w,
+    { args: [want], timeout: 20000, message });
+  try {
+    await step('the report has an idle Delegation card with its cost; nothing goes to Globalping', async () => {
+      await page.goto(`${server.url}#/about`);
+      await waitReady(page);
+      await setLangUi(page, 'en');
+      await gotoHash(page, `#/health?domain=${DLG_ZONE_NAME}`, 'health');
+      await page.waitFor(DONE, { timeout: 30000, message: 'health report' });
+      const c = await card();
+      assert(c, 'Delegation card');
+      assertEqual([c.state, c.button], ['hook', 'Check the delegation'], 'idle card');
+      assert(c.text.includes('Asks every name server of example.org directly') && c.text.includes('About 10 Globalping probes.'), `intro: ${c.text.slice(0, 200)}`);
+      assertEqual(await gpCalls(), [], 'no Globalping call, not even /limits');
+      await assertNoHorizontalScroll(page, 'delegation idle');
+    });
+
+    await step('the click reads the delegation from DoH, then the consent dialog names the zone, the servers asked and the cost; Cancel sends nothing', async () => {
+      await page.click('[data-action="dlg-open"]');
+      await page.waitFor((d) => document.querySelector(d), { args: [GP_DIALOG], timeout: 20000, message: 'consent dialog' });
+      const dlg = await page.evaluate((d) => {
+        const el = document.querySelector(d);
+        return { privacy: el.querySelector('[data-gp="confirm-privacy"]')?.textContent || '', probes: el.querySelector('[data-gp="confirm-cost"]')?.dataset.probes };
+      }, GP_DIALOG);
+      assert(dlg.privacy.includes('example.org') && dlg.privacy.includes('example.net') && dlg.privacy.includes('a0.org-servers.example.net'), `privacy: ${dlg.privacy}`);
+      assertEqual(dlg.probes, '10', 'cost: SOA, NS and the unrelated name at three servers, and the parent');
+      assertEqual((await gpCalls()).map((c) => `${c.method} ${c.path}`), ['GET /limits'], 'only the free quota read before consent');
+      const dohNames = await page.evaluate(() => window.__dlgDns.slice());
+      for (const q of ['example.org|NS', 'ns1.example.org|A', 'ns1.example.org|AAAA', 'org|NS']) assert(dohNames.includes(q), `DoH asked ${q}`);
+      assert(!dohNames.includes('example.net|A'), 'the unrelated name never goes to DoH');
+      await page.click(`${GP_DIALOG} .modal-foot .btn:not(.btn-primary)`);
+      await page.waitFor((d) => !document.querySelector(d), { args: [GP_DIALOG], message: 'dialog closed' });
+      await panelState('idle', 'panel back to idle');
+      assertEqual(await posts(), [], 'Cancel sends nothing');
+    });
+
+    await step('Send: exactly the planned measurements; lame, Sitting Ducks, serial drift, stale glue and an open resolver', async () => {
+      await page.click('[data-action="dlg-run"]');
+      await page.waitFor((d) => document.querySelector(d), { args: [GP_DIALOG], timeout: 20000, message: 'consent dialog (Cancel granted nothing)' });
+      await page.click(`${GP_DIALOG} .modal-foot .btn-primary`);
+      await panelState('done', 'delegation result');
+      assertEqual(await posts(), [
+        'a0.org-servers.example.net|example.org|NS',
+        'ns1.digitalocean.com|example.net|A', 'ns1.digitalocean.com|example.org|SOA',
+        'ns1.example.org|example.net|A', 'ns1.example.org|example.org|NS', 'ns1.example.org|example.org|SOA',
+        'ns2.example.net|example.net|A', 'ns2.example.net|example.org|NS', 'ns2.example.net|example.org|SOA'
+      ], 'nine measurements: no NS question to the server that refused the zone');
+      const c = await card();
+      assertEqual(c.verdict, 'error', 'verdict');
+      assertEqual(c.findings, ['lame:error', 'sitting-ducks:error', 'serial-drift:warn', 'glue-differs:warn', 'open-recursion:warn'], 'findings, worst first');
+      assertEqual(c.servers, ['ns1.digitalocean.com=refused', 'ns1.example.org=ok', 'ns2.example.net=ok'], 'servers');
+      assertEqual(c.glue, ['ns1.example.org=differs'], 'stale glue for the server inside the zone');
+      assertEqual(c.parent, 'ok', 'the parent delegates');
+      assertEqual(c.refs, 3, 'the Sitting Ducks references');
+      assert(c.links.length === 8 && c.links.every((u) => u.startsWith('https://api.globalping.io/v1/measurements/fakeDelegation')), `measurement links: ${c.links}`);
+      assert(c.text.includes('SOA serials differ: 2026100700, 2026100801') && c.text.includes('NSID ns1-ams') && c.text.includes('DigitalOcean'), `text: ${c.text.slice(0, 400)}`);
+      await assertNoHorizontalScroll(page, 'delegation result');
+      await shotSelector(page, 'health-delegation-desktop-light-en', '.hlt-dlg');
+    });
+
+    await step('a language switch keeps the result in Turkish, without a new probe', async () => {
+      await setLangUi(page, 'tr');
+      await page.waitFor(() => document.querySelector('[data-delegation="panel"]')?.dataset.state === 'done', { timeout: 20000, message: 'result after the re-mount' });
+      const c = await card();
+      assert(c.text.includes('Sitting Ducks riski') && c.text.includes('Delegasyonda 2 sorun var.'), `Turkish: ${c.text.slice(0, 300)}`);
+      assertEqual((await posts()).length, 9, 'no new measurement');
+      await setLangUi(page, 'en');
+      await page.waitFor(() => document.querySelector('[data-delegation="panel"]')?.dataset.state === 'done', { timeout: 20000, message: 'result back in English' });
+    });
+
+    for (const scheme of ['light', 'dark']) {
+      await step(`[375 px, ${scheme}] the Delegation card fits a phone`, async () => {
+        await page.setViewport({ width: 375, height: 812, mobile: true });
+        await page.emulateMedia({ 'prefers-color-scheme': scheme });
+        await assertNoHorizontalScroll(page, `delegation 375 ${scheme}`);
+        await shotSelector(page, `health-delegation-phone-${scheme}-en`, '.hlt-dlg');
+        await page.setViewport({ width: 1440, height: 900 });
+        await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      });
+    }
+
+    await step('a quota that cannot cover the check: nothing is sent, the card says when it comes back', async () => {
+      await page.evaluate(() => { window.__gp.limitsRemaining = 3; });
+      await page.click('[data-action="dlg-run"]');
+      await panelState('quota', 'quota state');
+      const c = await card();
+      assert(/quota cannot cover the check; it resets/.test(c.text), `quota text: ${c.text.slice(0, 300)}`);
+      assertEqual((await posts()).length, 9, 'no measurement over the quota');
+    });
+
+    await step('nothing left the page; i18n complete; no console errors', async () => {
+      assertEqual(netHits, [], 'https requests that reached the network');
+      await checkI18n(page);
+      await assertClean(page, 'delegation offline');
+    });
+  } finally {
+    await page.close();
+  }
+}
+
 /** Element screenshot of one details card, however tall (no-op with --no-shots). */
 async function shotSelector(page, name, selector) {
   if (!SHOTS_ON) return;
@@ -1101,6 +1366,7 @@ async function main() {
 
   try {
     await mtaStsGroup(browser, server);
+    await delegationGroup(browser, server);
     if (OFFLINE) process.stdout.write('\n(--offline: the live DNS + RDAP groups are skipped)\n');
     else await liveGroups(browser, server);
   } finally {

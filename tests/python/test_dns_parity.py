@@ -822,5 +822,191 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual((code, out.strip()), (0, 'dns_parity.py 1.0.0'))
 
 
+# ============================================================================ zone transfers
+
+class FakeTransfer:
+    """A TCP server for zone transfers of ``zone`` on 127.0.0.1: ``mode`` 'open' (the zone in two
+    messages, SOA first and last), 'partial' (the zone without its closing SOA, then silence),
+    'refused' / 'notauth' (that rcode), 'close' (closes without an answer), 'silent' (never
+    answers) or 'nosoa' (an answer that does not start with the SOA)."""
+
+    def __init__(self, zone: str = 'example.com', mode: str = 'open', serial: int = 2026100801) -> None:
+        self.zone, self.mode, self.serial = zone, mode, serial
+        self.asked = []  # type: List[Tuple[str, int]]
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.bind(('127.0.0.1', 0))
+        self.sock.listen(8)
+        self.port = self.sock.getsockname()[1]
+        self.alive = True
+        self.conns = []  # type: List[socket.socket]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def close(self) -> None:
+        self.alive = False
+        for sock in [self.sock] + self.conns:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def _rr(self, name: str, rtype: str, value) -> bytes:
+        data = rdata(rtype, value)
+        return enc_name(name) + struct.pack('!HHIH', CODES[rtype], 1, 3600, len(data)) + data
+
+    def _message(self, msg_id: int, question: bytes, rrs: List[bytes], rcode: int = 0) -> bytes:
+        header = struct.pack('!HHHHHH', msg_id, 0x8400 | rcode, 1, len(rrs), 0, 0)
+        body = header + question + b''.join(rrs)
+        return struct.pack('!H', len(body)) + body
+
+    def _serve(self) -> None:
+        while self.alive:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            self.conns.append(conn)
+            try:
+                size = struct.unpack('!H', conn.recv(2))[0]
+                data = b''
+                while len(data) < size:
+                    data += conn.recv(size - len(data))
+            except (OSError, struct.error):
+                continue
+            msg_id = struct.unpack('!H', data[:2])[0]
+            qtype = struct.unpack('!H', data[-4:-2])[0]
+            question = data[12:]
+            self.asked.append((self.zone, qtype))
+            soa = self._rr(self.zone, 'SOA', ('ns1.example.net', 'hostmaster.example.com', self.serial))
+            body = [self._rr(self.zone, 'NS', 'ns1.example.net'), self._rr(self.zone, 'A', '192.0.2.10'),
+                    self._rr('mail.' + self.zone, 'A', '198.51.100.25')]
+            try:
+                if self.mode == 'open':
+                    conn.sendall(self._message(msg_id, question, [soa] + body[:1]))
+                    conn.sendall(self._message(msg_id, question, body[1:] + [soa]))
+                elif self.mode == 'partial':
+                    conn.sendall(self._message(msg_id, question, [soa] + body))
+                    continue  # and then nothing more: the reader times out
+                elif self.mode in ('refused', 'notauth'):
+                    conn.sendall(self._message(msg_id, question, [], 5 if self.mode == 'refused' else 9))
+                elif self.mode == 'nosoa':
+                    conn.sendall(self._message(msg_id, question, body))
+                elif self.mode == 'silent':
+                    continue
+            except OSError:
+                pass
+            if self.mode != 'silent':
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+
+
+class AxfrTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def server(self, mode: str) -> FakeTransfer:
+        srv = FakeTransfer(mode=mode)
+        self.addCleanup(srv.close)
+        return srv
+
+    def test_the_question_layout(self):
+        query = dp.axfr_query('example.com', 0x1234)
+        self.assertEqual(query[:12], struct.pack('!HHHHHH', 0x1234, 0, 1, 0, 0, 0), 'RD off, no EDNS')
+        self.assertEqual(query[12:], enc_name('example.com') + struct.pack('!HH', 252, 1))
+
+    def test_an_open_server_sends_the_zone_which_is_only_counted(self):
+        srv = self.server('open')
+        result = dp.try_axfr('127.0.0.1', srv.port, 'Example.COM.', timeout=2)
+        self.assertEqual((result.status, result.records, result.serial, result.complete, result.rcode),
+                         (dp.AXFR_OPEN, 5, 2026100801, True, 'NOERROR'))
+        self.assertEqual(result.detail, '')
+        self.assertEqual(srv.asked, [('example.com', 252)])
+
+    def test_denied_by_rcode_by_a_closed_connection_or_an_answer_without_the_zone(self):
+        for mode, detail in (('refused', 'REFUSED'), ('notauth', 'RCODE9'), ('close', 'closed the connection'),
+                             ('nosoa', 'no zone in the answer')):
+            srv = self.server(mode)
+            result = dp.try_axfr('127.0.0.1', srv.port, 'example.com', timeout=2)
+            self.assertEqual((result.status, result.records), (dp.AXFR_DENIED, 0), mode)
+            self.assertIn(detail, result.detail, mode)
+
+    def test_silence_is_an_error_and_a_cut_transfer_is_open_but_incomplete(self):
+        silent = self.server('silent')
+        result = dp.try_axfr('127.0.0.1', silent.port, 'example.com', timeout=0.3)
+        self.assertEqual(result.status, dp.AXFR_ERROR)
+        self.assertIn('no answer in 0.3s', result.detail)
+        partial = self.server('partial')
+        result = dp.try_axfr('127.0.0.1', partial.port, 'example.com', timeout=0.3)
+        self.assertEqual((result.status, result.records, result.complete), (dp.AXFR_OPEN, 4, False))
+        self.assertIn('before the closing SOA', result.detail)
+        refused = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        refused.bind(('127.0.0.1', 0))
+        port = refused.getsockname()[1]
+        refused.close()  # nothing listens there now
+        result = dp.try_axfr('127.0.0.1', port, 'example.com', timeout=1)
+        self.assertEqual(result.status, dp.AXFR_ERROR)
+        self.assertIn('no TCP connection', result.detail)
+
+    def test_the_command_reports_every_server_and_fails_the_check_when_one_is_open(self):
+        open_srv, refused = self.server('open'), self.server('refused')
+        out_json = os.path.join(self.tmp.name, 'axfr.json')
+        args = ['--axfr', 'example.com', '--ns', '127.0.0.1:%d' % open_srv.port, '127.0.0.1:%d' % refused.port,
+                '--timeout', '2', '--json', out_json]
+        code, out, _ = run_main(*args)
+        self.assertEqual(code, 0)
+        self.assertIn('Zone transfer (AXFR) of example.com', out)
+        self.assertRegex(out, r'127\.0\.0\.1\s+OPEN\s+5 records, serial 2026100801')
+        self.assertRegex(out, r'127\.0\.0\.1\s+DENIED\s+the server refuses zone transfers \(REFUSED\)')
+        self.assertIn('OPEN: anyone can download the whole zone', out)
+        self.assertNotIn('192.0.2.10', out, 'the records are never printed')
+        doc = json.loads(Path(out_json).read_text(encoding='utf-8'))
+        self.assertEqual((doc['version'], doc['mode'], doc['zone']), (1, 'axfr', 'example.com'))
+        self.assertEqual([(n['status'], n['records'], n['port']) for n in doc['nameservers']],
+                         [('OPEN', 5, open_srv.port), ('DENIED', 0, refused.port)])
+        self.assertNotIn('192.0.2.10', json.dumps(doc))
+        code, _, _ = run_main(*(args + ['--fail-on-diff']))
+        self.assertEqual(code, 1)
+        code, out, _ = run_main('--axfr', 'example.com', '--ns', '127.0.0.1:%d' % refused.port, '--fail-on-diff')
+        self.assertEqual(code, 0)
+        self.assertIn('No name server allows a zone transfer to this machine.', out)
+
+    def test_without_ns_the_zone_s_name_servers_come_from_the_resolver(self):
+        transfer = self.server('open')
+        resolver = FakeAuthority('example.com', {('example.com', 'NS'): [(86400, 'ns1.example.net'), (86400, 'ns2.example.net')]})
+        self.addCleanup(resolver.close)
+        with mock.patch.object(dp, '_resolve', lambda host: '127.0.0.1'):
+            code, out, err = run_main('--axfr', 'example.com', '--resolver', '127.0.0.1:%d' % resolver.port,
+                                      '--port', str(transfer.port), '--timeout', '2')
+        self.assertEqual(code, 0, err)
+        self.assertIn('name servers of example.com: ns1.example.net, ns2.example.net', err)
+        self.assertRegex(out, r'ns1\.example\.net \(127\.0\.0\.1\)\s+OPEN', 'both names share one address: asked once')
+        self.assertNotIn('ns2.example.net (127.0.0.1)', out)
+        self.assertEqual(resolver.asked[0][:2], ('example.com', 'NS'))
+
+    def test_usage_errors_and_resolv_conf(self):
+        zone = os.path.join(self.tmp.name, 'z.zone')
+        Path(zone).write_text(ZONE_TEXT, encoding='utf-8')
+        for args in (['--axfr', 'example.com', zone], ['--axfr', 'example.com', '--ns', '192.0.2.1', '--csv', '-'],
+                     ['--axfr', 'bad..name', '--ns', '192.0.2.1'], [zone, '--ns', '192.0.2.1', '--resolver', '192.0.2.53'],
+                     ['--ns', '192.0.2.1']):
+            code, _, _ = run_main(*args)
+            self.assertEqual(code, 2, args)
+        with mock.patch.object(dp, 'system_resolvers', lambda path=dp.RESOLV_CONF: []):
+            code, _, err = run_main('--axfr', 'example.com')
+        self.assertEqual(code, 2)
+        self.assertIn('give the name servers with --ns', err)
+        conf = os.path.join(self.tmp.name, 'resolv.conf')
+        Path(conf).write_text('# a comment\nnameserver 192.0.2.53\nsearch example.com\nnameserver fe80::1%en0\n'
+                              'nameserver not-an-address\noptions ndots:1\n', encoding='utf-8')
+        self.assertEqual(dp.system_resolvers(conf), ['192.0.2.53', 'fe80::1'])
+        self.assertEqual(dp.system_resolvers(os.path.join(self.tmp.name, 'none')), [])
+
+    def test_the_resolver_query_asks_for_recursion(self):
+        self.assertEqual(struct.unpack('!H', dp.build_query('example.com', 'NS', 1, rd=True)[2:4])[0], 0x0100)
+        self.assertEqual(struct.unpack('!H', dp.build_query('example.com', 'NS', 1)[2:4])[0], 0)
+
+
 if __name__ == '__main__':
     unittest.main()

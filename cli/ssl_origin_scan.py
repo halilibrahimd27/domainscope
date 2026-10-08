@@ -7974,6 +7974,12 @@ def _verify_side(address: str, port: int, name: str, timeout: float, cert: CertI
     except ssl.SSLCertVerificationError as exc:
         detail = getattr(exc, 'verify_message', '') or _clean_ssl_message(exc)
         if cert.covers(name)[0] and any(issued_by(cert, ca) for ca in private_cas):
+            # OpenSSL names only the unknown issuer: the dates are checked here, as for a public one
+            now = _utcnow()
+            if cert.not_after < now:
+                return False, 'certificate has expired'
+            if cert.not_before > now:
+                return False, 'certificate is not yet valid'
             return True, 'issued by a --private-ca'
         return False, detail
     except (OSError, ssl.SSLError) as exc:

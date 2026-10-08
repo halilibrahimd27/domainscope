@@ -20,6 +20,7 @@ import ssl
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 from typing import Dict, List, Optional, Tuple
 
 from test_ssl_origin_scan import FIXTURES, _Listener, fixture_cert, read_json, run_main, sos
@@ -405,6 +406,21 @@ class CompareUnitTests(unittest.TestCase):
                                   expiring, width=160, now=now)
         line = next(l for l in text.splitlines() if l.strip().startswith('cert expires'))
         self.assertTrue(line.rstrip().endswith('WARNING'), line)
+
+    def test_a_private_ca_certificate_outside_its_dates_is_not_trusted(self):
+        # the system store rejects it as an unknown issuer either way: a --private-ca vouches for
+        # the issuer, never for an expired or not yet valid certificate (BROKEN, as a public one)
+        server = HttpsServer('cli_private_wild', '127.0.0.1')
+        try:
+            cert, ca = fixture_cert('cli_private_wild.pem'), fixture_cert('cli_private_ca.pem')
+            side = lambda: sos._verify_side('127.0.0.1', server.port, NAME, 3, cert, [ca])
+            self.assertEqual(side(), (True, 'issued by a --private-ca'))
+            for now, detail in ((cert.not_after + timedelta(days=1), 'certificate has expired'),
+                                (cert.not_before - timedelta(days=1), 'certificate is not yet valid')):
+                with mock.patch.object(sos, '_utcnow', return_value=now):
+                    self.assertEqual(side(), (False, detail))
+        finally:
+            server.close()
 
     def test_page_title(self):
         self.assertEqual(sos.page_title(b'<TITLE lang=en>\n A &#8212; B &amp; C </title>'), 'A — B & C')

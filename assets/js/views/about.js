@@ -193,6 +193,7 @@ registerStrings('en', {
   'about.ex7': 'Cron — changes since the last run and certificates expiring within 21 days (set DOMAINSCOPE_NOTIFY_URL for Slack, Teams, Discord, Telegram or Google Chat)',
   'about.ex8': 'Before DNS moves a name to a new server: the old and the new server’s answers side by side (private addresses too)',
   'about.exStarttls': 'Mail and database servers — STARTTLS on 25, 587 and 5432, SMTP on 2525 too — with a TLS audit: versions, weak cipher suites, RSA + ECDSA pairs',
+  'about.exProfile': 'Every port the scan speaks — web, mail, file transfer, directory, chat, database, remote desktop — with a TLS audit: chains this machine does not trust or that lack an intermediate, and a name a pool member still serves with an older certificate',
   'about.parityDesc': 'Moving DNS to another provider: asks the new name servers for every record set of a zone file, from your machine, and lists what is missing, different or extra there. Python 3.8+, a single file.',
   'about.parityEx': 'Zone File › New name servers downloads the zone and gives this command',
   'about.ipIntelDesc': 'Reverse IP from inside your network: the names an address, a range or a list serves or served — its TLS certificates with and without SNI, PTR, free passive DNS (mnemonic too, which no browser can ask) and the services of your own keys, read from environment variables only — and where each name points now. A private address goes to no third party. Python 3.8+, a single file.',
@@ -355,6 +356,7 @@ registerStrings('tr', {
   'about.ex7': 'Cron — son çalıştırmadan beri değişenler ve 21 gün içinde süresi dolacak sertifikalar (Slack, Teams, Discord, Telegram ya da Google Chat bildirimi için DOMAINSCOPE_NOTIFY_URL ortam değişkenini tanımlayın)',
   'about.ex8': 'DNS bir adı yeni sunucuya taşımadan önce: eski ve yeni sunucunun yanıtları yan yana (özel adresler de olur)',
   'about.exStarttls': 'Posta ve veritabanı sunucuları — 25, 587 ve 5432’de STARTTLS, 2525’te de SMTP — ve TLS denetimi: sürümler, zayıf şifre takımları, RSA + ECDSA ikilileri',
+  'about.exProfile': 'Taramanın konuştuğu her port — web, posta, dosya aktarımı, dizin, sohbet, veritabanı, uzak masaüstü — ve TLS denetimi: bu makinenin güvenmediği ya da ara sertifikası eksik zincirler, bir havuz üyesinin hâlâ eski sertifikayla sunduğu adlar',
   'about.parityDesc': 'DNS’i başka bir sağlayıcıya taşırken: bir zone dosyasındaki her kayıt kümesini kendi makinenizden yeni ad sunucularına sorar; orada eksik, farklı ya da fazladan olanları listeler. Python 3.8+, tek dosya.',
   'about.parityEx': 'Zone File › Yeni ad sunucuları zone’u indirir ve bu komutu verir',
   'about.ipIntelDesc': 'Ağınızın içinden ters IP: bir adresin, aralığın ya da listenin bugün sunduğu veya geçmişte sunduğu adlar — SNI’li ve SNI’siz TLS sertifikaları, PTR, ücretsiz pasif DNS (hiçbir tarayıcının soramadığı mnemonic dahil) ve yalnızca ortam değişkenlerinden okunan anahtarlarınızla çalışan servisler — ve her adın bugün nereye çözümlendiği. Özel adresler hiçbir üçüncü tarafa gönderilmez. Python 3.8+, tek dosya.',
@@ -413,7 +415,8 @@ const CLI_EXAMPLES = [
   { key: 'about.ex6', cmd: 'python3 ssl_origin_scan.py -t hosts.ini -t 10.0.0.5:8443 --cert new.pem --private-ca internal-ca.pem' },
   { key: 'about.ex7', cmd: 'python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --baseline last.json --json last.json --warn-days 21 -q > last.txt' },
   { key: 'about.ex8', cmd: 'python3 ssl_origin_scan.py --compare 10.0.0.5 10.0.0.6 -n www.example.com' },
-  { key: 'about.exStarttls', cmd: 'python3 ssl_origin_scan.py -t mail.txt --cert new.pem -p 25,587,993,5432,2525/smtp --tls-audit' }
+  { key: 'about.exStarttls', cmd: 'python3 ssl_origin_scan.py -t mail.txt --cert new.pem -p 25,587,993,5432,2525/smtp --tls-audit' },
+  { key: 'about.exProfile', cmd: 'python3 ssl_origin_scan.py -t hosts.ini -n names.txt --profile all --tls-audit --json audit.json' }
 ];
 
 const CLI_STATUSES = [

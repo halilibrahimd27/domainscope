@@ -1104,8 +1104,13 @@ async function main() {
         assertEqual(cron?.label, want, `cron example label (${lang})`);
         assert(cron.cmd.includes('--baseline last.json --json last.json --warn-days 21'), `cron command: ${cron.cmd}`);
         labels[lang] = cron.label;
+        // the port presets with the audit's chain and fleet checks
+        const profile = list.find((ex) => ex.cmd.includes('--profile all --tls-audit'));
+        assert(profile && /RDP|uzak masaüstü|remote desktop/.test(profile.label), `profile example (${lang}): ${JSON.stringify(profile)}`);
+        labels[`profile-${lang}`] = profile.label;
       }
       assert(labels.tr !== labels.en && labels.tr.includes('DOMAINSCOPE_NOTIFY_URL'), `labels: ${JSON.stringify(labels)}`);
+      assert(labels['profile-tr'] !== labels['profile-en'], `profile labels: ${JSON.stringify(labels)}`);
     });
 
     await step('settings dialog: reorder/toggle resolvers, restore defaults, Esc closes', async () => {

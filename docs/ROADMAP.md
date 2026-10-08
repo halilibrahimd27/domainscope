@@ -9,6 +9,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 - **Wave 3 — shipped 2026-09-28** ([what shipped and where](#wave-3--shipped-2026-09-28)): customer workspaces with a hand-over file and expected CAs, several certificates at once in SSL Targets (a renewal week) with the CLI's repeated `--cert`, Renewal readiness, Retire an IP, the Domain overview, and PFX / PKCS#12 import.
 - **Wave 4 — shipped 2026-10-01** ([what shipped and where](#wave-4--shipped-2026-10-01)): the headless runner with a nightly GitHub Actions template, the CLI's certificate estate and `bundle-check` with a Certificate estate view and a CSR check, the missing intermediate from a bundled CCADB list with root-store warnings, DNS change requests with an "is it live?" link and fix-as-code, DNS provider moves (new name servers, `dns_parity.py`, the old and the new server side by side), a ledger of what the page sent with related domains and key continuity, and DMARC & TLS reports.
 - **Wave 5 — shipping feature by feature (2026-10-03)** ([what shipped and where](#wave-5--shipping-feature-by-feature-2026-10-03)): a zone fetched from deSEC or DigitalOcean, Global DNS's mainland China locations, the Domain portfolio with a policy audit and the runner's `audit`, Zone File's Compare and Convert, load balancers, VIPs and NAT in the inventory, and a per-workspace origin map.
+- **Wave 6 — shipping feature by feature (2026-10-08)** ([what shipped and where](#wave-6--shipping-feature-by-feature-2026-10-08)): a start route back under its budget, with a Subdomains scan's results loading with the first scan, and a sidebar with room for 24 tools.
 - **P0** — high value, verified feasible, next iteration
   - [P0.1 Verify the served certificate from the internet (Globalping SNI probe)](#p01-verify-the-served-certificate-from-the-internet-globalping-sni-probe)
   - [P0.2 Origin exposure audit for Cloudflare/CDN-proxied hosts](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts)
@@ -117,6 +118,14 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 | The inventory's topology keys (`ports=`, `terminates_tls=no`, `vip=`, `backends=`, `nat=`), read alike by the web app and the CLI: SSL Targets groups the servers by load balancer (a VIP pair together, plain-HTTP backends needing no certificate, NAT addresses) and the Renewal plan, its work list, the Servers CSV, Verify and `targets.txt` follow; the CLI scans each server on its own ports, skips plain-HTTP backends (`--include-backends`) and groups its summary by load balancer; when DNS reaches a `terminates_tls=no` server directly the certificate wins and the inventory is flagged | Servers, SSL Targets, `cli/ssl_origin_scan.py` | new |
 | A per-workspace origin map (opt-in): which server and port really serves a proxied name, remembered from a zone file, imported CLI reports, Verify's checks of exact origins and the old / new server comparison, with stale marks and merge rules that give the same map whatever order the reports arrive in; Subdomains and SSL Targets rank a remembered origin first as `known`, Behind CDN lists it, and the CLI sweep command and `targets.txt` carry it on its own port | Servers › Origin map, Subdomains, SSL Targets, Zone File, Retire an IP | follow-up of [P0.2](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts) and [P1.2](#p12-zone-import-exact-seeds-proxied-origin-map-lint-and-live-drift) |
 | Integration: one number per section for the three (SPEC §5.66–§5.70), the IP half of netinfo in lib/ip.js so the provider ranges stay off the start route (377,888 bytes of its 370 KB budget), a remembered origin counting like DNS and the zone file where TLS terminates | Shell, SSL Targets, Servers | — |
+
+## Wave 6 — shipping feature by feature (2026-10-08)
+
+| Feature | Where | Roadmap item |
+| --- | --- | --- |
+| Integration: the start-route diet — a Subdomains scan's progress and results (`ui/subdomains-run.js`, with their strings and `lib/export.js`) load with its first scan, together with the DoH client, and are modulepreloaded once the page is idle — and a sidebar with room for 24 tools at 1366 × 768 (below 760 px of height the group headings are for screen readers only and a thin rule separates the groups; each link stays a 24 px target) | Shell, Subdomains | — |
+
+**Status (2026-10-08): the start route is at 339,887 bytes gzip of its 370 KB budget (379,552 before the diet), and the sidebar keeps 24 tools in view at 1366 × 768.**
 
 ## P0 — next iteration
 

@@ -350,8 +350,8 @@ describe('subdomains', () => {
     assert.ok(lines(found).includes('- 3 hosts hide their origin behind a proxy') && found.includes('- 1 dangling CNAME (possible takeover): `old.example.com`'), found);
   });
 
-  test('a cancelled scan (views/subdomains facts): the proxied hosts found so far, never "no host hides its origin", no candidates', async () => {
-    const { subdomainsSummaryFacts } = await imp('assets/js/views/subdomains.js');
+  test('a cancelled scan (the Subdomains run facts): the proxied hosts found so far, never "no host hides its origin", no candidates', async () => {
+    const { subdomainsSummaryFacts } = await imp('assets/js/ui/subdomains-run.js');
     const cf = { kind: 'cloudflare', provider: { name: 'Cloudflare' }, hidesOrigin: true, dangling: false };
     const direct = { kind: 'direct', provider: null, hidesOrigin: false, dangling: false };
     const host = (name, ip, classification) => ({ name, wildcardSuspect: false, resolution: { status: 'NOERROR', ipv4: [ip], ipv6: [], cnames: [] }, classification, servers: [] });
@@ -380,7 +380,7 @@ describe('subdomains', () => {
   });
 
   test('a finished scan counts a proxied host whose origin the origin map remembers among those with origin candidates, as the ORIGIN panel does', async () => {
-    const { subdomainsSummaryFacts } = await imp('assets/js/views/subdomains.js');
+    const { subdomainsSummaryFacts } = await imp('assets/js/ui/subdomains-run.js');
     const cf = { kind: 'cloudflare', provider: { name: 'Cloudflare' }, hidesOrigin: true, dangling: false };
     const host = (name, ip) => ({ name, wildcardSuspect: false, resolution: { status: 'NOERROR', ipv4: [ip], ipv6: [], cnames: [] }, classification: cf, servers: [] });
     const hosts = [host('www.example.net', '104.16.5.5'), host('shop.example.net', '104.16.5.6')];

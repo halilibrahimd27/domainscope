@@ -12,8 +12,9 @@ import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/lib/dnswire.js';
 import {
   zoneForDomains, validZoneIntent, zoneScanOverrides, zoneChipCounts, zoneOfResult, originOverview, originSweep,
-  realOriginNetworks, techniqueCounts, ZONE_MODES, ZONE_INTENT_MAX_AGE, HINT_KINDS, WARNING_CODES
+  realOriginNetworks, techniqueCounts, ZONE_MODES, ZONE_INTENT_MAX_AGE, WARNING_CODES
 } from '../../assets/js/views/subdomains.js';
+import { HINT_KINDS } from '../../assets/js/ui/subdomains-run.js';
 import * as scanView from '../../assets/js/views/scan.js';
 
 const SOA = { mname: 'ns.example.net', rname: 'hostmaster.example.net', serial: 1, refresh: 900, retry: 900, expire: 1800, minimum: 60 };

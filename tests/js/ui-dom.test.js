@@ -30,6 +30,11 @@ import { NAV_GROUPS } from '../../assets/js/lib/shellnav.js';
 import { clearedMessage } from '../../assets/js/ui/workspace-ui.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+/** The Subdomains view's source, then its run's progress and results (ui/subdomains-run.js, loaded with the first scan). */
+const subdomainsSource = async () => [
+  await readFile(path.join(ROOT, 'assets', 'js', 'views', 'subdomains.js'), 'utf8'),
+  await readFile(path.join(ROOT, 'assets', 'js', 'ui', 'subdomains-run.js'), 'utf8')
+].join('\n');
 const SPEC_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
 const VIEW_IDS = ['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'reports', 'portfolio', 'inventory', 'about'];
 
@@ -269,8 +274,9 @@ describe('i18n', () => {
   test('a numeric {count} is locale-grouped in plain strings too (Turkish entries are often plain)', async () => {
     i18n.registerStrings('en', { 'test.plainCount': '{count} names' });
     i18n.registerStrings('tr', { 'test.plainCount': '{count} ad' });
-    // Real view strings whose Turkish form is a plain string.
+    // Real view strings whose Turkish form is a plain string (the Subdomains stage pills come with its results).
     await import('../../assets/js/views/subdomains.js');
+    await import('../../assets/js/ui/subdomains-run.js');
     await import('../../assets/js/views/scan.js');
     i18n.setLang('tr');
     try {
@@ -1238,7 +1244,8 @@ describe('routing', () => {
 
 describe('subdomains / scan view helpers (discovery engine v2)', () => {
   const load = async () => ({
-    S: await import('../../assets/js/views/subdomains.js'),
+    // The Subdomains view with its run's results (ui/subdomains-run.js, loaded with the first scan).
+    S: { ...(await import('../../assets/js/views/subdomains.js')), ...(await import('../../assets/js/ui/subdomains-run.js')) },
     C: await import('../../assets/js/views/scan.js'),
     src: await import('../../assets/js/lib/sources.js')
   });
@@ -1561,7 +1568,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.deepEqual(ex.exclude, { requested: ['198.51.100.25', 'not-an-ip'], emitted: [], excluded: ['198.51.100.25'], unused: [], invalid: ['not-an-ip'] });
     // Wiring: the panel and the export read the same helper and the run's exclusions, which are kept
     // per run at module level (a re-mount — another view and back, a language switch — keeps them).
-    const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    const src = await subdomainsSource();
     assert.match(src, /origin: run\.result \? originExport\(run\.result, originExclude\.tokens, originIndex\(stateSingleton\.workspaceData\('origins'\)\)\) : null/,
       'the export reads the panel exclusions and the origin map as the panel does');
     assert.match(src, /const currentSweep = \(shell\) => originSweepFor\(r, \{/, 'the panel reads the same helper');
@@ -1759,7 +1766,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.match(scanSrc, /active && active\.refreshVocab\) active\.refreshVocab\(\)/, 'startRun calls the hook after learning');
     const activeBlock = /\n {2}active = \{([\s\S]*?)\n {2}\};/.exec(scanSrc);
     assert.ok(activeBlock && /\n {4}refreshVocab\(\) \{\s*renderVocab\(\);/.test(activeBlock[1]), 'the mounted view defines it');
-    const subSrc = await readFile(new URL('../../assets/js/views/subdomains.js', import.meta.url), 'utf8');
+    const subSrc = await subdomainsSource();
     const forget = /dataset: \{ action: 'sub-learned-clear' \},\s*onClick: \(\) => \{([\s\S]*?)\n {4}\}\n {2}\}\);/.exec(subSrc);
     assert.ok(forget, 'Forget handler found');
     for (const fn of ['renderLearned()', 'renderPlan()', 'renderAdvSummary()']) assert.ok(forget[1].includes(fn), `Forget calls ${fn}`);
@@ -2150,7 +2157,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.equal(S.linkAction({ run: '1' }, ['example.org'], run(['example.com'], 'running')), null, 'a scan is running');
     assert.equal(S.linkAction({ run: '1' }, ['example.org'], run(['example.com'])), 'prompt');
     // start() writes only `domain` (a reload pre-fills instead of re-scanning) — checked in the source.
-    const srcText = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    const srcText = await subdomainsSource();
     assert.match(srcText, /ctx\.setParams\(\{ domain: v\.domains\.join\(','\) \}\);/);
     assert.doesNotMatch(srcText, /ctx\.setParams\([^)]*run: '1'/);
     assert.doesNotMatch(srcText, /queueMicrotask\(\(\) => \{\s*if \(!ctx\.signal\.aborted\) start\(\);/, 'no automatic start');
@@ -2190,7 +2197,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     const zoneRun = { ...run(['example.com'], 'running', 'exact'), zone: v1 };
     assert.equal(S.zoneStartAction(zoneRun, ['example.com'], 'exact', v1), null);
     assert.equal(S.zoneStartAction(zoneRun, ['example.com'], 'exact', v2), 'wait', 'the updated export waits for the old scan');
-    const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    const src = await subdomainsSource();
     assert.match(src, /run\.zone = zoneCfg\.zone \|\| null;/, 'start() keeps the zone on the run');
     inLang('en', () => assert.equal(i18n.t('sub.zone.busy', { running: 'example.org', domain: 'example.com' }),
       'A scan of example.org is still running. The scan of your zone file (example.com) starts when it ends.'));
@@ -2200,7 +2207,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
 
   test('live runs: skipped stages are not announced; a partial row says "resolving…" only while the run lives', async () => {
     // Wiring guards (the views cannot be mounted on the fake DOM; the E2E cancel steps check the behaviour).
-    const subSrc = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    const subSrc = await subdomainsSource();
     const scanSrc = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
     for (const [name, src, prefix] of [['subdomains', subSrc, 'sub'], ['scan', scanSrc, 'scan']]) {
       const announces = [...src.matchAll(/announce\(t\(`(?:sub|scan)\.progress\.\$\{payload\.stage\}`\)\)/g)];
@@ -2239,7 +2246,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
   test('Subdomains results are tabs: the route and the page session keep a chosen tab, a new run starts on the automatic one', async () => {
     // Wiring guards (the view cannot be mounted on the fake DOM; the Subdomains E2E drives the tabs).
     await load();
-    const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    const src = await subdomainsSource();
     for (const [lang, labels] of [['en', ['Overview', 'Hosts', 'Origins', 'Sources']], ['tr', ['Genel bakış', 'Host’lar', 'Origin’ler', 'Kaynaklar']]]) {
       inLang(lang, () => assert.deepEqual(['overview', 'hosts', 'origins', 'sources'].map((id) => i18n.t(`sub.tab.${id}`)), labels, lang));
     }
@@ -2255,7 +2262,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     const start = src.slice(src.indexOf('async function start()'), src.indexOf('function cancel()'));
     assert.ok(start.indexOf('session.tab = null;') !== -1 && start.indexOf('session.tab = null;') < start.indexOf("ctx.setParams({ domain: v.domains.join(',') });"));
     // update(): an edited `tab=` opens that tab without a re-mount.
-    assert.match(src, /const tab = parseSubTab\(params\.tab\);\s*if \(tab && ui\) ui\.showTab\(tab\);/);
+    assert.match(src, /const tab = ui \? runUi\.parseSubTab\(params\.tab\) : null;\s*if \(tab\) ui\.showTab\(tab\);/);
     // A stat card filters the hosts and hands the focus to the Hosts tab (the card hides with its panel).
     assert.match(src, /function pickFilter\(f\) \{\s*setFilter\(f\);\s*showTab\('hosts', \{ focus: true \}\);/);
     // A click on the tab already shown is a choice (the component fires onChange only for a change) …
@@ -2267,7 +2274,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
   test('Subdomains source news is spoken from the run header, since the Sources panel is hidden under another tab', async () => {
     // Wiring guard: a live region inside a hidden tab panel says nothing, so the one that speaks
     // the wait note and the per-source lines sits in the always-visible run header.
-    const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    const src = await subdomainsSource();
     assert.match(src, /const sourceLive = h\('div', \{ class: 'sr-only sub-src-live', attrs: \{ 'aria-live': 'polite' \} \}\);/);
     assert.match(src, /h\('div', \{ class: 'sub-run-titles' \}, title, meta\),\s*summary\.el,\s*NotifyButton\(\(\) => run\.job \|\| null\)\),\s*progress, zoneBanner, handoffBanner, notice, sourceLive\);/, 'in the run header');
     assert.match(src, /const sourceWaitNote = h\('div', \{ class: 'sub-src-wait', hidden: true \}\);/, 'the note in the panel is no live region of its own');
@@ -2294,7 +2301,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
 
   test('a finished Subdomains run redraws its streamed rows, so the "origin?" badge follows the ORIGIN panel', async () => {
     // Wiring guard (the view cannot be mounted on the fake DOM; the Zone File hand-off E2E counts the badges).
-    const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    const src = await subdomainsSource();
     const done = /\n {4}if \(run\.status === 'done'\) \{([\s\S]*?)\n {4}\}/.exec(src);
     assert.ok(done, "finish()'s done branch");
     const at = (s) => done[1].indexOf(s);
@@ -2307,7 +2314,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     await load();
     inLang('en', () => assert.equal(i18n.t('sub.plan.zoneExact', { count: 6 }), 'Exact mode: only the 6 names from your zone file are resolved; the wordlist, variations and passive sources are not used for this scan.'));
     inLang('tr', () => assert.equal(i18n.t('sub.plan.zoneExact', { count: 6 }), 'Kesin mod: yalnızca zone dosyanızdaki 6 ad çözümlenir; bu taramada kelime listesi, varyasyonlar ve pasif kaynaklar kullanılmaz.'));
-    const src = await readFile(path.join(ROOT, 'assets/js/views/subdomains.js'), 'utf8');
+    const src = await subdomainsSource();
     const plan = /function renderPlan\(\) \{([\s\S]*?)\n {2}\}/.exec(src);
     assert.ok(plan, 'renderPlan found');
     assert.match(plan[1], /zone && zoneModes\.get\(zone\) === 'exact'/, 'the exact branch reads the chosen zone mode');
@@ -2319,8 +2326,9 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     await load();
     inLang('en', () => assert.equal(i18n.t('sub.org.owner.lookupFor', { cidr: '203.0.113.0/24' }), 'Look up the owner of 203.0.113.0/24 (asks RIPEstat)'));
     inLang('tr', () => assert.equal(i18n.t('sub.org.owner.lookupFor', { cidr: '203.0.113.0/24' }), '203.0.113.0/24 ağının sahibini bul (RIPEstat’a sorar)'));
-    for (const file of ['subdomains.js', 'scan.js']) {
-      const src = await readFile(path.join(ROOT, 'assets/js/views', file), 'utf8');
+    // Subdomains draws its ORIGIN panel with the run's results (ui/subdomains-run.js).
+    for (const file of ['ui/subdomains-run.js', 'views/scan.js']) {
+      const src = await readFile(path.join(ROOT, 'assets/js', file), 'utf8');
       assert.match(src, /ariaLabel: t\('sub\.org\.owner\.lookupFor', \{ cidr: net\.cidr \}\)/, `${file}: distinct accessible name`);
       assert.match(src, /class: '(?:sub-org-owner|scan-net-owner)', attrs: \{ 'aria-live': 'polite' \}/, `${file}: polite live region`);
     }

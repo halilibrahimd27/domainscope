@@ -257,9 +257,10 @@ async function runSubdomains(targets, options, env) {
   const { scanHostRows } = await import('../../assets/js/lib/export.js');
   const { subdomainsSummary } = await import('../../assets/js/lib/summary.js');
   // The view's own pure helpers (DOM-free at import, tests/js/i18n-coverage.test.js): the stat
-  // cards, its Copy summary facts, its scan concurrency and its warning sentences, so the report
-  // says what the app says.
-  const { countHosts, subdomainsSummaryFacts, scanConcurrency, WARNING_CODES } = await import('../../assets/js/views/subdomains.js');
+  // cards, its Copy summary facts (with the run's results, ui/subdomains-run.js), its scan
+  // concurrency and its warning sentences, so the report says what the app says.
+  const { countHosts, scanConcurrency, WARNING_CODES } = await import('../../assets/js/views/subdomains.js');
+  const { subdomainsSummaryFacts } = await import('../../assets/js/ui/subdomains-run.js');
   const exact = Array.isArray(env.inputs.exactNames);
   const out = [];
   const docs = [];

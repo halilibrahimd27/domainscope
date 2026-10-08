@@ -1403,7 +1403,7 @@ async function main() {
       await dismissToasts(page);
     });
 
-    await step('a laptop screen (1366 × 657): every tool link of the sidebar in view; shorter still, the sidebar scrolls to the open tool', async () => {
+    await step('a laptop screen (1366 × 657): every tool link of the sidebar in view, with room for 24 tools; shorter still, the sidebar scrolls to the open tool', async () => {
       const sidebar = () => page.evaluate(() => {
         const nav = document.getElementById('app-nav');
         const box = nav.getBoundingClientRect();
@@ -1430,6 +1430,24 @@ async function main() {
         assert(fit.linkHeight >= 24, `a link stays a 24 px target: ${JSON.stringify(fit)}`);
         assert(!fit.navScrolled, 'nothing to scroll');
         await shot(page, 'desktop-light-en-sidebar-1366x657');
+        // Room for 24 tools: copies of a link, spread over the groups, all stay in view at 24 px.
+        const full = await page.evaluate(() => {
+          const lists = [...document.querySelectorAll('#app-nav .nav-list')];
+          const added = [];
+          for (let i = 0; document.querySelectorAll('#app-nav .nav-link').length < 24; i++) {
+            const item = lists[i % lists.length].lastElementChild.cloneNode(true);
+            lists[i % lists.length].append(item);
+            added.push(item);
+          }
+          const nav = document.getElementById('app-nav');
+          const box = nav.getBoundingClientRect();
+          const links = [...nav.querySelectorAll('.nav-link')].map((a) => a.getBoundingClientRect());
+          const out = { count: links.length, outside: links.filter((r) => r.top < box.top || r.bottom > box.bottom).length, minHeight: Math.min(...links.map((r) => Math.round(r.height))) };
+          for (const item of added) item.remove();
+          return out;
+        });
+        assertEqual([full.count, full.outside], [24, 0], `24 tools in view: ${JSON.stringify(full)}`);
+        assert(full.minHeight >= 24, `24 px targets with 24 tools: ${JSON.stringify(full)}`);
         // Too short for every link: the sidebar (not the page) scrolls to the open tool, About the last one.
         await page.setViewport({ width: 1280, height: 480 });
         await gotoRoute(page, 'lookup');

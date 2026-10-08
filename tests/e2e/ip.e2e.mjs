@@ -213,6 +213,7 @@ async function main() {
 
   try {
     await offlineGroup(browser, server);
+    await reverseIpGroup(browser, server);
     if (!OFFLINE) await liveGroups(browser, server);
   } finally {
     await browser.close();
@@ -598,6 +599,442 @@ async function offlineGroup(browser, server) {
       assertEqual(blocked, [], 'requests the zone script had to block');
       await checkI18n(page);
       await assertClean(page, 'offline');
+    });
+  } finally {
+    await page.setViewport({ width: 1440, height: 900 });
+    await page.close();
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Offline: Domains on this IP (ui/reverse-ip-panel.js, lib/reverseip.js)   */
+/* ------------------------------------------------------------------------ */
+
+/** Made-up API keys, built from pieces so that no file holds anything key-shaped. */
+const RIP_SHODAN_KEY = ['e2e', 'shodan', 'made', 'up'].join('-');
+const RIP_WHOIS_KEY = ['e2e', 'whois', 'made', 'up'].join('-');
+
+/** DNS of the reverse-IP group: the PTR of 203.0.113.10 and the names its sources give (A / AAAA, a SERVFAIL). */
+const RIP_DNS = {
+  '10.113.0.203.in-addr.arpa': { PTR: ['host-10.example.net'] },
+  'host-10.example.net': { A: ['203.0.113.10'] },
+  'www.example.com': { A: ['203.0.113.10'] },
+  'blog.example.com': { A: ['203.0.113.10'], AAAA: ['2001:db8::10'] },
+  'shop.example.net': { A: ['192.0.2.1'] },
+  'cdn.example.org': { A: ['104.16.5.5'] },
+  'mail.example.org': { RCODE: { A: 'SERVFAIL', AAAA: 'SERVFAIL' } },
+  'web.example.com': { A: ['198.51.100.30'] },
+  'whois.example.com': { A: ['198.51.100.30'] }
+};
+
+/**
+ * Domains on this IP answered in the page: a fake DoH for every name of `window.__rip.dns` (anything
+ * else NXDOMAIN), RIPEstat / ipwho.is for the row lookup, and HackerTarget, ip.thc.org, OTX, Robtex,
+ * InternetDB, Shodan and WhoisXML from `window.__rip.data[ip]`. `otx429` / `idb429` make those answer
+ * 429; `calls` lists "<host> <ip>" per request, `dnsNames` every name asked, `blocked` anything else.
+ */
+const RIP_FAKE_SCRIPT = (dns) => `(() => {
+  const realFetch = window.fetch.bind(window);
+  const fake = window.__rip = { dns: ${JSON.stringify(dns)}, data: {}, calls: [], dnsNames: [], blocked: [], otx429: [], idb429: false,
+    shodanKey: ${JSON.stringify(RIP_SHODAN_KEY)}, whoisKey: ${JSON.stringify(RIP_WHOIS_KEY)} };
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const text = (body, status = 200, type = 'text/plain') => new Response(body, { status, headers: { 'content-type': type } });
+  const SOA = { mname: 'ns.dns-infra.invalid', rname: 'hostmaster.dns-infra.invalid', serial: 1, refresh: 900, retry: 900, expire: 1800, minimum: 60 };
+  let wire = null;
+  const answer = (name, type) => {
+    const node = fake.dns[name];
+    if (!node) return { rcode: 'NXDOMAIN', answers: [], authorities: [{ name: 'example.com', type: 'SOA', ttl: 300, data: SOA }] };
+    if (node.RCODE && node.RCODE[type]) return { rcode: node.RCODE[type], answers: [], authorities: [] };
+    const answers = (node[type] || []).map((data) => ({ name, type, ttl: 300, data }));
+    return { rcode: 'NOERROR', answers, authorities: answers.length ? [] : [{ name: 'example.com', type: 'SOA', ttl: 300, data: SOA }] };
+  };
+  const data = (ip) => fake.data[ip] || {};
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    const u = new URL(url, location.href);
+    if (u.origin === location.origin) return realFetch(input, init);
+    const m = /[?&]dns=([^&]+)/.exec(url);
+    if (m) {
+      wire = wire || await import(new URL('assets/js/lib/dnswire.js', document.baseURI).href);
+      const q = wire.decodeMessage(wire.base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
+      const name = String(q.name).toLowerCase().replace(/[.]$/, '');
+      if (!fake.dnsNames.includes(name)) fake.dnsNames.push(name);
+      const out = answer(name, q.type);
+      return new Response(wire.encodeMessage({ id: 0, flags: { qr: true, rd: true, ra: true }, rcode: out.rcode,
+        questions: [{ name: q.name, type: q.type }], answers: out.answers, authorities: out.authorities, edns: {} }), { headers: { 'content-type': 'application/dns-message' } });
+    }
+    const host = u.hostname;
+    if (host === 'stat.ripe.net') {
+      const ip = u.searchParams.get('resource');
+      if (u.pathname.includes('prefix-overview')) return json({ status: 'ok', data: { announced: true, asns: [{ asn: 64500, holder: 'EXAMPLE-NET - Example Networks B.V.' }], resource: ip + '/32', block: { desc: 'Administered by RIPE NCC' } } });
+      return json({ status: 'ok', data: { located_resources: [{ locations: [{ country: 'NL', city: 'Amsterdam', covered_percentage: 100 }] }] } });
+    }
+    if (host === 'ipwho.is') return json({ success: false, message: 'You have exceeded the rate limit' });
+    if (host === 'api.hackertarget.com') {
+      const ip = u.searchParams.get('q');
+      fake.calls.push('hackertarget ' + ip);
+      return text((data(ip).ht || []).join('\\n') || 'No DNS A records found');
+    }
+    if (host === 'ip.thc.org') {
+      const body = JSON.parse((init && init.body) || '{}');
+      fake.calls.push('thc ' + body.ip_address);
+      const list = data(body.ip_address).thc || [];
+      return json({ matching_records: list.length, domains: list.map((domain) => ({ domain })), next_page_state: '' });
+    }
+    if (host === 'otx.alienvault.com') {
+      const ip = u.pathname.split('/')[5];
+      fake.calls.push('otx ' + ip);
+      if (fake.otx429.includes(ip)) return text('Too Many Requests', 429);
+      const list = data(ip).otx || [];
+      return json({ passive_dns: list.map((hostname) => ({ address: ip, hostname, first: '2025-01-01T00:00:00', last: '2026-10-03T07:53:19', record_type: 'A' })), count: list.length });
+    }
+    if (host === 'freeapi.robtex.com') {
+      const ip = u.pathname.split('/')[3];
+      fake.calls.push('robtex ' + ip);
+      return text((data(ip).robtex || []).map((rrname) => JSON.stringify({ rrname, rrdata: ip, rrtype: 'A', time_first: 1700000000, time_last: 1790000000, count: 1 })).join('\\n'), 200, 'application/x-ndjson');
+    }
+    if (host === 'internetdb.shodan.io') {
+      const ip = u.pathname.slice(1);
+      fake.calls.push('internetdb ' + ip);
+      if (fake.idb429) return json({ detail: 'Too Many Requests' }, 429);
+      const d = data(ip).idb;
+      return d ? json({ ip, cpes: [], hostnames: d.hostnames || [], ports: d.ports || [], tags: d.tags || [], vulns: d.vulns || [] }) : json({ detail: 'No information available' }, 404);
+    }
+    if (host === 'api.shodan.io') {
+      const ip = u.pathname.split('/')[3];
+      fake.calls.push('shodan ' + ip);
+      if (u.searchParams.get('key') !== fake.shodanKey) return text('401 Unauthorized', 401);
+      return json({ ip_str: ip, hostnames: data(ip).shodan || [], domains: [], ports: [443] });
+    }
+    if (host === 'reverse-ip.whoisxmlapi.com') {
+      const ip = u.searchParams.get('ip');
+      fake.calls.push('whoisxml ' + ip);
+      if (u.searchParams.get('apiKey') !== fake.whoisKey) return json({ code: 403, messages: 'Access restricted.' }, 403);
+      const list = data(ip).whois || [];
+      return json({ current_page: '0', size: list.length, result: list.map((name) => ({ name, first_seen: 1700000000, last_visit: 1780000000 })) });
+    }
+    fake.blocked.push(url);
+    throw new TypeError('blocked by the E2E (Domains on this IP)');
+  };
+})();`;
+
+/** The panel as the user sees it: rows by name, chips by source, notes, facts, the Check more line, hand-offs. */
+function ripInfo() {
+  const panel = document.querySelector('.rip-panel');
+  if (!panel) return null;
+  const rows = {};
+  for (const tr of panel.querySelectorAll('.rip-row')) {
+    const name = tr.querySelector('.rip-name')?.textContent;
+    rows[name] = {
+      status: tr.querySelector('[data-status]')?.dataset.status || null,
+      sources: tr.querySelector('.rip-sources')?.dataset.sources || '',
+      domain: tr.querySelector('td.rip-col-domain')?.textContent || '',
+      resolves: tr.querySelector('td.rip-col-resolves')?.textContent.replace(/\s+/g, ' ').trim() || '',
+      first: tr.querySelector('td.rip-col-first time')?.getAttribute('datetime') || null
+    };
+  }
+  const run = panel.querySelector('[data-action="rip-run"]');
+  return {
+    rows,
+    count: panel.querySelectorAll('.rip-row').length,
+    chips: Object.fromEntries([...panel.querySelectorAll('.rip-chip')].map((c) => [c.dataset.source, {
+      state: c.dataset.state, skip: c.dataset.skip, value: c.querySelector('.src-chip-value')?.textContent || '', retry: !!c.querySelector('[data-action="retry-source"]'), title: c.title
+    }])),
+    notes: [...panel.querySelectorAll('.rip-notes > *')].map((a) => a.textContent.replace(/\s+/g, ' ').trim()),
+    facts: [...panel.querySelectorAll('.rip-facts > *')].map((a) => a.textContent.replace(/\s+/g, ' ').trim()),
+    done: !!(run && !run.hidden && !panel.querySelector('.rip-chip[data-state="pending"]') && panel.querySelector('.rip-progress').hidden),
+    more: panel.querySelector('.rip-more') && !panel.querySelector('.rip-more').hidden ? panel.querySelector('[data-action="rip-more"]').textContent.trim() : null,
+    handoffs: [...panel.querySelectorAll('[data-handoff]')].map((a) => [a.dataset.handoff, a.getAttribute('href')])
+  };
+}
+
+/** The CSV and JSON exports of the panel's table, captured in the page: [{ name, text }] (CSV first). */
+function ripExports(page) {
+  return page.evaluate(async () => {
+    const captured = [];
+    const origCreate = URL.createObjectURL;
+    const origClick = HTMLAnchorElement.prototype.click;
+    const blobs = new Map();
+    URL.createObjectURL = (blob) => { const url = origCreate.call(URL, blob); blobs.set(url, blob); return url; };
+    HTMLAnchorElement.prototype.click = function click() {
+      if (this.download && blobs.has(this.href)) captured.push({ name: this.download, blob: blobs.get(this.href) });
+      else origClick.call(this);
+    };
+    try {
+      document.querySelector('.rip-panel [data-export="csv"]').click();
+      document.querySelector('.rip-panel [data-export="json"]').click();
+    } finally {
+      URL.createObjectURL = origCreate;
+      HTMLAnchorElement.prototype.click = origClick;
+    }
+    return Promise.all(captured.map(async (f) => ({ name: f.name, text: await f.blob.text() })));
+  });
+}
+
+async function reverseIpGroup(browser, server) {
+  group('Offline: Domains on this IP (every source answered in the page)');
+  const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+  // A visible tab: the table draws its updates on animation frames.
+  await page.send('Page.bringToFront');
+  const netHits = await networkGuard(page);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: RIP_FAKE_SCRIPT(RIP_DNS) });
+  await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+  const rip = () => page.evaluate(ripInfo);
+  const calls = () => page.evaluate(() => window.__rip.calls.slice());
+  const waitRip = async (message) => {
+    await page.waitFor(() => {
+      const p = document.querySelector('.rip-panel');
+      const b = p && p.querySelector('[data-action="rip-run"]');
+      return !!(b && !b.hidden && p.querySelector('.rip-results') && !p.querySelector('.rip-results').hidden
+        && !p.querySelector('.rip-chip[data-state="pending"]') && p.querySelector('.rip-progress').hidden);
+    }, { timeout: 30000, message });
+    // The table draws on the next animation frames (with a timeout: a hidden tab gets none).
+    await page.evaluate(() => new Promise((resolve) => {
+      const done = setTimeout(resolve, 500);
+      requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(done); resolve(); }));
+    }));
+  };
+  const runPanel = async (ips) => {
+    await page.evaluate((text) => {
+      const box = document.querySelector('[data-role="rip-addresses"]');
+      box.value = text;
+      document.querySelector('[data-action="rip-run"]').click();
+    }, ips);
+    await waitRip(`lookup of ${ips}`);
+  };
+  try {
+    await step('Find domains on a public address: every source asked once, names merged, checked in DNS now', async () => {
+      await page.goto(`${server.url}#/about`);
+      await waitReady(page);
+      await setLangUi(page, 'en');
+      await page.evaluate(async () => {
+        const { state } = await import('./assets/js/state.js');
+        state.setInventory('web01 203.0.113.10\nlan-box 10.0.0.5\n');
+        state.setWorkspaceData('origins', { v: 1, remember: true, entries: [
+          { name: 'origin.example.com', ip: '203.0.113.10', port: 443, source: 'manual', firstSeen: '2026-09-01T00:00:00Z', lastConfirmed: '2026-10-01T00:00:00Z' },
+          { name: 'intranet-app.example.com', ip: '10.0.0.5', port: 443, source: 'manual', firstSeen: '2026-09-01T00:00:00Z', lastConfirmed: '2026-10-01T00:00:00Z' }
+        ] });
+        window.__rip.data['203.0.113.10'] = {
+          ht: ['www.example.com', 'blog.example.com'], thc: ['api.example.com'], otx: ['www.example.com', 'shop.example.net', '203.0.113.10'],
+          robtex: ['WWW.Example.com.', 'gone.example.com'], idb: { hostnames: ['cdn.example.org', '*.mail.example.org'], ports: [443, 80], tags: ['cloud'], vulns: ['CVE-2026-0001'] }
+        };
+      });
+      await gotoHash(page, '#/ip?ips=203.0.113.10,10.0.0.5', 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows looked up' });
+      assertEqual(await calls(), [], 'nothing asked before a click');
+      await page.evaluate(() => document.querySelector('[data-action="reverse"][data-ip="203.0.113.10"]').click());
+      await waitRip('reverse lookup');
+      const i = await rip();
+      const st = Object.fromEntries(Object.entries(i.rows).map(([n, r]) => [n, r.status]));
+      assertEqual(st, {
+        'api.example.com': 'none', 'blog.example.com': 'here', 'gone.example.com': 'none', 'origin.example.com': 'workspace', 'www.example.com': 'here',
+        'host-10.example.net': 'here', 'shop.example.net': 'moved', 'cdn.example.org': 'cdn', 'mail.example.org': 'failed'
+      }, 'status of every name (sortHostnames order)');
+      assertEqual(Object.keys(i.rows), ['api.example.com', 'blog.example.com', 'gone.example.com', 'origin.example.com', 'www.example.com', 'host-10.example.net', 'shop.example.net', 'cdn.example.org', 'mail.example.org'], 'one row per name, junk dropped');
+      assertEqual(i.rows['www.example.com'].sources, 'hackertarget otx robtex', 'per-name sources');
+      assertEqual(i.rows['www.example.com'].domain, 'example.com', 'registrable domain');
+      assertEqual(i.rows['www.example.com'].first, '2023-11-14T22:13:20.000Z', 'first seen: the earliest sighting (Robtex)');
+      assert(/192\.0\.2\.1/.test(i.rows['shop.example.net'].resolves), `moved: where to (${i.rows['shop.example.net'].resolves})`);
+      assertEqual(i.rows['host-10.example.net'].sources, 'ptr', 'the PTR name, forward-confirmed');
+      assertEqual((await calls()).sort(), ['hackertarget 203.0.113.10', 'internetdb 203.0.113.10', 'otx 203.0.113.10', 'robtex 203.0.113.10', 'thc 203.0.113.10'], 'one request per source');
+      const names = await page.evaluate(() => window.__rip.dnsNames.slice());
+      assert(!names.includes('origin.example.com'), 'a name only the workspace knows is never sent');
+      const chips = Object.fromEntries(Object.entries(i.chips).map(([s, c]) => [s, [c.state, c.value]]));
+      assertEqual(chips, {
+        workspace: ['ok', '1 name'], ptr: ['ok', '1 name'], hackertarget: ['ok', '2 names'], thc: ['ok', '1 name'], otx: ['ok', '2 names'],
+        robtex: ['ok', '2 names'], internetdb: ['ok', '2 names'], shodan: ['idle', 'add a key to ask'], whoisxml: ['idle', 'add a key to ask']
+      }, 'one chip per source');
+      assert(/About 50 lookups a day/.test(i.chips.hackertarget.title), 'the HackerTarget quota note');
+      assert(i.facts.includes('Your servers on 203.0.113.10: web01'), `servers: ${i.facts}`);
+      assert(i.facts.includes('203.0.113.10 · Shodan InternetDB: open ports 80, 443 · tags cloud · 1 known vulnerability'), `InternetDB facts: ${i.facts}`);
+      const cell = await page.evaluate(() => {
+        const tr = [...document.querySelectorAll('.ipi-row')].find((r) => r.querySelector('.ipi-ip')?.textContent === '203.0.113.10');
+        const rev = tr.querySelector('.ipi-rev');
+        return rev ? [rev.dataset.state, rev.dataset.count] : null;
+      });
+      assertEqual(cell, ['done', '9'], 'the row keeps the count (and the first names) as before');
+      assertEqual(i.handoffs.map(([k]) => k), ['subdomains', 'subdomains', 'subdomains', 'scan', 'retire'], 'hand-offs');
+      assert(i.handoffs.some(([k, href]) => k === 'subdomains' && /domain=example\.com/.test(href) && /run=0/.test(href)), `Subdomains link: ${JSON.stringify(i.handoffs)}`);
+      assert(i.handoffs.some(([k, href]) => k === 'retire' && /ips=203\.0\.113\.10/.test(href)), 'Retire an IP link');
+      await assertNoHorizontalScroll(page, 'reverse IP desktop');
+      await shot(page, 'ip-reverse-desktop-light-en');
+    });
+
+    await step('filters by status and source, and the CSV / JSON exports', async () => {
+      const shown = async (status, source) => page.evaluate(([a, b]) => {
+        const set = (role, v) => {
+          const s = document.querySelector(`[data-role="${role}"]`);
+          s.value = v;
+          s.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        set('rip-filter-status', a);
+        set('rip-filter-source', b);
+        return [...document.querySelectorAll('.rip-panel .rip-row .rip-name')].map((n) => n.textContent);
+      }, [status, source]);
+      assertEqual(await shown('here', ''), ['blog.example.com', 'www.example.com', 'host-10.example.net'], 'status: here now');
+      assertEqual(await shown('', 'robtex'), ['gone.example.com', 'www.example.com'], 'source: Robtex');
+      assertEqual(await shown('none', 'robtex'), ['gone.example.com'], 'both');
+      assertEqual((await shown('', '')).length, 9, 'All again');
+      const files = await ripExports(page);
+      assert(files.length === 2 && files.every((f) => /^reverse-ip/.test(f.name)), `file names: ${files.map((f) => f.name)}`);
+      const json = JSON.parse(files[1].text);
+      const www = json.find((r) => r.name === 'www.example.com');
+      assertEqual([www.status, www.domain, www.sources, www.addresses], ['here', 'example.com', ['hackertarget', 'otx', 'robtex'], ['203.0.113.10']], 'JSON row');
+      assert(/^name,|"name"|Name/.test(files[0].text.split(/\r?\n/)[0]), `CSV header: ${files[0].text.split(/\r?\n/)[0]}`);
+      assert(files[0].text.includes('shop.example.net') && files[0].text.includes('moved'), 'CSV rows carry the status code');
+    });
+
+    await step('a private address: only the workspace, nothing sent (no request, no PTR question)', async () => {
+      const before = (await calls()).length;
+      const dnsBefore = await page.evaluate(() => window.__rip.dnsNames.slice());
+      await page.evaluate(() => document.querySelector('[data-action="reverse"][data-ip="10.0.0.5"]').click());
+      await waitRip('private lookup');
+      const i = await rip();
+      assertEqual((await calls()).length, before, 'no third-party request');
+      const dnsAfter = await page.evaluate(() => window.__rip.dnsNames.slice());
+      assertEqual(dnsAfter.filter((n) => !dnsBefore.includes(n)), [], 'no DNS question either');
+      assert(i.notes.some((n) => /10\.0\.0\.5 is a private or reserved address: only what your workspace knows is shown, and nothing was sent/.test(n)), `note: ${i.notes}`);
+      assertEqual(Object.fromEntries(Object.entries(i.rows).map(([n, r]) => [n, r.status])), { 'intranet-app.example.com': 'workspace' }, 'the workspace name, never sent');
+      assertEqual(Object.entries(i.chips).filter(([, c]) => c.skip === 'local').map(([s]) => s), ['ptr', 'hackertarget', 'thc', 'otx', 'robtex', 'internetdb', 'shodan', 'whoisxml'], 'every other source: not asked');
+      assert(i.facts.includes('Your servers on 10.0.0.5: lan-box'), `servers: ${i.facts}`);
+    });
+
+    await step('a failed source is "n/a" with the reason; its Retry asks only it again', async () => {
+      await page.evaluate(() => {
+        window.__rip.otx429 = ['198.51.100.20'];
+        window.__rip.data['198.51.100.20'] = { otx: ['retry.example.com'], ht: ['web.example.com'] };
+      });
+      await runPanel('198.51.100.20');
+      let i = await rip();
+      assertEqual([i.chips.otx.state, i.chips.otx.retry], ['failed', true], 'OTX chip failed, with a Retry');
+      assert(/^n\/a · rate limited — try again later/.test(i.chips.otx.value), `OTX chip: ${i.chips.otx.value}`);
+      assert(/AlienVault OTX: rate limited/.test(i.chips.otx.title), `tooltip: ${i.chips.otx.title}`);
+      const before = (await calls()).length;
+      await page.evaluate(() => { window.__rip.otx429 = []; });
+      await page.evaluate(() => document.querySelector('.rip-chip[data-source="otx"] [data-action="retry-source"]').click());
+      await page.waitFor(() => document.querySelector('.rip-chip[data-source="otx"]')?.dataset.state === 'ok', { timeout: 15000, message: 'OTX answered' });
+      await waitRip('after the Retry');
+      assertEqual((await calls()).slice(before), ['otx 198.51.100.20'], 'the Retry asked OTX alone');
+      i = await rip();
+      // The table draws its updates on the next animation frame.
+      await page.waitFor(() => document.querySelector('.rip-row [data-status]') && [...document.querySelectorAll('.rip-row')]
+        .some((tr) => tr.querySelector('.rip-name')?.textContent === 'retry.example.com' && tr.querySelector('[data-status]')?.dataset.status === 'none'),
+      { timeout: 10000, message: 'the new name, checked' });
+      i = await rip();
+      assertEqual(i.rows['retry.example.com']?.sources, 'otx', 'its name joined the table and was checked');
+    });
+
+    await step('InternetDB: its first 429 locks it — the next address is not sent, and the panel says until when', async () => {
+      await page.evaluate(() => { window.__rip.idb429 = true; });
+      await runPanel('198.51.100.21');
+      let i = await rip();
+      assertEqual(i.chips.internetdb.state, 'failed', 'InternetDB failed');
+      assert(/try again in 60 min/.test(i.chips.internetdb.value), `chip: ${i.chips.internetdb.value}`);
+      assertEqual(i.chips.internetdb.retry, false, 'no Retry while it is locked');
+      assert(i.facts.some((f) => /Shodan InternetDB locked this browser out after a burst of requests: it is not asked again before/.test(f)), `note: ${i.facts}`);
+      await runPanel('198.51.100.22');
+      i = await rip();
+      assertEqual((await calls()).filter((c) => c === 'internetdb 198.51.100.22'), [], 'the next address is not sent to InternetDB');
+      assertEqual([i.chips.internetdb.state, i.chips.internetdb.skip], ['failed', 'locked'], 'locked');
+    });
+
+    await step('typed keys: Shodan and WhoisXML asked with them; a key is never in the page, a link or an export', async () => {
+      await page.evaluate(([a, b]) => {
+        document.querySelector('.rip-keys summary')?.click();
+        const set = (role, v) => {
+          const el = document.querySelector(`[data-role="${role}"]`);
+          el.value = v;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+        set('rip-key-shodan', a);
+        set('rip-key-whoisxml', b);
+        window.__rip.data['198.51.100.30'] = { shodan: ['web.example.com'], whois: ['whois.example.com'] };
+      }, [RIP_SHODAN_KEY, RIP_WHOIS_KEY]);
+      const before = (await calls()).length;
+      await runPanel('198.51.100.30');
+      const after = (await calls()).slice(before);
+      assert(after.includes('shodan 198.51.100.30') && after.includes('whoisxml 198.51.100.30'), `keyed requests: ${after}`);
+      const i = await rip();
+      assertEqual([i.rows['web.example.com']?.status, i.rows['whois.example.com']?.status], ['here', 'here'], 'their names, checked');
+      assertEqual([i.chips.shodan.state, i.chips.whoisxml.state], ['ok', 'ok'], 'chips');
+      const files = await ripExports(page);
+      const leak = await page.evaluate(([a, b]) => {
+        const text = `${document.body.innerText} ${location.href} ${document.body.outerHTML.replace(/value="[^"]*"/g, '')}`;
+        return [a, b].filter((k) => text.includes(k));
+      }, [RIP_SHODAN_KEY, RIP_WHOIS_KEY]);
+      assertEqual(leak, [], 'no key in the page text, the markup or the URL');
+      assert(!files.some((f) => f.text.includes(RIP_SHODAN_KEY) || f.text.includes(RIP_WHOIS_KEY)), 'no key in an export');
+    });
+
+    await step('a refused key says so (Shodan 401)', async () => {
+      await page.evaluate(() => {
+        const el = document.querySelector('[data-role="rip-key-shodan"]');
+        el.value = 'wrong';
+        window.__rip.data['198.51.100.31'] = {};
+      });
+      await runPanel('198.51.100.31');
+      const i = await rip();
+      assertEqual(i.chips.shodan.state, 'failed', 'Shodan failed');
+      assert(i.facts.includes('Shodan API refused the key (HTTP 401): check the key and its credits.'), `note: ${i.facts}`);
+      await page.evaluate(() => {
+        document.querySelector('[data-role="rip-key-shodan"]').value = '';
+        document.querySelector('[data-role="rip-key-whoisxml"]').value = '';
+      });
+    });
+
+    await step('past 300 names: the first 300 are checked, "Check more" checks the rest', async () => {
+      await page.evaluate(() => {
+        window.__rip.data['198.51.100.40'] = { ht: Array.from({ length: 305 }, (_, n) => `n${n + 1}.example.com`) };
+      });
+      await runPanel('198.51.100.40');
+      let i = await rip();
+      assertEqual(i.more, 'Check 5 more names', 'the rest wait for a click');
+      const asked = await page.evaluate(() => window.__rip.dnsNames.filter((n) => /^n\d+\.example\.com$/.test(n)).length);
+      assertEqual(asked, 300, 'exactly the first batch was sent');
+      await page.evaluate(() => document.querySelector('[data-action="rip-more"]').click());
+      await page.waitFor(() => document.querySelector('.rip-more')?.hidden === true && document.querySelector('[data-action="rip-run"]') && !document.querySelector('[data-action="rip-run"]').hidden, { timeout: 30000, message: 'check more done' });
+      const total = await page.evaluate(() => window.__rip.dnsNames.filter((n) => /^n\d+\.example\.com$/.test(n)).length);
+      assertEqual(total, 305, 'every name checked');
+      i = await rip();
+      assertEqual(i.more, null, 'nothing left');
+    });
+
+    await step('a language re-mount shows the lookup again in Turkish, with nothing sent and no key kept', async () => {
+      await page.evaluate(() => {
+        document.querySelector('[data-role="rip-key-shodan"]').value = 'kept-nowhere';
+      });
+      await runPanel('203.0.113.10');
+      const before = (await calls()).length;
+      await setLangUi(page, 'tr');
+      await page.waitFor(() => document.querySelectorAll('.rip-panel .rip-row').length > 0, { timeout: 15000, message: 'panel restored' });
+      const i = await rip();
+      assertEqual((await calls()).length, before, 'nothing asked again');
+      assertEqual(i.count, 9, 'the same rows');
+      const tr = await page.evaluate(() => ({
+        title: document.querySelector('.rip-panel [data-role="rip-title"]')?.textContent,
+        status: document.querySelector('.rip-panel .rip-row [data-status="here"]')?.textContent,
+        key: document.querySelector('[data-role="rip-key-shodan"]').value
+      }));
+      assertEqual(tr, { title: 'Bu IP’deki alan adları', status: 'şu an burada', key: '' }, 'Turkish, and the key field empty');
+      await assertNoHorizontalScroll(page, 'reverse IP desktop tr');
+    });
+
+    for (const [scheme, lang, width] of [['dark', 'tr', 375], ['light', 'en', 320]]) {
+      await step(`[${scheme}, ${lang.toUpperCase()}, ${width} px] the panel reads well and fits`, async () => {
+        await page.setViewport({ width, height: 812, mobile: true });
+        await page.emulateMedia({ 'prefers-color-scheme': scheme });
+        await setLangUi(page, lang);
+        await page.waitFor(() => document.querySelectorAll('.rip-panel .rip-row').length > 0, { timeout: 15000, message: 'panel shown' });
+        await assertNoHorizontalScroll(page, `reverse IP ${scheme} ${lang} ${width}`);
+        await shot(page, `ip-reverse-mobile-${scheme}-${lang}`);
+      });
+    }
+
+    await step('nothing left the page; i18n complete; no console errors', async () => {
+      assertEqual(netHits, [], 'https requests that reached the network');
+      assertEqual(await page.evaluate(() => window.__rip.blocked.slice()), [], 'requests the fake had to block');
+      await checkI18n(page);
+      await assertClean(page, 'reverse IP');
     });
   } finally {
     await page.setViewport({ width: 1440, height: 900 });

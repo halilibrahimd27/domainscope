@@ -608,42 +608,6 @@ async function offlineGroup(browser, server) {
       assert(md.startsWith('**IP Intel · `203.0.113.7`**') && md.trim().endsWith('#/ip?ips=203.0.113.7'), `summary: ${md}`);
     });
 
-    await step('a reverse IP answer that lands after a new lookup of the same address never replaces the new run’s row', async () => {
-      const ip = '203.0.113.7';
-      const reverseCalls = async () => (await calls()).filter((c) => c.startsWith('hackertarget ')).length;
-      const row = () => page.evaluate(() => {
-        const btn = document.querySelector('.ipi-row [data-action="reverse"]');
-        return { button: btn ? { busy: btn.getAttribute('aria-busy'), disabled: btn.disabled } : null, shown: !!document.querySelector('.ipi-row .ipi-rev') };
-      });
-      await page.evaluate(() => { window.__ipFake.limited = []; window.__ipFake.htDelay = 2500; });
-      try {
-        await gotoHash(page, '#/about', 'about');
-        await gotoHash(page, `#/ip?ips=${ip}`, 'ip');
-        await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows shown' });
-        const lookUp = async (message) => {
-          await page.evaluate(() => document.querySelector('[data-action="run"]').click());
-          await page.waitFor(ROWS_DONE, { timeout: 30000, message });
-        };
-        await lookUp('first lookup');
-        await page.evaluate(() => document.querySelector('.ipi-row [data-action="reverse"]').click());
-        await page.waitFor(() => document.querySelector('.ipi-row [data-action="reverse"]')?.getAttribute('aria-busy') === 'true', { message: 'reverse IP in flight' });
-        // The same address again while that answer is on its way.
-        await lookUp('second lookup');
-        await new Promise((resolve) => { setTimeout(resolve, 3200); });
-        assertEqual(await row(), { button: { busy: null, disabled: false }, shown: false }, 'the new run’s row: its own Find domains, ready');
-        const files = await exportFiles(page);
-        const exported = JSON.parse(files[1].text).find((r) => r.ip === ip);
-        assert(!(exported.reverseIp && exported.reverseIp.length), `the export has no domains the table never showed: ${JSON.stringify(exported.reverseIp)}`);
-        // The first answer was kept: the new row's Find domains shows it without another request.
-        const before = await reverseCalls();
-        await page.evaluate(() => document.querySelector('.ipi-row [data-action="reverse"]').click());
-        await page.waitFor(() => /site-a\.example\.org/.test(document.querySelector('.ipi-row .ipi-rev')?.textContent || ''), { message: 'domains shown' });
-        assertEqual(await reverseCalls(), before, 'no second HackerTarget request');
-      } finally {
-        await page.evaluate(() => { window.__ipFake.htDelay = 0; });
-      }
-    });
-
     await step('the header’s Copy link leaves out private and inventory addresses, as Copy summary’s link does', async () => {
       await page.evaluate(async () => {
         (await import('./assets/js/state.js')).state.setInventory('origin-web 198.51.100.20\n');
@@ -1328,6 +1292,38 @@ async function reverseIpGroup(browser, server) {
       assertEqual(state, { busy: null, disabled: false }, 'the row button, usable again');
       assert((await rip()).notes.some((n) => /^Stopped/.test(n)), 'the panel says it stopped');
       await page.evaluate(() => { window.__rip.slow = 0; });
+    });
+
+    await step('a Domains on this IP answer that lands after a new lookup of the same address fills in the new run’s row, never an old copy of it', async () => {
+      // The in-row reverse lookup this guarded (fix(ip) 19b3708) became the panel: its answer is drawn into
+      // the rows on screen when it lands, so the new run's row never keeps a spinner and the export matches it.
+      const ip = '198.51.100.51';
+      await page.evaluate((x) => { window.__rip.slow = 2500; window.__rip.data[x] = { ht: ['late.example.com'] }; }, ip);
+      try {
+        await gotoHash(page, `#/ip?ips=${ip}`, 'ip');
+        await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'row looked up' });
+        const btn = `[data-action="reverse"][data-ip="${ip}"]`;
+        await page.evaluate((sel) => document.querySelector(sel).click(), btn);
+        await page.waitFor((sel) => document.querySelector(sel)?.getAttribute('aria-busy') === 'true', { args: [btn], timeout: 10000, message: 'row busy' });
+        // The same address again while that answer is on its way.
+        await page.evaluate(() => document.querySelector('[data-action="run"]').click());
+        await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'second lookup' });
+        await waitRip('the late answer');
+        const cells = await page.evaluate((x) => [...document.querySelectorAll('.ipi-row')]
+          .filter((tr) => tr.querySelector('.ipi-ip')?.textContent === x)
+          .map((tr) => {
+            const rev = tr.querySelector('.ipi-rev');
+            const b = tr.querySelector('[data-action="reverse"]');
+            return { state: rev ? rev.dataset.state : null, count: rev ? rev.dataset.count : null, busy: b ? b.getAttribute('aria-busy') : null };
+          }), ip);
+        assertEqual(cells, [{ state: 'done', count: '1', busy: null }], 'the new run’s one row: filled in, no spinner left');
+        const files = await exportFiles(page);
+        const exported = JSON.parse(files[1].text).find((r) => r.ip === ip);
+        assertEqual(exported.reverseIp, ['late.example.com'], 'the export holds what the table shows');
+        assertEqual((await calls()).filter((c) => c === `hackertarget ${ip}`).length, 1, 'one HackerTarget request');
+      } finally {
+        await page.evaluate(() => { window.__rip.slow = 0; });
+      }
     });
 
     await step('a language re-mount shows the lookup again in Turkish, with nothing sent and no key kept', async () => {

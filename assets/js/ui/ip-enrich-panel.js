@@ -181,7 +181,22 @@ let service = null;
 const getService = () => service || (service = createIpEnrich());
 
 /** Per view mount (its ctx): the panel state of each address. */
-const mounts = new WeakMap();
+let mounts = new WeakMap();
+let subscribed = false;
+
+/**
+ * Which addresses were checked is the workspace's business: another workspace or "Delete all
+ * local data" forgets the answers (the service's and the panels').
+ */
+function forgetOn(state) {
+  if (subscribed || !state || typeof state.subscribe !== 'function') return;
+  subscribed = true;
+  state.subscribe(({ key }) => {
+    if (key !== 'cleared' && key !== 'workspace') return;
+    if (service) service.clearCache();
+    mounts = new WeakMap();
+  });
+}
 
 function stateOf(ctx, ip) {
   let map = mounts.get(ctx);
@@ -209,6 +224,7 @@ function stateOf(ctx, ip) {
 export function mountIpEnrich(slot, row, ctx) {
   const ip = normalizeIP(row.ip);
   if (!ip) return;
+  forgetOn(ctx.state);
   const st = stateOf(ctx, ip);
   st.slot = slot;
   st.row = row;

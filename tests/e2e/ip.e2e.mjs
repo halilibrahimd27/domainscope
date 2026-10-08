@@ -791,6 +791,17 @@ async function enrichGroup(browser, server) {
       });
     }
 
+    await step('“Delete all local data” forgets which addresses were checked: the panel is idle again, nothing sent', async () => {
+      await page.evaluate(async () => { await (await import('./assets/js/state.js')).state.clearAll(); });
+      await gotoHash(page, '#/about', 'about');
+      await gotoHash(page, '#/ip?ips=193.0.6.139', 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'row looked up' });
+      const before = (await calls()).length;
+      await openEnrich(page, '193.0.6.139');
+      const p = await panel('193.0.6.139');
+      assertEqual([p.state, p.check, (await calls()).length - before], ['idle', true, 0], 'no kept answer, no request');
+    });
+
     await step('nothing left the page; i18n complete; no console errors', async () => {
       assertEqual(netHits, [], 'https requests that reached the network');
       assertEqual(await page.evaluate(() => window.__zoneBlocked.slice()), [], 'requests the zone script had to block');

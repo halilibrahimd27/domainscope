@@ -236,8 +236,29 @@ export function replacedLeaves(leaves) {
 }
 
 /**
+ * A file's server certificates: its end-entity certificates (lib/x509 leafCertificates), else the
+ * self-signed CA certificates that issued none of its other certificates and name hosts in
+ * subjectAltName, or by a host-name subject CN while they may not sign certificates (no
+ * keyCertSign). `openssl req -x509` marks a server certificate CA:TRUE by default (OpenSSL 3),
+ * and the CLI bundle check takes it as the leaf by the same rule; a private root names no host.
+ * @param {object[]} certs x509 Certificates of one file
+ * @returns {object[]}
+ */
+function endsOf(certs) {
+  const ends = leafCertificates(certs);
+  if (ends.length) return ends;
+  const serverLike = (c) => c.isCA && c.selfSigned && ((Array.isArray(c.dnsNames) && c.dnsNames.length > 0)
+    || (namesOf(c).length > 0 && !(Array.isArray(c.keyUsage) && c.keyUsage.includes('keyCertSign'))));
+  // leafCertificates' "issued none of the others", with the CA flag of each candidate set aside.
+  const asEnd = certs.map((c) => (serverLike(c) ? { ...c, isCA: false } : c));
+  const found = leafCertificates(asEnd);
+  return certs.filter((c, i) => asEnd[i] !== c && found.includes(asEnd[i]));
+}
+
+/**
  * The renewal behind the loaded files: every end-entity certificate (lib/x509 leafCertificates:
- * a chain gives one, several pasted PEM blocks give each), grouped into sets.
+ * a chain gives one, several pasted PEM blocks give each; {@link endsOf} for a file of CA
+ * certificates only), grouped into sets.
  * @param {CertFileInput[]} files in load order
  * @returns {RenewalBundle}
  */
@@ -268,7 +289,7 @@ export function renewalBundle(files) {
     if (codes.includes('PARSE_ERROR')) {
       unread.push({ file, index, details: warnings.filter((w) => w.code === 'PARSE_ERROR' && w.detail).map((w) => String(w.detail)) });
     }
-    const ends = leafCertificates(certs);
+    const ends = endsOf(certs);
     for (const c of certs) {
       if (ends.includes(c)) continue;
       const k = derKey(c);
@@ -332,7 +353,7 @@ export function withoutLeaf(files, key) {
       out.push(f);
       continue;
     }
-    const leaves = leafCertificates(kept);
+    const leaves = endsOf(kept);
     if (!leaves.length) continue;
     const result = f.result && typeof f.result === 'object' ? f.result : f;
     const next = { ...result, certificates: kept, leaf: leaves[0] };
@@ -350,7 +371,7 @@ export function withoutLeaf(files, key) {
  */
 export function primaryFile(files) {
   const list = (Array.isArray(files) ? files : []).filter(Boolean);
-  return list.find((f) => leafCertificates(certsOfFile(f)).length > 0) || list[0] || null;
+  return list.find((f) => endsOf(certsOfFile(f)).length > 0) || list[0] || null;
 }
 
 /**
@@ -370,7 +391,7 @@ export function fileForLeaf(files, key) {
     if (!cert) continue;
     const result = f.result && typeof f.result === 'object' ? f.result : f;
     if (result.leaf === cert) return f;
-    const others = leafCertificates(certs);
+    const others = endsOf(certs);
     const next = { ...result, certificates: [cert, ...certs.filter((c) => c !== cert && !others.includes(c))], leaf: cert };
     return f.result && typeof f.result === 'object' ? { ...f, result: next } : next;
   }

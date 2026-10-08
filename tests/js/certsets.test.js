@@ -126,6 +126,26 @@ describe('renewalBundle — leaves and sets', () => {
     assert.ok(b.chain[0].isCA);
   });
 
+  test('a self-signed server certificate marked CA:TRUE (`openssl req -x509`) is the leaf of its file; a private root is not', () => {
+    // bundle_selfsigned_ca.pem: CN=www.example.com, CA:TRUE, no keyUsage, no subjectAltName.
+    const ss = load('bundle_selfsigned_ca.pem', 'server.crt');
+    const files = [load(RSA_A), ss, load('ec_wildcard.key', 'server.key'), load('ca.pem', 'chain.pem')];
+    const b = renewalBundle(files);
+    assert.deepEqual(b.leaves.map((l) => [l.files[0], l.names]), [[RSA_A, ['example.com', '*.example.com']], ['server.crt', ['www.example.com']]]);
+    assert.deepEqual(b.skipped.map((s) => [s.file, s.issue]), [['server.key', 'no-certificate'], ['chain.pem', 'ca-only']]);
+    assert.deepEqual(b.chain.map((c) => c.subjectCN), ['Subdomain Scanner Test Root CA'], 'never the chain of the other leaves');
+    assert.equal(renewalBundle([ss, files[2]]).leaves.length, 1, 'next to its key alone');
+    assert.equal(primaryFile([files[2], load('ca.pem'), ss]), ss);
+    assert.equal(fileForLeaf(files, b.leaves[1].key), ss);
+    assert.deepEqual(withoutLeaf(files, b.leaves[0].key).map((f) => f.name), ['server.crt', 'server.key', 'chain.pem']);
+    // A CA that may sign, or that issued another certificate of its file, stays a CA.
+    const cert = ss.result.certificates[0];
+    const signer = { name: 'signer.pem', result: { certificates: [{ ...cert, keyUsage: ['keyCertSign', 'cRLSign'] }] } };
+    const inter = { ...parseCertificates(read('bundle_inter.pem')).certificates[0], issuerDN: cert.subjectDN, authorityKeyId: cert.subjectKeyId };
+    const issuing = { name: 'ca-bundle.pem', result: { certificates: [cert, inter] } };
+    assert.deepEqual(renewalBundle([signer, issuing]).skipped.map((s) => [s.file, s.issue]), [['signer.pem', 'ca-only'], ['ca-bundle.pem', 'ca-only']]);
+  });
+
   test('withoutLeaf removes one certificate from every file; a file left without a leaf goes, one that never had one stays', () => {
     const pasted = { name: 'pasted', result: parseCertificates(`${read(RSA_A)}\n${read(EC_A)}`) };
     const files = [load('ec_wildcard.key', 'privkey.pem'), pasted, load(RSA_A, 'cert.pem'), load('chain.pem', 'fullchain.pem')];

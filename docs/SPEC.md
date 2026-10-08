@@ -1836,6 +1836,8 @@ A renewal week often brings more than one certificate: an RSA + ECDSA pair for t
 export const SKIP_ISSUES = ['no-certificate', 'ca-only', 'no-names']
 export function renewalBundle(files) -> { leaves: RenewalLeaf[], sets: CertSet[], chain: Certificate[], skipped: [{ file, index, issue, codes, subject?, count?, key? }], unread: [{ file, index, details }], replaced: [{ leaf, by, set, bySet }], duplicates, keyFiles: string[] }
   // every end-entity certificate of the files (x509 leafCertificates), in load order; the same DER from two files is one leaf with both `files`;
+  // a file of CA certificates only gives its self-signed ones that issued none of its others and name hosts in subjectAltName, or by a host-name CN without
+  // keyCertSign (`openssl req -x509` marks a server certificate CA:TRUE; the CLI bundle check's rule, §7), so a private root is still `ca-only`;
   // a file without a certificate (a key, a CSR, a PKCS#12 bundle: the parser's `codes`), with CA certificates only (`chain` material) or a leaf without a DNS name
   // is `skipped` (index = the file's position, key = that leaf's); keyFiles: files that also held a private key (ignored, never shown);
   // unread: files that gave certificates but also PARSE_ERROR warnings (`details` their text: a damaged block next to good ones, so a certificate may be missing);

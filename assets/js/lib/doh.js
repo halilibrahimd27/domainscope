@@ -290,7 +290,9 @@ function edeText(ede) {
  * Build a {@link HostResolution} from an A and an AAAA {@link DnsResponse}
  * (either may be null). The status comes from the A query; the AAAA query is
  * used when the A query failed at transport level (or returned SERVFAIL /
- * REFUSED while AAAA got a real answer).
+ * REFUSED while AAAA got a real answer). A lookup that got no answer is never
+ * hidden behind the other one's NOERROR without an address: that would read
+ * as "the name has no address" (NODATA), so the failure is the status then.
  * @param {string} name
  * @param {DnsResponse|null} a
  * @param {DnsResponse|null} aaaa
@@ -309,6 +311,9 @@ export function hostResolutionFrom(name, a, aaaa) {
   const ownersB = new Set([qname, ...chainB.cnames]);
   const v4 = a && a.ok ? chainAddresses(a.answers, ownersA, 'A') : { ips: [], rrs: [] };
   const v6 = aaaa && aaaa.ok ? chainAddresses(aaaa.answers, ownersB, 'AAAA') : { ips: [], rrs: [] };
+  // A transport error, a rate limit or a SERVFAIL leaves that family unknown; NXDOMAIN settles both.
+  const lost = [a, aaaa].filter((r) => r && !usable(r));
+  if (lost.length && usable(primary) && primary.rcode === 'NOERROR' && !v4.ips.length && !v6.ips.length) primary = lost[0];
 
   const status = statusOf(primary);
   let error = null;

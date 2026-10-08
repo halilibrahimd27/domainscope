@@ -700,6 +700,19 @@ describe('resolveHost', () => {
     assert.equal(r.error, null);
   });
 
+  test('A failed and AAAA has no record → the A failure is the status, never "no address" (NODATA)', async () => {
+    const { fetchImpl } = mockFetch(({ type, name }) => {
+      if (type === 'A') throw new TypeError('A lost');
+      return zoneAnswer(ZONE, name, type);
+    });
+    const dns = new DohClient({ fetchImpl, retries: 0, ...fast() });
+    const r = await dns.resolveHost('deep.sub.example.com');
+    assert.equal(r.status, 'ERROR');
+    assert.deepEqual([r.ipv4, r.ipv6], [[], []]);
+    assert.equal(r.error, 'A lost');
+    assert.equal(r.errorKind, 'network');
+  });
+
   test('both queries failing → ERROR with the transport error', async () => {
     const { fetchImpl } = mockFetch(() => { throw new TypeError('offline'); });
     const dns = new DohClient({ fetchImpl, retries: 0, ...fast() });
@@ -759,6 +772,22 @@ describe('hostResolutionFrom / followCnames helpers', () => {
     assert.equal(odd.status, 'ERROR');
     assert.equal(odd.error, 'FORMERR');
     assert.equal(hostResolutionFrom('h.example', null, null).status, 'ERROR');
+  });
+
+  test('a lost family next to an empty answer is the failure (with its EDE), never NODATA; NXDOMAIN settles the name', () => {
+    const ede = [{ code: 6, name: 'DNSSEC Bogus', text: 'signature expired' }];
+    const nodata = resp('NOERROR', []);
+    const r = hostResolutionFrom('h.example', resp('SERVFAIL', [], { ede }), nodata);
+    assert.equal(r.status, 'SERVFAIL');
+    assert.equal(r.error, 'SERVFAIL (DNSSEC Bogus: signature expired)');
+    assert.deepEqual(r.ede, ede);
+    const lost = { ok: false, rcode: null, answers: [], error: 'HTTP 503', errorKind: 'http', resolver: 'quad9', ede: [] };
+    const m = hostResolutionFrom('h.example', nodata, lost);
+    assert.deepEqual([m.status, m.error, m.errorKind, m.resolver], ['ERROR', 'HTTP 503', 'http', 'quad9']);
+    const alias = resp('NOERROR', [{ name: 'h.example', type: 'CNAME', ttl: 9, data: 'lb.example.net' }]);
+    assert.equal(hostResolutionFrom('h.example', lost, alias).status, 'ERROR');
+    assert.equal(hostResolutionFrom('h.example', resp('SERVFAIL', []), resp('NXDOMAIN', [])).status, 'NXDOMAIN');
+    assert.equal(hostResolutionFrom('h.example', lost, resp('NXDOMAIN', [])).status, 'NXDOMAIN');
   });
 
   test('ad is true only when every answered query was validated', () => {

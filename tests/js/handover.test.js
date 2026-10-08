@@ -37,7 +37,9 @@ const DATA = {
       { name: 'shop.example.com', ip: '192.0.2.40', port: 8443, source: 'zone', firstSeen: '2026-09-01T08:00:00.000Z', lastConfirmed: '2026-09-01T08:00:00.000Z', server: null,
         stale: { reason: 'cli-elsewhere', at: '2026-09-27T08:00:00.000Z', ip: '203.0.113.10', port: 443 } }
     ]
-  }
+  },
+  // The Rollout board (lib/rollout.js): its JSON text, one board with web01 installed.
+  rollout: '{"v":1,"boards":[{"id":"abababababababababababababababababababababababababababababababab","label":"*.example.com","created":"2026-09-28T09:00:00.000Z","updated":"2026-09-28T09:10:00.000Z","rows":[{"k":"s:web01","n":"web01","s":null,"i":"2026-09-28T09:10:00.000Z","r":null,"v":null,"a":null,"m":"2026-09-28T09:10:00.000Z"}]}]}'
 };
 const WS = { name: 'Acme', data: DATA, app: 'DomainScope 1.0.0', exportedAt: AT };
 
@@ -52,7 +54,7 @@ describe('the plain file', () => {
     assert.equal(file.workspace.default, false);
     assert.equal(file.workspace.exportedAt, '2026-09-28T09:30:00.000Z');
     assert.equal(file.workspace.app, 'DomainScope 1.0.0');
-    assert.deepEqual(Object.keys(file.workspace.parts), ['inventory', 'wordlist', 'expectedCas', 'recent', 'origins']);
+    assert.deepEqual(Object.keys(file.workspace.parts), ['inventory', 'wordlist', 'expectedCas', 'recent', 'origins', 'rollout']);
     assert.equal(file.workspace.parts.origins.entries.length, 2, 'the origin map goes with the workspace');
     assert.ok(text.endsWith('\n') && text.includes('\n  "format"'), 'indented');
   });

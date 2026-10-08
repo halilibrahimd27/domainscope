@@ -2238,6 +2238,11 @@ export function mount(container, ctx) {
 
   function render() {
     renderLoader();
+    renderContent();
+  }
+
+  /** The certificate's part of the view (everything but the loader and its "No file?" block). */
+  function renderContent() {
     disposeDane();
     clear(content);
     if (!load) {
@@ -3122,11 +3127,12 @@ export function mount(container, ctx) {
   render();
 
   // Another view (SSL Targets) may replace or clear the shared certificate; the workspace's
-  // expected CAs decide the issuer badges.
+  // expected CAs decide the issuer badges, so only the certificate's part is drawn again: the
+  // loader keeps its "No file?" block, and a lookup running there its answer.
   const off = state.subscribe((change) => {
     const { key, value } = change;
     if (key === 'workspaceData' && expectedCasChanged(change)) {
-      if (load) render();
+      if (load) renderContent();
       return;
     }
     if (key !== 'session' || !value || value.name !== CURRENT_CERT) return;

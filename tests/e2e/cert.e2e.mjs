@@ -153,7 +153,8 @@ async function delayRequests(page, patterns, ms) {
  * Spotter rate limited; crt.sh lists the certificate as precertificate + certificate rows),
  * 'down' (Cert Spotter rate limited, crt.sh answering 404), 'wild-down' (Cert Spotter rate
  * limited, crt.sh answering the name's own search with nothing and its `*.parent` search with a
- * 404), 'hold' (no answer until the request is aborted; `aborted` counts those). Every intercepted request is recorded with its
+ * 404), 'hold' (no answer until the request is aborted; `aborted` counts those), 'gate' (the first page waits for
+ * `window.__ctFake.release()`, then 'found'). Every intercepted request is recorded with its
  * credentials mode; any other fetch goes out.
  */
 const ctFakeScript = (row, crtshRows) => `(() => {
@@ -170,12 +171,18 @@ const ctFakeScript = (row, crtshRows) => `(() => {
       reject(new DOMException('The operation was aborted.', 'AbortError'));
     }, { once: true });
   });
+  // 'gate': the first page waits for window.__ctFake.release() (or its abort), then answers as 'found'.
+  const gate = (init) => new Promise((resolve, reject) => {
+    window.__ctFake.release = () => resolve(json([ROW]));
+    hold(init).catch(reject);
+  });
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
     const mode = window.__ctFake.mode;
     if (url.startsWith('https://api.certspotter.com/v1/issuances')) {
       window.__ctFake.calls.push({ url, credentials: init && init.credentials });
       if (mode === 'hold') return hold(init);
+      if (mode === 'gate' && !/[?&]after=/.test(url)) return gate(init);
       if (mode === '429' || mode === 'down' || mode === 'wild-down') return json({ code: 'rate_limited', message: 'Rate limit exceeded' }, 429);
       return json(mode === 'none' || /[?&]after=/.test(url) ? [] : [ROW]);
     }
@@ -357,6 +364,39 @@ async function main() {
       assert(!/işlem bitince/.test(tr.toasts), `no deferred language switch: ${tr.toasts}`);
       await setLangUi(page, 'en');
       assertEqual(await page.evaluate(() => window.__ctFake.calls.length), 1, 'nothing asked after the stop');
+      await page.evaluate(() => {
+        document.querySelectorAll('.toast').forEach((x) => x.remove());
+        document.querySelector('.cert-reload').open = true;
+      });
+    });
+
+    await run.step('the expected CAs change while a lookup runs: it goes on, and the certificate it finds loads with the new badge', async () => {
+      const ws = (value) => page.evaluate(async (v) => {
+        const { state } = await import('./assets/js/state.js');
+        if (v) state.setWorkspaceData('expectedCas', v);
+        return state.workspaceData('expectedCas');
+      }, value);
+      const before = await ws(null);
+      await page.evaluate(() => { window.__ctFake.mode = 'gate'; window.__ctFake.calls = []; window.__ctFake.release = null; });
+      await page.type('.cert-reload [data-role="ct-host"]', 'www.example.net');
+      await page.click('.cert-reload [data-action="ct-load"]');
+      await page.waitFor(() => window.__ctFake.calls.length === 1 && typeof window.__ctFake.release === 'function', { message: 'lookup held open' });
+      await ws(['DomainScope Sample']);
+      const running = await page.evaluate(() => ({
+        load: document.querySelector('.cert-reload [data-action="ct-load"]')?.dataset.state || null,
+        spinner: !!document.querySelector('.cert-reload .cert-alt-status .spinner'),
+        busy: document.getElementById('main').getAttribute('aria-busy')
+      }));
+      assertEqual(running, { load: 'running', spinner: true, busy: 'true' }, 'the lookup is still on screen');
+      await page.evaluate(() => window.__ctFake.release());
+      await page.waitFor(() => document.querySelector('.cert-overview-badges [data-cert-source]')?.dataset.certSource === 'ct', { message: 'the certificate found is loaded' });
+      assertEqual(await page.evaluate(() => document.querySelector('.cert-overview-issuer [data-expected-ca]')?.dataset.expectedCa || null), 'expected', 'badge');
+      assertEqual(await page.evaluate(() => document.getElementById('main').getAttribute('aria-busy')), 'false', 'not busy');
+      // Back to the sample, as the next step expects.
+      await ws(before);
+      await page.evaluate(() => { document.querySelector('.cert-reload').open = true; });
+      await page.click('.cert-reload [data-action="cert-sample"]');
+      await page.waitFor(() => document.querySelector('.cert-overview-badges [data-cert-source]')?.dataset.certSource === 'sample', { message: 'the sample again' });
       await page.evaluate(() => {
         document.querySelectorAll('.toast').forEach((x) => x.remove());
         document.querySelector('.cert-reload').open = true;

@@ -1,7 +1,9 @@
 /**
  * lib/policy.js — the domain policy: its parser (flat and nested, every value kind, the errors
  * that leave a rule out), the presets, the evaluator over lib/portfolio.js facts (pass, fail and
- * "not known" with the evidence), the matrix and its exports, and every text in both languages.
+ * "not known" with the evidence) — the lock's depth, the registry lock, the registrar's class and
+ * the DNS providers among them, and the corporate preset —, the matrix and its exports, and every
+ * text in both languages.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,7 +11,7 @@ import {
   POLICY_RULES, POLICY_PRESETS, POLICY_PRESET_IDS, POLICY_OPS, POLICY_I18N, POLICY_ERRORS, POLICY_MAX_RULES,
   parsePolicy, policyObject, policyText, presetPolicy, evaluatePolicy, auditPortfolio, auditCsv, auditJson, evidenceText, requirementText, policyRule
 } from '../../assets/js/lib/policy.js';
-import { portfolioFacts } from '../../assets/js/lib/portfolio.js';
+import { portfolioFacts, LOCK_LEVELS } from '../../assets/js/lib/portfolio.js';
 import { HEALTH_CHECK_IDS } from '../../assets/js/lib/health.js';
 
 /** English `t` over POLICY_I18N (plural objects: one / other / zero). */
@@ -115,15 +117,33 @@ describe('parsePolicy', () => {
     assert.deepEqual(parsePolicy(text).policy, p);
   });
 
-  test('presets: baseline, strict mail, parked domain; each parses without an error', () => {
-    assert.deepEqual(POLICY_PRESET_IDS, ['baseline', 'strict-mail', 'parked']);
+  test('presets: baseline, strict mail, parked domain, corporate; each parses without an error', () => {
+    assert.deepEqual(POLICY_PRESET_IDS, ['baseline', 'strict-mail', 'parked', 'corporate']);
     for (const id of POLICY_PRESET_IDS) {
       const { errors } = parsePolicy(POLICY_PRESETS[id]);
       assert.deepEqual(errors, [], id);
       assert.ok(POLICY_I18N.en[`pol.preset.${id}`] && POLICY_I18N.tr[`pol.preset.${id}`], id);
     }
     assert.deepEqual(presetPolicy('parked').rules.map((r) => r.id), ['expiryDays', 'transferLock', 'caa', 'spf.all', 'dmarc.policy', 'mx.null']);
+    // CSC's eight measures (lib/secscore.js), with at least the registrar's full lock
+    assert.deepEqual(presetPolicy('corporate').rules.map((r) => [r.id, r.op, r.value]), [
+      ['lock.level', '>=', 'registrar-full'], ['registryLock', '==', true], ['registrar.class', '==', 'corporate'], ['ns.providers', '>=', 2],
+      ['dnssec', '>=', 'signed'], ['caa', '==', 'present'], ['spf', '==', 'valid'], ['dmarc.policy', '>=', 'quarantine'], ['dkim', '==', true]
+    ]);
+    assert.equal(presetPolicy('corporate').name, 'corporate');
     assert.throws(() => presetPolicy('nope'), RangeError);
+  });
+
+  test('the lock levels are lib/portfolio.js\'s, weakest first; a level or "OP level"; the class and the providers take their values', () => {
+    assert.deepEqual([...policyRule('lock.level').levels], [...LOCK_LEVELS]);
+    const { policy, errors } = parsePolicy({ 'lock.level': 'Registry-Partial', 'registrar.class': true, 'ns.providers': 3, registryLock: 'true' });
+    assert.deepEqual(errors, []);
+    assert.deepEqual(policy.rules.map((r) => [r.id, r.op, r.value]), [
+      ['lock.level', '>=', 'registry-partial'], ['registryLock', '==', true], ['registrar.class', '==', 'corporate'], ['ns.providers', '>=', 3]
+    ]);
+    assert.deepEqual(parsePolicy({ 'lock.level': '== registry' }).policy.rules[0].op, '==');
+    const bad = parsePolicy({ 'lock.level': '>= locked', 'registrar.class': 'retail', 'ns.providers': '>= 21' }).errors;
+    assert.deepEqual(bad.map((e) => [e.code, e.rule]), [['bad-value', 'lock.level'], ['bad-value', 'registrar.class'], ['bad-value', 'ns.providers']]);
   });
 
   test('every rule: a label in both languages, an example its own parser takes, health check ids that exist', () => {
@@ -169,6 +189,85 @@ describe('evaluatePolicy', () => {
       ['fail', 'registrar: Elsewhere Ltd']
     ]);
     assert.equal(cellOf(p, facts({ registration: { ...facts().registration, transferLock: null } }), 'transferLock').status, 'unknown', 'no status from the registry');
+  });
+
+  test('lock level: ordered over the five levels, said with the server prohibitions a partial lock has; not registered fails, no RDAP or no status is not known', () => {
+    const at = (level, serverLocks = []) => facts({ registration: { ...facts().registration, lockLevel: level, serverLocks } });
+    const atLeast = one({ 'lock.level': '>= registrar-full' });
+    assert.deepEqual(LOCK_LEVELS.map((l) => cellOf(atLeast, at(l), 'lock.level').status), ['fail', 'fail', 'pass', 'pass', 'pass']);
+    assert.deepEqual(LOCK_LEVELS.map((l) => cellOf(one({ 'lock.level': '== registry' }), at(l), 'lock.level').status), ['fail', 'fail', 'fail', 'fail', 'pass']);
+    assert.deepEqual(LOCK_LEVELS.map((l) => cellOf(one({ 'lock.level': '< registry-partial' }), at(l), 'lock.level').status), ['pass', 'pass', 'pass', 'fail', 'fail']);
+    const partial = cellOf(atLeast, at('registry-partial', ['server transfer prohibited']), 'lock.level');
+    assert.deepEqual([partial.actual, evidenceText(partial, t)], ['registry-partial',
+      'a partial registry lock, server transfer prohibited only: a registry lock is server transfer, update and delete prohibited together']);
+    assert.deepEqual(LOCK_LEVELS.filter((l) => l !== 'registry-partial').map((l) => evidenceText(cellOf(atLeast, at(l), 'lock.level'), t)), [
+      'not locked: no transfer prohibition, the domain can be transferred away',
+      'the registrar’s transfer lock only (client transfer prohibited): changes and deletion are not locked',
+      'the registrar’s full lock: client transfer, update and delete prohibited',
+      'a registry lock: server transfer, update and delete prohibited'
+    ]);
+    assert.equal(evidenceText(partial, makeT('tr')), 'kısmi kayıt kuruluşu kilidi, yalnızca server transfer prohibited: kayıt kuruluşu kilidi server transfer, update ve delete prohibited durumlarının üçü birdendir');
+    assert.equal(cellOf(atLeast, facts({ registration: { state: 'unsupported', tld: 'tr' } }), 'lock.level').status, 'unknown');
+    assert.equal(cellOf(atLeast, facts({ registration: { ...facts().registration, lockLevel: null } }), 'lock.level').evidence.key, 'pol.ev.noStatus');
+    assert.deepEqual([cellOf(atLeast, facts({ registration: { state: 'not-found' } }), 'lock.level').status,
+      cellOf(atLeast, facts({ registration: { state: 'not-found' } }), 'lock.level').evidence.key], ['fail', 'pol.ev.notRegistered']);
+  });
+
+  test('registry lock: all three server prohibitions; one or two of them said, never taken for it', () => {
+    const p = one({ registryLock: true });
+    const reg = (extra) => facts({ registration: { ...facts().registration, ...extra } });
+    const full = cellOf(p, reg({ registryLock: true, serverLocks: ['server transfer prohibited', 'server update prohibited', 'server delete prohibited'] }), 'registryLock');
+    assert.deepEqual([full.status, evidenceText(full, t)], ['pass', 'a registry lock: server transfer, update and delete prohibited']);
+    const two = cellOf(p, reg({ registryLock: false, serverLocks: ['server transfer prohibited', 'server delete prohibited'] }), 'registryLock');
+    assert.deepEqual([two.status, evidenceText(two, t)], ['fail',
+      'a partial registry lock, server transfer prohibited, server delete prohibited only: a registry lock is server transfer, update and delete prohibited together']);
+    const none = cellOf(p, reg({ registryLock: false, serverLocks: [] }), 'registryLock');
+    assert.deepEqual([none.status, evidenceText(none, t)], ['fail', 'no registry lock: none of server transfer, update and delete prohibited']);
+    assert.equal(cellOf(p, reg({ registryLock: null }), 'registryLock').status, 'unknown', 'no status reported');
+    assert.equal(cellOf(one({ registryLock: false }), reg({ registryLock: false, serverLocks: [] }), 'registryLock').status, 'pass', 'false asks for none');
+    assert.equal(cellOf(p, facts({ registration: { state: 'failed' } }), 'registryLock').status, 'unknown');
+    assert.equal(cellOf(p, facts({ registration: { state: 'not-found' } }), 'registryLock').status, 'fail');
+  });
+
+  test('registrar class by the IANA ID: corporate passes, retail fails, a reserved ID or none is not known', () => {
+    const p = one({ 'registrar.class': 'corporate' });
+    const reg = (extra) => facts({ registration: { ...facts().registration, ...extra } });
+    const corp = cellOf(p, reg({ registrar: 'Example Brand Registrar', ianaId: '292' }), 'registrar.class');
+    assert.deepEqual([corp.status, corp.actual, evidenceText(corp, t)], ['pass', 'corporate', 'a corporate registrar: Example Brand Registrar (IANA ID 292)']);
+    const retail = cellOf(p, reg({ ianaId: '1068' }), 'registrar.class');
+    assert.deepEqual([retail.status, retail.actual, evidenceText(retail, t)], ['fail', 'retail', 'not a corporate registrar: Example Registrar, Inc. (IANA ID 1068)']);
+    assert.equal(evidenceText(retail, makeT('tr')), 'kurumsal bir kayıt firması değil: Example Registrar, Inc. (IANA kimliği 1068)');
+    const reserved = cellOf(p, reg({ ianaId: '9999' }), 'registrar.class');
+    assert.deepEqual([reserved.status, evidenceText(reserved, t)], ['unknown',
+      'IANA ID 9999 is a reserved one (such as the registry acting as registrar): whether the registrar is corporate is not known']);
+    const noId = cellOf(p, reg({ ianaId: null }), 'registrar.class');
+    assert.deepEqual([noId.status, noId.evidence.key], ['unknown', 'pol.ev.registrarClass.noId']);
+    // the facts' class (lib/portfolio.js) is read first; the name never decides
+    assert.equal(cellOf(p, reg({ registrar: 'MarkMonitor Inc.', ianaId: '1068' }), 'registrar.class').status, 'fail', 'a name is no ID');
+    assert.equal(evidenceText(cellOf(p, reg({ registrarClass: 'corporate', ianaId: '3838', registrar: null }), 'registrar.class'), t), 'a corporate registrar: MarkMonitor (IANA ID 3838)');
+    assert.equal(cellOf(p, facts({ registration: { state: 'unsupported', tld: 'tr' } }), 'registrar.class').evidence.key, 'pol.ev.noRdap');
+    assert.equal(cellOf(p, facts({ registration: { state: 'not-found' } }), 'registrar.class').status, 'fail');
+  });
+
+  test('DNS providers: a number (>= by default); a domain that does not exist fails, an NS lookup not landed or failed is not known', () => {
+    const p = one({ 'ns.providers': 2 });
+    const ns = (names, extra = {}) => facts({ ns: { ...facts().ns, providers: { count: names.length, providers: names.map((name) => ({ id: `domain:${name}`, name, known: false, hosts: [] })) }, ...extra } });
+    const two = cellOf(p, ns(['Amazon Route 53', 'example.net']), 'ns.providers');
+    assert.deepEqual([two.status, two.actual, evidenceText(two, t)], ['pass', 2, '2 DNS providers: Amazon Route 53, example.net']);
+    const single = cellOf(p, ns(['example.net']), 'ns.providers');
+    assert.deepEqual([single.status, evidenceText(single, t), evidenceText(single, makeT('tr'))], ['fail', '1 DNS provider: example.net', '1 DNS sağlayıcısı: example.net']);
+    assert.equal(cellOf(p, facts({ ns: { state: 'nxdomain', domains: [], providers: null } }), 'ns.providers').status, 'fail');
+    assert.equal(cellOf(p, facts({ ns: { state: 'failed', failure: {}, domains: [], providers: null } }), 'ns.providers').evidence.key, 'pol.ev.failed');
+    assert.equal(cellOf(p, facts({ ns: { state: 'pending', domains: [], providers: null } }), 'ns.providers').evidence.key, 'pol.ev.pending');
+    assert.equal(cellOf(p, facts({ ns: { state: 'none', hosts: [], domains: [], providers: null } }), 'ns.providers').evidence.key, 'pol.ev.noNs');
+  });
+
+  test('a lookup that has not landed is "not looked up", never a failed one', () => {
+    const p = one({ caa: 'present', spf: 'valid', 'dmarc.policy': '>= none', dkim: true, mtaSts: true, dnssec: 'signed' });
+    const pending = { state: null, failure: null, pending: true };
+    const cells = evaluatePolicy(p, facts({ caa: pending, spf: pending, dmarc: pending, dkim: pending, mtaSts: pending, dnssec: pending }));
+    assert.deepEqual(cells.map((c) => [c.status, c.evidence.key]), Array(6).fill(['unknown', 'pol.ev.pending']));
+    assert.equal(evidenceText(cellOf(p, facts({ caa: { state: null, failure: { kind: 'error' } } }), 'caa'), t), 'CAA lookup failed');
   });
 
   test('name server domains: the soonest decides; one not known leaves a pass "not known", never a fail', () => {
@@ -291,6 +390,44 @@ describe('evaluatePolicy', () => {
   });
 });
 
+describe('the corporate preset over real facts (lib/portfolio.js)', () => {
+  const NOW = new Date('2026-10-08T12:00:00Z');
+  const answer = (type, list) => ({ ok: true, rcode: 'NOERROR', flags: { ad: false }, answers: list.map((data) => ({ type, data })) });
+  const txt = (...records) => answer('TXT', records.map((r) => [r]));
+  const rdap = (status, ianaId, registrar = 'Example Registrar, Inc.') => ({
+    ok: true, domain: 'example.com', tld: 'com', registrar, registrarIanaId: ianaId, status, expires: new Date('2027-10-08T00:00:00Z')
+  });
+  const raw = (over = {}) => ({
+    domain: 'example.com',
+    rdap: rdap(['servertransferprohibited', 'serverupdateprohibited', 'serverdeleteprohibited', 'clienttransferprohibited', 'clientupdateprohibited', 'clientdeleteprohibited'], '299'),
+    ns: answer('NS', ['ns-1.awsdns-01.com', 'ns1.example.net']),
+    ds: answer('DS', [{ keyTag: 1, algorithm: 13, digestType: 2, digest: 'ab'.repeat(32) }]),
+    dnskey: { ...answer('DNSKEY', [{ flags: 257, protocol: 3, algorithm: 13, publicKey: 'AA==' }]), flags: { ad: true } },
+    // lib/health.js findCaa's result: the records where it found them
+    caa: { name: 'example.com', foundAt: 'example.com', records: [{ type: 'CAA', data: { flags: 0, tag: 'issue', value: 'letsencrypt.org' } }], error: null },
+    mx: answer('MX', [{ preference: 10, exchange: 'mx.example.com' }]),
+    txt: txt('v=spf1 -all'),
+    dmarc: txt('v=DMARC1; p=quarantine'),
+    dkim: { asked: 8, selectors: ['selector1'], revoked: [], wildcard: false, failedSelectors: [] },
+    ...over
+  });
+  const statuses = (r) => evaluatePolicy(presetPolicy('corporate'), portfolioFacts(r, { now: NOW })).map((c) => `${c.id}:${c.status}`);
+
+  test('a domain at a corporate registrar, locked at the registry, on two DNS providers, signed, with CAA and mail authenticated: every rule passes', () => {
+    assert.deepEqual(statuses(raw()), ['lock.level:pass', 'registryLock:pass', 'registrar.class:pass', 'ns.providers:pass', 'dnssec:pass', 'caa:pass', 'spf:pass', 'dmarc.policy:pass', 'dkim:pass']);
+  });
+
+  test('a retail registrar\'s transfer lock, one DNS provider, nothing signed: what fails says why; a registry without RDAP is not known', () => {
+    const weak = raw({ rdap: rdap(['clientTransferProhibited'], '1068'), ns: answer('NS', ['ns1.example.net', 'ns2.example.net']), ds: answer('DS', []), caa: { name: 'example.com', foundAt: null, records: [], error: null },
+      dmarc: txt('v=DMARC1; p=none'), dkim: { asked: 8, selectors: [], revoked: [], wildcard: false, failedSelectors: [] } });
+    assert.deepEqual(statuses(weak), ['lock.level:fail', 'registryLock:fail', 'registrar.class:fail', 'ns.providers:fail', 'dnssec:fail', 'caa:fail', 'spf:pass', 'dmarc.policy:fail', 'dkim:fail']);
+    const tr = raw({ domain: 'example-test.com.tr', rdap: { ok: false, unsupportedTld: true, domain: 'example-test.com.tr', tld: 'tr', registrar: null, status: [] } });
+    assert.deepEqual(statuses(tr).slice(0, 3), ['lock.level:unknown', 'registryLock:unknown', 'registrar.class:unknown']);
+    const off = raw({ dkim: { off: true } });
+    assert.equal(statuses(off).at(-1), 'dkim:unknown', 'DKIM not asked: not known');
+  });
+});
+
 describe('the matrix', () => {
   const policy = parsePolicy({ name: 'baseline', rules: { expiryDays: '>= 30', transferLock: true, 'dmarc.policy': '>= quarantine' } }).policy;
   const list = [
@@ -325,6 +462,8 @@ describe('the matrix', () => {
   test('from real facts (lib/portfolio.js): nothing landed yet is "not known" everywhere', () => {
     const empty = auditPortfolio(presetPolicy('baseline'), [portfolioFacts({ domain: 'example.com' })]);
     assert.ok(empty.rows[0].cells.every((c) => c.status === 'unknown'), JSON.stringify(empty.rows[0].cells.map((c) => c.status)));
+    const corporate = auditPortfolio(presetPolicy('corporate'), [portfolioFacts({ domain: 'example.com' })]);
+    assert.ok(corporate.rows[0].cells.every((c) => c.status === 'unknown' && c.evidence.key === 'pol.ev.pending'), JSON.stringify(corporate.rows[0].cells.map((c) => c.evidence.key)));
     assert.equal(requirementText({ id: 'registrar', op: 'in', value: ['Example Registrar, Inc.', 'b'] }), 'Example Registrar, Inc.; b', 'a list between semicolons: a name has commas');
   });
 

@@ -2,7 +2,8 @@
  * lib/portfolio.js — the Domain portfolio: the list it reads, how RDAP statuses read for risk,
  * the name server domains (each asked once per run), a run over a fake DoH and a fake RDAP
  * registry (rows fill as lookups land, a stop, a Retry past the cache), the facts of each row,
- * the expiry dates of the calendar and the export rows. No network.
+ * how deeply a domain is locked, its registrar's class and its DNS providers, the expiry dates of
+ * the calendar and the export rows. No network.
  */
 import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,7 +14,7 @@ import * as portfolioLib from '../../assets/js/lib/portfolio.js';
 import {
   PORTFOLIO_LOOKUPS, PORTFOLIO_CELLS, CELL_LOOKUPS, CRITICAL_STATUSES, PORTFOLIO_MAX_DOMAINS, PORTFOLIO_DKIM_SELECTORS,
   parsePortfolioInput, statusRisk, nsDomainsOf, createPortfolio, portfolioFacts, cellFailures,
-  rowRisk, expiryBand, expiryEvents, expiryUid, exportRow, EXPORT_COLUMNS, portfolioSummaryFacts
+  rowRisk, expiryBand, expiryEvents, expiryUid, exportRow, EXPORT_COLUMNS, portfolioSummaryFacts, lockLevel, LOCK_LEVELS, nsProviders
 } from '../../assets/js/lib/portfolio.js';
 import { clearRdapCache } from '../../assets/js/lib/rdap.js';
 import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
@@ -82,11 +83,11 @@ export function fakeDns(zone, { signed = [], fail = {}, rcodes = {}, delayMs = 0
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/rdap+json' } });
 const REGISTRY = 'https://rdap.example.net/';
 
-function rdapJson(domain, { status = ['client transfer prohibited'], days = 400, registrar = 'Example Registrar, Inc.' } = {}) {
+function rdapJson(domain, { status = ['client transfer prohibited'], days = 400, registrar = 'Example Registrar, Inc.', ianaId = '9999' } = {}) {
   return {
     objectClassName: 'domain', ldhName: domain.toUpperCase(), status,
     events: [{ eventAction: 'registration', eventDate: '2001-05-01T00:00:00Z' }, ...(days === null ? [] : [{ eventAction: 'expiration', eventDate: iso(days) }])],
-    entities: [{ objectClassName: 'entity', roles: ['registrar'], vcardArray: ['vcard', [['version', {}, 'text', '4.0'], ['fn', {}, 'text', registrar]]], publicIds: [{ type: 'IANA Registrar ID', identifier: '9999' }] }],
+    entities: [{ objectClassName: 'entity', roles: ['registrar'], vcardArray: ['vcard', [['version', {}, 'text', '4.0'], ['fn', {}, 'text', registrar]]], publicIds: [{ type: 'IANA Registrar ID', identifier: ianaId }] }],
     secureDNS: { delegationSigned: false }
   };
 }
@@ -200,10 +201,13 @@ describe('RDAP statuses read for risk', () => {
     assert.equal(statusRisk(['client transfer prohibited']).risk, 'ok');
     assert.equal(statusRisk(['clientTransferProhibited', 'clientDeleteProhibited']).transferLock, true);
     const open = statusRisk(['active']);
-    assert.deepEqual([open.risk, open.transferLock, open.registryLock], ['hijack', false, false]);
-    // A registry lock (RFC 5731: transfer requests MUST be rejected) is a transfer lock, and is said as one.
+    assert.deepEqual([open.risk, open.transferLock, open.registryLock, open.lockLevel], ['hijack', false, false, 'none']);
+    // The registry's transfer prohibition (RFC 5731: transfer requests MUST be rejected) is a transfer
+    // lock, but no registry lock: that is all three server prohibitions (lockLevel below).
     const reg = statusRisk(['server transfer prohibited', 'active']);
-    assert.deepEqual([reg.risk, reg.transferLock, reg.registryLock], ['ok', true, true]);
+    assert.deepEqual([reg.risk, reg.transferLock, reg.registryLock, reg.lockLevel, reg.serverLocks], ['ok', true, false, 'registry-partial', ['server transfer prohibited']]);
+    const full = statusRisk(['serverDeleteProhibited', 'serverTransferProhibited', 'serverUpdateProhibited']);
+    assert.deepEqual([full.registryLock, full.lockLevel, full.serverLocks], [true, 'registry', ['server transfer prohibited', 'server update prohibited', 'server delete prohibited']]);
     assert.deepEqual(statusRisk(['serverTransferProhibited']).transferLock, true);
     // RFC 9083's plain "transfer prohibited" too.
     const plain = statusRisk(['transfer prohibited']);
@@ -262,12 +266,95 @@ describe('RDAP statuses read for risk', () => {
   });
 
   test('no status at all: nothing can be said', () => {
-    assert.deepEqual(statusRisk([]), { flags: [], critical: [], transferLock: null, registryLock: null, transferCodes: [], risk: null });
+    assert.deepEqual(statusRisk([]), { flags: [], critical: [], transferLock: null, registryLock: null, lockLevel: null, serverLocks: [], transferCodes: [], risk: null });
     assert.deepEqual(statusRisk(undefined).risk, null);
   });
 
   test('expiry bands: Domain Health\'s (expired, < 30 error, < 60 warn)', () => {
     assert.deepEqual([-1, 0, 29, 30, 59, 60, null].map(expiryBand), ['expired', 'error', 'error', 'warn', 'warn', 'ok', null]);
+  });
+});
+
+describe('lock depth, registrar class, DNS providers', () => {
+  test('lockLevel, a truth table: RFC 8056 spellings with spaces and EPP camelCase alike; partial sets', () => {
+    const rfc = (who, ops) => ops.map((op) => `${who} ${op} prohibited`);
+    const epp = (who, ops) => ops.map((op) => `${who}${op[0].toUpperCase()}${op.slice(1)}Prohibited`);
+    const T = ['transfer'];
+    const TUD = ['transfer', 'update', 'delete'];
+    const cases = [
+      [[], 'none'],
+      [['active'], 'none'],
+      [['client update prohibited', 'client delete prohibited'], 'none'],
+      [['server delete prohibited'], 'none'],
+      [['server update prohibited', 'server delete prohibited'], 'none'],
+      [rfc('client', T), 'registrar-transfer'],
+      [rfc('client', ['transfer', 'update']), 'registrar-transfer'],
+      [rfc('client', ['transfer', 'delete']), 'registrar-transfer'],
+      [['transfer prohibited'], 'registrar-transfer'],
+      [rfc('client', TUD), 'registrar-full'],
+      [['transfer prohibited', 'update prohibited', 'delete prohibited'], 'registrar-full'],
+      [['client transfer prohibited', 'update prohibited', 'client delete prohibited'], 'registrar-full'],
+      [rfc('server', T), 'registry-partial'],
+      [rfc('server', ['transfer', 'update']), 'registry-partial'],
+      [[...rfc('client', TUD), ...rfc('server', T)], 'registry-partial'],
+      [['client transfer prohibited', 'server delete prohibited'], 'registry-partial'],
+      [rfc('server', TUD), 'registry'],
+      [[...rfc('server', TUD), ...rfc('client', TUD), 'active'], 'registry']
+    ];
+    for (const [statuses, level] of cases) {
+      assert.equal(lockLevel(statuses), level, statuses.join(', ') || '(none)');
+      // EPP's spelling, as the registry wrote it and lower-cased (lib/rdap.js), and a free spelling
+      const camel = statuses.map((s) => s.replace(/^(client|server) (\w+) prohibited$/, (m, who, op) => epp(who, [op])[0]));
+      assert.equal(lockLevel(camel), level, camel.join(', '));
+      assert.equal(lockLevel(camel.map((s) => s.toLowerCase())), level, `${camel.join(', ')} lower-cased`);
+      assert.equal(lockLevel(statuses.map((s) => s.toUpperCase().replace(/ /g, '_'))), level, `${statuses.join(', ')} upper, underscores`);
+    }
+    assert.deepEqual(LOCK_LEVELS, ['none', 'registrar-transfer', 'registrar-full', 'registry-partial', 'registry']);
+    assert.equal(lockLevel(undefined), 'none');
+    // statusRisk says it only when the registry reports statuses at all
+    assert.equal(statusRisk([]).lockLevel, null);
+    assert.equal(statusRisk(epp('server', TUD)).registryLock, true);
+    assert.equal(statusRisk(epp('server', ['transfer', 'delete'])).registryLock, false, 'two of the three: no registry lock');
+  });
+
+  test('nsProviders: a known provider once whatever its TLDs, an unknown one by its registrable domain, the domain\'s own name servers as one', () => {
+    const route53 = nsProviders(['ns-1.awsdns-01.com', 'NS-2.AWSDNS-02.NET.', 'ns-3.awsdns-03.org', 'ns-4.awsdns-04.co.uk']);
+    assert.deepEqual([route53.count, route53.providers[0].id, route53.providers[0].known, route53.providers[0].hosts.length], [1, 'route53', true, 4]);
+    const mixed = nsProviders(['ns2.example.net', 'ns1.example.net', 'ns.example.com', 'ns1.example.org', 'ns-1.awsdns-01.com'], { domain: 'example.com' });
+    assert.deepEqual(mixed.providers.map((p) => [p.id, p.name, p.known, p.hosts]), [
+      ['route53', 'Amazon Route 53', true, ['ns-1.awsdns-01.com']],
+      ['self', 'example.com', false, ['ns.example.com']],
+      ['domain:example.net', 'example.net', false, ['ns1.example.net', 'ns2.example.net']],
+      ['domain:example.org', 'example.org', false, ['ns1.example.org']]
+    ]);
+    assert.equal(mixed.count, 4);
+    assert.deepEqual(nsProviders(['ns1.example.net', 'ns2.example.net']).count, 1, 'two hosts of one domain: one provider');
+    assert.deepEqual(nsProviders(['ns1.example.com', 'ns2.example.com'], { domain: 'example.com' }).providers.map((p) => p.id), ['self'], 'in-bailiwick only: one');
+    assert.deepEqual(nsProviders([]), { count: 0, providers: [] });
+  });
+
+  test('the facts: the lock\'s depth with the server prohibitions set, the registrar\'s class by IANA ID, the DNS providers', async () => {
+    const rdap = {
+      ...RDAP,
+      'example.com': rdapJson('example.com', { status: ['server transfer prohibited', 'server update prohibited', 'server delete prohibited', 'client transfer prohibited'], ianaId: '292' }),
+      'example.org': rdapJson('example.org', { status: ['serverTransferProhibited', 'clientTransferProhibited'], ianaId: '1068', days: 200 }),
+      'example.net': rdapJson('example.net', { status: ['client transfer prohibited'], ianaId: 'not given', days: 300 })
+    };
+    const { run } = run4({ rdap });
+    await run.start();
+    const com = run.facts('example.com', { now: NOW });
+    assert.deepEqual([com.registration.lockLevel, com.registration.registryLock, com.registration.registrarClass, com.registration.ianaId],
+      ['registry', true, 'corporate', '292']);
+    assert.deepEqual(com.ns.providers, { count: 1, providers: [{ id: 'domain:example.net', name: 'example.net', known: false, hosts: ['ns1.example.net', 'ns2.example.net'] }] });
+    const org = run.facts('example.org', { now: NOW });
+    assert.deepEqual([org.registration.lockLevel, org.registration.registryLock, org.registration.serverLocks, org.registration.registrarClass],
+      ['registry-partial', false, ['server transfer prohibited'], 'retail']);
+    assert.deepEqual(org.ns.providers.providers.map((p) => p.id), ['self', 'domain:example.net'],'its own name server and example.net\'s: two');
+    assert.equal(run.facts('example.net', { now: NOW }).registration.registrarClass, 'unknown', 'an IANA ID that is no number');
+    const tr = run.facts('example-test.com.tr', { now: NOW });
+    assert.deepEqual([tr.registration.registrarClass, tr.registration.lockLevel, tr.ns.providers.count], [undefined, undefined, 1], 'no RDAP: nothing said');
+    // not looked up yet: no providers to count
+    assert.equal(portfolioFacts({ domain: 'example.com' }, { now: NOW }).ns.providers, null);
   });
 });
 
@@ -431,11 +518,14 @@ describe('the calendar and the exports', () => {
     const rows = run.allFacts({ now: NOW }).map(exportRow);
     assert.deepEqual(Object.keys(rows[0]), [...EXPORT_COLUMNS]);
     assert.deepEqual(rows[0], {
-      domain: 'example.com', registration: 'ok', registrar: 'Example Registrar, Inc.', expires: iso(400).slice(0, 10), daysLeft: 400, risk: 'ns-expiring',
-      statuses: 'client transfer prohibited', transferLock: true, critical: '', dnssec: 'validated', delegationSigned: false,
-      nameServers: 'ns1.example.net ns2.example.net', nsDomains: 'example.net:12', nsMinDaysLeft: 12, caa: 'present', caaIssuers: 'letsencrypt.org sectigo.com',
-      mx: 'some', spf: 'ok', spfAll: '-all', spfLookups: 3, dmarc: 'p=reject', dkim: 'google', mtaSts: 'present', tlsRpt: 'present', parked: 'receives-mail', failed: ''
-    });
+      domain: 'example.com', registration: 'ok', registrar: 'Example Registrar, Inc.', registrarClass: 'unknown', expires: iso(400).slice(0, 10), daysLeft: 400,
+      risk: 'ns-expiring', statuses: 'client transfer prohibited', transferLock: true, lockLevel: 'registrar-transfer', critical: '', dnssec: 'validated',
+      delegationSigned: false, nameServers: 'ns1.example.net ns2.example.net', nsDomains: 'example.net:12', nsMinDaysLeft: 12, nsProviders: 1, caa: 'present',
+      caaIssuers: 'letsencrypt.org sectigo.com', mx: 'some', spf: 'ok', spfAll: '-all', spfLookups: 3, dmarc: 'p=reject', dkim: 'google', mtaSts: 'present',
+      tlsRpt: 'present', parked: 'receives-mail', failed: ''
+    }, 'IANA ID 9999 is a reserved one: the class is not known');
+    assert.deepEqual([rows[1].lockLevel, rows[1].nsProviders], ['none', 2], 'example.org: no transfer prohibition; example.net\'s and its own name servers');
+    assert.deepEqual([rows[3].registrarClass, rows[3].lockLevel], [null, null], 'no RDAP for .tr: neither is known');
     assert.equal(rows[2].failed, 'caa');
     assert.equal(rows[1].parked, 'locked');
     // the DMARC column never says "none" for two things: p=none is "p=none", no record "missing"

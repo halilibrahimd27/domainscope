@@ -1,9 +1,10 @@
 /**
  * views/portfolio.js — the pure parts of the Domain portfolio view: a link's list and the share
  * params, the table's filters over lib/portfolio.js facts (and the tiles they back), the calendar
- * events worded in English and Turkish with the .ics file they make (lib/ics.js), and the line
- * above the policy matrix. The module is DOM-free at import. Pure Node, no network; documentation
- * data only.
+ * events worded in English and Turkish with the .ics file they make (lib/ics.js), the line
+ * above the policy matrix, and the Domain security tab's line and adoption bars
+ * (ui/secscore-panel.js) in English and Turkish. The modules are DOM-free at import. Pure Node, no
+ * network; documentation data only.
  */
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,6 +15,8 @@ import {
 } from '../../assets/js/views/portfolio.js';
 import { expiryUid } from '../../assets/js/lib/portfolio.js';
 import { buildCalendar } from '../../assets/js/lib/ics.js';
+import { totalsText, barModel, generatedKeys, BAR_SEGMENTS } from '../../assets/js/ui/secscore-panel.js';
+import { SECURITY_MEASURES } from '../../assets/js/lib/secscore.js';
 
 after(() => setLang('en'));
 
@@ -54,7 +57,7 @@ describe('Domain portfolio view helpers', () => {
   test('the view interface; nothing kept before a check; the tiles are filters, the risk badges risks', () => {
     assert.deepEqual([id, titleKey, icon], ['portfolio', 'nav.portfolio', 'box']);
     assert.equal(result(), null);
-    assert.deepEqual(PORTFOLIO_TABS, ['domains', 'policy', 'ct']);
+    assert.deepEqual(PORTFOLIO_TABS, ['domains', 'security', 'policy', 'ct']);
     for (const tile of PORTFOLIO_TILES) assert.ok(PORTFOLIO_FILTERS.includes(tile), tile);
     // every risk lib/portfolio.js rowRisk names but 'ok', worst first
     assert.deepEqual([...RISK_BADGES], ['critical', 'ns-unregistered', 'pending-transfer', 'expired', 'expiring', 'ns-expiring', 'hijack', 'warn']);
@@ -173,5 +176,45 @@ describe('Domain portfolio view helpers', () => {
     assert.equal(matrixCountsText({ domains: 3, failing: 0, unknown: 2, passing: 1 }, t), '3 alan adından politikaya uymayan yok · 2 tanesi tam kontrol edilemedi · 1 tanesi bütün kurallara uyuyor');
     assert.equal(matrixCountsText({ domains: 4, failing: 0, unknown: 0, passing: 4 }, t), '4 alan adının tamamı bütün kurallara uyuyor');
     setLang('en');
+  });
+});
+
+describe('Domain security tab (ui/secscore-panel.js)', () => {
+  test('the line above the bars: the domains, the average, all eight, what could not be checked — in English and Turkish', () => {
+    const totals = { domains: 3, average: 19 / 3, full: 1, unknownDomains: 2, unknownMeasures: 3 };
+    setLang('en');
+    assert.equal(totalsText(totals, t), '3 domains · average score 6.3 of 8 · 1 meets all eight · 3 measures could not be checked');
+    assert.equal(totalsText({ domains: 1, average: 8, full: 1, unknownDomains: 0, unknownMeasures: 0 }, t), '1 domain · average score 8 of 8 · 1 meets all eight');
+    assert.equal(totalsText({ domains: 2, average: 4.25, full: 0, unknownDomains: 1, unknownMeasures: 1 }, t), '2 domains · average score 4.3 of 8 · none meets all eight · 1 measure could not be checked');
+    setLang('tr');
+    assert.equal(totalsText(totals, t), '3 alan adı · ortalama puan 8 üzerinden 6,3 · 1 tanesi sekizini birden karşılıyor · 3 ölçüt kontrol edilemedi');
+    assert.equal(totalsText({ domains: 2, average: 4, full: 0, unknownDomains: 0, unknownMeasures: 0 }, t), '2 alan adı · ortalama puan 8 üzerinden 4 · sekizini birden karşılayan yok');
+    setLang('en');
+  });
+
+  test('a measure\'s bar: met, not met and not known as shares of the domains (an empty part left out), its text and its label', () => {
+    setLang('en');
+    const m = barModel({ id: 'registryLock', pass: 1, fail: 2, unknown: 1, total: 4, share: 0.25 }, t);
+    assert.deepEqual(m.segments, [{ kind: 'pass', x: 0, width: 25, count: 1 }, { kind: 'fail', x: 25, width: 50, count: 2 }, { kind: 'unknown', x: 75, width: 25, count: 1 }]);
+    assert.equal(m.text, '1 of 4 (25%) · 1 not known');
+    assert.equal(m.label, 'Registry lock: 1 met, 2 not met, 1 not known');
+    const all = barModel({ id: 'spf', pass: 3, fail: 0, unknown: 0, total: 3, share: 1 }, t);
+    assert.deepEqual([all.segments.map((s) => s.kind), all.segments[0].width, all.text], [['pass'], 100, '3 of 3 (100%)']);
+    assert.deepEqual(barModel({ id: 'caa', pass: 0, fail: 0, unknown: 0, total: 0, share: null }, t).segments, [], 'no domain: an empty track');
+    setLang('tr');
+    const tr = barModel({ id: 'registryLock', pass: 1, fail: 2, unknown: 1, total: 4, share: 0.25 }, t);
+    assert.equal(tr.text, '4 alan adından 1 tanesi (%25) · 1 tanesi bilinmiyor');
+    assert.equal(tr.label, 'Kayıt kuruluşu kilidi: 1 karşılanıyor, 2 karşılanmıyor, 1 bilinmiyor');
+    setLang('en');
+  });
+
+  test('every key the tab builds from a code exists in both languages', () => {
+    assert.deepEqual([...BAR_SEGMENTS], ['pass', 'fail', 'unknown']);
+    for (const lang of ['en', 'tr']) {
+      setLang(lang);
+      for (const k of generatedKeys()) assert.notEqual(t(k), k, `${lang}: ${k}`);
+    }
+    setLang('en');
+    assert.equal(generatedKeys().length, SECURITY_MEASURES.length * 2 + BAR_SEGMENTS.length);
   });
 });

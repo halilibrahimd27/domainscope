@@ -949,6 +949,44 @@ export function auditDocs(audit, { t, now, at, policy, carried = [] }) {
   return docs;
 }
 
+/** Domains the security score table lists before "… and N more" (a GitHub issue holds 65,536 characters). */
+export const SECURITY_MAX_ROWS = 100;
+/** How the score table marks a measure: met, not met, not known. */
+const SECURITY_MARKS = Object.freeze({ pass: '✓', fail: '✗', unknown: '?' });
+
+/**
+ * The domain security score of an audit's domains (lib/secscore.js, CSC's eight measures) as a
+ * table doc: one row per domain, the lowest score first (then the most not known, then the
+ * run's order), its score and each measure as ✓ met, ✗ not met or ? not known; under it what
+ * the marks mean, the domains left out past {@link SECURITY_MAX_ROWS}, and each measure's
+ * adoption. render.mjs writes it as a Markdown table (`--md`) and as aligned columns (stdout).
+ * @param {object[]} rows lib/secscore.js securityScores, in the run's order
+ * @param {{ t: Function }} opts
+ * @param {{ SECURITY_MEASURES: object[], SECURITY_MAX: number, securityAdoption: Function }} kit lib/secscore.js
+ * @returns {{ kind: 'audit', title: Array, table: { columns: string[], align: string[], rows: Array<Array<Array>> }, lines: Array<Array> }}
+ */
+export function securityDoc(rows, { t }, { SECURITY_MEASURES, SECURITY_MAX, securityAdoption }) {
+  const order = rows.map((r, i) => ({ r, i }))
+    .sort((a, b) => a.r.score - b.r.score || b.r.unknown - a.r.unknown || a.i - b.i).map((x) => x.r);
+  const shown = order.slice(0, SECURITY_MAX_ROWS);
+  const names = SECURITY_MEASURES.map((m) => t(`sec.m.${m.id}`));
+  const adoption = securityAdoption(rows);
+  return {
+    kind: 'audit',
+    title: ['Domain security score'],
+    table: {
+      columns: ['Domain', 'Score', ...names],
+      align: ['left', 'right', ...names.map(() => 'center')],
+      rows: shown.map((r) => [[code(r.domain)], [`${r.score}/${SECURITY_MAX}`], ...r.measures.map((m) => [SECURITY_MARKS[m.status]])])
+    },
+    lines: [
+      [`CSC's ${SECURITY_MAX} domain security measures: ${SECURITY_MARKS.pass} met, ${SECURITY_MARKS.fail} not met, ${SECURITY_MARKS.unknown} not known (never counted as met)`],
+      rows.length > shown.length ? [`… and ${rows.length - shown.length} more domains: the JSON report has every domain's score`] : null,
+      ['Adoption: ', adoption.map((a, i) => `${names[i]} ${a.pass} of ${a.total}`).join(', ')]
+    ].filter(Boolean)
+  };
+}
+
 /**
  * The warnings of an audit run: what could not be read, so the rules that need it could not be
  * checked (a TLD without RDAP, an RDAP or DNS lookup that failed, a name server domain's RDAP).
@@ -990,6 +1028,7 @@ export function auditWarnings(facts, { cellFailures, cells }) {
 async function runAudit(targets, options, env) {
   const { createPortfolio, exportRow, cellFailures, PORTFOLIO_CELLS, PORTFOLIO_DKIM_SELECTORS } = await import('../../assets/js/lib/portfolio.js');
   const { auditPortfolio, evidenceText, policyObject } = await import('../../assets/js/lib/policy.js');
+  const secscore = await import('../../assets/js/lib/secscore.js');
   const policy = env.inputs.policy;
   const startedAt = env.now();
   const prevBy = new Map(((env.baseline && env.baseline.targets) || []).map((x) => [x.target, x]));
@@ -1014,15 +1053,19 @@ async function runAudit(targets, options, env) {
   const facts = run.allFacts({ now });
   const audit = auditPortfolio(policy, facts);
   const audited = audit.rows.map((row, i) => auditTarget(row, facts[i], { t: env.t, exportRow, evidenceText, checkedAt: now }, { prev: prevBy.get(row.domain) || null }));
+  // CSC's eight measures, whatever the policy asks: each target's score, and the table after the run's summary.
+  const scores = secscore.securityScores(facts);
+  audited.forEach((x, i) => { x.security = secscore.securityExport(scores[i]); });
   // A rule that failed when last checked and could not be checked tonight still fails the run: a
   // registry outage never closes the nightly issue (the carried status is the requirement's own).
   const carried = audited.flatMap((x) => x.rules.filter((r) => r.status === 'unknown' && r.last && r.last.status === 'fail')
     .map((r) => ({ domain: x.target, id: r.id, required: r.required, from: r.last.from })));
   const carriedFails = carried.map((x) => `${x.id} of ${x.domain} could not be checked this run and failed when last checked (${isoDay(x.from) || 'an earlier run'}): it still counts as failed`);
+  const [runDoc, ...domainDocs] = auditDocs(audit, { t: env.t, now, at: startedAt, policy, carried });
   return {
     options: { policy: policyObject(policy), policyFile: policy.file || null, preset: options.preset, dkim: options.dkim, resolvers: [...options.chain] },
     targets: audited,
-    docs: auditDocs(audit, { t: env.t, now, at: startedAt, policy, carried }),
+    docs: [runDoc, securityDoc(scores, { t: env.t }, secscore), ...domainDocs],
     warnings: [...auditWarnings(facts, { cellFailures, cells: PORTFOLIO_CELLS }), ...carriedFails],
     failed: audit.counts.failing > 0 || carriedFails.length > 0
   };

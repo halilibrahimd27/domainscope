@@ -11,6 +11,9 @@
  *   lock-down of a domain that takes no mail). Rows fill as the lookups land; a lookup that
  *   failed is "⚠ n/a" in its cell with a Retry of that cell's lookups only. Tiles and a filter pick
  *   out what needs a look; columns sort. Exports: CSV, JSON and an .ics calendar of every expiry.
+ * - Domain security tab: CSC's eight measures per domain with a 0–8 score, the portfolio's
+ *   adoption of each measure and a CSV (ui/secscore-panel.js over lib/secscore.js, loaded with
+ *   the tab on its first use): computed from the check on screen, nothing more is sent.
  * - The policy (Policy audit tab): presets, one row per rule and the JSON (kept in step), kept in
  *   the workspace; the matrix domain × rule with the evidence of each cell, CSV and JSON.
  * - Certificates (CT) tab: the CT watchlist of the same domains (ui/ctwatch-panel.js over
@@ -35,6 +38,7 @@ import {
   POLICY_RULES, POLICY_PRESET_IDS, POLICY_OPS, POLICY_I18N, POLICY_MAX_CHARS, parsePolicy, policyText, presetPolicy, auditPortfolio, auditCsv,
   auditJson, evidenceText, policyRule
 } from '../lib/policy.js';
+import { corporateRegistrar } from '../lib/registrars.js';
 import { buildCalendar } from '../lib/ics.js';
 import { toCsv, toJson } from '../lib/export.js';
 import { registerSummaryBuilder, permalinkParams } from '../lib/summarycore.js';
@@ -64,9 +68,11 @@ export const RISK_BADGES = Object.freeze(['critical', 'ns-unregistered', 'pendin
 /** A link carries the list only up to this many domains (a summary's link too). */
 export const MAX_LINK_DOMAINS = 50;
 /** The views' tabs. */
-export const PORTFOLIO_TABS = Object.freeze(['domains', 'policy', 'ct']);
+export const PORTFOLIO_TABS = Object.freeze(['domains', 'security', 'policy', 'ct']);
 /** The Certificates (CT) tab's panel (with lib/ctwatch.js), on the tab's first use. */
 const loadCtPanel = onceAsync(() => import('../ui/ctwatch-panel.js'));
+/** The Domain security tab's panel (with lib/secscore.js), on the tab's first use. */
+const loadSecurityPanel = onceAsync(() => import('../ui/secscore-panel.js'));
 
 registerSummaryBuilder('portfolio', portfolioSummary);
 registerStrings('en', PORTFOLIO_SUMMARY_I18N.en);
@@ -103,9 +109,11 @@ registerStrings('en', {
   'pf.retried': '{domain}: updated',
 
   'pf.tab.domains': 'Domains',
+  'pf.tab.security': 'Domain security',
   'pf.tab.policy': 'Policy audit',
   'pf.tab.ct': 'Certificates (CT)',
   'pf.ct.failed': 'The Certificates (CT) tab could not be loaded',
+  'pf.sec.failed': 'The Domain security tab could not be loaded',
 
   'pf.tile.domains': 'Domains',
   'pf.tile.expiring': 'Expire < 30 days',
@@ -167,7 +175,15 @@ registerStrings('en', {
   'pf.lockOn': 'Transfer lock',
   'pf.lockOnTitle': 'Transfers are prohibited ({codes}): the domain cannot be moved to another registrar until that is lifted.',
   'pf.registryLock': 'Registry lock',
-  'pf.registryLockTitle': 'serverTransferProhibited: the registry itself rejects transfer requests (RFC 5731), a stronger lock than the registrar’s.',
+  'pf.registryLockTitle': 'Server transfer, update and delete prohibited: the registry itself refuses a transfer, a change and deletion (RFC 5731) until the registrar asks it to lift them, out of band — the strongest lock, which a hijacked registrar account cannot lift.',
+  'pf.lock.full': 'Registrar lock',
+  'pf.lock.fullTitle': 'Client transfer, update and delete prohibited: the registrar refuses a transfer, a change and deletion until it lifts them. A registry lock (the server prohibitions) is stronger: only the registry can lift it.',
+  'pf.lock.partial': 'Partial registry lock',
+  'pf.lock.partialTitle': 'Set by the registry: {codes}. A registry lock is server transfer, update and delete prohibited together.',
+  'pf.lock.transferOnly': 'transfer only — also what a registry sets during a dispute or the 60-day lock after a transfer',
+  'pf.lock.partialCodes': '{codes} only: a registry lock is server transfer, update and delete prohibited together',
+  'pf.corporate': 'Corporate',
+  'pf.corporateTitle': 'A corporate registrar by its IANA ID {id} ({brand}): brand protection, registry locks and change control.',
   'pf.lockOff': 'No transfer lock',
   'pf.lockOffTitle': 'No transfer prohibition (clientTransferProhibited or serverTransferProhibited): anyone with the transfer code can move the domain to another registrar (a hijack risk).',
   'pf.noStatus': 'no status reported',
@@ -292,9 +308,11 @@ registerStrings('tr', {
   'pf.retried': '{domain}: güncellendi',
 
   'pf.tab.domains': 'Alan adları',
+  'pf.tab.security': 'Alan adı güvenliği',
   'pf.tab.policy': 'Politika denetimi',
   'pf.tab.ct': 'Sertifikalar (CT)',
   'pf.ct.failed': 'Sertifikalar (CT) sekmesi yüklenemedi',
+  'pf.sec.failed': 'Alan adı güvenliği sekmesi yüklenemedi',
 
   'pf.tile.domains': 'Alan adları',
   'pf.tile.expiring': '< 30 günde doluyor',
@@ -356,7 +374,15 @@ registerStrings('tr', {
   'pf.lockOn': 'Transfer kilidi',
   'pf.lockOnTitle': 'Transfer yasak ({codes}): bu kaldırılmadan alan adı başka bir kayıt firmasına taşınamaz.',
   'pf.registryLock': 'Kayıt kuruluşu kilidi',
-  'pf.registryLockTitle': 'serverTransferProhibited: transfer isteklerini kayıt kuruluşunun kendisi reddeder (RFC 5731); bu, kayıt firmasının kilidinden daha güçlüdür.',
+  'pf.registryLockTitle': 'Server transfer, update ve delete prohibited: kayıt firması bant dışından kaldırılmasını isteyene kadar transferi, değişikliği ve silmeyi kayıt kuruluşunun kendisi reddeder (RFC 5731). En güçlü kilit budur; ele geçirilmiş bir kayıt firması hesabı bunu kaldıramaz.',
+  'pf.lock.full': 'Kayıt firması kilidi',
+  'pf.lock.fullTitle': 'Client transfer, update ve delete prohibited: kayıt firması bunları kaldırana kadar transferi, değişikliği ve silmeyi reddeder. Kayıt kuruluşu kilidi (server durumları) daha güçlüdür: onu yalnızca kayıt kuruluşu kaldırabilir.',
+  'pf.lock.partial': 'Kısmi kayıt kuruluşu kilidi',
+  'pf.lock.partialTitle': 'Kayıt kuruluşunun koyduğu: {codes}. Kayıt kuruluşu kilidi, server transfer, update ve delete prohibited durumlarının üçü birdendir.',
+  'pf.lock.transferOnly': 'yalnızca transfer — kayıt kuruluşları bunu bir anlaşmazlık sırasında ya da transferden sonraki 60 günlük kilitte de koyar',
+  'pf.lock.partialCodes': 'yalnızca {codes}: kayıt kuruluşu kilidi server transfer, update ve delete prohibited durumlarının üçü birdendir',
+  'pf.corporate': 'Kurumsal',
+  'pf.corporateTitle': 'IANA kimliği {id} olan kurumsal bir kayıt firması ({brand}): marka koruması, kayıt kuruluşu kilidi ve değişiklik denetimi.',
   'pf.lockOff': 'Transfer kilidi yok',
   'pf.lockOffTitle': 'Transfer yasağı yok (clientTransferProhibited ya da serverTransferProhibited): transfer kodunu bilen herkes alan adını başka bir kayıt firmasına taşıyabilir (ele geçirme riski).',
   'pf.noStatus': 'durum bildirilmiyor',
@@ -832,21 +858,40 @@ export function mount(container, ctx) {
       h('span', { class: 'num' }, formatDate(reg.expires)), daysBadge(reg.daysLeft, reg.expiry));
   }
 
+  /**
+   * The lock of a registration by its depth (lib/portfolio.js lockLevel): a registry lock (all
+   * three server prohibitions), a partial one — with what it is, since serverTransferProhibited
+   * alone is also a dispute's or a recent transfer's —, the registrar's full lock, its transfer
+   * lock, or none at all (any transfer prohibition locks transfers: never "no lock" with one).
+   */
+  function lockBadge(reg) {
+    const level = reg.lockLevel;
+    const badge = (text, title, variant, icon) => h('span', { title, dataset: { lockLevel: level || 'none' } }, Badge(text, { variant, icon }));
+    if (reg.transferLock === false) return badge(t('pf.lockOff'), t('pf.lockOffTitle'), 'warn', 'unlock');
+    if (!level || reg.transferLock !== true) return muted(t('pf.noStatus'));
+    if (level === 'registry') return badge(t('pf.registryLock'), t('pf.registryLockTitle'), 'ok', 'lock');
+    if (level === 'registrar-full') return badge(t('pf.lock.full'), t('pf.lock.fullTitle'), 'ok', 'lock');
+    if (level === 'registry-partial') {
+      const codes = (reg.serverLocks || []).join(', ');
+      const transferOnly = (reg.serverLocks || []).length === 1 && squashStatus(reg.serverLocks[0]) === 'servertransferprohibited';
+      return h('span', { class: 'pf-lock' }, badge(t('pf.lock.partial'), t('pf.lock.partialTitle', { codes }), 'ok', 'lock'),
+        h('span', { class: 'muted text-xs pf-lock-note' }, transferOnly ? t('pf.lock.transferOnly') : t('pf.lock.partialCodes', { codes })));
+    }
+    return badge(t('pf.lockOn'), t('pf.lockOnTitle', { codes: (reg.transferCodes || []).join(', ') }), 'ok', 'lock');
+  }
+
   function statusCell(f) {
     const reg = f.registration;
     if (reg.state !== 'ok') return reg.state === 'unsupported' ? muted(t('pf.noRdap')) : null;
-    // Any transfer prohibition locks: the registry's own (serverTransferProhibited) is said as such.
-    const lock = reg.transferLock === true
-      ? reg.registryLock
-        ? h('span', { title: t('pf.registryLockTitle') }, Badge(t('pf.registryLock'), { variant: 'ok', icon: 'lock' }))
-        : h('span', { title: t('pf.lockOnTitle', { codes: (reg.transferCodes || []).join(', ') }) }, Badge(t('pf.lockOn'), { variant: 'ok', icon: 'lock' }))
-      : reg.transferLock === false
-        ? h('span', { title: t('pf.lockOffTitle') }, Badge(t('pf.lockOff'), { variant: 'warn', icon: 'unlock' }))
-        : muted(t('pf.noStatus'));
+    const lock = lockBadge(reg);
     const critical = (reg.critical || []).map((c) => h('span', { title: t('pf.criticalTitle') }, Badge(c, { variant: 'error', icon: 'alert', mono: true })));
-    // The flags not said yet: the critical ones and the transfer prohibitions have their badges above;
-    // an operation under way (a pending transfer, renewal, update) is a badge of its own.
-    const said = new Set([...CRITICAL_STATUSES, ...(reg.transferCodes || [])].map(squashStatus));
+    // The flags not said yet: the critical ones and the transfer prohibitions have their badges above,
+    // as have the prohibitions the lock's badge names (a registry lock's server ones, the registrar's
+    // full lock's client ones); an operation under way (a pending transfer, renewal, update) is a
+    // badge of its own.
+    const lockCodes = reg.lockLevel === 'registry' || reg.lockLevel === 'registry-partial' ? reg.serverLocks || []
+      : reg.lockLevel === 'registrar-full' ? ['client update prohibited', 'client delete prohibited', 'update prohibited', 'delete prohibited'] : [];
+    const said = new Set([...CRITICAL_STATUSES, ...(reg.transferCodes || []), ...lockCodes].map(squashStatus));
     const rest = (reg.flags || []).filter((x) => !said.has(squashStatus(x.code)));
     const pending = rest.filter((x) => x.kind === 'pending')
       .map((x) => h('span', { title: t('pf.pendingTitle'), dataset: { flag: squashStatus(x.code) } }, Badge(x.code, { variant: 'warn', icon: 'clock', mono: true })));
@@ -860,7 +905,12 @@ export function mount(container, ctx) {
   function registrarCell(f) {
     const reg = f.registration;
     if (reg.state !== 'ok') return reg.state === 'unsupported' ? muted(t('pf.noRdap')) : null;
-    return reg.registrar ? h('span', { class: 'pf-registrar' }, reg.registrar) : null;
+    // A corporate registrar by its IANA ID (lib/registrars.js), never by the name it writes.
+    const corp = reg.registrarClass === 'corporate' ? corporateRegistrar(reg.ianaId) : null;
+    const name = reg.registrar ? h('span', { class: 'pf-registrar' }, reg.registrar) : null;
+    if (!corp) return name;
+    return stack(name, h('span', { title: t('pf.corporateTitle', { id: corp.id, brand: corp.brand }), dataset: { registrarClass: 'corporate' } },
+      Badge(t('pf.corporate'), { variant: 'ok', icon: 'shield' })));
   }
 
   function dnssecCell(f) {
@@ -1036,8 +1086,37 @@ export function mount(container, ctx) {
     });
   }
   cleanups.push(() => { if (ctPanel) ctPanel.destroy(); });
+  // The Domain security tab reads the facts of the check on screen: it sends nothing.
+  const securityHost = h('div', { class: 'pf-sec-host' });
+  let securityPanel = null;
+  let securityLoading = false;
+  function openSecurity() {
+    if (securityPanel) {
+      securityPanel.refresh();
+      return;
+    }
+    if (securityLoading) return;
+    securityLoading = true;
+    securityHost.append(h('div', { class: 'pf-sec-loading' }, Spinner({ showLabel: true })));
+    loadSecurityPanel().then((mod) => {
+      clear(securityHost);
+      if (ctx.signal.aborted) return;
+      securityPanel = mod.mountSecurity(securityHost, {
+        ctx,
+        source: () => (session.job ? { facts: rows.map((r) => r.facts), status: session.job.status } : null),
+        subject: () => subject()
+      });
+    }).catch((err) => {
+      securityLoading = false;
+      clear(securityHost);
+      securityHost.append(ErrorBanner(err, { title: t('pf.sec.failed'), compact: true }));
+      ctx.checkOutdated();
+    });
+  }
+  cleanups.push(() => { if (securityPanel) securityPanel.destroy(); });
   const tabs = Tabs([
     { id: 'domains', label: t('pf.tab.domains'), content: () => h('div', { class: 'stack pf-domains' }, emptyEl, tilesEl, table.el) },
+    { id: 'security', label: t('pf.tab.security'), content: () => securityHost },
     { id: 'policy', label: t('pf.tab.policy'), content: () => policyPanel },
     { id: 'ct', label: t('pf.tab.ct'), content: () => ctHost }
   ], {
@@ -1045,10 +1124,12 @@ export function mount(container, ctx) {
     label: t('nav.portfolio'),
     onChange: (tab) => {
       session.tab = tab;
+      if (tab === 'security') openSecurity();
       if (tab === 'policy') renderPolicyMatrix();
       if (tab === 'ct') openCt();
     }
   });
+  if (session.tab === 'security') openSecurity();
   if (session.tab === 'ct') openCt();
 
   // No part of the form: Ctrl/Cmd+Enter in a table filter or the policy editor starts no new run.
@@ -1161,8 +1242,9 @@ export function mount(container, ctx) {
     if (changed.length) table.updateRows(changed);
     renderTiles();
     progressUpdate();
-    // The matrix redraws every row: only while it is on screen (and once the run ends).
+    // The matrix and the security scores redraw every row: only while on screen (and once the run ends).
     if (tabs.getSelected() === 'policy' || job.status !== 'running') renderPolicyMatrix();
+    if (securityPanel && (tabs.getSelected() === 'security' || job.status !== 'running')) securityPanel.refresh();
   }
 
   function progressUpdate() {
@@ -1199,6 +1281,7 @@ export function mount(container, ctx) {
     setFilter(session.filter);
     renderPolicy();
     if (ctPanel) ctPanel.refresh();
+    if (securityPanel) securityPanel.refresh();
     clear(notifyHost);
     if (job.status === 'running') {
       showProgress(true);

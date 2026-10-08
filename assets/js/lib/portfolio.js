@@ -20,7 +20,9 @@
  *   again past the DNS cache.
  * - {@link portfolioFacts} turns one row's results into facts: codes and values, never text (the
  *   view and lib/policy.js word them); a lookup that failed is a lib/sourcestatus.js status on
- *   its part, never "none".
+ *   its part, never "none". The registration's facts carry how deeply the domain is locked
+ *   ({@link lockLevel}) and its registrar's class (lib/registrars.js), the name servers' facts
+ *   their DNS providers ({@link nsProviders}): what lib/secscore.js scores.
  * - {@link expiryEvents}: the dates for the calendar file (lib/ics.js), one per domain.
  *
  * DOM-free; runs in browsers and Node 22 (the headless runner's `audit`, tools/ds). Every network
@@ -31,7 +33,8 @@ import { errorKind, throwIfAborted, uniq, createLimiter, randomLabel } from './u
 import { isSubdomainOf } from './domain.js';
 import { rdapDomain, registryDomain } from './rdap.js';
 import { spfLookupCount, parseDkim, SPF_LOOKUP_LIMIT } from './health.js';
-import { passportDomain, passportDns, runLookup, mailCard, certsCard, rdapStatusFlags, registryWhois, lookupStatus } from './passport.js';
+import { passportDomain, passportDns, runLookup, mailCard, certsCard, rdapStatusFlags, registryWhois, lookupStatus, dnsProviderOf } from './passport.js';
+import { registrarClass } from './registrars.js';
 
 /** At most this many domains in one run (the rest are said and left out). */
 export const PORTFOLIO_MAX_DOMAINS = 300;
@@ -135,19 +138,55 @@ function statusName(status) {
   return RDAP_STATUS_NAMES.get(squash(status)) || status;
 }
 
+/** How deeply a domain can be locked ({@link lockLevel}), weakest first: what lib/policy.js `lock.level` orders. */
+export const LOCK_LEVELS = Object.freeze(['none', 'registrar-transfer', 'registrar-full', 'registry-partial', 'registry']);
+/** The three prohibitions a lock is made of, in the order a status list says them. */
+const LOCK_OPS = Object.freeze(['transfer', 'update', 'delete']);
+
+/**
+ * How deeply a domain is locked, from its registry statuses (RFC 8056's spelling with spaces,
+ * "client transfer prohibited", or EPP's camelCase, "clientTransferProhibited"; any case):
+ * - 'registry': server transfer, update and delete prohibited — a registry lock: the registry
+ *   itself refuses transfers, changes and deletion (RFC 5731) until the registrar's out-of-band
+ *   request lifts it, so a hijacked registrar account cannot;
+ * - 'registry-partial': some of those, not all three. serverTransferProhibited alone is also what
+ *   a registry sets during a dispute or for the 60-day lock after a transfer: no registry lock;
+ * - 'registrar-full': client transfer, update and delete prohibited (the registrar's lock);
+ * - 'registrar-transfer': client transfer prohibited, without both update and delete;
+ * - 'none': transfers are not prohibited at all — whatever else is set (a server delete
+ *   prohibition alone), anyone with the transfer code can move the domain to another registrar.
+ * RFC 9083's plain prohibitions ("transfer prohibited", neither client nor server) count as the
+ * registrar's: who set them is not said, and only a server status is the registry's.
+ * @param {string[]} statuses as RDAP lists them
+ * @returns {'none'|'registrar-transfer'|'registrar-full'|'registry-partial'|'registry'}
+ */
+export function lockLevel(statuses) {
+  const keys = new Set((Array.isArray(statuses) ? statuses : []).map(squash));
+  const server = LOCK_OPS.filter((op) => keys.has(`server${op}prohibited`));
+  const client = LOCK_OPS.filter((op) => keys.has(`client${op}prohibited`) || keys.has(`${op}prohibited`));
+  if (!server.includes('transfer') && !client.includes('transfer')) return 'none';
+  if (server.length === LOCK_OPS.length) return 'registry';
+  if (server.length) return 'registry-partial';
+  return client.length === LOCK_OPS.length ? 'registrar-full' : 'registrar-transfer';
+}
+
 /**
  * The registry statuses read for risk: the flags as lib/passport.js orders them, the critical ones
  * ({@link CRITICAL_STATUSES}), whether transfers are prohibited — clientTransferProhibited (the
  * registrar's lock), serverTransferProhibited (the registry's: RFC 5731 says transfer requests MUST
  * be rejected) or RFC 9083's plain "transfer prohibited", as Domain overview and Domain Health read
  * it (null when the registry reports no status at all) —, the statuses that say so (in their RDAP
- * spelling, as every status here), the registry lock alone, and the risk: 'critical' (a critical
- * status), 'hijack' (no transfer prohibition at all: anyone with the transfer code can move the
- * domain to another registrar), 'ok', or null without statuses; 'pending-transfer' (a transfer
- * under way: a hijack in progress if nobody here asked for it) comes right after 'critical'.
+ * spelling, as every status here), the lock's depth ({@link lockLevel}), the registry lock — server
+ * transfer, update and delete prohibited, all three — with the server prohibitions that are set,
+ * and the risk: 'critical' (a critical status), 'hijack' (no transfer prohibition at all: anyone
+ * with the transfer code can move the domain to another registrar), 'ok', or null without
+ * statuses; 'pending-transfer' (a transfer under way: a hijack in progress if nobody here asked
+ * for it) comes right after 'critical'.
  * @param {string[]} statuses as RDAP lists them ('client transfer prohibited' or 'clientTransferProhibited')
  * @returns {{ flags: Array<{ code: string, kind: string }>, critical: string[], transferLock: boolean|null,
- *   registryLock: boolean|null, transferCodes: string[], risk: 'critical'|'pending-transfer'|'hijack'|'ok'|null }}
+ *   registryLock: boolean|null, lockLevel: string|null, serverLocks: string[], transferCodes: string[],
+ *   risk: 'critical'|'pending-transfer'|'hijack'|'ok'|null }} `serverLocks`: 'server transfer prohibited',
+ *   'server update prohibited', 'server delete prohibited' as far as they are set
  */
 export function statusRisk(statuses) {
   // each status once, in its RDAP spelling: EPP's clientTransferProhibited arrives lower-cased from lib/rdap.js
@@ -157,13 +196,51 @@ export function statusRisk(statuses) {
   const known = list.length > 0;
   const transferCodes = list.filter((s) => squash(s).includes('transferprohibited'));
   const transferLock = known ? transferCodes.length > 0 : null;
-  const registryLock = known ? keys.has('servertransferprohibited') : null;
+  const serverLocks = LOCK_OPS.filter((op) => keys.has(`server${op}prohibited`)).map((op) => `server ${op} prohibited`);
+  // A registry lock is all three server prohibitions: serverTransferProhibited alone is also set
+  // during a dispute or the 60-day lock after a transfer.
+  const registryLock = known ? serverLocks.length === LOCK_OPS.length : null;
   let risk = null;
   if (critical.length) risk = 'critical';
   // a transfer under way: a hijack in progress if nobody here asked for it
   else if (keys.has('pendingtransfer')) risk = 'pending-transfer';
   else if (known) risk = transferLock ? 'ok' : 'hijack';
-  return { flags: rdapStatusFlags(list), critical, transferLock, registryLock, transferCodes, risk };
+  return {
+    flags: rdapStatusFlags(list), critical, transferLock, registryLock, lockLevel: known ? lockLevel(list) : null, serverLocks, transferCodes, risk
+  };
+}
+
+/**
+ * The DNS providers of a zone's name servers: a host's provider by lib/passport.js dnsProviderOf
+ * (Route 53's awsdns-NN hosts under four TLDs are one provider, Cloudflare's too), a host it does
+ * not know by its registrable domain (ns1.example.net and ns2.example.net: one), the hosts under
+ * the domain itself as its own name servers ('self'). Two providers or more: an outage at one
+ * leaves the zone answering — CSC's "DNS redundancy" (lib/secscore.js).
+ * @param {string[]} hosts name server host names
+ * @param {{ domain?: string|null }} [opts] the zone's domain
+ * @returns {{ count: number, providers: Array<{ id: string, name: string, known: boolean, hosts: string[] }> }}
+ *   `id`: a lib/passport.js DNS_PROVIDERS id, 'self', or 'domain:' and the registrable domain;
+ *   `name`: the provider's name, else that domain (the zone's own for 'self'); `known`: in the
+ *   provider table; in the order of the sorted hosts
+ */
+export function nsProviders(hosts, { domain = null } = {}) {
+  const own = canon(domain);
+  const by = new Map();
+  for (const host of uniq((hosts || []).map(canon).filter(Boolean)).sort()) {
+    const p = dnsProviderOf(host, { domain: own || null });
+    let id;
+    let name;
+    if (p && p.id === 'self') [id, name] = ['self', own];
+    else if (p) [id, name] = [p.id, p.name];
+    else {
+      const d = registryDomain(host) || host;
+      [id, name] = [`domain:${d}`, d];
+    }
+    if (!by.has(id)) by.set(id, { id, name, known: !!p && p.id !== 'self', hosts: [] });
+    by.get(id).hosts.push(host);
+  }
+  const providers = [...by.values()];
+  return { count: providers.length, providers };
 }
 
 /**
@@ -536,6 +613,8 @@ function registrationFacts(r, now) {
     failure: null,
     registrar: r.registrar || null,
     ianaId: r.registrarIanaId || null,
+    // corporate / retail / unknown (no IANA ID, a reserved one): lib/registrars.js
+    registrarClass: registrarClass(r.registrarIanaId),
     registrarUrl: r.registrarUrl || null,
     expires: valid ? expires : null,
     daysLeft,
@@ -579,14 +658,14 @@ function dnssecFacts(raw, now) {
   return { state, failure: null, dnskeyFailure, dsCount: ds.length, pending: raw.dnskey === undefined };
 }
 
-/** The name servers and their domains' expiry. */
+/** The name servers, their DNS providers and their domains' expiry. */
 function nsFacts(raw, own, rdap, now) {
   const res = raw.ns;
-  if (res === undefined) return { state: 'pending', failure: null, hosts: [], domains: [], minDaysLeft: null };
-  if (!answered(res)) return { state: 'failed', failure: lookupStatus(res, { now: now.getTime() }), hosts: [], domains: [], minDaysLeft: null };
-  if (res.rcode === 'NXDOMAIN') return { state: 'nxdomain', failure: null, hosts: [], domains: [], minDaysLeft: null };
+  if (res === undefined) return { state: 'pending', failure: null, hosts: [], domains: [], minDaysLeft: null, providers: null };
+  if (!answered(res)) return { state: 'failed', failure: lookupStatus(res, { now: now.getTime() }), hosts: [], domains: [], minDaysLeft: null, providers: null };
+  if (res.rcode === 'NXDOMAIN') return { state: 'nxdomain', failure: null, hosts: [], domains: [], minDaysLeft: null, providers: null };
   const hosts = uniq((res.answers || []).filter((rr) => rr.type === 'NS').map((rr) => canon(rr.data)).filter(Boolean)).sort();
-  if (!hosts.length) return { state: 'none', failure: null, hosts, domains: [], minDaysLeft: null };
+  if (!hosts.length) return { state: 'none', failure: null, hosts, domains: [], minDaysLeft: null, providers: null };
   const domains = nsDomainsOf(hosts, raw.domain).map((d) => {
     const reg = d.own ? own : registrationFacts(rdap.get(d.domain), now);
     return {
@@ -596,7 +675,7 @@ function nsFacts(raw, own, rdap, now) {
     };
   });
   const days = domains.filter((d) => Number.isFinite(d.daysLeft)).map((d) => d.daysLeft);
-  return { state: 'ok', failure: null, hosts, domains, minDaysLeft: days.length ? Math.min(...days) : null };
+  return { state: 'ok', failure: null, hosts, domains, minDaysLeft: days.length ? Math.min(...days) : null, providers: nsProviders(hosts, { domain: raw.domain }) };
 }
 
 /**
@@ -846,17 +925,20 @@ export function exportRow(f) {
     domain: f.domain,
     registration: reg.state || null,
     registrar: reg.registrar || null,
+    registrarClass: reg.state === 'ok' ? reg.registrarClass || null : null,
     expires: iso(reg.expires),
     daysLeft: Number.isFinite(reg.daysLeft) ? reg.daysLeft : null,
     risk: rowRisk(f),
     statuses: (reg.statuses || []).join(', '),
     transferLock: reg.transferLock ?? null,
+    lockLevel: reg.lockLevel ?? null,
     critical: (reg.critical || []).join(' '),
     dnssec: f.dnssec ? f.dnssec.state : null,
     delegationSigned: reg.delegationSigned ?? null,
     nameServers: (f.ns && f.ns.hosts ? f.ns.hosts : []).join(' '),
     nsDomains: (f.ns && f.ns.domains ? f.ns.domains : []).map((d) => `${d.domain}${d.own ? '' : `:${Number.isFinite(d.daysLeft) ? d.daysLeft : d.state}`}`).join(' '),
     nsMinDaysLeft: f.ns && Number.isFinite(f.ns.minDaysLeft) ? f.ns.minDaysLeft : null,
+    nsProviders: f.ns && f.ns.providers ? f.ns.providers.count : null,
     caa: f.caa ? f.caa.state : null,
     caaIssuers: f.caa && f.caa.issuers ? [...new Set([...f.caa.issuers, ...(f.caa.wildIssuers || [])])].join(' ') : null,
     mx: f.mx ? f.mx.state : null,
@@ -874,9 +956,9 @@ export function exportRow(f) {
 }
 
 /** The keys of {@link exportRow}, in CSV column order. */
-export const EXPORT_COLUMNS = Object.freeze(['domain', 'registration', 'registrar', 'expires', 'daysLeft', 'risk', 'statuses', 'transferLock', 'critical',
-  'dnssec', 'delegationSigned', 'nameServers', 'nsDomains', 'nsMinDaysLeft', 'caa', 'caaIssuers', 'mx', 'spf', 'spfAll', 'spfLookups', 'dmarc', 'dkim',
-  'mtaSts', 'tlsRpt', 'parked', 'failed']);
+export const EXPORT_COLUMNS = Object.freeze(['domain', 'registration', 'registrar', 'registrarClass', 'expires', 'daysLeft', 'risk', 'statuses', 'transferLock',
+  'lockLevel', 'critical', 'dnssec', 'delegationSigned', 'nameServers', 'nsDomains', 'nsMinDaysLeft', 'nsProviders', 'caa', 'caaIssuers', 'mx', 'spf', 'spfAll',
+  'spfLookups', 'dmarc', 'dkim', 'mtaSts', 'tlsRpt', 'parked', 'failed']);
 
 /**
  * What lib/portfoliosummary.js writes for "Copy summary": counts and the domains that need a look,

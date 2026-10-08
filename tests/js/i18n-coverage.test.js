@@ -81,6 +81,8 @@ before(async () => {
   await imp('assets/js/ui/report.js');
   // Domain portfolio › Certificates (CT): loaded on the tab's first use.
   await imp('assets/js/ui/ctwatch-panel.js');
+  // Domain portfolio › Domain security: loaded on the tab's first use.
+  await imp('assets/js/ui/secscore-panel.js');
   // Renewal readiness › Plan: loaded on the panel's first open.
   await imp('assets/js/ui/renewal-planner.js');
   // DNS change request › the check page's cutover assistant: loaded with that page.
@@ -442,6 +444,10 @@ describe('i18n coverage', () => {
     // Its Certificates (CT) tab (ui/ctwatch-panel.js over lib/ctwatch.js): every flag, filter, note,
     // tile and source a row or a domain's read words from a library code.
     for (const k of (await imp('assets/js/ui/ctwatch-panel.js')).generatedKeys()) add(k);
+    // Its Domain security tab (ui/secscore-panel.js over lib/secscore.js): every measure's name and
+    // what it asks, every status a cell and the legend word, the CSV's headers.
+    for (const k of (await imp('assets/js/ui/secscore-panel.js')).generatedKeys()) add(k);
+    for (const k of Object.keys((await imp('assets/js/lib/secscore.js')).SECURITY_I18N.en)) add(k);
     for (const d of ['validated', 'signed', 'failing', 'unsigned']) add(`pf.dnssec.${d}`);
     for (const c of ['none', 'unrestricted', 'deny-all', 'critical']) add(`pf.caa.${c}`);
     for (const s of ['none', 'many', 'invalid']) { add(`pf.spf.${s}`); add(`pf.dmarc.${s}`); }

@@ -17,8 +17,14 @@ import {
   NODE_CHAIN, NODE_UNREADABLE, DS_TOOL, DS_VERSION, DS_DEFAULT_LEVEL, EXIT, USAGE
 } from '../../tools/ds/args.mjs';
 import { baselineProblem, baselineInfo, baselineNotes, diffReports, orderChanges, notableChanges } from '../../tools/ds/diff.mjs';
-import { setupStrings, renderChangesText, renderChangesMarkdown, renderRunText, painter, changeText, CHANGE_TAGS, MAX_SUMMARY_CHANGES, MAX_MARKDOWN_CHANGES } from '../../tools/ds/render.mjs';
-import { ctCertId, ctTarget, ctDoc, hostRow, baselineSeeds, reportHosts, createSourceBreaker, stageProgress, scanWarningParts } from '../../tools/ds/commands.mjs';
+import {
+  setupStrings, renderChangesText, renderChangesMarkdown, renderRunText, renderRunMarkdown, renderTableMarkdown, renderTableText, painter, changeText, CHANGE_TAGS,
+  MAX_SUMMARY_CHANGES, MAX_MARKDOWN_CHANGES
+} from '../../tools/ds/render.mjs';
+import {
+  ctCertId, ctTarget, ctDoc, hostRow, baselineSeeds, reportHosts, createSourceBreaker, stageProgress, scanWarningParts, securityDoc, SECURITY_MAX_ROWS
+} from '../../tools/ds/commands.mjs';
+import * as secscore from '../../assets/js/lib/secscore.js';
 import { failedAreas, checkAreas, carryHealth, carryCt, carryHosts, lastFullTimes } from '../../tools/ds/carry.mjs';
 import { main, decodeText, skippedWarnings } from '../../tools/ds.mjs';
 import { renderParts } from '../../assets/js/lib/summary.js';
@@ -202,7 +208,8 @@ describe('command line', () => {
     assert.deepEqual([url.targets, url.options.lists], [['example.com', 'example.org'], []]);
     assert.throws(() => parseCommandLine(['audit', 'example.com']), /audit needs the rules: --policy FILE or --preset NAME \(one of them\)/);
     assert.throws(() => parseCommandLine(['audit', 'example.com', '--policy', 'p.json', '--preset', 'baseline']), /one of them/);
-    assert.throws(() => parseCommandLine(['audit', 'example.com', '--preset', 'strict']), /--preset takes baseline, strict-mail, parked, not "strict"/);
+    assert.throws(() => parseCommandLine(['audit', 'example.com', '--preset', 'strict']), /--preset takes baseline, strict-mail, parked, corporate, not "strict"/);
+    assert.equal(parseCommandLine(['audit', '--preset', 'Corporate', 'example.com']).options.preset, 'corporate');
     assert.throws(() => parseCommandLine(['audit', 'example.com', '--policy', '-']), /--policy takes a file, not "-"/);
     assert.throws(() => parseCommandLine(['audit', '--preset', 'baseline']), /audit needs at least one domain \(or --list FILE\)/);
     assert.throws(() => parseCommandLine(['audit', '--preset', 'baseline', '192.0.2.1', 'com.tr']), /not a domain name: "192\.0\.2\.1", "com\.tr"/);
@@ -1555,6 +1562,82 @@ describe('offline runs (fake DoH)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test('audit --preset corporate: the eight measures and the lock depth as rules; the security score table on stdout, in --md and per target in --json', async () => {
+    const dir = tmp();
+    try {
+      const zone = portfolioZone({ now: NOW.getTime() });
+      // example.com: a corporate registrar (IANA 299), a registry lock, name servers at two DNS providers
+      const registrar = zone.rdap['example.com'].entities[0];
+      registrar.publicIds = [{ type: 'IANA Registrar ID', identifier: '299' }];
+      zone.rdap['example.com'].status = ['server transfer prohibited', 'server update prohibited', 'server delete prohibited', 'client transfer prohibited'];
+      zone.table['example.com'].NS = ['ns1.example.net', 'ns1.example.org'];
+      // example.org: a retail registrar
+      zone.rdap['example.org'].entities[0].publicIds = [{ type: 'IANA Registrar ID', identifier: '1068' }];
+      const json = join(dir, 'audit.json');
+      const md = join(dir, 'audit.md');
+      const res = await runMain(['audit', '--preset', 'corporate', 'example.com', 'example.org', 'example-test.com.tr', '--json', json, '--md', md], { fetchImpl: createPortfolioFetch(zone) });
+      assert.equal(res.code, EXIT.CHANGED, 'example.org and example-test.com.tr fail the corporate rules');
+      assert.match(res.out, /^Policy audit · corporate\n- 3 domains, 9 rules: 2 fail the policy, 0 could not be checked in full, 1 meets every rule\n- Rules: lock\.level >= registrar-full, registryLock true, registrar\.class corporate, ns\.providers >= 2, dnssec >= signed, caa present, spf valid, dmarc\.policy >= quarantine, dkim true\n- Every rule met: example\.com\n/);
+      // the table: the lowest score first, every measure marked, then the legend and the adoption
+      assert.match(res.out, new RegExp([
+        '\\nDomain security score',
+        '  Domain               Score  Corporate registrar  Registry lock  CAA  DNS redundancy  DNSSEC  SPF  DKIM  DMARC',
+        '  example-test\\.com\\.tr    1/8           \\?                 \\?         ✗         ✗           ✗      ✓    ✗      ✗',
+        '  example\\.org            3/8           ✗                 ✗         ✗         ✓           ✗      ✓    ✗      ✓',
+        '  example\\.com            8/8           ✓                 ✓         ✓         ✓           ✓      ✓    ✓      ✓',
+        "- CSC's 8 domain security measures: ✓ met, ✗ not met, \\? not known \\(never counted as met\\)",
+        '- Adoption: Corporate registrar 1 of 3, Registry lock 1 of 3, CAA 1 of 3, DNS redundancy 2 of 3, DNSSEC 1 of 3, SPF 3 of 3, DKIM 1 of 3, DMARC 2 of 3\\n'
+      ].join('\\n')), res.out);
+      assert.match(res.out, /\nPolicy audit · example\.org\n- 6 rules failed, 0 could not be checked, 3 passed\n- FAIL lock\.level >= registrar-full: not locked: no transfer prohibition, the domain can be transferred away\n/);
+      assert.match(res.out, /- FAIL registrar\.class corporate: not a corporate registrar: Example Registrar, Inc\. \(IANA ID 1068\)\n/);
+      const mdText = readFileSync(md, 'utf8');
+      assert.ok(mdText.includes([
+        '**Domain security score**',
+        '',
+        '| Domain | Score | Corporate registrar | Registry lock | CAA | DNS redundancy | DNSSEC | SPF | DKIM | DMARC |',
+        '| --- | ---: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |',
+        '| `example-test.com.tr` | 1/8 | ? | ? | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |',
+        '| `example.org` | 3/8 | ✗ | ✗ | ✗ | ✓ | ✗ | ✓ | ✗ | ✓ |',
+        '| `example.com` | 8/8 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |',
+        '',
+        "- CSC's 8 domain security measures: ✓ met, ✗ not met, ? not known (never counted as met)",
+        '- Adoption: Corporate registrar 1 of 3, Registry lock 1 of 3, CAA 1 of 3, DNS redundancy 2 of 3, DNSSEC 1 of 3, SPF 3 of 3, DKIM 1 of 3, DMARC 2 of 3',
+        ''
+      ].join('\n')), mdText);
+      assert.ok(mdText.indexOf('**Domain security score**') > mdText.indexOf('**Policy audit · `corporate`**')
+        && mdText.indexOf('**Domain security score**') < mdText.indexOf('**Policy audit · `example.org`**'), 'after the run\'s summary, before the domains');
+      const doc = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(doc.options.preset, 'corporate');
+      assert.deepEqual(doc.targets.map((x) => [x.target, x.security.score, x.security.unknown]), [['example.com', 8, 0], ['example.org', 3, 0], ['example-test.com.tr', 1, 2]]);
+      assert.deepEqual(doc.targets[1].security.measures, {
+        registrar: 'fail', registryLock: 'fail', caa: 'fail', dnsRedundancy: 'pass', dnssec: 'fail', spf: 'pass', dkim: 'fail', dmarc: 'pass'
+      });
+      assert.deepEqual([doc.targets[0].row.lockLevel, doc.targets[0].row.registrarClass, doc.targets[0].row.nsProviders], ['registry', 'corporate', 2]);
+      // the rules read the same facts: a registry lock and a corporate registrar pass, a partial lock is said as one
+      assert.deepEqual(doc.targets[0].rules.map((r) => r.status), Array(9).fill('pass'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('the security table: at most SECURITY_MAX_ROWS domains, the lowest score first; a `|` in a value never breaks the Markdown table', () => {
+    const facts = (domain, extra = {}) => ({ domain, exists: true, registration: { state: 'unsupported', tld: 'tr' }, ...extra });
+    const rows = secscore.securityScores(Array.from({ length: SECURITY_MAX_ROWS + 2 }, (_, i) => facts(`d${i}.example.com`,
+      i === 5 ? {} : { caa: { state: 'present', issuers: ['letsencrypt.org'], wildIssuers: [] } })));
+    const doc = securityDoc(rows, { t }, secscore);
+    assert.equal(doc.table.rows.length, SECURITY_MAX_ROWS);
+    assert.deepEqual(doc.table.rows[0][0], [{ code: 'd5.example.com' }], 'the lowest score first');
+    assert.deepEqual(doc.table.rows.slice(1, 3).map((r) => r[0][0].code), ['d0.example.com', 'd1.example.com'], 'equal scores keep the run\'s order');
+    assert.ok(doc.lines.some((l) => l.join('') === '… and 2 more domains: the JSON report has every domain\'s score'), JSON.stringify(doc.lines));
+    const hostile = { title: ['T'], table: { columns: ['Domain', 'Score'], align: ['left', 'right'], rows: [[[{ code: 'a|b' }], ['1/8']], [[{ code: 'x' }], ['10/8']]] }, lines: [['a | b']] };
+    assert.equal(renderTableMarkdown(hostile), '**T**\n\n| Domain | Score |\n| --- | ---: |\n| `a\\|b` | 1/8 |\n| `x` | 10/8 |\n\n- a \\| b\n');
+    assert.equal(renderTableText(hostile), 'T\n  Domain  Score\n  a|b       1/8\n  x        10/8\n- a | b\n');
+    // in the run's Markdown and text, a table doc is a table, every other doc a summary
+    const plain = { kind: 'audit', title: ['Policy audit'], lines: [['one line']], inline: false, footer: { when: 'checked 2026-09-28 03:00 UTC', url: null } };
+    assert.match(renderRunMarkdown({ command: 'audit' }, [plain, hostile]), /^\*\*Policy audit\*\*\n- one line\n\nDomainScope · checked 2026-09-28 03:00 UTC\n\n\*\*T\*\*\n\n\| Domain \| Score \|\n/);
+    assert.match(renderRunText({ command: 'audit' }, [plain, hostile]), /\nDomainScope · checked 2026-09-28 03:00 UTC\n\nT\n  Domain  Score\n/);
   });
 
   test('renew and dane on the fake zone', async () => {

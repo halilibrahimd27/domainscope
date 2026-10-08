@@ -501,7 +501,8 @@ commands:
   dane CERT.pem                  the DANE / TLSA renewal guard for a certificate (fullchain.pem)
   audit DOMAIN|FILE...           the Domain portfolio's policy audit: each domain's registration
                                  (RDAP), DNSSEC, the name servers' own domains, CAA and mail posture
-                                 against the rules of a policy; a pass / fail matrix
+                                 against the rules of a policy; a pass / fail matrix, and each
+                                 domain's security score (CSC's 8 measures) as a table
       --policy FILE              the policy (JSON, as the app exports it), or
       --preset NAME              a built-in one: ${POLICY_PRESET_IDS.join(', ')}
       [--no-dkim]                skip the DKIM keys (${PORTFOLIO_DKIM_SELECTORS.length} common selectors per domain)
@@ -567,4 +568,5 @@ examples:
   node tools/ds.mjs dane fullchain.pem
   node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
   node tools/ds.mjs audit --preset parked example.org --baseline audit.json --json audit.json
+  node tools/ds.mjs audit --preset corporate --list domains.txt --md audit.md
 `;

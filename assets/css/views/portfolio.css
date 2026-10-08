@@ -1,7 +1,8 @@
 /*
  * views/portfolio.css — "Domain portfolio" view (.pf-*): the list, the head with its exports, the
- * tiles, the table of domains (labelled cards on a phone), the policy editor and the matrix, and the
- * Certificates (CT) tab (.pf-ct-*, ui/ctwatch-panel.js).
+ * tiles, the table of domains (labelled cards on a phone), the Domain security tab (.pf-sec-*,
+ * ui/secscore-panel.js), the policy editor and the matrix, and the Certificates (CT) tab (.pf-ct-*,
+ * ui/ctwatch-panel.js).
  */
 
 .pf-view {
@@ -603,6 +604,154 @@
 
   .pf-ct-table td.pf-col-domain .pf-cell {
     flex-direction: row;
+  }
+}
+
+/* ---- the Domain security tab (ui/secscore-panel.js) ---------------------------------- */
+
+.pf-sec-loading {
+  padding: 16px 0;
+}
+
+.pf-sec-intro,
+.pf-sec-totals {
+  margin: 0;
+}
+
+.pf-sec-subtitle {
+  margin: 4px 0 0;
+  font-size: 14px;
+}
+
+/* A partial registry lock says what it is under its badge. */
+.pf-lock {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pf-lock-note {
+  max-width: 16rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* One bar per measure: its name, the bar, how many meet it (a grid, so the bars line up). */
+.pf-sec-bars {
+  display: grid;
+  grid-template-columns: minmax(7rem, max-content) minmax(6rem, 1fr) minmax(0, max-content);
+  gap: 8px 12px;
+  align-items: center;
+  min-width: 0;
+}
+
+.pf-sec-bar {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  min-width: 0;
+}
+
+.pf-sec-bar-label {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.pf-sec-bar-chart {
+  display: block;
+  width: 100%;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 3px;
+}
+
+.pf-sec-bar-value {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.pf-sec-seg-track {
+  fill: var(--surface-2);
+}
+
+.pf-sec-seg-pass {
+  fill: var(--ok-solid);
+}
+
+.pf-sec-seg-fail {
+  fill: var(--error-solid);
+}
+
+.pf-sec-seg-unknown {
+  fill: var(--k-unresolved-solid);
+}
+
+.pf-sec-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--text-2);
+}
+
+.pf-sec-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pf-sec-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.pf-sec-swatch.pf-sec-seg-pass {
+  background: var(--ok-solid);
+}
+
+.pf-sec-swatch.pf-sec-seg-fail {
+  background: var(--error-solid);
+}
+
+.pf-sec-swatch.pf-sec-seg-unknown {
+  background: var(--k-unresolved-solid);
+}
+
+.pf-sec-table td.pf-sec-col {
+  min-width: 8rem;
+  max-width: 13rem;
+  white-space: normal;
+}
+
+.pf-sec-table td.pf-sec-col .pf-cell,
+.pf-sec-score {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+@media (max-width: 640px) {
+  .pf-sec-bars {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .pf-sec-bar {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .pf-lock-note {
+    max-width: none;
+  }
+
+  .pf-sec-table td.pf-sec-col {
+    min-width: 0;
+    max-width: none;
   }
 }
 

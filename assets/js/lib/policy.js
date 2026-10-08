@@ -10,11 +10,11 @@
  *   { "dmarc.policy": ">= quarantine", "dnssec": "signed", "caa": "present", "transferLock": true, "expiryDays": ">= 30" }
  *
  * Values by rule kind: a number rule takes a number (compared with its natural operator, `>=` for
- * days left, `<=` for SPF lookups) or "OP N"; an ordered rule ("dnssec", "spf.all", "dmarc.policy")
- * takes a level, meaning "at least" it, or "OP level"; a yes / no rule takes true or false; an
- * enum rule ("caa", "spf") one of its values (true for its first); a list rule ("registrar",
- * "caa.issuers") a string or a list of them, entries between semicolons (a registrar's name has
- * commas). OP is one of {@link POLICY_OPS}.
+ * days left and DNS providers, `<=` for SPF lookups) or "OP N"; an ordered rule ("lock.level",
+ * "dnssec", "spf.all", "dmarc.policy") takes a level, meaning "at least" it, or "OP level"; a yes /
+ * no rule takes true or false; an enum rule ("registrar.class", "caa", "spf") one of its values
+ * (true for its first); a list rule ("registrar", "caa.issuers") a string or a list of them,
+ * entries between semicolons (a registrar's name has commas). OP is one of {@link POLICY_OPS}.
  *
  * {@link evaluatePolicy} reads the facts lib/portfolio.js portfolioFacts() derives from one
  * domain's lookups; {@link auditPortfolio} makes the matrix. A rule whose facts could not be read
@@ -26,6 +26,7 @@
  */
 
 import { toCsv } from './export.js';
+import { corporateRegistrar, registrarClass, registrarId } from './registrars.js';
 
 /** Version of the exported policy file. */
 export const POLICY_VERSION = 1;
@@ -46,6 +47,12 @@ const rule = (id, kind, extra = {}) => Object.freeze({ id, kind, ...extra, ...(e
   ...(extra.values ? { values: Object.freeze([...extra.values]) } : {}), health: Object.freeze([...(extra.health || [])]) });
 
 /**
+ * The depths of a lock, weakest first: lib/portfolio.js LOCK_LEVELS (kept here so the policy needs
+ * no lookup code; tests/js/policy.test.js checks that the two agree).
+ */
+const LOCK_LEVELS = ['none', 'registrar-transfer', 'registrar-full', 'registry-partial', 'registry'];
+
+/**
  * Every rule a policy can hold, in the matrix's column order. `kind`: 'number' (with its natural
  * `op` and `min` / `max`), 'ordered' (`levels`, lowest first), 'bool', 'enum' (`values`) or 'list';
  * `area`: the part of the facts it reads; `health`: the Domain Health check ids it corresponds to;
@@ -55,9 +62,15 @@ export const POLICY_RULES = Object.freeze([
   rule('expiryDays', 'number', { op: '>=', min: 0, max: 3650, area: 'registration', example: '>= 30',
     health: ['rdap.expiry-ok', 'rdap.expiring-soon', 'rdap.expiring', 'rdap.expired'] }),
   rule('transferLock', 'bool', { area: 'registration', example: true, health: ['rdap.transfer-unlocked'] }),
+  // how deeply the domain is locked (lib/portfolio.js lockLevel), and the registry lock itself
+  rule('lock.level', 'ordered', { op: '>=', levels: LOCK_LEVELS, area: 'registration', example: '>= registrar-full' }),
+  rule('registryLock', 'bool', { area: 'registration', example: true }),
   rule('status.critical', 'bool', { area: 'registration', example: false, health: ['rdap.hold', 'rdap.pending-delete'] }),
   rule('registrar', 'list', { area: 'registration', example: ['Example Registrar, Inc.'] }),
+  // by the registrar's IANA ID (lib/registrars.js)
+  rule('registrar.class', 'enum', { values: ['corporate'], area: 'registration', example: 'corporate' }),
   rule('nsExpiryDays', 'number', { op: '>=', min: 0, max: 3650, area: 'ns', example: '>= 30' }),
+  rule('ns.providers', 'number', { op: '>=', min: 0, max: 20, area: 'ns', example: '>= 2', health: ['ns.single-provider'] }),
   rule('dnssec', 'ordered', { op: '>=', levels: ['unsigned', 'signed', 'validated'], area: 'dnssec', example: 'signed',
     health: ['dnssec.ok', 'dnssec.unsigned', 'dnssec.no-ds', 'dnssec.not-validated', 'dnssec.broken'] }),
   rule('caa', 'enum', { values: ['present', 'deny-all'], area: 'caa', example: 'present', health: ['caa.present', 'caa.missing', 'caa.deny-all'] }),
@@ -88,8 +101,9 @@ export function policyRule(id) {
 
 /**
  * The presets the editor offers: a baseline for every domain, strict mail for domains that send
- * mail, and the lock-down of a parked domain (the DNS change request's "Lock down a parked domain"
- * template: null MX, `v=spf1 -all`, DMARC `p=reject`, CAA `issue ";"`).
+ * mail, the lock-down of a parked domain (the DNS change request's "Lock down a parked domain"
+ * template: null MX, `v=spf1 -all`, DMARC `p=reject`, CAA `issue ";"`), and a corporate domain's
+ * security: CSC's eight measures (lib/secscore.js) with at least the registrar's full lock.
  */
 export const POLICY_PRESETS = Object.freeze({
   baseline: Object.freeze({
@@ -109,6 +123,13 @@ export const POLICY_PRESETS = Object.freeze({
     name: 'parked domain',
     rules: Object.freeze({
       expiryDays: '>= 30', transferLock: true, 'mx.null': true, 'spf.all': '== -all', 'dmarc.policy': '== reject', caa: 'deny-all'
+    })
+  }),
+  corporate: Object.freeze({
+    name: 'corporate',
+    rules: Object.freeze({
+      'lock.level': '>= registrar-full', registryLock: true, 'registrar.class': 'corporate', dnssec: 'signed', caa: 'present',
+      'ns.providers': '>= 2', spf: 'valid', dkim: true, 'dmarc.policy': '>= quarantine'
     })
   })
 });
@@ -308,7 +329,8 @@ const cell = (entry, status, actual, evidence) => ({ id: entry.id, status, actua
 
 /** Why a part of the facts is not known: its lookup failed, was not run, or never answered. */
 function unknownWhy(part, what) {
-  if (!part || part.state === 'pending' || part.state === undefined) return ev('pol.ev.pending');
+  // a lookup that has not landed (lib/portfolio.js marks it `pending`) has not failed
+  if (!part || part.state === 'pending' || part.state === undefined || (part.pending && !part.failure)) return ev('pol.ev.pending');
   if (part.state === 'off') return ev('pol.ev.off');
   return ev('pol.ev.failed', { what });
 }
@@ -362,6 +384,25 @@ const RULE_EVAL = {
         .filter((x) => x.includes('transferprohibited')).map((x) => TRANSFER_CODE_NAMES[x] || x))];
     return boolCell(entry, reg.transferLock, reg.transferLock ? ev('pol.ev.lockOn', { codes: codes.join(', ') }) : ev('pol.ev.lockOff'));
   },
+  'lock.level'(entry, f) {
+    const reg = f.registration;
+    // not registered: nothing holds it, anyone can register it
+    if (reg && reg.state === 'not-found') return cell(entry, 'fail', null, ev('pol.ev.notRegistered'));
+    if (!reg || reg.state !== 'ok') return cell(entry, 'unknown', null, registrationUnknown(reg));
+    if (!LOCK_LEVELS.includes(reg.lockLevel)) return cell(entry, 'unknown', null, ev('pol.ev.noStatus'));
+    return orderedCell(entry, reg.lockLevel, lockEvidence(reg.lockLevel, reg.serverLocks));
+  },
+  registryLock(entry, f) {
+    const reg = f.registration;
+    if (reg && reg.state === 'not-found') return cell(entry, 'fail', null, ev('pol.ev.notRegistered'));
+    if (!reg || reg.state !== 'ok') return cell(entry, 'unknown', null, registrationUnknown(reg));
+    if (typeof reg.registryLock !== 'boolean') return cell(entry, 'unknown', null, ev('pol.ev.noStatus'));
+    // All three server prohibitions; one or two of them is said, never taken for the lock.
+    const server = Array.isArray(reg.serverLocks) ? reg.serverLocks : [];
+    const evidence = reg.registryLock ? ev('pol.ev.lock.registry')
+      : server.length ? lockEvidence('registry-partial', server) : ev('pol.ev.registryLockOff');
+    return boolCell(entry, reg.registryLock, evidence);
+  },
   'status.critical'(entry, f) {
     const reg = f.registration;
     if (!reg || reg.state !== 'ok') return cell(entry, 'unknown', null, registrationUnknown(reg));
@@ -375,6 +416,20 @@ const RULE_EVAL = {
     const name = String(reg.registrar).toLowerCase();
     const hit = entry.value.some((x) => name.includes(x.toLowerCase()));
     return cell(entry, hit ? 'pass' : 'fail', reg.registrar, ev('pol.ev.registrar', { name: reg.registrar }));
+  },
+  'registrar.class'(entry, f) {
+    const reg = f.registration;
+    if (reg && reg.state === 'not-found') return cell(entry, 'fail', null, ev('pol.ev.notRegistered'));
+    if (!reg || reg.state !== 'ok') return cell(entry, 'unknown', null, registrationUnknown(reg));
+    // By the IANA ID, never by the name the registrar writes (lib/registrars.js).
+    const id = registrarId(reg.ianaId);
+    const cls = reg.registrarClass || registrarClass(id);
+    if (cls !== 'corporate' && cls !== 'retail') {
+      return cell(entry, 'unknown', null, id === null ? ev('pol.ev.registrarClass.noId') : ev('pol.ev.registrarClass.reserved', { id }));
+    }
+    const corp = corporateRegistrar(id);
+    const name = reg.registrar || (corp ? corp.brand : '—');
+    return cell(entry, cls === entry.value ? 'pass' : 'fail', cls, ev(`pol.ev.registrarClass.${cls}`, { name, id }));
   },
   nsExpiryDays(entry, f) {
     const ns = f.ns;
@@ -396,6 +451,15 @@ const RULE_EVAL = {
     const notKnown = others.find((d) => !(d.state === 'ok' && Number.isFinite(d.daysLeft)));
     if (notKnown) return cell(entry, 'unknown', soonest ? soonest.daysLeft : null, ev('pol.ev.nsUnknown', { domain: notKnown.domain }));
     return cell(entry, 'pass', soonest.daysLeft, evidenceOf(soonest));
+  },
+  'ns.providers'(entry, f) {
+    const ns = f.ns;
+    if (!ns || ns.state === 'failed' || ns.state === 'pending' || ns.state === undefined) return cell(entry, 'unknown', null, unknownWhy(ns, 'NS'));
+    if (ns.state === 'nxdomain') return cell(entry, 'fail', null, ev('pol.ev.nxdomain'));
+    // lib/portfolio.js nsProviders: a provider by its table, else by the host's registrable domain
+    const p = ns.providers;
+    if (!p || !p.count) return cell(entry, 'unknown', null, ev('pol.ev.noNs'));
+    return numberCell(entry, p.count, ev('pol.ev.nsProviders', { count: p.count, list: p.providers.map((x) => x.name).join(', ') }));
   },
   dnssec(entry, f) {
     const d = f.dnssec;
@@ -484,6 +548,13 @@ const RULE_EVAL = {
   }
 };
 
+/** The evidence of a lock level; a partial registry lock names the server prohibitions that are set. */
+function lockEvidence(level, serverLocks) {
+  return level === 'registry-partial'
+    ? ev('pol.ev.lock.registry-partial', { codes: (Array.isArray(serverLocks) ? serverLocks : []).join(', ') })
+    : ev(`pol.ev.lock.${level}`);
+}
+
 function presenceCell(entry, part, what) {
   if (!part || !part.state) return cell(entry, 'unknown', null, unknownWhy(part, what));
   // A record that is not valid is not there for senders.
@@ -511,7 +582,7 @@ export function evaluatePolicy(policy, facts) {
     const fn = RULE_EVAL[entry.id];
     if (!fn) return cell(entry, 'unknown', null, ev('pol.ev.pending'));
     const c = fn(entry, f);
-    if (c.status !== 'pass' && f.exists === false && ['dnssec', 'caa', 'caa.issuers', 'spf', 'spf.lookups', 'spf.all', 'dmarc.policy', 'dkim', 'mtaSts', 'tlsRpt', 'mx.null'].includes(entry.id)) {
+    if (c.status !== 'pass' && f.exists === false && ['ns.providers', 'dnssec', 'caa', 'caa.issuers', 'spf', 'spf.lookups', 'spf.all', 'dmarc.policy', 'dkim', 'mtaSts', 'tlsRpt', 'mx.null'].includes(entry.id)) {
       return { ...c, status: 'fail', evidence: ev('pol.ev.nxdomain') };
     }
     return c;
@@ -616,9 +687,14 @@ export function auditJson(audit, { t, policy, app = 'DomainScope', version = '',
 const STRINGS = [
   ['pol.rule.expiryDays', ['Days until expiry', 'Bitişe kalan gün']],
   ['pol.rule.transferLock', ['Transfer lock (client or server transfer prohibited)', 'Transfer kilidi (client ya da server transfer prohibited)']],
+  ['pol.rule.lock.level', ['Lock level: the registrar’s (registrar-transfer, registrar-full) or the registry’s (registry-partial, registry)',
+    'Kilit düzeyi: kayıt firmasınınki (registrar-transfer, registrar-full) ya da kayıt kuruluşununki (registry-partial, registry)']],
+  ['pol.rule.registryLock', ['Registry lock (server transfer, update and delete prohibited)', 'Kayıt kuruluşu kilidi (server transfer, update ve delete prohibited)']],
   ['pol.rule.status.critical', ['Critical registry status (hold, redemption, pending delete)', 'Kritik kayıt durumu (askı, geri alma, silinme bekliyor)']],
   ['pol.rule.registrar', ['Registrar', 'Kayıt firması']],
+  ['pol.rule.registrar.class', ['Corporate registrar (by its IANA ID)', 'Kurumsal kayıt firması (IANA kimliğine göre)']],
   ['pol.rule.nsExpiryDays', ['Days until the name servers’ domains expire', 'Ad sunucusu alan adlarının bitişine kalan gün']],
+  ['pol.rule.ns.providers', ['DNS providers the name servers are spread over', 'Ad sunucularının dağıldığı DNS sağlayıcısı sayısı']],
   ['pol.rule.dnssec', ['DNSSEC', 'DNSSEC']],
   ['pol.rule.caa', ['CAA', 'CAA']],
   ['pol.rule.caa.issuers', ['The only CAs CAA may allow', 'CAA’nın izin verebileceği CA’lar (yalnızca)']],
@@ -638,6 +714,7 @@ const STRINGS = [
   ['pol.preset.baseline', ['Baseline', 'Temel']],
   ['pol.preset.strict-mail', ['Strict mail', 'Sıkı e-posta']],
   ['pol.preset.parked', ['Parked domain', 'Park edilmiş alan adı']],
+  ['pol.preset.corporate', ['Corporate', 'Kurumsal']],
 
   ['pol.err.not-json', ['Not valid JSON: {detail}', 'Geçerli bir JSON değil: {detail}']],
   ['pol.err.not-object', ['A policy is a JSON object of rules, such as { "expiryDays": ">= 30" }.', 'Politika, { "expiryDays": ">= 30" } gibi kurallardan oluşan bir JSON nesnesidir.']],
@@ -661,6 +738,20 @@ const STRINGS = [
   ['pol.ev.lockOff', ['no transfer prohibition (clientTransferProhibited or serverTransferProhibited): the domain can be transferred away',
     'transfer yasağı yok (clientTransferProhibited ya da serverTransferProhibited): alan adı başka yere transfer edilebilir']],
   ['pol.ev.noStatus', ['the registry reports no status', 'kayıt kuruluşu durum bildirmiyor']],
+  ['pol.ev.lock.none', ['not locked: no transfer prohibition, the domain can be transferred away', 'kilitli değil: transfer yasağı yok, alan adı başka yere transfer edilebilir']],
+  ['pol.ev.lock.registrar-transfer', ['the registrar’s transfer lock only (client transfer prohibited): changes and deletion are not locked',
+    'yalnızca kayıt firmasının transfer kilidi (client transfer prohibited): değişiklik ve silme kilitli değil']],
+  ['pol.ev.lock.registrar-full', ['the registrar’s full lock: client transfer, update and delete prohibited', 'kayıt firmasının tam kilidi: client transfer, update ve delete prohibited']],
+  ['pol.ev.lock.registry-partial', ['a partial registry lock, {codes} only: a registry lock is server transfer, update and delete prohibited together',
+    'kısmi kayıt kuruluşu kilidi, yalnızca {codes}: kayıt kuruluşu kilidi server transfer, update ve delete prohibited durumlarının üçü birdendir']],
+  ['pol.ev.lock.registry', ['a registry lock: server transfer, update and delete prohibited', 'kayıt kuruluşu kilidi: server transfer, update ve delete prohibited']],
+  ['pol.ev.registryLockOff', ['no registry lock: none of server transfer, update and delete prohibited', 'kayıt kuruluşu kilidi yok: server transfer, update ve delete prohibited durumlarının hiçbiri yok']],
+  ['pol.ev.registrarClass.corporate', ['a corporate registrar: {name} (IANA ID {id})', 'kurumsal bir kayıt firması: {name} (IANA kimliği {id})']],
+  ['pol.ev.registrarClass.retail', ['not a corporate registrar: {name} (IANA ID {id})', 'kurumsal bir kayıt firması değil: {name} (IANA kimliği {id})']],
+  ['pol.ev.registrarClass.noId', ['the registry gives no IANA registrar ID (a country-code registry’s own registrars have none): whether it is corporate is not known',
+    'kayıt kuruluşu IANA kayıt firması kimliği vermiyor (ülke kodlu kayıt kuruluşlarının kendi kayıt firmalarında bu kimlik olmaz): kurumsal olup olmadığı bilinmiyor']],
+  ['pol.ev.registrarClass.reserved', ['IANA ID {id} is a reserved one (such as the registry acting as registrar): whether the registrar is corporate is not known',
+    'IANA kimliği {id} ayrılmış bir kimlik (örneğin kayıt kuruluşu kayıt firması olarak işlem yapıyor): kayıt firmasının kurumsal olup olmadığı bilinmiyor']],
   ['pol.ev.critical', ['critical status: {codes}', 'kritik durum: {codes}']],
   ['pol.ev.noCritical', ['no hold, redemption or pending delete', 'askı, geri alma ya da silinme durumu yok']],
   ['pol.ev.registrar', ['registrar: {name}', 'kayıt firması: {name}']],
@@ -673,6 +764,7 @@ const STRINGS = [
   ['pol.ev.nsNotRegistered', ['name server domain {domain} is not registered — anyone can register it and take over DNS',
     'ad sunucusu alan adı {domain} kayıtlı değil — herkes kaydedip DNS’i ele geçirebilir']],
   ['pol.ev.noNs', ['no name servers to check', 'kontrol edilecek ad sunucusu yok']],
+  ['pol.ev.nsProviders', [{ one: '{count} DNS provider: {list}', other: '{count} DNS providers: {list}' }, '{count} DNS sağlayıcısı: {list}']],
   ['pol.ev.nsOwnOnly', ['the name servers are under the domain itself: they expire with it', 'ad sunucuları alan adının kendi altında: onunla birlikte sona erer']],
   ['pol.ev.nxdomain', ['the domain does not exist in DNS (NXDOMAIN)', 'alan adı DNS’te yok (NXDOMAIN)']],
   ['pol.ev.dnssec.validated', ['signed (DS) and validated', 'imzalı (DS) ve doğrulanıyor']],

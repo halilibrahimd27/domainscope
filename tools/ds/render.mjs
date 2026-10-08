@@ -10,10 +10,11 @@
  */
 
 import { t, registerStrings } from '../../assets/js/i18n.js';
-import { SUMMARY_I18N, renderMarkdown, renderPlainText, renderParts, utcStamp } from '../../assets/js/lib/summary.js';
+import { SUMMARY_I18N, renderMarkdown, renderPlainText, renderParts, utcStamp, mdCode } from '../../assets/js/lib/summary.js';
 import { HEALTH_I18N } from '../../assets/js/lib/health.js';
 import { RENEWAL_I18N } from '../../assets/js/lib/renewal.js';
 import { POLICY_I18N } from '../../assets/js/lib/policy.js';
+import { SECURITY_I18N } from '../../assets/js/lib/secscore.js';
 
 /** A code part: an untrusted value. */
 export const code = (value) => ({ code: String(value ?? '') });
@@ -50,8 +51,9 @@ export async function setupStrings() {
   registerStrings('en', SUMMARY_I18N.en);
   registerStrings('en', HEALTH_I18N.en);
   registerStrings('en', RENEWAL_I18N.en);
-  // audit: the policy's rule names and the evidence of each cell
+  // audit: the policy's rule names and the evidence of each cell, the security score's measures
   registerStrings('en', POLICY_I18N.en);
+  registerStrings('en', SECURITY_I18N.en);
   await import('../../assets/js/views/zone.js');
   await import('../../assets/js/ui/dane-panel.js');
   return t;
@@ -201,6 +203,60 @@ export function renderChangesMarkdown(run) {
 }
 
 /* ------------------------------------------------------------------------ */
+/* Tables (the audit's security score)                                      */
+/* ------------------------------------------------------------------------ */
+
+/** One cell's parts in Markdown, by lib/summary.js' rule; a `|` inside a code span is escaped too, as a GFM table cell needs. */
+function tableCellMarkdown(parts) {
+  return parts.map((p) => (p && typeof p === 'object' && 'code' in p ? mdCode(p.code).replace(/\|/g, '\\|') : renderParts([p], 'markdown'))).join('');
+}
+
+/**
+ * A table doc (commands.mjs securityDoc: `{ title, table: { columns, align, rows }, lines }`, a
+ * cell a list of parts) in Markdown: the bold title, a GFM table, then its lines as a list.
+ * @param {{ title: Array, table: { columns: string[], align?: string[], rows: Array<Array<Array>> }, lines?: Array<Array> }} doc
+ * @returns {string} with a trailing newline
+ */
+export function renderTableMarkdown(doc) {
+  const { columns, align = [], rows } = doc.table;
+  const rule = (i) => (align[i] === 'right' ? '---:' : align[i] === 'center' ? ':-:' : '---');
+  const lines = [
+    `**${renderParts(doc.title, 'markdown')}**`,
+    '',
+    `| ${columns.map((c) => renderParts([c], 'markdown')).join(' | ')} |`,
+    `| ${columns.map((_, i) => rule(i)).join(' | ')} |`,
+    ...rows.map((r) => `| ${r.map(tableCellMarkdown).join(' | ')} |`)
+  ];
+  const notes = (doc.lines || []).map((l) => `- ${renderParts(l, 'markdown')}`);
+  return `${[...lines, ...(notes.length ? ['', ...notes] : [])].join('\n')}\n`;
+}
+
+/**
+ * The same table as plain text: the title, the columns aligned with spaces (each as wide as its
+ * widest cell), then the lines.
+ * @param {{ title: Array, table: { columns: string[], align?: string[], rows: Array<Array<Array>> }, lines?: Array<Array> }} doc
+ * @returns {string} with a trailing newline
+ */
+export function renderTableText(doc) {
+  const { columns, align = [], rows } = doc.table;
+  const cells = [columns.map((c) => renderParts([c], 'text')), ...rows.map((r) => r.map((p) => renderParts(p, 'text')))];
+  const width = (s) => [...s].length;
+  const widths = columns.map((_, i) => Math.max(...cells.map((r) => width(r[i] || ''))));
+  const pad = (s, i) => {
+    const gap = widths[i] - width(s);
+    if (align[i] === 'right') return `${' '.repeat(gap)}${s}`;
+    if (align[i] === 'center') return `${' '.repeat(Math.floor(gap / 2))}${s}${' '.repeat(gap - Math.floor(gap / 2))}`;
+    return `${s}${' '.repeat(gap)}`;
+  };
+  const out = [
+    renderParts(doc.title, 'text'),
+    ...cells.map((r) => `  ${r.map(pad).join('  ')}`.trimEnd()),
+    ...(doc.lines || []).map((l) => `- ${renderParts(l, 'text')}`)
+  ];
+  return `${out.join('\n')}\n`;
+}
+
+/* ------------------------------------------------------------------------ */
 /* The whole summary                                                        */
 /* ------------------------------------------------------------------------ */
 
@@ -217,14 +273,14 @@ export function renderRunText(run, docs, { color = false, showAll = false } = {}
   if (run.baseline) out.push(...renderChangesText(run, { paint, showAll }));
   docs.forEach((d, i) => {
     if (i) out.push('');
-    out.push(renderPlainText(d).replace(/\n$/, ''));
+    out.push((d.table ? renderTableText(d) : renderPlainText(d)).replace(/\n$/, ''));
   });
   return `${out.join('\n')}\n`;
 }
 
 /**
  * The `--md` file: the changes block (with --baseline), then each target's summary as the app's
- * "Copy summary" writes it.
+ * "Copy summary" writes it (a table doc — the audit's security score — as a Markdown table).
  * @param {{ command: string, baseline?: object|null, changes?: object[], notes?: string[] }} run
  * @param {object[]} docs SummaryDocs
  * @returns {string} with a trailing newline
@@ -232,6 +288,6 @@ export function renderRunText(run, docs, { color = false, showAll = false } = {}
 export function renderRunMarkdown(run, docs) {
   const parts = [];
   if (run.baseline) parts.push(renderChangesMarkdown(run));
-  for (const d of docs) parts.push(renderMarkdown(d));
+  for (const d of docs) parts.push(d.table ? renderTableMarkdown(d) : renderMarkdown(d));
   return parts.join('\n');
 }

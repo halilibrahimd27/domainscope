@@ -119,6 +119,28 @@ const dailyReport = (day, { dkim = 'pass', p = 'none' } = {}) => {
 <spf><domain>example.com</domain><result>pass</result></spf></auth_results></record></feedback>`;
 };
 
+/**
+ * One week of example.org's mail, whose sources the senders group names: one authorized by a
+ * service's SPF include, one signing with a service's DKIM, one bouncing through a service's
+ * return-path, three nothing in the report names, and a private address.
+ */
+const sendersReport = () => {
+  const rec = (ip, count, { dkim = 'fail', spf = 'fail', auth = '<spf><domain>example.org</domain><result>fail</result></spf>' } = {}) => `<record><row><source_ip>${ip}</source_ip><count>${count}</count>
+<policy_evaluated><disposition>none</disposition><dkim>${dkim}</dkim><spf>${spf}</spf></policy_evaluated></row>
+<identifiers><header_from>example.org</header_from></identifiers><auth_results>${auth}</auth_results></record>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><feedback><report_metadata><org_name>google.com</org_name><email>noreply-dmarc-support@example.org</email>
+<report_id>senders-1</report_id><date_range><begin>1790294400</begin><end>1790899199</end></date_range></report_metadata>
+<policy_published><domain>example.org</domain><p>none</p></policy_published>
+${rec('203.0.113.40', 40, { spf: 'pass', auth: '<spf><domain>example.org</domain><result>pass</result></spf>' })}
+${rec('198.51.100.61', 25, { dkim: 'pass', auth: '<dkim><domain>example.org</domain><selector>s1</selector><result>pass</result></dkim><dkim><domain>sendgrid.net</domain><selector>smtpapi</selector><result>pass</result></dkim><spf><domain>sendgrid.net</domain><result>pass</result></spf>' })}
+${rec('192.0.2.62', 9, { dkim: 'pass', auth: '<dkim><domain>example.org</domain><selector>pm</selector><result>pass</result></dkim><spf><domain>pm.mtasv.net</domain><result>pass</result></spf>' })}
+${rec('192.0.2.70', 6)}
+${rec('198.51.100.71', 4)}
+${rec('203.0.113.72', 3)}
+${rec('10.1.2.3', 2)}
+</feedback>`;
+};
+
 /** A zip of `n` central directory entries that all name one deflate stream of 8 MB (each claims 100 bytes). */
 function overlappingZip(n) {
   const le = (v, size) => {
@@ -165,6 +187,16 @@ function storedZip(entries) {
 
 const text = (page, sel) => page.evaluate((s) => document.querySelector(s)?.textContent.replace(/\s+/g, ' ').trim() || '', sel);
 const counts = (page) => page.evaluate(() => ({ dns: window.__dnsLog.length, ip: window.__ipLog.length }));
+/** The Service column: ip → "name|via" (a named source) or its muted text ("—", "not identified"). */
+const tableServices = (page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.rpt-sources tbody tr.dt-row')].map((tr) => {
+  const svc = tr.querySelector('.rpt-svc');
+  return [tr.querySelector('.rpt-ip')?.dataset.ip, svc ? `${svc.querySelector('.rpt-svc-name').textContent}|${svc.dataset.via}` : tr.querySelector('.rpt-svc-none')?.textContent || ''];
+})));
+/** The service view's rows: [group key, name, addresses] in their order. */
+const tableGroups = (page) => page.evaluate(() => [...document.querySelectorAll('.rpt-services tbody tr.dt-row')].map((tr) => {
+  const svc = tr.querySelector('.rpt-svc');
+  return [svc?.dataset.group, svc?.querySelector('.rpt-svc-name')?.textContent, tr.querySelector('td.rpt-grp-addr')?.textContent];
+}));
 /** The sources table as [ip, class] in its order (only the rows it shows). */
 const tableClasses = (page) => page.evaluate(() => [...document.querySelectorAll('.rpt-sources tbody tr.dt-row')]
   .map((tr) => [tr.querySelector('.rpt-ip')?.dataset.ip, tr.querySelector('.badge[data-cls]')?.dataset.cls]));
@@ -718,6 +750,139 @@ async function main() {
       await page.click('[data-action="rpt-forget"]');
       await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
     });
+
+    run.group('Senders named by service');
+    const sendersDir = await mkdtemp(path.join(tmpdir(), 'ds-reports-senders-'));
+    try {
+      await run.step('the sources are named from the report and the SPF with no lookup; Identify senders asks only for the rest', async () => {
+        const file = path.join(sendersDir, 'google.com!example.org!1790294400!1790899199.xml');
+        await writeFile(file, sendersReport());
+        await page.evaluate(() => {
+          // example.org's SPF authorizes Google Workspace's (documentation) range; three addresses get reverse names.
+          Object.assign(window.__zone, {
+            'example.org': { TXT: [['v=spf1 include:_spf.google.com ~all']] },
+            '_spf.google.com': { TXT: [['v=spf1 ip4:203.0.113.32/27 ~all']] },
+            '70.2.0.192.in-addr.arpa': { PTR: ['mail-yw1-f70.google.com'] },
+            'mail-yw1-f70.google.com': { A: ['192.0.2.70'] },
+            '71.100.51.198.in-addr.arpa': { PTR: ['c-198-51-100-71.hsd1.ca.comcast.net'] }
+          });
+          window.__dnsLog = [];
+          window.__ipLog = [];
+          document.querySelectorAll('.toast').forEach((el) => el.remove());
+        });
+        await page.setFileInput('.rpt-load .filedrop-input', [file]);
+        await waitDmarc(page);
+        await page.waitFor(() => document.querySelector('.rpt-spf')?.dataset.state === 'ok', { message: 'example.org\'s SPF' });
+        await frames(page);
+        assertEqual(await tableServices(page), {
+          '203.0.113.40': 'Google Workspace|spf-include',
+          '198.51.100.61': 'SendGrid|dkim',
+          '192.0.2.62': 'Postmark|return-path',
+          '192.0.2.70': '—', '198.51.100.71': '—', '203.0.113.72': '—', '10.1.2.3': '—'
+        }, 'named from the report and the SPF');
+        assertEqual(await page.evaluate(() => [...new Set(window.__dnsLog.map((q) => `${q.name}|${q.type}`))].sort()), ['_spf.google.com|TXT', 'example.org|TXT'], 'only the SPF tree: nothing about the senders');
+        assertEqual(await text(page, '[data-action="rpt-identify"]'), 'Identify 3 senders', 'the unnamed public sources');
+        await shot(page, opts, 'reports-senders-desktop-light-en');
+        await page.click('[data-action="rpt-identify"]');
+        await page.waitFor(() => /Example Hosting Ltd/.test([...document.querySelectorAll('.rpt-sources tbody tr.dt-row')]
+          .find((tr) => tr.querySelector('.rpt-ip')?.dataset.ip === '203.0.113.72')?.querySelector('.rpt-svc')?.textContent || '')
+          && document.querySelector('[data-action="rpt-identify"]')?.hidden, { timeout: 20000, message: 'every unnamed sender looked up' });
+        await frames(page);
+        const named = await tableServices(page);
+        assertEqual([named['192.0.2.70'], named['198.51.100.71'], named['203.0.113.72'], named['10.1.2.3']],
+          ['Google (Including Gmail and Google Workspace)|ptr', 'ISP or home network|isp', 'Example Hosting Ltd|asn', '—'], 'named by the reverse DNS, the ISP list, the network');
+        const asked = await page.evaluate(() => window.__dnsLog.filter((q) => q.type === 'PTR').map((q) => q.name));
+        assertEqual([...new Set(asked)].sort(), ['70.2.0.192.in-addr.arpa', '71.100.51.198.in-addr.arpa', '72.113.0.203.in-addr.arpa'], 'reverse DNS of the three unnamed public sources only');
+        const forward = await page.evaluate(() => [...new Set(window.__dnsLog.filter((q) => q.type === 'A').map((q) => q.name))].sort());
+        assertEqual(forward, ['c-198-51-100-71.hsd1.ca.comcast.net', 'mail-yw1-f70.google.com'], 'each name found checked forward');
+        assertEqual((await page.evaluate(() => window.__ipLog)).sort(), ['maxmind-geo-lite 203.0.113.72', 'prefix-overview 203.0.113.72'], 'the network of the one still unnamed');
+        const cell = await page.evaluate(() => [...document.querySelectorAll('.rpt-sources tbody tr.dt-row')].map((tr) => tr.querySelector('.rpt-svc'))
+          .filter(Boolean).map((s) => [s.dataset.via, s.dataset.confidence, s.querySelector('.rpt-svc-meta').textContent]));
+        assert(cell.some(([via, conf, meta]) => via === 'isp' && conf === 'low' && meta === 'comcast.net · reverse DNS, not confirmed'), JSON.stringify(cell));
+        assert(cell.some(([via, conf, meta]) => via === 'ptr' && conf === 'medium' && meta === 'Mailbox provider · reverse DNS'), JSON.stringify(cell));
+      });
+
+      await run.step('a source\'s details say how it was named and how to align the service; the sources CSV has the service', async () => {
+        await page.evaluate(() => [...document.querySelectorAll('.rpt-sources tbody tr.dt-row')].find((r) => r.querySelector('.rpt-ip')?.dataset.ip === '198.51.100.61')
+          .querySelector('.dt-expand-btn').click());
+        await page.waitFor(() => !!document.querySelector('.rpt-sources .rpt-details .rpt-guide'), { message: 'details' });
+        const det = await text(page, '.rpt-sources .rpt-details');
+        assert(/SendGrid — Transactional email/.test(det) && /Named from its DKIM signature, which verified: d=sendgrid\.net/.test(det)
+          && /SendGrid: authenticate example\.org under Settings › Sender Authentication/.test(det), det);
+        await page.click('.rpt-sources [data-export="csv"]');
+        await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'download' });
+        const [csv] = await takeDownloads(page);
+        const { DMARC_CSV_COLUMNS } = await import('../../assets/js/lib/dmarcreport.js');
+        assertEqual(csvHeader(csv.text), [...DMARC_CSV_COLUMNS], 'CSV header');
+        const line = csv.text.split(/\r?\n/).find((l) => l.includes('198.51.100.61'));
+        assert(/,SendGrid,transactional,dkim,high,/.test(line), line);
+      });
+
+      await run.step('By service: one row per service with totals, the unnamed last; a group\'s guide and addresses; the class tiles apply', async () => {
+        await page.click('.rpt-view .seg-btn[data-value="service"]');
+        await page.waitFor(() => document.querySelectorAll('.rpt-services tbody tr.dt-row').length > 0, { message: 'the service view' });
+        assertEqual(await page.evaluate(() => document.activeElement?.matches('.rpt-view .seg-btn[data-value="service"]')), true, 'the focus stays on the switch');
+        assertEqual(await tableGroups(page), [
+          ['svc:google', 'Google Workspace', '1'],
+          ['svc:sendgrid', 'SendGrid', '1'],
+          ['svc:postmark', 'Postmark', '1'],
+          ['name:google (including gmail and google workspace)', 'Google (Including Gmail and Google Workspace)', '1'],
+          ['isp', 'ISP or home networks', '1'],
+          ['net:example hosting ltd', 'Example Hosting Ltd', '1'],
+          ['unnamed', 'Not identified', '1']
+        ], 'groups, the most mail first, the unnamed last');
+        assertEqual(await text(page, '[data-role="rpt-grp-totals"]'), '6 services · 7 addresses · 89 messages · 1 address not identified (2 messages)', 'totals');
+        await page.evaluate(() => [...document.querySelectorAll('.rpt-services tbody tr.dt-row')].find((r) => r.querySelector('[data-group="svc:postmark"]'))
+          .querySelector('.dt-expand-btn').click());
+        await page.waitFor(() => !!document.querySelector('.rpt-services .rpt-details'), { message: 'group details' });
+        const det = await text(page, '.rpt-services .rpt-details');
+        assert(/Postmark: verify example\.org/.test(det) && /pm\.mtasv\.net/.test(det) && /192\.0\.2\.62/.test(det) && /Named from\s*return-path/.test(det), det);
+        await shot(page, opts, 'reports-services-desktop-light-en');
+        await page.click('.rpt-services [data-export="csv"]');
+        await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'services download' });
+        const [csv] = await takeDownloads(page);
+        assert(/^dmarc-services-example\.org-.*\.csv$/.test(csv.name), csv.name);
+        const { SERVICE_CSV_COLUMNS } = await import('../../assets/js/lib/senders.js');
+        assertEqual(csvHeader(csv.text), [...SERVICE_CSV_COLUMNS], 'services CSV header');
+        await page.click('.rpt-cls [data-cls="unknown"]');
+        await page.waitFor(() => document.querySelectorAll('.rpt-services tbody tr.dt-row').length === 4, { message: 'the unknown senders\' services' });
+        assertEqual((await tableGroups(page)).map(([k]) => k), ['name:google (including gmail and google workspace)', 'isp', 'net:example hosting ltd', 'unnamed'], 'filtered');
+        await page.click('[data-action="rpt-cls-clear"]');
+        await page.waitFor(() => document.querySelectorAll('.rpt-services tbody tr.dt-row').length === 7, { message: 'every class again' });
+      });
+
+      await run.step('the service view at 375 and 320 px in Turkish, light and dark: no horizontal scroll', async () => {
+        await page.setViewport({ width: 375, height: 740, mobile: true });
+        await setLangUi(page, 'tr');
+        await page.waitFor(() => document.querySelectorAll('.rpt-services tbody tr.dt-row').length === 7, { message: 'kept after the language switch' });
+        assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rpt-view .seg-btn')].map((b) => b.textContent)), ['Adrese göre', 'Hizmete göre'], 'the switch in Turkish');
+        assertEqual((await tableGroups(page)).map(([, name]) => name).slice(-3), ['İSS’ler ya da ev ağları', 'Example Hosting Ltd', 'Tanımlanamadı'], 'groups in Turkish');
+        assertEqual(await text(page, '[data-role="rpt-grp-totals"]'), '6 hizmet · 7 adres · 89 e-posta · 1 adres tanımlanamadı (2 e-posta)', 'totals in Turkish');
+        for (const scheme of ['light', 'dark']) {
+          await page.emulateMedia({ 'prefers-color-scheme': scheme });
+          await page.evaluate(() => document.querySelector('.rpt-sources-section').scrollIntoView());
+          await assertNoHorizontalScroll(page, `services ${scheme} tr`);
+          await shot(page, opts, `reports-services-mobile-${scheme}-tr`);
+        }
+        await page.setViewport({ width: 320, height: 640, mobile: true });
+        await frames(page);
+        await assertNoHorizontalScroll(page, 'services 320 tr dark');
+        await page.click('.rpt-view .seg-btn[data-value="address"]');
+        await page.waitFor(() => document.querySelectorAll('.rpt-sources tbody tr.dt-row').length === 7, { message: 'the address view' });
+        await assertNoHorizontalScroll(page, 'addresses 320 tr dark');
+        const fits = await page.evaluate(() => [...document.querySelectorAll('.rpt-sources tbody tr.dt-row')].filter((c) => c.scrollWidth > c.clientWidth + 1).map((c) => c.className));
+        assertEqual(fits, [], 'every card fits at 320 px');
+        assert(/İşlemsel e-posta · DKIM/.test(await text(page, '.rpt-sources tbody')), 'the Service column in Turkish');
+        await shot(page, opts, 'reports-senders-mobile320-dark-tr');
+        await page.setViewport({ width: 1440, height: 900 });
+        await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+        await setLangUi(page, 'en');
+        await page.click('[data-action="rpt-forget"]');
+        await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+      });
+    } finally {
+      await rm(sendersDir, { recursive: true, force: true }).catch(() => {});
+    }
 
     run.group('Quality');
     await run.step('no request ever left the page origin', () => assertEqual(external, [], 'external requests'));

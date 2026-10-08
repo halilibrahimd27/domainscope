@@ -568,10 +568,15 @@ class RunTests(unittest.TestCase):
         closed_port = sock.getsockname()[1]
         sock.close()
         try:
-            report = run(['127.0.0.1'], tls=True, ports=[plain.port, closed_port], sni_max=4)
+            report = run(['127.0.0.1'], tls=True, ports=[plain.port, closed_port], sni_max=4,
+                         ptr_lookup=lambda ip: ['www.example.com'])
         finally:
             plain.close()
         rep = report.addresses[0]
+        self.assertEqual(rep.sni_tried, 0, 'a port that speaks no TLS gets no SNI handshakes')
+        self.assertFalse(ii.speaks_tls(ii.PORT_TLS_ERROR, '[SSL: RECORD_LAYER_FAILURE] record layer failure'))
+        self.assertTrue(ii.speaks_tls(ii.PORT_TLS_ERROR, '[SSL: TLSV1_ALERT_UNRECOGNIZED_NAME] tlsv1 unrecognized name'))
+        self.assertFalse(ii.speaks_tls(ii.PORT_CLOSED, 'connection refused'))
         self.assertEqual([(p.port, p.state) for p in rep.ports],
                          [(plain.port, ii.PORT_TLS_ERROR), (closed_port, ii.PORT_CLOSED)])
         self.assertEqual(rep.certificates, [])

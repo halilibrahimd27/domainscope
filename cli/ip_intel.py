@@ -510,6 +510,19 @@ def tls_handshake(ip: str, port: int, sni: Optional[str], timeout: float,
                 pass
 
 
+# A handshake error that says the port speaks no TLS at all (an HTTP or another plain server),
+# which no SNI can change: OpenSSL / LibreSSL reason codes and their texts.
+_NOT_TLS_RE = re.compile(r'WRONG_VERSION_NUMBER|RECORD_LAYER_FAILURE|PACKET_LENGTH_TOO_LONG|HTTP_REQUEST|'
+                         r'UNKNOWN_PROTOCOL|wrong version number|record layer failure|packet length too long|'
+                         r'http request', re.I)
+
+
+def speaks_tls(state: str, detail: str) -> bool:
+    """Whether a port asked without SNI may serve a certificate when asked with one: it served
+    one, or the handshake failed in a way an SNI can change (an alert, a hang-up)."""
+    return state == PORT_OK or (state == PORT_TLS_ERROR and not _NOT_TLS_RE.search(detail or ''))
+
+
 def _no_address_codes() -> Set[int]:
     codes = {11001, 11004}  # WSAHOST_NOT_FOUND, WSANO_DATA (Windows)
     for attr in ('EAI_NONAME', 'EAI_NODATA', 'EAI_ADDRFAMILY'):
@@ -1507,7 +1520,7 @@ def run_domains(addresses: Sequence[str], ports: Sequence[int] = DEFAULT_PORTS, 
     if tls and sni_max > 0:
         sni_plan = []  # type: List[Tuple[AddressReport, int, str]]
         for rep in reports:
-            open_ports = [p.port for p in rep.ports if p.state in (PORT_OK, PORT_TLS_ERROR)]
+            open_ports = [p.port for p in rep.ports if speaks_tls(p.state, p.detail)]
             names = _sni_candidates(rep, found.get(rep.ip, []), sni_max) if open_ports else []
             for port in open_ports:
                 for name in names:
@@ -1873,7 +1886,8 @@ def build_parser() -> argparse.ArgumentParser:
     limits.add_argument('--max', type=int, default=DEFAULT_MAX_ADDRESSES, metavar='N',
                         help='at most N addresses (default: %(default)s, an IPv4 /22)')
     limits.add_argument('--timeout', type=float, default=DEFAULT_TIMEOUT, metavar='SECONDS',
-                        help='per request, handshake and lookup (default: %(default)s)')
+                        help='per request and handshake (default: %(default)s); name lookups keep the '
+                             'system resolver\'s own timeouts')
     limits.add_argument('-w', '--workers', type=int, default=DEFAULT_WORKERS, metavar='N',
                         help='lookups in flight (default: %(default)s); each source keeps its own pace')
     out = domains.add_argument_group('output')

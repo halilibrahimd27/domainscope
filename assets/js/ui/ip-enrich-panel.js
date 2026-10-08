@@ -407,7 +407,7 @@ function breadcrumb(st, ctx, ip, prefix) {
   const crumbs = [];
   const pick = (level) => {
     st.level = level.cidr;
-    for (const b of crumbs) b.setAttribute('aria-pressed', String(b.dataset.cidr === level.cidr));
+    for (const b of crumbs) if (b.dataset.cidr) b.setAttribute('aria-pressed', String(b.dataset.cidr === level.cidr));
     showServers(list, level, index.size > 0);
   };
   levels.forEach((l, i) => {
@@ -445,6 +445,6 @@ function showServers(list, level, haveInventory) {
     h('ul', { class: 'ipe-server-list' }, level.servers.slice(0, MAX_SERVERS).map((s) => h('li', { dataset: { server: s.id } },
       h('span', { class: 'ipe-server-name' }, s.name), ' ',
       h('span', { class: 'mono muted text-xs' }, s.ips.join(', ')),
-      s.here ? Badge(t('ipe.serversHere'), { variant: 'direct', className: 'ipe-here' }) : null))),
+      s.here ? [' ', Badge(t('ipe.serversHere'), { variant: 'direct', className: 'ipe-here' })] : null))),
     level.servers.length > MAX_SERVERS ? h('p', { class: 'muted text-xs' }, `+${formatNumber(level.servers.length - MAX_SERVERS)}`) : null);
 }

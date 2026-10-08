@@ -686,7 +686,7 @@ export function mount(container, ctx) {
       lookalikeWanted = domain;
       clear(lookalikeSlot);
       lookalikeSlot.append(lookalike.panel.el);
-      const first = lookalike.panel.el.querySelector('[data-action="lk-check"]:not([hidden]), [data-role="lk-budget"]');
+      const first = lookalike.panel.el.querySelector('[data-action="lk-check"]:not([hidden])') || lookalike.panel.el.querySelector('[data-role="lk-budget"]');
       if (focus && first) first.focus();
     }, () => {
       ctx.checkOutdated();

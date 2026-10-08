@@ -483,6 +483,12 @@
     flex: 1 1 100%;
   }
 
+  /* Export CSV takes its own row under the title. */
+  .lk-panel .card-actions {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+
   .lk-table .dt-table,
   .lk-table .dt-table tbody {
     display: block;

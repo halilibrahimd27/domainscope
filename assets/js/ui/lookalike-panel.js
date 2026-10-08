@@ -138,7 +138,7 @@ registerStrings('tr', {
   'lk.sends': 'Kontrol et, her ad için DoH çözümleyicilerinize bir NS sorgusu, DNS’te olan adlar için de A, AAAA ve MX sorguları gönderir ve bu adların ne zaman kaydedildiğini kayıt kuruluşlarının RDAP sunucusuna sorar. crt.sh’e yalnızca en riskli adlar için, kendi düğmesiyle sorulur.',
   'lk.nothingSent': 'Henüz hiçbir şey gönderilmedi.',
   'lk.generated': { other: 'Kontrol edilecek ad sayısı: {count} ({techniques} teknikle üretilen {total} addan).' },
-  'lk.own': { other: 'Bunlardan {count} tanesi çalışma alanınızdaki bir alan adı; hiçbir zaman kontrol edilmez ya da işaretlenmez.' },
+  'lk.own': { other: 'Bunlardan {count} tanesi çalışma alanınızdaki alan adlarınızdan; bunlar hiçbir zaman kontrol edilmez ya da işaretlenmez.' },
   'lk.budget': 'Listedeki ad sayısı',
   'lk.budgetAll': 'Tümü ({count})',
   'lk.check': { other: '{count} adı kontrol et' },
@@ -365,7 +365,30 @@ export function LookalikePanel({ ctx, domain }) {
         h('span', { class: 'mono lk-unicode' }, r.candidate.unicode),
         r.candidate.idn ? h('span', { class: 'mono muted text-xs lk-ascii' }, r.candidate.name) : null)
     },
+    {
+      // what the score is made of, next to the name it is about
+      key: 'why', label: t('lk.col.why'), wrap: true,
+      render: (r) => {
+        const reasons = riskOf(r).reasons;
+        if (!reasons.length) return null;
+        const params = { domain, days: reasons.includes('new') ? LOOKALIKE_NEW_DAYS : LOOKALIKE_RECENT_DAYS };
+        return h('span', { class: 'lk-reasons' }, reasons.map((x) => Badge(t(`lk.reason.${x}`), {
+          variant: x === 'same-ns' || x === 'same-ip' ? 'ok' : 'neutral', title: t(`lk.reason.${x}.title`, params), className: 'lk-reason'
+        })));
+      }
+    },
     { key: 'technique', label: t('lk.col.technique'), sortable: true, sortValue: (r) => t(`lk.tech.${r.candidate.technique}`), render: (r) => t(`lk.tech.${r.candidate.technique}`) },
+    {
+      key: 'created', label: t('lk.col.created'), sortable: true, defaultDir: 'desc',
+      sortValue: (r) => (r.rdap && r.rdap.created ? r.rdap.created.getTime() : null),
+      render: (r) => {
+        if (!r.rdap) return rdapPending.has(r.candidate.registrable) ? h('span', { class: 'muted' }, t('lk.cell.rdapPending')) : null;
+        if (r.rdap.state === 'failed') return na([r.rdap.failure]);
+        if (r.rdap.state === 'not-found') return h('span', { class: 'muted' }, t('lk.cell.notFound'));
+        if (r.rdap.state === 'unsupported') return h('span', { class: 'muted' }, t('lk.cell.noRdap'));
+        return r.rdap.created ? h('span', { class: 'num' }, formatDate(r.rdap.created)) : null;
+      }
+    },
     {
       key: 'ns', label: t('lk.col.ns'),
       render: (r) => notDnsYet(r) || listCell(r.dns.ns)
@@ -388,17 +411,6 @@ export function LookalikePanel({ ctx, domain }) {
         return listCell(r.dns.mx);
       }
     },
-    {
-      key: 'created', label: t('lk.col.created'), sortable: true, defaultDir: 'desc',
-      sortValue: (r) => (r.rdap && r.rdap.created ? r.rdap.created.getTime() : null),
-      render: (r) => {
-        if (!r.rdap) return rdapPending.has(r.candidate.registrable) ? h('span', { class: 'muted' }, t('lk.cell.rdapPending')) : null;
-        if (r.rdap.state === 'failed') return na([r.rdap.failure]);
-        if (r.rdap.state === 'not-found') return h('span', { class: 'muted' }, t('lk.cell.notFound'));
-        if (r.rdap.state === 'unsupported') return h('span', { class: 'muted' }, t('lk.cell.noRdap'));
-        return r.rdap.created ? h('span', { class: 'num' }, formatDate(r.rdap.created)) : null;
-      }
-    },
     { key: 'registrar', label: t('lk.col.registrar'), wrap: true, render: (r) => (r.rdap && r.rdap.state === 'ok' ? r.rdap.registrar : null) },
     {
       key: 'certs', label: t('lk.col.certs'),
@@ -410,17 +422,6 @@ export function LookalikePanel({ ctx, domain }) {
           r.ct.newest ? h('span', { class: 'muted text-xs' }, ` · ${t('lk.cell.certsNewest', { date: formatDate(r.ct.newest) })}`) : null);
       }
     },
-    {
-      key: 'why', label: t('lk.col.why'), wrap: true,
-      render: (r) => {
-        const reasons = riskOf(r).reasons;
-        if (!reasons.length) return null;
-        const params = { domain, days: reasons.includes('new') ? LOOKALIKE_NEW_DAYS : LOOKALIKE_RECENT_DAYS };
-        return h('span', { class: 'lk-reasons' }, reasons.map((x) => Badge(t(`lk.reason.${x}`), {
-          variant: x === 'same-ns' || x === 'same-ip' ? 'ok' : 'neutral', title: t(`lk.reason.${x}.title`, params), className: 'lk-reason'
-        })));
-      }
-    }
   ];
   const table = DataTable({
     columns,
@@ -428,6 +429,8 @@ export function LookalikePanel({ ctx, domain }) {
     sort: { key: 'risk', dir: 'asc' },
     search: true,
     pageSize: 50,
+    // the page scrolls, not the table: 50 rows, then "Show more"
+    maxHeight: null,
     export: false,
     cellLabels: true,
     dense: true,

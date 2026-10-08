@@ -67,7 +67,7 @@ import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { onceAsync } from '../lib/util.js';
 import { ParityTab, freshParity, stopParity, generatedKeys as parityKeys, reasonKey as parityReasonKey } from '../ui/parity-panel.js';
-import { ZoneFetchPanel, stopZoneFetch, generatedKeys as fetchKeys } from '../ui/zone-fetch.js';
+import { ZoneFetchPanel, stopZoneFetch, zoneFetchRunning, generatedKeys as fetchKeys } from '../ui/zone-fetch.js';
 import { zoneObservations } from '../lib/originfill.js';
 import { OriginMapOffNote, recordOrigins, recordText, rememberOn } from '../ui/origin-map.js';
 
@@ -1364,12 +1364,14 @@ export function mount(container, ctx) {
 
   /**
    * Import dropped, pasted or fetched files. `origin`: the zone name given with them (a fetch from a
-   * DNS provider: the zone it asked for), taken as confirmed.
+   * DNS provider: the zone it asked for), taken as confirmed. A fetch still running is stopped: its
+   * listing would replace the zone imported now (a finished fetch is no longer running here).
    */
   function importFiles(files, { origin = '' } = {}) {
     const list = (files || []).slice(0, MAX_FILES).map((f) => ({ name: String(f.name || ''), size: Number(f.size) || (f.text || '').length, text: String(f.text || '') }));
     if ((files || []).length > MAX_FILES) toast(t('zone.tooManyFiles', { max: MAX_FILES }), { type: 'warn' });
     if (!list.length) return;
+    if (zoneFetchRunning()) stopZoneFetch();
     S.files = list;
     S.originInput = origin;
     S.confirmed = !!origin;

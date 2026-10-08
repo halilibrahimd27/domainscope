@@ -1498,6 +1498,30 @@ async function main() {
       await page.evaluate(() => { window.__prov.delayMs = 0; });
     });
 
+    await run.step('another import while a fetch runs stops it: the zone pasted meanwhile stays, with its tab', async () => {
+      await openFetch(page);
+      await page.evaluate(() => { window.__prov.delayMs = 2000; window.__prov.mode.desec = 'ok'; window.__prov.calls = []; });
+      await page.type('[data-role="zone-fetch-token"]', FETCH_TOKEN);
+      await page.click('[data-action="zone-fetch"]');
+      await page.waitFor(() => !!document.querySelector('[data-action="zone-fetch-stop"]'), { message: 'running' });
+      await page.evaluate(() => {
+        document.querySelectorAll('.zone-import-folded, .zone-paste').forEach((d) => { d.open = true; });
+        const el = document.querySelector('[data-role="zone-paste"]');
+        const ta = el.tagName === 'TEXTAREA' ? el : el.querySelector('textarea');
+        ta.value = '$ORIGIN example.org.\n$TTL 300\n@ 300 IN A 192.0.2.10\n';
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await page.click('[data-action="zone-paste-import"]');
+      await page.waitFor(() => document.querySelector('.zone-summary-title')?.textContent === 'Zone example.org', { message: 'the pasted zone' });
+      await clickTab(page, 'problems');
+      await sleep(2500);
+      assertEqual([await text(page, '.zone-summary-title'), await page.evaluate(() => location.hash)], ['Zone example.org', '#/zone?tab=problems'],
+        'the fetch did not replace the pasted zone');
+      await openFetch(page);
+      assert(!await page.evaluate(() => !!document.querySelector('[data-action="zone-fetch-stop"]')), 'the fetch is stopped');
+      await page.evaluate(() => { window.__prov.delayMs = 0; });
+    });
+
     await run.step('offline: Fetch zone says it needs the network, sends nothing and leaves the token in its field', async () => {
       const setOnline = async (on) => {
         await page.send('Network.emulateNetworkConditions', { offline: !on, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });

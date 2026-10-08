@@ -94,6 +94,7 @@ DomainScope is a static site with no backend. Everything runs in your browser ag
 | Registration | RDAP: each registry's own server from the IANA bootstrap, rdap.org only as the fallback, at most one request a second (Domain Health, Domain overview and Domain portfolio; some country TLDs, such as `.de`, `.jp` and `.tr`, publish no RDAP) |
 | Checks from the internet | [Globalping](https://globalping.io) (jsDelivr's free probe network; only when you press "Check from the internet" in SSL Targets › Verify, "Check the policy" on Domain Health's MTA-STS card, "Test … names" in Renewal readiness, "Compare … record sets" in Zone File › New name servers, or "Compare (2 probes)" in Retire an IP) |
 | The missing intermediate | This site's own copy of the [CCADB](https://www.ccadb.org/) list of public intermediates (`assets/data/intermediates/`; one or two small files per lookup) |
+| The CDN / cloud classification | This site's own weekly-refreshed copy of the providers' own published IP ranges (`assets/data/ranges/`, from Cloudflare, Fastly, AWS / CloudFront, GitHub Pages, Google, Oracle, DigitalOcean and RIPEstat), loaded with the scan engine; nothing is sent to classify an answer, and if it cannot load, a built-in table is used instead |
 
 † Quad9 answers browsers over HTTP/3 without a CORS header, so Chrome, Edge and most other browsers usually cannot read it; Global DNS shows those rows as "Not readable in browsers" with a `dig` command, and discovery leaves Quad9 out of its default resolver chain. It works from a terminal, and in a browser on networks that block QUIC.
 
@@ -460,6 +461,8 @@ assets/data/             bundled wordlists (Smart plain text, Large + Huge gzip)
 tools/build-wordlists.mjs  rebuilds assets/data from pinned upstream lists (maintainers only)
 tools/build-intermediates.mjs  rebuilds assets/data/intermediates from the CCADB reports; tools/root-lifecycle.json holds
                          the hand-kept distrust dates (maintainers and the weekly workflow only)
+tools/build-ranges.mjs   rebuilds assets/data/ranges from the providers' published IP lists for netinfo's CDN / cloud
+                         classification; writes nothing on a bad download (maintainers and the weekly workflow only)
 tools/assemble-site.mjs  the GitHub Pages bundle: copies the site, assets/ under v/<commit>/, writes the precache list into sw.js
                          and version.json next to the assets (deploy only)
 tools/build-icons.mjs    renders icons/*.png from favicon.svg with headless Chrome (maintainers only)
@@ -471,7 +474,7 @@ tests/js/                node:test unit tests (no network), incl. a repo-hygiene
 tests/python/            CLI tests, including local TLS servers with SNI and a local UDP / TCP DNS server
 tests/e2e/               headless Chrome E2E via the DevTools protocol (no dependencies)
 .github/workflows/       CI (unit, CLI and offline E2E tests), the Pages deploy, which runs CI first, and the weekly
-                         intermediate-list rebuild, which opens a pull request
+                         intermediate-list and provider-range rebuilds, which each open a pull request
 tests/live/              live smoke tests and the discovery benchmark (network; never run in CI; the Globalping smoke never sends your own targets)
 docs/                    SPEC (module contracts), ROADMAP, RESEARCH; examples/: the nightly GitHub Actions template for the runner
 ```

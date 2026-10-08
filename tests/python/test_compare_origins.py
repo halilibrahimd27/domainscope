@@ -73,6 +73,17 @@ def _pair(new_kwargs: Optional[Dict] = None, new_fixture: str = 'cli_private_wil
     return old, new
 
 
+def _local(address: str) -> bool:
+    """Is ``address`` one of this machine's? All of 127/8 is on Linux and Windows; on macOS lo0
+    has 127.0.0.1 only, so nothing answers 127.0.0.2 and a connection to it times out."""
+    try:
+        with socket.socket() as probe:
+            probe.bind((address, 0))
+        return True
+    except OSError:
+        return False
+
+
 class CompareIntegrationTests(unittest.TestCase):
 
     def setUp(self):
@@ -175,7 +186,7 @@ class CompareIntegrationTests(unittest.TestCase):
         code, out, _ = self.compare(old.port)
         self.assertEqual(code, 0, 'no --fail-on-change')
         self.assertIn('BROKEN', out)
-        self.assertIn('CLOSED', out)
+        self.assertIn('CLOSED' if _local('127.0.0.2') else 'TIMEOUT', out)
         self.assertNotIn('HTTP status', out, 'nothing else is compared')
 
     def test_neither_server_answering_fails_the_check(self):

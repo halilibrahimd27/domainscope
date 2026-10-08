@@ -82,3 +82,14 @@ packs them with Python's own `zipfile` and `gzip` (so the zip reader is tested a
 implementation wrote): the Google report as a `.zip`, the Microsoft one as `.xml.gz`, the TLS reports as
 `.json.gz`, `reports-2026-09.zip` (a mailbox export: those files stored, a `notes.txt` that is no report and
 the `__MACOSX/` entries macOS adds) and `descriptor.zip` (sizes in data descriptors, written to a pipe).
+
+DNSSEC chains (lib/dnssec.js, `tests/js/dnssec.test.js`, the DNSSEC chain group of the `lookup` E2E
+suite): `dnssec/signed-zones.mjs` signs a small tree under the documentation TLD `example.` with
+node:crypto on every run (no key or signature is committed) — a test root (RSA/SHA-256) and
+`example` (ECDSA P-256), then `rsa.example`, `ecdsa.example`, `ed.example` (Ed25519), `n3.example`
+(NSEC3), `expired.example` (every signature expired a day ago), `rollover.example` (its DS names a
+key the zone no longer serves), `gost.example` (algorithm 12, which the validator does not check)
+and `unsigned.example` (no DS). Its `resolve()` answers a question the way a resolver asked with
+the DO and CD bits would (NSEC / NSEC3 proofs included), `fakeDns()` wraps that as a DohClient,
+and `answerTable()` gives the wire answers the E2E suite's in-page DoH serves. The signing input
+is built there independently of the validator, so a canonical-form mistake does not cancel out.

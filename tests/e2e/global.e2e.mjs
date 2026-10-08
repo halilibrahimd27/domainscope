@@ -16,7 +16,10 @@
  * too — so the verdict (why answers differ: CDN / GeoDNS edges by design, or which part looks
  * like propagation or a misconfiguration), the operator on every answer group and the China row
  * group are checked with fixed answers, in EN / TR, light / dark, at 1440 px and 375 px, with
- * nothing leaving the page.
+ * nothing leaving the page. A fake Globalping answers the ISP resolvers panel (ui/isp-resolvers.js):
+ * the consent, a measurement through each probe's own resolver, one ISP still on the old address
+ * ("Stale at 1 ISP resolver" with the TTL left), CloudFront edges at the ISPs (by design), the
+ * quota, a Turkish re-mount that keeps the rows, and 375 px.
  *
  * Quad9 / Quad9 ECS (resolvers.js browserReliable:false): browsers use HTTP/3 for them and
  * Quad9's HTTP/3 answers carry no CORS header (tests/live/browser-doh-matrix.mjs), so their rows
@@ -232,6 +235,7 @@ const SERVFAIL_SUBNETS = [GEO_VANTAGES[0].subnet, GEO_VANTAGES[1].subnet];
  *   Cloudflare's anycast addresses, so every resolver and location outside China agrees;
  * - china-bare.example.com: Fastly's anycast address everywhere, a bare Cloudflare-range address
  *   with no name in front only for the China rows: the shape of a forged answer;
+ * - isp.example.com: the new address everywhere (the ISP resolvers group asks it of a fake Globalping);
  * - txt.example.com TXT: eight records; AliDNS would give three of them (it cuts large answers short
  *   without TC), so the China rows are not asked for TXT at all.
  * The China rows' questions reach AliDNS in its JSON form and are answered in it (recorded in
@@ -276,6 +280,7 @@ const fakeGlobalDnsScript = () => `(() => {
       if (resolver === 'tiar') return { rcode: 'REFUSED', answers: [] };
       return { answers: [a(qname, resolver === 'quad9' ? OLD : NEW)] };
     }
+    if (qname === 'isp.example.com') return { answers: [a(qname, NEW)] };
     if (qname === 'new.example.com') {
       return resolver === 'cloudflare-family' ? { rcode: 'NXDOMAIN', answers: [] } : { answers: [a(qname, NEW)] };
     }
@@ -744,6 +749,214 @@ async function offlineVerdicts(browser, server) {
   await page.close();
 }
 
+/* ------------------------------------------------------------------------ */
+/* Offline: ISP resolvers through a fake Globalping (ui/isp-resolvers.js)   */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Fake Globalping v1 API for DNS measurements through the probes' own resolvers (outermost
+ * window.fetch wrapper, installed after the fake DoH). Ten eyeball probes; per target:
+ * isp.example.com — every probe on the new address except Istanbul, whose ISP still caches the
+ * old one for 1,500 s; www.example.com — the steering chain to CloudFront edges (by design);
+ * anything else NXDOMAIN. A GET right after the POST is still in progress (half the probes).
+ * Knobs on window.__gpIsp: limitsRemaining (what /limits reports), calls (every request).
+ */
+const fakeIspGlobalpingScript = () => `(() => {
+  const API = 'https://api.globalping.io/v1';
+  const OLD = '192.0.2.10';
+  const NEW = '198.51.100.20';
+  const CLOUDFRONT = ['13.32.0.10', '13.32.1.20', '13.33.2.30', '13.35.3.40'];
+  const PROBES = [
+    ['EU', 'DE', 'Berlin', 3320, 'Deutsche Telekom AG'], ['EU', 'FR', 'Paris', 3215, 'Orange S.A.'], ['AS', 'TR', 'Istanbul', 209604, '2E Telekomunikasyon'],
+    ['NA', 'US', 'Chicago', 7922, 'Comcast Cable Communications, LLC'], ['NA', 'CA', 'Toronto', 812, 'Rogers Communications Canada Inc.'],
+    ['AS', 'JP', 'Tokyo', 2516, 'KDDI Corporation'], ['EU', 'GB', 'London', 2856, 'British Telecommunications PLC'],
+    ['SA', 'BR', 'Sao Paulo', 28573, 'Claro NXT Telecomunicacoes Ltda'], ['OC', 'AU', 'Sydney', 1221, 'Telstra Limited'], ['AF', 'ZA', 'Johannesburg', 37457, 'Telkom SA Ltd']
+  ].map(([continent, country, city, asn, network]) => ({ continent, region: '', country, state: null, city, asn, network, latitude: 0, longitude: 0, tags: ['eyeball-network'], resolvers: ['private'] }));
+  const gp = window.__gpIsp = { calls: [], measurements: {}, n: 0, limitsRemaining: 250 };
+  const json = (status, body, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
+  const rr = (name, type, ttl, value) => ({ name: name + '.', type, ttl, class: 'IN', value });
+  const test = (target, i) => {
+    let answers;
+    if (target === 'isp.example.com') answers = [i === 2 ? rr(target, 'A', 1500, OLD) : rr(target, 'A', 240, NEW)];
+    else if (target === 'www.example.com') {
+      answers = [rr(target, 'CNAME', 60, 'tp.edge.example.com.'), rr('tp.edge.example.com', 'CNAME', 60, 'cf.edge.example.com.'), rr('cf.edge.example.com', 'A', 60, CLOUDFRONT[i % 4])];
+    } else answers = [];
+    const rcode = answers.length ? 'NOERROR' : 'NXDOMAIN';
+    const raw = ';; ->>HEADER<<- opcode: QUERY, status: ' + rcode + ', id: 1\\n;; flags: qr rd ra' + (i % 2 ? ' ad' : '') + '; QUERY: 1, ANSWER: ' + answers.length + '\\n\\n;; SERVER: x.x.x.x#53(x.x.x.x) (UDP)\\n';
+    return { status: 'finished', rawOutput: raw, statusCodeName: rcode, statusCode: rcode === 'NOERROR' ? 0 : 3, answers, timings: { total: 10 + i }, resolver: i === 3 ? '8.8.8.8' : 'private' };
+  };
+  const inner = window.fetch;
+  window.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (!url.startsWith(API)) return inner(input, init);
+    const method = String(init.method || 'GET').toUpperCase();
+    let body = null;
+    try { body = typeof init.body === 'string' ? JSON.parse(init.body) : null; } catch { body = null; }
+    const p = url.slice(API.length);
+    gp.calls.push({ method, path: p, body });
+    if (init.signal && init.signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+    const quota = () => ({ 'x-ratelimit-limit': '250', 'x-ratelimit-remaining': String(gp.limitsRemaining), 'x-ratelimit-reset': '1800' });
+    if (p === '/limits') return json(200, { rateLimit: { measurements: { create: { type: 'ip', limit: 250, remaining: gp.limitsRemaining, reset: 1800 } } } });
+    if (p === '/measurements' && method === 'POST') {
+      const probes = Math.min(PROBES.length, (body.locations || []).reduce((n, l) => n + (l.limit || 1), 0) || body.limit || 1);
+      gp.limitsRemaining = Math.max(0, gp.limitsRemaining - probes);
+      gp.n += 1;
+      const id = 'fakeIsp' + String(gp.n).padStart(8, '0');
+      gp.measurements[id] = { id, target: body.target, probes, gets: 0, createdAt: new Date().toISOString() };
+      return json(202, { id, probesCount: probes }, { ...quota(), 'x-request-cost': String(probes) });
+    }
+    const m = /^\\/measurements\\/([A-Za-z0-9]+)$/.exec(p);
+    if (m && method === 'GET') {
+      const meas = gp.measurements[m[1]];
+      if (!meas) return json(404, { error: { type: 'not_found', message: 'Not Found.' } });
+      meas.gets += 1;
+      const done = meas.gets > 1;
+      const results = PROBES.slice(0, meas.probes).map((probe, i) => ({
+        probe, result: done || i % 2 === 0 ? test(meas.target, i) : { status: 'in-progress', rawOutput: '' }
+      }));
+      return json(200, { id: meas.id, type: 'dns', status: done ? 'finished' : 'in-progress', createdAt: meas.createdAt, updatedAt: new Date().toISOString(), target: meas.target, probesCount: meas.probes, results });
+    }
+    return json(404, { error: { type: 'not_found', message: 'Not Found.' } });
+  };
+})();`;
+
+/** The ISP panel and the summary as the user sees them. */
+function ispInfo() {
+  const panel = document.querySelector('[data-role="isp-panel"]');
+  const rows = [...document.querySelectorAll('.glb-isp-table tbody tr.dt-row')];
+  const alert = document.querySelector('.glb-summary .alert');
+  return {
+    panel: !!panel,
+    status: document.querySelector('[data-role="isp-status"] [data-isp-status]')?.dataset.ispStatus || null,
+    statusText: document.querySelector('[data-role="isp-status"]')?.textContent || '',
+    quota: document.querySelector('[data-role="isp-quota"]')?.textContent || '',
+    rows: rows.length,
+    pending: rows.filter((tr) => tr.classList.contains('is-pending')).length,
+    istanbul: rows.find((tr) => tr.textContent.includes('Istanbul'))?.textContent || '',
+    chicago: rows.find((tr) => tr.textContent.includes('Chicago'))?.textContent || '',
+    state: alert?.dataset.state,
+    title: alert?.querySelector('.alert-title')?.textContent || '',
+    message: alert?.textContent || '',
+    findings: [...document.querySelectorAll('.glb-summary .glb-finding')].map((li) => li.textContent),
+    chips: document.querySelectorAll('.glb-legend .glb-chip').length,
+    oldIp: [...document.querySelectorAll('.glb-ips tbody tr.dt-row')].find((tr) => tr.textContent.includes('192.0.2.10'))?.querySelectorAll('.glb-flag').length || 0,
+    calls: window.__gpIsp.calls.map((c) => `${c.method} ${c.path}`),
+    posts: window.__gpIsp.calls.filter((c) => c.method === 'POST').map((c) => c.body),
+    external: window.__externalFetches
+  };
+}
+
+async function offlineIsp(browser, server) {
+  group('Offline: ISP resolvers through a fake Globalping (stale at an ISP, CDN by design, quota)');
+  const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeGlobalDnsScript() });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeIspGlobalpingScript() });
+  await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+  await page.goto(`${server.url}#/about`);
+  await waitReady(page);
+  await setLangUi(page, 'en');
+  const DONE_ISP = () => ['done', 'stopped', 'partial', 'failed', 'quota'].includes(document.querySelector('[data-role="isp-status"] [data-isp-status]')?.dataset.ispStatus);
+
+  await step('the panel loads on first use and sends nothing by itself', async () => {
+    await gotoHash(page, '#/global?name=isp.example.com&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'check done' });
+    assertEqual(await page.evaluate(() => !!document.querySelector('[data-role="isp-panel"]')), false, 'not loaded before the click');
+    await page.click('[data-action="isp-open"]');
+    await page.waitFor(() => !!document.querySelector('[data-role="isp-panel"]'), { message: 'panel' });
+    const info = await page.evaluate(ispInfo);
+    assertEqual(info.calls, [], 'nothing sent to Globalping');
+    assert(/Globalping: 250 probes per hour/.test(info.quota), `quota line: ${info.quota}`);
+    assertEqual(info.state, 'agree', 'the check alone agrees');
+  });
+
+  await step('ask 10 probes over the continents: consent, the probes’ own resolvers, rows with ISP, resolver and TTL left', async () => {
+    await page.click('[data-action="isp-run"]');
+    await page.waitFor(() => !!document.querySelector('.gp-confirm'), { message: 'consent dialog' });
+    const dialog = await page.evaluate(() => document.querySelector('.gp-confirm').textContent);
+    assert(/isp\.example\.com/.test(dialog) && /10 probes of the 250/.test(dialog), `dialog: ${dialog}`);
+    await page.click('.gp-confirm .btn-primary');
+    await page.waitFor(DONE_ISP, { timeout: 20000, message: 'ISP run done' });
+    const info = await page.evaluate(ispInfo);
+    assertEqual(info.status, 'done', `status (${info.statusText})`);
+    assertEqual([info.rows, info.pending], [10, 0], 'ten rows, none pending');
+    const [post] = info.posts;
+    assertEqual(post.measurementOptions, { query: { type: 'A' }, protocol: 'UDP', port: 53 }, 'no resolver: each probe asks its own');
+    assertEqual(post.locations.map((l) => `${l.continent}${l.limit}`).join(' '), 'EU3 NA2 AS2 SA1 OC1 AF1', 'spread over the continents');
+    assert(post.locations.every((l) => l.tags[0] === 'eyeball-network'), 'ISP networks only');
+    assert(/2E Telekomunikasyon/.test(info.istanbul) && /AS209604/.test(info.istanbul) && /ISP-internal/.test(info.istanbul) && /1,500/.test(info.istanbul), `Istanbul row: ${info.istanbul}`);
+    assert(/8\.8\.8\.8/.test(info.chicago) && /Google Public DNS/.test(info.chicago), `Chicago row names the public resolver: ${info.chicago}`);
+    assert(/10 of 10 probes answered/.test(info.statusText), `status: ${info.statusText}`);
+    assert(/Globalping: 240 of 250 probes left/.test(info.quota), `quota after: ${info.quota}`);
+  });
+
+  await step('one ISP still on the old address: "Stale at 1 ISP resolver", when it expires, the IP table names its country', async () => {
+    const info = await page.evaluate(ispInfo);
+    assertEqual(info.state, 'stale', `state (${info.title})`);
+    assertEqual(info.title, 'Stale at 1 ISP resolver', 'title');
+    assert(/The public resolvers and locations agree\./.test(info.message), `reference: ${info.message}`);
+    assert(info.findings.length === 1 && /^2E Telekomunikasyon \(Istanbul, TR\): 192\.0\.2\.10 — expires within 25 min/.test(info.findings[0]), `finding: ${JSON.stringify(info.findings)}`);
+    assertEqual(info.chips, 2, 'two answer groups');
+    assertEqual(info.oldIp, 1, 'the old address carries the ISP’s flag');
+    assertEqual(info.external, [], 'nothing left the page');
+    await assertNoHorizontalScroll(page, 'stale at an ISP');
+    await shot(page, 'global-offline-desktop-light-en-isp-stale');
+  });
+
+  await step('[TR, dark] a language re-mount keeps the ISP rows and words the verdict in Turkish (no new measurement)', async () => {
+    await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
+    await setLangUi(page, 'tr');
+    await page.waitFor(() => document.querySelector('.glb-summary .alert-title')?.textContent === '1 İSS çözümleyicisinde eskimiş yanıt', { timeout: 10000, message: 'TR stale title' });
+    const info = await page.evaluate(ispInfo);
+    assertEqual(info.rows, 10, 'rows kept');
+    assertEqual(info.posts.length, 1, 'no second measurement');
+    assert(/İSS iç ağı/.test(info.istanbul), `TR resolver cell: ${info.istanbul}`);
+    await shot(page, 'global-offline-desktop-dark-tr-isp-stale');
+    await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+    await setLangUi(page, 'en');
+  });
+
+  await step('CloudFront edges at the ISPs through the same chain: by design, not stale', async () => {
+    await gotoHash(page, '#/global?name=www.example.com&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'check done' });
+    await page.waitFor(() => !!document.querySelector('[data-action="isp-run"]'), { message: 'panel kept open' });
+    const before = await page.evaluate(ispInfo);
+    assertEqual(before.rows, 0, 'a new check drops the ISP rows of the last one');
+    await page.click('[data-action="isp-run"]');
+    await page.waitFor(DONE_ISP, { timeout: 20000, message: 'ISP run done' });
+    const info = await page.evaluate(ispInfo);
+    assertEqual(info.posts.length, 2, 'consent kept for the page session: no second dialog');
+    assertEqual(info.state, 'by-design', `state (${info.title})`);
+    assert(/Amazon CloudFront/.test(info.title), `title: ${info.title}`);
+  });
+
+  await step('quota used up: says when it resets and sends nothing', async () => {
+    await page.evaluate(() => { window.__gpIsp.limitsRemaining = 0; });
+    await page.click('[data-action="isp-run"]');
+    await page.waitFor(DONE_ISP, { timeout: 10000, message: 'quota status' });
+    const info = await page.evaluate(ispInfo);
+    assertEqual(info.status, 'quota', 'status');
+    assert(/quota for this hour is used up/.test(info.statusText) && /Nothing was sent/.test(info.statusText), `text: ${info.statusText}`);
+    assertEqual(info.posts.length, 2, 'no POST');
+  });
+
+  await step('375 px, light and dark: the ISP panel and table stay inside the page', async () => {
+    await page.setViewport({ width: 375, height: 812, mobile: true });
+    for (const scheme of ['light', 'dark']) {
+      await page.emulateMedia({ 'prefers-color-scheme': scheme });
+      await assertNoHorizontalScroll(page, `375 px ${scheme} ISP panel`);
+    }
+    await shot(page, 'global-offline-mobile-dark-en-isp');
+    await page.setViewport({ width: 1440, height: 900 });
+    await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+  });
+
+  await step('ISP resolvers: no console errors, exceptions, CSP violations or missing keys', async () => {
+    await checkI18n(page);
+    await assertClean(page, 'ISP resolvers');
+  });
+  await page.close();
+}
+
 /** The live groups: desktop (English) and phone (Turkish) against the public resolvers. */
 async function liveChecks(browser, server) {
   /* ---------------- Desktop ---------------- */
@@ -1017,6 +1230,7 @@ async function main() {
 
   try {
     await offlineVerdicts(browser, server);
+    await offlineIsp(browser, server);
     if (OFFLINE) process.stdout.write('\n--offline: the live resolver groups are skipped\n');
     else await liveChecks(browser, server);
   } finally {

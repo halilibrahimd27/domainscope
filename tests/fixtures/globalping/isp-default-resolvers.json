@@ -1,0 +1,106 @@
+{
+  "name": "isp-default-resolvers",
+  "capturedAt": "2026-10-08T10:00:00.000Z",
+  "shows": "an A query asked by six probes through their own default resolvers: private ISP resolvers with the remaining TTL of their caches (one still on the old address), a probe that uses Google Public DNS, a resolver that timed out, a cached NXDOMAIN with its SOA, a probe still asking",
+  "scrubbed": "hand-trimmed in the shape of a live measurement of 2026-10-08 (no resolver given): names → www.example.com / example.com, addresses → 192.0.2.0/24 and 198.51.100.0/24; masked dig SERVER lines as Globalping sends them for a private resolver",
+  "request": {
+    "type": "dns",
+    "target": "www.example.com",
+    "locations": [
+      { "continent": "EU", "tags": ["eyeball-network"], "limit": 1 },
+      { "continent": "AS", "tags": ["eyeball-network"], "limit": 1 },
+      { "continent": "NA", "tags": ["eyeball-network"], "limit": 1 },
+      { "continent": "SA", "tags": ["eyeball-network"], "limit": 1 },
+      { "continent": "OC", "tags": ["eyeball-network"], "limit": 1 },
+      { "continent": "AF", "tags": ["eyeball-network"], "limit": 1 }
+    ],
+    "timeout": 15,
+    "measurementOptions": { "query": { "type": "A" }, "protocol": "UDP", "port": 53 }
+  },
+  "final": {
+    "status": 200,
+    "body": {
+      "id": "2PwXFrk4NTKcZmeCy00021ISP",
+      "type": "dns",
+      "status": "in-progress",
+      "createdAt": "2026-10-08T10:00:00.000Z",
+      "updatedAt": "2026-10-08T10:00:01.200Z",
+      "target": "www.example.com",
+      "probesCount": 6,
+      "locations": [
+        { "continent": "EU", "tags": ["eyeball-network"], "limit": 1 },
+        { "continent": "AS", "tags": ["eyeball-network"], "limit": 1 },
+        { "continent": "NA", "tags": ["eyeball-network"], "limit": 1 },
+        { "continent": "SA", "tags": ["eyeball-network"], "limit": 1 },
+        { "continent": "OC", "tags": ["eyeball-network"], "limit": 1 },
+        { "continent": "AF", "tags": ["eyeball-network"], "limit": 1 }
+      ],
+      "results": [
+        {
+          "probe": { "continent": "EU", "region": "Western Europe", "country": "DE", "state": null, "city": "Berlin", "asn": 3320, "network": "Deutsche Telekom AG", "tags": ["eyeball-network"] },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n; <<>> DiG 9.18.33 <<>> -t A www.example.com -p 53 -4 +timeout=5 +tries=2 +nofail +nocookie +nosplit +nsid\n;; global options: +cmd\n;; Got answer:\n;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 51064\n;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1\n\n;; QUESTION SECTION:\n;www.example.com.\t\tIN\tA\n\n;; ANSWER SECTION:\nwww.example.com.\t204\tIN\tA\t198.51.100.20\n\n;; Query time: 12 msec\n;; SERVER: x.x.x.x#53(x.x.x.x) (UDP)\n",
+            "statusCodeName": "NOERROR",
+            "statusCode": 0,
+            "answers": [{ "name": "www.example.com.", "type": "A", "ttl": 204, "class": "IN", "value": "198.51.100.20" }],
+            "timings": { "total": 12 },
+            "resolver": "private"
+          }
+        },
+        {
+          "probe": { "continent": "AS", "region": "Western Asia", "country": "TR", "state": null, "city": "Istanbul", "asn": 209604, "network": "2E Telekomunikasyon", "tags": ["eyeball-network"] },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n; <<>> DiG 9.18.33 <<>> -t A www.example.com -p 53 -4 +timeout=5 +tries=2 +nofail +nocookie +nosplit +nsid\n;; Got answer:\n;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 15318\n;; flags: qr rd ra ad; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1\n\n;; ANSWER SECTION:\nwww.example.com.\t1500\tIN\tA\t192.0.2.10\n\n;; SERVER: x.x.x.x#53(x.x.x.x) (UDP)\n",
+            "statusCodeName": "NOERROR",
+            "statusCode": 0,
+            "answers": [{ "name": "www.example.com.", "type": "A", "ttl": 1500, "class": "IN", "value": "192.0.2.10" }],
+            "timings": { "total": 15 },
+            "resolver": "private"
+          }
+        },
+        {
+          "probe": { "continent": "NA", "region": "Northern America", "country": "US", "state": "IL", "city": "Chicago", "asn": 7922, "network": "Comcast Cable Communications, LLC", "tags": ["eyeball-network", "u-probe"] },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 4410\n;; flags: qr rd ra ad; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1\n\n;; ANSWER SECTION:\nwww.example.com.\t290\tIN\tA\t198.51.100.20\n\n;; SERVER: 8.8.8.8#53(8.8.8.8) (UDP)\n",
+            "statusCodeName": "NOERROR",
+            "statusCode": 0,
+            "answers": [{ "name": "www.example.com.", "type": "A", "ttl": 290, "class": "IN", "value": "198.51.100.20" }],
+            "timings": { "total": 21 },
+            "resolver": "8.8.8.8"
+          }
+        },
+        {
+          "probe": { "continent": "SA", "region": "South America", "country": "BR", "state": null, "city": "Sao Paulo", "asn": 28573, "network": "Claro NXT Telecomunicacoes Ltda", "tags": ["eyeball-network"] },
+          "result": {
+            "status": "failed",
+            "rawOutput": ";; communications error to x.x.x.x#53: timed out\n;; communications error to x.x.x.x#53: timed out\n;; no servers could be reached\n",
+            "statusCodeName": null,
+            "statusCode": null,
+            "answers": [],
+            "timings": { "total": 0 },
+            "resolver": "private"
+          }
+        },
+        {
+          "probe": { "continent": "OC", "region": "Australia and New Zealand", "country": "AU", "state": null, "city": "Sydney", "asn": 1221, "network": "Telstra Limited", "tags": ["eyeball-network"] },
+          "result": {
+            "status": "finished",
+            "rawOutput": "\n;; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 7777\n;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 1, ADDITIONAL: 1\n\n;; AUTHORITY SECTION:\nexample.com.\t\t900\tIN\tSOA\tns1.example.net. hostmaster.example.com. 2026100801 7200 3600 1209600 3600\n\n;; SERVER: x.x.x.x#53(x.x.x.x) (UDP)\n",
+            "statusCodeName": "NXDOMAIN",
+            "statusCode": 3,
+            "answers": [],
+            "timings": { "total": 30 },
+            "resolver": "private"
+          }
+        },
+        {
+          "probe": { "continent": "AF", "region": "Southern Africa", "country": "ZA", "state": null, "city": "Johannesburg", "asn": 37457, "network": "Telkom SA Ltd", "tags": ["eyeball-network"] },
+          "result": { "status": "in-progress", "rawOutput": "" }
+        }
+      ]
+    }
+  }
+}

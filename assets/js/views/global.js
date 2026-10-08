@@ -19,6 +19,9 @@
  *   servers (inventory) — the "Global DNS should give us the IPs too" request.
  * - "Copy summary" next to the links row (ui/summary-button.js): the verdict, the answers and who
  *   operates them, and the findings, as Markdown for Jira / Slack or plain text.
+ * - "ISP resolvers" (ui/isp-resolvers.js, loaded on first use): Globalping probes ask their own
+ *   resolvers — the ISPs' — for the same name and type; their rows join the check (kind 'isp'),
+ *   so the groups, the IP table and the verdict (stale at these ISPs) take them in.
  * - Shareable: `#/global?name=www.example.com&type=A` (optional `geo=0`) runs on open; with
  *   `run=0` (a name carried over from another tool, lib/session.js) it is only filled in. The
  *   finished check is kept for the page session (`result()` / `snapshot()`).
@@ -26,7 +29,7 @@
 
 import { h, clear } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, DataTable, Disclosure, EmptyState, Icon, KindBadge, ProgressBar,
+  Alert, Badge, Button, Card, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, Icon, KindBadge, ProgressBar,
   Section, StatCard, TruncatedList, checkbox, ipSortValue, select, setButtonBusy, textInput
 } from '../ui/components.js';
 import { registerStrings, hasString, formatNumber, formatDuration, formatRegion } from '../i18n.js';
@@ -36,7 +39,7 @@ import { checkPropagation, propagationVerdict, splitChain } from '../lib/propaga
 import { classifyResolution, ipVersion, isPrivateIP, normalizeIP } from '../lib/netinfo.js';
 import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
-import { mergeSignals } from '../lib/util.js';
+import { mergeSignals, onceAsync } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
@@ -178,6 +181,9 @@ registerStrings('en', {
   'glb.geo.title': 'Locations — GeoDNS via EDNS Client Subnet',
   'glb.geo.desc': 'Google Public DNS asked on behalf of a home-internet subnet in {count} locations: roughly what users there get.',
   'glb.cn.title': 'Mainland China',
+  'glb.isp.title': 'ISP resolvers',
+  'glb.isp.desc': 'What the resolvers of real ISPs answer, through Globalping probes in the countries and networks you pick — with the TTL each one still caches its answer for.',
+  'glb.isp.open': 'Ask ISP resolvers…',
   'glb.cn.desc': 'AliDNS (Alibaba Cloud) asked on behalf of {count} mainland ISPs, each with the /24 of its own DNS servers in Beijing, Shanghai and Guangzhou: roughly what their users get, also for names whose GeoDNS ignores Google’s subnet. Only A, AAAA, CNAME and HTTPS are asked: AliDNS’s JSON API cuts larger answers short without saying so. For A and AAAA it is also asked once on behalf of a US subnet, to tell a China line from an older answer. AliDNS reports no ECS scope and does not validate DNSSEC.',
   'glb.col.resolver': 'Resolver',
   'glb.col.location': 'Location',
@@ -330,6 +336,9 @@ registerStrings('tr', {
   'glb.geo.title': 'Konumlar — EDNS Client Subnet ile GeoDNS',
   'glb.geo.desc': 'Google Public DNS’e {count} konumdaki bir ev interneti alt ağı adına soruldu: oradaki kullanıcıların aldığı yanıta yakındır.',
   'glb.cn.title': 'Anakara Çin',
+  'glb.isp.title': 'İSS çözümleyicileri',
+  'glb.isp.desc': 'Gerçek İSS’lerin çözümleyicilerinin verdiği yanıtlar: seçtiğiniz ülke ve ağlardaki Globalping ölçüm noktalarıyla, her birinin yanıtı önbellekte daha ne kadar tutacağıyla birlikte.',
+  'glb.isp.open': 'İSS çözümleyicilerine sor…',
   'glb.cn.desc': 'AliDNS’e (Alibaba Cloud) {count} anakara Çin internet sağlayıcısı adına, her birinin Pekin, Şanghay ve Guangzhou’daki kendi DNS sunucularının /24’üyle soruldu: o sağlayıcıların kullanıcılarının aldığı yanıta yakındır — GeoDNS’i Google’ın gönderdiği alt ağı dikkate almayan adlarda da. Yalnızca A, AAAA, CNAME ve HTTPS sorulur: AliDNS’in JSON API’si daha büyük yanıtları haber vermeden kırpıyor. A ve AAAA için ayrıca bir kez ABD’deki bir alt ağ adına sorulur: Çin’e özel bir hattı eski bir yanıttan ayırt etmek için. AliDNS ECS kapsamı bildirmez ve DNSSEC doğrulaması yapmaz.',
   'glb.col.resolver': 'Çözümleyici',
   'glb.col.location': 'Konum',
@@ -962,6 +971,10 @@ export function mount(container, ctx) {
       if (key.startsWith('geo:')) {
         const v = vantageById.get(key.slice(4));
         if (v) vantages.push(v);
+      } else if (key.startsWith('isp:')) {
+        // An ISP resolver (ui/isp-resolvers.js): a flag of its probe's country, like a location.
+        const row = current && current.rowByKey.get(key);
+        if (row && row.isp && row.isp.country) vantages.push({ id: key, countryCode: row.isp.country, nameEn: ispName(row), nameTr: ispName(row) });
       } else {
         resolvers.push(key.slice(9));
       }
@@ -988,6 +1001,67 @@ export function mount(container, ctx) {
     className: 'glb-geo',
     children: [geoTable.el || geoTable, CHINA.length ? chinaGroup : null]
   });
+  /* --- ISP resolvers: ui/isp-resolvers.js, loaded on first use (Globalping) ---------- */
+  const loadIsp = onceAsync(() => import('../ui/isp-resolvers.js'));
+  /** The mounted panel (null until first use): refresh / setFilter / reset / staleAlert / note / snapshot. */
+  let ispPanel = null;
+  const ispBody = h('div', { class: 'glb-isp-body' });
+  const ispOpen = Button({ label: t('glb.isp.open'), icon: 'globe', dataset: { action: 'isp-open' }, onClick: () => openIsp() });
+  const ispSection = Section({ title: t('glb.isp.title'), description: t('glb.isp.desc'), className: 'glb-isp-section', children: [ispOpen, ispBody] });
+  const ispRows = () => (current ? current.rows.filter((r) => r.kind === 'isp') : []);
+  const ispName = (row) => (ispPanel ? ispPanel.label(row) : [row.isp && row.isp.network, row.isp && row.isp.city].filter(Boolean).join(', ') || row.key);
+  /** What the panel may do to the check on screen: its rows are a row group of the check. */
+  const ispHost = {
+    ctx,
+    check: () => (current ? { name: current.name, type: current.type, busy: !!current.controller } : null),
+    rows: ispRows,
+    setRows(rows) {
+      if (!current) return;
+      const keep = new Set(rows);
+      const dropped = ispRows().filter((r) => !keep.has(r));
+      for (const r of dropped) current.rowByKey.delete(r.key);
+      current.rows = [...current.rows.filter((r) => r.kind !== 'isp'), ...rows];
+      for (const r of rows) current.rowByKey.set(r.key, r);
+      // Addresses only a dropped row returned leave the IP table with it.
+      if (dropped.some((r) => r.addresses.length)) {
+        for (const r of dropped) {
+          for (const ip of r.addresses) {
+            const entry = current.ips.get(ip);
+            if (entry && entry.members.delete(r.key) && !entry.members.size) current.ips.delete(ip);
+          }
+        }
+        ipTable.setRows([...current.ips.values()]);
+      }
+      scheduleRender();
+    },
+    apply: (item) => applyItem(item),
+    cells: {
+      group: (r) => groupMark(rowGroup(r)), answer: renderAnswer, status: renderStatus, ad: renderAd, latency: renderLatency, rowClass, groupSort, answerText
+    }
+  };
+  async function openIsp(meta = null) {
+    if (ispPanel) return ispPanel;
+    setButtonBusy(ispOpen, true);
+    try {
+      const mod = await loadIsp();
+      if (ctx.signal.aborted) return null;
+      if (!ispPanel) {
+        clear(ispBody);
+        ispPanel = mod.mountIspPanel(ispBody, ispHost, { restored: meta });
+      }
+      ispOpen.hidden = true;
+      if (current) renderAll();
+      return ispPanel;
+    } catch (err) {
+      ctx.checkOutdated();
+      clear(ispBody);
+      ispBody.append(ErrorBanner(err, { compact: true, onRetry: () => openIsp(meta) }));
+      return null;
+    } finally {
+      setButtonBusy(ispOpen, false);
+    }
+  }
+
   const emptyEl = EmptyState({
     icon: 'globe',
     title: t('glb.emptyTitle'),
@@ -1020,7 +1094,7 @@ export function mount(container, ctx) {
   });
   const results = h('div', { class: 'stack-lg glb-results', hidden: true, dataset: { shortcutScope: 'results' } },
     h('div', { class: 'stack' }, progress, summaryEl, statsGrid, h('div', { class: 'glb-results-bar' }, linksEl, summary.el)),
-    legendCard, ipSection, resSection, geoSection);
+    legendCard, ipSection, resSection, geoSection, ispSection);
 
   container.append(h('div', { class: 'stack-lg glb-view' }, formCard, h('div', { class: 'glb-empty card' }, emptyEl), results));
   const emptyWrap = container.querySelector('.glb-empty');
@@ -1106,6 +1180,7 @@ export function mount(container, ctx) {
     geoTable.refresh();
     chinaTable.refresh();
     ipTable.refresh();
+    if (ispPanel) ispPanel.refresh();
     renderLegend();
     renderStats();
     renderSummary();
@@ -1146,6 +1221,7 @@ export function mount(container, ctx) {
     resolverTable.setFilter(fn);
     geoTable.setFilter(fn);
     chinaTable.setFilter(fn);
+    if (ispPanel) ispPanel.setFilter(fn);
     ipTable.setFilter(g ? (ipRow) => [...ipRow.members].some((k) => g.members.includes(k)) : null);
     clear(filterNote);
     filterNote.hidden = !g;
@@ -1216,6 +1292,7 @@ export function mount(container, ctx) {
       verdict.rewritten.length ? t('glb.sum.rewritten', { names: sourceNames(verdict.rewritten), targets: verdict.rewriteTargets.join(', ') }) : null,
       unavailable.length ? t('glb.sum.unavailable', { names: unavailable.map((r) => r.resolver.name).join(', ') }) : null,
       notAsked.length ? t('glb.sum.notAsked', { names: sourceNames(notAsked.map((r) => r.key)), type: current.type }) : null,
+      ispPanel ? ispPanel.note(verdict, { shortList }) : null,
       current.cancelled ? t('glb.cancelled') : null
     ].filter(Boolean).join(' ');
     const state = !current.done && !current.cancelled ? 'running'
@@ -1264,6 +1341,9 @@ export function mount(container, ctx) {
           : t(unsure ? 'glb.sum.designTitleUnsure' : 'glb.sum.designTitle', { operators }),
         message: [body, multi ? t('glb.sum.designMulti') : null, extra].filter(Boolean).join(' ')
       });
+    } else if (state === 'stale' && ispPanel) {
+      // Only ISP resolvers (ui/isp-resolvers.js) still give an answer: when it expires there.
+      alert = ispPanel.staleAlert(verdict, { extra, shortList });
     } else if (state === 'geo') {
       const geoGroups = distinct(usable.filter((r) => r.kind === 'geo'));
       const { split, unsure } = splitOfVerdict();
@@ -1349,7 +1429,7 @@ export function mount(container, ctx) {
     const names = [...keys].sort((a, b) => order(a) - order(b)).map((key) => {
       const row = current.rowByKey.get(key);
       if (!row) return key;
-      return row.kind === 'geo' ? vantageName(row.vantage) : row.resolver.name;
+      return row.kind === 'geo' ? vantageName(row.vantage) : row.kind === 'isp' ? ispName(row) : row.resolver.name;
     });
     return shortList([...new Set(names)], 3, '; ');
   }
@@ -1527,6 +1607,7 @@ export function mount(container, ctx) {
     geoTable.setRows(rows.filter((r) => r.kind === 'geo' && !isChinaRow(r)));
     chinaTable.setRows(rows.filter(isChinaRow));
     ipTable.setRows([]);
+    if (ispPanel) ispPanel.reset();
     geoSection.hidden = !geo;
     for (const o of Object.values(exportOpts)) o.subject = name;
     emptyWrap.hidden = true;
@@ -1591,6 +1672,17 @@ export function mount(container, ctx) {
   /** Re-render a finished run kept across a language re-mount (no network). */
   function restore(snap) {
     prepare(snap.name, snap.type, snap.geo);
+    // The ISP resolver rows of the check (ui/isp-resolvers.js) come back with their probes.
+    const isp = snap.items.filter((item) => item.kind === 'isp');
+    for (const item of isp) {
+      const row = {
+        kind: 'isp', key: item.key, isp: item.isp, ttl: item.ttl ?? null, expiresAt: item.expiresAt ?? null, status: item.status,
+        resolver: null, vantage: null, pending: true, values: null, response: null, filtered: false, addresses: [], scopePrefix: null
+      };
+      current.rows.push(row);
+      current.rowByKey.set(row.key, row);
+    }
+    if (isp.length || snap.isp) openIsp(snap.isp || null);
     for (const item of [...snap.items, ...(Array.isArray(snap.controls) ? snap.controls : [])]) applyItem(item);
     current.done = !!snap.done;
     current.cancelled = !snap.done;
@@ -1619,15 +1711,17 @@ export function mount(container, ctx) {
       if (renderTimer) clearTimeout(renderTimer);
       renderTimer = null;
       if (current && current.controller) current.controller.abort();
+      if (ispPanel) ispPanel.teardown();
     },
     snapshot() {
       if (!current) return { name: nameField.value, type: typeField.value, geo: geoField.checked, carried };
       const items = current.rows.filter((r) => !r.pending).map((r) => ({
-        key: r.key, response: r.response, values: r.values, filtered: r.filtered, addresses: r.addresses, scopePrefix: r.scopePrefix, notAsked: !!r.notAsked
+        key: r.key, response: r.response, values: r.values, filtered: r.filtered, addresses: r.addresses, scopePrefix: r.scopePrefix, notAsked: !!r.notAsked,
+        ...(r.kind === 'isp' ? { kind: 'isp', isp: r.isp, ttl: r.ttl, expiresAt: r.expiresAt, status: r.status } : {})
       }));
       return {
         name: current.name, type: current.type, geo: current.geo, items, controls: current.controls, done: current.done, at: current.finishedAt,
-        draft: nameField.value, carried
+        draft: nameField.value, carried, isp: ispPanel ? ispPanel.snapshot() : null
       };
     },
     result() {

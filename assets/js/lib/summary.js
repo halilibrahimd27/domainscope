@@ -94,6 +94,7 @@ export function globalSummary(facts, opts) {
   else if (v.state === 'by-design' && v.noRecords) state = t(unsure ? 'sum.global.nodataUnsure' : 'sum.global.nodata', { type: facts.type, operators: opList });
   else if (v.state === 'by-design') state = t(unsure ? 'sum.global.designUnsure' : 'sum.global.design', { operators: opList });
   else if (v.state === 'geo' && unsure) state = t('sum.global.geoUnsure');
+  else if (v.state === 'stale') state = t('sum.global.stale', { count: k.num(((v.isp && v.isp.stale) || []).reduce((n, g) => n + g.members.length, 0)) });
   else if (['agree', 'geo', 'unresolved', 'differ'].includes(v.state)) state = t(`sum.global.${v.state}`);
   else state = t('sum.global.differ');
   if (facts.cancelled && answered) state = `${state} ${t('sum.global.partial')}`;
@@ -874,6 +875,8 @@ const STRINGS = [
   ['sum.global.geoUnsure', ['Resolvers agree — locations differ, most likely by GeoDNS; AliDNS may still hold an older answer for mainland China',
     'Çözümleyiciler aynı — konumlar büyük olasılıkla GeoDNS yüzünden farklı; AliDNS anakara Çin için hâlâ eski bir yanıtı tutuyor olabilir']],
   ['sum.global.unresolved', ['No source could resolve the name', 'Hiçbir kaynak adı çözümleyemedi']],
+  ['sum.global.stale', ['Stale at ISP resolvers ({count}): an older answer no public resolver or location gives is still cached there',
+    'İSS çözümleyicilerinde eskimiş yanıt ({count}): hiçbir genel çözümleyicinin ya da konumun vermediği eski bir yanıt orada hâlâ önbellekte']],
   ['sum.global.differ', ['Answers differ', 'Yanıtlar farklı']],
   ['sum.global.failed', ['No answers', 'Yanıt alınamadı']],
   ['sum.global.stopped', ['Stopped before any source answered', 'Hiçbir kaynak yanıt vermeden durduruldu']],

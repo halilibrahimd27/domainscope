@@ -167,7 +167,7 @@ function summarizeAddresses(items) {
 /* ------------------------------------------------------------------------ */
 
 /** States of propagationVerdict (see there). */
-export const VERDICT_STATES = Object.freeze(['none', 'unresolved', 'agree', 'by-design', 'geo', 'differ']);
+export const VERDICT_STATES = Object.freeze(['none', 'unresolved', 'agree', 'by-design', 'geo', 'stale', 'differ']);
 
 /**
  * Finding codes of propagationVerdict, most serious first: `rcode` (SERVFAIL, REFUSED …
@@ -499,8 +499,19 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  *   the CDN their last CNAME names, which the control does not get). A branch only those
  *   locations take is GeoDNS only with a `geoSplits` entry, even when the resolvers agree (an
  *   anycast CDN gives them all the same answer): one without (`regionalOnly`) stays a finding;
+ * - 'stale': ISP resolver rows (kind 'isp' or 'isp:' keys, Global DNS › ISP resolvers,
+ *   lib/ispdns.js) give answers no public resolver or location gives — an address, a CNAME,
+ *   NXDOMAIN or NODATA — while the public resolvers and locations alone agree, differ by design or
+ *   by location ('agree', 'by-design', 'geo' without the ISP rows), and with them the answers are
+ *   not all edges by design: those ISPs still cache an older answer (or rewrite the name). Listed
+ *   in `isp.stale`; not when an ISP alone gives an rcode (SERVFAIL, REFUSED: `isp.faults`, a
+ *   finding as from any source), and only `isp.unsure` when the locations already differ by
+ *   GeoDNS (state 'geo': for an ISP, its region's answer or an older one);
  * - 'differ': everything else; `findings` say which part looks like propagation or a
  *   misconfiguration, and `designPart` whether the rest are edge differences.
+ * ISP rows are judged as locations otherwise: their own answers may differ by GeoDNS, an edge of
+ * the CDN everyone else is on is by design, and next to public resolvers that disagree they are
+ * part of the propagation the findings describe.
  * An answer that only filtering resolvers (resolver `filtering`, not ECS locations) return
  * while an unfiltered source answers differently is their policy only when it is recognisably
  * a rewrite: its CNAME chain reaches a SafeSearch name (SAFE_SEARCH_TARGETS; Cloudflare
@@ -540,13 +551,58 @@ const membersOf = (groups) => uniqueList(groups.flatMap((g) => g.members));
  *   operators: object[], findings: object[], resolversAgree: boolean, designPart: boolean, multiOperator: boolean,
  *   noRecords: boolean, steering: Array<{ owner: string|null, targets: string[] }>,
  *   geoSplits: Array<{ owner: string|null, targets: Array<string|null>, members: string[], line: true|null }>,
- *   rewritten: string[], rewriteTargets: string[] }}
+ *   rewritten: string[], rewriteTargets: string[], isp: null|{ members: string[], reference: string,
+ *     stale: Array<{ key: string, members: string[], status: string }>, faults: Array<{ key: string, members: string[],
+ *     status: string }>, unsure: boolean } }}
+ *   `isp` (null without ISP rows): the ISP rows that answered, the state without them (`reference`),
+ *   the answer groups only ISPs give that look like older cached answers (`stale`) or faults.
  *   Operators: `{ id, name, kind (netinfo kind), provider, via: 'ip'|'cname'|'ptr'|'asn'|null, reasonKey,
  *   managed, steering }` — of a group's addresses, or for a NODATA group of the provider its CNAME
  *   chain enters; the top-level list holds the managed ones of the judged groups (the answers, or
  *   with `noRecords` the chains) with their `members`, most sources first.
  */
-export function propagationVerdict(items, { type = 'A', ipInfo = null, controls = null } = {}) {
+export function propagationVerdict(items, opts = {}) {
+  const list = Array.isArray(items) ? items : [];
+  const all = judgeItems(list, opts);
+  if (!list.some(isIspItem)) return { ...all, isp: null };
+  // The same question without the ISP rows: what the public resolvers and the locations say.
+  const ref = judgeItems(list.filter((it) => !isIspItem(it)), opts);
+  const ispKey = (key) => String(key).startsWith('isp:');
+  const ispOnly = all.groups.filter((g) => !g.rewritten && g.members.every(ispKey));
+  // An rcode (SERVFAIL, REFUSED) only an ISP gives is a fault there, never a cached answer; another
+  // edge of a CDN the public sources are on is that CDN's choice for the ISP's region.
+  const refOps = new Set(ref.groups.flatMap((g) => g.operators.filter((op) => op.managed).map((op) => op.id)));
+  const refEdge = (g) => g.managed && g.operators.length > 0 && g.operators.every((op) => refOps.has(op.id));
+  const cached = ispOnly.filter((g) => g.status !== 'rcode' && !refEdge(g));
+  const faults = ispOnly.filter((g) => g.status === 'rcode');
+  const entry = (g) => ({ key: g.key, members: [...g.members], status: g.status });
+  const isp = {
+    members: uniqueList(all.groups.flatMap((g) => g.members.filter(ispKey))),
+    reference: ref.state,
+    stale: [],
+    faults: faults.map(entry),
+    unsure: false
+  };
+  let state = all.state;
+  if (cached.length && all.state !== 'by-design' && ['agree', 'by-design', 'geo'].includes(ref.state)) {
+    isp.stale = cached.map(entry);
+    if (ref.state === 'geo' && all.state === 'geo') isp.unsure = true; // GeoDNS for their region, or an older answer
+    else if (!faults.length) state = 'stale';
+  }
+  return {
+    ...all,
+    state,
+    findings: state === 'stale' ? [] : all.findings,
+    designPart: state === 'stale' ? false : all.designPart,
+    isp
+  };
+}
+
+/** An ISP resolver row (Global DNS › ISP resolvers, lib/ispdns.js): kind 'isp' or an 'isp:' key. */
+const isIspItem = (it) => !!it && (it.kind === 'isp' || String(it.key ?? '').startsWith('isp:'));
+
+/** propagationVerdict over one set of items (with or without the ISP rows). */
+function judgeItems(items, { type = 'A', ipInfo = null, controls = null } = {}) {
   const qtype = typeToName(type ?? 'A');
   const address = ADDRESS_TYPES.has(qtype);
   const infoOf = (ip) => {
@@ -559,7 +615,7 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null, controls 
   const isGeo = (it) => it.kind === 'geo' || String(it.key ?? '').startsWith('geo:');
   // A location asked through a resolver of its own (mainland China: AliDNS), not Google's ECS.
   const isRegional = (it) => isGeo(it) && !!(it.vantage && it.vantage.resolver);
-  const isFiltering = (it) => !isGeo(it) && !!(it.resolver && it.resolver.filtering);
+  const isFiltering = (it) => !isGeo(it) && !isIspItem(it) && !!(it.resolver && it.resolver.filtering);
   // Does the source validate DNSSEC? Google, which asks for the other locations, does; AliDNS does not.
   const validates = (it) => {
     const r = isRegional(it) ? getAnyResolver(it.vantage.resolver) : (isGeo(it) ? null : it.resolver);
@@ -582,7 +638,8 @@ export function propagationVerdict(items, { type = 'A', ipInfo = null, controls 
       byKey.set(key, g);
     }
     g.members.push(String(it.key ?? `#${order}`));
-    if (!isGeo(it)) g.geo = false;
+    // An ISP's resolver answers for its region like a location (GeoDNS gives it that region's answer).
+    if (!isGeo(it) && !isIspItem(it)) g.geo = false;
     if (!isRegional(it)) g.regional = false;
     else g.via.add(it.vantage.resolver);
     if (validates(it)) g.unvalidated = false;

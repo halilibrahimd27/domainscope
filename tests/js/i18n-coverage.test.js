@@ -83,6 +83,8 @@ before(async () => {
   await imp('assets/js/ui/renewal-planner.js');
   // DNS change request › the check page's cutover assistant: loaded with that page.
   await imp('assets/js/ui/cutover.js');
+  // Global DNS › ISP resolvers: loaded on the first click of "Ask ISP resolvers…".
+  await imp('assets/js/ui/isp-resolvers.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -461,6 +463,10 @@ describe('i18n coverage', () => {
     for (const s of tko.TAKEOVER_STATUSES) add(`tko.status.${s}`);
     for (const r of tko.TAKEOVER_REASONS) add(`tko.reason.${r}`);
     for (const o of tko.HTTP_CHECK_OUTCOMES.filter((x) => x !== 'in-use')) add(`tko.http.outcome.${o}`);
+    // Global DNS › ISP resolvers (ui/isp-resolvers.js over lib/ispdns.js): why a plan is refused, what the public sources say.
+    const isp = await imp('assets/js/lib/ispdns.js');
+    for (const e of isp.ISP_PLAN_ERRORS) add(`isp.err.${e}`);
+    for (const s of ['agree', 'by-design', 'geo']) add(`isp.sum.ref.${s}`);
     assert.deepEqual(missingIn(keys), []);
   });
 

@@ -404,11 +404,14 @@ export function isProbeableResolver(value) {
  * the probe with `+timeout=5 +tries=2 +nsid`, over IPv4, and the result carries `statusCodeName`,
  * `answers[] { name, type, ttl, class, value }` in presentation format and the dig text in
  * `rawOutput`, whose flags line says whether the answer was authoritative). One probe, one
- * query, one credit; a resolver the probe cannot resolve fails the test (charged).
- * @param {{ name: string, type: string, resolver: string, protocol?: 'UDP'|'TCP', port?: number,
+ * query, one credit; a resolver the probe cannot resolve fails the test (charged). Without
+ * `resolver` (null / undefined) every probe asks its own default resolver — its network's, an
+ * ISP's for an eyeball probe (Global DNS › ISP resolvers, lib/ispdns.js; verified live 2026-10-08:
+ * `result.resolver` reads that address, or 'private', and the TTLs are its cache's remaining TTLs).
+ * @param {{ name: string, type: string, resolver?: string|null, protocol?: 'UDP'|'TCP', port?: number,
  *   timeoutS?: number, probes?: number, locations?: null|string|object[] }} opts
  * @returns {{ type: 'dns', target: string, limit?: number, locations?: string|object[], timeout: number,
- *   measurementOptions: { query: { type: string }, resolver: string, protocol: 'UDP'|'TCP', port: number } }}
+ *   measurementOptions: { query: { type: string }, resolver?: string, protocol: 'UDP'|'TCP', port: number } }}
  * @throws {TypeError} for a name, type, resolver, protocol or port Globalping refuses, a bad probe
  *   count, timeout or location list, or any unknown option
  */
@@ -417,7 +420,8 @@ export function dnsQueryRequest({ name, type, resolver, protocol = 'UDP', port =
   if (unknown.length) throw new TypeError(`Unknown option: ${unknown[0]}`);
   if (!isProbeableDnsName(name)) throw new TypeError(`Globalping cannot query this name: ${String(name)}`);
   if (!GP_DNS_TYPES.includes(type)) throw new TypeError(`Globalping cannot query this record type: ${String(type)}`);
-  if (!isProbeableResolver(resolver)) throw new TypeError(`Globalping cannot ask this resolver: ${String(resolver)}`);
+  const ownResolver = resolver === null || resolver === undefined;
+  if (!ownResolver && !isProbeableResolver(resolver)) throw new TypeError(`Globalping cannot ask this resolver: ${String(resolver)}`);
   if (protocol !== 'UDP' && protocol !== 'TCP') throw new TypeError('protocol must be UDP or TCP');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError(`Not a DNS port: ${String(port)}`);
   if (!Number.isInteger(probes) || probes < 1 || probes > GP_LIMITS.maxProbesPerMeasurement) {
@@ -428,7 +432,8 @@ export function dnsQueryRequest({ name, type, resolver, protocol = 'UDP', port =
   const body = { type: 'dns', target: name };
   applyLocations(body, locations, probes);
   body.timeout = timeout;
-  body.measurementOptions = { query: { type }, resolver: ipVersion(resolver) ? probeTarget(resolver) : resolver, protocol, port };
+  body.measurementOptions = ownResolver ? { query: { type }, protocol, port }
+    : { query: { type }, resolver: ipVersion(resolver) ? probeTarget(resolver) : resolver, protocol, port };
   return body;
 }
 
@@ -726,9 +731,10 @@ export function createGlobalping({
     throwIfAborted(signal);
     const payload = JSON.stringify(body);
     // About › What this page sent: whether this body sends an address (with the host name and port:
-    // Verify, the old-versus-new server comparison), a host name alone (MTA-STS, HTTP-01) or a DNS
-    // question for a name server (Zone File › New name servers) — the kind, never the value.
-    const note = body.type === 'dns' ? 'dns-query'
+    // Verify, the old-versus-new server comparison), a host name alone (MTA-STS, HTTP-01), a DNS
+    // question for a name server (Zone File › New name servers) or one for the probes' own
+    // resolvers (Global DNS › ISP resolvers) — the kind, never the value.
+    const note = body.type === 'dns' ? (body.measurementOptions && body.measurementOptions.resolver ? 'dns-query' : 'dns-own')
       : typeof body.target === 'string' && ipVersion(body.target) ? 'ip-target' : 'host-target';
     let anonRetried = false;
     let burstRetried = false;

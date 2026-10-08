@@ -139,6 +139,7 @@ registerStrings('en', {
   'about.src.rdap': 'Domain registration: registrar, dates, status flags, name servers, DNSSEC (Domain Health, Domain overview and its lookalikes in DNS; the Domain portfolio also asks for its name servers’ own domains, once each).',
   'about.src.rdapLimit': 'IANA bootstrap + the registries’ own servers; rdap.org only as the fallback, at most one request a second (left alone for a minute after it answers “rate limited”). Some country TLDs (for example .de, .jp, .tr) publish no RDAP service.',
   'about.src.globalping': 'Globalping (jsDelivr): TLS checks of your public server addresses from probes worldwide (SSL Targets › Verify), and one HTTPS fetch of a domain’s MTA-STS policy (Domain Health).',
+  'about.privIsp': 'Only when you press “Ask ISP resolvers” in Global DNS: the host name, the record type and the places you typed go to Globalping (after a consent dialog, once per page session), and each probe asks its own resolver — its ISP’s — so those resolvers receive the question too. Internal names (.local, .internal, .home.arpa …) are never sent, and anyone with the measurement ID can read the results for about six months.',
   'about.src.globalpingLimit': '250 probes per hour per IP address without an account, shared by Verify and the MTA-STS check; results are public by measurement ID for about six months.',
   'about.src.ari': 'Let’s Encrypt’s ACME Renewal Information (RFC 9773): the renewal window Let’s Encrypt suggests for one of its certificates (Renewal readiness › Plan), only after a click — two requests, its ACME directory and the certificate’s renewal-info.',
   'about.src.ariLimit': 'No published quota; the answer says when to ask again (Retry-After). It knows only certificates Let’s Encrypt issued.',
@@ -295,6 +296,7 @@ registerStrings('tr', {
   'about.src.rdap': 'Alan adı kaydı: kayıt firması, tarihler, durum işaretleri, ad sunucuları, DNSSEC (Alan Adı Sağlığı, Alan adı özeti ve DNS’te olan benzerleri; Alan adı portföyü ad sunucularının kendi alan adlarını da birer kez sorar).',
   'about.src.rdapLimit': 'IANA bootstrap + kayıt kuruluşlarının kendi sunucuları; rdap.org yalnızca yedek olarak, saniyede en fazla bir istekle (“hız sınırı” yanıtından sonra bir dakika sorulmaz). Bazı ülke uzantılarının (ör. .de, .jp, .tr) RDAP hizmeti yok.',
   'about.src.globalping': 'Globalping (jsDelivr): genel sunucu adreslerinizin dünya çapındaki ölçüm noktalarından TLS kontrolü (SSL Hedefleri › Doğrula) ve bir alan adının MTA-STS politikasının HTTPS ile bir kez alınması (Alan Adı Sağlığı).',
+  'about.privIsp': 'Yalnızca Global DNS’te “İSS çözümleyicilerine sor”a bastığınızda: host adı, kayıt türü ve yazdığınız yerler Globalping’e gider (her sayfa oturumunda bir kez onay istenir); her ölçüm noktası kendi çözümleyicisini — İSS’sininkini — sorduğundan bu çözümleyiciler de soruyu alır. İç ağ adları (.local, .internal, .home.arpa …) asla gönderilmez; sonuçları ölçüm kimliğini bilen herkes yaklaşık altı ay okuyabilir.',
   'about.src.globalpingLimit': 'Hesapsız IP adresi başına saatte 250 ölçüm; Doğrula ve MTA-STS kontrolü bu kotayı paylaşır. Sonuçlar ölçüm kimliğiyle yaklaşık altı ay herkese açık.',
   'about.src.ari': 'Let’s Encrypt’in ACME Renewal Information hizmeti (RFC 9773): Let’s Encrypt’in kendi sertifikalarından biri için önerdiği yenileme aralığı (Yenileme hazırlığı › Plan), yalnızca bir tıklamadan sonra — iki istek: ACME dizini ve sertifikanın renewal-info kaydı.',
   'about.src.ariLimit': 'Yayımlanmış bir kota yok; yanıt ne zaman yeniden sorulacağını söyler (Retry-After). Yalnızca Let’s Encrypt’in verdiği sertifikaları tanır.',
@@ -592,7 +594,8 @@ export function mount(container, ctx) {
     ['download', 'about.privOffline'],
     ['globe', 'about.priv6'],
     ['mail', 'about.priv7'],
-    ['swap', 'about.privMove']
+    ['swap', 'about.privMove'],
+    ['network', 'about.privIsp']
   ];
   const privacy = section('privacy', {
     title: t('about.privacyTitle'),

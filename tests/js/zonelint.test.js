@@ -307,6 +307,16 @@ describe('mail, CAA, TTL, SOA and NS rules', () => {
     assert.deepEqual(find(zone([['ok', 'TXT', ['x'.repeat(255), 'y']]]), 'TXT_STRING_TOO_LONG'), []);
   });
 
+  test('TXT_STRING_TOO_LONG counts the bytes the zone holds, not each string decoded on its own', () => {
+    // "<254×a>\197" "\159<44×b>": 255 and 45 bytes, a 'ş' (C5 9F) split across them, so the parser
+    // decodes each string as Latin-1 (one character a byte, two bytes again as UTF-8).
+    const data = [`${'a'.repeat(254)}Å`, `\u009f${'b'.repeat(44)}`];
+    const text = `"${'a'.repeat(254)}\\197" "\\159${'b'.repeat(44)}"`;
+    assert.deepEqual(find(zone([['note', 'TXT', 'x', { data, text }]]), 'TXT_STRING_TOO_LONG'), []);
+    const long = find(zone([['note', 'TXT', 'x', { data: [`${'a'.repeat(255)}Å`], text: `"${'a'.repeat(255)}\\197"` }]]), 'TXT_STRING_TOO_LONG');
+    assert.deepEqual(long.map((f) => f.params.bytes), [256]);
+  });
+
   test('CAA_UNKNOWN_TAG and CAA_FLAGS', () => {
     const z = zone([['@', 'CAA', '0 isue "example-ca.example"'], ['@', 'CAA', '5 issue "letsencrypt.org"'], ['@', 'CAA', '128 issue "letsencrypt.org"']]);
     assert.deepEqual(find(z, 'CAA_UNKNOWN_TAG').map((f) => f.params), [{ name: 'example.com', tag: 'isue' }]);

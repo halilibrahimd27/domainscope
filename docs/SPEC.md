@@ -1167,7 +1167,7 @@ The rules:
   - originless placeholders, Tunnels and SaaS targets;
   - proxied MX targets, and proxied SRV targets off the proxy's ports.
 - Mail and certificates: SPF (multiple, invalid, SPF RR type), DMARC, CAA tags and flags.
-- TXT strings longer than 255 bytes.
+- TXT strings longer than 255 bytes (the bytes the record holds, read from its text: a character split across two strings is not counted twice).
 - TTL outliers and very low TTLs, the SOA negative TTL, a single NS.
 - Route 53 alias targets missing from the zone.
 

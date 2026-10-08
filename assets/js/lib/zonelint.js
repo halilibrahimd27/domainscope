@@ -26,6 +26,7 @@
 
 import { normalizeIP, ipInCidr } from './netinfo.js';
 import { parseSpf, parseDmarc } from './health.js';
+import { txtBytes } from './zonetext.js';
 import {
   zoneIndex, proxiedCore, exposureFacts, effectiveTargets, servedTargets, wildcardCovers,
   classifyExternalTarget, isCloudflareIp, isPlaceholder, isSpfRecord, addressOf, isPrivateAddress
@@ -109,7 +110,6 @@ const CAA_TAGS = new Set(CAA_KNOWN_TAGS);
 const PROXY_PORTS = new Set(CF_PROXY_PORTS);
 const DOTTED_QUAD = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 const SEVERITY_RANK = new Map(SEVERITY_ORDER.map((s, i) => [s, i]));
-const utf8 = new TextEncoder();
 
 /**
  * @typedef {object} LintFinding
@@ -357,8 +357,10 @@ export function lintZone(zone) {
     }
 
     if (r.type === 'TXT' || r.type === 'SPF') {
+      // The bytes the zone holds (its text): `data` decodes each string on its own, so a character
+      // split across two strings, or a byte that is not UTF-8, would count twice.
       let bytes = 0;
-      for (const s of Array.isArray(r.data) ? r.data : []) bytes = Math.max(bytes, utf8.encode(String(s ?? '')).length);
+      if (Array.isArray(r.data)) for (const s of txtBytes(r)) bytes = Math.max(bytes, s.length);
       if (bytes > 255) push('TXT_STRING_TOO_LONG', r, { name: r.name, bytes }, `one character-string is ${bytes} bytes (max 255)`);
       if (isSpfRecord(r)) {
         const spf = parseSpf(joinedText(r));

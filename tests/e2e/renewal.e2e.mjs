@@ -581,7 +581,7 @@ async function main() {
       assert(/with 3 certificates/.test(await page.evaluate(() => document.querySelector('.scan-runbar-summary')?.textContent || '')), 'run bar summary');
       await runScan(page);
       const tabs = await page.evaluate(() => [...document.querySelectorAll('.scan-tabs .tab[data-tab]')].map((b) => b.dataset.tab));
-      assertEqual(tabs, ['hosts', 'servers', 'plan', 'cdn', 'verify', 'dane', 'sources', 'ct'], 'tabs: the Renewal plan after Servers');
+      assertEqual(tabs, ['hosts', 'servers', 'plan', 'cdn', 'verify', 'rollout', 'dane', 'sources', 'ct'], 'tabs: the Renewal plan after Servers');
       const sum = await page.evaluate(() => document.querySelector('[data-summary="renewal"]')?.textContent || '');
       assert(/2 certificate sets: 3 servers need one of them/.test(sum), `summary: ${sum}`);
       assert(await page.evaluate(() => !!document.querySelector('[data-summary="renewal-uncovered"]')), 'the uncovered-names line');
@@ -813,7 +813,7 @@ async function main() {
         tabs: [...document.querySelectorAll('.scan-tabs .tab[data-tab]')].map((b) => b.dataset.tab),
         renewal: !!document.querySelector('[data-summary="renewal"]')
       }));
-      assertEqual(info.tabs, ['hosts', 'servers', 'cdn', 'verify', 'dane', 'sources', 'ct'], 'tabs');
+      assertEqual(info.tabs, ['hosts', 'servers', 'cdn', 'verify', 'rollout', 'dane', 'sources', 'ct'], 'tabs');
       assertEqual(info.renewal, false, 'no renewal summary');
       await openTab(page, 'cdn');
       const command = await page.evaluate(() => document.querySelector('.scan-cli-command code, .scan-cli-command pre')?.textContent || '');

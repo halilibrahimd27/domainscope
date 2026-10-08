@@ -302,7 +302,7 @@ async function main() {
       await page.waitFor(() => document.querySelector('.cert-overview-cn'), { message: 'certificate loaded' });
       await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
       const tabs = await page.evaluate(() => [...document.querySelectorAll('.cert-tabs .tab[data-tab]')].map((b) => b.dataset.tab));
-      assertEqual(tabs, ['names', 'details', 'chain', 'caa', 'dane', 'ct', 'pem'], 'tab order');
+      assertEqual(tabs, ['names', 'details', 'chain', 'caa', 'dane', 'ct', 'pem', 'compare'], 'tab order');
       await page.click('.cert-tabs .tab[data-tab="dane"]');
       await page.waitFor(() => document.querySelector('.cert-tabs [data-dane="panel"]'), { message: 'DANE panel' });
       await sleep(300);
@@ -485,7 +485,7 @@ async function main() {
         tabs: [...document.querySelectorAll('.scan-tabs .tab[data-tab]')].map((b) => b.dataset.tab),
         hint: document.querySelector('[data-summary="dane"]')?.textContent || ''
       }));
-      assertEqual(info.tabs, ['hosts', 'servers', 'cdn', 'verify', 'dane', 'sources', 'ct'], 'tab order');
+      assertEqual(info.tabs, ['hosts', 'servers', 'cdn', 'verify', 'rollout', 'dane', 'sources', 'ct'], 'tab order');
       assert(/mail servers \(MX\)/.test(info.hint), `summary hint: ${info.hint}`);
     });
 

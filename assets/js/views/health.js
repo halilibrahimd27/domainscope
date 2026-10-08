@@ -892,7 +892,7 @@ export function mount(container, ctx) {
       const rdap = await rdapDomain(state.report.domain, { signal: mergeSignals(ctx.signal, controller.signal) });
       if (current !== state) return;
       state.report = applyRdap(state.report, rdap);
-      renderReport(state.report);
+      renderReport(state.report, state.selectors);
       const card = detailsEl.querySelector('.hlt-rdap');
       const again = card && card.querySelector('[data-action="retry-source"]');
       if (again) again.focus();

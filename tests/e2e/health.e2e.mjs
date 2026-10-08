@@ -789,8 +789,8 @@ async function mtaStsGroup(browser, server) {
       await shotCard(page, 'health-mtasts-desktop-light-en-txt-invalid');
     });
 
-    await step('RDAP out of reach: its fields say n/a and why, never "—"; Retry (keyboard) asks RDAP alone again', async () => {
-      await gotoHash(page, `#/health?domain=${MAIL_APEX}`, 'health');
+    await step('RDAP out of reach: its fields say n/a and why, never "—"; Retry (keyboard) asks RDAP alone again, the summary link keeps the selectors', async () => {
+      await gotoHash(page, `#/health?domain=${MAIL_APEX}&selectors=custom1`, 'health');
       await page.waitFor((d) => document.querySelector('.hlt-hero-domain')?.textContent === d && !document.querySelector('[data-action="run"]').hidden,
         { args: [MAIL_APEX], timeout: 30000, message: 'example.com report' });
       let r = await page.evaluate(rdapInfo);
@@ -820,6 +820,10 @@ async function mtaStsGroup(browser, server) {
       const checks = (await page.evaluate(reportInfo)).checks.map((c) => c.id);
       assert(checks.includes('rdap.expiry-ok') && !checks.includes('rdap.error'), `registration checks: ${checks.filter((c) => c.startsWith('rdap'))}`);
       await announced(page, /Registration data loaded/, 'retry announced');
+      await page.evaluate(() => window.dispatchEvent(new Event('beforeprint')));
+      const printed = await page.evaluate(() => document.querySelector('.print-head .print-permalink')?.getAttribute('href') || '');
+      await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
+      assert(printed.endsWith(`/domainscope/#/health?domain=${MAIL_APEX}&selectors=custom1`), `the summary link keeps the run's selectors: ${printed}`);
       await shotSelector(page, 'health-rdap-desktop-light-en-retried', '.hlt-rdap');
     });
 

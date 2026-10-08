@@ -274,8 +274,9 @@ describe('i18n', () => {
   test('a numeric {count} is locale-grouped in plain strings too (Turkish entries are often plain)', async () => {
     i18n.registerStrings('en', { 'test.plainCount': '{count} names' });
     i18n.registerStrings('tr', { 'test.plainCount': '{count} ad' });
-    // Real view strings whose Turkish form is a plain string.
+    // Real view strings whose Turkish form is a plain string (the Subdomains stage pills come with its results).
     await import('../../assets/js/views/subdomains.js');
+    await import('../../assets/js/ui/subdomains-run.js');
     await import('../../assets/js/views/scan.js');
     i18n.setLang('tr');
     try {

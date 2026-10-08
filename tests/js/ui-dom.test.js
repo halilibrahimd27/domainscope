@@ -1349,11 +1349,30 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     // Explicit locales override the auto pick; [] means the global list only.
     assert.deepEqual(S.wordlistPlan({ level: 'smart', domains: ['example.com.tr'], locales: ['de'] }).perDomain[0].packs.map((p) => p.code), ['de']);
     assert.deepEqual(S.wordlistPlan({ level: 'smart', domains: ['example.com.tr'], locales: [] }).perDomain[0].packs, []);
-    // Huge is capped per domain, and the whole scan is capped at the total.
+    // Custom names come on top of the per-domain cap (lib/scanner tries them all); the whole scan is capped at the total.
     const huge = S.wordlistPlan({ level: 'huge', domains: ['a.com', 'b.com'], custom: 300000 });
-    assert.equal(huge.perDomain[0].total, S.BRUTEFORCE_CAPS.huge, 'per-domain cap');
-    assert.equal(huge.perDomain[0].capped, true);
+    assert.equal(huge.perDomain[0].total, S.levelCount('huge') + 300000, 'the custom names on top of the per-domain cap');
+    assert.equal(huge.perDomain[0].capped, false);
     assert.equal(huge.total, S.BRUTEFORCE_TOTAL_CAP, 'multi-domain total cap');
+  });
+
+  test('wordlistPlan: custom and learned names come on top of the level cap, as lib/scanner tries them, so a long custom list is never said capped', async () => {
+    const { S } = await load();
+    const { estimateQueries } = await import('../../assets/js/lib/scanplan.js');
+    for (const [level, domains, custom, learned] of [['small', ['example.org'], 5000, 0], ['smart', ['example.com'], 100000, 0],
+      ['large', ['example.com.tr'], 70000, 20000], ['huge', ['example.com', 'example.net'], 300000, 0]]) {
+      const plan = S.wordlistPlan({ level, domains, custom, learned });
+      const engine = estimateQueries({ bruteforce: level, domains, customCount: custom, learnedCount: learned }).breakdown.wordlist;
+      assert.equal(plan.total, engine, `${level} + ${custom} custom, ${learned} learned: the scanner's count`);
+      assert.ok(plan.perDomain.every((d) => !d.capped), `${level}: no domain capped`);
+    }
+    inLang('en', () => {
+      const line = S.wordlistPlanText(S.wordlistPlan({ level: 'small', domains: ['example.org'], custom: 5000 }));
+      assert.equal(line, `≈ 5,159 DNS queries for 1 domain (159 small, +5,000 yours) · ${S.estimateText(5159)}`);
+      // A level list with its packs over the cap (none ships today) is said so, the custom names on top.
+      const over = { level: 'huge', perDomain: [{ domain: 'example.org', level: 130000, packs: [], custom: 300, learned: 0, total: 160300, capped: true }], total: 160300 };
+      assert.match(S.wordlistPlanText(over), /\+300 yours, capped at 160,300 per domain\) · /);
+    });
   });
 
   test('locale helpers: auto pick from the TLD, a readable summary and the effective packs', async () => {
@@ -1424,7 +1443,8 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
         `≈ ${total.toLocaleString('en-US')} DNS queries for 1 domain (${S.levelCount('smart').toLocaleString('en-US')} smart, +${tr} Turkish, +2 yours) · ${S.estimateText(total)}`);
       const two = S.wordlistPlan({ level: 'smart', domains: ['example.de', 'example.fr'] });
       assert.match(S.wordlistPlanText(two), /for 2 domains \(per domain: [\d,]+ smart, \+[\d,]+ German, \+[\d,]+ French\)/);
-      assert.match(S.wordlistPlanText(S.wordlistPlan({ level: 'huge', domains: ['example.org'], learned: 999999 })), /capped at 160,000 per domain/);
+      // Learned names on top of the per-domain cap: only the whole scan's cap bounds them.
+      assert.match(S.wordlistPlanText(S.wordlistPlan({ level: 'huge', domains: ['example.org'], learned: 999999 })), /^≈ 200,000 DNS queries for 1 domain \([\d,]+ huge, \+999,999 learned\) · /);
       assert.equal(S.wordlistPlanText(S.wordlistPlan({ level: 'off', domains: ['example.org'] })), '');
     });
     // The level labels add the packs the typed domains get (each once), from Smart up.

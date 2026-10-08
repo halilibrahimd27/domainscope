@@ -117,7 +117,7 @@ export const PROBE_RATE_QPS = 120;
 /**
  * Candidates the scanner tries per scanned domain at each level at most (mirrors
  * lib/scanplan MAX_BRUTEFORCE_PER_BASE; a unit test keeps the two in step) and across all
- * domains of one scan (MAX_BRUTEFORCE_TOTAL). Custom and learned names count towards the cap.
+ * domains of one scan (MAX_BRUTEFORCE_TOTAL). Custom and learned names come on top of the per-domain cap.
  */
 export const BRUTEFORCE_CAPS = Object.freeze({ small: 4000, smart: 20000, large: 80000, huge: 160000 });
 export const BRUTEFORCE_TOTAL_CAP = 200000;
@@ -1322,8 +1322,9 @@ export function localeSummary(choice, domains) {
 /**
  * What the wordlist stage of a scan will try, per typed domain: the level's names, the locale
  * packs (from Smart up), the custom and learned names — capped like lib/scanner caps them
- * ({@link BRUTEFORCE_CAPS} per domain, {@link BRUTEFORCE_TOTAL_CAP} in all). Custom and learned
- * names that are already in the list add nothing, so their share is an upper bound.
+ * ({@link BRUTEFORCE_CAPS} per domain, the custom and learned names on top, and
+ * {@link BRUTEFORCE_TOTAL_CAP} in all). Custom and learned names that are already in the list
+ * add nothing, so their share is an upper bound.
  * @param {{ level: string, domains: string[], locales?: string[]|null, custom?: number, learned?: number }} opts
  * @returns {{ level: string, perDomain: Array<{ domain: string, level: number, packs: Array<{ code: string, count: number }>,
  *   custom: number, learned: number, total: number, capped: boolean }>, total: number }}
@@ -1331,13 +1332,13 @@ export function localeSummary(choice, domains) {
 export function wordlistPlan({ level, domains = [], locales = null, custom = 0, learned = 0 }) {
   const lvl = BRUTEFORCE_MODES.includes(level) ? level : 'off';
   if (lvl === 'off') return { level: lvl, perDomain: [], total: 0 };
-  const cap = BRUTEFORCE_CAPS[lvl] || BRUTEFORCE_CAPS.smart;
+  const extra = Math.max(0, Number(custom) || 0) + Math.max(0, Number(learned) || 0);
+  const cap = (BRUTEFORCE_CAPS[lvl] || BRUTEFORCE_CAPS.smart) + extra;
   const perDomain = (domains.length ? domains : ['']).map((domain) => {
     // Packs apply from Smart up; with no domain typed yet only a manual choice is known.
     const packs = lvl === 'small' || (!domain && !Array.isArray(locales))
       ? []
       : effectiveLocales(locales, domain).map((code) => ({ code, count: localePackCount(code) }));
-    const extra = Math.max(0, Number(custom) || 0) + Math.max(0, Number(learned) || 0);
     const raw = levelCount(lvl) + packs.reduce((a, p) => a + p.count, 0) + extra;
     return {
       domain,
@@ -1419,7 +1420,7 @@ export function wordlistPlanText(plan, sweep = MAX_SWEEP_CONCURRENCY, queries = 
   for (const [code, count] of packs) parts.push(t('sub.plan.pack', { count: formatNumber(count), language: languageName(code) }));
   if (pd.custom) parts.push(t('sub.plan.custom', { count: formatNumber(pd.custom) }));
   if (pd.learned) parts.push(t('sub.plan.learned', { count: formatNumber(pd.learned) }));
-  if (list.some((d) => d.capped)) parts.push(t('sub.plan.capped', { count: formatNumber(BRUTEFORCE_CAPS[plan.level]) }));
+  if (list.some((d) => d.capped)) parts.push(t('sub.plan.capped', { count: formatNumber(BRUTEFORCE_CAPS[plan.level] + pd.custom + pd.learned) }));
   const joined = parts.join(', ');
   // The query estimate covers the whole scan (wordlist + variations + deeper round + origin
   // hints), so it is honest about how many DNS queries run — not just the wordlist size.

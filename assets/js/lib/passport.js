@@ -290,17 +290,20 @@ export function mailPlatformOf(exchange) {
 }
 
 /**
- * The platforms an SPF record authorises by name: every `include:` and the `redirect=` domain
- * matched against {@link MAIL_PLATFORMS} `spf` suffixes. Macro domains (`%{i}…`) and unknown
+ * The platforms an SPF record authorises by name: every `include:` in front of `all` and, without
+ * an `all`, the `redirect=` domain (receivers never get past `all`: RFC 7208 §5.1, §6.1), matched
+ * against {@link MAIL_PLATFORMS} `spf` suffixes. Macro domains (`%{i}…`) and unknown
  * ones are listed in `other` as written.
  * @param {object|string} spf a health.parseSpf() result or the record text
  * @returns {{ senders: Array<{ id: string, name: string, kind: string }>, other: string[] }}
  */
 export function spfSenders(spf) {
   const parsed = typeof spf === 'string' ? parseSpf(spf) : spf;
+  const terms = (parsed && parsed.terms) || [];
+  const hasAll = !!parsed && parsed.all != null && parsed.allIndex >= 0;
   const targets = [];
-  for (const term of (parsed && parsed.terms) || []) if (term.mechanism === 'include' && term.value) targets.push(term.value);
-  if (parsed && parsed.modifiers && parsed.modifiers.redirect) targets.push(parsed.modifiers.redirect);
+  for (const term of hasAll ? terms.slice(0, parsed.allIndex) : terms) if (term.mechanism === 'include' && term.value) targets.push(term.value);
+  if (!hasAll && parsed && parsed.modifiers && parsed.modifiers.redirect) targets.push(parsed.modifiers.redirect);
   const senders = [];
   const other = [];
   for (const target of uniq(targets.map(canon))) {

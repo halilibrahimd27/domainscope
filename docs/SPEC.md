@@ -1992,7 +1992,7 @@ export const DNS_PROVIDERS   // NS host → provider by suffix or pattern: Cloud
 export function dnsProviderOf(nsHost, { domain }) -> { id, name } | { id: 'self' } | null ; export function dnsHosting(nsHosts, { domain }) -> { providers: [{ id, name, hosts }], self, other }
 export const MAIL_PLATFORMS  // { id, name, kind: 'mailbox'|'gateway'|'forwarding'|'sending', mx (suffixes), mxPatterns, spf (include suffixes) }: Microsoft 365, Google Workspace,
                              // Zoho, Yandex 360, Yaani, Türk Telekom, Mail.ru, Proton, iCloud, Fastmail, …, Mimecast, Proofpoint, Barracuda, Cisco, …, SendGrid, Mailgun, Amazon SES, …
-export function mailPlatformOf(exchange) -> { id, name, kind } | null ; export function spfSenders(spf) -> { senders: [{ id, name, kind }], other: string[] }   // include: / redirect=, macro includes by suffix
+export function mailPlatformOf(exchange) -> { id, name, kind } | null ; export function spfSenders(spf) -> { senders: [{ id, name, kind }], other: string[] }   // include: / redirect=, macro includes by suffix; nothing past `all`, and no redirect= next to one
 export const TXT_VENDORS     // { id, name, key, re }: ~100 verification-token prefixes, anchored at the record's start (google-site-verification, MS=, facebook-, apple-, atlassian-,
                              // docusign=, stripe-, ZOOM_verify_, adobe-idp-, hubspot-, openai-, anthropic-, …); `key` is the fixed prefix, the only part ever shown
 export function txtVendorOf(record) -> { id, name, key } | null ; export function saasFingerprints(records) -> { vendors: [{ id, name, key, count }], other, policy, total }   // never a token

@@ -252,6 +252,9 @@ describe('names and tables', () => {
     assert.deepEqual(r.other, ['spf.example.net']);
     assert.deepEqual(spfSenders('v=spf1 redirect=_spf.yandex.net').senders.map((s) => s.id), ['yandex']);
     assert.deepEqual(spfSenders('not spf'), { senders: [], other: [] });
+    // Receivers never get past "all": a redirect next to it is ignored, an include after it never evaluated (RFC 7208 §5.1, §6.1).
+    assert.deepEqual(spfSenders('v=spf1 include:_spf.google.com redirect=spf.protection.outlook.com ~all').senders.map((s) => s.id), ['google']);
+    assert.deepEqual(spfSenders('v=spf1 ip4:192.0.2.1 -all include:_spf.google.com'), { senders: [], other: [] });
   });
 
   test('TXT vendors: anchored prefixes, the documented keys, never a token', () => {

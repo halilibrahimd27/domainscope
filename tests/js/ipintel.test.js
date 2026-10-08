@@ -185,6 +185,14 @@ test('parseReverseIpText: hosts, quota, errors, empty', () => {
   assert.equal(err.ok, false);
   assert.equal(err.limited, false);
   assert.equal(err.error, 'error check your search parameter');
+  assert.equal(parseReverseIpText('error invalid host').ok, false);
+  // A host list whose first host starts with "error." or "error-" is a host list, never an error.
+  for (const first of ['error-pages.example.com', 'error.example.net']) {
+    const list = parseReverseIpText(`${first}\nshop.example.com\nwww.example.com`);
+    assert.equal(list.ok, true, first);
+    assert.equal(list.error, null, first);
+    assert.ok(list.domains.includes(first) && list.domains.length === 3, `${first}: ${list.domains}`);
+  }
 
   assert.deepEqual(parseReverseIpText('No DNS A records found for 1.2.3.4').domains, []);
   assert.equal(parseReverseIpText('No DNS A records found').ok, true);

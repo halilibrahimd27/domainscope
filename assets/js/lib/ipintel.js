@@ -225,7 +225,9 @@ export function parseReverseIpText(text) {
     ok: false, domains: [], error, limited, errorKind: limited ? 'rate-limit' : 'http'
   });
   if (/api count exceeded|increase quota|rate limit|too many requests/i.test(body)) return fail(firstLine(body), true);
-  if (/^error\b/i.test(body)) return fail(firstLine(body));
+  // "error check your search parameter", "error invalid host": the word, then a space (a host
+  // list whose first host is error.example.net or error-pages.example.com is a host list).
+  if (/^error(?:[\s:]|$)/i.test(body)) return fail(firstLine(body));
   if (!body || /^no (dns )?(a )?records? found/i.test(body) || /^no records/i.test(body)) {
     return { ok: true, domains: [], error: null, limited: false, errorKind: null };
   }

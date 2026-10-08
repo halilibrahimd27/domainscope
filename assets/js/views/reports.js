@@ -730,6 +730,8 @@ let S = fresh();
 let subscribed = false;
 let rerender = null;
 let intelService = null;
+/** The DohClient intelService asks: a new one (another resolver chain) gets a new service. */
+let intelDns = null;
 let active = null;
 
 /** Forget every report (Forget, another workspace, "Delete all local data"). */
@@ -981,11 +983,16 @@ export function mount(container, ctx) {
     const sig = signal();
     for (const ip of todo) mine.intel.set(ip, { loading: true });
     refreshRows(todo);
-    if (!intelService) intelService = createIpIntel({ dns: await ctx.getDns(), concurrency: 3 });
+    const dns = await ctx.getDns();
+    if (!intelService || intelDns !== dns) {
+      intelService = createIpIntel({ dns, concurrency: 3 });
+      intelDns = dns;
+    }
+    const intel = intelService;
     let done = 0;
     await Promise.all(todo.map(async (ip) => {
       try {
-        mine.intel.set(ip, { info: await intelService.info(ip, { signal: sig }) });
+        mine.intel.set(ip, { info: await intel.info(ip, { signal: sig }) });
         done += 1;
       } catch (err) {
         mine.intel.delete(ip);

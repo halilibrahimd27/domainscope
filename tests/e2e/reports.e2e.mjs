@@ -44,6 +44,7 @@ import { deflateRawSync } from 'node:zlib';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import { crc32 } from '../../assets/js/lib/zipread.js';
+import { DEFAULT_CHAIN, getResolver } from '../../assets/js/lib/resolvers.js';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
   gotoRoute, installDownloadCapture, setLangUi, shot, stubClipboard, takeClipboard, takeDownloads, waitReady, csvHeader
@@ -96,7 +97,7 @@ const fakeScript = () => `(() => {
     wire = wire || await import(new URL('assets/js/lib/dnswire.js', document.baseURI).href);
     const q = wire.decodeMessage(wire.base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
     const qname = String(q.name).toLowerCase().replace(/[.]$/, '');
-    window.__dnsLog.push({ name: qname, type: q.type });
+    window.__dnsLog.push({ name: qname, type: q.type, host: u.hostname });
     const forced = window.__rcodes[qname + '|' + q.type];
     const node = Z[qname];
     const answers = forced || !node ? [] : (node[q.type] || []).map((data) => ({ name: qname, type: q.type, ttl: 300, data }));
@@ -285,6 +286,37 @@ async function main() {
       assert(/AS64496 Example Hosting Ltd/.test(await text(page, '.rpt-sources tbody')), 'AS holder');
       assertEqual((await page.evaluate(() => window.__ipLog)).sort(), ['maxmind-geo-lite 192.0.2.200', 'prefix-overview 192.0.2.200'], 'one address, RIPEstat only');
       await page.waitFor(() => /Look up 9 addresses/.test(document.querySelector('[data-action="rpt-intel-all"]')?.textContent || ''), { message: 'bulk count' });
+    });
+
+    await run.step('a resolver taken out of the chain in Settings: the next reverse DNS goes to the chain as it is now', async () => {
+      const host = (id) => new URL(getResolver(id).url).hostname;
+      const ptrs = () => page.evaluate(() => window.__dnsLog.filter((q) => q.type === 'PTR').map((q) => `${q.name} ${q.host}`));
+      assertEqual(await ptrs(), [`200.2.0.192.in-addr.arpa ${host(DEFAULT_CHAIN[0])}`], 'the first lookup asked the first resolver');
+      const waitChain = (want, message) => page.waitFor((w) => JSON.parse(localStorage.getItem('ssds.settings') || '{}').chain?.join(',') === w,
+        { args: [want], message });
+      const settings = async (act) => {
+        await page.click('[data-control="settings"]');
+        try {
+          await page.waitForSelector('dialog.modal[open] .settings-resolvers');
+          await act();
+        } finally {
+          await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+        }
+        await page.waitFor(() => !document.querySelector('dialog[open]'), { message: 'settings closed' });
+      };
+      await settings(async () => {
+        await page.click(`dialog.modal[open] [data-resolver="${DEFAULT_CHAIN[0]}"] input[type="checkbox"]`);
+        await waitChain(DEFAULT_CHAIN.slice(1).join(','), `chain without ${DEFAULT_CHAIN[0]}`);
+      });
+      const ip = await page.evaluate(() => document.querySelector('[data-action="rpt-intel"]')?.dataset.ip);
+      await page.click(`[data-action="rpt-intel"][data-ip="${ip}"]`);
+      await page.waitFor(() => window.__dnsLog.filter((q) => q.type === 'PTR').length === 2, { message: 'second PTR' });
+      const second = (await ptrs())[1];
+      assert(second.endsWith(` ${host(DEFAULT_CHAIN[1])}`), `the reverse DNS of ${ip} goes to the new chain: ${second}`);
+      await settings(async () => {
+        await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open] .modal-foot button')][0].click());
+        await waitChain(DEFAULT_CHAIN.join(','), 'restore defaults');
+      });
     });
 
     await run.step('CSV of the sources (every column) and Copy summary (no server name, the bare link)', async () => {

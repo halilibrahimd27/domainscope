@@ -13,15 +13,18 @@
  *   type and every name kept), counted when it drops a name, changes the key type or the CA;
  * - a host whose DNS lookup failed is listed once (FAILED, not counted: nothing was compared) and
  *   the next run is compared with the endpoints it carried; NXDOMAIN (the name went) is GONE, counted.
- * Per certificate (ARI with --ari, the CRL with --revocation), counted, tone bad:
- * - RENEW-NOW: the CA's ARI window has opened (or ended, the renewal overdue) since the last check
- *   of that certificate, or a certificate first seen in its window;
+ * Per certificate (ARI with --ari, the CRL with --revocation), counted, tone bad, also for a target
+ * new to the list (compared with nothing):
+ * - RENEW-NOW: the CA's ARI window has opened (or ended, the renewal overdue) since the baseline last
+ *   saw that certificate served — the window it knew then, at that time (the target's check; the
+ *   check a DNS outage carried; an endpoint's lastGood `at`), never at its answer's `checkedAt`: an
+ *   answer carried past its Retry-After keeps that time —, or a certificate first seen in its window;
  * - MOVED-UP: its window starts more than {@link MOVED_UP_MS} earlier than the last answer said — a CA
  *   does that before a mass revocation;
  * - CA-NOTICE: an explanationURL the target's last answers did not carry;
  * - REVOKED: its CRL lists it now, and did not at the last check (or it is new).
- * The research notes named MOVED-UP and CA-NOTICE "WINDOW-MOVED" and "EXPLANATION"; the tags keep to
- * the nine characters of the CLI's change column.
+ * The research notes named MOVED-UP and CA-NOTICE "WINDOW-MOVED" and "EXPLANATION"; SPEC §9 has every
+ * tag at most nine characters (tests/js/ds-runner.test.js), the change column of both tools.
  */
 
 import { code, isoDay } from './render.mjs';
@@ -97,6 +100,8 @@ function certDifferences(a, b) {
 
 /** The time of a target's check (ms), else the report's start. */
 const checkedMs = (x, doc) => Date.parse((x && x.checkedAt) || (doc && doc.startedAt) || '') || NaN;
+/** When a target's endpoints were read (ms): a DNS outage carried them from an earlier check. */
+const servedMs = (x, doc) => (x && x.carried && Date.parse(x.carried.from)) || checkedMs(x, doc);
 
 /**
  * @param {object} before the baseline report
@@ -112,6 +117,8 @@ export function diffTls(before, after) {
     if (!b) {
       const ok = (a.endpoints || []).filter((e) => e.cert).length;
       out.push(change('NEW', target, null, [a.carried ? 'now checked (its DNS lookup failed this run)' : `now checked: ${ok} endpoint${ok === 1 ? '' : 's'} served a certificate`], { kind: 'appeared' }));
+      // what its certificates are in now (a window open, a revocation) is said once, as the CLI does
+      if (!a.carried) out.push(...diffCertificates(target, a, { endpoints: [] }, before, after));
       continue;
     }
     if (a.carried) {
@@ -185,24 +192,32 @@ function diffEndpoints(target, a, b) {
   return out;
 }
 
-/** Every certificate a target's report knows, with its ARI and revocation: sha256 → { cert, ari, revocation }. */
-function certificatesOf(x) {
+/**
+ * Every certificate a target's report knows, with its ARI and revocation and when it was last seen
+ * served (ms: the target's check, or an endpoint's lastGood `at`): sha256 → { cert, ari, revocation,
+ * seenAt }, the newest record of a certificate two endpoints know.
+ */
+function certificatesOf(x, doc) {
   const out = new Map();
+  const served = servedMs(x, doc);
   for (const e of (x && x.endpoints) || []) {
     const c = certOf(e);
-    if (!c || out.has(c.sha256)) continue;
-    out.set(c.sha256, { cert: c, ...extrasOf(e) });
+    if (!c) continue;
+    const seenAt = e.cert ? served : Date.parse(e.lastGood.at) || served;
+    const had = out.get(c.sha256);
+    if (!had || seenAt > had.seenAt) out.set(c.sha256, { cert: c, ...extrasOf(e), seenAt });
   }
   return out;
 }
 
 function diffCertificates(target, a, b, before, after) {
   const out = [];
-  const prev = certificatesOf(b);
+  const prev = certificatesOf(b, before);
   const at = checkedMs(a, after);
   const prevExplanations = new Set();
   let prevRead = false;
-  for (const { ari } of prev.values()) {
+  for (const e of b.endpoints || []) {
+    const { ari } = extrasOf(e);
     if (ari && !ari.error) {
       prevRead = true;
       if (ari.explanationURL) prevExplanations.add(ari.explanationURL);
@@ -218,7 +233,8 @@ function diffCertificates(target, a, b, before, after) {
     const pAri = p && p.ari && !p.ari.error ? p.ari : null;
     if (ari) {
       const state = windowState(ari, at);
-      const pState = pAri ? windowState(pAri, Date.parse(pAri.checkedAt) || checkedMs(b, before)) : null;
+      // the window the baseline knew, when it last saw the certificate served (what its run said)
+      const pState = pAri ? windowState(pAri, [p.seenAt, Date.parse(pAri.checkedAt), at].find(Number.isFinite)) : null;
       if ((state === 'open' || state === 'past') && STATE_RANK[state] > (pState === null ? -1 : STATE_RANK[pState])) {
         out.push(change('RENEW-NOW', target, sha, [...label, state === 'open'
           ? `: the CA's renewal window opened (${isoDay(ari.start)} – ${isoDay(ari.end)}): renew it now`

@@ -390,6 +390,51 @@ test('changes: a window moved by less than a day, later, or a Google-like fixed 
   assert.deepEqual(diffTls(before, failed), []);
 });
 
+test('changes: RENEW-NOW is said once for a window the baseline saw open, whenever the CA was last asked', () => {
+  const c = cert('a');
+  const W = ['2026-10-09T05:00:00.000Z', '2026-10-12T00:00:00.000Z'];
+  const asked = (at) => ariOf(...W, { checkedAt: at, retryAfter: new Date(Date.parse(at) + 6 * 3600000).toISOString() });
+  const night = (at, endpoint, extra = {}) => report([tgt([endpoint], { checkedAt: at, ...extra })], at);
+  // 03:00 asked (the window opens at 05:00), 06:00 the answer carried (before its Retry-After), 03:00 the next day asked again
+  const n1 = night('2026-10-09T03:00:00.000Z', ep('192.0.2.10', 'OK', { cert: c, ari: asked('2026-10-09T03:00:00.000Z') }));
+  const n2 = night('2026-10-09T06:00:00.000Z', ep('192.0.2.10', 'OK', { cert: c, ari: { ...asked('2026-10-09T03:00:00.000Z'), carried: { from: '2026-10-09T03:00:00.000Z' } } }));
+  const n3 = night('2026-10-10T03:00:00.000Z', ep('192.0.2.10', 'OK', { cert: c, ari: asked('2026-10-10T03:00:00.000Z') }));
+  assert.deepEqual(diffTls(n1, n2).map((x) => x.tag), ['RENEW-NOW'], 'the window opened between the two runs');
+  assert.deepEqual(diffTls(n2, n3), [], 'the baseline served it with its window open: no RENEW-NOW again');
+  // an endpoint that did not answer: its last good run is when the window was last seen
+  const down = (at, lastGood) => night(at, ep('192.0.2.10', 'TIMEOUT', { error: 'no answer within 10 s', lastGood }));
+  const seenOpen = down('2026-10-10T03:00:00.000Z', { at: '2026-10-09T06:00:00.000Z', cert: c, ari: n2.targets[0].endpoints[0].ari });
+  assert.deepEqual(diffTls(seenOpen, n3).map((x) => x.tag), ['RECOVERED'], 'its last good run already saw the window open');
+  const early = night('2026-10-08T03:00:00.000Z', ep('192.0.2.10', 'OK', { cert: c, ari: asked('2026-10-08T03:00:00.000Z') }));
+  const seenBefore = down('2026-10-10T03:00:00.000Z', { at: '2026-10-08T03:00:00.000Z', cert: c, ari: early.targets[0].endpoints[0].ari });
+  assert.deepEqual(diffTls(seenBefore, n3).map((x) => x.tag), ['RECOVERED', 'RENEW-NOW'], 'the window opened while the endpoint was down');
+  // a DNS outage carries the endpoints of the last check: compared as of that check
+  const outage = night('2026-10-10T03:00:00.000Z', early.targets[0].endpoints[0], {
+    dns: { status: 'SERVFAIL', ipv4: [], ipv6: [], cnames: [], error: 'x' }, carried: { from: '2026-10-08T03:00:00.000Z' }
+  });
+  assert.deepEqual(diffTls(outage, n3).map((x) => x.tag), ['RECOVERED', 'RENEW-NOW'], 'the window opened during the outage');
+  // one certificate on two endpoints, one of them down: the newest record of it is the baseline's
+  const moved = ariOf('2026-10-09T12:00:00.000Z', '2026-10-11T00:00:00.000Z', { checkedAt: '2026-10-10T03:00:00.000Z' });
+  const both = report([tgt([ep('192.0.2.10', 'TIMEOUT', { lastGood: { at: '2026-10-08T03:00:00.000Z', cert: c, ari: ariOf('2026-11-01T00:00:00.000Z', '2026-11-03T00:00:00.000Z') } }),
+    ep('192.0.2.11', 'OK', { cert: c, ari: moved })], { checkedAt: '2026-10-10T03:00:00.000Z' })], '2026-10-10T03:00:00.000Z');
+  const back = report([tgt([ep('192.0.2.10', 'OK', { cert: c, ari: { ...moved, checkedAt: '2026-10-10T12:00:00.000Z' } }),
+    ep('192.0.2.11', 'OK', { cert: c, ari: { ...moved, checkedAt: '2026-10-10T12:00:00.000Z' } })], { checkedAt: '2026-10-10T12:00:00.000Z' })], '2026-10-10T12:00:00.000Z');
+  assert.deepEqual(diffTls(both, back).map((x) => x.tag), ['RECOVERED'], 'no MOVED-UP or RENEW-NOW again from the older record');
+});
+
+test('changes: a target new to the list says NEW, and RENEW-NOW and REVOKED for what it serves', () => {
+  const c = cert('a');
+  const old = { ...tgt([ep('192.0.2.1', 'OK', { cert: cert('b') })]), target: 'old.example.com', host: 'old.example.com' };
+  const before = report([old], '2026-10-08T03:00:00.000Z');
+  const added = tgt([ep('192.0.2.10', 'OK', { cert: c, ari: ariOf('2026-10-01T00:00:00.000Z', '2026-10-20T00:00:00.000Z', { checkedAt: '2026-10-09T03:00:00.000Z' }),
+    revocation: { status: 'revoked', reason: 'keyCompromise', time: '2026-10-05T00:00:00.000Z' } })]);
+  const after = report([old, added]);
+  assert.deepEqual(diffTls(before, after).map((x) => [x.tag, x.counts]), [['NEW', true], ['RENEW-NOW', true], ['REVOKED', true]]);
+  assert.deepEqual(diffTls(after, report([old, { ...added, checkedAt: '2026-10-10T03:00:00.000Z' }], '2026-10-10T03:00:00.000Z')), [], 'said once');
+  const quiet = tgt([ep('192.0.2.10', 'OK', { cert: c, ari: ariOf('2026-11-01T00:00:00.000Z', '2026-11-03T00:00:00.000Z'), revocation: { status: 'good' } })]);
+  assert.deepEqual(diffTls(before, report([old, quiet])).map((x) => x.tag), ['NEW'], 'a window not open yet and a good CRL: NEW only');
+});
+
 test('changes: CERT counted when a name goes or the key type or CA changes; handshake failures; SKIPPED never', () => {
   const c = cert('a');
   const base = report([tgt([ep('192.0.2.10', 'OK', { cert: c }), ep('192.0.2.11', 'OK', { cert: c }), ep('2001:db8::10', 'SKIPPED', { error: 'no-ipv6-route' })])], '2026-10-08T03:00:00.000Z');

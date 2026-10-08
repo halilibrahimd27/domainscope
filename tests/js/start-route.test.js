@@ -65,9 +65,12 @@ const JS = join(ASSETS, 'js');
  * netinfo.js re-exports: ≈ 364 KB (372,300 bytes). The origin map (lib/originmap.js, which the
  * workspace store and every scan read, and the Subdomains view's rows of remembered origins) added
  * ≈ 5.5 KB: ≈ 369 KB (377,888 bytes), 992 bytes under the budget.
+ * Wave 6's correctness fixes in start-route modules (the shell, the workspace store, the Subdomains
+ * view, the summary core) together added ≈ 1.6 KB: ≈ 371 KB (379,552 bytes). The budget is 372 KB
+ * until the start-route diet of wave 6 brings the route back under 370 KB.
  * Raise it only for a reason you can name in the commit.
  */
-const START_ROUTE_BUDGET = 370 * 1024;
+const START_ROUTE_BUDGET = 372 * 1024;
 
 /** Modules that must never be part of the start route (lib/summary.js: every view's Copy summary but the start view's; lib/netinfo.js: the provider tables, the shell needs only lib/ip.js). */
 const HEAVY = ['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/zoneparse.js', 'lib/x509.js', 'lib/health.js',

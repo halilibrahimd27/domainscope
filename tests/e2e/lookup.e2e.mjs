@@ -429,6 +429,21 @@ async function offlineGroup(browser, server) {
       await page.evaluate(() => { window.__dohFail.slow = {}; });
     });
 
+    await step('the summary leads a domain on to Global DNS and Domain Health, and the root zone to neither', async () => {
+      const links = () => page.evaluate(() => [...document.querySelectorAll('.lkp-sum-actions a')].map((a) => a.hash));
+      await gotoHash(page, '#/lookup?name=example.com&type=NS', 'lookup');
+      await page.waitFor(ALL_DONE, { timeout: 30000, message: 'example.com answered' });
+      const domain = await links();
+      assert(domain.some((x) => x.startsWith('#/global?name=example.com')) && domain.includes('#/health?domain=example.com'), `example.com: ${JSON.stringify(domain)}`);
+      // Nothing outside example.com is answered here: the root's NS query is rate limited instead.
+      await page.evaluate(() => { window.__dohFail.types = ['NS']; });
+      await gotoHash(page, '#/lookup?name=.&type=NS', 'lookup');
+      await page.waitFor(() => document.querySelector('.lkp-card[data-type="NS"]')?.dataset.state === 'error', { timeout: 15000, message: 'the root asked' });
+      await page.waitFor(ALL_DONE, { timeout: 30000, message: 'the root lookup done' });
+      assertEqual(await links(), [], 'Domain Health would refuse "." (no domain), Global DNS is not offered for it');
+      await page.evaluate(() => { window.__dohFail.types = []; });
+    });
+
     for (const [scheme, lang, width] of [['light', 'en', 375], ['dark', 'tr', 375], ['dark', 'tr', 1440]]) {
       await step(`[${scheme}, ${lang.toUpperCase()}, ${width} px] the compact lookup reads well and fits`, async () => {
         await page.setViewport(width < 600 ? { width, height: 812, mobile: true } : { width, height: 900 });

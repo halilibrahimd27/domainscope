@@ -1,5 +1,6 @@
 /*
- * views/ip.css — "IP Intel" view (.ipi-*).
+ * views/ip.css — "IP Intel" view (.ipi-*), with its routing panel in a row's details
+ * (ui/ip-enrich-panel.js, .ipe-*).
  */
 
 .ipi-input .textarea {
@@ -188,5 +189,136 @@
   .ipi-op,
   .ipi-holder {
     min-width: 0;
+  }
+}
+
+/* Routing, RPKI and abuse contact (ui/ip-enrich-panel.js) in a row's details. */
+.ipi-enrich {
+  max-width: 60rem;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.ipe-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ipe-title {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.ipe-note {
+  margin: 0 0 8px;
+}
+
+.ipe-rpki-row,
+.ipe-pdb-net,
+.ipe-routing {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ipe-roas,
+.ipe-server-list {
+  margin: 2px 0 0;
+  padding-left: 1.1rem;
+}
+
+.ipe-abuse a,
+.ipe-prefix,
+.ipe-server-list li {
+  overflow-wrap: anywhere;
+}
+
+.ipe-crumbs-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.ipe-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.ipe-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.ipe-crumb:hover {
+  background: var(--surface-hover);
+}
+
+.ipe-crumb.is-announced {
+  border-color: var(--accent-soft-border);
+}
+
+.ipe-crumb[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.ipe-crumb-count {
+  min-width: 1.4em;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.ipe-crumb-count.is-zero {
+  color: var(--text-3);
+}
+
+.ipe-sep {
+  color: var(--text-3);
+}
+
+.ipe-servers-title {
+  margin: 0;
+}
+
+.ipe-here {
+  margin-left: 4px;
+}
+
+@media (max-width: 640px) {
+  .ipe-head {
+    align-items: flex-start;
+  }
+
+  .ipe-crumb {
+    font-size: 0.75rem;
+  }
+}
+
+@media print {
+  .ipe-head .btn {
+    display: none;
   }
 }

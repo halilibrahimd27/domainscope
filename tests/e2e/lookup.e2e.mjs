@@ -12,6 +12,14 @@
  * Retry that asks that type alone again, also while a slower type of the same lookup still runs;
  * 1440 and 375 px, light and dark, English and Turkish.
  *
+ * OFFLINE group "DNSSEC chain" (always runs): the summary's "DNSSEC chain" button validates the
+ * chain of trust in the page (ui/dnssec-panel.js, lib/dnssec.js) against zones signed with
+ * node:crypto on this run (tests/fixtures/dnssec/signed-zones.mjs), served by an in-page DoH; the
+ * trust anchor module is answered with the fixture root's anchor (CDP Fetch). Secure RSA / ECDSA /
+ * Ed25519 / NSEC3 chains, a CNAME followed, a DS that matches no DNSKEY after a rollover, expired
+ * signatures, an unsupported algorithm (insecure, never bogus), an unsigned delegation, a question
+ * that got no answer (indeterminate, Retry), the type select, Turkish, 375 and 320 px.
+ *
  * Covers: pure helpers (Node); shared link with many types + DNSSEC (parsed A/AAAA, MX, TXT,
  * SOA, CAA, HTTPS, DS, DNSKEY cards, AD flag, RRSIG section, raw dig text); IP → PTR; NXDOMAIN;
  * a specific resolver; presets and "other types" validation; host links navigating inside the
@@ -25,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import { zoneHandoffScript } from './scan.e2e.mjs';
+import { buildZones, answerTable } from '../fixtures/dnssec/signed-zones.mjs';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import {
   parseTypes, parseLookupName, soaSerialDate, rrsigStatus, txtKinds, digLine, responseText, TYPE_PRESETS
@@ -232,6 +241,7 @@ async function main() {
 
   try {
     await offlineGroup(browser, server);
+    await dnssecGroup(browser, server);
     if (!OFFLINE) await liveGroups(browser, server);
   } finally {
     await browser.close();
@@ -474,6 +484,210 @@ async function offlineGroup(browser, server) {
 }
 
 /** The live groups: real DoH resolvers. */
+/* ------------------------------------------------------------------------ */
+/* Offline: the DNSSEC chain of trust                                       */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * An in-page DoH answering from `window.__dsecTable` (`name|TYPE` → base64 wire answer, the signed
+ * fixture). A key in `window.__dsecFail` gets HTTP 429 from every resolver; `__dsecAsked` lists every
+ * question; any other request outside the page's origin is refused and noted in `__dsecBlocked`.
+ */
+const dnssecDohScript = (table) => `(() => {
+  window.__dsecTable = ${JSON.stringify(table)};
+  window.__dsecFail = [];
+  window.__dsecAsked = [];
+  window.__dsecBlocked = [];
+  const realFetch = window.fetch.bind(window);
+  let wire = null;
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    const m = /[?&]dns=([^&]+)/.exec(url);
+    if (!m) {
+      if (new URL(url, location.href).origin === location.origin) return realFetch(input, init);
+      window.__dsecBlocked.push(url);
+      throw new TypeError('blocked by the E2E (DNSSEC chain)');
+    }
+    wire = wire || await import(new URL('assets/js/lib/dnswire.js', document.baseURI).href);
+    const q = wire.decodeMessage(wire.base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
+    const key = (q.name === '.' ? '.' : String(q.name).toLowerCase().replace(/[.]$/, '')) + '|' + q.type;
+    window.__dsecAsked.push(key);
+    if (window.__dsecFail.includes(key)) return new Response('Too Many Requests', { status: 429 });
+    const b64 = window.__dsecTable[key];
+    if (!b64) {
+      window.__dsecBlocked.push('dns:' + key);
+      return new Response('not in the fixture', { status: 404 });
+    }
+    return new Response(wire.base64Decode(b64), { headers: { 'content-type': 'application/dns-message' } });
+  };
+})();`;
+
+/** What the DNSSEC panel shows: its state, verdict, reason and every zone card in order. */
+function dnssecInfo() {
+  const panel = document.querySelector('.dsec-panel');
+  if (!panel) return null;
+  const verdict = panel.querySelector('.dsec-verdict');
+  const body = panel.querySelector('.dsec-body');
+  const cards = [...panel.querySelectorAll('.dsec-body > .dsec-chain > .dsec-zone')];
+  return {
+    state: panel.dataset.state || '',
+    status: panel.dataset.status || '',
+    reason: verdict ? verdict.dataset.reason : '',
+    breakAt: verdict ? verdict.dataset.breakAt : '',
+    first: body && body.firstElementChild ? body.firstElementChild.className : '',
+    verdict: verdict ? verdict.textContent.replace(/\s+/g, ' ').trim() : '',
+    zones: cards.map((z) => [z.dataset.zone, z.dataset.status]),
+    alias: [...panel.querySelectorAll('.dsec-alias .dsec-zone')].map((z) => [z.dataset.zone, z.dataset.status]),
+    keys: cards.map((z) => [...z.querySelectorAll('.dsec-key-table tbody tr')].map((tr) => tr.textContent.replace(/\s+/g, ' ').trim())),
+    sigResults: [...panel.querySelectorAll('.dsec-sig')].map((x) => x.dataset.result),
+    retry: !!panel.querySelector('.dsec-verdict [data-action="retry-source"]'),
+    title: panel.querySelector('.dsec-title')?.textContent || '',
+    text: panel.textContent.replace(/\s+/g, ' ')
+  };
+}
+
+async function openChain(page, name, type = 'A') {
+  await gotoHash(page, `#/lookup?name=${name}&type=${type}`, 'lookup');
+  await page.waitFor(ALL_DONE, { timeout: 30000, message: `${name} answered` });
+  await page.waitFor((n) => document.querySelector('.lkp-sum-name')?.textContent === n, { args: [name], message: `${name} summary` });
+  await page.click('[data-action="dnssec-chain"]');
+  await page.waitFor(() => ['done', 'error'].includes(document.querySelector('.dsec-panel')?.dataset.state), { timeout: 30000, message: `${name} chain validated` });
+  return page.evaluate(dnssecInfo);
+}
+
+async function dnssecGroup(browser, server) {
+  group('Offline: DNSSEC chain of trust (signed fixture zones answered in the page)');
+  const world = buildZones({ now: Date.now() });
+  const anchorModule = `export const ROOT_ANCHORS = Object.freeze(${JSON.stringify(world.rootAnchor())});\n`;
+  const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+  const anchorsServed = [];
+  page.conn.on('Fetch.requestPaused', (p) => {
+    anchorsServed.push(p.request.url);
+    page.send('Fetch.fulfillRequest', {
+      requestId: p.requestId, responseCode: 200,
+      responseHeaders: [{ name: 'Content-Type', value: 'text/javascript; charset=utf-8' }],
+      body: Buffer.from(anchorModule).toString('base64')
+    }).catch(() => {});
+  }, page.sessionId);
+  await page.send('Fetch.enable', { patterns: [{ urlPattern: '*/assets/js/lib/dnssec-anchors.js*' }] });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: dnssecDohScript(answerTable(world)) });
+  await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+  const zone = (name) => world.zones.get(name);
+  try {
+    await step('secure: root → example → rsa.example → the answer, every card secure, the verdict first', async () => {
+      await page.goto(`${server.url}#/about`);
+      await waitReady(page);
+      await setLangUi(page, 'en');
+      const info = await openChain(page, 'www.rsa.example');
+      assert(anchorsServed.length > 0, 'the anchor module was served by the test');
+      assertEqual(info.status, 'secure', `status (${info.verdict})`);
+      assertEqual(info.zones, [['.', 'secure'], ['example', 'secure'], ['rsa.example', 'secure'], ['answer', 'secure']], 'zone cards');
+      assert(info.first.includes('dsec-verdict'), `the verdict comes first: ${info.first}`);
+      assert(/www\.rsa\.example A is secure/.test(info.verdict), info.verdict);
+      const rsa = info.keys[2].join(' | ');
+      const z = zone('rsa.example');
+      assert(rsa.includes(String(z.ksk.keyTag)) && rsa.includes('KSK') && rsa.includes('matches the DS') && rsa.includes('2,048 bits'), `rsa.example keys: ${rsa}`);
+      assert(rsa.includes(String(z.zsk.keyTag)) && rsa.includes('ZSK'), `the ZSK: ${rsa}`);
+      assert(info.text.includes(`DNSKEY ${z.ksk.keyTag}`), 'the DS row names the key it matches');
+      assert(info.sigResults.length > 0 && info.sigResults.every((r) => r === 'valid'), `signatures: ${info.sigResults}`);
+      await shot(page, 'lookup-dnssec-secure');
+    });
+
+    await step('ECDSA, Ed25519 and NSEC3 zones; a CNAME followed into its target’s own chain', async () => {
+      for (const [name, type] of [['www.ecdsa.example', 'AAAA'], ['www.ed.example', 'A'], ['nope.n3.example', 'A']]) {
+        const info = await openChain(page, name, type);
+        assertEqual(info.status, 'secure', `${name} ${type}: ${info.verdict}`);
+      }
+      const n3 = await page.evaluate(dnssecInfo);
+      assert(n3.text.includes('NXDOMAIN') && n3.text.includes('Proof of absence: NSEC3, signed and checked'), `the NSEC3 proof: ${n3.text.slice(0, 600)}`);
+      const alias = await openChain(page, 'alias.rsa.example');
+      assertEqual(alias.status, 'secure', alias.verdict);
+      assertEqual(alias.alias, [['.', 'secure'], ['example', 'secure'], ['ecdsa.example', 'secure'], ['answer', 'secure']], 'the target’s chain');
+    });
+
+    await step('a DS that matches no DNSKEY after a rollover: bogus, the break and its fix first, with both key tags', async () => {
+      const info = await openChain(page, 'www.rollover.example');
+      const z = zone('rollover.example');
+      assertEqual(info.status, 'bogus', info.verdict);
+      assertEqual(info.reason, 'ds-no-match', 'reason');
+      assertEqual(info.breakAt, 'rollover.example', 'where');
+      assertEqual(info.zones.map((x) => x[1]), ['secure', 'secure', 'bogus', 'skipped'], 'statuses');
+      assert(info.verdict.includes(`publish a DS for the current KSK (key tag ${z.ksk.keyTag})`) && info.verdict.includes(`remove the one for ${z.ds[0].keyTag}`), `the fix: ${info.verdict}`);
+      await shot(page, 'lookup-dnssec-bogus');
+    });
+
+    await step('expired signatures: bogus at the zone with the date; GOST: insecure, never bogus; an unsigned delegation: insecure', async () => {
+      const expired = await openChain(page, 'www.expired.example');
+      assertEqual([expired.status, expired.reason, expired.breakAt], ['bogus', 'sig-expired', 'expired.example'], expired.verdict);
+      assert(expired.sigResults.includes('expired') && /expired on/.test(expired.verdict), expired.verdict);
+      const gost = await openChain(page, 'www.gost.example');
+      assertEqual([gost.status, gost.reason], ['insecure', 'unsupported-algorithm'], gost.verdict);
+      assert(gost.verdict.includes('not as bogus') && gost.verdict.includes('ECC-GOST'), gost.verdict);
+      const unsigned = await openChain(page, 'www.unsigned.example');
+      assertEqual([unsigned.status, unsigned.reason, unsigned.breakAt], ['insecure', 'no-ds', 'unsigned.example'], unsigned.verdict);
+      assert(unsigned.verdict.includes('signed NSEC record proves it') && unsigned.text.includes('Shown unchecked'), unsigned.text.slice(0, 600));
+    });
+
+    await step('a question that got no answer: indeterminate with the reason and a Retry that asks again', async () => {
+      // The zones above are in the DoH client's cache by now: the answer's own question fails.
+      await page.evaluate(() => { window.__dsecFail = ['mail.rsa.example|MX']; });
+      const info = await openChain(page, 'mail.rsa.example', 'MX');
+      assertEqual([info.status, info.reason, info.breakAt], ['indeterminate', 'query-failed', 'answer'], info.verdict);
+      assert(info.retry, 'a Retry in the verdict');
+      assert(info.verdict.includes('⚠'), `the status says why: ${info.verdict}`);
+      await page.evaluate(() => { window.__dsecFail = []; });
+      await page.click('.dsec-verdict [data-action="retry-source"]');
+      await page.waitFor(() => document.querySelector('.dsec-panel')?.dataset.status === 'secure', { timeout: 30000, message: 'secure after the Retry' });
+    });
+
+    await step('a new lookup closes the chain; the type select validates another type of the lookup', async () => {
+      await gotoHash(page, '#/lookup?name=www.ecdsa.example&type=A,TXT', 'lookup');
+      await page.waitFor(ALL_DONE, { timeout: 30000, message: 'answered' });
+      assertEqual(await page.evaluate(() => document.querySelectorAll('.dsec-panel').length), 0, 'no panel of the old lookup');
+      await page.click('[data-action="dnssec-chain"]');
+      await page.waitFor(() => document.querySelector('.dsec-panel')?.dataset.state === 'done', { timeout: 30000, message: 'A validated' });
+      const asked = await page.evaluate(() => window.__dsecAsked.length);
+      await page.evaluate(() => {
+        const sel = document.querySelector('.dsec-type select');
+        sel.value = 'TXT';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await page.waitFor(() => document.querySelector('.dsec-panel')?.dataset.state === 'done' && /TXT is secure/.test(document.querySelector('.dsec-verdict')?.textContent || ''),
+        { timeout: 30000, message: 'TXT validated' });
+      assert(await page.evaluate((n) => window.__dsecAsked.slice(n).includes('www.ecdsa.example|TXT'), asked), 'the TXT question was asked');
+      const text = await page.evaluate(() => document.querySelector('.dsec-panel').textContent);
+      assert(text.includes('No TXT records (NODATA).') && text.includes('Proof of absence: NSEC, signed and checked.'), 'the NSEC proof of no data');
+    });
+
+    for (const [scheme, lang, width] of [['dark', 'tr', 375], ['light', 'en', 320]]) {
+      await step(`[${scheme}, ${lang.toUpperCase()}, ${width} px] the chain reads well and fits`, async () => {
+        await page.setViewport({ width, height: 812, mobile: true });
+        await page.emulateMedia({ 'prefers-color-scheme': scheme });
+        await setLangUi(page, lang);
+        const info = await openChain(page, 'www.rollover.example');
+        assertEqual(info.status, 'bogus', 'status');
+        if (lang === 'tr') {
+          assertEqual(info.title, 'DNSSEC güven zinciri', 'Turkish title');
+          assert(info.verdict.includes('Ne düzeltilmeli') && info.text.includes('Güvenli') && info.text.includes('Bozuk'), info.verdict);
+        }
+        await assertNoHorizontalScroll(page, `${scheme} ${lang} ${width}`);
+        await shot(page, `lookup-dnssec-mobile-${scheme}-${lang}`);
+      });
+    }
+
+    await step('DNSSEC chain: nothing left the page, i18n complete, no console errors', async () => {
+      await page.setViewport({ width: 1440, height: 900 });
+      await setLangUi(page, 'en');
+      assertEqual(await page.evaluate(() => window.__dsecBlocked.slice()), [], 'requests outside the fixture');
+      await checkI18n(page);
+      await assertClean(page, 'dnssec');
+    });
+  } finally {
+    await page.setViewport({ width: 1440, height: 900 });
+    await page.close();
+  }
+}
+
 async function liveGroups(browser, server) {
   group('Desktop 1440×900 (English, live resolvers)');
   const page = await browser.newPage('about:blank', { width: 1440, height: 900 });

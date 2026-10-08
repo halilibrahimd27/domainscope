@@ -69,6 +69,8 @@ before(async () => {
   await imp('assets/js/ui/dnsbl-panel.js');
   // Domain Health › Delegation: loaded on the first "Check the delegation".
   await imp('assets/js/ui/delegation-panel.js');
+  // DNS Lookup › DNSSEC chain: loaded on the first click of its button.
+  await imp('assets/js/ui/dnssec-panel.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -417,6 +419,8 @@ describe('i18n coverage', () => {
     for (const k of (await imp('assets/js/ui/ip-enrich-panel.js')).generatedKeys()) add(k);
     // IP Intel › Domains on this IP (ui/reverse-ip-panel.js over lib/reverseip.js): every status and source.
     for (const k of (await imp('assets/js/ui/reverse-ip-panel.js')).generatedKeys()) add(k);
+    // The DNSSEC chain (ui/dnssec-panel.js over lib/dnssec.js): every status, reason, fix and signature result.
+    for (const k of (await imp('assets/js/ui/dnssec-panel.js')).generatedKeys()) add(k);
     for (const e of omp.FORM_ERRORS) add(`omp.err.${e}`);
     for (const e of estate.REPORT_ERRORS) add(`omp.file.${e}`);
     for (const v of ['known']) { add(`scan.srv.via.${v}`); add(`scan.hint.${v}`); add(`sub.hint.${v}`); }

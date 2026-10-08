@@ -525,3 +525,166 @@
     display: none;
   }
 }
+
+/* ---- DNSSEC chain (ui/dnssec-panel.js, .dsec-*) ------------------------------ */
+.lkp-dnssec:empty {
+  display: none;
+}
+
+.dsec-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 16px;
+}
+
+.dsec-head {
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.dsec-title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.dsec-name {
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+
+.dsec-controls {
+  margin-left: auto;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.dsec-intro {
+  margin: 0;
+}
+
+.dsec-running {
+  align-items: center;
+  gap: 8px;
+}
+
+.dsec-verdict {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--text-3);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+
+.dsec-verdict.dsec-secure {
+  border-left-color: var(--ok-solid);
+}
+
+.dsec-verdict.dsec-insecure {
+  border-left-color: var(--warn-solid);
+}
+
+.dsec-verdict.dsec-bogus {
+  border-left-color: var(--error-solid);
+}
+
+.dsec-verdict p {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.dsec-verdict-head {
+  align-items: center;
+  gap: 8px;
+}
+
+.dsec-chain {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  counter-reset: dsec;
+}
+
+.dsec-zone {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.dsec-zone.dsec-bogus {
+  border-color: var(--error);
+}
+
+.dsec-zone-head {
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.dsec-zone-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.dsec-zone-reason,
+.dsec-denial,
+.dsec-none {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.dsec-sub {
+  margin: 8px 0 4px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.dsec-table .dt-table td {
+  vertical-align: middle;
+}
+
+.dsec-role {
+  gap: 4px;
+}
+
+.dsec-records {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+.dsec-alias {
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
+@media (max-width: 640px) {
+  .dsec-controls {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .dsec-panel {
+    padding: 10px 12px;
+  }
+
+  .dsec-zone {
+    padding: 6px 8px;
+  }
+}
+
+@media print {
+  .dsec-controls,
+  .dsec-verdict .btn {
+    display: none;
+  }
+
+  .dsec-zone {
+    break-inside: avoid;
+  }
+}

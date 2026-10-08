@@ -1,7 +1,7 @@
 /**
  * certdiff.test.js — lib/certdiff.js (old-vs-new certificate comparison) over the
  * tests/fixtures/certdiff_*.pem pair (gen_certdiff_fixtures.mjs), plus single rules on parsed
- * fixture certificates with one field changed.
+ * fixture certificates with one field changed, and the panel's words (ui/cert-diff-panel.js).
  */
 
 import { test } from 'node:test';
@@ -248,4 +248,26 @@ test('olderOf: the one issued first is the old one, unless swapped', () => {
   // the same start: the one that ends first
   assert.equal(olderOf(NEW.cert, RENEWED.cert), 'x');
   assert.equal(olderOf(RENEWED.cert, NEW.cert), 'y');
+});
+
+test('the panel words every code in both languages, and the text report', async () => {
+  const i18n = await import('../../assets/js/i18n.js');
+  const panel = await import('../../assets/js/ui/cert-diff-panel.js');
+  const keys = panel.generatedKeys();
+  const en = new Set(i18n.listKeys('en'));
+  const tr = new Set(i18n.listKeys('tr'));
+  assert.deepEqual(keys.filter((k) => !en.has(k) || !tr.has(k)), []);
+  const d = await diffCertificates(OLD, NEW, { now: NOW });
+  const kit = { certName: (c) => c.subjectCN, issuerName: (c) => c.issuerCN };
+  i18n.setLang('en');
+  const text = panel.diffReport(d, OLD, NEW, kit);
+  assert.match(text, /^Certificate comparison: example\.com → example\.com\n/);
+  assert.match(text, /Not a drop-in replacement: 3 blockers/);
+  assert.match(text, /- 2 names no longer covered: legacy\.example\.net, 192\.0\.2\.10 — /);
+  assert.match(text, /- Wildcard \*\.example\.com goes — Hosts directly under example\.com /);
+  assert.match(text, /Steps on the servers:\n- Another issuer: DomainScope Test Diff CA 1 → DomainScope Test Diff CA 2/);
+  assert.match(text, /Unchanged: subject\./);
+  i18n.setLang('tr');
+  assert.match(panel.diffReport(d, OLD, NEW, kit), /Doğrudan yerine konamaz: 3 engel/);
+  i18n.setLang('en');
 });

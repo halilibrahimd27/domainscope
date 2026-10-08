@@ -944,3 +944,178 @@
     print-color-adjust: exact;
   }
 }
+
+/* Compare (ui/cert-diff-panel.js): the other certificate, the verdict, both side by side, then
+   every change by severity (a coloured edge per severity). */
+.cdiff-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.cdiff-intro,
+.cdiff-unchanged,
+.cdiff-overlap {
+  margin: 0;
+}
+
+.cdiff-box {
+  padding: 14px 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.cdiff-box-title {
+  margin: 0;
+  font-size: 14px;
+}
+
+.cdiff-ct-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.cdiff-ct-row .cdiff-ct-field {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.cdiff-ct-row .btn {
+  flex: none;
+}
+
+.cdiff-ct p {
+  margin: 0;
+}
+
+.cdiff-bar {
+  align-items: center;
+}
+
+.cdiff-table-wrap {
+  position: relative;
+  overflow-x: auto;
+}
+
+.cdiff-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+.cdiff-table th,
+.cdiff-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.cdiff-table thead th:first-child,
+.cdiff-table tbody th {
+  width: 10rem;
+}
+
+.cdiff-table tbody th {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.cdiff-cn {
+  font-weight: 600;
+}
+
+.cdiff-hash,
+.cdiff-url {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.cdiff-group-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.cdiff-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cdiff-item {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.cdiff-item-blocker {
+  border-left-color: var(--error-solid);
+}
+
+.cdiff-item-action {
+  border-left-color: var(--warn-solid);
+}
+
+.cdiff-item-check {
+  border-left-color: var(--info-solid);
+}
+
+.cdiff-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.cdiff-item-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.cdiff-item-body,
+.cdiff-list-line {
+  margin: 6px 0 0;
+}
+
+.cdiff-item-body {
+  color: var(--text-2);
+}
+
+.cdiff-list-line {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .cdiff-box {
+    padding: 12px;
+  }
+
+  .cdiff-table thead th:first-child,
+  .cdiff-table tbody th {
+    width: 6.5rem;
+  }
+
+  .cdiff-table th,
+  .cdiff-table td {
+    padding: 6px 4px;
+  }
+}
+
+@media print {
+  .cdiff-loader,
+  .cdiff-bar {
+    display: none;
+  }
+
+  .cdiff-item {
+    break-inside: avoid;
+  }
+}

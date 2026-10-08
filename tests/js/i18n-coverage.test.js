@@ -58,6 +58,8 @@ before(async () => {
   await imp('assets/js/ui/related-domains.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
+  // Certificate › Compare: loaded on the tab's first use.
+  await imp('assets/js/ui/cert-diff-panel.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -355,6 +357,8 @@ describe('i18n coverage', () => {
     // Certificate › Key continuity (ui/key-continuity.js): the consequences of a reused or a new key,
     // a leaf's and a CA certificate's.
     for (const w of ['reused', 'single']) for (const suffix of ['', 'Ca']) { add(`key.tlsa.${w}${suffix}`); add(`key.pin.${w}${suffix}`); }
+    // Certificate › Compare (ui/cert-diff-panel.js over lib/certdiff.js): every change, severity, verdict and area it words.
+    for (const k of (await imp('assets/js/ui/cert-diff-panel.js')).generatedKeys()) add(k);
     // DMARC & TLS reports (lib/dmarcreport.js, lib/tlsrpt.js, lib/health.js spfEvaluate through
     // views/reports.js): every source class (tile, badge, tooltip), reason, fix, verdict and note,
     // why a file could not be used, the SPF line's states and verdicts (a permerror's reason too), every TLS-RPT result type

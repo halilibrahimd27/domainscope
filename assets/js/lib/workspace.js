@@ -510,9 +510,9 @@ function sanitizeMeta(value) {
  * @property {ReturnType<typeof emptyWorkspaceData>} data  the active workspace's parts (treat as read-only)
  * @property {() => WorkspaceMeta[]} list  Default first, then by name
  * @property {(part: string, value: any) => Promise<boolean>} save  write one part of the active workspace
- *   (false, in memory only, while its parts could not be read)
+ *   (false while its parts could not be read)
  * @property {(value: string, at?: Date) => Promise<boolean>} recordRecent
- * @property {(id: string) => Promise<WorkspaceMeta>} switchTo  rejects (nothing switched) when its parts could not be read
+ * @property {(id: string) => Promise<WorkspaceMeta>} switchTo  rejects when its parts could not be read
  * @property {(name: string, data?: object) => Promise<{ meta: WorkspaceMeta, persisted: boolean }>} create
  * @property {(id: string, name: string) => Promise<{ meta: WorkspaceMeta, persisted: boolean }>} rename
  * @property {(id: string) => Promise<{ switched: boolean, persisted: boolean }>} remove
@@ -553,7 +553,7 @@ export function createWorkspaceStore({
   let pendingLegacy = null;
   /** A migration whose write failed (persistent store): the next write that commits carries it. */
   let unmigrated = null;
-  /** Workspaces whose parts could not be read (id → error): never saved over until a read succeeds. */
+  /** Workspaces whose parts could not be read (id → error): never saved over until read. */
   const unread = new Map();
   let opening = null;
   const listeners = new Set();
@@ -641,7 +641,7 @@ export function createWorkspaceStore({
     return out;
   }
 
-  /** A workspace's parts from the backend (every value sanitized); a failed read is empty, and {@link unread}. */
+  /** A workspace's parts from the backend (every value sanitized); a failed read is empty ({@link unread}). */
   async function loadData(id) {
     const out = emptyWorkspaceData();
     try {
@@ -829,7 +829,7 @@ export function createWorkspaceStore({
     // No database and nothing written to one: nothing to read either (a read would create it).
     data = exists === false && !initialised ? withPending(activeId, emptyWorkspaceData()) : await loadData(activeId);
     if (unread.has(activeId) && activeId !== DEFAULT_WORKSPACE_ID) {
-      // Not opened empty (see switchTo): Default is, as for a deleted one.
+      // Unread: Default instead (see switchTo).
       activeId = DEFAULT_WORKSPACE_ID;
       data = await loadData(activeId);
     }
@@ -954,7 +954,7 @@ export function createWorkspaceStore({
         data = { ...data, [part]: clean };
       }
       if (unread.has(activeId)) {
-        // This copy would replace the parts that could not be read: kept in memory only.
+        // It would replace what could not be read: memory only.
         lastError = unread.get(activeId);
         return false;
       }
@@ -969,7 +969,7 @@ export function createWorkspaceStore({
     async switchTo(id) {
       if (!metas.has(id)) throw new WorkspaceError('not-found');
       const next = await loadData(id);
-      // Not opened empty: its saves would replace what is stored.
+      // Its saves would replace what is stored.
       if (unread.has(id)) throw unread.get(id);
       activeId = id;
       data = next;
@@ -1019,7 +1019,7 @@ export function createWorkspaceStore({
       }
       const switched = activeId === id;
       if (switched) {
-        // Default is entered, read or not (then never saved over).
+        // Read or not (then never saved over).
         data = await loadData(DEFAULT_WORKSPACE_ID);
         activeId = DEFAULT_WORKSPACE_ID;
         writePointer(DEFAULT_WORKSPACE_ID);

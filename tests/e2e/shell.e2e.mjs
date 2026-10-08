@@ -12,7 +12,8 @@
  *     the settings dialog, the Servers view (typing, file import, warnings, save → reload, clear)
  *   - builds a component gallery (badges, kinds, stats, alerts, progress, tabs, fields, DataTable)
  *     and tests DataTable paging/sorting/search/streaming and Tabs keyboard navigation, CopyButton's
- *     own toast text and its onFail hand-over (Copy summary's dialog), and the table's print styles
+ *     own toast text, its onFail hand-over (Copy summary's dialog) and, without the Clipboard API,
+ *     its copy from a modal dialog, and the table's print styles
  *   - prints from dark mode (print media): the light palette, no shell or controls, Disclosures
  *     opened and the print header (title, UTC time, permalink) on beforeprint, undone afterwards
  *   - fails on any console error, uncaught exception, failed request or CSP violation, and on
@@ -1224,6 +1225,35 @@ async function main() {
         assert(/Could not copy/.test(failed), `a plain CopyButton still says it failed: ${failed}`);
       } finally {
         await clipboard('real');
+        await dismissToasts(page);
+      }
+    });
+
+    await step('CopyButton without the Clipboard API (an insecure context) copies from a modal dialog too', async () => {
+      // Outside a modal dialog the page is inert: the copy must select its text inside the dialog.
+      await page.evaluate(async () => {
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+        window.__copies = [];
+        window.__onCopy = () => {
+          const a = document.activeElement;
+          window.__copies.push(a && typeof a.value === 'string' ? a.value.slice(a.selectionStart, a.selectionEnd) : String(getSelection()));
+        };
+        document.addEventListener('copy', window.__onCopy, true);
+        const { Modal, CopyButton } = await import('./assets/js/ui/components.js');
+        window.__copyModal = Modal({ title: 'Copy', content: CopyButton('text in the dialog', { className: 'modal-copy-test' }) });
+        window.__copyModal.open();
+      });
+      try {
+        await page.waitFor(() => document.querySelector('dialog.modal[open] .modal-copy-test'), { message: 'the dialog' });
+        await page.click('dialog.modal[open] .modal-copy-test');
+        await page.waitFor(() => window.__copies.length, { message: 'a copy' });
+        assertEqual(await page.evaluate(() => window.__copies), ['text in the dialog'], 'what the copy took');
+      } finally {
+        await page.evaluate(() => {
+          document.removeEventListener('copy', window.__onCopy, true);
+          window.__copyModal.close();
+          delete navigator.clipboard;
+        });
         await dismissToasts(page);
       }
     });

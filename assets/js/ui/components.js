@@ -418,8 +418,9 @@ export async function copyText(text) {
   const doc = globalThis.document;
   if (!doc) return false;
   const ta = h('textarea', { class: 'clipboard-proxy', value, attrs: { readonly: true, 'aria-hidden': 'true', tabindex: -1 } });
-  doc.body.append(ta);
   const prevFocus = doc.activeElement;
+  // Into the dialog: outside a modal one the page is inert.
+  (prevFocus?.closest?.('dialog[open]') || doc.body).append(ta);
   ta.select();
   let ok = false;
   try {

@@ -9,7 +9,8 @@
  *   small free quotas (HackerTarget ≈ 50/day, Cert Spotter ≈ 10/hour), and each one starts
  *   its own browser and static server.
  * - Order: shell first (offline, fastest), then the views in navigation order (domain, the
- *   offline suite of the Domain overview, right after subdomains; verify, the offline suite of SSL
+ *   offline suite of the Domain overview, right after subdomains, then locales, the offline suite
+ *   of the adaptive locale packs of Subdomains; verify, the offline suite of SSL
  *   Targets › Verify, right after scan, then renewal, SSL Targets with several certificates at
  *   once, offline too; dane, the offline DANE / TLSA suite of the Certificate view and SSL Targets,
  *   right after cert, then pfx, the offline PKCS#12 suite of the same two views, chainfix, their
@@ -43,7 +44,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ORDER = ['shell', 'subdomains', 'domain', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'reports', 'portfolio', 'carry', 'workspaces', 'origins', 'privacy', 'integration'];
+const ORDER = ['shell', 'subdomains', 'domain', 'locales', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'reports', 'portfolio', 'carry', 'workspaces', 'origins', 'privacy', 'integration'];
 const POSIX = process.platform !== 'win32';
 /** After SIGTERM, how long a timed-out suite gets before SIGKILL. */
 const KILL_GRACE_MS = 5000;

@@ -15,7 +15,9 @@
  * Names that belong to the queried domain are returned in `names` (with
  * per-record `evidence`); names outside it (external NS, SPF includes, CA
  * `issue` domains, cross-org DMARC report domains) are returned as
- * `externalRefs` for context. `names` never holds a name with a `_`-prefixed
+ * `externalRefs` for context, and with the record that named them in
+ * `externalEvidence` (the adaptive locale packs read the countries of the NS and
+ * MX hosts there, lib/localeevidence.js). `names` never holds a name with a `_`-prefixed
  * label: `_dmarc`, `_sip._tls` or `_spf` name a record, not a host, so the
  * probed query names (and in-domain `include:_spf.<domain>`) are not reported.
  */
@@ -99,22 +101,34 @@ function hostFromUri(uri) {
  * @param {(p: { stage: string, done: number, total: number, name?: string }) => void} [opts.onProgress]
  * @param {boolean} [opts.resolvePtr=false] optional hook: PTR the in-domain IPs
  *   seen in answers (needs `dns.ptr`) and keep in-domain PTR names.
- * @returns {Promise<{ names: string[], evidence: Array<{ name: string, from: string, record: string }>, externalRefs: string[] }>}
+ * @returns {Promise<{ names: string[], evidence: Array<{ name: string, from: string, record: string }>, externalRefs: string[],
+ *   externalEvidence: Array<{ name: string, from: string, record: string }> }>} `externalEvidence`: each external name
+ *   with the record that named it (NS, MX, SOA, SPF, DMARC, SRV, CNAME, CAA, HTTPS), each (name, from, record) once
  */
 export async function mineDnsNames(domain, { dns, signal, onProgress, resolvePtr = false } = {}) {
   const apex = normalizeHostname(String(domain ?? ''), { allowSingleLabel: true });
   if (!apex || !dns || typeof dns.query !== 'function') {
-    return { names: [], evidence: [], externalRefs: [] };
+    return { names: [], evidence: [], externalRefs: [], externalEvidence: [] };
   }
 
   const names = new Set();
   const evidence = [];
   const evidenceSeen = new Set();
   const external = new Set();
+  const externalEvidence = [];
   const ips = new Set();
 
+  /** Keep one (name, from, record) of a reference once. */
+  const remember = (list, name, from, record) => {
+    const rec = String(record ?? name);
+    const key = `${name}\u0000${from}\u0000${rec}`;
+    if (evidenceSeen.has(key)) return;
+    evidenceSeen.add(key);
+    list.push({ name, from, record: rec });
+  };
+
   /**
-   * Record a referenced name: in-domain → names + evidence, else externalRefs.
+   * Record a referenced name: in-domain → names + evidence, else externalRefs + externalEvidence.
    * An in-domain service-label name (`_dmarc.<domain>`, a CNAME'd probe name)
    * is dropped. The same (name, from, record) is kept once: the SOA carried in
    * the authority section of every NXDOMAIN / NODATA answer is one piece of evidence.
@@ -126,13 +140,10 @@ export async function mineDnsNames(domain, { dns, signal, onProgress, resolvePtr
       if (norm === apex) return; // the apex itself is not a discovery
       if (hasServiceLabel(norm)) return; // a record name, never a host
       names.add(norm);
-      const rec = String(record ?? norm);
-      const key = `${norm}\u0000${from}\u0000${rec}`;
-      if (evidenceSeen.has(key)) return;
-      evidenceSeen.add(key);
-      evidence.push({ name: norm, from, record: rec });
+      remember(evidence, norm, from, record);
     } else {
       external.add(norm);
+      remember(externalEvidence, norm, from, record);
     }
   };
 
@@ -218,7 +229,10 @@ export async function mineDnsNames(domain, { dns, signal, onProgress, resolvePtr
             if (host) addName(host, 'CAA', String(rr.data.value));
           } else if (rr.data && (rr.data.tag === 'issue' || rr.data.tag === 'issuewild')) {
             const ca = cleanHost(String(rr.data.value || '').split(';')[0].trim());
-            if (ca) external.add(ca.toLowerCase());
+            if (ca) {
+              external.add(ca.toLowerCase());
+              remember(externalEvidence, ca.toLowerCase(), 'CAA', String(rr.data.value));
+            }
           }
           break;
         case 'TXT': {
@@ -247,7 +261,8 @@ export async function mineDnsNames(domain, { dns, signal, onProgress, resolvePtr
   return {
     names: sortHostnames([...names]),
     evidence,
-    externalRefs: [...external].sort()
+    externalRefs: [...external].sort(),
+    externalEvidence
   };
 }
 

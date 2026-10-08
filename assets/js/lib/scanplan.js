@@ -14,7 +14,7 @@
 
 import { normalizeHostname, registrableDomain, isPublicSuffix } from './domain.js';
 import {
-  getWordlist, WORDLIST_SMALL, WORDLIST_LEVELS, localesForDomain, LOCALE_PACK_CODES, wordlistInfo
+  getWordlist, WORDLIST_SMALL, WORDLIST_LEVELS, localesForDomain, LOCALE_PACK_CODES, LOCALE_EVIDENCE_MAX_PACKS, wordlistInfo
 } from './wordlist.js';
 import { SRV_SERVICES } from './dnsmine.js';
 import { isStorableLabel } from './learned.js';
@@ -178,6 +178,15 @@ function localePackWordCount(code) {
 }
 
 /**
+ * The most names the adaptive locale packs can add to one domain: its LOCALE_EVIDENCE_MAX_PACKS
+ * largest packs (build-time sizes).
+ * @returns {number}
+ */
+export function evidencePackMax() {
+  return LOCALE_PACK_CODES.map(localePackWordCount).sort((a, b) => b - a).slice(0, LOCALE_EVIDENCE_MAX_PACKS).reduce((a, n) => a + n, 0);
+}
+
+/**
  * Honest DNS-query estimate range for a planned scan, as `{ min, max }` with a
  * breakdown — for the UI plan line. The old line counted only the wordlist and so
  * undercounted real runs by ~20-25 %: the permutation budget, the recursive round
@@ -205,9 +214,12 @@ function localePackWordCount(code) {
  * @param {boolean} [opts.mine=true]
  * @param {boolean} [opts.originHints=true]
  * @param {boolean} [opts.resolverLeak=true]
- * @returns {{ min: number, max: number, breakdown: { wordlist: number, mining: number, wildcard: number,
- *   permutation: number, recursive: number, resolveMin: number, resolveMax: number, hintsMin: number,
- *   hintsMax: number, bases: number, zones: number } }}
+ * @returns {{ min: number, max: number, breakdown: { wordlist: number, localeEvidence: number, mining: number,
+ *   wildcard: number, permutation: number, recursive: number, resolveMin: number, resolveMax: number,
+ *   hintsMin: number, hintsMax: number, bases: number, zones: number } }}
+ *   `localeEvidence`: what the adaptive locale packs may add (in `max` only): with the automatic
+ *   choice, each domain whose TLD names no market may get its packs from the evidence the scan
+ *   finds, counted as the largest ones ({@link evidencePackMax}) within the caps.
  */
 export function estimateQueries({
   bruteforce = 'smart', domains = [], wildcardBases = [], certNames = [], extraNames = [],
@@ -228,19 +240,28 @@ export function estimateQueries({
     ? locales.filter((cc) => LOCALE_PACK_CODES.includes(cc))
     : localesForDomain(base));
 
-  // Brute-force candidates, with the scan's per-base and total caps.
+  // Brute-force candidates, with the scan's per-base and total caps. A domain whose TLD names no
+  // market may gain packs from evidence under the automatic choice: only the ceiling counts them.
   const levelCount = levelWordCount(level);
   let wordlist = 0;
+  let withEvidence = 0;
   if (level !== 'off' && (levelCount > 0 || extra > 0)) {
     const perBaseCap = KNOWN_LEVELS.has(level)
       ? (MAX_BRUTEFORCE_PER_BASE[level] || LEGACY_MAX_BRUTEFORCE) + extra
       : (baseSet.length ? Math.max(1, Math.floor(LEGACY_MAX_BRUTEFORCE / baseSet.length)) : LEGACY_MAX_BRUTEFORCE);
+    const evidenceMax = evidencePackMax();
     for (const base of baseSet.length ? baseSet : ['']) {
-      const packSum = usesPacks ? packsFor(base).reduce((a, cc) => a + localePackWordCount(cc), 0) : 0;
-      wordlist += Math.min(levelCount + packSum + extra, perBaseCap);
+      const packs = usesPacks ? packsFor(base) : [];
+      const packSum = packs.reduce((a, cc) => a + localePackWordCount(cc), 0);
+      const own = Math.min(levelCount + packSum + extra, perBaseCap);
+      wordlist += own;
+      const adaptive = usesPacks && base && !Array.isArray(locales) && !packs.length;
+      withEvidence += adaptive ? Math.min(levelCount + evidenceMax + extra, perBaseCap) : own;
     }
     wordlist = Math.min(wordlist, MAX_BRUTEFORCE_TOTAL);
+    withEvidence = Math.min(withEvidence, MAX_BRUTEFORCE_TOTAL);
   }
+  const localeEvidence = Math.max(0, withEvidence - wordlist);
 
   // As runScan: mining runs once per registrable domain of the scanned domains
   // (sourceDomains); the SPF/MX hints per registrable domain ∪ scanned domain
@@ -267,7 +288,7 @@ export function estimateQueries({
   const seedCount = seedSet.size || 1;
   const resolveMin = 2 * seedCount;
   // Up to ~5 % of the swept candidates may resolve in a dense estate (upper bound).
-  const resolveMax = 2 * (seedCount + Math.ceil(0.05 * (wordlist + permBudget + recursiveMax)));
+  const resolveMax = 2 * (seedCount + Math.ceil(0.05 * (wordlist + localeEvidence + permBudget + recursiveMax)));
 
   // Origin hints: SPF/MX always run when enabled; resolver-leak depends on how
   // many proxied hosts are found (bounded by the query cap).
@@ -278,12 +299,12 @@ export function estimateQueries({
 
   const floor = wordlist + mining + wildcard;
   const min = floor + resolveMin + hintsMin;
-  const max = floor + permBudget + recursiveMax + resolveMax + hintsMax;
+  const max = floor + localeEvidence + permBudget + recursiveMax + resolveMax + hintsMax;
   return {
     min,
     max,
     breakdown: {
-      wordlist, mining, wildcard, permutation: permBudget, recursive: recursiveMax,
+      wordlist, localeEvidence, mining, wildcard, permutation: permBudget, recursive: recursiveMax,
       resolveMin, resolveMax, hintsMin, hintsMax, bases: baseSet.length, zones: zones.length
     }
   };

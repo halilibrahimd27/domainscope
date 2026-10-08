@@ -1392,12 +1392,16 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.deepEqual(S.effectiveLocales([], 'example.de'), [], 'none');
     inLang('en', () => {
       assert.equal(S.localeSummary(null, ['example.com.tr']), 'Auto: Turkish (.com.tr)');
-      assert.equal(S.localeSummary(null, ['example.com']), 'Auto: none — .com has no market pack, so the global list is used');
+      // A TLD that names no market: the scan picks the packs from evidence (lib/localeevidence.js).
+      assert.equal(S.localeSummary(null, ['example.com']),
+        'Auto: .com names no market, so the scan picks packs from evidence — the words in the names it finds and the countries of the name and mail servers');
+      assert.equal(S.localeSummary(null, ['example.com.tr', 'example.com']), 'Auto: Turkish (.com.tr), from evidence for .com');
       assert.equal(S.localeSummary(['de', 'fr'], []), 'Chosen: German, French');
       assert.equal(S.localeSummary([], []), 'None: the global list only');
     });
     inLang('tr', () => {
       assert.equal(S.localeSummary(null, ['example.com.tr']), 'Otomatik: Türkçe (.com.tr)');
+      assert.equal(S.localeSummary(null, ['example.com.tr', 'example.net']), 'Otomatik: Türkçe (.com.tr), .net için kanıta göre');
       assert.equal(S.localeSummary([], []), 'Hiçbiri: yalnızca küresel liste');
     });
   });
@@ -1450,8 +1454,10 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
         `≈ ${total.toLocaleString('en-US')} DNS queries for 1 domain (${S.levelCount('smart').toLocaleString('en-US')} smart, +${tr} Turkish, +2 yours) · ${S.estimateText(total)}`);
       const two = S.wordlistPlan({ level: 'smart', domains: ['example.de', 'example.fr'] });
       assert.match(S.wordlistPlanText(two), /for 2 domains \(per domain: [\d,]+ smart, \+[\d,]+ German, \+[\d,]+ French\)/);
-      // Learned names on top of the per-domain cap: only the whole scan's cap bounds them.
-      assert.match(S.wordlistPlanText(S.wordlistPlan({ level: 'huge', domains: ['example.org'], learned: 999999 })), /^≈ 200,000 DNS queries for 1 domain \([\d,]+ huge, \+999,999 learned\) · /);
+      // Learned names on top of the per-domain cap: only the whole scan's cap bounds them. (.org
+      // names no market: its packs come from the scan's evidence, said before the learned names.)
+      assert.match(S.wordlistPlanText(S.wordlistPlan({ level: 'huge', domains: ['example.org'], learned: 999999 })),
+        /^≈ 200,000 DNS queries for 1 domain \([\d,]+ huge, plus market packs if the scan finds evidence, \+999,999 learned\) · /);
       assert.equal(S.wordlistPlanText(S.wordlistPlan({ level: 'off', domains: ['example.org'] })), '');
     });
     // The level labels add the packs the typed domains get (each once), from Smart up.
@@ -2276,7 +2282,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     // the wait note and the per-source lines sits in the always-visible run header.
     const src = await subdomainsSource();
     assert.match(src, /const sourceLive = h\('div', \{ class: 'sr-only sub-src-live', attrs: \{ 'aria-live': 'polite' \} \}\);/);
-    assert.match(src, /h\('div', \{ class: 'sub-run-titles' \}, title, meta\),\s*summary\.el,\s*NotifyButton\(\(\) => run\.job \|\| null\)\),\s*progress, zoneBanner, handoffBanner, notice, sourceLive\);/, 'in the run header');
+    assert.match(src, /h\('div', \{ class: 'sub-run-titles' \}, title, meta\),\s*summary\.el,\s*NotifyButton\(\(\) => run\.job \|\| null\)\),\s*progress, zoneBanner, handoffBanner, localeHost, notice, sourceLive\);/, 'in the run header');
     assert.match(src, /const sourceWaitNote = h\('div', \{ class: 'sub-src-wait', hidden: true \}\);/, 'the note in the panel is no live region of its own');
     assert.match(src, /const sourceNotes = h\('div', \{ class: 'sub-src-notes' \}\);/);
     // Each line once: every source event redraws the panel's lines.

@@ -92,9 +92,10 @@ const REGRESSION_WORLD = {
 };
 // Re-pinned since: the wildcard results gained `targets` / `variable`, then `conclusive`,
 // and the stats `*Vanished`, then Cloudflare's provider record (serialised with the
-// proxy.cdn.cloudflare.net host) its China Network suffix, cloudflarecn.net (each time the only
-// difference in the normalised output).
-const PRE_ZONE_DIGEST = '535076ee547837e401f212ff0d6ff08a3186d5ced97ea91d9a57806d67f6a36a';
+// proxy.cdn.cloudflare.net host) its China Network suffix, cloudflarecn.net, then the adaptive
+// locale packs' `localeSource` / `localeEvidence` per domain (null here: a legacy wordlist) and
+// the wordlist stage's `locales` ([]) (each time the only difference in the normalised output).
+const PRE_ZONE_DIGEST = '26bc59694505e617ef541fab86527765bd8ed730edc7c2c8752bcd63385fb9ce';
 
 async function regressionScan(extra = {}) {
   const { fetchImpl, dns } = mkWorld({

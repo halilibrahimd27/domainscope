@@ -213,8 +213,21 @@ describe('mineDnsNames', () => {
     assert.equal(evidence.filter((e) => e.name === 'ns1.example.net' && e.from === 'SOA').length, 1);
   });
 
+  test('externalEvidence names the record of every external reference (the NS and MX hosts the locale packs read)', async () => {
+    const { externalRefs, externalEvidence } = await mineDnsNames(APEX, { dns: makeDns() });
+    const of = (from) => externalEvidence.filter((e) => e.from === from).map((e) => e.name).sort();
+    assert.deepEqual(of('NS'), ['ns.externaldns.net']);
+    assert.deepEqual(of('MX'), ['aspmx.l.google.com']);
+    assert.deepEqual(of('SPF'), ['_spf.google.com', 'spf.protection.outlook.com']);
+    assert.deepEqual(of('SRV'), ['matrix.externalhost.net']);
+    assert.deepEqual(of('CAA'), ['letsencrypt.org']);
+    assert.deepEqual([...new Set(externalEvidence.map((e) => e.name))].sort(), externalRefs, 'the same names as externalRefs');
+    const keys = externalEvidence.map((e) => `${e.name}|${e.from}|${e.record}`);
+    assert.equal(new Set(keys).size, keys.length, 'each (name, from, record) once');
+  });
+
   test('invalid input returns empty', async () => {
-    assert.deepEqual(await mineDnsNames('', { dns: makeDns() }), { names: [], evidence: [], externalRefs: [] });
-    assert.deepEqual(await mineDnsNames(APEX, {}), { names: [], evidence: [], externalRefs: [] });
+    assert.deepEqual(await mineDnsNames('', { dns: makeDns() }), { names: [], evidence: [], externalRefs: [], externalEvidence: [] });
+    assert.deepEqual(await mineDnsNames(APEX, {}), { names: [], evidence: [], externalRefs: [], externalEvidence: [] });
   });
 });

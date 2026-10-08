@@ -28,8 +28,9 @@ import {
 import { buildIpIndex, lookupServers } from './inventory.js';
 import { applyTopology, orderByLoadBalancer, terminatesTls, tlsNowhere } from './topology.js';
 import {
-  getWordlist, loadWordlist, WORDLIST_SMALL, parseCustomWordlist, localesForDomain, LOCALE_PACK_CODES
+  getWordlist, loadWordlist, WORDLIST_SMALL, parseCustomWordlist, localesForDomain, LOCALE_PACK_CODES, loadLocaleVocabulary
 } from './wordlist.js';
+import { localeEvidence } from './localeevidence.js';
 import { SOURCES, fetchAllSources, mergeCerts, sourceHealthSummary } from './sources.js';
 import { followCnames, detectWildcardDeep } from './doh.js';
 import { mineDnsNames } from './dnsmine.js';
@@ -705,7 +706,9 @@ function assignOriginCandidates(proxiedHosts, originNetworks, originHintList, st
  *     aware) at every level that hosts a discovered name, plus the apex and each
  *     certificate wildcard base.
  *  4. `bruteforce` — courteous A-only wordlist sweep (balance mode) under the
- *     apex and each certificate wildcard base; wildcard look-alikes dropped.
+ *     apex and each certificate wildcard base; wildcard look-alikes dropped. A
+ *     base whose TLD names no market gets the locale packs the evidence found so
+ *     far points to (adaptive locale packs, lib/localeevidence.js).
  *  5. `permutations` — alterx/dnsgen-style variants of everything found so far
  *     (env / number / region / sibling; every level above a candidate is
  *     wildcard-checked first), then one recursive wordlist round under
@@ -745,7 +748,8 @@ function assignOriginCandidates(proxiedHosts, originNetworks, originHintList, st
  * @param {string[]} [config.learnedLabels] extension: labels from earlier scans (learned.js), tried
  *   after custom and before the level's list
  * @param {string[]} [config.locales] extension: locale-pack codes for the wordlist; undefined = auto
- *   per domain (from its TLD), [] = none, an explicit list = exactly those packs
+ *   per domain (from its TLD; for a TLD without packs, from the evidence the scan has gathered by
+ *   its wordlist stage — lib/localeevidence.js), [] = none, an explicit list = exactly those packs
  * @param {boolean} [config.balance=true] extension: use DohClient balance mode for bulk A-only probes
  * @param {boolean} [config.resolverLeak=true] extension: re-resolve proxied hosts through other resolvers (origin hint)
  * @param {number} [config.recursiveParents=8] extension: max parents in the recursive round
@@ -849,10 +853,14 @@ export async function runScan(config = {}, hooks = {}) {
   const permWords = (customLabels.length || learnedList.length)
     ? [...new Set([...DEFAULT_WORDS, ...singleLabels(customLabels), ...singleLabels(learnedList)])]
     : undefined;
-  // Per-apex locale packs actually applied (auto from TLD, or the explicit list).
+  // Adaptive locale packs: base → lib/localeevidence.js result, for a base whose TLD names no
+  // market, filled just before the wordlist stage (only with the automatic choice, from Smart up).
+  const evidenceByBase = new Map();
+  // Per-apex locale packs actually applied (auto from the TLD or, without TLD packs, the
+  // evidence; or the explicit list).
   const localesForBase = (base) => (Array.isArray(locales)
     ? locales.filter((cc) => LOCALE_PACK_CODES.includes(cc))
-    : localesForDomain(base));
+    : localesForDomain(base, evidenceByBase.get(base) || null));
   // Track a silent wordlist downgrade (e.g. the .gz tier failed to fetch /
   // decompress) so result.options reports the level actually served (the
   // smallest across apexes) and one warning is surfaced, instead of claiming a
@@ -1049,6 +1057,9 @@ export async function runScan(config = {}, hooks = {}) {
 
   const mineEvidence = [];
   const mineExternal = new Set();
+  // Registrable domain → the NS and MX hosts its records name (in-domain and external), for the
+  // adaptive locale packs (the countries of the name and mail servers).
+  const mineServers = new Map();
   const mineEnabled = !exactMode && mine !== false;
   // Mining runs concurrently with the sources stage, but its progress must not
   // paint over the still-active 'sources' progress. Buffer the count and only
@@ -1065,6 +1076,12 @@ export async function runScan(config = {}, hooks = {}) {
         mineEvidence.push(ev);
       }
       for (const ref of out.externalRefs || []) mineExternal.add(ref);
+      const servers = { ns: [], mx: [] };
+      for (const ev of [...(out.evidence || []), ...(out.externalEvidence || [])]) {
+        const list = ev.from === 'NS' ? servers.ns : ev.from === 'MX' ? servers.mx : null;
+        if (list && !list.includes(ev.name)) list.push(ev.name);
+      }
+      mineServers.set(domain, servers);
       miningDone += 1;
       if (miningStageShown) progress('mining', miningDone, sourceDomains.length);
     }, signal);
@@ -1385,6 +1402,7 @@ export async function runScan(config = {}, hooks = {}) {
       },
       domain: base,
       locales,
+      evidence: evidenceByBase.get(base) || null,
       extra: extraLabels
     });
     wlByLocaleKey.set(key, list);
@@ -1396,6 +1414,50 @@ export async function runScan(config = {}, hooks = {}) {
     const missing = missingByKey.get(listKey(base));
     return localesForBase(base).filter((cc) => !(missing && missing.has(cc)));
   };
+
+  /* ---- adaptive locale packs (a TLD without a market: from evidence) ----- */
+  // With the automatic choice (`locales` undefined) a base whose TLD names no market (.com, .io …)
+  // gets the packs the evidence points to (lib/localeevidence.js): the words of the names found so
+  // far (input, certificate, zone, the zone's own records, the sources that answered within the
+  // grace window), the letters of IDN labels and the countries of the zone's NS / MX hosts. Only
+  // from Smart up (Small is language-neutral); never for a legacy override, 'medium' or exact mode.
+  const usesPacks = KNOWN_LEVELS.has(bfMode) && bfMode !== 'small' && !overrideWords && !exactMode;
+  const openBases = usesPacks && !Array.isArray(locales) ? bfBases.filter((b) => !localesForDomain(b).length) : [];
+  if (openBases.length) {
+    // (localeEvidence reads them in sortHostnames order, whatever order they arrived in)
+    const known = [...origins.keys()];
+    const namesUnder = new Map(openBases.map((b) => [b, known.filter((n) => n !== b && isSubdomainOf(n, b))]));
+    // The pack words are loaded (≈ 16 KB, cached) only when names were found: without them the
+    // words are not read at all — the servers and IDN letters need no pack.
+    let packs = {};
+    if ([...namesUnder.values()].some((l) => l.length)) {
+      try {
+        packs = await loadLocaleVocabulary({ fetchImpl, signal, preferFetch: wordlistPreferFetch === true });
+      } catch (err) {
+        if (err && err.name === 'AbortError') throw err;
+        packs = {};
+      }
+      checkAbort(signal);
+    }
+    for (const base of openBases) {
+      const servers = mineServers.get(registrableDomain(base) || base) || { ns: [], mx: [] };
+      evidenceByBase.set(base, localeEvidence({ domain: base, names: namesUnder.get(base), ns: servers.ns, mx: servers.mx, packs }));
+    }
+  }
+  /** How a base's packs were chosen: 'chosen' (the config's list), 'tld', 'evidence' or 'none'; null without packs. */
+  const localeSourceOf = (base) => {
+    if (!usesPacks) return null;
+    if (Array.isArray(locales)) return 'chosen';
+    if (localesForDomain(base).length) return 'tld';
+    return localesForBase(base).length ? 'evidence' : 'none';
+  };
+  /** A base's packs (those that loaded), how they were chosen and the evidence read for it. */
+  const localeChoice = (base) => ({
+    domain: base,
+    locales: localesUsedForBase(base),
+    source: localeSourceOf(base),
+    evidence: evidenceByBase.get(base) || null
+  });
   const baseWords = new Map();
   let maxRank = 0;
   for (const base of bfBases) {
@@ -1480,7 +1542,12 @@ export async function runScan(config = {}, hooks = {}) {
   const permStageActive = permBudget > 0 || recursiveEnabled;
   if (raiseSweep) dns.setConcurrency(probePool);
   try {
-    stage('bruteforce', { total: bfCandidates.length, words: maxRank, parents: bfBases, skipped: bfCandidates.length === 0 });
+    // `locales`: per base, the packs its list holds and how they were chosen (the adaptive
+    // packs' evidence with them), so a view can say so while the wordlist runs.
+    stage('bruteforce', {
+      total: bfCandidates.length, words: maxRank, parents: bfBases, skipped: bfCandidates.length === 0,
+      locales: usesPacks ? bfBases.map(localeChoice) : []
+    });
     Object.assign(bf, await probeNames(bfCandidates, 'wordlist', 'bruteforce', 0, bfCandidates.length));
 
     // Fold in names from sources that were still arriving during the grace
@@ -2262,11 +2329,16 @@ export async function runScan(config = {}, hooks = {}) {
     bump(foundByBaseTier, attr.base, attr.tier);
     foundEntries[attr.tier].add(attr.entry);
   }
-  const usesLocalePacks = KNOWN_LEVELS.has(bfMode) && bfMode !== 'small' && !overrideWords;
   const wordlistPerDomain = bfBases.map((base) => ({
     domain: base,
     level: baseWords.get(base) && baseWords.get(base).length ? levelUsed : 'off',
-    locales: usesLocalePacks ? localesUsedForBase(base) : [],
+    locales: usesPacks ? localesUsedForBase(base) : [],
+    // extension (adaptive locale packs): how the packs were chosen — 'tld', 'evidence', 'none'
+    // (a TLD without packs and no evidence strong enough) or 'chosen' (the config's list); null
+    // when the level uses no packs. `localeEvidence`: what the evidence read (lib/localeevidence.js),
+    // for a base whose TLD names no market under the automatic choice; null otherwise.
+    localeSource: localeSourceOf(base),
+    localeEvidence: evidenceByBase.get(base) || null,
     words: (baseWords.get(base) || []).length,
     customTried: byBaseTier(triedByBaseTier, base, 'custom'),
     learnedTried: byBaseTier(triedByBaseTier, base, 'learned'),
@@ -2277,9 +2349,9 @@ export async function runScan(config = {}, hooks = {}) {
     requested: bfMode,
     level: levelUsed,
     degraded: [...degradePairs],
-    localePacks: usesLocalePacks ? [...new Set(bfBases.flatMap(localesUsedForBase))].sort() : [],
+    localePacks: usesPacks ? [...new Set(bfBases.flatMap(localesUsedForBase))].sort() : [],
     // extension: requested locale packs that failed to load (so were NOT used)
-    localesMissing: usesLocalePacks ? missingAll : [],
+    localesMissing: usesPacks ? missingAll : [],
     customTried: triedEntries.custom.size,
     learnedTried: triedEntries.learned.size,
     customFound: foundEntries.custom.size,

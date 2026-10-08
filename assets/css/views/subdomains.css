@@ -797,6 +797,16 @@
   display: none;
 }
 
+/* The locale packs a run added from evidence (lib/localeevidence.js): one sentence per pack. */
+.sub-locale-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.sub-locale-line + .sub-locale-line {
+  margin-top: 4px;
+}
+
 /* ---- results tabs --------------------------------------------------------------- */
 
 /* A host name wraps only after a dot: each label is one unbreakable run (hostNameNodes). */

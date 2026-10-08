@@ -215,6 +215,7 @@ registerStrings('en', {
   'sub.plan.pack': '+{count} {language}',
   'sub.plan.custom': '+{count} yours',
   'sub.plan.learned': '+{count} learned',
+  'sub.plan.evidence': 'plus market packs if the scan finds evidence',
   'sub.plan.capped': 'capped at {count} per domain',
 
   'sub.lang.legend': 'Languages / markets',
@@ -222,7 +223,11 @@ registerStrings('en', {
   'sub.lang.auto': 'Choose from the domain ending',
   'sub.lang.autoPick': 'Auto: {list}',
   'sub.lang.autoItem': '{language} ({suffix})',
-  'sub.lang.autoNone': 'Auto: none — {suffix} has no market pack, so the global list is used',
+  'sub.lang.autoEvidence': {
+    one: 'Auto: {suffix} names no market, so the scan picks packs from evidence — the words in the names it finds and the countries of the name and mail servers',
+    other: 'Auto: {suffix} name no market, so the scan picks packs from evidence — the words in the names it finds and the countries of the name and mail servers'
+  },
+  'sub.lang.autoEvidenceItem': 'from evidence for {suffix}',
   'sub.lang.autoEmpty': 'Auto: picked from the domain ending (e.g. .de → German, .com.tr → Turkish)',
   'sub.lang.manualNone': 'None: the global list only',
   'sub.lang.manual': 'Chosen: {list}',
@@ -456,6 +461,7 @@ registerStrings('tr', {
   'sub.plan.pack': '+{count} {language}',
   'sub.plan.custom': '+{count} sizin',
   'sub.plan.learned': '+{count} öğrenilen',
+  'sub.plan.evidence': 'kanıt bulunursa pazar paketleri de',
   'sub.plan.capped': 'alan adı başına {count} ile sınırlı',
 
   'sub.lang.legend': 'Diller / pazarlar',
@@ -463,7 +469,8 @@ registerStrings('tr', {
   'sub.lang.auto': 'Alan adı uzantısına göre seç',
   'sub.lang.autoPick': 'Otomatik: {list}',
   'sub.lang.autoItem': '{language} ({suffix})',
-  'sub.lang.autoNone': 'Otomatik: yok — {suffix} için pazar paketi yok, küresel liste kullanılır',
+  'sub.lang.autoEvidence': 'Otomatik: {suffix} bir pazara işaret etmiyor; tarama paketleri kanıta göre seçer — bulduğu adlardaki kelimeler ile ad ve posta sunucularının ülkesi',
+  'sub.lang.autoEvidenceItem': '{suffix} için kanıta göre',
   'sub.lang.autoEmpty': 'Otomatik: alan adı uzantısından seçilir (ör. .de → Almanca, .com.tr → Türkçe)',
   'sub.lang.manualNone': 'Hiçbiri: yalnızca küresel liste',
   'sub.lang.manual': 'Seçilen: {list}',
@@ -851,7 +858,9 @@ export function effectiveLocales(choice, domain) {
 
 /**
  * One line describing the locale choice for the typed domains: "Auto: Turkish (.com.tr)",
- * "Auto: none — .com has no market pack …", "Chosen: German, French", "None: the global list only".
+ * "Auto: .com names no market, so the scan picks packs from evidence …" (lib/localeevidence.js),
+ * "Auto: Turkish (.com.tr), from evidence for .com", "Chosen: German, French", "None: the global
+ * list only".
  * @param {string[]|null} choice options.locales
  * @param {string[]} domains
  * @returns {string}
@@ -870,7 +879,10 @@ export function localeSummary(choice, domains) {
       if (!items.includes(item)) items.push(item);
     }
   }
-  if (!items.length) return t('sub.lang.autoNone', { suffix: [...new Set(picks.map((p) => p.suffix))].join(', ') });
+  // The endings that name no market: their packs come from the scan's evidence.
+  const open = [...new Set(picks.filter((p) => !p.codes.length).map((p) => p.suffix))].join(', ');
+  if (!items.length) return t('sub.lang.autoEvidence', { suffix: open, count: open.split(', ').length });
+  if (open) items.push(t('sub.lang.autoEvidenceItem', { suffix: open }));
   return t('sub.lang.autoPick', { list: items.join(', ') });
 }
 
@@ -880,9 +892,11 @@ export function localeSummary(choice, domains) {
  * ({@link BRUTEFORCE_CAPS} per domain, the custom and learned names on top, and
  * {@link BRUTEFORCE_TOTAL_CAP} in all). Custom and learned names that are already in the list
  * add nothing, so their share is an upper bound.
+ * A domain whose TLD names no market, under the automatic choice, is marked `evidence`: the scan
+ * picks its packs from what it finds (lib/localeevidence.js), so they are not counted here.
  * @param {{ level: string, domains: string[], locales?: string[]|null, custom?: number, learned?: number }} opts
  * @returns {{ level: string, perDomain: Array<{ domain: string, level: number, packs: Array<{ code: string, count: number }>,
- *   custom: number, learned: number, total: number, capped: boolean }>, total: number }}
+ *   evidence: boolean, custom: number, learned: number, total: number, capped: boolean }>, total: number }}
  */
 export function wordlistPlan({ level, domains = [], locales = null, custom = 0, learned = 0 }) {
   const lvl = BRUTEFORCE_MODES.includes(level) ? level : 'off';
@@ -899,6 +913,7 @@ export function wordlistPlan({ level, domains = [], locales = null, custom = 0, 
       domain,
       level: levelCount(lvl),
       packs,
+      evidence: lvl !== 'small' && !!domain && !Array.isArray(locales) && !packs.length,
       custom: Math.max(0, Number(custom) || 0),
       learned: Math.max(0, Number(learned) || 0),
       total: Math.min(raw, cap),
@@ -960,7 +975,8 @@ export function levelPacks(level, domains, locales) {
 /**
  * One sentence for a {@link wordlistPlan}: "≈ 7,450 DNS queries for 1 domain (7,000 smart,
  * +450 Turkish) · ≈ 1 min". With several domains the breakdown is per domain and lists every
- * locale pack any of them gets. Empty for an off / empty plan.
+ * locale pack any of them gets. A domain whose packs the scan picks from evidence adds "plus
+ * market packs if the scan finds evidence". Empty for an off / empty plan.
  * @param {ReturnType<typeof wordlistPlan>} plan
  * @param {number} [sweep] parallel probes of the scan ({@link scanConcurrency} of the Settings value)
  * @returns {string}
@@ -973,6 +989,7 @@ export function wordlistPlanText(plan, sweep = MAX_SWEEP_CONCURRENCY, queries = 
   const packs = new Map();
   for (const d of list) for (const p of d.packs) if (!packs.has(p.code)) packs.set(p.code, p.count);
   for (const [code, count] of packs) parts.push(t('sub.plan.pack', { count: formatNumber(count), language: languageName(code) }));
+  if (list.some((d) => d.evidence)) parts.push(t('sub.plan.evidence'));
   if (pd.custom) parts.push(t('sub.plan.custom', { count: formatNumber(pd.custom) }));
   if (pd.learned) parts.push(t('sub.plan.learned', { count: formatNumber(pd.learned) }));
   if (list.some((d) => d.capped)) parts.push(t('sub.plan.capped', { count: formatNumber(BRUTEFORCE_CAPS[plan.level] + pd.custom + pd.learned) }));

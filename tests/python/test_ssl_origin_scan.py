@@ -805,6 +805,19 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual([(s.name, s.ips) for s in inv.servers], [('web01.example.com', ['10.0.0.7'])],
                          'without an IP column another column still gives the address')
 
+    def test_a_placeholder_in_an_ip_column_leaves_the_row_to_its_own_name(self):
+        # DHCP, N/A, TBD, - ... in an IP column are no address and no host to resolve: the row's
+        # own name is resolved, as the JSON reader does for {"name": ..., "ip": "N/A"}
+        inv = sos.parse_inventory('name,ip\nweb01.example.com,DHCP\nweb02.example.com,N/A\n'
+                                  'web03.example.com,-\nweb04.example.com,\nweb05.example.com,TBD ?\n'
+                                  'web06.example.com,web6.example.net\n')
+        self.assertEqual([(s.name, s.ips, s.hostnames) for s in inv.servers],
+                         [('web0%d.example.com' % n, [], ['web0%d.example.com' % n]) for n in range(1, 6)]
+                         + [('web06.example.com', [], ['web6.example.net'])])
+        self.assertEqual(inv.warnings, [])
+        inv = sos.parse_inventory('name,ansible_host\nweb01,bastion\n')
+        self.assertEqual([s.hostnames for s in inv.servers], [['bastion']], 'an ansible_host column names a host')
+
     def test_email_addresses_are_never_resolved(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'inv.csv')

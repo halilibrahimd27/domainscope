@@ -2402,6 +2402,7 @@ def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder, sta
     # iLO / subnet / MAC / e-mail column: such a row's own name is resolved instead.
     other_idx = [i for i, h in enumerate(header) if i != name_idx and i not in topology_idx
                  and not _IP_HEADER_EXCLUDE_RE.search(h)]
+    host_idx = {i for i, h in enumerate(header) if h in ('ansible_host', 'ansible_ssh_host')}
     for h in header:
         if h in _NEAR_MISS:
             builder.warn(content[0][0], 'TOPOLOGY', 'column %s is no topology key - did you mean '
@@ -2413,7 +2414,10 @@ def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder, sta
         values = []  # type: List[str]
         for i in columns:
             if i < len(cells) and cells[i]:
-                values.extend(v for v in re.split(r'[\s,;|]+', cells[i]) if v)
+                # A word without a digit, a dot or a colon (DHCP, N/A, TBD, -) is no address and
+                # no host but in an ansible_host column: the row's own name is resolved instead.
+                values.extend(v for v in re.split(r'[\s,;|]+', cells[i])
+                              if v and (i in host_idx or re.search(r'[\d.:]', v)))
         values = [v for v in values if ip_idx or _address_token(v) or is_ip_block(v)]
         groups = [cells[i] for i in group_idx if i < len(cells) and cells[i]]
         topology = builder.line_topology([(header[i], cells[i]) for i in topology_idx

@@ -282,6 +282,8 @@ describe('config.zone: exact origins', () => {
     assert.deepEqual(web02.hosts.map((e) => [e.name, e.ip, e.via]), [['tagged.example.com', '192.0.2.40', 'zone']]);
     assert.equal(web02.needsCert, true);
     assert.equal(web02.maybeNeedsCert, false);
+    // counted once, among the servers to update: "possible via hints" holds the servers hints alone tie
+    assert.equal(result.stats.hintedServers, result.servers.filter((g) => g.hosts.every((e) => e.via === 'hint')).length);
     const web01 = result.servers.find((g) => g.server.name === 'web01');
     assert.deepEqual(web01.hosts.map((e) => `${e.via}:${e.name}`),
       ['dns:ftp.example.com', 'zone:example.com', 'zone:docs.example.com', 'zone:www.example.com']);

@@ -2194,7 +2194,8 @@ export async function runScan(config = {}, hooks = {}) {
     unresolved: kindCount('unresolved'),
     hiddenOrigin: count((x) => x.classification.hidesOrigin),
     needsCert: serverGroups.filter((g) => g.needsCert).length,
-    hintedServers: serverGroups.filter((g) => !g.hosts.some((e) => e.via === 'dns')).length,
+    // tied by origin hints alone: a zone file or origin map tie counts in needsCert, never here as well
+    hintedServers: serverGroups.filter((g) => !g.hosts.some((e) => e.via === 'dns' || e.via === 'zone' || e.via === 'known')).length,
     originHints: originHintList.length,
     unmatchedIps: unmatchedIps.length,
     sourcesOk: sourceResults.filter((r) => r.ok).length,

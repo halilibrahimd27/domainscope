@@ -136,6 +136,15 @@ describe('config.knownOrigins: the remembered origins rank first', () => {
     assert.equal(web03.needsCert, true);
   });
 
+  test('a server the map ties is counted once: among the servers to update, never again as possible via hints (hints off too)', async () => {
+    for (const originHints of [true, false]) {
+      const { result } = await scan({ knownOrigins: KNOWN, originHints });
+      const hintOnly = result.servers.filter((g) => g.hosts.every((e) => e.via === 'hint')).map((g) => g.server.name);
+      assert.ok(result.servers.find((g) => g.server.name === 'web03').needsCert, `hints ${originHints}`);
+      assert.equal(result.stats.hintedServers, hintOnly.length, `hints ${originHints}: only ${hintOnly.join(', ') || 'none'}`);
+    }
+  });
+
   test('the CLI command carries them exactly: the address on 443, ip:port on another port, never a /24', async () => {
     const { result } = await scan({ knownOrigins: KNOWN });
     assert.ok(result.cliTargets.includes('192.0.2.40'));

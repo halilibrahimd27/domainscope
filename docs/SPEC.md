@@ -778,6 +778,7 @@ With a zone:
 - a server with `terminates_tls=no` has no `needsCert` / `maybeNeedsCert` — unless the inventory and DNS disagree (`GroupTopology.suspect`, §5.69): a covered DNS, remembered (`known`, §5.70) or zone name reaches it directly (its own address, a VIP or NAT address it holds; no `lbs`) while it forwards to no backend, or a name that would terminate TLS nowhere reaches it directly. Then it needs the certificate (the scan errs toward it) and its notes say to check the inventory; `ScanResult.tlsNowhere` (present only when non-empty) lists the covered names that reach only `terminates_tls=no` servers;
 - after the needs-first sort, `orderByLoadBalancer`: each load balancer (a VIP pair together) followed by what is behind it;
 - `stats.matchedServers` counts the servers that get the certificate and that a name reached by DNS itself (not through a load balancer).
+- `stats.hintedServers` (the "+N possible via hints" under the Servers card) counts the servers that origin hints alone tie: a DNS, zone (`zone`) or remembered (`known`) tie counts in `needsCert` instead, never in both.
 
 **Extension: the origin map (wave 5, §5.70).** Additive: a run without `knownOrigins` gives the same result as before (no `known` key).
 ```js

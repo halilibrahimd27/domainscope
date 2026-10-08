@@ -171,6 +171,11 @@ test('a DS that matches no DNSKEY after a rollover: bogus, ds-no-match, the stal
   assert.equal(z.ds[0].matches, null);
   assert.ok(!z.keys.some((k) => k.keyTag === z.ds[0].keyTag) || z.keys.every((k) => !k.matchesDs));
   assert.ok(z.dsSigs.some((s) => s.result === 'valid'), 'the DS itself is properly signed by the parent');
+  // Shown, not trusted: the zone's own KSK signs its key set — the key a new DS must name.
+  const ksk = z.keys.find((k) => k.role === 'ksk');
+  assert.ok(ksk.signsKeys && !ksk.matchesDs);
+  assert.ok(z.keySigs.some((s) => s.result === 'valid' && s.keyTag === ksk.keyTag));
+  assert.equal(world.zones.get('rollover.example').ksk.keyTag, ksk.keyTag);
 });
 
 test('an unsupported algorithm (GOST) is insecure, never bogus', async () => {

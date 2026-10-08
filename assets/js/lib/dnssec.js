@@ -983,11 +983,16 @@ async function keyStep(step, env) {
   if (!matched.length) {
     step.status = 'bogus';
     step.reason = zone === '.' && step.dsSource === 'anchor' ? 'anchor-mismatch' : 'ds-no-match';
+    // Shown, not trusted: which of its own keys the zone signs its key set with (after a rollover,
+    // the key the DS should name).
+    const own = await verifyRRset(keyRRs, sigsFor(res.answers, zone, 'DNSKEY'), keyRRs, zone, env);
+    step.keySigs = own.checks;
+    for (const info of step.keys) info.signsKeys = own.validKeys.includes(info.keyTag);
     return step;
   }
   const v = await verifyRRset(keyRRs, sigsFor(res.answers, zone, 'DNSKEY'), matched, zone, env);
   step.keySigs = v.checks;
-  for (const info of step.keys) info.signsKeys = v.validKeys.includes(info.keyTag) && info.matchesDs;
+  for (const info of step.keys) info.signsKeys = v.validKeys.includes(info.keyTag);
   if (v.result === 'valid') {
     step.status = 'secure';
     step.reason = null;

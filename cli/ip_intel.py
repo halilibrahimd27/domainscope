@@ -13,8 +13,8 @@ range or a file of them, and adds what a browser cannot do:
      hosts, also for addresses only your network reaches;
   2. PTR, through the system resolver;
   3. free passive sources (unless --no-passive): HackerTarget reverse IP, AlienVault OTX
-     passive DNS, Robtex passive DNS, Shodan InternetDB and mnemonic passive DNS (which sends
-     no CORS headers, so no browser can ask it);
+     passive DNS, Robtex passive DNS, Shodan InternetDB, mnemonic passive DNS (which sends no
+     CORS headers, so no browser can ask it) and ip.thc.org reverse IP;
   4. sources that need a key of yours, read from environment variables only: SecurityTrails,
      VirusTotal, Shodan, Censys, ViewDNS, WhoisXML API and Netlas.
 
@@ -834,6 +834,28 @@ def parse_mnemonic(body: bytes) -> SourceResult:
                         truncated=len(rows) >= MNEMONIC_LIMIT or (total is not None and total > len(rows)))
 
 
+THC_LIMIT = 100  # names asked of ip.thc.org per address: one page (its token bucket is small)
+
+
+def parse_thc(body: bytes) -> SourceResult:
+    """ip.thc.org ``POST /api/v1/lookup``: ``{matching_records, count_unavailable?, domains:
+    [{domain, apex_domain}], next_page_state}``; an error is ``{status: 'error', error}``."""
+    doc = _json(body)
+    if not isinstance(doc, dict):
+        raise ValueError('not an object')
+    if doc.get('status') == 'error' or ('domains' not in doc and doc.get('error')):
+        message = _first_line(str(doc.get('error') or doc.get('message') or 'error'))
+        limited = re.search(r'rate.?limit|too many|quota|throttl', message, flags=re.I)
+        return SourceResult('thc', RATE_LIMITED if limited else ERROR, detail=message)
+    rows = doc.get('domains') or []
+    if not isinstance(rows, list):
+        raise ValueError('domains is not a list')
+    hits, _ = _hits(((r.get('domain') if isinstance(r, dict) else r), None, None) for r in rows)
+    total = None if doc.get('count_unavailable') is True else _int(doc.get('matching_records'))
+    truncated = bool(doc.get('next_page_state')) or (total is not None and total > len(rows))
+    return SourceResult('thc', OK, hits, total=total, truncated=truncated)
+
+
 def parse_securitytrails(body: bytes) -> SourceResult:
     """SecurityTrails ``POST /v1/domains/list`` with an ``ipv4`` / ``ipv6`` filter:
     ``{records: [{hostname}], record_count}``."""
@@ -971,6 +993,11 @@ def _req_mnemonic(ip: str, keys: Mapping[str, str]) -> RequestParts:
     return 'https://api.mnemonic.no/pdns/v3/%s?limit=%d' % (_q(ip), MNEMONIC_LIMIT), {}, None
 
 
+def _req_thc(ip: str, keys: Mapping[str, str]) -> RequestParts:
+    body = json.dumps({'ip_address': ip, 'limit': THC_LIMIT}).encode('utf-8')
+    return 'https://ip.thc.org/api/v1/lookup', {'Content-Type': 'text/plain'}, body
+
+
 def _req_securitytrails(ip: str, keys: Mapping[str, str]) -> RequestParts:
     body = json.dumps({'filter': {'ipv6' if ':' in ip else 'ipv4': ip}}).encode('utf-8')
     return ('https://api.securitytrails.com/v1/domains/list?page=1',
@@ -1029,6 +1056,7 @@ SOURCES = (
     Source('robtex', 'Robtex passive DNS', (), True, 1.0, _req_robtex, parse_robtex),
     Source('internetdb', 'Shodan InternetDB', (), True, 0.2, _req_internetdb, parse_internetdb, True),
     Source('mnemonic', 'mnemonic passive DNS', (), True, 0.5, _req_mnemonic, parse_mnemonic),
+    Source('thc', 'ip.thc.org reverse IP', (), True, 2.0, _req_thc, parse_thc),
     Source('securitytrails', 'SecurityTrails', ('SECURITYTRAILS_API_KEY',), True, 1.0,
            _req_securitytrails, parse_securitytrails),
     Source('virustotal', 'VirusTotal', ('VT_API_KEY',), True, 15.0, _req_virustotal, parse_virustotal),
@@ -1763,7 +1791,7 @@ examples:
     python3 ip_intel.py sources
 
 sources (third parties; a private or reserved address goes to none of them):
-  free  hackertarget, otx, robtex, internetdb, mnemonic (--no-passive leaves them out)
+  free  hackertarget, otx, robtex, internetdb, mnemonic, thc (--no-passive leaves them out)
   key   securitytrails (SECURITYTRAILS_API_KEY), virustotal (VT_API_KEY), shodan
         (SHODAN_API_KEY), censys (CENSYS_API_ID + CENSYS_API_SECRET), viewdns
         (VIEWDNS_API_KEY), whoisxml (WHOISXML_API_KEY), netlas (NETLAS_API_KEY): asked when

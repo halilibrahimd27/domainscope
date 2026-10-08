@@ -49,6 +49,7 @@ def _load_cli():
 ii = _load_cli()
 
 DOC_PREFIXES = ('192.0.2.', '198.51.100.', '203.0.113.', '2001:db8:')
+FREE_IDS = [s.id for s in ii.SOURCES if not s.keys]
 
 
 def doc_public(ip: str) -> bool:
@@ -298,6 +299,26 @@ class ParserTests(unittest.TestCase):
         failed = ii.parse_mnemonic(json.dumps(dict(MNEMONIC_BODY, responseCode=503,
                                                    messages=[{'message': 'busy'}])).encode())
         self.assertEqual((failed.status, failed.detail), (ii.ERROR, 'responseCode 503: busy'))
+
+    def test_thc_one_page_and_its_count(self):
+        body = {'comment': 'Free Service!', 'processed_ip_address': '203.0.113.10', 'matching_records': 250,
+                'domains': [{'apex_domain': 'example.com', 'domain': 'www.example.com', 'ip_address': '203.0.113.10'},
+                            {'apex_domain': 'example.org', 'domain': 'example.org'}],
+                'next_page_state': '0027400401'}
+        result = ii.parse_thc(json.dumps(body).encode())
+        self.assertEqual(([h.name for h in result.hits], result.total, result.truncated),
+                         (['example.org', 'www.example.com'], 250, True))
+        none = ii.parse_thc(json.dumps({'matching_records': 0, 'count_unavailable': True, 'domains': [],
+                                        'next_page_state': ''}).encode())
+        self.assertEqual((none.status, none.total, none.truncated), (ii.OK, None, False))
+        self.assertEqual(ii.parse_thc(b'{"status": "error", "error": "rate limit exceeded"}').status, ii.RATE_LIMITED)
+        bad = ii.parse_thc(b'{"status": "error", "error": "invalid ip address"}')
+        self.assertEqual((bad.status, bad.detail), (ii.ERROR, 'invalid ip address'))
+        http = FakeHttp([('https://ip.thc.org/', (200, body))])
+        ii.ask_source(source('thc'), '203.0.113.10', {}, http)
+        url, headers, data = http.calls[0]
+        self.assertEqual((url, json.loads(data)), ('https://ip.thc.org/api/v1/lookup',
+                                                   {'ip_address': '203.0.113.10', 'limit': 100}))
 
     def test_key_sources(self):
         st = ii.parse_securitytrails(json.dumps({'records': [{'hostname': 'www.example.com'}, {'hostname': 'x'}],
@@ -634,7 +655,7 @@ class CommandLineTests(unittest.TestCase):
                 names = {n['name']: n for n in doc['addresses'][0]['names']}
                 self.assertEqual(names['www.example-test.com.tr']['status'], 'HERE')
                 self.assertEqual(names['www.example-test.com.tr']['tls'], 'SNI')
-                self.assertEqual(doc['options']['sources'], list(ii.SOURCE_IDS[:5]))
+                self.assertEqual(doc['options']['sources'], FREE_IDS)
                 self.assertEqual({s['status'] for s in doc['addresses'][0]['sources'][2:]}, {'SKIPPED'})
                 with open(csv_path, encoding='utf-8-sig') as handle:
                     self.assertIn('127.0.0.1,www.example-test.com.tr,HERE', handle.read())
@@ -653,8 +674,8 @@ class CommandLineTests(unittest.TestCase):
             code, out, err = run_main('domains', '203.0.113.10', '--no-tls', '--json', '-')
             self.assertEqual(code, 0, err)
             self.assertEqual(json.loads(out)['options']['sources'],
-                             ['hackertarget', 'otx', 'robtex', 'internetdb', 'mnemonic', 'virustotal'])
-            for switches, expected in ((['--no-passive'], ['virustotal']), (['--no-keys'], ii.SOURCE_IDS[:5]),
+                             ['hackertarget', 'otx', 'robtex', 'internetdb', 'mnemonic', 'thc', 'virustotal'])
+            for switches, expected in ((['--no-passive'], ['virustotal']), (['--no-keys'], FREE_IDS),
                                        (['--no-passive', '--no-keys'], []), (['--sources', 'otx,virustotal'],
                                                                              ['otx', 'virustotal'])):
                 code, out, err = run_main('domains', '203.0.113.10', '--no-tls', '--json', '-', *switches)

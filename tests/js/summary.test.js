@@ -1474,6 +1474,21 @@ describe('rendering and dispatch', () => {
     assert.deepEqual(S.SUMMARY_FORMATS, ['markdown', 'text']);
   });
 
+  test('a crafted link puts no Markdown in the footer: its syntax is percent-encoded after the host, and the page reads it back the same', () => {
+    const zone = (url) => S.zoneSummary({ origin: 'example.com', counts: { records: 1, names: 1, proxied: 0 } }, opts('en', url));
+    // a page query string and the raw hash of an "is it live?" link, which the browser leaves as typed
+    const note = '[Change-approved-by-SecOps](https://evil.example/login)![](https://evil.example/p.png)`c`*b*~s~|<i>\\';
+    const doc = zone(`${URL_BASE}?x=[a](b)#/change/check?z=example.com&r=is+www+A+192.0.2.1&note=${note}`);
+    const foot = lines(md(doc)).pop();
+    assert.equal(foot, `DomainScope · as of 2026-09-27 14:03 UTC · ${URL_BASE}?x=%5Ba%5D(b)#/change/check?z=example.com&r=is+www+A+192.0.2.1`
+      + '&note=%5BChange-approved-by-SecOps%5D(https://evil.example/login)!%5B%5D(https://evil.example/p.png)%60c%60%2Ab%2A%7Es%7E%7C%3Ci%3E%5C');
+    assert.equal(lines(txt(doc)).pop(), foot, 'the same link in plain text');
+    assert.equal(new URLSearchParams(foot.split('#/change/check?')[1]).get('note'), note);
+    // the host keeps its brackets (an IPv6 address), and a link without syntax is left as it is
+    const v6 = 'http://[2001:db8::1]:8080/domainscope/#/lookup?name=_dmarc.example.com&type=TXT';
+    assert.equal(lines(md(zone(v6))).pop(), `DomainScope · as of 2026-09-27 14:03 UTC · ${v6}`);
+  });
+
   test('the Markdown footer is its own paragraph, never a lazy continuation of the last item or the one-line summary', () => {
     const zone = S.zoneSummary({ origin: 'example.com', counts: { records: 1, names: 1, proxied: 0 } }, opts('en', `${URL_BASE}#/zone`));
     const ip = S.ipSummary({ rows: [{ ip: '203.0.113.7', info: { ptr: [], error: null }, classification: { kind: 'direct' }, servers: [] }] }, opts('en', `${URL_BASE}#/ip?ips=203.0.113.7`));

@@ -1651,7 +1651,8 @@ export function ipSummary({ rows /* views/ip rows */, at /* when the lookup ende
 SummaryDoc = { kind, title: Part[], lines: Part[][], inline: boolean /* one line after the title */, footer: { when /* 'checked 2026-09-27 14:03 UTC' */, url } }
 Part = string /* Markdown-escaped */ | { code: string } /* an untrusted value: a code span */ | { strong: string }
 export function renderMarkdown(doc) / renderPlainText(doc) / renderSummary(doc, 'markdown'|'text') -> string   // "**title**", "- line"…, "DomainScope · <when> · <url>"; trailing newline;
-                                                   // Markdown puts an empty line before the footer (CommonMark would continue the last item with it); plain text does not
+                                                   // Markdown puts an empty line before the footer (CommonMark would continue the last item with it); plain text does not;
+                                                   // the URL's \ ` * [ ] < > ~ | after the host are percent-encoded (a crafted query or check link cannot add a link or an image)
 export function permalinkParams(view, params, { exclude = [] } = {}) -> Record<string, string>   // PERMALINK_PARAMS keys only, never an empty value; zone / cert / reports: none; ip: host names and
                                                                                                    // public addresses not in `exclude` (inventory addresses)
 export function healthScore(summary) / trafficLight(summary)   // 100 − 20 per error − 6 per warning (0…100); 'error' | 'warn' | 'ok' (views/health re-exports both)

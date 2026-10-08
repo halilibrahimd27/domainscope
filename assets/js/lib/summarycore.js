@@ -400,10 +400,21 @@ function joinParts(parts, fn) {
   return parts.map(fn).join('').replace(/ {2,}/g, ' ').trim();
 }
 
+// The Markdown syntax mdEscape escapes, but `_` (`_dmarc` names; it cannot make a link): a page's
+// query string and a shared check link keep `[x](y)` as typed, so a crafted link would put a link
+// or an image into the pasted footer. Percent-encoded, the page reads its params back the same.
+const URL_MARKUP = /[\\`*[\]<>~|]/g;
+
+function footerUrl(url) {
+  const s = String(url).replace(/\s/g, '');
+  const host = (/^[a-z][a-z\d+.-]*:\/\/[^/?#]*/i.exec(s) || [''])[0]; // an IPv6 host keeps its brackets
+  return host + s.slice(host.length).replace(URL_MARKUP, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
 function footerLine(footer, esc) {
   const bits = ['DomainScope', esc(footer.when)];
   // A bare URL: every chat and tracker links it, and it survives a paste into plain text.
-  if (footer.url) bits.push(String(footer.url).replace(/\s/g, ''));
+  if (footer.url) bits.push(footerUrl(footer.url));
   return bits.join(' · ');
 }
 

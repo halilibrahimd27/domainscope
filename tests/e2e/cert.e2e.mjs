@@ -43,12 +43,15 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { pinnedClockScript } from './clock.mjs';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions,
   createRunner, gotoRoute, installDownloadCapture, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const fixture = (name) => path.join(FIXTURES, name);
+/** The instant the expectations were written for (the fixtures expire from 2026-11-29 to 2052): the page's clock and the helpers' `now`. */
+const CERT_NOW = Date.parse('2026-10-01T12:00:00Z');
 
 async function nodeChecks(run) {
   const V = await import('../../assets/js/views/cert.js');
@@ -57,7 +60,7 @@ async function nodeChecks(run) {
 
   await run.step('analyzeChain: complete chain in order (root included)', async () => {
     const { result } = await load('chain.pem');
-    const a = V.analyzeChain(result.certificates, result.leaf);
+    const a = V.analyzeChain(result.certificates, result.leaf, CERT_NOW);
     assertEqual(a.ordered.map((c) => c.subjectCN), ['www.example-test.com.tr', 'Subdomain Scanner Test Root CA'], 'order');
     assert(a.complete && a.inOrder && !a.unrelated.length, 'complete, in order');
     assertEqual(a.issues.map((i) => i.code), ['root-included'], 'issues');
@@ -66,15 +69,15 @@ async function nodeChecks(run) {
   });
   await run.step('analyzeChain: reversed file, leaf only, lone CA, cross-signed root', async () => {
     const rev = (await load('chain_reversed.pem')).result;
-    const a = V.analyzeChain(rev.certificates, rev.leaf);
+    const a = V.analyzeChain(rev.certificates, rev.leaf, CERT_NOW);
     assert(!a.inOrder && a.issues.some((i) => i.code === 'order'), 'order issue');
     assertEqual(a.ordered[0].subjectCN, 'www.example-test.com.tr', 'leaf first after ordering');
     const single = (await load('rsa_multi_san.pem')).result;
-    assertEqual(V.analyzeChain(single.certificates, single.leaf).issues.map((i) => i.code), ['leaf-only'], 'leaf only');
+    assertEqual(V.analyzeChain(single.certificates, single.leaf, CERT_NOW).issues.map((i) => i.code), ['leaf-only'], 'leaf only');
     const ca = (await load('ca.pem')).result;
-    assertEqual(V.analyzeChain(ca.certificates, ca.leaf).issues, [], 'a lone root CA has no issue');
+    assertEqual(V.analyzeChain(ca.certificates, ca.leaf, CERT_NOW).issues, [], 'a lone root CA has no issue');
     const g = (await load('real_google_chain.pem')).result;
-    const ga = V.analyzeChain(g.certificates, g.leaf);
+    const ga = V.analyzeChain(g.certificates, g.leaf, CERT_NOW);
     assertEqual(ga.ordered.length, 3, 'three in chain');
     assert(!ga.complete && ga.issues.some((i) => i.code === 'ends-at'), 'ends at a cross-signed root');
     assertEqual(V.fullchainCerts(ga).length, 3, 'a non-self-signed last certificate stays in the fullchain');
@@ -244,6 +247,9 @@ async function main() {
   process.stdout.write(`\nServing ${server.url} — ${(await browser.version()).product}${OFFLINE ? ' (offline: live checks skipped)' : ''}\n`);
   try {
     const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    // The fixture certificates carry fixed dates (from 2026-11-29 to 2052), so the page counts them from the day the
+    // expectations were written, on a clock that keeps moving: what it says about validity never drifts with today.
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: pinnedClockScript(CERT_NOW) });
     await installDownloadCapture(page);
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: ctFakeScript(certspotterRow(ctLeaf, '17000000001'), crtshRows) });
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
@@ -313,7 +319,7 @@ async function main() {
       await page.setFileInput('.cdiff .cdiff-box .filedrop-input', [fixture('certdiff_new.pem')]);
       await verdictOf('blocked');
       const info = await diffInfo();
-      const expected = cdiff.compareCertificates(diffOld, diffNew, { now: Date.now() });
+      const expected = cdiff.compareCertificates(diffOld, diffNew, { now: CERT_NOW });
       assertEqual(info.codes, expected.changes.map((c) => c.code), 'the library\'s changes, in its order');
       assertEqual(info.title, 'Not a drop-in replacement: 3 blockers', 'verdict');
       assertEqual(info.groups, ['blocker', 'action', 'check', 'info'], 'groups by severity');

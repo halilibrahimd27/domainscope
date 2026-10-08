@@ -38,6 +38,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { pinnedClockScript } from './clock.mjs';
 import { orderSuites } from './run-all.mjs';
 import { parseCertificates } from '../../assets/js/lib/x509.js';
 import { seq, ctx, oid, octet, int } from '../fixtures/der-builder.mjs';
@@ -48,6 +49,8 @@ import {
 
 const fixture = (name) => path.join(FIXTURES, name);
 const DATASET = path.join(FIXTURES, 'intermediates');
+/** The instant the expectations were written for (the test PKIs expire from 2035 to 2045, the dataset is of Sep 28, 2026): the page's clock starts here. */
+const CHAINFIX_NOW = Date.parse('2026-09-28T12:00:00Z');
 /** The DER of a PEM fixture's certificate, as base64 (to find it in a download). */
 const derB64 = async (file) => Buffer.from(parseCertificates(await readFile(fixture(file))).certificates[0].der).toString('base64');
 const pemBodies = (text) => (text.match(/-----BEGIN CERTIFICATE-----\n([\s\S]*?)-----END CERTIFICATE-----/g) || []).map((b) => b.replace(/-----[^-]+-----|\s/g, ''));
@@ -239,6 +242,7 @@ async function main() {
   const STEP = '.scan-step-cert';
   try {
     page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: pinnedClockScript(CHAINFIX_NOW) });
     net = await interceptDataset(page);
     await installDownloadCapture(page);
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });

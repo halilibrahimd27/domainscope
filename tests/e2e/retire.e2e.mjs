@@ -31,12 +31,15 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { pinnedClockScript } from './clock.mjs';
 import {
   BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
   gotoRoute, installDownloadCapture, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const CF_EDGE = '104.16.1.1';
+/** The instant the expectations were written for (the fixture certificates expire in 2050): the page's clock starts here. */
+const RETIRE_NOW = Date.parse('2026-10-01T12:00:00Z');
 
 /** The fake DNS: name → { TYPE: [data…], CNAME: target }; a name missing is answered by a `*.` entry one label up, else NXDOMAIN. */
 export function fakeTable() {
@@ -268,6 +271,7 @@ async function main() {
   const external = [];
   try {
     const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: pinnedClockScript(RETIRE_NOW) });
     page.conn.on('Network.requestWillBeSent', (p) => {
       const u = String((p.request && p.request.url) || '');
       if (!u.startsWith(origin) && !/^(data|blob|about|chrome-extension):/.test(u)) external.push(u);

@@ -55,6 +55,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { pinnedClockScript } from './clock.mjs';
 import { orderSuites } from './run-all.mjs';
 import { SOURCES as LIB_SOURCES } from '../../assets/js/lib/sources.js';
 import {
@@ -89,6 +90,8 @@ export const ZONE = {
 };
 export const INVENTORY = 'web01 1.2.3.4\nweb02 1.2.3.5\ndb01 10.0.0.5';
 const GP = 'https://api.globalping.io/v1';
+/** The instant the expectations were written for (the renewal week's certificates expire in 2036): the page's clock starts here. */
+const RENEWAL_NOW = Date.parse('2026-10-01T12:00:00Z');
 const THREE_CERTS = '--cert new-cert-a-rsa.pem --cert new-cert-a-ecdsa.pem --cert new-cert-b-rsa.pem';
 
 /** SHA-256 of a PEM certificate's DER as Globalping reports it ('AB:CD:…'). */
@@ -368,6 +371,7 @@ async function main() {
   let folder = null;
   try {
     page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: pinnedClockScript(RENEWAL_NOW) });
     netHits = await networkGuard(page);
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeZoneScript(APEX, ZONE) });
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeGlobalpingScript(fp) });

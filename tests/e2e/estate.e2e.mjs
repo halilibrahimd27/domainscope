@@ -39,6 +39,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { pinnedClockScript } from './clock.mjs';
 import { orderSuites } from './run-all.mjs';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
@@ -164,11 +165,7 @@ const csrBox = (page) => page.evaluate(() => document.querySelector('[data-role=
 
 /** The instant the expectations were written for; the page's clock starts here on every load. */
 const ESTATE_NOW = Date.parse('2026-10-01T12:00:00Z');
-const ESTATE_CLOCK_SCRIPT = `(() => {
-  const realNow = Date.now.bind(Date);
-  const skew = ${ESTATE_NOW} - realNow();
-  Date.now = () => realNow() + skew;
-})();`;
+const ESTATE_CLOCK_SCRIPT = pinnedClockScript(ESTATE_NOW);
 
 async function main() {
   const opts = cliOptions();

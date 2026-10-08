@@ -26,6 +26,7 @@ import { existsSync, rmSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { skewFromEnv, skewedClockScript } from './clock.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -320,6 +321,9 @@ export class Page {
         document.addEventListener('securitypolicyviolation', (e) => window.__cspViolations.push({
           directive: e.violatedDirective, blocked: e.blockedURI, source: e.sourceFile, line: e.lineNumber, sample: e.sample }));`
     });
+    // A time-travel run (tests/time-travel.mjs) moves the page's clock as it moves the Node processes'.
+    const skew = skewFromEnv();
+    if (skew !== null) await this.send('Page.addScriptToEvaluateOnNewDocument', { source: skewedClockScript(skew) });
     await this.setViewport(this.viewport);
   }
 

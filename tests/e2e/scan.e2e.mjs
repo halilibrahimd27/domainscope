@@ -63,6 +63,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { pinnedClockScript } from './clock.mjs';
 import { SOURCES as LIB_SOURCES } from '../../assets/js/lib/sources.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -74,6 +75,8 @@ export const SHOTS = path.join(HERE, 'screenshots');
 export const FIXTURES = path.join(ROOT, 'tests', 'fixtures');
 /** Served under a project path, like GitHub Pages (the live site is /domainscope/). */
 export const BASE = '/domainscope/';
+/** The instant the offline scan's expectations were written for: that tab's clock starts here on every load. */
+const SCAN_NOW = Date.parse('2026-10-01T12:00:00Z');
 
 /* ------------------------------------------------------------------------ */
 /* Harness (shared with cert.e2e.mjs and bulk.e2e.mjs)                      */
@@ -1839,6 +1842,9 @@ async function main() {
     run.group('Offline certificate scan (emulated DNS, nothing else leaves the page)');
     {
       const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      // The certificates it scans carry fixed dates (one expires on 2034-06-01, the renewed one on 2051-01-01), so the page counts
+      // them from the day the expectations were written, on a clock that keeps moving.
+      await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: pinnedClockScript(SCAN_NOW) });
       await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
       // The live suite's stored options / inventory are restored afterwards.
       const saved = await page.evaluate(storedSetup)

@@ -53,6 +53,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { pinnedClockScript } from './clock.mjs';
 import { orderSuites } from './run-all.mjs';
 import { SOURCES as LIB_SOURCES } from '../../assets/js/lib/sources.js';
 import {
@@ -65,6 +66,8 @@ import {
 /* ------------------------------------------------------------------------ */
 
 const CERT_FILE = path.join(FIXTURES, 'ec_wildcard.pem');
+/** The instant the expectations were written for (the certificates of the fake probes expire on 2051-01-01): the page's clock starts here. */
+const VERIFY_NOW = Date.parse('2026-10-01T12:00:00Z');
 const APEX = 'example.net';
 const ZONE = {
   'wild.example.net': { A: ['1.2.3.4'] },
@@ -492,6 +495,7 @@ async function main() {
   let netHits = [];
   try {
     page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: pinnedClockScript(VERIFY_NOW) });
     netHits = await networkGuard(page);
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeZoneScript(APEX, ZONE) });
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeGlobalpingScript(colonHex(newSha)) });

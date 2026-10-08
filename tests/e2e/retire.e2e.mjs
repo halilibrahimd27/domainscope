@@ -18,8 +18,8 @@
  * list, Copy summary, CSV / JSON, the passive lookup (its cost written next to the button, two
  * services, a cut-off ip.thc.org list said, unverified until checked; "Check these too" adds their
  * domains and checks again: one gone, one live), the Small-wordlist
- * discovery offered for a domain without host names (and nothing run before the click), Stop and
- * the keyboard focus, a shared link that fills the form and waits, a carried address (never over a
+ * discovery offered for a domain without host names (and nothing run before the click; a double
+ * click starts one, and after Stop nothing more is asked), Stop and the keyboard focus, a shared link that fills the form and waits, a carried address (never over a
  * draft), the 375 px layout in TR / EN × light / dark, zero console errors / CSP violations /
  * missing i18n keys, nothing sent outside the page.
  *
@@ -591,6 +591,31 @@ async function main() {
       await typeInto(page, 'retire-domains', 'example.com\nexample.net\nexample.org');
       await page.click('[data-action="retire-run"]');
       await waitDone(page, 'a full check again');
+    });
+
+    await run.step('a double click on Discover starts one discovery: after Stop nothing more is asked and no check starts by itself', async () => {
+      const job = () => page.evaluate(() => document.querySelector('.retire-job')?.dataset.job || null);
+      const before = await job();
+      // A domain without host names that nothing has asked about yet.
+      await typeInto(page, 'retire-domains', 'example.com\ndouble.example.org');
+      await page.waitFor(() => !!document.querySelector('[data-action="retire-discover"]'), { message: 'the discovery offer' });
+      await page.evaluate(() => { window.__fakeDnsDelay = 150; });
+      try {
+        // Two clicks before the engine has loaded.
+        await page.evaluate(() => { const b = document.querySelector('[data-action="retire-discover"]'); b.click(); b.click(); });
+        await page.waitFor(() => !document.querySelector('[data-action="retire-stop"]').hidden, { message: 'the discovery runs' });
+        await sleep(600);
+        await jsClick(page, '[data-action="retire-stop"]');
+        await page.waitFor(() => document.querySelector('[data-action="retire-stop"]').hidden, { message: 'stopped' });
+        await sleep(300);
+        const asked = await dnsCount(page);
+        await sleep(4000);
+        assertEqual(await dnsCount(page), asked, 'nothing asked after Stop');
+        assertEqual(await job(), before, 'no check started by itself');
+      } finally {
+        await page.evaluate(() => { window.__fakeDnsDelay = 0; });
+      }
+      await typeInto(page, 'retire-domains', 'example.com\nexample.net\nexample.org');
     });
 
     await run.step('a shared link fills the form and waits; a carried address replaces the last run, never a draft', async () => {

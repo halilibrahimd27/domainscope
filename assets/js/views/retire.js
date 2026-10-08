@@ -44,7 +44,7 @@ import { WORDLIST_SMALL } from '../lib/wordlist.js';
 import { isPrivateIP } from '../lib/netinfo.js';
 import { isSubdomainOf, registrableDomain } from '../lib/domain.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
-import { errorKind } from '../lib/util.js';
+import { errorKind, throwIfAborted } from '../lib/util.js';
 import { toCsv, toJson } from '../lib/export.js';
 import { permalinkParams } from '../ui/view-summaries.js';
 import { downloadText, timestampedName } from '../ui/download.js';
@@ -1234,6 +1234,13 @@ export function mount(container, ctx) {
   /** Discover host names of domains without any (the Small wordlist through the discovery engine), then check again. */
   async function discover(domains) {
     if (discoveryRunning() || checkRunning() || !ctx.requireOnline()) return;
+    // Running from the click on: a second click while the engine loads starts nothing, and Stop
+    // (or another workspace) ends this one even before its first query.
+    const controller = new AbortController();
+    const disc = { status: 'running', error: null, controller, current: domains[0], domains };
+    session.discovery = disc;
+    syncControls();
+    renderHosts();
     let runScan;
     let dns;
     try {
@@ -1241,16 +1248,13 @@ export function mount(container, ctx) {
       dns = await ctx.getDns();
     } catch (err) {
       ctx.checkOutdated();
-      session.discovery = { status: 'error', error: err, controller: null, current: null };
+      Object.assign(disc, { status: 'error', error: err, controller: null, current: null });
+      syncControls();
       renderHosts();
       return;
     }
-    const controller = new AbortController();
-    const disc = { status: 'running', error: null, controller, current: domains[0], domains };
-    session.discovery = disc;
-    syncControls();
-    renderHosts();
     try {
+      throwIfAborted(controller.signal);
       for (const d of domains) {
         disc.current = d;
         if (active) active.refreshHosts();

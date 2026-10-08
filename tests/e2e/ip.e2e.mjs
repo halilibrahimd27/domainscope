@@ -15,13 +15,18 @@
  * summary says how many lookups failed when every source failed (EN + TR); 1440 and 375 px,
  * light and dark, English and Turkish.
  *
+ * OFFLINE group 2, Domains on this IP (ui/reverse-ip-panel.js): HackerTarget, ip.thc.org, OTX, Robtex,
+ * InternetDB, Shodan, WhoisXML and DoH answered in the page; names merged and checked (here / moved /
+ * CDN / none / failed / workspace only), filters, exports, a private address sending nothing, a
+ * 429's Retry, InternetDB's lockout, typed keys never leaking, Check more, a re-mount, phones.
+ *
  * --no-quota-apis blocks ipwho.is and HackerTarget in the browser (their anonymous daily quotas
  * are small): the reverse-IP step then checks the error path instead of spending a unit.
  *
  * Covers: pure helpers (Node); shared link with IPv4, IPv6, a private IP and a host name;
  * PTR / ASN / owner / location / operator columns (incl. the well-known-network hint for
  * 1.1.1.1 and the flag / country-code fallback); inventory matching; private IPs never
- * looked up; one reverse-IP lookup (uses 1 HackerTarget quota unit — "limited" is accepted);
+ * looked up; one reverse-IP lookup (Domains on this IP: one request per source, 1 HackerTarget quota unit);
  * row details; input validation notes; language re-mount keeping rows; phone light/dark;
  * no console errors, exceptions or CSP violations; complete i18n.
  *
@@ -1077,7 +1082,7 @@ async function liveGroups(browser, server) {
     assertEqual(rows['2606:4700:4700::1111'].kind, 'cloudflare', 'Cloudflare IPv6');
     assert(/AS13335/.test(rows['2606:4700:4700::1111'].text), 'AS13335');
     assertEqual(rows['10.0.0.1'].kind, 'private', 'private kind');
-    assert(/lan-box/.test(rows['10.0.0.1'].text) && /not for private IPs/.test(rows['10.0.0.1'].text), 'private row: server + no reverse');
+    assert(/lan-box/.test(rows['10.0.0.1'].text) && /your workspace only/.test(rows['10.0.0.1'].text), 'private row: server + a reverse lookup of the workspace only');
     // 1.1.1.1 is AS13335 but outside Cloudflare's proxy ranges: still 'direct', with a network hint.
     const one = rows['1.1.1.1'];
     assertEqual([one.kind, one.network, one.relation], ['direct', 'cloudflare', 'outside-proxy-ranges'], '1.1.1.1 operator');
@@ -1151,14 +1156,15 @@ async function liveGroups(browser, server) {
     assert(/ARIN/.test(text) && /RIPEstat/.test(text) && /ripestat/.test(text), `details: ${text.slice(0, 300)}`);
   });
 
-  await step('reverse IP (1 HackerTarget quota unit): domains, or a clear quota message', async () => {
+  await step('reverse IP (one request per source: HackerTarget, ip.thc.org, OTX, Robtex, InternetDB): domains, or why not', async () => {
     await page.evaluate(() => document.querySelector('[data-action="reverse"][data-ip="1.1.1.1"]').click());
+    // OTX answers a busy address slowly (over 25 s for 1.1.1.1): the row fills in once every source answered.
     await page.waitFor(() => {
       const row = [...document.querySelectorAll('.ipi-row')].find((r) => r.querySelector('.ipi-ip')?.textContent === '1.1.1.1');
       return !!row && !!row.querySelector('.ipi-rev');
-    }, { timeout: 30000, message: 'reverse IP result' });
+    }, { timeout: 90000, message: 'reverse IP result' });
     const state = (await page.evaluate(rowsInfo))['1.1.1.1'].reverse;
-    assert(NO_QUOTA_APIS ? state === 'error' : ['done', 'limited', 'error'].includes(state), `reverse state ${state}`);
+    assert(['done', 'error'].includes(state), `reverse state ${state}`);
     notes.push(`reverse IP outcome: ${state}${NO_QUOTA_APIS ? ' (HackerTarget blocked by --no-quota-apis)' : ''}`);
   });
 

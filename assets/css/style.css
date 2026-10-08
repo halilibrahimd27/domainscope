@@ -1855,6 +1855,7 @@ button.nav-status:hover {
   .hide-sm,
   .header-actions .theme-toggle,
   .header-actions .gh-link,
+  .header-actions .hide-sm,
   .filedrop-accept {
     display: none;
   }

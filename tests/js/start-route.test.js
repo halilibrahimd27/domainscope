@@ -76,6 +76,9 @@ const JS = join(ASSETS, 'js');
  * with the rest of a scan's results, so it adds nothing to the route.
  * The workspace's CT watch baseline part (lib/workspace.js `ctSeen`, the JSON text lib/ctwatch.js
  * reads, which loads with the Domain portfolio's CT tab) added 80 bytes.
+ * The command palette keeps only its key (Ctrl/Cmd+K, lib/shellnav.js), the header button, the
+ * shortcut list's row, the lazy import and i18n.js's `stringIn` on the route; ui/palette.js,
+ * lib/palette.js and palette.css load on its first use: 401 bytes.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

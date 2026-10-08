@@ -16,6 +16,8 @@
  *     its copy from a modal dialog, and the table's print styles
  *   - prints from dark mode (print media): the light palette, no shell or controls, Disclosures
  *     opened and the print header (title, UTC time, permalink) on beforeprint, undone afterwards
+ *   - the command palette (Ctrl/Cmd+K): keys, search in both languages, arrow keys, actions that
+ *     open a tool filled in and send nothing, Esc returning the focus; desktop, 375 and 320 px
  *   - fails on any console error, uncaught exception, failed request or CSP violation, and on
  *     i18n keys that are missing in either language.
  * Then it serves the GitHub Pages bundle (tools/assemble-site.mjs, assets under v/<version>/):
@@ -505,6 +507,252 @@ async function jobsGroup(browser, server) {
   } finally {
     await phone.close();
   }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Command palette                                                          */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The command palette (Ctrl/Cmd+K, ui/palette.js): opened by the keys from the page and from a
+ * field, a tool found by its name in the other language, the arrow keys, an action on a domain, an
+ * address and a pasted certificate opening its tool filled in (nothing sent), Esc giving the focus
+ * back; at 375 and 320 px, a tap on an entry, and in Turkish and dark.
+ */
+async function paletteGroup(browser, server) {
+  group('Command palette (Ctrl/Cmd+K)');
+  const pal = await browser.newPage('about:blank', { width: 1280, height: 800 });
+  await pal.emulateMedia({ 'prefers-color-scheme': 'light' });
+  const origin = new URL(server.url).origin;
+  const external = [];
+  pal.conn.on('Network.requestWillBeSent', (p) => {
+    if (!p.request.url.startsWith(origin) && !/^(data|blob|about|chrome):/.test(p.request.url)) external.push(p.request.url);
+  }, pal.sessionId);
+  await pal.send('Network.enable');
+  const isOpen = () => pal.evaluate(() => !!document.querySelector('dialog.pal-modal[open]'));
+  const focused = () => pal.evaluate(() => {
+    const a = document.activeElement;
+    return a ? (a.dataset.role || a.dataset.control || a.id || a.tagName.toLowerCase()) : null;
+  });
+  const entries = () => pal.evaluate(() => [...document.querySelectorAll('.pal-list [role="option"]')].map((o) => o.dataset.entry));
+  const activeEntry = () => pal.evaluate(() => {
+    const input = document.querySelector('[data-role="palette-input"]');
+    const id = input && input.getAttribute('aria-activedescendant');
+    const el = id ? document.getElementById(id) : null;
+    return el && el.getAttribute('aria-selected') === 'true' ? el.dataset.entry : null;
+  });
+  const openWith = async (keys = { ctrl: true }) => {
+    await pal.press('k', keys);
+    await pal.waitFor(() => document.activeElement?.dataset.role === 'palette-input'
+      && document.querySelector('dialog.pal-modal[open] .pal-list [role="option"]'), { message: 'palette open, its box focused' });
+  };
+  const search = async (text) => {
+    await pal.type('[data-role="palette-input"]', text);
+    // A one-line box: the line breaks of a pasted PEM block arrive as spaces.
+    await pal.waitFor((want) => {
+      const first = document.querySelector('.pal-list [role="option"]');
+      return document.querySelector('[data-role="palette-input"]').value.replace(/\s+/g, ' ') === want
+        && (!!first || !!document.querySelector('.pal-status-none'));
+    }, { args: [text.replace(/\s+/g, ' ')], message: `results for ${text.slice(0, 40)}` });
+  };
+  const PEM = (await readFile(path.join(HERE, '..', 'fixtures', 'bundle_leaf.pem'), 'utf8')).trim();
+
+  await step('Ctrl+K opens the palette: a combobox in a dialog with the current target, the recent domains and every tool', async () => {
+    await pal.goto(`${server.url}#/lookup`);
+    await waitReady(pal);
+    // A target and a recent domain as a run leaves them (the profile may hold more from the groups before).
+    await pal.evaluate(async () => {
+      const [{ pageSession }, { state }] = await Promise.all([import('./assets/js/app.js'), import('./assets/js/state.js')]);
+      pageSession.setTarget('www.example.org');
+      state.recordRecent('example.net');
+    });
+    await pal.evaluate(() => document.getElementById('page-title').focus());
+    await openWith();
+    const list = await entries();
+    const a11y = await pal.evaluate(() => {
+      const input = document.querySelector('[data-role="palette-input"]');
+      const box = document.getElementById(input.getAttribute('aria-controls'));
+      return {
+        role: input.getAttribute('role'), expanded: input.getAttribute('aria-expanded'), auto: input.getAttribute('aria-autocomplete'),
+        label: !!input.getAttribute('aria-label'), listRole: box && box.getAttribute('role'),
+        modal: !!input.closest('dialog[aria-labelledby]'), status: document.querySelector('.pal-status').textContent
+      };
+    });
+    assertEqual(a11y, { role: 'combobox', expanded: 'true', auto: 'list', label: true, listRole: 'listbox', modal: true, status: `${list.length} results` },
+      'combobox semantics');
+    assertEqual(list.slice(0, 2), ['target:www.example.org', 'recent:example.net'], 'the target, then the most recent domain');
+    const tools = list.filter((k) => k.startsWith('tool:'));
+    assertEqual(tools, ROUTES.map((id) => `tool:${id}`), 'every tool, in navigation order');
+    assertEqual(list.slice(-tools.length), tools, 'the tools last');
+    assert(list.filter((k) => k.startsWith('recent:')).length <= 5, `five recent domains at most: ${list.join(', ')}`);
+    assertEqual(await activeEntry(), 'target:www.example.org', 'the first entry is active');
+    await shot(pal, 'desktop-light-en-palette');
+  });
+
+  await step('Enter on the current target puts it in the box, and its actions follow', async () => {
+    await pal.press('Enter');
+    await pal.waitFor(() => document.querySelector('[data-role="palette-input"]').value === 'www.example.org', { message: 'the target in the box' });
+    assert(await isOpen(), 'the palette stays open');
+    assertEqual((await entries()).slice(0, 3), ['action:subdomains', 'action:domain', 'action:health'], 'the host name’s actions');
+    assertEqual(await focused(), 'palette-input', 'the box keeps the focus');
+  });
+
+  await step('a tool is found by its Turkish name; ↓ and ↑ move through the list and wrap around', async () => {
+    await search('ters');
+    assertEqual((await entries())[0], 'tool:ptr', '“Ters DNS” is Reverse DNS');
+    await search('dns');
+    const list = await entries();
+    assertEqual(list[0], 'tool:lookup', 'a title that starts with the word first');
+    assert(list.length > 2, `several tools: ${list.join(', ')}`);
+    await pal.press('ArrowDown');
+    assertEqual(await activeEntry(), list[1], 'down');
+    await pal.press('ArrowUp');
+    await pal.press('ArrowUp');
+    assertEqual(await activeEntry(), list[list.length - 1], 'up from the first wraps to the last');
+    await search('zzzz');
+    assertEqual(await entries(), [], 'nothing');
+    assert(/Nothing matches “zzzz”/.test(await pal.evaluate(() => document.querySelector('.pal-status').textContent)), 'says so');
+    assertEqual(await pal.evaluate(() => {
+      const input = document.querySelector('[data-role="palette-input"]');
+      return [input.getAttribute('aria-expanded'), input.hasAttribute('aria-activedescendant')];
+    }), ['false', false], 'an empty list is collapsed, with no active entry');
+  });
+
+  await step('Esc closes the palette and gives the focus back, also to the field it was opened from (⌘+K)', async () => {
+    await pal.press('Escape');
+    await pal.waitFor(() => !document.querySelector('dialog.pal-modal'), { message: 'closed' });
+    assertEqual(await focused(), 'page-title', 'the focus is back on the title');
+    await pal.evaluate(() => document.querySelector('[data-role="lookup-name"]').focus());
+    await openWith({ meta: true });
+    await pal.press('Escape');
+    await pal.waitFor(() => !document.querySelector('dialog.pal-modal'), { message: 'closed again' });
+    assertEqual(await focused(), 'lookup-name', 'back in the field');
+    assertEqual(await pal.evaluate(() => document.querySelector('[data-role="lookup-name"]').value), '', 'nothing was typed into it');
+  });
+
+  await step('a domain offers its actions; “mx example.com” + Enter opens DNS Lookup filled in, MX only, and sends nothing', async () => {
+    await gotoRoute(pal, 'about');
+    await openWith();
+    await search('example.com');
+    assertEqual(await entries(), ['action:subdomains', 'action:domain', 'action:health', 'action:lookupMx', 'action:lookupTxt', 'action:lookupCaa',
+      'action:global', 'action:renew'], 'the domain’s actions');
+    await search('mx example.com');
+    assertEqual(await activeEntry(), 'action:lookupMx', 'the words rank them');
+    await pal.press('Enter');
+    await pal.waitFor(() => document.documentElement.dataset.view === 'lookup' && document.querySelector('[data-role="lookup-name"]'), { message: 'DNS Lookup' });
+    assert(!await isOpen(), 'the palette closed');
+    const form = await pal.evaluate(() => ({
+      hash: location.hash,
+      name: document.querySelector('[data-role="lookup-name"]').value,
+      types: [...document.querySelectorAll('input[name="lkp-types"]:checked')].map((c) => c.value)
+    }));
+    assertEqual(form, { hash: '#/lookup?name=example.com&run=0&type=MX', name: 'example.com', types: ['MX'] }, 'filled in, not run');
+    assertEqual(await focused(), 'page-title', 'the router moved the focus to the new page');
+  });
+
+  await step('an address: IP Intel, its domains, Reverse DNS and Retire an IP; ↓↓ Enter opens Reverse DNS with it', async () => {
+    await openWith();
+    await search('192.0.2.10');
+    assertEqual(await entries(), ['action:ip', 'action:reverseIp', 'action:ptr', 'action:retire'], 'the address’s actions');
+    await pal.press('ArrowDown');
+    await pal.press('ArrowDown');
+    await pal.press('Enter');
+    await pal.waitFor(() => document.documentElement.dataset.view === 'ptr' && document.querySelector('#page-body').childElementCount > 0, { message: 'Reverse DNS' });
+    assertEqual(await pal.evaluate(() => location.hash), '#/ptr?target=192.0.2.10&run=0', 'its route');
+    await pal.waitFor(() => [...document.querySelectorAll('#page-body textarea, #page-body input')].some((f) => f.value === '192.0.2.10'),
+      { message: 'the address is in the form' });
+    await openWith();
+    await search('AS64496');
+    assertEqual(await entries(), ['action:sweep'], 'an AS number: the sweep');
+    await pal.press('Escape');
+    await pal.waitFor(() => !document.querySelector('dialog.pal-modal'));
+  });
+
+  await step('a pasted certificate opens in Certificate, read in the browser', async () => {
+    await openWith();
+    await search(PEM);
+    assertEqual(await entries(), ['action:cert'], 'the certificate’s action');
+    await pal.press('Enter');
+    await pal.waitFor(() => document.documentElement.dataset.view === 'cert'
+      && /www\.example\.com/.test(document.querySelector('.cert-content')?.textContent || ''), { message: 'the certificate is shown' });
+    assert(!await isOpen(), 'closed');
+  });
+
+  await step('Ctrl+K in the open palette closes it, and the focus goes back; the header button opens it too', async () => {
+    await pal.evaluate(() => document.getElementById('page-title').focus());
+    await openWith();
+    await pal.press('k', { ctrl: true });
+    await pal.waitFor(() => !document.querySelector('dialog.pal-modal'), { message: 'toggled closed' });
+    assertEqual(await focused(), 'page-title', 'focus back');
+    const btn = await pal.evaluate(() => {
+      const b = document.querySelector('#header-actions [data-control="palette"]');
+      return b && { label: b.getAttribute('aria-label'), popup: b.getAttribute('aria-haspopup') };
+    });
+    assertEqual(btn, { label: 'Search the tools, or act on a domain or an IP address', popup: 'dialog' }, 'the header button');
+    await pal.click('#header-actions [data-control="palette"]');
+    await pal.waitFor(() => document.activeElement?.dataset.role === 'palette-input', { message: 'opened from the header' });
+    await pal.press('Escape');
+    await pal.waitFor(() => !document.querySelector('dialog.pal-modal'));
+    assertEqual(await focused(), 'palette', 'focus back on the header button');
+  });
+
+  await step('Turkish and dark: the palette’s own words, an English name finds the tool', async () => {
+    await pal.emulateMedia({ 'prefers-color-scheme': 'dark' });
+    await setLangUi(pal, 'tr');
+    await openWith();
+    assertEqual(await pal.evaluate(() => document.querySelector('dialog.pal-modal .modal-title').textContent), 'Araç ve işlem ara', 'title');
+    await search('reverse');
+    assertEqual((await entries())[0], 'tool:ptr', '“Reverse DNS” is Ters DNS');
+    assertEqual(await pal.evaluate(() => document.querySelector('.pal-option .pal-tag').textContent), 'Araç', 'the tag');
+    await shot(pal, 'desktop-dark-tr-palette');
+    await pal.press('Escape');
+    await pal.waitFor(() => !document.querySelector('dialog.pal-modal'));
+    await setLangUi(pal, 'en');
+    await pal.emulateMedia({ 'prefers-color-scheme': 'light' });
+  });
+
+  await step('375 and 320 px: fits without horizontal scroll; a tap on an entry opens it', async () => {
+    await pal.setViewport({ width: 375, height: 740, mobile: true });
+    await gotoRoute(pal, 'health');
+    assertEqual(await pal.evaluate(() => getComputedStyle(document.querySelector('[data-control="palette"]')).display), 'none',
+      'no header button on a phone: the header keeps its room');
+    await openWith();
+    await search('example.org');
+    for (const width of [375, 320]) {
+      await pal.setViewport({ width, height: 640, mobile: true });
+      await assertNoHorizontalScroll(pal, `palette at ${width} px`);
+      const box = await pal.evaluate(() => {
+        const r = document.querySelector('dialog.pal-modal .modal-box').getBoundingClientRect();
+        return { left: r.left, right: r.right, vw: document.documentElement.clientWidth };
+      });
+      assert(box.left >= 0 && box.right <= box.vw, `the dialog fits at ${width} px: ${JSON.stringify(box)}`);
+    }
+    await shot(pal, 'phone-light-en-palette');
+    await pal.click('.pal-option[data-entry="action:health"]');
+    await pal.waitFor(() => document.documentElement.dataset.view === 'health' && location.hash === '#/health?domain=example.org&run=0',
+      { message: 'Domain Health filled in' });
+    assert(!await isOpen(), 'closed');
+  });
+
+  await step('320 px: a long pasted block that matches nothing is cut in the status line and scrolls nothing sideways', async () => {
+    await pal.setViewport({ width: 320, height: 568, mobile: true });
+    await openWith();
+    const block = `-----BEGIN PRIVATE KEY-----${'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC'.repeat(8)}-----END PRIVATE KEY-----`;
+    await search(block);
+    const said = await pal.evaluate(() => document.querySelector('.pal-status').textContent);
+    assert(said.startsWith('Nothing matches “-----BEGIN PRIVATE KEY-----') && said.includes('…”') && said.length < 200, `cut: ${said}`);
+    assertEqual(await entries(), [], 'a private key is no certificate');
+    await assertNoHorizontalScroll(pal, 'palette with a long block at 320 px');
+    await pal.press('Escape');
+    await pal.waitFor(() => !document.querySelector('dialog.pal-modal'));
+    await pal.setViewport({ width: 1280, height: 800 });
+  });
+
+  await step('palette: nothing left the page; no console errors, exceptions, failed requests or CSP violations', async () => {
+    assertEqual(external, [], 'requests outside the page');
+    await assertClean(pal, 'palette');
+  });
+  await pal.close();
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1925,7 +2173,7 @@ async function main() {
       const rows = await kb.evaluate(() => [...document.querySelectorAll('.keys-table tr')].map((tr) => [tr.dataset.key,
         [...tr.querySelectorAll('kbd')].map((k) => k.textContent).join('+')]));
       const mod = process.platform === 'darwin' ? '⌘' : 'Ctrl'; // the browser runs here, and Apple platforms show ⌘
-      assertEqual(rows, [['submit', `${mod}+Enter`], ['cancel', 'Esc'], ['focus', '/'], ['help', '?']], 'shortcuts listed');
+      assertEqual(rows, [['submit', `${mod}+Enter`], ['cancel', 'Esc'], ['focus', '/'], ['palette', `${mod}+K`], ['help', '?']], 'shortcuts listed');
       await shot(kb, 'desktop-light-en-shortcuts');
       await kb.press('Escape');
       await kb.waitFor(() => !document.querySelector('dialog.keys-modal'), { message: 'closed' });
@@ -2136,6 +2384,9 @@ async function main() {
       await assertClean(kb, 'shortcuts');
     });
     await kb.close();
+
+    /* ---------------- The command palette ---------------- */
+    await paletteGroup(browser, server);
 
     /* ---------------- The Pages bundle, and a deploy while a tab is open ---------------- */
     group('Pages bundle (tools/assemble-site.mjs)');

@@ -142,6 +142,7 @@ export const SHORTCUTS = Object.freeze([
   { id: 'submit', keys: Object.freeze(['Mod', 'Enter']) },
   { id: 'cancel', keys: Object.freeze(['Esc']) },
   { id: 'focus', keys: Object.freeze(['/']) },
+  { id: 'palette', keys: Object.freeze(['Mod', 'K']) },
   { id: 'help', keys: Object.freeze(['?']) }
 ].map((s) => Object.freeze(s)));
 
@@ -228,11 +229,12 @@ export function isSearchClear(event) {
  * - `cancel`: Esc, anywhere (a field included), except in a search field with text
  *   ({@link escClearsField});
  * - `focus`: '/' and `help`: '?', only while not typing (Shift is allowed, as layouts need it for
- *   '/' or '?'; AltGr — Ctrl+Alt together — too; Ctrl, Alt or ⌘ alone is another shortcut).
+ *   '/' or '?'; AltGr — Ctrl+Alt together — too; Ctrl, Alt or ⌘ alone is another shortcut);
+ * - `palette`: Ctrl+K or ⌘+K, anywhere.
  * A held key (auto-repeat) and a key pressed while an input method composes text mean nothing.
  * @param {{ key?: string, ctrlKey?: boolean, metaKey?: boolean, altKey?: boolean, shiftKey?: boolean,
  *   repeat?: boolean, isComposing?: boolean, keyCode?: number, target?: object|null }} event
- * @returns {'submit'|'cancel'|'focus'|'help'|null}
+ * @returns {'submit'|'cancel'|'focus'|'palette'|'help'|null}
  */
 export function shortcutFor(event) {
   if (!event || event.repeat || event.isComposing || event.keyCode === 229) return null;
@@ -244,6 +246,7 @@ export function shortcutFor(event) {
     return (ctrl || meta) && !alt && !event.shiftKey && isFormField(target) ? 'submit' : null;
   }
   if (key === 'Escape' || key === 'Esc') return ctrl || meta || alt || event.shiftKey || escClearsField(target) ? null : 'cancel';
+  if (/^k$/i.test(key)) return (ctrl || meta) && !alt && !event.shiftKey ? 'palette' : null;
   if (key !== '/' && key !== '?') return null;
   if (meta || ctrl !== alt || isTypingTarget(target)) return null;
   return key === '/' ? 'focus' : 'help';

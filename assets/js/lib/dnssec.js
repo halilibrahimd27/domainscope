@@ -327,6 +327,10 @@ export function canonicalRdata(rr) {
       case 'RP':
         if (typeof d.mbox === 'string') return concat([canonicalName(d.mbox), canonicalName(d.txt)]);
         break;
+      case 'NAPTR':
+        // Never compressed (RFC 3403), but RFC 4034 §6.2 lowercases its replacement name.
+        if (raw) return lowercaseNameAt(raw, naptrNameOffset(raw));
+        break;
       case 'SOA':
         if (typeof d.mname === 'string' && raw && raw.length >= 20) {
           // The five counters are the last 20 octets, never compressed.
@@ -338,6 +342,25 @@ export function canonicalRdata(rr) {
   }
   if (raw) return raw;
   throw new Error(`no RDATA for ${rr.type}`);
+}
+
+/** Where a NAPTR's replacement name starts: after order, preference and three character strings. */
+function naptrNameOffset(raw) {
+  let p = 4;
+  for (let i = 0; i < 3 && p < raw.length; i++) p += 1 + raw[p];
+  return Math.min(p, raw.length);
+}
+
+/** A copy of `raw` with the ASCII letters of the wire name at `from` lowercased. */
+function lowercaseNameAt(raw, from) {
+  const out = new Uint8Array(raw);
+  let p = from;
+  while (p < out.length && out[p] !== 0 && out[p] < 64) {
+    const end = Math.min(out.length, p + 1 + out[p]);
+    for (let i = p + 1; i < end; i++) if (out[i] >= 0x41 && out[i] <= 0x5a) out[i] |= 0x20;
+    p = end;
+  }
+  return out;
 }
 
 /** lib/dnswire may present an RNAME as a mailbox ('hostmaster@example.com'): back to a name. */

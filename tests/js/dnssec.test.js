@@ -41,6 +41,10 @@ test('canonical RDATA: names rebuilt in lowercase without compression, other typ
   const a = { type: 'A', data: '192.0.2.1', rdata: Uint8Array.of(192, 0, 2, 1) };
   assert.deepEqual([...canonicalRdata(a)], [192, 0, 2, 1]);
   const soa = decodeMessage(encodeMessage({ answers: [{ name: 'example.com', type: 'SOA', ttl: 60, data: { mname: 'NS1.example.com', rname: 'hostmaster.example.com', serial: 1, refresh: 2, retry: 3, expire: 4, minimum: 5 } }] })).answers[0];
+  // NAPTR: the replacement name lowercased, the character strings left as they are.
+  const naptrRaw = Uint8Array.from([0, 1, 0, 2, 1, 0x55, 0, 1, 0x41, 3, 0x57, 0x57, 0x57, 7, 0x45, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0]);
+  assert.deepEqual([...canonicalRdata({ type: 'NAPTR', data: {}, rdata: naptrRaw }).subarray(4, 9)], [1, 0x55, 0, 1, 0x41], 'strings kept');
+  assert.deepEqual([...canonicalRdata({ type: 'NAPTR', data: {}, rdata: naptrRaw }).subarray(9)], [...encodeName('www.example')], 'name lowercased');
   const c = canonicalRdata(soa);
   assert.equal(c.length, encodeName('ns1.example.com').length + encodeName('hostmaster.example.com').length + 20);
   assert.equal(c[c.length - 1], 5);

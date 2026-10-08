@@ -162,6 +162,14 @@ async function certPemTab(page) {
 
 const csrBox = (page) => page.evaluate(() => document.querySelector('[data-role="cert-csr"]')?.value ?? null);
 
+/** The instant the expectations were written for; the page's clock starts here on every load. */
+const ESTATE_NOW = Date.parse('2026-10-01T12:00:00Z');
+const ESTATE_CLOCK_SCRIPT = `(() => {
+  const realNow = Date.now.bind(Date);
+  const skew = ${ESTATE_NOW} - realNow();
+  Date.now = () => realNow() + skew;
+})();`;
+
 async function main() {
   const opts = cliOptions();
   opts.shotsDir = path.resolve(opts.value('--shots-dir', SHOTS));
@@ -184,6 +192,10 @@ async function main() {
   let netHits = [];
   try {
     page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+    // The fixture reports carry fixed expiry dates (one on 2026-10-03, one on 2026-10-20) and the
+    // view buckets them against Date.now(), so the page runs on a clock that starts at the
+    // suite's reference date and keeps moving: the expiry tiles and lines never drift with today.
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: ESTATE_CLOCK_SCRIPT });
     netHits = await networkGuard(page);
     await installDownloadCapture(page);
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });

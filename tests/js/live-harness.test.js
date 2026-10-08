@@ -237,3 +237,51 @@ test('cdp: launchBrowser gives the page language as --lang and as --accept-lang 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('cdp: a suite whose browser fails to start ends with the error and leaves no browser running', { skip: process.platform === 'win32' && 'the stand-in browsers are POSIX shell scripts', timeout: 60000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ds-launch-'));
+  const pidFile = join(dir, 'browser.pid');
+  const refuses = join(dir, 'refuses');
+  writeFileSync(refuses, '#!/bin/sh\necho "FATAL: No usable sandbox!" >&2\nexit 1\n', { mode: 0o755 });
+  // starts and says where its DevTools endpoint is, but nothing answers there (port 1)
+  const unreachable = join(dir, 'unreachable');
+  writeFileSync(unreachable, `#!/bin/sh\necho $$ > '${pidFile}'\nfor a in "$@"; do case "$a" in --user-data-dir=*) d="\${a#--user-data-dir=}";; esac; done\nprintf '1\\n/devtools/browser/x\\n' > "$d/DevToolsActivePort"\nexec sleep 60\n`, { mode: 0o755 });
+  // the suites' shape: the server first, then the browser, and only then the try/finally that closes both
+  const suite = `
+    import { startServer } from ${JSON.stringify(new URL('../e2e/serve.mjs', import.meta.url).href)};
+    import { launchBrowser } from ${JSON.stringify(new URL('../e2e/cdp.mjs', import.meta.url).href)};
+    async function main() {
+      const server = await startServer();
+      const browser = await launchBrowser({ profileRoot: ${JSON.stringify(dir)}, timeout: 5000 });
+      try { await browser.version(); } finally { await browser.close(); await server.close(); }
+    }
+    main().catch((err) => { process.stderr.write('E2E crashed: ' + err.message + '\\n'); process.exitCode = 1; });`;
+  const run = (exe, nodeArgs = []) => new Promise((resolve) => {
+    const started = Date.now();
+    const child = spawn(process.execPath, [...nodeArgs, '--input-type=module', '-e', suite], { env: { ...process.env, CHROME_PATH: exe }, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (d) => { stderr += d; });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+    child.on('exit', (code) => { clearTimeout(timer); resolve({ code, stderr, ms: Date.now() - started }); });
+  });
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const browserPid = () => (existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : null);
+  try {
+    let r = await run(refuses);
+    assert.equal(r.code, 1, `ended by itself (after ${r.ms} ms): ${r.stderr}`);
+    assert.match(r.stderr, /E2E crashed: refuses exited early \(code 1\)/);
+    r = await run(unreachable);
+    assert.equal(r.code, 1, `ended by itself (after ${r.ms} ms): ${r.stderr}`);
+    assert.match(r.stderr, /E2E crashed: Could not connect to ws:\/\/127\.0\.0\.1:1\//);
+    assert.equal(alive(browserPid()), false, 'the browser it started is gone');
+    rmSync(pidFile);
+    r = await run(unreachable, ['--no-experimental-websocket']); // a Node without the global WebSocket (20, 21)
+    assert.equal(r.code, 1, `ended by itself (after ${r.ms} ms): ${r.stderr}`);
+    assert.match(r.stderr, /E2E crashed: .*Node 22 or later/);
+    assert.equal(browserPid(), null, 'no browser started');
+  } finally {
+    const pid = browserPid();
+    if (pid && alive(pid)) process.kill(pid, 'SIGKILL');
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

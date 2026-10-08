@@ -9,6 +9,7 @@
  * API:  const srv = await startServer({ port: 0, base: '/domainscope/' });
  *       srv.url  // 'http://127.0.0.1:53211/domainscope/'
  *       await srv.close();
+ *       The server does not keep the process alive by itself (srv.server.ref() serves on).
  *
  * Security: binds to 127.0.0.1 by default, GET/HEAD only, refuses path traversal and
  * symlink escapes, hides dot-files (except .nojekyll / .well-known), sends nosniff.
@@ -191,6 +192,9 @@ export async function startServer({ root = REPO_ROOT, port = 0, host = '127.0.0.
     server.once('error', reject);
     server.listen(port, host, resolve);
   });
+  // The listening socket alone never keeps the process alive: an E2E suite whose browser fails to
+  // start then ends with its error instead of waiting out run-all's timeout. The CLI re-refs it.
+  server.unref();
   const actualPort = server.address().port;
   const origin = `http://${host.includes(':') ? `[${host}]` : host}:${actualPort}`;
   return {
@@ -233,6 +237,7 @@ function parseArgs(argv) {
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const opts = parseArgs(process.argv.slice(2));
   startServer(opts).then((srv) => {
+    srv.server.ref(); // serve until stopped
     process.stdout.write(`Serving ${opts.root} at ${srv.url}  (Ctrl+C to stop)\n`);
     const stop = () => srv.close().then(() => process.exit(0));
     process.on('SIGINT', stop);

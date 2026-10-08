@@ -17,7 +17,8 @@
  *
  * Cleanup: every launched browser is registered; when the suite process exits — normally, on an
  * uncaught error, or on SIGINT / SIGTERM / SIGHUP (e.g. run-all's --timeout-min) — the browser is
- * killed and its profile removed, even if the suite never reached `browser.close()`.
+ * killed and its profile removed, even if the suite never reached `browser.close()`. A launch that
+ * fails stops the browser it started before it throws.
  */
 
 import { spawn } from 'node:child_process';
@@ -82,20 +83,27 @@ let exitHooksInstalled = false;
  */
 export function killLaunchedBrowsers() {
   const n = LIVE_BROWSERS.size;
-  for (const [proc, profileDir] of LIVE_BROWSERS) {
-    try {
-      if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
-    } catch {
-      // already gone
-    }
-    try {
-      rmSync(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-    } catch {
-      // still locked (Windows); run-all.mjs sweeps leftover .profile-<pid>-* folders
-    }
-  }
-  LIVE_BROWSERS.clear();
+  for (const [proc, profileDir] of LIVE_BROWSERS) killBrowserProcess(proc, profileDir);
   return n;
+}
+
+/**
+ * Kill one launched browser if it still runs, forget it and delete its profile. Synchronous.
+ * @param {import('node:child_process').ChildProcess} proc
+ * @param {string} profileDir
+ */
+function killBrowserProcess(proc, profileDir) {
+  try {
+    if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
+  } catch {
+    // already gone
+  }
+  try {
+    rmSync(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch {
+    // still locked (Windows); run-all.mjs sweeps leftover .profile-<pid>-* folders
+  }
+  LIVE_BROWSERS.delete(proc);
 }
 
 /**
@@ -645,6 +653,8 @@ export class Browser {
 export async function launchBrowser({
   browser = 'auto', executablePath = null, headless = true, args = [], profileRoot = HERE, timeout = 30000, lang = 'en-US'
 } = {}) {
+  // Node 20 and 21 have no global WebSocket: say so before starting a browser nothing could reach.
+  if (typeof WebSocket !== 'function') throw new Error(`cdp.mjs needs Node 22 or later (for its global WebSocket); this is Node ${process.versions.node}.`);
   const found = executablePath ? { name: path.basename(executablePath), path: executablePath } : findBrowser(browser);
   if (!found) throw new Error('No Chrome or Edge installation found (set CHROME_PATH).');
   profileCounter += 1;
@@ -687,28 +697,32 @@ export async function launchBrowser({
   proc.stderr.on('data', (d) => {
     stderr = (stderr + d.toString()).slice(-4000);
   });
-  const portFile = path.join(profileDir, 'DevToolsActivePort');
-  const deadline = Date.now() + timeout;
-  let wsUrl = null;
-  while (!wsUrl) {
-    if (proc.exitCode !== null) throw new Error(`${found.name} exited early (code ${proc.exitCode}): ${stderr}`);
-    if (Date.now() > deadline) {
-      proc.kill('SIGKILL');
-      throw new Error(`${found.name} did not expose DevToolsActivePort within ${timeout} ms`);
+  try {
+    const portFile = path.join(profileDir, 'DevToolsActivePort');
+    const deadline = Date.now() + timeout;
+    let wsUrl = null;
+    while (!wsUrl) {
+      if (proc.exitCode !== null) throw new Error(`${found.name} exited early (code ${proc.exitCode}): ${stderr}`);
+      if (Date.now() > deadline) throw new Error(`${found.name} did not expose DevToolsActivePort within ${timeout} ms`);
+      try {
+        const [port, wsPath] = (await readFile(portFile, 'utf8')).split(/\r?\n/);
+        if (port && wsPath) wsUrl = `ws://127.0.0.1:${port.trim()}${wsPath.trim()}`;
+      } catch {
+        // not written yet
+      }
+      if (!wsUrl) await sleep(50);
     }
-    try {
-      const [port, wsPath] = (await readFile(portFile, 'utf8')).split(/\r?\n/);
-      if (port && wsPath) wsUrl = `ws://127.0.0.1:${port.trim()}${wsPath.trim()}`;
-    } catch {
-      // not written yet
-    }
-    if (!wsUrl) await sleep(50);
+    const ws = new WebSocket(wsUrl);
+    await new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve, { once: true });
+      ws.addEventListener('error', () => reject(new Error(`Could not connect to ${wsUrl}`)), { once: true });
+    });
+    const conn = new Connection(ws);
+    return new Browser({ proc, conn, profileDir, name: found.name, executablePath: found.path });
+  } catch (err) {
+    // The caller gets no Browser to close, so stop this one now: a running child would keep the
+    // suite's process alive after its error.
+    killBrowserProcess(proc, profileDir);
+    throw err;
   }
-  const ws = new WebSocket(wsUrl);
-  await new Promise((resolve, reject) => {
-    ws.addEventListener('open', resolve, { once: true });
-    ws.addEventListener('error', () => reject(new Error(`Could not connect to ${wsUrl}`)), { once: true });
-  });
-  const conn = new Connection(ws);
-  return new Browser({ proc, conn, profileDir, name: found.name, executablePath: found.path });
 }

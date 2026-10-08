@@ -22,3 +22,7 @@ tests/live/*.json
 tests/live/*.csv
 /out.json
 /hosts.csv
+
+# Claude Code: local worktrees and settings
+.claude/worktrees/
+.claude/settings.local.json

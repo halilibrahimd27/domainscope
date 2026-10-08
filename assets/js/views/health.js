@@ -56,6 +56,7 @@ import { toJson } from '../lib/export.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from '../ui/globalping-gate.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { ReportButton } from '../ui/report-button.js';
 import { ExpectedCaaBadge, expectedCasChanged } from '../ui/expected-ca.js';
 import { healthScore, trafficLight, permalinkParams } from '../ui/view-summaries.js';
 import { errorKind, mergeSignals, onceAsync, splitList } from '../lib/util.js';
@@ -740,6 +741,7 @@ export function mount(container, ctx) {
         h('div', { class: 'hlt-hero-actions' },
           zoneLink,
           heroSummary,
+          ReportButton(ctx, 'health', () => ({ report, selectors })),
           Button({
             label: t('hlt.download'), icon: 'download', size: 'sm', dataset: { action: 'download' },
             onClick: () => downloadText(timestampedName('domain-health', 'json', report.domain), toJson(exportReport(report)), 'application/json;charset=utf-8')

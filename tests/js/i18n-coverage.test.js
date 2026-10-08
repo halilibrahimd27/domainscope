@@ -58,6 +58,8 @@ before(async () => {
   await imp('assets/js/ui/related-domains.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
+  // The customer report panel (Domain overview and Domain Health › Report): loaded on its first click.
+  await imp('assets/js/ui/report.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));

@@ -38,6 +38,7 @@ import {
 import { HEALTH_I18N, LOOKUP_FAILED_PARAM } from '../lib/health.js';
 import { NaMark, RetryButton, setRetryBusy, statusText } from '../ui/source-status.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { ReportButton } from '../ui/report-button.js';
 import { permalinkParams } from '../ui/view-summaries.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { mergeSignals } from '../lib/util.js';
@@ -533,7 +534,7 @@ export function mount(container, ctx) {
           h('span', { class: 'mono dov-break', attrs: { 'aria-hidden': 'true' } }, domain)),
         host ? h('p', { class: 'text-sm muted dov-reduced' }, t('dov.reduced', { domain, host })) : null,
         meta),
-      h('div', { class: 'dov-head-actions' }, summary)));
+      h('div', { class: 'dov-head-actions' }, summary, ReportButton(ctx, 'domain', () => current && current.at && !current.controller && { cards: cardsOf(), domain: current.domain, host: current.host, at: current.at }, { disabled: !!current.controller }))));
     if (focused) {
       const el = headEl.firstElementChild;
       const target = key && el.querySelector(key);

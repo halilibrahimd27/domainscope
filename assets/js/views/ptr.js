@@ -512,10 +512,11 @@ const freshSession = () => ({
 const session = freshSession();
 let jobCounter = 0;
 
-// A switch to another workspace forgets the form and the last sweep (the other customer's
-// network, matched against its servers), stopping what runs; the shell opens the view again.
+// "Delete all local data" and a switch to another workspace (the other customer's network,
+// matched against its servers) forget the form and the last sweep, stopping what runs; the shell
+// opens the view again after a switch, the view itself after a wipe (mount).
 stateSingleton.subscribe(({ key }) => {
-  if (key !== 'workspace') return;
+  if (key !== 'cleared' && key !== 'workspace') return;
   if (session.job && session.job.status === 'running') session.job.controller.abort();
   if (session.asn && session.asn.controller) session.asn.controller.abort();
   Object.assign(session, freshSession());
@@ -1145,6 +1146,15 @@ export function mount(container, ctx) {
   cleanups.push(state.subscribe(({ key }) => {
     if (key === 'settings') renderConcurrency();
     if (key === 'inventory' && ui) ui.refocus();
+    // "Delete all local data" forgot the session: the shell opens again only a tool with a kept
+    // result, so this one opens again on its bare route once every listener has run.
+    if (key === 'cleared') {
+      queueMicrotask(() => {
+        if (ctx.signal.aborted) return;
+        ctx.setParams({});
+        ctx.navigate(id, {}, { replace: true, force: true });
+      });
+    }
   }));
 
   active = {

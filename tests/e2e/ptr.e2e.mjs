@@ -710,6 +710,45 @@ async function main() {
       assertEqual(await dnsCount(page), before, 'the link sent nothing');
     });
 
+    await run.step('Settings › Delete all local data with a sweep running: it stops, and the form, the results and the link are forgotten', async () => {
+      const shown = () => page.evaluate(() => ({
+        hash: location.hash,
+        target: document.querySelector('[data-role="ptr-target"]')?.value,
+        results: !!document.querySelector('.ptr-results'),
+        stop: !document.querySelector('[data-action="ptr-stop"]')?.hidden
+      }));
+      // addresses no earlier step looked up (the DoH client caches answers)
+      await page.evaluate(() => { window.__fakeDnsDelay = 250; });
+      try {
+        await typeTarget(page, '198.51.100.64/26');
+        await page.type('[data-role="ptr-focus"]', '');
+        await sleep(200);
+        await page.click('[data-action="ptr-run"]');
+        await page.waitFor(() => !document.querySelector('[data-action="ptr-stop"]').hidden, { message: 'running' });
+        await page.click('[data-control="settings"]');
+        try {
+          await page.waitForSelector('dialog.modal[open] .settings-danger');
+          await page.click('dialog.modal[open] .settings-danger .btn-danger');
+          await page.waitFor(() => document.querySelectorAll('dialog.modal[open]').length === 2, { message: 'confirmation' });
+          await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open]')].find((d) => !d.querySelector('.settings-danger')).querySelector('.btn-danger').click());
+          await page.waitFor(() => !document.querySelector('dialog.modal[open]'), { message: 'dialogs closed' });
+        } finally {
+          await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+        }
+        await sleep(300);
+        const before = await dnsCount(page);
+        await sleep(800);
+        assertEqual(await dnsCount(page), before, 'the sweep asks nothing more');
+        assertEqual(await shown(), { hash: '#/ptr', target: '', results: false, stop: false }, 'the page forgot the sweep');
+        await gotoRoute(page, 'about');
+        await gotoRoute(page, 'ptr');
+        assertEqual(await shown(), { hash: '#/ptr', target: '', results: false, stop: false }, 'and the next visit shows none of it');
+      } finally {
+        await page.evaluate(() => { window.__fakeDnsDelay = 0; });
+      }
+      if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
+    });
+
     run.group('Phone 375×667, Turkish / English, light / dark');
     await run.step('the form, the picker and the results at 375 px: no horizontal scroll', async () => {
       await gotoRoute(page, 'ptr?target=192.0.2.0/28&focus=example.com');

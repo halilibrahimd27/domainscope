@@ -48,6 +48,7 @@ let i18n;
 let en;
 let tr;
 let views;
+let subRun;
 
 before(async () => {
   i18n = await imp('assets/js/i18n.js');
@@ -56,6 +57,8 @@ before(async () => {
   await imp('assets/js/ui/workspace-panel.js');
   // Subdomains › Sources › Related domains: loaded with a run that reads Certificate Transparency.
   await imp('assets/js/ui/related-domains.js');
+  // Subdomains: a scan's progress and results, loaded with the first scan.
+  subRun = await imp('assets/js/ui/subdomains-run.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
   views = {};
@@ -201,7 +204,7 @@ describe('i18n coverage', () => {
     }
     for (const o of ['input', 'cert', 'bruteforce', 'wordlist', 'permutation', 'recursive', 'dnsmine', 'zone']) add(`scan.origin.${o}`);
     // Subdomains view: every stage pill / progress label, wordlist level, origin id and hint kind.
-    const sub = views.subdomains;
+    const sub = { ...views.subdomains, ...subRun };
     for (const s of sub.SHOWN_STAGES) { add(`sub.stage.${s}`); add(`sub.progress.${s}`); }
     for (const m of sub.BRUTEFORCE_MODES) {
       add(`sub.sum.bf.${m}`);

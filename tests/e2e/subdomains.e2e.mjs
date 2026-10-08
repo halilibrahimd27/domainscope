@@ -75,7 +75,8 @@ const DONE = (id) => `(() => { const p = document.querySelector('.sub-run-ui[dat
 /* ------------------------------------------------------------------------ */
 
 async function nodeChecks(run) {
-  const S = await import('../../assets/js/views/subdomains.js');
+  // The view and its run's results (ui/subdomains-run.js, loaded with the first scan).
+  const S = { ...(await import('../../assets/js/views/subdomains.js')), ...(await import('../../assets/js/ui/subdomains-run.js')) };
   run.group('Node: views/subdomains.js helpers');
   await run.step('parseTargets: URLs, www → apex, subdomains kept, IPs / public suffixes / invalid reported', () => {
     const r = S.parseTargets('https://www.Example.com.tr/path shop.example.com *.foo.com com.tr 1.2.3.4 bad..x example.com.tr');

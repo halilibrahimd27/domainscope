@@ -152,12 +152,23 @@ describe('the discovery engine loads on the first scan', () => {
     assert.deepEqual([...ENGINE_MODULES].map((m) => `assets/js/${m}`).sort(), adds.sort());
   });
 
-  test('the views that scan preload the engine; every preload exists', () => {
+  test('the views that scan preload the engine first; every preload exists', () => {
     for (const v of VIEWS) {
       for (const m of v.preload) assert.ok(existsSync(join(JS, ...m.split('/'))), `${v.id}: ${m}`);
       const scans = /\brunScanner\(/.test(code(join(JS, 'views', `${v.id}.js`)));
-      assert.equal(v.preload === ENGINE_MODULES || v.preload.join() === ENGINE_MODULES.join(), scans, `${v.id} preload`);
+      // After the engine, a scanning view may preload what its runs draw with (Subdomains: ui/subdomains-run.js).
+      assert.equal(v.preload.slice(0, ENGINE_MODULES.length).join() === ENGINE_MODULES.join(), scans, `${v.id} preload`);
     }
+  });
+
+  test('a Subdomains scan loads its progress and results (ui/subdomains-run.js) with the DoH client, and the shell preloads them', () => {
+    const view = code(join(JS, 'views', 'subdomains.js'));
+    assert.match(view, /\[dns, runUi\] = await Promise\.all\(\[ctx\.getDns\(\), loadOnFirstUse\(loadRunUi, ctx\.checkOutdated\)\]\);/);
+    assert.match(view, /export const loadRunUi = onceAsync\(\(\) => import\('\.\.\/ui\/subdomains-run\.js'\)\);/);
+    const route = new Set(startRouteFiles().map(rel));
+    const runGraph = staticGraph(join(JS, 'ui', 'subdomains-run.js')).map(rel).filter((f) => !route.has(f));
+    const preload = VIEWS.find((v) => v.id === 'subdomains').preload.map((m) => `assets/js/${m}`);
+    assert.deepEqual(runGraph.filter((f) => !preload.includes(f)), [], 'every module the run UI adds to the route is preloaded');
   });
 
   test('lib/scanner.js and lib/sources.js re-export the view-side helpers unchanged', () => {
@@ -187,11 +198,12 @@ describe('modules loaded on first use', () => {
 
   test('every owner lookup (lib/ipintel.js on first use) passes ctx.checkOutdated', () => {
     let calls = 0;
-    for (const v of VIEWS) {
-      for (const line of code(join(JS, 'views', `${v.id}.js`)).split('\n')) {
+    // The Subdomains view looks owners up from its run's ORIGIN panel (ui/subdomains-run.js).
+    for (const file of [...VIEWS.map((v) => `views/${v.id}.js`), 'ui/subdomains-run.js']) {
+      for (const line of code(join(JS, ...file.split('/'))).split('\n')) {
         if (!/\bnetworkOwner\(/.test(line) || /function networkOwner\(/.test(line)) continue;
         calls += 1;
-        assert.match(line, /networkOwner\([^;]*, ctx\.checkOutdated\)/, `${v.id}: ${line.trim()}`);
+        assert.match(line, /networkOwner\([^;]*, ctx\.checkOutdated\)/, `${file}: ${line.trim()}`);
       }
     }
     assert.equal(calls, 2, 'Subdomains and SSL Targets');

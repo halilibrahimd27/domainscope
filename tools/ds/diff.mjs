@@ -28,8 +28,8 @@ import { code, isoDay, localYesNo, sourceName, certCount } from './render.mjs';
 import { isLookupError, checkAreas, failedAreas, knownChecks, carriedFrom, lastFullTimes, lookupFailed } from './carry.mjs';
 import { seenOf, radarCrossing } from './ctwatch.mjs';
 import { diffTls, tlsTargetProblem, tlsNotes } from './tlsdiff.mjs';
+import { SEVERITY_RANK, notable, checksById, resolves, DIRECT, driftSev } from './states.mjs';
 import { textParts } from '../../assets/js/lib/summary.js';
-import { DRIFT_SEVERITY } from '../../assets/js/lib/zonedrift.js';
 import { DANE_SEVERITY } from '../../assets/js/lib/dane.js';
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -177,10 +177,6 @@ function change(tag, target, item, what, { tone = 'info', counts = true, kind = 
 /** Targets of a report by their `target`, in report order. */
 const byTarget = (doc) => new Map((doc.targets || []).map((x) => [x.target, x]));
 
-/** Severity ranks (lib/health, lib/renewal, lib/zonedrift DRIFT_SEVERITY, lib/dane DANE_SEVERITY). */
-const SEVERITY_RANK = Object.freeze({ neutral: 0, ok: 0, info: 1, unknown: 1, warn: 2, error: 3 });
-const notable = (severity) => severity === 'warn' || severity === 'error';
-
 /**
  * Changes that count first, then the ones listed only, each group in its order (the CLI's
  * order_changes): every cap cuts what does not count first.
@@ -198,16 +194,6 @@ export function notableChanges(changes) {
 /* ------------------------------------------------------------------------ */
 /* health                                                                   */
 /* ------------------------------------------------------------------------ */
-
-/** The worst severity of each check id (a check id may appear more than once). */
-function checksById(checks) {
-  const out = new Map();
-  for (const c of checks || []) {
-    const prev = out.get(c.id);
-    if (!prev || (SEVERITY_RANK[c.severity] ?? 0) > (SEVERITY_RANK[prev.severity] ?? 0)) out.set(c.id, c);
-  }
-  return out;
-}
 
 function healthTitle(t, c) {
   return textParts(t, c.titleKey || `health.${c.id}.title`, localYesNo(t, c.params));
@@ -272,9 +258,7 @@ function diffHealth(before, after, { t }) {
 /* subdomains                                                               */
 /* ------------------------------------------------------------------------ */
 
-const resolves = (h) => (h.ipv4 || []).length > 0 || (h.ipv6 || []).length > 0;
 const addresses = (h) => [...(h.ipv4 || []), ...(h.ipv6 || [])];
-const DIRECT = new Set(['direct', 'private']);
 
 /** "Cloudflare", "direct 192.0.2.10", "NXDOMAIN" … for a host line. */
 function hostState(h) {
@@ -523,7 +507,6 @@ function diffCt(before, after) {
 /* drift                                                                    */
 /* ------------------------------------------------------------------------ */
 
-const driftSev = (status) => DRIFT_SEVERITY[status] || 'unknown';
 const needsLook = (status) => ['warn', 'error', 'unknown'].includes(driftSev(status));
 
 function rowWhere(r) {

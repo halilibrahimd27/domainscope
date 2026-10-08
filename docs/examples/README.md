@@ -52,9 +52,13 @@ is not set is empty, and then nothing is sent:
 - `DOMAINSCOPE_NOTIFY_BAD_URL`: only the changes that count and are bad, the pager route.
   PagerDuty's Events API (`https://events.pagerduty.com/v2/enqueue?routing_key=<integration key>`)
   gets one incident per problem — its `dedup_key` is the same every night, so a problem pages once
-  — with severity `critical` for a registrar, name server, DS, lock, expiry or trust change and
-  `error` for the rest, and a resolve on the night the problem is over (fixed, better, renewed).
-  `results/NAME.json` keeps the keys still open (`notify.open`); at most 50 events a night.
+  — and a resolve on the night the check shows the problem over: fixed, back where it was before
+  it paged, renewed. A night a lookup fails proves nothing, so the incident stays open. Severity
+  is `critical` for registration, delegation, DNSSEC and trust problems — the audit's registrar,
+  transfer lock, registry status, DNSSEC and expiry rules, drift's name servers, health's expired,
+  held or deleted registration and broken DNSSEC, ct's certificate in use revoked — and `error`
+  for the rest. `results/NAME.json` keeps the incidents still open (`notify.open`); at most 50
+  events a night.
 - `DOMAINSCOPE_NOTIFY_SECRET`: signs the JSON webhook. `X-DomainScope-Timestamp` carries the Unix
   time and `X-DomainScope-Signature` is `sha256=` and the hex HMAC-SHA256 of the timestamp, a dot
   and the body: compute the same over the raw body, compare in constant time, and refuse an old
@@ -64,8 +68,9 @@ is not set is empty, and then nothing is sent:
 
 Webhook URLs work as passwords: they are never printed or written, and the log names their hosts
 only. https:// only. A notification that is not delivered (after one retry) fails the job — the
-check reads `NAME:notify` — while its changes still open the issue, and `results/NAME.json` keeps
-the night before, so the next night sends them again.
+check reads `NAME:notify` — while its changes still open the issue (so does a night on which only
+a PagerDuty resolve failed, with no change to list), and `results/NAME.json` keeps the night before
+— only the PagerDuty incidents still open are updated in it — so the next night sends them again.
 
 Each check is stopped after `CHECK_MINUTES` (20) and all of them after `RUN_MINUTES` (45), well
 inside the job's `timeout-minutes` (60): on a slow night (crt.sh down, a large discovery) that
@@ -169,7 +174,8 @@ that is one of the run's own input files, and a baseline that cannot be compared
 before anything is sent), 3 a report could not be written after the run, 4 something changed
 since `--baseline` (only with `--fail-on-change`) or a rule of the policy failed (`audit`), 5 a
 notification was not delivered (only with `--fail-on-notify-error`), 130 interrupted (Ctrl-C, or
-`timeout -s INT`: nothing is written); when several apply, 3 comes first, then 5, then 4. DNS goes to the app's DoH resolvers (Cloudflare,
+`timeout -s INT`: nothing is written, not while the notifications are posted either); when several
+apply, 3 comes first, then 5, then 4. DNS goes to the app's DoH resolvers (Cloudflare,
 Google, DNS.SB; Quad9 and CZ.NIC answer over HTTP/2 only, which Node's fetch does not speak) with
 the app's concurrency; nothing goes to Globalping. A discovery run prints its progress through
 the long stages and the scanner's own warnings (a list of names cut at 20,000, resolvers that

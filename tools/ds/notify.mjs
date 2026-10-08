@@ -13,8 +13,9 @@
  *   baseline, counts, changes (≤ 500), changesTotal }`, signed with HMAC-SHA256 when
  *   DOMAINSCOPE_NOTIFY_SECRET is set ({@link signBody});
  * - `pagerduty` (Events API v2): one `trigger` per counted bad change, keyed by
- *   {@link dedupKey}, and a `resolve` once its problem is over ({@link pagerDutyPlan}); the report
- *   keeps the keys still open (`notify.open`) for the next run;
+ *   {@link dedupKey}, and a `resolve` once the report shows its problem over
+ *   ({@link pagerDutyPlan}, tools/ds/states.mjs); the report keeps the keys still open
+ *   (`notify.open`, as delivered: {@link keysOpenAfter}) for the next run;
  * - `ntfy`: plain text (≤ {@link NTFY_MAX_BYTES} bytes) with Title, Priority and Tags headers, and
  *   DOMAINSCOPE_NTFY_TOKEN as a bearer token.
  *
@@ -27,6 +28,7 @@
 
 import { createHash, createHmac } from 'node:crypto';
 import { setTimeout as wait } from 'node:timers/promises';
+import { problemStanding, pagedState } from './states.mjs';
 import { cleanText, utcStamp } from '../../assets/js/lib/summary.js';
 
 /** `--notify-format`: auto follows each URL ({@link detectNotifyFormat}). */
@@ -53,6 +55,17 @@ export const PAGERDUTY_MAX_OPEN = 500;
 export const NTFY_MAX_BYTES = 4000;
 /** The tags whose PagerDuty severity is `critical` (also any change whose `after` says critical); `error` otherwise. */
 export const CRITICAL_TAGS = Object.freeze(['REGISTRAR', 'NS', 'DS', 'LOCK', 'EXPIRED', 'UNTRUSTED']);
+/**
+ * The same problems as today's commands report them, by item: health's registration expired,
+ * held or being deleted and DNSSEC broken; drift's name servers; the audit's registrar, transfer
+ * lock, registry status, DNSSEC and expiry rules (also a domain added that fails one). And ct's
+ * certificate in use revoked (REVOKED).
+ */
+export const CRITICAL_ITEMS = Object.freeze({
+  health: Object.freeze(['rdap.expired', 'rdap.hold', 'rdap.pending-delete', 'dnssec.broken']),
+  drift: Object.freeze(['NS']),
+  audit: Object.freeze(['registrar', 'transferLock', 'status.critical', 'dnssec', 'expiryDays', 'nsExpiryDays'])
+});
 /** The environment the runner reads (the nightly template sets them from Actions secrets; empty is unset). */
 export const NOTIFY_ENV = Object.freeze({
   url: 'DOMAINSCOPE_NOTIFY_URL', bad: 'DOMAINSCOPE_NOTIFY_BAD_URL', secret: 'DOMAINSCOPE_NOTIFY_SECRET', ntfyToken: 'DOMAINSCOPE_NTFY_TOKEN'
@@ -201,17 +214,12 @@ function segmentForms(segment) {
 }
 
 /**
- * `text` (an error message, an answer's body) without the secret parts of `url` (the CLI's
- * redact_url): the URL as given and as sent, its path, query and fragment, the query values, the
- * path segments that may be tokens, the user name and password and the Basic value made of them,
- * and `extra` (the ntfy token, the signing secret).
- * @param {string} text
+ * The texts {@link redactUrl} takes out of a text for `url` and `extra`, longest first.
  * @param {string} url
  * @param {string[]} [extra]
- * @returns {string}
+ * @returns {string[]}
  */
-export function redactUrl(text, url, extra = []) {
-  let out = String(text ?? '');
+function secretsOf(url, extra = []) {
   const raw = String(url ?? '');
   const secrets = new Set([raw]);
   const always = new Set(extra.filter(Boolean).map(String));
@@ -239,9 +247,46 @@ export function redactUrl(text, url, extra = []) {
       always.add(authorization.slice(6));
     }
   }
-  const found = [...new Set([...[...secrets].filter((s) => s.length >= 4), ...[...always].filter(Boolean)])].sort((a, b) => b.length - a.length);
-  for (const secret of found) out = out.split(secret).join('***');
-  return out;
+  return [...new Set([...[...secrets].filter((s) => s.length >= 4), ...[...always].filter(Boolean)])].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * `text` without `secrets` (longest first). `cut`: the text is the start of a longer one, so it
+ * may end inside a secret — whatever it ends with that begins a secret goes too.
+ * @param {string} text
+ * @param {string[]} secrets {@link secretsOf}
+ * @param {boolean} [cut]
+ * @returns {string}
+ */
+function redactWith(text, secrets, cut = false) {
+  let out = String(text ?? '');
+  for (const secret of secrets) out = out.split(secret).join('***');
+  if (!cut) return out;
+  out = out.replace(/\uFFFD+$/, ''); // a character cut in two
+  let strip = 0;
+  for (const secret of secrets) {
+    for (let n = Math.min(secret.length - 1, out.length); n > strip; n -= 1) {
+      if (out.endsWith(secret.slice(0, n))) {
+        strip = n;
+        break;
+      }
+    }
+  }
+  return out.slice(0, out.length - strip);
+}
+
+/**
+ * `text` (an error message, an answer's body) without the secret parts of `url` (the CLI's
+ * redact_url): the URL as given and as sent, its path, query and fragment, the query values, the
+ * path segments that may be tokens, the user name and password and the Basic value made of them,
+ * and `extra` (the ntfy token, the signing secret).
+ * @param {string} text
+ * @param {string} url
+ * @param {string[]} [extra]
+ * @returns {string}
+ */
+export function redactUrl(text, url, extra = []) {
+  return redactWith(text, secretsOf(url, extra));
 }
 
 /**
@@ -562,23 +607,36 @@ export function dedupKey(command, target, item, tag) {
 
 /**
  * A bad change's PagerDuty severity: `critical` for {@link CRITICAL_TAGS} (registrar, name
- * servers, DS, a lock removed, expired, untrusted) and for a change whose `after` says critical
- * (a critical takeover risk or registry status), `error` for every other.
- * @param {{ tag: string, after?: any }} change
+ * servers, DS, a lock removed, expired, untrusted), for the items of `command` that are the same
+ * problems ({@link CRITICAL_ITEMS}; an audit domain added: one of them among the rules it fails),
+ * for ct's REVOKED and for a change whose `after` says critical (a critical takeover risk), `error`
+ * for every other.
+ * @param {{ tag: string, item?: string|null, after?: any }} change
+ * @param {string|null} [command]
  * @returns {'critical'|'error'}
  */
-export function eventSeverity(change) {
+export function eventSeverity(change, command = null) {
   if (CRITICAL_TAGS.includes(change.tag)) return 'critical';
+  const items = Object.prototype.hasOwnProperty.call(CRITICAL_ITEMS, command) ? CRITICAL_ITEMS[command] : [];
   const a = change.after;
+  if (typeof change.item === 'string' && items.includes(change.item)) return 'critical';
+  if (command === 'audit' && (change.item ?? null) === null && Array.isArray(a) && a.some((id) => items.includes(id))) return 'critical';
+  if (command === 'ct' && change.tag === 'REVOKED') return 'critical';
   if (a === 'critical' || (a && typeof a === 'object' && (a.severity === 'critical' || a.risk === 'critical'))) return 'critical';
   return 'error';
 }
 
+/** A key's paged state as a report keeps it: a short text or a number. */
+const isState = (v) => (typeof v === 'string' && v.length > 0 && v.length <= 64) || Number.isFinite(v);
+
 /**
  * The PagerDuty keys a baseline left open (its `notify.open`), each checked: `{ key, target,
- * item, tag, since, over? }`. Anything else in the list is dropped (it only ever loses a resolve).
+ * item, tag, since, state?, over? }` (`state`: what its item was paged at, tools/ds/states.mjs
+ * pagedState). Anything else in the list is dropped (it only ever loses a resolve), a `state`
+ * that is not a short text or a number too (the key is then over only once its item is fully
+ * good).
  * @param {object|null} doc a report
- * @returns {Array<{ key: string, target: string, item: string|null, tag: string, since: string|null, over?: true }>}
+ * @returns {Array<{ key: string, target: string, item: string|null, tag: string, since: string|null, state?: string|number, over?: true }>}
  */
 export function openKeysOf(doc) {
   const list = doc && doc.notify && typeof doc.notify === 'object' && Array.isArray(doc.notify.open) ? doc.notify.open : [];
@@ -588,49 +646,49 @@ export function openKeysOf(doc) {
     if (!e || typeof e !== 'object' || !DEDUP_KEY.test(String(e.key)) || typeof e.target !== 'string' || !TAG.test(String(e.tag))) continue;
     if (!(e.item === null || e.item === undefined || typeof e.item === 'string') || seen.has(e.key)) continue;
     seen.add(e.key);
-    out.push({ key: e.key, target: e.target, item: e.item ?? null, tag: e.tag, since: typeof e.since === 'string' ? e.since : null, ...(e.over === true ? { over: true } : {}) });
+    out.push({
+      key: e.key, target: e.target, item: e.item ?? null, tag: e.tag, since: typeof e.since === 'string' ? e.since : null,
+      ...(isState(e.state) ? { state: e.state } : {}), ...(e.over === true ? { over: true } : {})
+    });
   }
   return out;
 }
 
 /**
  * Is the problem of an open key over, by what this run's report says? Its target is no longer
- * checked; the same target and item moved again with a counted change that is good (fixed,
- * better, recovered), back after it was GONE (NEW), or bad in another way (another tag: that is
- * the item's problem now, under its own key); `ct`: its certificate superseded by a newer one
- * for every name (renewed), or its issuer gone from a complete read. A problem that stays as it
- * was makes no change, so its key stays open.
- * @param {{ target: string, item: string|null, tag: string }} e
+ * checked, or the report shows its item better than it was paged at, or out of what the run
+ * checks (tools/ds/states.mjs problemStanding: a finding's severity, a host's answer, a
+ * certificate renewed, a record set's status, a verdict, an endpoint's status, a rule). Never
+ * because another change came by: a lookup that failed, a source or a record set not read says
+ * nothing, and the key stays open. A command without a rule there: a counted good change of the
+ * same target and item, or the item back after it was GONE.
+ * @param {{ target: string, item: string|null, tag: string, state?: string|number }} e
  * @param {object} report
  * @returns {boolean}
  */
 export function problemOver(e, report) {
   const target = (report.targets || []).find((x) => x && x.target === e.target);
   if (!target) return true;
-  for (const c of report.changes || []) {
-    if (!c || c.counts !== true || c.target !== e.target || (c.item ?? null) !== e.item) continue;
-    if (c.tone === 'good' || (c.tone === 'bad' && c.tag !== e.tag) || (c.tag === 'NEW' && e.tag === 'GONE')) return true;
-  }
-  if (report.command === 'ct' && e.item !== null) {
-    const cert = (target.certificates || []).find((c) => c && c.id === e.item);
-    if (cert) return Array.isArray(cert.flags) && cert.flags.includes('superseded');
-    if (e.tag === 'ISSUER') return target.complete === true && !(target.issuers || []).some((g) => g && g.name === e.item);
-  }
-  return false;
+  const standing = problemStanding(report.command, target, e);
+  if (standing !== null) return standing === 'over';
+  return (report.changes || []).some((c) => c && c.counts === true && c.target === e.target && (c.item ?? null) === e.item
+    && (c.tone === 'good' || (c.tag === 'NEW' && e.tag === 'GONE')));
 }
 
 /**
  * What this run sends to PagerDuty and the keys it leaves open: a trigger per counted bad change
- * (one per key, in the changes' order), a resolve per open key whose problem is over
- * ({@link problemOver}) or whose resolve a run could not send yet (`over`). At most `max` events:
- * triggers first; the triggers left out are not sent (`cut`), the resolves left out stay open
- * with `over` and go out with the next run. Open keys: the baseline's still open (a key
- * triggered again keeps its `since`), then the new ones, at most {@link PAGERDUTY_MAX_OPEN} (the
- * oldest dropped).
+ * (one per key, in the changes' order; a new key keeps the state its item is paged at), a resolve
+ * per open key whose problem is over ({@link problemOver}) or whose resolve a run could not send
+ * yet (`over`). At most `max` events: triggers first; the triggers left out are not sent (`cut`),
+ * the resolves left out stay open with `over` and go out with the next run. `kept`, `deferred`
+ * and `added` are the parts of `open` ({@link keysOpenAfter}): the baseline's keys still open (a
+ * key triggered again keeps its `since` and `state`), those whose resolve waits, the new ones —
+ * `open`, as if every event were delivered.
  * @param {object} report this run's report
  * @param {object|null} baseline
  * @param {{ max?: number }} [opts]
- * @returns {{ triggers: Array<{ key: string, change: object }>, resolves: object[], cut: number, open: object[] }}
+ * @returns {{ triggers: Array<{ key: string, change: object }>, resolves: object[], cut: number, open: object[],
+ *   kept: object[], deferred: object[], added: object[] }}
  */
 export function pagerDutyPlan(report, baseline, { max = PAGERDUTY_MAX_EVENTS } = {}) {
   const triggered = new Map();
@@ -640,21 +698,46 @@ export function pagerDutyPlan(report, baseline, { max = PAGERDUTY_MAX_EVENTS } =
     if (!triggered.has(key)) triggered.set(key, c);
   }
   const open = openKeysOf(baseline);
-  const keep = [];
+  const kept = [];
   const ending = [];
   for (const e of open) {
-    if (triggered.has(e.key)) keep.push({ key: e.key, target: e.target, item: e.item, tag: e.tag, since: e.since });
-    else if (e.over || problemOver(e, report)) ending.push(e);
-    else keep.push(e);
+    if (triggered.has(e.key)) {
+      const { over, ...still } = e;
+      kept.push(still);
+    } else if (e.over || problemOver(e, report)) ending.push(e);
+    else kept.push(e);
   }
   const triggers = [...triggered].slice(0, Math.max(0, max)).map(([key, change]) => ({ key, change }));
   const resolves = ending.slice(0, Math.max(0, max - triggers.length));
   const deferred = ending.slice(resolves.length).map((e) => ({ ...e, over: true }));
   const known = new Set(open.map((e) => e.key));
-  const added = triggers.filter((t) => !known.has(t.key))
-    .map(({ key, change }) => ({ key, target: change.target, item: change.item ?? null, tag: change.tag, since: report.startedAt ?? null }));
-  const next = [...keep, ...deferred, ...added];
-  return { triggers, resolves, cut: triggered.size - triggers.length, open: next.slice(Math.max(0, next.length - PAGERDUTY_MAX_OPEN)) };
+  const added = triggers.filter((t) => !known.has(t.key)).map(({ key, change }) => {
+    const state = pagedState(report.command, change);
+    return { key, target: change.target, item: change.item ?? null, tag: change.tag, since: report.startedAt ?? null, ...(state === null ? {} : { state }) };
+  });
+  const plan = { triggers, resolves, cut: triggered.size - triggers.length, kept, deferred, added };
+  return { ...plan, open: keysOpenAfter(plan) };
+}
+
+/**
+ * The PagerDuty keys open after a run, by what was delivered: the baseline's keys still open,
+ * those whose resolve was not delivered (as they were: the next run decides again), those whose
+ * resolve waits for the event budget (`over`), and the new keys whose trigger was delivered — at
+ * most {@link PAGERDUTY_MAX_OPEN}, the oldest dropped.
+ * @param {{ kept: object[], resolves: object[], deferred: object[], added: object[] }} plan {@link pagerDutyPlan}
+ * @param {{ triggered?: Set<string>|null, resolved?: Set<string>|null }} [delivered] the keys of the
+ *   triggers and the resolves delivered (null: all of them)
+ * @returns {object[]}
+ */
+export function keysOpenAfter(plan, { triggered = null, resolved = null } = {}) {
+  const sent = (set, key) => !set || set.has(key);
+  const next = [
+    ...plan.kept,
+    ...plan.resolves.filter((e) => !sent(resolved, e.key)),
+    ...plan.deferred,
+    ...plan.added.filter((e) => sent(triggered, e.key))
+  ];
+  return next.slice(Math.max(0, next.length - PAGERDUTY_MAX_OPEN));
 }
 
 /**
@@ -664,7 +747,7 @@ export function pagerDutyPlan(report, baseline, { max = PAGERDUTY_MAX_EVENTS } =
  * @param {object} report
  * @param {{ triggers: object[], resolves: object[] }} plan
  * @param {{ run?: string|null, tool: string, version: string }} ctx
- * @returns {Array<{ url: string, headers: Record<string, string>, body: string, secrets: string[], action: string }>}
+ * @returns {Array<{ url: string, headers: Record<string, string>, body: string, secrets: string[], action: string, key: string }>}
  */
 export function pagerDutyRequests(route, report, plan, { run = null, tool, version }) {
   const { url, authorization } = splitCredentials(route.url);
@@ -675,7 +758,7 @@ export function pagerDutyRequests(route, report, plan, { run = null, tool, versi
   const headers = { 'Content-Type': 'application/json; charset=utf-8', 'User-Agent': `${tool}/${version} (+https://github.com/halilibrahimd27/domainscope)` };
   if (authorization) headers.Authorization = authorization;
   const command = cleanText(report.command);
-  const request = (event, action) => ({ url: u.href, headers, body: JSON.stringify(event), secrets: [routingKey], action });
+  const request = (event, action) => ({ url: u.href, headers, body: JSON.stringify(event), secrets: [routingKey], action, key: event.dedup_key });
   return [
     ...plan.triggers.map(({ key, change }) => request({
       routing_key: routingKey,
@@ -684,7 +767,7 @@ export function pagerDutyRequests(route, report, plan, { run = null, tool, versi
       payload: {
         summary: clip(`${cleanText(change.tag)} ${cleanText(change.text)}`, PAGERDUTY_SUMMARY_LIMIT),
         source: `domainscope:${command}`,
-        severity: eventSeverity(change),
+        severity: eventSeverity(change, report.command),
         component: change.target,
         group: command,
         custom_details: { tag: change.tag, item: change.item ?? null, before: change.before ?? null, after: change.after ?? null, run }
@@ -700,8 +783,15 @@ export function pagerDutyRequests(route, report, plan, { run = null, tool, versi
 /* Delivery                                                                 */
 /* ------------------------------------------------------------------------ */
 
-/** The reason in a webhook's error answer: Telegram's `description`, Discord's `message`, Power Automate's `error.message`, else the body (200 characters). */
-export function responseDetail(raw) {
+/**
+ * The reason in a webhook's error answer: Telegram's `description`, Discord's `message`, Power
+ * Automate's `error.message`, else the body — `redact`ed, then on one line and cut at 200
+ * characters (a secret echoed across the cut would leave its start, which no redaction finds).
+ * @param {string} raw
+ * @param {(text: string) => string} [redact]
+ * @returns {string}
+ */
+export function responseDetail(raw, redact = (text) => text) {
   let text = String(raw ?? '');
   try {
     const data = JSON.parse(text);
@@ -713,25 +803,31 @@ export function responseDetail(raw) {
   } catch {
     // not JSON: the body as it is
   }
-  return text.split(/\s+/).filter(Boolean).join(' ').slice(0, 200);
+  // a secret with spaces may only show once they are one
+  return redact(redact(text).split(/\s+/).filter(Boolean).join(' ')).slice(0, 200);
 }
 
-/** Up to `max` bytes of an answer's body, as text. */
+/** Up to `max` bytes of an answer's body, as text; `cut`: there was more (or may have been). */
 async function readSome(res, max) {
   if (!res.body || typeof res.body.getReader !== 'function') {
     try {
-      return (await res.text()).slice(0, max);
+      const text = await res.text();
+      return { text: text.slice(0, max), cut: text.length > max };
     } catch {
-      return '';
+      return { text: '', cut: false };
     }
   }
   const reader = res.body.getReader();
   const chunks = [];
   let n = 0;
+  let ended = false;
   try {
     while (n < max) {
       const { value, done } = await reader.read();
-      if (done) break;
+      if (done) {
+        ended = true;
+        break;
+      }
       chunks.push(value);
       n += value.length;
     }
@@ -740,22 +836,22 @@ async function readSome(res, max) {
   } finally {
     reader.cancel().catch(() => {});
   }
-  return Buffer.concat(chunks.map((c) => Buffer.from(c))).subarray(0, max).toString('utf8');
+  return { text: Buffer.concat(chunks.map((c) => Buffer.from(c))).subarray(0, max).toString('utf8'), cut: n > max || !ended };
 }
 
-/** A network failure in a few words: `timed out`, the system's reason (ECONNREFUSED, a TLS error). */
-function networkText(err) {
+/** A network failure in a few words, redacted before it is cut: `timed out`, the system's reason (ECONNREFUSED, a TLS error). */
+function networkText(err, redact) {
   const cause = err && err.cause;
   const text = (cause && (cause.message || cause.code)) || (err && err.message) || String(err);
-  return cleanText(text).slice(0, 200) || 'failed';
+  return redact(cleanText(text)).slice(0, 200) || 'failed';
 }
 
 /**
  * One POST: `{ ok }`, or `{ problem, retry, retryAfterMs }` (retry: a network error, 5xx or 429), or
  * `{ interrupted }` when the run's signal stopped it. No redirect is followed: a redirected POST
- * would arrive as a GET without the message.
+ * would arrive as a GET without the message. What the answer says is `redact`ed before it is cut.
  */
-async function postOnce(request, { fetchImpl, signal, timeoutMs }) {
+async function postOnce(request, { fetchImpl, signal, timeoutMs, redact }) {
   // A timer of its own rather than AbortSignal.timeout(), whose timer does not keep Node's event
   // loop alive: the timeout must fire whatever the fetch holds open. Cleared once the answer is read.
   const timeout = new AbortController();
@@ -770,15 +866,16 @@ async function postOnce(request, { fetchImpl, signal, timeoutMs }) {
     } catch (err) {
       if (signal && signal.aborted) return { interrupted: true };
       if (timeout.signal.aborted || (err && err.name === 'TimeoutError')) return { problem: 'timed out', retry: true };
-      return { problem: networkText(err), retry: true };
+      return { problem: networkText(err, redact), retry: true };
     }
     if (res.status >= 200 && res.status < 300) {
       if (res.body && typeof res.body.cancel === 'function') await res.body.cancel().catch(() => {});
       return { ok: true };
     }
-    let text = `HTTP ${res.status} ${res.statusText || ''}`.trim();
+    let text = `HTTP ${res.status} ${redact(res.statusText || '')}`.trim();
     if (res.status >= 300 && res.status < 400) text += ' (a redirect; not followed)';
-    const detail = responseDetail(await readSome(res, 512));
+    const body = await readSome(res, 512);
+    const detail = responseDetail(body.text, (t) => redact(t, body.cut));
     if (detail) text += `: ${detail}`;
     const after = String((res.headers && res.headers.get('retry-after')) || '').trim();
     return { problem: text, retry: res.status >= 500 || res.status === 429, retryAfterMs: /^\d+$/.test(after) ? Number(after) * 1000 : null };
@@ -800,11 +897,13 @@ async function postOnce(request, { fetchImpl, signal, timeoutMs }) {
  */
 export async function deliver(request, routeUrl, opts) {
   const { fetchImpl, signal, timeoutMs = NOTIFY_TIMEOUT_MS, retryDelayMs = NOTIFY_RETRY_DELAY_MS, retries = 1, sleep = (ms, sig) => wait(ms, undefined, { signal: sig }) } = opts;
+  const secrets = secretsOf(routeUrl, request.secrets || []);
+  const redact = (text, cut = false) => redactWith(text, secrets, cut);
   for (let attempt = 0; ; attempt += 1) {
-    const r = await postOnce(request, { fetchImpl, signal, timeoutMs });
+    const r = await postOnce(request, { fetchImpl, signal, timeoutMs, redact });
     if (r.ok) return null;
     if (r.interrupted) return { problem: 'interrupted', interrupted: true };
-    if (!r.retry || attempt >= retries) return { problem: cleanText(redactUrl(r.problem, routeUrl, request.secrets || [])) || 'failed' };
+    if (!r.retry || attempt >= retries) return { problem: cleanText(redact(r.problem)) || 'failed' };
     try {
       await sleep(Math.min(MAX_RETRY_AFTER_MS, Math.max(retryDelayMs, r.retryAfterMs || 0)), signal);
     } catch {
@@ -817,7 +916,9 @@ export async function deliver(request, routeUrl, opts) {
 /**
  * Post a run's notifications, one route after the other. A route sends when it has something to
  * say: --notify when a change counts (after every run with `always`), --notify-bad when a counted
- * change is bad, PagerDuty when it has events. A route stops at its first request that fails.
+ * change is bad, PagerDuty when it has events. A route stops at its first request that fails. The
+ * PagerDuty keys open after the run are those delivered ({@link keysOpenAfter}): a trigger taken
+ * by any PagerDuty URL opens its key, a resolve closes it once every PagerDuty URL took it.
  * @param {object} report this run's report (tools/ds.mjs; `changes` with --baseline)
  * @param {Array<{ url: string, format: string, bad: boolean, source: string }>} routes {@link notifyRoutes}
  * @param {{ baseline?: object|null, always?: boolean, env?: object, now?: () => Date, fetchImpl: typeof fetch,
@@ -825,8 +926,8 @@ export async function deliver(request, routeUrl, opts) {
  *   tool: string, version: string }} ctx
  * @returns {Promise<{ results: Array<{ route: object, host: string, sent: number, total: number, triggered: number,
  *   resolved: number, carries: boolean, problem: string|null, interrupted: boolean }>, open: object[]|null, cut: number,
- *   interrupted: boolean }>} `open`: the PagerDuty keys open after this run (null without a PagerDuty route);
- *   `carries`: the route carried changes that count, or PagerDuty events
+ *   interrupted: boolean }>} `open`: the PagerDuty keys open after this run, as delivered (null without a
+ *   PagerDuty route); `carries`: the route carried changes that count, or PagerDuty events
  */
 export async function sendNotifications(report, routes, ctx) {
   const { baseline = null, always = false, env = {}, now = () => new Date(), fetchImpl, signal, timing = {}, tool, version } = ctx;
@@ -834,6 +935,8 @@ export async function sendNotifications(report, routes, ctx) {
   const plan = routes.some((r) => r.format === 'pagerduty') ? pagerDutyPlan(report, baseline) : null;
   const results = [];
   let interrupted = false;
+  const triggered = new Set();
+  const resolvedBy = new Map(routes.filter((r) => r.format === 'pagerduty').map((r) => [r, new Set()]));
   for (const route of routes) {
     let requests = [];
     let carries = false;
@@ -858,13 +961,21 @@ export async function sendNotifications(report, routes, ctx) {
         break;
       }
       entry.sent += 1;
-      if (request.action === 'trigger') entry.triggered += 1;
-      if (request.action === 'resolve') entry.resolved += 1;
+      if (request.action === 'trigger') {
+        entry.triggered += 1;
+        triggered.add(request.key);
+      }
+      if (request.action === 'resolve') {
+        entry.resolved += 1;
+        resolvedBy.get(route).add(request.key);
+      }
     }
     if (entry.interrupted) {
       interrupted = true;
       break;
     }
   }
-  return { results, open: plan ? plan.open : null, cut: plan ? plan.cut : 0, interrupted };
+  if (!plan) return { results, open: null, cut: 0, interrupted };
+  const resolved = [...resolvedBy.values()].reduce((all, keys) => new Set([...all].filter((k) => keys.has(k))));
+  return { results, open: keysOpenAfter(plan, { triggered, resolved }), cut: plan.cut, interrupted };
 }

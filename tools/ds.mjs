@@ -21,8 +21,9 @@
  * be the `--json` report (replaced whole, through a temporary file, after the run), a missing
  * one is a first run only when it is that file, report files that cannot be written are refused
  * before the run. `--notify` / `--notify-bad` post the changes after the summary and before the
- * `--json` report (tools/ds/notify.mjs): when the report is also the baseline and a message
- * with changes was not delivered, the file keeps the previous report, as the CLI does.
+ * `--md` and `--json` reports (tools/ds/notify.mjs): when the report is also the baseline and a
+ * message with changes was not delivered, the file keeps the previous report, as the CLI does —
+ * with the PagerDuty incidents still open after this run noted in it.
  *
  * DNS goes through lib/doh.js's DohClient with the app's resolver chain (minus the resolvers
  * Node's fetch cannot read) and the app's concurrency; nothing goes to Globalping.
@@ -218,6 +219,18 @@ export function policyErrorText(e) {
 }
 
 /**
+ * A report with `notify.open` replaced by `open` (none: no `notify`), every other field as it was.
+ * @param {object} doc
+ * @param {object[]} open
+ * @returns {object}
+ */
+export function withOpenKeys(doc, open) {
+  const { notify, ...rest } = doc;
+  if (!open.length) return rest;
+  return 'notify' in doc ? { ...doc, notify: { open } } : { ...rest, notify: { open } };
+}
+
+/**
  * Run the runner with a command line; resolves with the exit code (never rejects).
  * @param {string[]} argv arguments after the script
  * @param {{ stdout?: { write: Function, isTTY?: boolean }, stderr?: { write: Function },
@@ -366,17 +379,17 @@ export async function main(argv, io = {}) {
     if (!path) return;
     try {
       await replaceFile(path, text);
-      if (!quiet) say(stderr, `${PROG}: ${label} written to ${path}`);
+      if (label && !quiet) say(stderr, `${PROG}: ${label} written to ${path}`);
     } catch (err) {
       writeFailed = true;
       say(stderr, `${PROG}: error: cannot write ${path}: ${(err && err.code) || err}`);
     }
   };
-  await write(options.md, renderRunMarkdown(run, result.docs), 'Markdown summary');
 
-  // --- notifications (before the report: it may be the next run's baseline) ---------------
+  // --- notifications (before the reports: the JSON one may be the next run's baseline) ------
   let notifyFailed = false;
   let heldBack = false;
+  let kept = null; // the previous report, with the PagerDuty incidents open after this run
   let open = openKeysOf(baseline); // PagerDuty's open keys go on while no PagerDuty URL is set
   if (routes.length) {
     const sent = await sendNotifications(report, routes, {
@@ -393,23 +406,24 @@ export async function main(argv, io = {}) {
     if (sent.cut && !quiet) {
       say(stderr, `${PROG}: warning: PagerDuty: ${sent.cut} more bad change${sent.cut === 1 ? '' : 's'} not sent (at most ${PAGERDUTY_MAX_EVENTS} events a run)`);
     }
-    if (sent.interrupted) {
-      say(stderr, `${PROG}: interrupted${options.json ? `: the JSON report is not written (${options.json})` : ''}`);
-      return EXIT.INTERRUPTED;
-    }
+    if (sent.interrupted) return interrupted();
     notifyFailed = sent.results.some((r) => r.problem);
     if (sent.open) open = sent.open;
     // This run's report would be the next baseline: the next run would compare with it, find
-    // nothing and never send what did not go out. Keep the previous one.
+    // nothing and never send what did not go out. Keep the previous one — but with the PagerDuty
+    // incidents this run opened or resolved, or the next run would not know them.
     if (jsonIsBaseline && run.baseline && !run.baseline.missing && sent.results.some((r) => r.problem && r.carries)) {
       heldBack = true;
+      if (sent.open && JSON.stringify(sent.open) !== JSON.stringify(openKeysOf(baseline))) kept = withOpenKeys(baseline, sent.open);
       const n = notableChanges(run.changes).length;
-      say(stderr, `${PROG}: kept the previous baseline in ${options.json} (this report is not written there): `
+      say(stderr, `${PROG}: kept the previous baseline in ${options.json} (this report is not written there${kept ? '; the PagerDuty incidents still open are noted in it' : ''}): `
         + (n ? `the ${n} change${n === 1 ? '' : 's'} will be reported again on the next run` : 'the next run sends again what was not delivered'));
     }
   }
+  await write(options.md, renderRunMarkdown(run, result.docs), 'Markdown summary');
   if (open.length) report.notify = { open };
   if (!heldBack) await write(options.json, `${toJson(report)}\n`, 'JSON report');
+  else if (kept) await write(options.json, `${toJson(kept)}\n`, null);
 
   if (writeFailed) return EXIT.WRITE;
   if (notifyFailed && options.failOnNotifyError) return EXIT.NOTIFY;

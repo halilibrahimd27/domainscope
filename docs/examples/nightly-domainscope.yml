@@ -105,7 +105,8 @@ jobs:
           end=$(( $(date +%s) + RUN_MINUTES * 60 ))
           # ds NAME COMMAND ARGS...: results/NAME.json is both last night's baseline and tonight's
           # report. Exit 4 means "changed since last night"; 5 that a notification was not
-          # delivered (the changes still open the issue, last night's NAME.json is kept so the next
+          # delivered (the changes still open the issue - so does a night on which only a PagerDuty
+          # resolve failed, with no change to list -, last night's NAME.json is kept so the next
           # night sends them again, and the job fails); anything else but 0 is a failure (124:
           # stopped at its time limit), which leaves last night's files as they were.
           ds() {

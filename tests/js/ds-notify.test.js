@@ -3,9 +3,11 @@
  * format each URL gets (mirroring the Python CLI's NotifyFormatTests), the URL checks that never
  * repeat a URL, the redaction, every format's payload and its cut at the service's limit, the
  * signed JSON (a known-answer HMAC vector the Python tests share), PagerDuty's triggers and
- * resolves over runs, ntfy, and runs of `main()` with a fake fetch: the --notify-bad filter, a
- * retry after a 500, a timeout, the exit code order (3, then 5, then 4), a baseline kept when a
- * message did not go out, and no URL in stdout, stderr or any file written. No network.
+ * resolves over runs — where each problem stands (tools/ds/states.mjs), also over several nights
+ * of the diffs as the runner makes them —, ntfy, and runs of `main()` with a fake fetch: the
+ * --notify-bad filter, a retry after a 500, a timeout, the exit code order (3, then 5, then 4), a
+ * baseline kept when a message did not go out (with what PagerDuty got noted in it), and no URL
+ * in stdout, stderr or any file written. No network.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,13 +17,16 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  NOTIFY_FORMATS, NOTIFY_TEXT_LIMITS, NOTIFY_MAX_CHANGES, NOTIFY_MAX_JSON_CHANGES, NOTIFY_LINE_LIMIT, NOTIFY_ENV, CRITICAL_TAGS,
+  NOTIFY_FORMATS, NOTIFY_TEXT_LIMITS, NOTIFY_MAX_CHANGES, NOTIFY_MAX_JSON_CHANGES, NOTIFY_LINE_LIMIT, NOTIFY_ENV, CRITICAL_TAGS, CRITICAL_ITEMS,
   PAGERDUTY_MAX_EVENTS, PAGERDUTY_SUMMARY_LIMIT, PAGERDUTY_MAX_OPEN, NTFY_MAX_BYTES, NotifyConfigError,
   detectNotifyFormat, notifyUrlProblem, notifyHost, splitCredentials, redactUrl, runUrl, notifyRoutes, notificationMessage,
-  fitLines, buildRequest, signBody, dedupKey, eventSeverity, openKeysOf, problemOver, pagerDutyPlan, pagerDutyRequests,
+  fitLines, buildRequest, signBody, dedupKey, eventSeverity, openKeysOf, problemOver, pagerDutyPlan, keysOpenAfter, pagerDutyRequests,
   responseDetail, deliver, sendNotifications, byteLength
 } from '../../tools/ds/notify.mjs';
 import { parseCommandLine, UsageError, EXIT, USAGE, DS_TOOL, DS_VERSION } from '../../tools/ds/args.mjs';
+import { diffReports } from '../../tools/ds/diff.mjs';
+import { setupStrings, changeText } from '../../tools/ds/render.mjs';
+import { carryHealth, carryHosts } from '../../tools/ds/carry.mjs';
 import { main } from '../../tools/ds.mjs';
 import { zoneTable, createFakeFetch, CF_EXPORT } from './ds-fake-doh.mjs';
 
@@ -81,7 +86,7 @@ function movedZone() {
   return table;
 }
 
-/** A report of `command` with these changes (the runner's `changes` entries). */
+/** A health report with these changes (the runner's `changes` entries); `extra` replaces any field (`targets`, `command`). */
 function reportOf(changes, extra = {}) {
   return {
     tool: DS_TOOL, version: DS_VERSION, command: 'health', startedAt: '2026-09-28T03:00:00.000Z', finishedAt: '2026-09-28T03:02:00.000Z', options: {},
@@ -420,23 +425,46 @@ describe('PagerDuty', () => {
     assert.notEqual(dedupKey('health', 'example.com', 'a', 'NEW'), dedupKey('health', 'example.com', 'a', 'WORSE'));
   });
 
-  test('severity: critical for registrar, name servers, DS, lock, expired and untrusted, and for a critical risk; error otherwise', () => {
+  test('severity: critical for registrar, name servers, DS, lock, expiry and trust — the tags, and the runner\'s own checks of them; error otherwise', () => {
     assert.deepEqual(CRITICAL_TAGS, ['REGISTRAR', 'NS', 'DS', 'LOCK', 'EXPIRED', 'UNTRUSTED']);
     for (const tag of CRITICAL_TAGS) assert.equal(eventSeverity({ tag }), 'critical', tag);
     assert.equal(eventSeverity({ tag: 'TAKEOVER', after: 'critical' }), 'critical');
     assert.equal(eventSeverity({ tag: 'TAKEOVER', after: { severity: 'critical', kind: 'cname' } }), 'critical');
     assert.equal(eventSeverity({ tag: 'NEW', after: { risk: 'critical' } }), 'critical');
     for (const c of [{ tag: 'WORSE', after: 'error' }, { tag: 'DANGLING' }, { tag: 'TAKEOVER', after: 'high' }, { tag: 'NEW', after: null }]) assert.equal(eventSeverity(c), 'error', c.tag);
+    // what today's commands page for those: drift's name servers, the audit's registrar, lock,
+    // registry status, DNSSEC and expiry rules (also a domain added that fails one), health's
+    // registration expired, held or being deleted and DNSSEC broken, ct's certificate in use revoked
+    assert.deepEqual(CRITICAL_ITEMS, {
+      health: ['rdap.expired', 'rdap.hold', 'rdap.pending-delete', 'dnssec.broken'],
+      drift: ['NS'],
+      audit: ['registrar', 'transferLock', 'status.critical', 'dnssec', 'expiryDays', 'nsExpiryDays']
+    });
+    assert.equal(eventSeverity({ tag: 'WORSE', item: 'NS', after: 'disjoint' }, 'drift'), 'critical');
+    assert.equal(eventSeverity({ tag: 'WORSE', item: 'mail.example.com|A', after: 'differs' }, 'drift'), 'error');
+    for (const id of CRITICAL_ITEMS.audit) assert.equal(eventSeverity({ tag: 'WORSE', item: id, after: 'fail' }, 'audit'), 'critical', id);
+    assert.equal(eventSeverity({ tag: 'NEW', item: 'spf', after: 'fail' }, 'audit'), 'error');
+    assert.equal(eventSeverity({ tag: 'NEW', item: null, after: ['spf', 'transferLock'] }, 'audit'), 'critical', 'a domain added that fails a registration rule');
+    assert.equal(eventSeverity({ tag: 'NEW', item: null, after: ['spf'] }, 'audit'), 'error');
+    for (const id of CRITICAL_ITEMS.health) assert.equal(eventSeverity({ tag: 'NEW', item: id, after: 'error' }, 'health'), 'critical', id);
+    assert.equal(eventSeverity({ tag: 'NEW', item: 'dmarc.missing', after: 'error' }, 'health'), 'error');
+    assert.equal(eventSeverity({ tag: 'REVOKED', item: 'a'.repeat(16) }, 'ct'), 'critical');
+    assert.equal(eventSeverity({ tag: 'EXPIRING', item: 'a'.repeat(16), after: 14 }, 'ct'), 'error');
+    assert.equal(eventSeverity({ tag: 'WORSE', item: 'transferLock', after: 'fail' }, 'drift'), 'error', 'an item of another command');
+    // the trigger carries it
+    const plan = pagerDutyPlan(reportOf([change('WORSE', 'bad', 'example.com', 'NS', 'name servers: same → disjoint', { after: 'disjoint' })], { command: 'drift' }), null);
+    const [event] = pagerDutyRequests({ url: PAGERDUTY_URL }, { command: 'drift' }, plan, { tool: DS_TOOL, version: DS_VERSION }).map((r) => JSON.parse(r.body));
+    assert.equal(event.payload.severity, 'critical');
   });
 
-  test('a trigger per counted bad change, the key kept open; the next run resolves it once its problem is over', () => {
+  test('a trigger per counted bad change, the key kept open with the state it paged at; a later run resolves it once the item is better than that', () => {
     const worse = change('WORSE', 'bad', 'example.com', 'dmarc.policy', 'dmarc.policy: warn → error — DMARC p=none', { before: 'warn', after: 'error' });
     const run1 = reportOf([worse, CHANGES[1], CHANGES[2], { ...worse, item: 'listed.only', counts: false, tone: 'quiet' }]);
     const plan1 = pagerDutyPlan(run1, null);
     const key = dedupKey('health', 'example.com', 'dmarc.policy', 'WORSE');
     assert.deepEqual(plan1.triggers.map((t) => t.key), [key]);
     assert.deepEqual(plan1.resolves, []);
-    assert.deepEqual(plan1.open, [{ key, target: 'example.com', item: 'dmarc.policy', tag: 'WORSE', since: '2026-09-28T03:00:00.000Z' }]);
+    assert.deepEqual(plan1.open, [{ key, target: 'example.com', item: 'dmarc.policy', tag: 'WORSE', since: '2026-09-28T03:00:00.000Z', state: 'error' }]);
     const run = 'https://github.com/example/nightly/actions/runs/42';
     const [req] = pagerDutyRequests({ url: PAGERDUTY_URL }, run1, plan1, { run, tool: DS_TOOL, version: DS_VERSION });
     assert.equal(req.url, 'https://events.pagerduty.com/v2/enqueue', 'the routing key moves into the body');
@@ -457,38 +485,114 @@ describe('PagerDuty', () => {
     });
 
     const baseline = { ...run1, notify: { open: plan1.open } };
-    // nothing moved: still open, nothing sent
-    const quiet = pagerDutyPlan(reportOf([]), baseline);
+    const night = (severity) => reportOf([], { targets: [{ target: 'example.com', score: 70, checks: [{ id: 'dmarc.policy', severity }] }, { target: 'example.org' }] });
+    // nothing moved, the finding still an error: still open, nothing sent
+    const quiet = pagerDutyPlan(night('error'), baseline);
     assert.deepEqual([quiet.triggers, quiet.resolves, quiet.open], [[], [], plan1.open]);
-    // fixed: the BETTER of the same finding resolves the key
-    const fixed = pagerDutyPlan(reportOf([change('BETTER', 'good', 'example.com', 'dmarc.policy', 'error → ok')]), baseline);
-    assert.deepEqual([fixed.triggers, fixed.resolves.map((e) => e.key), fixed.open], [[], [key], []]);
-    const [resolve] = pagerDutyRequests({ url: PAGERDUTY_URL }, reportOf([]), fixed, { tool: DS_TOOL, version: DS_VERSION });
+    // better than it paged at (back to warn, fixed, no longer reported): resolved
+    for (const fixed of [night('warn'), night('ok'), reportOf([])]) {
+      const plan = pagerDutyPlan(fixed, baseline);
+      assert.deepEqual([plan.triggers, plan.resolves.map((e) => e.key), plan.open], [[], [key], []]);
+    }
+    const [resolve] = pagerDutyRequests({ url: PAGERDUTY_URL }, reportOf([]), pagerDutyPlan(reportOf([]), baseline), { tool: DS_TOOL, version: DS_VERSION });
     assert.deepEqual(JSON.parse(resolve.body), { routing_key: ROUTING_KEY, event_action: 'resolve', dedup_key: key });
-    // triggered again (the same problem moved on): stays open with its first time
+    // triggered again (the same problem moved on): stays open with its first time and state
     const again = pagerDutyPlan({ ...reportOf([worse]), startedAt: '2026-09-29T03:00:00.000Z' }, baseline);
     assert.deepEqual([again.triggers.map((t) => t.key), again.resolves, again.open], [[key], [], plan1.open]);
   });
 
-  test('when a problem is over: its target gone, a good move, back after GONE, another bad move (its own key now), a renewed or vanished CT certificate', () => {
-    const open = (target, item, tag) => ({ key: dedupKey('health', target, item, tag), target, item, tag, since: null });
-    const r = (changes, extra) => reportOf(changes, extra);
-    assert.equal(problemOver(open('example.net', 'x', 'NEW'), r([])), true, 'no longer checked');
-    assert.equal(problemOver(open('example.com', 'x', 'NEW'), r([])), false, 'no change: still there');
-    assert.equal(problemOver(open('example.com', 'x', 'NEW'), r([change('GONE', 'good', 'example.com', 'x', 'gone')])), true);
-    assert.equal(problemOver(open('example.com', 'x', 'NEW'), r([change('GONE', 'quiet', 'example.com', 'x', 'gone', { counts: false })])), false, 'listed only: its lookup failed');
-    assert.equal(problemOver(open('example.com', 'x', 'NEW'), r([change('BETTER', 'good', 'example.com', 'y', 'other item')])), false);
-    assert.equal(problemOver(open('example.com', null, 'SCORE'), r([change('SCORE', 'good', 'example.com', null, '70 → 80')])), true);
-    assert.equal(problemOver(open('example.com', 'h.example.com', 'GONE'), r([change('NEW', 'info', 'example.com', 'h.example.com', 'now resolves')])), true);
-    assert.equal(problemOver(open('example.com', 'h.example.com', 'DANGLING'), r([change('CHANGED', 'info', 'example.com', 'h.example.com', 'moved')])), false);
-    assert.equal(problemOver(open('example.com', 'x', 'NEW'), r([change('WORSE', 'bad', 'example.com', 'x', 'warn → error')])), true, 'superseded by its WORSE');
-    // ct: a certificate renewed (superseded by a newer one for its names) ends EXPIRING / CA / REVOKED;
-    // an issuer gone from a complete read ends ISSUER
-    const ct = (certificates, extra = {}) => ({ ...reportOf([]), command: 'ct', targets: [{ target: 'example.com', complete: true, issuers: [{ name: 'Example CA' }], certificates, ...extra }] });
+  test('when a problem is over: the item\'s state in this run\'s report says so; a lookup that failed, a source or row not read never does', () => {
+    const open = (command, target, item, tag, state) => ({ key: dedupKey(command, target, item, tag), target, item, tag, since: null, ...(state === undefined ? {} : { state }) });
+    const run = (command, targets) => ({ ...reportOf([]), command, targets });
+    assert.equal(problemOver(open('health', 'example.net', 'x', 'NEW', 'warn'), reportOf([])), true, 'its target no longer checked');
+    // health: a finding below the severity it paged at, or no longer reported where its lookup answered
+    const h = (checks, extra = {}) => run('health', [{ target: 'example.com', score: 70, checks, ...extra }]);
+    const dmarc = open('health', 'example.com', 'dmarc.policy', 'WORSE', 'error');
+    assert.equal(problemOver(dmarc, h([{ id: 'dmarc.policy', severity: 'error' }])), false);
+    assert.equal(problemOver(dmarc, h([{ id: 'dmarc.policy', severity: 'warn' }])), true);
+    assert.equal(problemOver(dmarc, h([])), true, 'no longer reported');
+    assert.equal(problemOver(dmarc, h([{ id: 'dmarc.error', severity: 'warn' }])), false, 'its lookup failed: not known gone');
+    assert.equal(problemOver(dmarc, h([{ id: 'dmarc.error', severity: 'warn' }], { carried: [{ area: 'dmarc', from: null, checks: [{ id: 'dmarc.policy', severity: 'error' }] }] })), false, 'carried as last read');
+    assert.equal(problemOver({ ...dmarc, state: undefined }, h([{ id: 'dmarc.policy', severity: 'info' }])), false, 'without its state: over once fully good');
+    const lookup = open('health', 'example.com', 'dmarc.error', 'NEW', 'warn');
+    assert.equal(problemOver(lookup, h([{ id: 'dmarc.error', severity: 'warn' }])), false);
+    assert.equal(problemOver(lookup, h([])), true, 'the lookup answers again');
+    const score = open('health', 'example.com', null, 'SCORE', 70);
+    assert.equal(problemOver(score, h([])), false, 'still 70');
+    assert.equal(problemOver(score, run('health', [{ target: 'example.com', score: 75, checks: [] }])), true);
+    assert.equal(problemOver(score, run('health', [{ target: 'example.com', score: 90, checks: [{ id: 'mx.error', severity: 'warn' }] }])), false, 'a score read while a lookup failed');
+    // subdomains: the host's answer — a failed lookup proves nothing, a host an exact run no
+    // longer lists is out of its file, one a discovery run did not look up again is not known
+    const host = (over = {}) => ({ name: 'www.example.com', status: 'NOERROR', kind: 'cdn', provider: 'Cloudflare', providerId: 'cloudflare', hidesOrigin: true, dangling: false, ipv4: ['104.16.1.1'], ipv6: [], cnames: [], ...over });
+    const direct = { kind: 'direct', provider: null, providerId: null, hidesOrigin: false, ipv4: ['192.0.2.10'] };
+    const servfail = { status: 'SERVFAIL', kind: null, ipv4: [] };
+    const nx = { status: 'NXDOMAIN', kind: null, provider: null, hidesOrigin: false, ipv4: [] };
+    const s = (hosts, mode = 'exact') => run('subdomains', [{ target: 'example.com', mode, hosts }]);
+    const exposed = open('subdomains', 'example.com', 'www.example.com', 'EXPOSED');
+    assert.equal(problemOver(exposed, s([host(direct)])), false);
+    assert.equal(problemOver(exposed, s([host()])), true, 'behind its CDN again (a CHANGED)');
+    assert.equal(problemOver(exposed, s([host(servfail)])), false, 'a failed lookup');
+    assert.equal(problemOver(exposed, s([])), true, 'out of the exact names file');
+    assert.equal(problemOver(exposed, s([], 'discover')), false, 'not looked up again');
+    const failed = open('subdomains', 'example.com', 'www.example.com', 'FAILED');
+    assert.equal(problemOver(failed, s([host(servfail)])), false);
+    assert.equal(problemOver(failed, s([host(direct)])), true, 'answers again, whatever it says');
+    const dangling = open('subdomains', 'example.com', 'www.example.com', 'DANGLING');
+    assert.equal(problemOver(dangling, s([host({ ...nx, status: 'NOERROR', dangling: true, cnames: ['gone.example.net'] })])), false);
+    assert.equal(problemOver(dangling, s([host(servfail)])), false);
+    assert.equal(problemOver(dangling, s([host(nx)])), true, 'the alias removed');
+    const gone = open('subdomains', 'example.com', 'www.example.com', 'GONE');
+    assert.equal(problemOver(gone, s([host(nx)])), false);
+    assert.equal(problemOver(gone, s([host()])), true);
+    // drift: below the status (DRIFT_SEVERITY) or the name servers' match it paged at; a row
+    // that could not be checked or was skipped is not known, one out of the file is over
+    const d = (rows, preflight = { nsMatch: 'same' }) => run('drift', [{ target: 'example.com', preflight, rows }]);
+    const row = open('drift', 'example.com', 'mail.example.com|A', 'WORSE', 'differs');
+    assert.equal(problemOver(row, d([{ key: 'mail.example.com|A', status: 'differs' }])), false);
+    assert.equal(problemOver(row, d([{ key: 'mail.example.com|A', status: 'match' }])), true);
+    for (const status of ['error', 'skipped']) assert.equal(problemOver(row, d([{ key: 'mail.example.com|A', status }])), false, status);
+    assert.equal(problemOver(row, d([])), true, 'no longer in the file');
+    const occluded = open('drift', 'example.com', 'mail.example.com|A', 'WORSE', 'occluded');
+    assert.equal(problemOver(occluded, d([{ key: 'mail.example.com|A', status: 'occluded' }])), false, 'a move to info stays open until it moves back');
+    assert.equal(problemOver(occluded, d([{ key: 'mail.example.com|A', status: 'match' }])), true);
+    const rowFailed = open('drift', 'example.com', 'mail.example.com|A', 'FAILED', 'error');
+    assert.equal(problemOver(rowFailed, d([{ key: 'mail.example.com|A', status: 'error' }])), false);
+    assert.equal(problemOver(rowFailed, d([{ key: 'mail.example.com|A', status: 'differs' }])), true, 'checked again (a bad status pages on its own)');
+    const ns = open('drift', 'example.com', 'NS', 'WORSE', 'overlap');
+    assert.deepEqual(['disjoint', 'overlap', 'unknown', 'same'].map((m) => problemOver(ns, d([], { nsMatch: m }))), [false, false, false, true]);
+    // renew: a verdict better than the one it paged at; "could not be checked" is no verdict
+    const r = (verdict) => run('renew', [{ target: 'example.com', verdict, findings: [] }]);
+    const verdicts = ['ready', 'warnings', 'unknown', 'fail'];
+    assert.deepEqual(verdicts.map((v) => problemOver(open('renew', 'example.com', null, 'WORSE', 'warnings'), r(v))), [true, false, false, false]);
+    assert.deepEqual(verdicts.map((v) => problemOver(open('renew', 'example.com', null, 'WORSE', 'fail'), r(v))), [true, true, false, false]);
+    assert.deepEqual(verdicts.map((v) => problemOver(open('renew', 'example.com', null, 'FAILED', 'unknown'), r(v))), [true, true, false, true]);
+    // dane: an endpoint's status (DANE_SEVERITY) better than it paged at
+    const e = (endpoints) => run('dane', [{ target: 'example.com', endpoints }]);
+    const danger = open('dane', 'example.com', 'smtp|mail.example.com', 'WORSE', 'danger');
+    assert.deepEqual(['danger', 'pkix', 'safe', 'error'].map((status) => problemOver(danger, e([{ key: 'smtp|mail.example.com', status }]))), [false, true, true, false]);
+    assert.equal(problemOver(danger, e([])), true, 'no longer checked');
+    const mxFailed = run('dane', [{ target: 'example.com', endpoints: [], domains: [{ domain: 'example.com', error: 'SERVFAIL', nullMx: false }] }]);
+    assert.equal(problemOver(danger, mxFailed), false, 'gone with its MX lookup: not known');
+    // audit: a rule that passes (one not checked counts as it was last checked); a domain added
+    // that failed a rule, once no rule fails
+    const a = (rules) => run('audit', [{ target: 'example.com', rules }]);
+    const lock = open('audit', 'example.com', 'transferLock', 'WORSE');
+    assert.equal(problemOver(lock, a([{ id: 'transferLock', status: 'fail' }])), false);
+    assert.equal(problemOver(lock, a([{ id: 'transferLock', status: 'unknown', last: { status: 'fail', from: null } }])), false);
+    assert.equal(problemOver(lock, a([{ id: 'transferLock', status: 'unknown' }])), false, 'never checked: not known');
+    assert.equal(problemOver(lock, a([{ id: 'transferLock', status: 'pass' }])), true);
+    assert.equal(problemOver(lock, a([])), true, 'no longer a rule');
+    const added = open('audit', 'example.com', null, 'NEW');
+    assert.equal(problemOver(added, a([{ id: 'transferLock', status: 'pass' }, { id: 'spf', status: 'unknown', last: { status: 'fail', from: null } }])), false);
+    assert.equal(problemOver(added, a([{ id: 'transferLock', status: 'pass' }, { id: 'spf', status: 'pass' }])), true);
+    // ct: a certificate renewed (superseded by a newer one for its names) ends EXPIRING / CA /
+    // REVOKED; an issuer gone from a complete read ends ISSUER
+    const ct = (certificates, extra = {}) => run('ct', [{ target: 'example.com', complete: true, issuers: [{ name: 'Example CA' }], certificates, ...extra }]);
     const cert = { key: 'k'.repeat(32), target: 'example.com', item: 'aaaaaaaaaaaaaaaa', tag: 'EXPIRING', since: null };
     assert.equal(problemOver(cert, ct([{ id: 'aaaaaaaaaaaaaaaa', flags: ['superseded'] }])), true);
     assert.equal(problemOver(cert, ct([{ id: 'aaaaaaaaaaaaaaaa', flags: [] }])), false);
     assert.equal(problemOver(cert, ct([])), false, 'a certificate no longer listed is no fix');
+    assert.equal(problemOver({ ...cert, tag: 'CA' }, ct([{ id: 'aaaaaaaaaaaaaaaa', flags: ['expiring'] }])), false, 'another bad change of it ends nothing');
     const issuer = { ...cert, item: 'Odd CA', tag: 'ISSUER' };
     assert.equal(problemOver(issuer, ct([])), true);
     assert.equal(problemOver(issuer, ct([], { issuers: [{ name: 'Odd CA' }] })), false);
@@ -498,15 +602,17 @@ describe('PagerDuty', () => {
   test('at most 50 events a run, triggers first; resolves left out stay open (over) and go with the next run; the open keys are capped', () => {
     const open = Array.from({ length: 10 }, (_, i) => ({ key: dedupKey('health', 'example.com', `old-${i}`, 'NEW'), target: 'example.com', item: `old-${i}`, tag: 'NEW', since: null }));
     const fixes = open.map((e) => change('GONE', 'good', 'example.com', e.item, 'gone'));
-    const bad = Array.from({ length: 45 }, (_, i) => change('NEW', 'bad', 'example.com', `new-${i}`, 'new'));
-    const plan = pagerDutyPlan(reportOf([...bad, ...fixes]), { notify: { open } });
+    const bad = Array.from({ length: 45 }, (_, i) => change('NEW', 'bad', 'example.com', `new-${i}`, 'new', { after: 'error' }));
+    // the new findings stand, the old ones are gone
+    const checked = (changes) => reportOf(changes, { targets: [{ target: 'example.com', checks: bad.map((c) => ({ id: c.item, severity: 'error' })) }] });
+    const plan = pagerDutyPlan(checked([...bad, ...fixes]), { notify: { open } });
     assert.equal(PAGERDUTY_MAX_EVENTS, 50);
     assert.deepEqual([plan.triggers.length, plan.resolves.length, plan.cut], [45, 5, 0]);
     const deferred = plan.open.filter((e) => e.over);
     assert.deepEqual(deferred.map((e) => e.item), ['old-5', 'old-6', 'old-7', 'old-8', 'old-9']);
     assert.equal(plan.open.length, 5 + 45);
     // the next run sends the deferred resolves whatever it finds
-    const next = pagerDutyPlan(reportOf([]), { notify: { open: plan.open } });
+    const next = pagerDutyPlan(checked([]), { notify: { open: plan.open } });
     assert.deepEqual(next.resolves.map((e) => e.item), ['old-5', 'old-6', 'old-7', 'old-8', 'old-9']);
     assert.equal(next.open.length, 45);
     // a flood: the triggers past 50 are cut (said on stderr), never opened
@@ -514,16 +620,172 @@ describe('PagerDuty', () => {
     assert.deepEqual([flood.triggers.length, flood.cut, flood.open.length], [50, 20, 50]);
     // the open keys kept: the newest PAGERDUTY_MAX_OPEN
     const many = Array.from({ length: PAGERDUTY_MAX_OPEN + 20 }, (_, i) => ({ key: dedupKey('health', 'example.com', `k-${i}`, 'NEW'), target: 'example.com', item: `k-${i}`, tag: 'NEW', since: null }));
-    const capped = pagerDutyPlan(reportOf([]), { notify: { open: many } });
+    const capped = pagerDutyPlan(reportOf([], { targets: [{ target: 'example.com', checks: many.map((e) => ({ id: e.item, severity: 'warn' })) }] }), { notify: { open: many } });
     assert.equal(capped.open.length, PAGERDUTY_MAX_OPEN);
     assert.equal(capped.open[0].item, 'k-20');
   });
 
-  test('a baseline\'s open keys are checked: anything else in the list is dropped', () => {
+  test('the keys open after a run are what was delivered: a trigger not sent opens nothing, a resolve not sent leaves its key as it was', () => {
+    const key = (item, extra = {}) => ({ key: dedupKey('health', 'example.com', item, 'NEW'), target: 'example.com', item, tag: 'NEW', since: null, state: 'error', ...extra });
+    const baseline = { notify: { open: [key('kept'), key('fixed-1'), key('fixed-2', { over: true })] } };
+    const report = reportOf(['new-1', 'new-2'].map((id) => change('NEW', 'bad', 'example.com', id, 'new', { after: 'error' })),
+      { targets: [{ target: 'example.com', checks: ['kept', 'new-1', 'new-2'].map((id) => ({ id, severity: 'error' })) }] });
+    const plan = pagerDutyPlan(report, baseline);
+    assert.deepEqual(plan.resolves.map((e) => e.item), ['fixed-1', 'fixed-2']);
+    assert.deepEqual(plan.open, keysOpenAfter(plan), 'the plan\'s own: everything delivered');
+    assert.deepEqual(plan.open.map((e) => e.item), ['kept', 'new-1', 'new-2']);
+    const open = keysOpenAfter(plan, { triggered: new Set([plan.triggers[0].key]), resolved: new Set([plan.resolves[0].key]) });
+    assert.deepEqual(open.map((e) => [e.item, e.over === true, e.state]), [['kept', false, 'error'], ['fixed-2', true, 'error'], ['new-1', false, 'error']]);
+    assert.deepEqual(keysOpenAfter(plan, { triggered: new Set(), resolved: new Set() }).map((e) => e.item), ['kept', 'fixed-1', 'fixed-2']);
+  });
+
+  test('a baseline\'s open keys are checked: anything else in the list is dropped, a state that is not a short text or a number too', () => {
     const good = { key: 'a'.repeat(32), target: 'example.com', item: null, tag: 'SCORE', since: '2026-09-27T03:00:00.000Z' };
     assert.deepEqual(openKeysOf({ notify: { open: [good, { ...good }, { ...good, key: 'b'.repeat(32), over: true }, { ...good, key: 'xyz' }, { ...good, key: 'c'.repeat(32), tag: 'lower' },
       { ...good, key: 'd'.repeat(32), target: 5 }, { ...good, key: 'e'.repeat(32), item: 7 }, null, 'text'] } }), [good, { ...good, key: 'b'.repeat(32), over: true }]);
     for (const doc of [null, {}, { notify: null }, { notify: { open: 'x' } }, { notify: [] }]) assert.deepEqual(openKeysOf(doc), []);
+    assert.deepEqual(openKeysOf({ notify: { open: [{ ...good, state: 70 }, { ...good, key: 'f'.repeat(32), state: 'warn' }, { ...good, key: '1'.repeat(32), state: { x: 1 } },
+      { ...good, key: '2'.repeat(32), state: 'x'.repeat(65) }, { ...good, key: '3'.repeat(32), state: Infinity }] } }).map((e) => e.state),
+    [70, 'warn', undefined, undefined, undefined]);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* PagerDuty over several nights (the diffs as the runner makes them)       */
+/* ------------------------------------------------------------------------ */
+
+describe('PagerDuty over several nights', () => {
+  /**
+   * Night after night of `command`, each report compared with the one before as the runner does
+   * (diffReports, what a night could not read carried: carry.mjs), each with its PagerDuty plan;
+   * the keys a night leaves open go into its report, the next night's baseline. Returns per night
+   * the changes (TAG/tone), the triggers, the resolves and the keys open (TAG item).
+   */
+  async function nights(command, perNight) {
+    const t = await setupStrings();
+    const out = [];
+    let prev = null;
+    for (const [i, raw] of perNight.entries()) {
+      const startedAt = `2026-10-0${i + 1}T03:00:00.000Z`;
+      const targets = raw.map((x) => {
+        const p = prev && prev.targets.find((y) => y.target === x.target);
+        if (command === 'health') {
+          const carried = carryHealth(x, p || null, { prevAt: prev ? prev.startedAt : null });
+          return carried.length ? { ...x, carried } : x;
+        }
+        if (command === 'subdomains') return { ...x, hosts: carryHosts(x.hosts, p || null, { prevAt: prev ? prev.startedAt : null }) };
+        return x;
+      });
+      const report = { tool: DS_TOOL, version: DS_VERSION, command, startedAt, finishedAt: startedAt, options: {}, targets };
+      const night = { changes: [], triggers: [], resolves: [], open: [] };
+      if (prev) {
+        report.baseline = { file: `${command}.json`, missing: false, finishedAt: prev.finishedAt };
+        report.changes = diffReports(command, prev, report, { t }).map((c) => ({
+          tag: c.tag, tone: c.tone, counts: c.counts, target: c.target, item: c.item, kind: c.kind, before: c.before, after: c.after, text: changeText(c)
+        }));
+        const plan = pagerDutyPlan(report, prev);
+        if (plan.open.length) report.notify = { open: plan.open };
+        const named = (e) => `${e.tag}${e.item === null ? '' : ` ${e.item}`}`;
+        Object.assign(night, {
+          changes: report.changes.map((c) => `${c.tag}/${c.counts ? c.tone : 'listed'}`),
+          triggers: plan.triggers.map((x) => named(x.change)), resolves: plan.resolves.map(named), open: plan.open.map(named)
+        });
+      }
+      out.push(night);
+      prev = report;
+    }
+    return out;
+  }
+
+  const answer = (over = {}) => ({ name: 'www.example.com', status: 'NOERROR', kind: 'cdn', provider: 'Cloudflare', providerId: 'cloudflare', hidesOrigin: true, dangling: false, ipv4: ['104.16.1.1'], ipv6: [], cnames: [], ...over });
+  const PROXIED = answer();
+  const DIRECT = answer({ kind: 'direct', provider: null, providerId: null, hidesOrigin: false, ipv4: ['192.0.2.10'] });
+  const SERVFAIL = { name: 'www.example.com', status: 'SERVFAIL', kind: null, provider: null, hidesOrigin: false, dangling: false, ipv4: [], ipv6: [], cnames: [] };
+  const sub = (host) => [{ target: 'example.com', mode: 'exact', hosts: [host] }];
+
+  test('subdomains: an origin exposed, then back behind its CDN (a CHANGED, not a good change) is resolved', async () => {
+    const [, exposed, back] = await nights('subdomains', [sub(PROXIED), sub(DIRECT), sub(PROXIED)]);
+    assert.deepEqual(exposed, { changes: ['EXPOSED/bad'], triggers: ['EXPOSED www.example.com'], resolves: [], open: ['EXPOSED www.example.com'] });
+    assert.deepEqual(back, { changes: ['CHANGED/info'], triggers: [], resolves: ['EXPOSED www.example.com'], open: [] });
+  });
+
+  test('subdomains: a lookup that fails one night ends nothing — the origin still exposed after it stays paged until it is behind its CDN', async () => {
+    const [, exposed, failed, answers, fixed] = await nights('subdomains', [sub(PROXIED), sub(DIRECT), sub(SERVFAIL), sub(DIRECT), sub(PROXIED)]);
+    assert.deepEqual(exposed.open, ['EXPOSED www.example.com']);
+    assert.deepEqual(failed, { changes: ['FAILED/bad'], triggers: ['FAILED www.example.com'], resolves: [], open: ['EXPOSED www.example.com', 'FAILED www.example.com'] });
+    assert.deepEqual(answers, { changes: ['RECOVERED/good'], triggers: [], resolves: ['FAILED www.example.com'], open: ['EXPOSED www.example.com'] });
+    assert.deepEqual(fixed, { changes: ['CHANGED/info'], triggers: [], resolves: ['EXPOSED www.example.com'], open: [] });
+  });
+
+  test('subdomains: a dangling alias through a failed lookup, then removed (now resolving: an info change) — both resolved', async () => {
+    const DANGLING = answer({ kind: null, provider: null, providerId: null, hidesOrigin: false, dangling: true, ipv4: [], cnames: ['gone.example.net'] });
+    const [, dangling, failed, fixed] = await nights('subdomains', [sub(PROXIED), sub(DANGLING), sub(SERVFAIL), sub(PROXIED)]);
+    assert.deepEqual(dangling.triggers, ['DANGLING www.example.com']);
+    assert.deepEqual([failed.triggers, failed.resolves, failed.open], [['FAILED www.example.com'], [], ['DANGLING www.example.com', 'FAILED www.example.com']]);
+    assert.deepEqual(fixed, { changes: ['NEW/info'], triggers: [], resolves: ['DANGLING www.example.com', 'FAILED www.example.com'], open: [] });
+  });
+
+  test('audit: a domain added that fails a rule pages once; it is resolved the night every rule passes', async () => {
+    const domain = (target, lock) => ({ target, rules: [{ id: 'transferLock', required: 'true', status: lock }, { id: 'expiryDays', required: '>= 30', status: 'pass' }] });
+    const [, added, still, fixed] = await nights('audit', [
+      [domain('example.com', 'pass')],
+      [domain('example.com', 'pass'), domain('example.org', 'fail')],
+      [domain('example.com', 'pass'), domain('example.org', 'fail')],
+      [domain('example.com', 'pass'), domain('example.org', 'pass')]
+    ]);
+    assert.deepEqual(added, { changes: ['NEW/bad'], triggers: ['NEW'], resolves: [], open: ['NEW'] });
+    assert.deepEqual(still, { changes: [], triggers: [], resolves: [], open: ['NEW'] });
+    assert.deepEqual(fixed, { changes: ['BETTER/good'], triggers: [], resolves: ['NEW'], open: [] });
+  });
+
+  test('audit: a rule that fails stays paged through a night it could not be checked (its last status carried), then passes', async () => {
+    const domain = (lock, last) => [{ target: 'example.com', rules: [{ id: 'transferLock', required: 'true', status: lock, ...(last ? { last } : {}) }] }];
+    const [, failing, unchecked, fixed] = await nights('audit', [domain('pass'), domain('fail'), domain('unknown', { status: 'fail', evidence: '', from: '2026-10-02T03:00:00.000Z' }), domain('pass')]);
+    assert.deepEqual(failing.triggers, ['WORSE transferLock']);
+    assert.deepEqual(unchecked, { changes: ['FAILED/listed'], triggers: [], resolves: [], open: ['WORSE transferLock'] });
+    assert.deepEqual(fixed, { changes: ['BETTER/good'], triggers: [], resolves: ['WORSE transferLock'], open: [] });
+  });
+
+  test('renew: a name that could not be checked, then checked again at "warnings" (an info change) — its FAILED is resolved', async () => {
+    const name = (verdict) => [{ target: 'www.example.com', verdict, findings: [] }];
+    const [, failed, again] = await nights('renew', [name('warnings'), name('unknown'), name('warnings')]);
+    assert.deepEqual(failed, { changes: ['FAILED/bad'], triggers: ['FAILED'], resolves: [], open: ['FAILED'] });
+    assert.deepEqual(again, { changes: ['RECOVERED/info'], triggers: [], resolves: ['FAILED'], open: [] });
+  });
+
+  test('renew: a verdict worse stays paged while it stands and through a night it could not be checked, until it is back', async () => {
+    const name = (verdict) => [{ target: 'www.example.com', verdict, findings: [] }];
+    const [, worse, same, unchecked, back] = await nights('renew', [name('ready'), name('warnings'), name('warnings'), name('unknown'), name('ready')]);
+    assert.deepEqual(worse.open, ['WORSE']);
+    assert.deepEqual([same.resolves, same.open], [[], ['WORSE']]);
+    assert.deepEqual([unchecked.triggers, unchecked.resolves, unchecked.open], [['FAILED'], [], ['WORSE', 'FAILED']]);
+    assert.deepEqual([back.changes, back.resolves, back.open], [['RECOVERED/good'], ['WORSE', 'FAILED'], []]);
+  });
+
+  test('health: a finding worse stays paged through a night its lookup failed, and is resolved when it is back where it was', async () => {
+    const domain = (checks, score = 80) => [{ target: 'example.com', score, checks }];
+    const [, worse, failed, back] = await nights('health', [
+      domain([{ id: 'dmarc.policy', severity: 'warn' }]),
+      domain([{ id: 'dmarc.policy', severity: 'error' }]),
+      domain([{ id: 'dmarc.error', severity: 'warn' }]),
+      domain([{ id: 'dmarc.policy', severity: 'warn' }])
+    ]);
+    assert.deepEqual(worse.triggers, ['WORSE dmarc.policy']);
+    assert.deepEqual([failed.triggers, failed.resolves, failed.open], [['NEW dmarc.error'], [], ['WORSE dmarc.policy', 'NEW dmarc.error']]);
+    assert.deepEqual([back.resolves, back.open], [['WORSE dmarc.policy', 'NEW dmarc.error'], []]);
+  });
+
+  test('drift: a record set moved to an info status stays paged on a night with no change, until it matches again', async () => {
+    const zone = (status, nsMatch = 'same') => [{ target: 'example.com', preflight: { nsMatch }, rows: [{ key: 'mail.example.com|A', name: 'mail.example.com', type: 'A', status, reasons: [] }] }];
+    const [, moved, same, back] = await nights('drift', [zone('match'), zone('occluded'), zone('occluded'), zone('match')]);
+    assert.deepEqual(moved.triggers, ['WORSE mail.example.com|A']);
+    assert.deepEqual([same.resolves, same.open], [[], ['WORSE mail.example.com|A']]);
+    assert.deepEqual(back.resolves, ['WORSE mail.example.com|A']);
+    const [, overlap, disjoint, better, fixed] = await nights('drift', [zone('match'), zone('match', 'overlap'), zone('match', 'disjoint'), zone('match', 'overlap'), zone('match')]);
+    assert.deepEqual(overlap.triggers, ['WORSE NS']);
+    assert.deepEqual([disjoint.triggers, disjoint.open], [['WORSE NS'], ['WORSE NS']]);
+    assert.deepEqual([better.changes, better.resolves, better.open], [['BETTER/good'], [], ['WORSE NS']], 'better, but not back where it paged');
+    assert.deepEqual(fixed.resolves, ['WORSE NS']);
   });
 });
 
@@ -592,7 +854,7 @@ describe('delivery', () => {
     assert.deepEqual(sent.results.map((r) => [r.route.format, r.total, r.sent, r.carries, r.problem]), [
       ['slack', 1, 1, true, null], ['json', 1, 1, true, null], ['pagerduty', 1, 0, true, 'HTTP 500 Bad: error 500']
     ]);
-    assert.equal(sent.open.length, 1, 'the planned keys: the report is held back when a PagerDuty event failed');
+    assert.deepEqual(sent.open, [], 'a trigger that was not delivered opens no key');
     // nothing that counts: only --notify-always posts, on the --notify route
     const none = reportOf([CHANGES[2]]);
     const quiet = webhook();
@@ -601,6 +863,47 @@ describe('delivery', () => {
     const r2 = await sendNotifications(none, routes, { always: true, fetchImpl: quiet.fetch, tool: DS_TOOL, version: DS_VERSION });
     assert.deepEqual([quiet.requests.length, r2.results.map((r) => [r.total, r.carries])], [1, [[1, false], [0, false], [0, false]]]);
     assert.match(JSON.parse(quiet.requests[0].body).text, /^\*DomainScope health: no changes since /);
+  });
+
+  test('sendNotifications: the PagerDuty keys open as delivered — a trigger taken by any PagerDuty URL opens its key, a resolve closes it once every one took it', async () => {
+    const key = (item) => ({ key: dedupKey('health', 'example.com', item, 'NEW'), target: 'example.com', item, tag: 'NEW', since: null, state: 'error' });
+    const baseline = { notify: { open: [key('fixed')] } };
+    const report = reportOf(['new-1', 'new-2'].map((id) => change('NEW', 'bad', 'example.com', id, 'new', { after: 'error' })),
+      { targets: [{ target: 'example.com', checks: ['new-1', 'new-2'].map((id) => ({ id, severity: 'error' })) }] });
+    const EU_URL = 'https://events.eu.pagerduty.com/v2/enqueue?routing_key=' + ROUTING_KEY;
+    const routes = [PAGERDUTY_URL, EU_URL].map((url) => ({ url, format: 'pagerduty', bad: true, source: NOTIFY_ENV.bad }));
+    // the US service takes every event; the EU one the first trigger, then fails
+    const hook = webhook([202, 202, 202, 202, 500, 500]);
+    const sent = await sendNotifications(report, routes, { baseline, fetchImpl: hook.fetch, timing: FAST, tool: DS_TOOL, version: DS_VERSION });
+    assert.deepEqual(sent.results.map((r) => [r.sent, r.total, r.triggered, r.resolved]), [[3, 3, 2, 1], [1, 3, 1, 0]]);
+    assert.deepEqual(sent.open.map((e) => e.item), ['fixed', 'new-1', 'new-2'], 'the EU service still has "fixed" open');
+    // every event delivered everywhere: the plan's keys
+    const all = await sendNotifications(report, routes, { baseline, fetchImpl: webhook().fetch, timing: FAST, tool: DS_TOOL, version: DS_VERSION });
+    assert.deepEqual(all.open.map((e) => e.item), ['new-1', 'new-2']);
+  });
+
+  test('an answer that echoes a secret is redacted before it is cut: no piece of it at the 200-character cut, nor where the 512 bytes read end', async () => {
+    const sleep = async () => {};
+    for (const [url, secret, extra] of [[PAGERDUTY_URL, ROUTING_KEY, [ROUTING_KEY]], [HOOK_URL, TOKEN, []], [NTFY_URL, 'tk_' + 'examplevalue0123', ['tk_' + 'examplevalue0123']]]) {
+      const bodies = [
+        ...[150, 180, 190, 195, 199].map((n) => `${'e'.repeat(n)} ${secret} tail`),
+        JSON.stringify({ message: `${'m'.repeat(185)} ${secret}` }),
+        // the 512 bytes read end inside the secret (at byte 500 + 12): the spaces collapse, what is left is short
+        `${' '.repeat(498)}x ${secret}${'z'.repeat(600)}`,
+        `${'ü'.repeat(150)}${' '.repeat(198)}x ${secret}${'z'.repeat(600)}`
+      ];
+      for (const body of bodies) {
+        const fetchImpl = async () => new Response(body, { status: 400, statusText: 'Bad Request' });
+        const { problem } = await deliver({ url, headers: {}, body: '{}', secrets: extra }, url, { fetchImpl, sleep });
+        assert.ok(problem.startsWith('HTTP 400 Bad Request'), problem);
+        for (let n = 4; n <= secret.length; n += 1) assert.ok(!problem.includes(secret.slice(0, n)), `${problem.slice(-30)}: ${n} characters of the secret`);
+      }
+    }
+    // the reason in a status line too
+    const fetchImpl = async () => new Response('x', { status: 400, statusText: `Bad key ${ROUTING_KEY}` });
+    assert.deepEqual(await deliver({ url: PAGERDUTY_URL, headers: {}, body: '{}', secrets: [ROUTING_KEY] }, PAGERDUTY_URL, { fetchImpl, sleep }), { problem: 'HTTP 400 Bad key ***: x' });
+    // responseDetail on its own: the redaction given goes before the cut
+    assert.equal(responseDetail(`${'e'.repeat(195)} ${TOKEN}`, (s) => s.split(TOKEN).join('***')), `${'e'.repeat(195)} ***`);
   });
 });
 
@@ -633,7 +936,7 @@ describe('runs of the runner (main)', () => {
       assert.equal(bad.run, 'https://github.com/example/nightly/actions/runs/42');
       assert.match(second.err, /ds: notification sent \(slack, hooks\.slack\.com\)\nds: notification sent \(pagerduty, events\.pagerduty\.com, --notify-bad\): 1 triggered, 0 resolved\nds: notification sent \(json, hooks\.example\.com, --notify-bad\)\nds: JSON report written to /);
       const doc = JSON.parse(readFileSync(json, 'utf8'));
-      assert.deepEqual(doc.notify, { open: [{ key: '76ba01e87c44289e10e6ce396ed86f09', target: 'example.com', item: 'mail.example.com|A', tag: 'WORSE', since: NOW.toISOString() }] });
+      assert.deepEqual(doc.notify, { open: [{ key: '76ba01e87c44289e10e6ce396ed86f09', target: 'example.com', item: 'mail.example.com|A', tag: 'WORSE', since: NOW.toISOString(), state: 'differs' }] });
 
       // the third night mail is back: the chat says so, PagerDuty resolves the incident
       const third = await runDs(argv, { table: Object.assign(movedZone(), { 'mail.example.com': zoneTable()['mail.example.com'] }), env });
@@ -709,6 +1012,41 @@ describe('runs of the runner (main)', () => {
     }
   });
 
+  test('a baseline kept because the chat failed still notes what PagerDuty got: the night the problem is fixed resolves it', async () => {
+    const dir = tmp();
+    try {
+      const json = join(dir, 'drift.json');
+      const argv = ['drift', CF_EXPORT, '--baseline', json, '--json', json, '--notify', HOOK_URL, '--notify-bad', PAGERDUTY_URL, '--fail-on-notify-error'];
+      await runDs(argv);
+      const first = JSON.parse(readFileSync(json, 'utf8'));
+      assert.equal(first.notify, undefined);
+      // night 2: mail's address is wrong (WORSE, bad); the chat answers 503 twice, PagerDuty takes the trigger
+      const second = await runDs(argv, { table: movedZone(), hook: webhook([503, 503, 202]) });
+      assert.equal(second.code, EXIT.NOTIFY, second.err);
+      assert.match(second.err, /ds: error: notification failed \(json, hooks\.example\.com\): HTTP 503 Bad: error 503\n/);
+      assert.match(second.err, /ds: notification sent \(pagerduty, events\.pagerduty\.com, --notify-bad\): 1 triggered, 0 resolved\n/);
+      assert.match(second.err, /ds: kept the previous baseline in .*drift\.json \(this report is not written there; the PagerDuty incidents still open are noted in it\): the 2 changes will be reported again on the next run/);
+      const kept = JSON.parse(readFileSync(json, 'utf8'));
+      const incident = { key: '76ba01e87c44289e10e6ce396ed86f09', target: 'example.com', item: 'mail.example.com|A', tag: 'WORSE', since: NOW.toISOString(), state: 'differs' };
+      assert.deepEqual(kept, { ...first, notify: { open: [incident] } }, 'the previous report, with the incident opened');
+      assert.deepEqual(readdirSync(dir), ['drift.json'], 'no temporary file left');
+      // night 3: mail is fixed (www's move still to report): the chat gets it, PagerDuty the resolve
+      const third = await runDs(argv, { table: Object.assign(movedZone(), { 'mail.example.com': zoneTable()['mail.example.com'] }) });
+      assert.equal(third.code, EXIT.OK, third.err);
+      assert.deepEqual(third.hook.requests.map((r) => (r.url === HOOK_URL ? 'chat' : JSON.parse(r.body).event_action)), ['chat', 'resolve']);
+      assert.equal(JSON.parse(third.hook.requests[1].body).dedup_key, incident.key);
+      assert.equal(JSON.parse(readFileSync(json, 'utf8')).notify, undefined, 'nothing open any more');
+      // a night PagerDuty itself fails on its one event: nothing opened, the file as it was
+      const before = readFileSync(json);
+      const down = await runDs(argv, { table: movedZone(), hook: webhook([200, 500, 500]) });
+      assert.equal(down.code, EXIT.NOTIFY, down.err);
+      assert.match(down.err, /\(this report is not written there\): the 1 change will be reported again on the next run/);
+      assert.deepEqual(readFileSync(json), before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('exit codes: 3, then 5, then 4', async () => {
     const dir = tmp();
     try {
@@ -747,17 +1085,18 @@ describe('runs of the runner (main)', () => {
       assert.match(slow.err, /ds: error: notification failed \(json, hooks\.example\.com\): timed out/);
       assert.equal(slow.hook.requests.length, 2);
 
-      // Ctrl-C while the message is posted: exit 130, the report not written
+      // Ctrl-C while the message is posted: exit 130, nothing written (the Markdown neither)
       const out = join(dir, 'stopped.json');
+      const md = join(dir, 'stopped.md');
       const controller = new AbortController();
       const stop = webhook([(url, init) => {
         setTimeout(() => controller.abort(), 5);
         return hang(url, init);
       }]);
-      const stopped = await runDs(['drift', CF_EXPORT, '--baseline', json, '--json', out, '--notify', HOOK_URL], { table: movedZone(), hook: stop, signal: controller.signal });
+      const stopped = await runDs(['drift', CF_EXPORT, '--baseline', json, '--json', out, '--md', md, '--notify', HOOK_URL], { table: movedZone(), hook: stop, signal: controller.signal });
       assert.equal(stopped.code, EXIT.INTERRUPTED);
-      assert.match(stopped.err, /ds: error: notification \(json, hooks\.example\.com\) interrupted\nds: interrupted: the JSON report is not written/);
-      assert.ok(!existsSync(out));
+      assert.match(stopped.err, /ds: error: notification \(json, hooks\.example\.com\) interrupted\nds: interrupted: nothing written\n$/);
+      assert.ok(!existsSync(out) && !existsSync(md));
 
       // --notify on the command line without --baseline has nothing to send: a warning
       const lone = await runDs(['drift', CF_EXPORT, '--notify', HOOK_URL, '--json', join(dir, 'lone.json')]);

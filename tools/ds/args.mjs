@@ -705,9 +705,11 @@ notifications: a webhook URL works as a password (whoever has it can post), so i
   template reads Actions secrets); with none set, the notify options change nothing.
   ${NOTIFY_ENV.ntfyToken} goes to ntfy as a bearer token. 10 s timeout, one retry, no
   redirects. When the --json file is also the baseline and a message with changes was not
-  delivered, the file keeps the previous report, so the next run reports them again.
-  PagerDuty: at most ${PAGERDUTY_MAX_EVENTS} events a run; the report keeps the keys still open
-  (notify.open), and a later run resolves each once its problem is over.
+  delivered, the file keeps the previous report (with the PagerDuty incidents still open), so
+  the next run reports them again. PagerDuty: at most ${PAGERDUTY_MAX_EVENTS} events a run; the report keeps
+  the incidents still open (notify.open), and a later run resolves each once its check shows
+  the problem over (a lookup that failed proves nothing). Severity critical for registration,
+  name server, DNSSEC and trust problems, error for the rest.
 
 exit codes: 0 done, 1 the run failed (an unexpected error, printed), 2 usage error (report
   files that cannot be written or that are one of the run's input files, and a baseline that

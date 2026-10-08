@@ -1013,3 +1013,16 @@ test('topologyTokens: what targets.txt writes for the CLI', () => {
     ['10.0.0.22', []]
   ]);
 });
+
+test('a large JSON inventory (a Terraform output map of 20,000 servers) parses in linear time, each warning on its own line', () => {
+  const ip = (i) => `10.${Math.floor(i / 65536) % 256}.${Math.floor(i / 256) % 256}.${i % 256}`;
+  const value = {};
+  for (let i = 0; i < 20000; i += 1) value[`web-${i}`] = i === 15000 ? `${ip(i)}:99999` : ip(i);
+  const json = JSON.stringify({ servers: { value, type: 'map', sensitive: false } }, null, 2);
+  const t0 = performance.now();
+  const r = parseInventory(json);
+  const ms = performance.now() - t0;
+  assert.equal(r.servers.length, 19999);
+  assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.detail]), [[4 + 15000, 'INVALID_IP', `${ip(15000)}:99999`]]);
+  assert.ok(ms < 1000, `${Math.round(ms)} ms`);
+});

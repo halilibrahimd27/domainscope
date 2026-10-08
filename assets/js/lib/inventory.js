@@ -369,6 +369,7 @@ function createCollector(text, lines) {
   /** @type {Map<string, { hosts: Set<string>, children: Set<string> }>} */
   const groupDefs = new Map();
   let lineStarts = null;
+  let from = 0;
 
   const lineText = (n) => (n >= 1 && n <= lines.length ? lines[n - 1].trim().slice(0, 200) : '');
 
@@ -384,11 +385,13 @@ function createCollector(text, lines) {
       warnings.push(w);
     },
     lineText,
-    /** Approximate 1-based line of the first occurrence of `needle`. */
+    /** Approximate 1-based line of `needle`, searched from the last hit (records come in order: a parse stays linear), else from the top. */
     lineOf(needle) {
       if (!needle) return 1;
-      const idx = text.indexOf(needle);
+      let idx = text.indexOf(needle, from);
+      if (idx === -1) idx = text.indexOf(needle);
       if (idx === -1) return 1;
+      from = idx;
       if (!lineStarts) {
         lineStarts = [0];
         for (let i = 0; i < text.length; i += 1) if (text[i] === '\n') lineStarts.push(i + 1);

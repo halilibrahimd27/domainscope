@@ -18,9 +18,12 @@ serial, and the order of the move.
 
 Python 3.8+, standard library only, single file - copy it anywhere.
 
+With --axfr ZONE it tries a zone transfer (AXFR, over TCP) at every name server of the zone
+instead, and says whether anyone can download the whole zone (the records are only counted).
+
 The module is importable: parse_zone(), build_query(), parse_message(), query_dns(),
 parse_nameserver(), check_nameserver(), run_parity(), render_summary(), report_to_dict(),
-render_csv() and main() are the public API.
+render_csv(), try_axfr(), run_axfr(), render_axfr(), axfr_to_dict() and main() are the public API.
 """
 
 from __future__ import annotations
@@ -814,11 +817,12 @@ def _encode_name(name: str) -> bytes:
     return out + b'\x00'
 
 
-def build_query(name: str, rtype: str, msg_id: int, edns: bool = True) -> bytes:
+def build_query(name: str, rtype: str, msg_id: int, edns: bool = True, rd: bool = False) -> bytes:
     """A query for ``name`` / ``rtype`` with RD off (an authoritative server's own data is
-    wanted) and, by default, an EDNS(0) OPT record offering :data:`UDP_PAYLOAD` bytes."""
+    wanted; ``rd`` turns it on for a recursive resolver) and, by default, an EDNS(0) OPT record
+    offering :data:`UDP_PAYLOAD` bytes."""
     code = TYPE_CODES.get(rtype) or int(rtype[4:])
-    header = struct.pack('!HHHHHH', msg_id & 0xffff, 0, 1, 0, 0, 1 if edns else 0)
+    header = struct.pack('!HHHHHH', msg_id & 0xffff, 0x0100 if rd else 0, 1, 0, 0, 1 if edns else 0)
     question = _encode_name(name) + struct.pack('!HH', code, 1)
     opt = b'\x00' + struct.pack('!HHIH', 41, UDP_PAYLOAD, 0, 0) if edns else b''
     return header + question + opt
@@ -982,12 +986,12 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes:
 
 
 def query_dns(server: str, port: int, name: str, rtype: str, timeout: float = DEFAULT_TIMEOUT,
-              tcp: bool = False) -> Message:
+              tcp: bool = False, rd: bool = False) -> Message:
     """Ask ``server`` (an IP address) for ``name`` / ``rtype``: over UDP (:data:`TRIES`
     attempts), then over TCP when the answer is truncated (or only TCP with ``tcp``).
     Raises DnsError."""
     msg_id = random.randint(0, 0xffff)
-    query = build_query(name, rtype, msg_id)
+    query = build_query(name, rtype, msg_id, rd=rd)
     family = socket.AF_INET6 if ':' in server else socket.AF_INET
     want = (canonical_name(name), TYPE_CODES.get(rtype) or int(rtype[4:]))
     if not tcp:
@@ -1718,6 +1722,248 @@ def render_csv(report: ParityReport, lineterminator: str = '\r\n') -> str:
 
 
 # ---------------------------------------------------------------------------------------
+# Zone transfers (--axfr)
+# ---------------------------------------------------------------------------------------
+
+AXFR_OPEN = 'OPEN'      # the server sent the zone: anyone can download every record of it
+AXFR_DENIED = 'DENIED'  # it refused (REFUSED, NOTAUTH, NOTIMP ...), sent no zone or closed the connection
+AXFR_ERROR = 'ERROR'    # no answer: no TCP connection, a timeout, a name that does not resolve
+AXFR_STATUSES = (AXFR_OPEN, AXFR_DENIED, AXFR_ERROR)
+AXFR_TYPE = 252
+RESOLV_CONF = '/etc/resolv.conf'
+
+
+@dataclass
+class AxfrResult:
+    ns: str                   # the name server as given or found (a host name, or an address)
+    address: str              # the address asked ('' when the host name does not resolve)
+    port: int
+    status: str = AXFR_ERROR
+    rcode: Optional[str] = None
+    records: int = 0          # records received (only counted, never kept)
+    serial: Optional[int] = None
+    complete: bool = False    # the closing SOA arrived
+    detail: str = ''
+
+
+def axfr_query(zone: str, msg_id: int) -> bytes:
+    """An AXFR question for ``zone`` (RFC 5936), without EDNS."""
+    header = struct.pack('!HHHHHH', msg_id & 0xffff, 0, 1, 0, 0, 0)
+    return header + _encode_name(zone) + struct.pack('!HH', AXFR_TYPE, 1)
+
+
+def try_axfr(address: str, port: int, zone: str, timeout: float = DEFAULT_TIMEOUT,
+             max_bytes: int = MAX_ZONE_BYTES) -> AxfrResult:
+    """Ask ``address`` for a transfer of ``zone`` over TCP and read it up to the closing SOA, a
+    read that times out, or ``max_bytes``. The records are only counted (and the first SOA's
+    serial read): nothing of the zone is kept or printed."""
+    zone = canonical_name(zone)
+    result = AxfrResult(address, address, port)
+    msg_id = random.randint(0, 0xffff)
+    try:
+        sock = socket.create_connection((address, port), timeout=timeout)
+    except socket.timeout:
+        result.detail = 'no TCP connection in %gs' % timeout
+        return result
+    except OSError as exc:
+        result.detail = 'no TCP connection: %s' % (exc.strerror or exc)
+        return result
+    received = 0
+    soas = 0
+    messages = 0
+    try:
+        sock.settimeout(timeout)
+        query = axfr_query(zone, msg_id)
+        sock.sendall(struct.pack('!H', len(query)) + query)
+        while soas < 2 and received < max_bytes:
+            try:
+                size = struct.unpack('!H', _recv_exact(sock, 2))[0]
+                reply = parse_message(_recv_exact(sock, size))
+            except socket.timeout:
+                result.detail = ('no more data in %gs: the transfer stopped before the closing SOA' % timeout
+                                 if result.records else 'no answer in %gs' % timeout)
+                break
+            except DnsError as exc:
+                if exc.kind == 'network' and not messages:
+                    result.status, result.detail = AXFR_DENIED, 'the server closed the connection without an answer'
+                elif result.records:
+                    result.detail = 'the connection ended before the closing SOA'
+                else:
+                    result.detail = str(exc)
+                break
+            messages += 1
+            received += size + 2
+            if reply.id != msg_id:
+                result.detail = 'an answer to another question'
+                break
+            result.rcode = reply.rcode
+            if reply.rcode != 'NOERROR':
+                result.status, result.detail = AXFR_DENIED, 'the server refuses zone transfers (%s)' % reply.rcode
+                break
+            if not result.records and (not reply.answers or reply.answers[0].rtype != 'SOA'
+                                       or canonical_name(reply.answers[0].name) != zone):
+                result.status, result.detail = AXFR_DENIED, 'no zone in the answer'
+                break
+            for rr in reply.answers:
+                result.records += 1
+                if rr.rtype == 'SOA' and canonical_name(rr.name) == zone:
+                    soas += 1
+                    if result.serial is None:
+                        result.serial = rr.key[0]
+                    if soas == 2:
+                        break
+    except OSError as exc:
+        if not result.records:
+            result.detail = exc.strerror or str(exc)
+    finally:
+        sock.close()
+    if result.records:
+        result.status = AXFR_OPEN
+        result.complete = soas >= 2
+        if result.complete:
+            result.detail = ''
+        elif received >= max_bytes:
+            result.detail = 'stopped after %d MB' % (max_bytes // (1024 * 1024))
+    return result
+
+
+def system_resolvers(path: str = RESOLV_CONF) -> List[str]:
+    """The ``nameserver`` addresses of resolv.conf, in order ([] without the file: Windows)."""
+    found = []  # type: List[str]
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as handle:
+            for line in handle:
+                parts = line.split('#', 1)[0].split()
+                if len(parts) >= 2 and parts[0] == 'nameserver':
+                    try:
+                        found.append(str(ipaddress.ip_address(parts[1].split('%', 1)[0])))
+                    except ValueError:
+                        continue
+    except OSError:
+        return []
+    return found
+
+
+def zone_nameservers(zone: str, resolvers: Sequence[NameServer], timeout: float = DEFAULT_TIMEOUT) -> List[str]:
+    """The NS host names of ``zone`` (sorted), from the first recursive resolver that answers.
+    Raises UsageError when none does, or when the zone has no NS records."""
+    zone = canonical_name(zone)
+    problems = []  # type: List[str]
+    for resolver in resolvers:
+        try:
+            reply = query_dns(resolver.address, resolver.port, zone, 'NS', timeout, rd=True)
+        except DnsError as exc:
+            problems.append('%s: %s' % (resolver.label, exc))
+            continue
+        hosts = sorted({canonical_name(rr.key) for rr in _own(reply.answers, zone, 'NS')})
+        if hosts:
+            return hosts
+        problems.append('%s: no NS records for %s (%s)' % (resolver.label, zone, reply.rcode))
+    raise UsageError('cannot find the name servers of %s: %s' % (zone, '; '.join(problems) or 'no resolver'))
+
+
+def run_axfr(zone: str, nameservers: Sequence[NameServer], timeout: float = DEFAULT_TIMEOUT,
+             max_bytes: int = MAX_ZONE_BYTES) -> List[AxfrResult]:
+    """Try a transfer of ``zone`` at every name server, in parallel, in the order given."""
+    def one(ns: NameServer) -> AxfrResult:
+        if not ns.address:
+            return AxfrResult(ns.label, '', ns.port, AXFR_ERROR, detail=ns.detail or 'its name does not resolve')
+        result = try_axfr(ns.address, ns.port, zone, timeout, max_bytes)
+        result.ns = ns.label
+        return result
+    if not nameservers:
+        return []
+    with ThreadPoolExecutor(max_workers=min(len(nameservers), MAX_NAMESERVERS)) as pool:
+        return list(pool.map(one, nameservers))
+
+
+def render_axfr(zone: str, results: Sequence[AxfrResult]) -> str:
+    """The text report of a --axfr run: one line per name server, then the verdict."""
+    lines = ['Zone transfer (AXFR) of %s, over TCP from this machine:' % zone]
+    labels = [r.ns + (' (%s)' % r.address if r.address and r.address != r.ns else '') for r in results]
+    width = max([len(label) for label in labels] + [10])
+    for label, r in zip(labels, results):
+        text = '  %-*s  %-6s' % (width, label, r.status)
+        if r.status == AXFR_OPEN:
+            text += ' %d records%s%s' % (r.records, ', serial %d' % r.serial if r.serial is not None else '',
+                                         '' if r.complete else ' (incomplete: %s)' % _plain(r.detail))
+        elif r.detail:
+            text += ' %s' % _plain(r.detail)
+        lines.append(text.rstrip())
+    opened = [r.ns for r in results if r.status == AXFR_OPEN]
+    if opened:
+        lines.append('OPEN: anyone can download the whole zone from %s. Allow transfers only to your '
+                     'secondaries (BIND allow-transfer, Knot acl, PowerDNS allow-axfr-ips) or with TSIG.'
+                     % ', '.join(opened))
+    elif results and all(r.status == AXFR_DENIED for r in results):
+        lines.append('No name server allows a zone transfer to this machine.')
+    else:
+        lines.append('No name server allowed a zone transfer; those with ERROR could not be asked.')
+    return '\n'.join(lines) + '\n'
+
+
+def axfr_to_dict(zone: str, results: Sequence[AxfrResult]) -> Dict[str, Any]:
+    """The JSON report of a --axfr run (``version`` 1, a document of its own: ``mode`` 'axfr')."""
+    return {
+        'version': 1,
+        'tool': PROG,
+        'mode': 'axfr',
+        'zone': zone,
+        'checkedAt': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'nameservers': [{'name': r.ns, 'address': r.address or None, 'port': r.port, 'status': r.status,
+                         'rcode': r.rcode, 'records': r.records, 'serial': r.serial, 'complete': r.complete,
+                         'detail': r.detail} for r in results],
+        'open': [r.ns for r in results if r.status == AXFR_OPEN],
+    }
+
+
+def _run_axfr(args: argparse.Namespace) -> int:
+    """--axfr ZONE: a zone transfer at every name server (given with --ns, else the zone's NS set
+    from --resolver or the system's resolv.conf)."""
+    err = sys.stderr
+    if args.zonefile:
+        raise UsageError('--axfr takes a zone name, not a zone file')
+    if args.csv:
+        raise UsageError('--csv does not apply to --axfr (use --json)')
+    try:
+        zone = canonical_name(args.axfr.strip().rstrip('.').lower())
+    except ValueError:
+        raise UsageError('bad zone name %r' % args.axfr)
+    if not re.match(r'^[a-z0-9_-]+(\.[a-z0-9_-]+)+$', zone):
+        raise UsageError('bad zone name %r' % args.axfr)
+    values = [v for item in (args.ns or []) for v in re.split(r'[\s,]+', item) if v]
+    if not values:
+        resolvers = [parse_nameserver(r) for r in ([args.resolver] if args.resolver else system_resolvers())]
+        if not resolvers:
+            raise UsageError('give the name servers with --ns, or a resolver with --resolver (no %s here)' % RESOLV_CONF)
+        values = zone_nameservers(zone, [r for r in resolvers if r.address], args.timeout)
+        if not args.quiet:
+            print('name servers of %s: %s' % (zone, ', '.join(values)), file=err)
+    if len(values) > MAX_NAMESERVERS:
+        if args.ns:
+            raise UsageError('at most %d name servers' % MAX_NAMESERVERS)
+        values = values[:MAX_NAMESERVERS]
+    nameservers = []  # type: List[NameServer]
+    for value in values:
+        ns = parse_nameserver(value, args.port)
+        if all((n.address or n.label, n.port) != (ns.address or ns.label, ns.port) for n in nameservers):
+            nameservers.append(ns)
+    results = run_axfr(zone, nameservers, timeout=args.timeout)
+    if args.json:
+        try:
+            _write(args.json, json.dumps(axfr_to_dict(zone, results), indent=2) + '\n')
+        except OSError as exc:
+            print('%s: error: cannot write %s: %s' % (PROG, args.json, exc.strerror or exc), file=err)
+            return EXIT_OUTPUT_ERROR
+    if args.json != '-':
+        sys.stdout.write(render_axfr(zone, results))
+        sys.stdout.flush()
+    if args.fail_on_diff and any(r.status == AXFR_OPEN for r in results):
+        return EXIT_DIFFERENCES
+    return EXIT_OK
+
+
+# ---------------------------------------------------------------------------------------
 # Command line
 # ---------------------------------------------------------------------------------------
 
@@ -1732,6 +1978,10 @@ examples:
   Reports for scripts, and exit code 1 while anything is missing or different:
     python3 dns_parity.py example.com.zone --ns ns1.example.net --json parity.json --fail-on-diff
 
+  Can anyone download the whole zone? A zone transfer (AXFR, TCP) at each of its name servers:
+    python3 dns_parity.py --axfr example.com
+    python3 dns_parity.py --axfr example.com --ns ns1.example.net ns2.example.net --fail-on-diff
+
 statuses (per name server and record set):
   SAME       the new server serves what the file says
   DIFFERENT  other values, or a CNAME instead
@@ -1742,6 +1992,12 @@ statuses (per name server and record set):
   ERROR      no usable answer (timeout, SERVFAIL, REFUSED)
   The apex NS set is compared with the --ns host names: the new provider names itself there.
   A TTL that differs from the file's is listed apart.
+
+--axfr statuses (per name server; the NS set comes from --resolver or resolv.conf without --ns):
+  OPEN       the server sent the zone: anyone can download every record (counted, never kept)
+  DENIED     it refused the transfer (REFUSED, NOTAUTH ...), sent no zone or closed the connection
+  ERROR      no answer: no TCP connection, a timeout, a name that does not resolve
+  With --fail-on-diff the exit code is 1 when a server is OPEN.
 
 verdict (the web app's): FIX while something is MISSING or DIFFERENT or a server does not
   serve the zone; PARTIAL while record sets got no answer (ERROR: run it again before you
@@ -1759,6 +2015,9 @@ Türkçe: DNS sağlayıcısını değiştirmeden önce yeni ad sunucularının z
   kaydı sunup sunmadığını kontrol eder (eksik, farklı, fazladan kayıtlar, TTL farkları).
   Web uygulamasının Zone File > Yeni ad sunucuları sekmesi indirdiği dosyayla, örnek:
     python3 dns_parity.py example.com.parity.zone --ns ns1.example.net ns2.example.net
+  --axfr her ad sunucusunda zone aktarımı (AXFR) dener; OPEN, zone'un tamamını herkesin
+  indirebildiği anlamına gelir:
+    python3 dns_parity.py --axfr example.com
 """
 
 
@@ -1768,10 +2027,16 @@ def build_parser() -> argparse.ArgumentParser:
         description='Before a DNS provider move: ask the NEW name servers for every record set of a '
                     'BIND zone file and list what is missing, different or extra there. Python 3.8+, '
                     'standard library only.')
-    parser.add_argument('zonefile', help='the zone file (BIND / RFC 1035 master format; "-" for stdin)')
-    parser.add_argument('--ns', metavar='SERVER', action='extend', nargs='+', required=True,
+    parser.add_argument('zonefile', nargs='?', help='the zone file (BIND / RFC 1035 master format; "-" for stdin)')
+    parser.add_argument('--ns', metavar='SERVER', action='extend', nargs='+',
                         help='the new name servers: host names, addresses, NAME=ADDRESS or ADDRESS:PORT '
-                             '(repeatable, at most %d)' % MAX_NAMESERVERS)
+                             '(repeatable, at most %d; required with a zone file)' % MAX_NAMESERVERS)
+    parser.add_argument('--axfr', metavar='ZONE',
+                        help='instead of a comparison: try a zone transfer (AXFR, TCP) of ZONE at every name '
+                             'server (--ns, else the NS set of ZONE) and report whether anyone can download it')
+    parser.add_argument('--resolver', metavar='ADDRESS',
+                        help='with --axfr and no --ns: the recursive resolver that finds the NS set '
+                             '(ADDRESS or ADDRESS:PORT; default: the first of %s)' % RESOLV_CONF)
     parser.add_argument('--origin', metavar='ZONE', help='the zone name, when the file names none')
     parser.add_argument('--port', type=int, default=DEFAULT_PORT, help='DNS port (default: 53)')
     parser.add_argument('--tcp', action='store_true', help='ask over TCP only')
@@ -1786,7 +2051,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--show-all', action='store_true', help='also list what is the same and what was not compared')
     parser.add_argument('--fail-on-diff', action='store_true',
                         help='exit with code 1 when anything is missing, different, extra or unproxied, '
-                             'or got no answer')
+                             'or got no answer (with --axfr: when a server allows the transfer)')
     parser.add_argument('-q', '--quiet', action='store_true', help='no progress and no warnings on stderr')
     parser.add_argument('--version', action='version', version='%(prog)s ' + __version__)
     return parser
@@ -1828,6 +2093,13 @@ def _run(args: argparse.Namespace) -> int:
         raise UsageError('--workers must be between 1 and %d' % MAX_WORKERS)
     if not 1 <= args.port <= 65535:
         raise UsageError('--port must be 1-65535')
+    if args.axfr is not None:
+        return _run_axfr(args)
+    if args.resolver:
+        raise UsageError('--resolver applies to --axfr only')
+    if not args.zonefile or not args.ns:
+        raise UsageError('the following arguments are required: %s' % ', '.join(
+            n for n, v in (('zonefile', args.zonefile), ('--ns', args.ns)) if not v))
     if args.json == '-' and args.csv == '-':
         raise UsageError('--json - and --csv - cannot both write to stdout')
     values = [v for item in args.ns for v in re.split(r'[\s,]+', item) if v]

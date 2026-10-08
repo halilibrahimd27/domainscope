@@ -1770,6 +1770,50 @@ async function analyzeMailIdentity(name, mx, d) {
   return out;
 }
 
+/**
+ * What an expanded SPF policy gives a sender none of its terms lists: the first term every address
+ * matches. That is an `all`, an include whose policy passes everyone (it matches before the record's
+ * own `all` is reached), or whatever the policy a redirect hands over to gives (RFC 7208 §5.2, §6.1).
+ * @param {SpfNode|null} node `spfLookupCount().tree`
+ * @param {number} [depth]
+ * @returns {{ qualifier: string|null, term: string|null }|undefined} the qualifier, and the term as
+ *   written behind the includes and redirects that lead to it (`redirect=_spf.example.net → ~all`);
+ *   `{ qualifier: null }` when the policy ends without one (neutral), undefined when a redirect on
+ *   the way did not resolve here
+ */
+function spfCatchAll(node, depth = 0) {
+  if (!node || typeof node.record !== 'string' || depth > 12) return undefined;
+  for (const t of node.terms) {
+    if (t.mechanism === 'all') return { qualifier: t.qualifier, term: t.term };
+    if (t.mechanism !== 'include' && t.mechanism !== 'redirect') continue;
+    const inner = spfCatchAll(t.child, depth + 1);
+    const via = (qualifier) => ({ qualifier, term: inner.term ? `${t.term} → ${inner.term}` : t.term });
+    if (t.mechanism === 'redirect') return inner && via(inner.qualifier);
+    if (inner && inner.qualifier === '+') return via(t.qualifier);
+  }
+  return { qualifier: null, term: null };
+}
+
+/**
+ * The `+` terms with a /0 prefix (every address of a family) in the policies an SPF tree includes
+ * with `+` or redirects to, behind the chain that reaches them (`include:_spf.example.net → ip4:0.0.0.0/0`).
+ * @param {SpfNode|null} node `spfLookupCount().tree`
+ * @param {string} [chain]
+ * @param {number} [depth]
+ * @returns {string[]}
+ */
+function spfNestedOpen(node, chain = '', depth = 0) {
+  if (!node || depth > 12) return [];
+  const out = [];
+  for (const t of node.terms || []) {
+    if (depth > 0 && t.qualifier === '+' && (t.cidr4 === 0 || t.cidr6 === 0)) out.push(`${chain}${t.term}`);
+    if (t.child && (t.mechanism === 'redirect' || (t.mechanism === 'include' && t.qualifier === '+'))) {
+      out.push(...spfNestedOpen(t.child, `${chain}${t.term} → `, depth + 1));
+    }
+  }
+  return out;
+}
+
 async function analyzeSpf(name, txtR, d, mxInfo) {
   const checks = [];
   const out = { checks, record: null, parsed: null, lookups: null };
@@ -1792,10 +1836,20 @@ async function analyzeSpf(name, txtR, d, mxInfo) {
   out.parsed = parsed;
   checks.push(makeCheck('spf.present', 'ok', { record }));
   if (!parsed.valid) checks.push(makeCheck('spf.syntax', 'error', { errors: parsed.errors.map((e) => e.token) }));
+  const lookups = await spfLookupCount(name, { dns: d, record });
+  out.lookups = lookups;
   const allCode = { '-': 'spf.all-fail', '~': 'spf.all-softfail', '?': 'spf.all-neutral', '+': 'spf.all-pass' };
   const allSeverity = { '-': 'ok', '~': 'info', '?': 'warn', '+': 'error' };
-  if (parsed.all) checks.push(makeCheck(allCode[parsed.all], allSeverity[parsed.all], { term: parsed.terms[parsed.allIndex].raw }));
-  else if (!parsed.modifiers.redirect) checks.push(makeCheck('spf.all-missing', 'warn', {}));
+  const own = parsed.all ? parsed.terms[parsed.allIndex].raw : null;
+  const catchAll = spfCatchAll(lookups.tree);
+  if (catchAll && catchAll.term && catchAll.term !== own) {
+    // Another policy decides (a redirect, or an include in front of the own "all"): its fixes are not this record's.
+    const q = catchAll.qualifier;
+    if (q === '+') checks.push(makeCheck('spf.nested-pass', 'error', { term: catchAll.term }));
+    else if (q === '-' || q === '~') checks.push(makeCheck(allCode[q], allSeverity[q], { term: catchAll.term }));
+    else checks.push(makeCheck('spf.nested-neutral', 'warn', { term: catchAll.term }));
+  } else if (parsed.all) checks.push(makeCheck(allCode[parsed.all], allSeverity[parsed.all], { term: own }));
+  else if (catchAll) checks.push(makeCheck('spf.all-missing', 'warn', {}));
   for (const w of parsed.warnings) {
     if (w.code === 'ptr') checks.push(makeCheck('spf.ptr', 'warn', { term: w.token }));
     else if (w.code === 'terms-after-all') checks.push(makeCheck('spf.after-all', 'warn', { terms: w.token }));
@@ -1803,14 +1857,13 @@ async function analyzeSpf(name, txtR, d, mxInfo) {
     else if (w.code === 'too-long') checks.push(makeCheck('spf.too-long', 'warn', { length: Number(w.token), max: SPF_RECOMMENDED_MAX_LENGTH }));
   }
   const broad = parsed.warnings.filter((w) => w.code === 'broad-range').map((w) => w.token);
-  if (broad.length) {
-    const open = parsed.terms.some((t) => t.qualifier === '+' && (t.cidr4 === 0 || t.cidr6 === 0)); // ip4/ip6/a/mx with /0
-    checks.push(makeCheck('spf.broad', open ? 'error' : 'warn', { terms: broad }));
+  const nestedOpen = spfNestedOpen(lookups.tree);
+  if (broad.length || nestedOpen.length) {
+    const open = nestedOpen.length > 0 || parsed.terms.some((t) => t.qualifier === '+' && (t.cidr4 === 0 || t.cidr6 === 0)); // ip4/ip6/a/mx with /0
+    checks.push(makeCheck('spf.broad', open ? 'error' : 'warn', { terms: [...broad, ...nestedOpen] }));
   }
   if (mxInfo.nullMx && parsed.all !== '-') checks.push(makeCheck('spf.null-mx', 'info', {}));
 
-  const lookups = await spfLookupCount(name, { dns: d, record });
-  out.lookups = lookups;
   if (lookups.count > SPF_LOOKUP_LIMIT) {
     checks.push(makeCheck('spf.lookups-exceeded', 'error', { count: lookups.count, limit: SPF_LOOKUP_LIMIT }));
   } else if (lookups.count >= SPF_LOOKUP_LIMIT - 1) {
@@ -2684,6 +2737,12 @@ const STRINGS = [
   ['spf.all-missing', ['SPF has no "all" mechanism', 'SPF’te "all" mekanizması yok'],
     ['Without a final all (and no redirect) the default result is neutral, so unlisted senders are not rejected. End the record with ~all or -all.',
       'Sonda all (ve redirect) yoksa varsayılan sonuç "neutral" olur; listede olmayan gönderenler reddedilmez. Kaydı ~all veya -all ile bitirin.']],
+  ['spf.nested-pass', ['SPF allows everyone through another policy', 'SPF başka bir politika üzerinden herkese izin veriyor'],
+    ['Through {term}, every server on the Internet passes SPF for this domain, whatever the rest of the record says. Fix the policy it points to, or remove that include or redirect.',
+      '{term} üzerinden İnternet’teki tüm sunucular bu alan adı adına SPF’ten geçer; kaydın geri kalanı ne derse desin. Gösterdiği politikayı düzeltin ya da bu include veya redirect ifadesini kaldırın.']],
+  ['spf.nested-neutral', ['SPF ends neutral through another policy', 'SPF başka bir politika üzerinden neutral sonuçla bitiyor'],
+    ['Through {term}, servers that are not listed get a neutral result (?all, or no all at the end), so SPF gives no spoofing protection. End that policy with ~all or -all.',
+      '{term} üzerinden listede olmayan sunucular neutral sonuç alır (?all ya da sonda all yok); SPF sahteciliğe karşı koruma sağlamaz. O politikayı ~all veya -all ile bitirin.']],
   ['spf.redirect-ignored', ['SPF redirect is ignored', 'SPF redirect yok sayılıyor'],
     ['The record has an "all" mechanism, so {term} is never used (RFC 7208 §6.1).',
       'Kayıtta "all" mekanizması olduğu için {term} hiçbir zaman kullanılmaz (RFC 7208 §6.1).']],

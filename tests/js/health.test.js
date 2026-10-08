@@ -1068,6 +1068,48 @@ test('SPF checks: lookup limit exceeded / high, void lookups, include errors, te
   has(r, 'spf.error', 'warn');
 });
 
+test('SPF checks: the "all" verdict follows a redirect and an include that passes everyone', async () => {
+  const report = async (own, target) => {
+    const zone = goodZone();
+    zone['example.com'].TXT = [own];
+    if (target) zone['_spf.example.com'] = { TXT: [target] };
+    const r = await run('example.com', fakeDns(zone));
+    assertRenderable(r);
+    return r;
+  };
+  const spfIds = (r) => ids(r).filter((id) => /^spf\.(all|nested)-/.test(id));
+  // A redirect hands its target's result over (RFC 7208 §6.1): +all there lets everyone pass.
+  let r = await report('v=spf1 redirect=_spf.example.com', 'v=spf1 ip4:192.0.2.0/24 +all');
+  assert.deepEqual(spfIds(r), ['spf.nested-pass']);
+  assert.equal(has(r, 'spf.nested-pass', 'error').params.term, 'redirect=_spf.example.com → +all');
+  // An include matches when its policy passes: one that passes everyone does so before the own -all.
+  r = await report('v=spf1 include:_spf.example.com -all', 'v=spf1 ip4:192.0.2.0/24 +all');
+  assert.deepEqual(spfIds(r), ['spf.nested-pass']);
+  assert.equal(find(r, 'spf.nested-pass').params.term, 'include:_spf.example.com → +all');
+  r = await report('v=spf1 include:_spf.mailer.net include:_spf.example.com -all', 'v=spf1 redirect=_spf.mailer.net');
+  assert.deepEqual(spfIds(r), ['spf.all-fail'], 'an include of a ~all policy matches only the senders it lists');
+  // ?all at the end of a redirect, or no "all" there: unlisted senders are neutral.
+  r = await report('v=spf1 redirect=_spf.example.com', 'v=spf1 ip4:192.0.2.0/24 ?all');
+  assert.deepEqual(spfIds(r), ['spf.nested-neutral']);
+  assert.equal(has(r, 'spf.nested-neutral', 'warn').params.term, 'redirect=_spf.example.com → ?all');
+  r = await report('v=spf1 redirect=_spf.example.com', 'v=spf1 ip4:192.0.2.0/24');
+  assert.equal(has(r, 'spf.nested-neutral', 'warn').params.term, 'redirect=_spf.example.com');
+  r = await report('v=spf1 redirect=_spf.example.com', 'v=spf1 redirect=_spf.mailer.net');
+  assert.deepEqual(spfIds(r), ['spf.all-softfail']);
+  assert.equal(has(r, 'spf.all-softfail', 'info').params.term, 'redirect=_spf.example.com → redirect=_spf.mailer.net → ~all');
+  // A redirect that does not resolve here says nothing about "all".
+  r = await report('v=spf1 redirect=_spf.example.com', null);
+  assert.deepEqual(spfIds(r), []);
+  // The record's own "all" when nothing in front of it matches everyone.
+  r = await report('v=spf1 include:_spf.example.com -all', 'v=spf1 ip4:192.0.2.0/24 ?all');
+  assert.deepEqual(spfIds(r), ['spf.all-fail']);
+  // A /0 range in an included policy opens it as much as one in the record.
+  r = await report('v=spf1 include:_spf.example.com -all', 'v=spf1 ip4:0.0.0.0/0 -all');
+  assert.equal(has(r, 'spf.broad', 'error').params.terms, 'include:_spf.example.com → ip4:0.0.0.0/0');
+  r = await report('v=spf1 ip4:10.0.0.0/7 -include:_spf.example.com -all', 'v=spf1 ip4:0.0.0.0/0 -all');
+  assert.deepEqual([find(r, 'spf.broad').severity, find(r, 'spf.broad').params.terms], ['warn', 'ip4:10.0.0.0/7'], 'a -include fails what it matches');
+});
+
 /* ==================================================================== */
 /* DMARC                                                                */
 /* ==================================================================== */

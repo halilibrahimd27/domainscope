@@ -28,7 +28,7 @@ registerStrings('en', {
   'pal.hint': 'An entry only fills the tool in: nothing is sent until you run it.',
   'pal.keys': '↑ ↓ to move · Enter to open · Esc to close',
   'pal.fill': 'Show what you can do with it',
-  'pal.reverseIpHint': 'IP Intel — the result row’s “Other domains on this IP” button',
+  'pal.reverseIpHint': 'IP Intel — then “Find domains” in the address’s row (HackerTarget)',
   'pal.certHint': 'Certificate — read in this browser, nothing is sent',
   'pal.certFailed': 'The Certificate tool could not be loaded: {message}',
   'pal.type.action': 'Action',
@@ -60,8 +60,8 @@ registerStrings('tr', {
   'pal.none': '“{query}” ile eşleşen bir şey yok. Bir aracın adını, bir alan adını ya da bir IP adresini yazın.',
   'pal.hint': 'Bir seçenek aracı yalnızca doldurur: siz çalıştırana kadar hiçbir şey gönderilmez.',
   'pal.keys': 'Gezinmek için ↑ ↓ · açmak için Enter · kapatmak için Esc',
-  'pal.fill': 'Bununla neler yapabileceğinizi gösterin',
-  'pal.reverseIpHint': 'IP Bilgisi — sonuç satırındaki “Bu IP’deki diğer alan adları” düğmesi',
+  'pal.fill': 'Bununla yapabileceklerinizi göster',
+  'pal.reverseIpHint': 'IP Bilgisi — ardından adresin satırındaki “Alan adlarını bul” (HackerTarget)',
   'pal.certHint': 'Sertifika — bu tarayıcıda okunur, hiçbir şey gönderilmez',
   'pal.certFailed': 'Sertifika aracı yüklenemedi: {message}',
   'pal.type.action': 'İşlem',
@@ -227,15 +227,20 @@ export function openPalette({ views, navigate, href, state, session, done = () =
     modal.close();
   }
 
+  let reading = false;
+
+  /** Read a pasted certificate with the Certificate view's own loader and open it there. */
   async function openCertificate(text) {
-    let mod;
+    if (reading) return;
+    reading = true;
     try {
-      mod = await import('../views/cert.js');
+      const mod = await import('../views/cert.js');
+      mod.setCurrentCert(state, mod.loadCertificateData(text, { name: t('file.pasted'), source: 'paste' }));
     } catch (err) {
+      reading = false;
       status.textContent = t('pal.certFailed', { message: err && err.message ? err.message : String(err) });
       return;
     }
-    mod.setCurrentCert(state, mod.loadCertificateData(text, { name: t('file.pasted'), source: 'paste' }));
     left = true;
     modal.close();
     navigate('cert', {}, { force: true });

@@ -308,6 +308,15 @@
 }
 
 @media (max-width: 640px) {
+  /* The details row is as wide as the table, which scrolls sideways on a phone: the panel stays
+     in view at the scroller's left edge and wraps at the screen's width (gutters and the details
+     padding taken off), so nothing of it needs a sideways scroll to be read. */
+  .ipi-enrich {
+    position: sticky;
+    left: 0;
+    max-width: calc(100vw - 96px);
+  }
+
   .ipe-head {
     align-items: flex-start;
   }

@@ -339,7 +339,8 @@ export function effectiveQualifier(chain, qualifier) {
  * that covers a retiring address, and every one whose coverage cannot be told.
  * - ip4 / ip6: the term's range against each block;
  * - a: each address of the named host, widened by the term's CIDR length (`a/24`);
- * - mx: each MX host's addresses (`mxAddresses`: host → { addresses, error }), widened the same way;
+ * - mx: each MX host's addresses (`mxAddresses`: host → { addresses, error, familyErrors }), widened the same way;
+ *   an a / mx host whose question of a block's family failed (`familyErrors`) is unknown next to that;
  * - include / redirect: followed with the path; a policy that could not be read → include-failed;
  * - a macro that needs the sender (`%{i}`, `%{s}`, `%{l}` …), `ptr`, a failed or skipped lookup → unknown.
  * `exists` without such a macro does not depend on the address (it matches every sender or none).
@@ -348,7 +349,7 @@ export function effectiveQualifier(chain, qualifier) {
  * match's `shields`. (An include in between, or a term that cannot be told, is not weighed.)
  * @param {object|null} tree
  * @param {RetireBlock[]} blocks
- * @param {{ mxAddresses?: Map<string, { addresses: string[], error?: string|null }> }} [opts]
+ * @param {{ mxAddresses?: Map<string, { addresses: string[], error?: string|null, familyErrors?: Array<{ type: string }> }> }} [opts]
  * @returns {{ matches: SpfMatch[], unknown: SpfUnknown[] }}
  */
 export function spfCoverage(tree, blocks, { mxAddresses = new Map() } = {}) {
@@ -358,6 +359,8 @@ export function spfCoverage(tree, blocks, { mxAddresses = new Map() } = {}) {
   const at = (node, path, t, reason, target = null) => unknown.push({
     path: [...path], holder: node.domain, record: node.record, term: t.term, mechanism: t.mechanism, reason, target
   });
+  // A failed A (AAAA) question leaves an IPv4 (IPv6) block open.
+  const lostFor = (lost) => Array.isArray(lost) && lost.some((f) => f && blocks.some((b) => b.version === (f.type === 'AAAA' ? 6 : 4)));
   // The first term of a policy that covers a whole block (per policy, per block): it decides.
   let decided = new Map();
   const matchRange = (node, path, chain, t, range, via = null) => {
@@ -402,7 +405,10 @@ export function spfCoverage(tree, blocks, { mxAddresses = new Map() } = {}) {
           if (!t.target) at(node, path, t, t.macro ? 'macro' : 'lookup-failed');
           else if (t.skipped) at(node, path, t, 'skipped', t.target);
           else if (t.error || !Array.isArray(t.addresses)) at(node, path, t, 'lookup-failed', t.target);
-          else hostRanges(node, path, chain, t, t.target, t.addresses);
+          else {
+            hostRanges(node, path, chain, t, t.target, t.addresses);
+            if (lostFor(t.familyErrors)) at(node, path, t, 'lookup-failed', t.target);
+          }
           break;
         case 'mx':
           if (!t.target) at(node, path, t, t.macro ? 'macro' : 'lookup-failed');
@@ -412,7 +418,10 @@ export function spfCoverage(tree, blocks, { mxAddresses = new Map() } = {}) {
             for (const host of t.hosts) {
               const hit = mxAddresses.get(host);
               if (!hit || hit.error) at(node, path, t, 'lookup-failed', host);
-              else hostRanges(node, path, chain, t, host, hit.addresses || []);
+              else {
+                hostRanges(node, path, chain, t, host, hit.addresses || []);
+                if (lostFor(hit.familyErrors)) at(node, path, t, 'lookup-failed', host);
+              }
             }
           }
           break;
@@ -491,6 +500,9 @@ function isAbort(err) {
  * @property {string[]} ipv6
  * @property {string|null} error
  * @property {string|null} errorKind
+ * @property {Array<{ type: 'A'|'AAAA', error: string, errorKind: string|null }>} familyErrors with status
+ *   NOERROR, the family whose question got no answer: those addresses are unknown, never "none" (for a
+ *   block of that family it is a failure of the name)
  * @property {string[]} roles why it was resolved: 'apex', 'host', 'mx', 'ns', 'spf'
  * @property {string[]} sources where a known host came from ({@link HOST_SOURCES})
  */
@@ -529,6 +541,8 @@ export async function checkDomain(domain, { dns, blocks, hosts = [], signal, onL
   throwIfAborted(signal);
   const names = new Map();
   const failures = [];
+  // A lost IPv4 answer matters to an IPv4 block only (any block when none is given).
+  const matters = (type) => !Array.isArray(blocks) || blocks.some((b) => b.version === (type === 'AAAA' ? 6 : 4));
   let done = 0;
   let total = 4;
   const tick = () => {
@@ -548,25 +562,30 @@ export async function checkDomain(domain, { dns, blocks, hosts = [], signal, onL
     let entry = names.get(n);
     if (!entry) {
       total += 1;
-      entry = { check: { name: n, status: 'ERROR', cnames: [], ipv4: [], ipv6: [], error: null, errorKind: null, roles: [], sources: [] } };
+      entry = { check: { name: n, status: 'ERROR', cnames: [], ipv4: [], ipv6: [], error: null, errorKind: null, familyErrors: [], roles: [], sources: [] } };
       names.set(n, entry);
       entry.promise = (async () => {
+        let lost = [];
         try {
           const h = await dns.resolveHost(n, { signal });
+          lost = (Array.isArray(h.familyErrors) ? h.familyErrors : []).filter((f) => f && (f.type === 'A' || f.type === 'AAAA'));
           Object.assign(entry.check, {
             status: String(h.status || 'ERROR'),
             cnames: (h.cnames || []).map(canon),
             ipv4: (h.ipv4 || []).map(normalizeIP).filter(Boolean),
             ipv6: (h.ipv6 || []).map(normalizeIP).filter(Boolean),
             error: h.error || null,
-            errorKind: h.errorKind || null
+            errorKind: h.errorKind || null,
+            familyErrors: lost.map((f) => ({ type: f.type, error: f.error || 'lookup failed', errorKind: f.errorKind || null }))
           });
         } catch (err) {
           if (isAbort(err)) throw err;
           Object.assign(entry.check, { status: 'ERROR', error: String((err && err.message) || err), errorKind: errorKind(err) });
         }
         const s = entry.check.status;
+        const gap = s === 'NOERROR' ? lost.find((f) => matters(f.type)) : null;
         if (s !== 'NOERROR' && s !== 'NXDOMAIN') failures.push({ what: 'name', name: n, error: entry.check.error || s, errorKind: entry.check.errorKind });
+        else if (gap) failures.push({ what: 'name', name: n, error: `${gap.type}: ${gap.error || 'lookup failed'}`, errorKind: gap.errorKind || null });
         tick();
         return entry.check;
       })();
@@ -668,7 +687,7 @@ export async function checkDomain(domain, { dns, blocks, hosts = [], signal, onL
     const mxHosts = spfMxHosts(r.tree);
     const resolvedMx = await Promise.all(mxHosts.map((host) => resolve(host, 'spf')));
     const mxAddresses = new Map(resolvedMx.map((c) => [c.name, {
-      addresses: [...c.ipv4, ...c.ipv6], error: c.status !== 'NOERROR' && c.status !== 'NXDOMAIN' ? c.error || c.status : null
+      addresses: [...c.ipv4, ...c.ipv6], error: c.status !== 'NOERROR' && c.status !== 'NXDOMAIN' ? c.error || c.status : null, familyErrors: c.familyErrors
     }]));
     const cov = spfCoverage(r.tree, blocks, { mxAddresses });
     return { ...base, status: 'ok', error: null, matches: cov.matches, unknown: cov.unknown };
@@ -915,7 +934,9 @@ export async function verifyZoneRefs(refs, { dns, signal, max = RETIRE_MAX_ZONE_
       return { ok: false, answers: [] };
     }
   };
-  const usable = (h) => h && (h.status === 'NOERROR' || h.status === 'NXDOMAIN');
+  // An answer settles an address of its own family only: a failed AAAA question never says "gone".
+  const usable = (h, address) => h && (h.status === 'NOERROR' || h.status === 'NXDOMAIN')
+    && !(h.familyErrors || []).some((f) => f && f.type === (String(address).includes(':') ? 'AAAA' : 'A'));
   const reaches = (h, address) => [...(h.ipv4 || []), ...(h.ipv6 || [])].map((ip) => normalizeIP(ip)).includes(address);
   let left = Math.max(0, Number(max) || 0);
   const out = await Promise.all((refs || []).map(async (ref) => {
@@ -932,7 +953,7 @@ export async function verifyZoneRefs(refs, { dns, signal, max = RETIRE_MAX_ZONE_
     if (asked !== ref.name) copy.probe = asked;
     if (aliasOrAddress) {
       const h = await host(asked);
-      if (!usable(h)) copy.live = null;
+      if (!usable(h, ref.address)) copy.live = null;
       else copy.live = reaches(h, ref.address) && (ref.type !== 'CNAME' || canon((h.cnames || [])[0]) === canon(ref.value));
       return copy;
     }
@@ -952,7 +973,7 @@ export async function verifyZoneRefs(refs, { dns, signal, max = RETIRE_MAX_ZONE_
       return copy;
     }
     const h = await host(canon(ref.value));
-    copy.live = usable(h) ? reaches(h, ref.address) : null;
+    copy.live = usable(h, ref.address) ? reaches(h, ref.address) : null;
     return copy;
   }));
   throwIfAborted(signal);
@@ -1361,7 +1382,7 @@ export function buildChanges({ blocks = [], checks = [], zone = null, passive = 
     const type = address.includes(':') ? 'AAAA' : 'A';
     for (const name of p.names || []) {
       const n = resolved.get(name);
-      if (n && (n.status === 'NOERROR' || n.status === 'NXDOMAIN')) {
+      if (n && (n.status === 'NOERROR' || n.status === 'NXDOMAIN') && !(n.familyErrors || []).some((f) => f.type === type)) {
         const holder = n.cnames.length ? n.cnames[n.cnames.length - 1] : n.name;
         const row = rows.get(`${holder}|${type}|${address}`);
         if (row && !row.sources.includes('passive')) row.sources.push('passive');

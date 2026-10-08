@@ -75,6 +75,9 @@ import { normalizeHostname } from './domain.js';
  * @property {boolean} ad extension: every answer used was DNSSEC-validated
  * @property {Array<{code:number,name:string,text:string}>} ede extension
  * @property {number} elapsedMs extension: max elapsed of the A / AAAA queries
+ * @property {Array<{type:'A'|'AAAA',error:string,errorKind:string|null}>} [familyErrors] extension: with
+ *   status NOERROR, the family whose question got no answer (a transport error, a rate limit, a
+ *   SERVFAIL): its addresses are unknown, never "none"; absent otherwise
  */
 
 /* ------------------------------------------------------------------------ */
@@ -286,6 +289,14 @@ function edeText(ede) {
   return ede.map((e) => (e.text ? `${e.name}: ${e.text}` : e.name)).join('; ');
 }
 
+/** The error of a response with no usable answer: the transport error, else the rcode with its EDE. */
+function failureText(response) {
+  if (!response) return 'No response';
+  if (!response.ok) return response.error || 'Query failed';
+  const extra = edeText(response.ede);
+  return extra ? `${response.rcode} (${extra})` : response.rcode;
+}
+
 /**
  * Build a {@link HostResolution} from an A and an AAAA {@link DnsResponse}
  * (either may be null). The status comes from the A query; the AAAA query is
@@ -293,6 +304,7 @@ function edeText(ede) {
  * REFUSED while AAAA got a real answer). A lookup that got no answer is never
  * hidden behind the other one's NOERROR without an address: that would read
  * as "the name has no address" (NODATA), so the failure is the status then.
+ * Next to an address of the other family it stays NOERROR and `familyErrors` names it.
  * @param {string} name
  * @param {DnsResponse|null} a
  * @param {DnsResponse|null} aaaa
@@ -312,17 +324,11 @@ export function hostResolutionFrom(name, a, aaaa) {
   const v4 = a && a.ok ? chainAddresses(a.answers, ownersA, 'A') : { ips: [], rrs: [] };
   const v6 = aaaa && aaaa.ok ? chainAddresses(aaaa.answers, ownersB, 'AAAA') : { ips: [], rrs: [] };
   // A transport error, a rate limit or a SERVFAIL leaves that family unknown; NXDOMAIN settles both.
-  const lost = [a, aaaa].filter((r) => r && !usable(r));
-  if (lost.length && usable(primary) && primary.rcode === 'NOERROR' && !v4.ips.length && !v6.ips.length) primary = lost[0];
+  const lost = [['A', a], ['AAAA', aaaa]].filter(([, r]) => r && !usable(r));
+  if (lost.length && usable(primary) && primary.rcode === 'NOERROR' && !v4.ips.length && !v6.ips.length) primary = lost[0][1];
 
   const status = statusOf(primary);
-  let error = null;
-  if (!primary) error = 'No response';
-  else if (!primary.ok) error = primary.error || 'Query failed';
-  else if (status !== 'NOERROR' && status !== 'NXDOMAIN') {
-    const extra = edeText(primary.ede);
-    error = extra ? `${primary.rcode} (${extra})` : primary.rcode;
-  }
+  const error = status === 'NOERROR' || status === 'NXDOMAIN' ? null : failureText(primary);
   const used = [...chain.records, ...v4.rrs, ...v6.rrs];
   const answered = [a, aaaa].filter((r) => r && r.ok);
   return {
@@ -337,7 +343,10 @@ export function hostResolutionFrom(name, a, aaaa) {
     errorKind: primary && !primary.ok ? primary.errorKind : null,
     ad: answered.length > 0 && answered.every((r) => !!(r.flags && r.flags.ad)),
     ede: primary && Array.isArray(primary.ede) ? primary.ede : [],
-    elapsedMs: Math.max(0, ...[a, aaaa].map((r) => (r && Number.isFinite(r.elapsedMs) ? r.elapsedMs : 0)))
+    elapsedMs: Math.max(0, ...[a, aaaa].map((r) => (r && Number.isFinite(r.elapsedMs) ? r.elapsedMs : 0))),
+    ...(status === 'NOERROR' && lost.length
+      ? { familyErrors: lost.map(([type, r]) => ({ type, error: failureText(r), errorKind: r.ok ? null : r.errorKind || null })) }
+      : {})
   };
 }
 

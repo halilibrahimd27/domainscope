@@ -377,6 +377,60 @@ describe('what a check could not settle', () => {
     assert.equal(retireGaps().settled, true, 'nothing asked, nothing open');
   });
 
+  test('a failed A or AAAA question leaves that family unknown: "cannot tell" for a block of that family, never "nothing points here"', async () => {
+    const table = {
+      'example.com': { A: ['198.51.100.1'] },
+      'www.example.com': { A: ['192.0.2.10'], AAAA: ['2001:db8::10'] }
+    };
+    const dns = fakeDns(table, { fail: { 'www.example.com|AAAA': 'HTTP 503' } });
+    const v6 = blocksOf('2001:db8::10');
+    const c = await checkDomain('example.com', { dns, blocks: v6, hosts: ['www.example.com'] });
+    assert.deepEqual(c.failures.map((f) => [f.what, f.name, f.error]), [['name', 'www.example.com', 'AAAA: HTTP 503']]);
+    const www = c.names.find((n) => n.name === 'www.example.com');
+    assert.deepEqual([www.status, www.ipv4, www.ipv6, www.familyErrors.map((f) => f.type)], ['NOERROR', ['192.0.2.10'], [], ['AAAA']]);
+    const built = buildChanges({ blocks: v6, checks: [c] });
+    assert.equal(retireGaps({ domains: ['example.com'], checks: [c], counts: built.counts }).settled, false);
+    // The A answer settles an IPv4 block all the same.
+    const v4 = blocksOf('192.0.2.10');
+    const c4 = await checkDomain('example.com', { dns, blocks: v4, hosts: ['www.example.com'] });
+    assert.deepEqual(c4.failures, []);
+    assert.deepEqual(buildChanges({ blocks: v4, checks: [c4] }).changes.map((x) => [x.name, x.type, x.value]), [['www.example.com', 'A', '192.0.2.10']]);
+    // A passive hit on the lost family is never "gone".
+    const passive = buildChanges({ blocks: v6, checks: [c], passive: [{ address: '2001:db8::10', names: ['www.example.com'] }] });
+    assert.deepEqual(passive.gone, []);
+    assert.deepEqual(passive.changes.map((x) => [x.name, x.group, x.reason]), [['www.example.com', 'passive', 'lookup-failed']]);
+  });
+
+  test('an SPF mx or a host whose A question failed is "cannot tell", next to what its AAAA answer shows', async () => {
+    const dns = fakeDns({
+      'example.org': { A: ['198.51.100.1'], MX: [{ preference: 10, exchange: 'mail.example.org' }], TXT: ['v=spf1 mx a:relay.example.org a:solo.example.org -all'] },
+      'mail.example.org': { A: ['192.0.2.25'], AAAA: ['2001:db8::25'] },
+      'relay.example.org': { A: ['192.0.2.25'], AAAA: ['2001:db8::25'] },
+      'solo.example.org': { A: ['192.0.2.25'] }
+    }, { fail: { 'mail.example.org|A': 'HTTP 503', 'relay.example.org|A': 'HTTP 503', 'solo.example.org|A': 'HTTP 503' } });
+    const both = blocksOf('192.0.2.25, 2001:db8::25');
+    const c = await checkDomain('example.org', { dns, blocks: both });
+    assert.deepEqual(c.spf.matches.map((m) => [m.term, m.block]), [['mx', '2001:db8::25/128'], ['a:relay.example.org', '2001:db8::25/128']]);
+    assert.deepEqual(c.spf.unknown.map((u) => [u.term, u.reason, u.target]), [
+      ['mx', 'lookup-failed', 'mail.example.org'], ['a:relay.example.org', 'lookup-failed', 'relay.example.org'], ['a:solo.example.org', 'lookup-failed', 'solo.example.org']
+    ]);
+    // Only the lost family's blocks are open: an IPv6 block alone is settled by the AAAA answers.
+    const v6 = await checkDomain('example.org', { dns, blocks: blocksOf('2001:db8::25') });
+    assert.deepEqual(v6.spf.unknown.map((u) => u.target), ['solo.example.org']);
+  });
+
+  test('a zone record whose family\'s question failed is "could not check", never gone from DNS', async () => {
+    const records = [rec('v6.example.com', 'AAAA', '2001:db8::10', { line: 3 }), rec('example.com', 'MX', 'mx.example.com', { preference: 10, line: 4 })];
+    const dns = fakeDns({
+      'v6.example.com': { A: ['192.0.2.10'], AAAA: ['2001:db8::10'] },
+      'example.com': { MX: [{ preference: 10, exchange: 'mx.example.com' }] },
+      'mx.example.com': { A: ['192.0.2.10'], AAAA: ['2001:db8::10'] }
+    }, { fail: { 'v6.example.com|AAAA': 'HTTP 503', 'mx.example.com|AAAA': 'HTTP 503' } });
+    const refs = zoneCandidates([...records, rec('mx.example.com', 'AAAA', '2001:db8::10', { line: 5 })], blocksOf('2001:db8::10'));
+    const verified = await verifyZoneRefs(refs, { dns });
+    assert.deepEqual(verified.map((r) => [r.name, r.type, r.live]), [['v6.example.com', 'AAAA', null], ['example.com', 'MX', null], ['mx.example.com', 'AAAA', null]]);
+  });
+
   test('a domain that does not exist (a typo?) is said so, never "nothing points here"', async () => {
     const dns = fakeDns({ 'example.net': { MX: [{ preference: 10, exchange: 'mx.example.net' }], NS: ['ns1.example.net'] }, 'mx.example.net': { A: ['198.51.100.2'] } });
     const blocks = blocksOf('192.0.2.10');

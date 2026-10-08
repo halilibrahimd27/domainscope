@@ -547,7 +547,7 @@ export class DohClient {
   setConcurrency(n) ; stats() -> { queries, cacheHits, failures, byResolver: { [id]: { ok, fail, avgMs } } }
 }
 DnsResponse = { name, type, resolver /* id that answered */, ok: boolean /* got a DNS answer (any rcode) */, rcode: 'NOERROR'|'NXDOMAIN'|'SERVFAIL'|..., flags, answers: RR[], authorities: RR[], ecs /* echoed ECS or null */, ede: [], elapsedMs, error: string|null /* transport error message when ok=false */, errorKind }
-HostResolution = { name, status: 'NOERROR'|'NXDOMAIN'|'SERVFAIL'|'REFUSED'|'ERROR', cnames: string[] /* chain order */, ipv4: string[], ipv6: string[], ttl: number|null /* min TTL */, resolver, error: string|null }
+HostResolution = { name, status: 'NOERROR'|'NXDOMAIN'|'SERVFAIL'|'REFUSED'|'ERROR', cnames: string[] /* chain order */, ipv4: string[], ipv6: string[], ttl: number|null /* min TTL */, resolver, error: string|null, familyErrors?: [{ type: 'A'|'AAAA', error, errorKind }] /* only with NOERROR: the family whose question got no answer, its addresses unknown */ }
 // Failover (when no explicit resolver): transport error / timeout / HTTP 429/5xx / SERVFAIL|REFUSED → try next in chain. Uses GET ?dns= with id=0 and accept header. Cache key includes name/type/resolver/ecs/dnssec/cd.
 ```
 Current wiring (code wins), v2 extensions:
@@ -1947,14 +1947,17 @@ export function spfMxHosts(tree) -> string[]   // lib/health.js spfMxHosts (§5.
 export async function checkDomain(domain, { dns, blocks, hosts /* [{ name, source }] */, signal, onLookup(done, total) }) -> DomainCheck
   // its own name, the known hosts, MX (≤ 10) and NS (≤ 13) hosts, each resolved; its SPF tree (spfLookupCount) and the addresses of every host an mx
   // mechanism names; the HTTPS record's ipv4hint / ipv6hint. DomainCheck = { domain, names: [{ name, status, cnames, ipv4, ipv6, error, errorKind,
+  // familyErrors /* with NOERROR, the family whose question got no answer (§5.9 HostResolution.familyErrors), [] otherwise */,
   // roles: 'apex'|'host'|'mx'|'ns'|'spf', sources }], mx, ns, spf: { status: 'ok'|'none'|'failed'|'multiple', record, lookups, matches, unknown }, https, failures,
   // missing /* its own name NXDOMAIN without a CNAME (a dangling alias exists) and no name server: the domain does not exist, a typo in the list most likely */ }.
-  // A failed lookup is a failure (never "nothing points here"); a domain SPF record that could not be read is also an `unknown` entry
+  // A failed lookup is a failure (never "nothing points here"), and so is a failed A (AAAA) question of a name when a block is IPv4 (IPv6), even
+  // when the other family answered; an SPF a / mx host in that state is also an `unknown` entry (lookup-failed) next to what its other family matched.
+  // A domain SPF record that could not be read is also an `unknown` entry
   // (mechanism 'record', reason lookup-failed), so it is a "cannot tell" row, never "no SPF"; only an abort rejects.
 export function zoneCandidates(records /* §5.22 referenceRecords */, blocks) -> ZoneRef[]   // A / AAAA with the address, CNAMEs whose in-zone chain ends at one,
   // MX / NS / SRV / HTTPS / SVCB whose in-zone target holds one (a DNS-only CNAME into a proxied name takes its proxy status), HTTPS / SVCB hints, SPF ip4 / ip6;
   // `targetInternal`: the target or a name on its in-zone chain looks internal
-export async function verifyZoneRefs(refs, { dns, signal, max = 1000, labelFn = randomLabel }) -> ZoneRef[] with `live`: true / false / null (failed)
+export async function verifyZoneRefs(refs, { dns, signal, max = 1000, labelFn = randomLabel }) -> ZoneRef[] with `live`: true / false / null (failed, or the address's family failed)
   // does public DNS still serve each? A wildcard owner `*.x` is asked at a random name under it (`<label>.x`, one per owner, kept as `probe`), like the
   // Zone File live check, and is a record like any other (live / file / unverified — never "zone file only" without an answer that says so). A proxied
   // record's origin and an internal-looking name are never asked (`live` undefined); a served record whose target looks internal is live without its

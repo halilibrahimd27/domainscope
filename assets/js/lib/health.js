@@ -133,7 +133,9 @@ function normHost(r, name) {
     cnames: arr(r?.cnames).map(canonName).filter(Boolean),
     ipv4: ips(r?.ipv4, 4),
     ipv6: ips(r?.ipv6, 6),
-    error: r?.error ? String(r.error) : null
+    error: r?.error ? String(r.error) : null,
+    // lib/doh.js HostResolution.familyErrors: the family whose question got no answer next to the other's address.
+    familyErrors: arr(r?.familyErrors).filter((f) => f && (f.type === 'A' || f.type === 'AAAA'))
   };
 }
 
@@ -541,6 +543,7 @@ async function evalSpfTerm(term, node, ctx, depth, path) {
     } else {
       t.addresses = [...h.ipv4, ...h.ipv6];
       if (!t.addresses.length) t.void = true;
+      if (h.familyErrors.length) t.familyErrors = h.familyErrors;
     }
     return t;
   }

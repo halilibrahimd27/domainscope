@@ -698,6 +698,7 @@ describe('resolveHost', () => {
     assert.deepEqual(r.ipv4, []);
     assert.deepEqual(r.ipv6, ['2606:2800:220:1:248:1893:25c8:1946']);
     assert.equal(r.error, null);
+    assert.deepEqual(r.familyErrors, [{ type: 'A', error: 'A lost', errorKind: 'network' }], 'its IPv4 addresses are unknown, never "none"');
   });
 
   test('A failed and AAAA has no record → the A failure is the status, never "no address" (NODATA)', async () => {
@@ -788,6 +789,17 @@ describe('hostResolutionFrom / followCnames helpers', () => {
     assert.equal(hostResolutionFrom('h.example', lost, alias).status, 'ERROR');
     assert.equal(hostResolutionFrom('h.example', resp('SERVFAIL', []), resp('NXDOMAIN', [])).status, 'NXDOMAIN');
     assert.equal(hostResolutionFrom('h.example', lost, resp('NXDOMAIN', [])).status, 'NXDOMAIN');
+    for (const x of [r, m]) assert.equal(x.familyErrors, undefined, 'the status says it');
+  });
+
+  test('familyErrors: the family that got no answer next to an address of the other, with its error', () => {
+    const a = resp('NOERROR', [{ name: 'h.example', type: 'A', ttl: 9, data: '192.0.2.1' }]);
+    const ede = [{ code: 22, name: 'No Reachable Authority', text: '' }];
+    const r = hostResolutionFrom('h.example', a, resp('SERVFAIL', [], { ede }));
+    assert.deepEqual([r.status, r.error, r.ipv4, r.ipv6], ['NOERROR', null, ['192.0.2.1'], []]);
+    assert.deepEqual(r.familyErrors, [{ type: 'AAAA', error: 'SERVFAIL (No Reachable Authority)', errorKind: null }]);
+    assert.ok(!('familyErrors' in hostResolutionFrom('h.example', a, resp('NOERROR', []))), 'both answered: the shape is unchanged');
+    assert.ok(!('familyErrors' in hostResolutionFrom('h.example', a, null)), 'a question never asked is not a failure');
   });
 
   test('ad is true only when every answered query was validated', () => {

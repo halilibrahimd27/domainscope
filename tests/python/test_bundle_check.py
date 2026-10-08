@@ -22,7 +22,7 @@ import unittest
 from datetime import datetime, timezone
 from typing import List
 
-from test_ssl_origin_scan import FIXTURES, fixture_bytes, fixture_cert, run_main, sos
+from test_ssl_origin_scan import FIXTURES, NOW, fixture_bytes, fixture_cert, run_main, sos
 
 LEAF = fixture_cert('bundle_leaf.pem')
 INTER = fixture_cert('bundle_inter.pem')
@@ -186,7 +186,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(sos.bundle_outputs(result), [])
 
     def test_a_self_signed_certificate_has_no_chain(self):
-        result = sos.check_bundle(items('cn_only.pem', 'cn_only.key'))
+        result = sos.check_bundle(items('cn_only.pem', 'cn_only.key'), now=NOW)   # it expires in 2035
         self.assertEqual(statuses(result), [('OK', 'key'), ('OK', 'chain'), ('WARN', 'names')])
         self.assertIn('is self-signed: there is no chain to send', texts(result))
         # no subjectAltName: browsers look only there
@@ -269,7 +269,7 @@ class CheckTests(unittest.TestCase):
 
     def test_a_self_signed_ca_certificate_that_names_hosts_is_the_leaf(self):
         # `openssl req -x509` marks what it makes CA:TRUE: a server certificate all the same
-        result = sos.check_bundle(items('many_sans.pem'))
+        result = sos.check_bundle(items('many_sans.pem'), now=NOW)
         self.assertEqual(result.leaf.subject_cn, 'bulk.example.com')
         self.assertEqual(statuses(result), [('OK', 'chain'), ('WARN', 'chain')])
         self.assertIn('MOZILLA_PKIX_ERROR_CA_CERT_USED_AS_END_ENTITY', texts(result))

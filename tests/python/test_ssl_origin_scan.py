@@ -3560,7 +3560,7 @@ class NotifyFormatTests(unittest.TestCase):
                          '(6 open), ports 443, names a.wild.example.net, '
                          'www.example-test.com.tr, extra.example.com.')
         self.assertEqual(footer[1], 'Servers that need the new certificate: 1; serving it: 3.')
-        report = fleet_before()
+        report = fleet_before(now=NOW)   # the real clock reaches the fixtures' expiry in 2034
         quiet = sos.build_monitor(report, sos.report_to_dict(report), 'last.json', warn_days=5)
         title, items, _ = sos.notification_message(sos.report_to_dict(report, quiet), quiet)
         self.assertEqual(items, [])
@@ -3786,7 +3786,8 @@ class NotifyDeliveryTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.before, cls.after = fleet_before(), fleet_after()
+        # a fixed clock: --warn-days 5 would see www.example-test.com.tr's 2034-06-01 expiry
+        cls.before, cls.after = fleet_before(now=NOW), fleet_after(now=NOW + timedelta(days=1))
         cls.tmp = tempfile.TemporaryDirectory()
         cls.baseline = os.path.join(cls.tmp.name, 'last.json')
         Path(cls.baseline).write_text(sos.render_json(cls.before), encoding='utf-8')

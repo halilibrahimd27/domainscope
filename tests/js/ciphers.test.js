@@ -13,6 +13,7 @@ import {
   CipherError, SLICE_BYTES, aesCbcDecrypt, cbcDecryptInSlices, desEde3CbcDecrypt, rc2CbcDecrypt
 } from '../../assets/js/lib/ciphers.js';
 import { sha1, sha256 } from '../../assets/js/lib/sha.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 const hex = (s) => Uint8Array.from(Buffer.from(s.replace(/\s+/g, ''), 'hex'));
 const toHex = (b) => Buffer.from(b).toString('hex');
@@ -97,7 +98,7 @@ describe('DES and DES-EDE (3DES)', () => {
       const ms = performance.now() - t0;
       assert.ok(Buffer.from(out).equals(plain), name);
       // About 5 ms here; a bit-per-byte DES took over two seconds, and it runs on the page's thread.
-      assert.ok(ms < 500, `${name}: ${ms.toFixed(0)} ms for 64 KB`);
+      assert.ok(ms < 500 * PERF_FACTOR, `${name}: ${ms.toFixed(0)} ms for 64 KB`);
     }
     return undefined;
   });

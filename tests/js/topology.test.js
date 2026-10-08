@@ -20,6 +20,7 @@ import { planRenewal, workListRows, workListColumns, WORKLIST_COLUMNS } from '..
 import { toCsv, scanServerRows, targetsForCli, cliServerName, SERVER_COLUMNS } from '../../assets/js/lib/export.js';
 import { buildVerifyPairs } from '../../assets/js/lib/verify.js';
 import { targetsText } from '../../assets/js/views/inventory.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 const TOPOLOGY_DIR = new URL('../fixtures/topology/', import.meta.url);
 const INVENTORY = parseInventory(readFileSync(new URL('inventory.txt', TOPOLOGY_DIR), 'utf8')).servers;
@@ -79,7 +80,7 @@ describe('applyTopology / orderByLoadBalancer', () => {
     const out = applyTopology([{ server: servers[0], hosts: hosts() }, { server: servers[1], hosts: hosts() }], servers);
     const ms = performance.now() - started;
     assert.deepEqual([out.length, out[2].hosts.length, out[2].hosts[4999].lbs], [42, 5000, ['lb01', 'lb02']]);
-    assert.ok(ms < 1000, `applyTopology took ${Math.round(ms)} ms`);
+    assert.ok(ms < 1000 * PERF_FACTOR, `applyTopology took ${Math.round(ms)} ms`);
   });
 
   const [lb01, lb02, web01, web02, app01] = ['lb01', 'lb02', 'web01', 'web02', 'app01'].map((n) => CORE.find((s) => s.name === n));

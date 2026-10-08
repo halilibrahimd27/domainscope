@@ -8,6 +8,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { relatedDomains, uniqueCerts, SHARED_CERT_DOMAINS, RELATED_NAME_CAP, RELATED_CERT_CAP } from '../../assets/js/lib/ctrelated.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 const NOW = Date.parse('2026-09-28T12:00:00Z');
 const day = (n) => new Date(NOW + n * 86400000);
@@ -56,7 +57,7 @@ describe('uniqueCerts', () => {
     for (let i = 0; i < 19750; i += 1) rows.push(crtsh(20000 + i, `dd${i}`, [`h${i}.example.com`], { from: -300 - i }));
     const started = performance.now();
     const list = uniqueCerts([...rows, ...spotters]);
-    assert.ok(performance.now() - started < 2000, 'no pairwise search');
+    assert.ok(performance.now() - started < 2000 * PERF_FACTOR, 'no pairwise search');
     assert.equal(list.length, 500 + 19750);
     assert.deepEqual(list.find((c) => c.key === spotters[1].key).sources, ['certspotter', 'crtsh'], 'folded into the twin whose names it has');
     assert.deepEqual(list.find((c) => c.key === spotters[0].key).sources, ['certspotter']);

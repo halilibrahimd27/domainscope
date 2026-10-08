@@ -18,6 +18,7 @@ import {
 import { clearRdapCache } from '../../assets/js/lib/rdap.js';
 import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
 import { throwIfAborted } from '../../assets/js/lib/util.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 const NOW = new Date('2026-10-02T12:00:00Z');
 const DAY = 86400000;
@@ -189,7 +190,7 @@ describe('the list', () => {
     const p = parsePortfolioInput(text);
     const ms = performance.now() - t0;
     assert.deepEqual([p.domains, p.invalid.length, p.invalid[0], p.invalid.at(-1)], [['example.com'], 60000, '12:00:0', 'status_29999=200'], 'every junk token once, in input order');
-    assert.ok(ms < 1000, `${Math.round(ms)} ms for 60,000 distinct junk tokens`);
+    assert.ok(ms < 1000 * PERF_FACTOR, `${Math.round(ms)} ms for 60,000 distinct junk tokens`);
   });
 });
 

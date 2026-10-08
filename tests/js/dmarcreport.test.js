@@ -25,6 +25,7 @@ import { crc32, ZIP_LIMITS } from '../../assets/js/lib/zipread.js';
 import { buildIpIndex, parseInventory } from '../../assets/js/lib/inventory.js';
 import { hostResolutionFrom } from '../../assets/js/lib/doh.js';
 import { throwIfAborted } from '../../assets/js/lib/util.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 const DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'mailreports');
 const bytesOf = (name) => new Uint8Array(readFileSync(join(DIR, name)));
@@ -187,12 +188,12 @@ describe('parseXml — a minimal reader for data-only XML', () => {
       const ms = performance.now() - t0;
       assert.equal(root.name, 'feedback', name);
       // A backtracking attribute pattern took seconds on 50,000 characters; the margin is for shared CI runners.
-      assert.ok(ms < 1500, `${name}: ${Math.round(ms)} ms`);
+      assert.ok(ms < 1500 * PERF_FACTOR, `${name}: ${Math.round(ms)} ms`);
     }
     assert.deepEqual(parseXml('<a b = "1" c=\'2\' d e=f g="&lt;"/>').attrs, { b: '1', c: '2', g: '<' }, 'a bare name and an unquoted value are passed over');
     const t0 = performance.now();
     assert.throws(() => parseXml(`<feedback><record a="${'x'.repeat(1000000)}`), (err) => err.code === 'unterminated');
-    assert.ok(performance.now() - t0 < 1500);
+    assert.ok(performance.now() - t0 < 1500 * PERF_FACTOR);
   });
 
   test('a large report parses quickly (50,000 records)', () => {
@@ -224,7 +225,7 @@ describe('parseXml — a minimal reader for data-only XML', () => {
     assert.deepEqual([d.errors.length, s.headerFrom.length, s.envelopeFrom.length, s.spfAuth.length, s.dkimAuth.length, s.overrides.length], [n, n, n, n, n, n]);
     assert.deepEqual([s.spfAuth[0].messages, s.dkimAuth[0].messages, s.overrides[0].messages, s.spfAuth[1].messages], [3, 3, 3, 1], 'a repeated result adds its messages');
     // The linear scans of every list gathered so far took seconds here; the margin is for shared CI runners.
-    assert.ok(ms < 1500, `${Math.round(ms)} ms`);
+    assert.ok(ms < 1500 * PERF_FACTOR, `${Math.round(ms)} ms`);
   });
 });
 

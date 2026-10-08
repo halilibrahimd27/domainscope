@@ -6,6 +6,7 @@ import {
   TOPOLOGY_KEYS, TOPOLOGY_REASONS
 } from '../../assets/js/lib/inventory.js';
 import { inventoryTopology, terminatesTls, topologyTokens } from '../../assets/js/lib/topology.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 /** Map server id -> sorted ips for order-independent comparison. */
 function ipsById(result) {
@@ -1024,5 +1025,5 @@ test('a large JSON inventory (a Terraform output map of 20,000 servers) parses i
   const ms = performance.now() - t0;
   assert.equal(r.servers.length, 19999);
   assert.deepEqual(r.warnings.map((w) => [w.line, w.code, w.detail]), [[4 + 15000, 'INVALID_IP', `${ip(15000)}:99999`]]);
-  assert.ok(ms < 1000, `${Math.round(ms)} ms`);
+  assert.ok(ms < 1000 * PERF_FACTOR, `${Math.round(ms)} ms`);
 });

@@ -7,6 +7,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataTable } from '../../assets/js/ui/components.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 /* ---- a fake document: just enough for DataTable ------------------------------------------ */
 
@@ -236,7 +237,7 @@ describe('DataTable.updateRows — many rows at once', () => {
     const ms = performance.now() - t0;
     assert.equal(found, n);
     assert.equal(visible[0], fresh[0]);
-    assert.ok(ms < 200, `${n} rows took ${ms.toFixed(0)} ms`);
+    assert.ok(ms < 200 * PERF_FACTOR, `${n} rows took ${ms.toFixed(0)} ms`);
     await rendered();
     assert.match(bodyRows(table)[0].textContent, /third-party/);
   });

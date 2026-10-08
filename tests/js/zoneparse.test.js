@@ -16,6 +16,7 @@ import { encodeMessage, decodeMessage, encodeName, hexDecode } from '../../asset
 import {
   FIXTURES, ZONES_DIR, parseFixture, fixtureText, formatParseGolden, goldenPath, unifiedDiff
 } from '../fixtures/zones/gen-parse-golden.mjs';
+import { PERF_FACTOR } from './perf.mjs';
 
 const STRICT = process.env.ZONE_PERF_STRICT === '1';
 /** Performance budgets: strict under ZONE_PERF_STRICT=1, 3× margin otherwise (shared CI runners). */
@@ -267,7 +268,7 @@ describe('input, encoding and line endings', () => {
     const t0 = performance.now();
     const huge = P('a'.repeat(ZONE_LIMITS.maxChars + 1));
     assert.equal(huge.fatal.code, 'TOO_LARGE');
-    assert.ok(performance.now() - t0 < 1000);
+    assert.ok(performance.now() - t0 < 1000 * PERF_FACTOR);
   });
 
   test('gzip bytes → NOT_A_ZONE hint gzip', () => {

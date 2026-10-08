@@ -11,6 +11,7 @@ import { DohClient } from '../../assets/js/lib/doh.js';
 import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/lib/dnswire.js';
 import { parseInventory, buildIpIndex } from '../../assets/js/lib/inventory.js';
 import { HttpError } from '../../assets/js/lib/util.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 /* ------------------------------------------------------------------------ */
 /* Mock DoH                                                                 */
@@ -254,7 +255,7 @@ describe('parseSweepTarget', () => {
       const ms = performance.now() - t0;
       assert.equal(t.ok, false, name);
       // Quadratic parsing took seconds here; the margin is for shared CI runners.
-      assert.ok(ms < 250, `${name}: ${Math.round(ms)} ms`);
+      assert.ok(ms < 250 * PERF_FACTOR, `${name}: ${Math.round(ms)} ms`);
     }
   });
 

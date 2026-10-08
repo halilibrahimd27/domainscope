@@ -1,0 +1,133 @@
+{
+  "version": "1.0",
+  "log_list_timestamp": "2026-09-30T12:00:00Z",
+  "operators": [
+    {
+      "name": "Example Log Operator A",
+      "email": [
+        "ct-a@example.com"
+      ],
+      "logs": [
+        {
+          "description": "Example 'Alpha2026h2' log",
+          "log_id": "OWHsonDjY7uyvjVWfahOWXlbj/5UXuarecj1bwPIYM8=",
+          "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuufeHtS/Wv51QcXgBf3vdWlaL8XzmewOKyIv+ySfXybY1DE0XbZ8z7RwLCTCVD/+8DHcD0L9KFKlcolMVKsYGQ==",
+          "url": "https://ct.example.com/alpha2026h2/",
+          "mmd": 86400,
+          "state": {
+            "usable": {
+              "timestamp": "2026-01-15T00:00:00Z"
+            }
+          },
+          "temporal_interval": {
+            "start_inclusive": "2026-07-01T00:00:00Z",
+            "end_exclusive": "2028-01-01T00:00:00Z"
+          }
+        },
+        {
+          "description": "Example 'Bravo2026h2' log",
+          "log_id": "rU+wBtUgxj4XPtdyAVH9pEd1z07/xymwISLRyqUD4ic=",
+          "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETw5t50HrwwUQni3JyCYCbP4Hol9C7vwDzcrJvnHePcIKXBx6348jN3QgDi2jdJ0II5jFDXnvDjObezeK3dJJPQ==",
+          "url": "https://ct.example.com/bravo2026h2/",
+          "mmd": 86400,
+          "state": {
+            "retired": {
+              "timestamp": "2026-09-15T00:00:00Z"
+            }
+          },
+          "temporal_interval": {
+            "start_inclusive": "2026-07-01T00:00:00Z",
+            "end_exclusive": "2028-01-01T00:00:00Z"
+          }
+        }
+      ],
+      "tiled_logs": []
+    },
+    {
+      "name": "Example Log Operator B",
+      "email": [
+        "ct-b@example.com"
+      ],
+      "logs": [
+        {
+          "description": "Example 'Delta2027h1' log",
+          "log_id": "recTaI0R2ZyHWf6/xmclDpFUZz7tpRgXF4GTYRaCrH0=",
+          "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE1UaQnZ4lm8oGADlJiBuRtUGJoWAR5oLU3HgH4ONSvvv7FxCxQs4tokauC3oll0/JxJOQQvtwpihy/V3sii0FmA==",
+          "url": "https://ct.example.net/delta2027h1/",
+          "mmd": 86400,
+          "state": {
+            "readonly": {
+              "timestamp": "2026-06-01T00:00:00Z"
+            }
+          },
+          "temporal_interval": {
+            "start_inclusive": "2026-07-01T00:00:00Z",
+            "end_exclusive": "2028-01-01T00:00:00Z"
+          }
+        }
+      ],
+      "tiled_logs": [
+        {
+          "description": "Example 'Charlie2026h2'",
+          "log_id": "3wkVVY+MoNnsBNCfvaA/Ip0P9/v+NVHFixSFwhT6VVw=",
+          "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECodFJBhSTROH9bIScRiQN0DrHU67xEtwI8XuRtKw1wwmw+Sxkz6kvI90WdeN8jHFtEHZkdkT/5PjW8heQQNZcA==",
+          "submission_url": "https://charlie2026h2.ct.example.net/",
+          "monitoring_url": "https://charlie2026h2.ct.example.net/tiles/",
+          "mmd": 60,
+          "state": {
+            "usable": {
+              "timestamp": "2026-02-01T00:00:00Z"
+            }
+          },
+          "temporal_interval": {
+            "start_inclusive": "2026-07-01T00:00:00Z",
+            "end_exclusive": "2028-01-01T00:00:00Z"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Example Log Operator C",
+      "email": [
+        "ct-c@example.com"
+      ],
+      "logs": [
+        {
+          "description": "Example 'Echo2026h2' log",
+          "log_id": "vPPwIeg4cF89OJd6g25KqPNRAecwEBEMOeSwjqYCuRc=",
+          "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE0qKP9QkSyxY38QDqfJHjtnQboPeY5eUtD1bXlZiCrrSii256ji8tL9sJAJygDYhBRNXTwy9DoD5MXwDigYPQ3A==",
+          "url": "https://ct.example.org/echo2026h2/",
+          "mmd": 86400,
+          "state": {
+            "pending": {
+              "timestamp": "2026-08-01T00:00:00Z"
+            }
+          },
+          "temporal_interval": {
+            "start_inclusive": "2026-07-01T00:00:00Z",
+            "end_exclusive": "2028-01-01T00:00:00Z"
+          }
+        }
+      ],
+      "tiled_logs": [
+        {
+          "description": "Example 'Hotel2026h2'",
+          "log_id": "JL1PAsjQxf/Tm13gxo6p7NccQC343l7rhFPVWGRnCT4=",
+          "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwtuOp7k3BY3j/l19WdGzGpAXDHRPO61eGB57sm+52e8MgyPbQjUyOd7E/dcpLNgAoT1pkFw/aXRzs9XGLhKQgQ==",
+          "submission_url": "https://hotel2026h2.ct.example.org/",
+          "monitoring_url": "https://hotel2026h2.ct.example.org/tiles/",
+          "mmd": 60,
+          "state": {
+            "usable": {
+              "timestamp": "2026-03-01T00:00:00Z"
+            }
+          },
+          "temporal_interval": {
+            "start_inclusive": "2026-07-01T00:00:00Z",
+            "end_exclusive": "2028-01-01T00:00:00Z"
+          }
+        }
+      ]
+    }
+  ]
+}

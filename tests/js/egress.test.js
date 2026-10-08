@@ -572,6 +572,7 @@ const CALL_SITES = {
   'assets/js/lib/util.js': [],
   'assets/js/lib/doh.js': ['doh'],
   'assets/js/lib/ctcert.js': ['certspotter', 'crtsh'],
+  'assets/js/lib/ctwatch.js': ['certspotter', 'crtsh'],
   'assets/js/lib/sources.js': ['crtsh', 'certspotter', 'hackertarget', 'anubis', 'otx', 'thc'],
   'assets/js/lib/ipintel.js': ['ripestat', 'ipwhois', 'hackertarget', 'thc'],
   // IP Intel › Domains on this IP (HackerTarget and ip.thc.org through lib/ipintel.js)

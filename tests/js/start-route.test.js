@@ -74,6 +74,8 @@ const JS = join(ASSETS, 'js');
  * sidebar's denser groups for 24 tools added a few bytes to style.css: ≈ 332 KB (339,887 bytes).
  * The Takeover risks card's hook (ui/takeover-panel.js, with its engine) sits in ui/subdomains-run.js
  * with the rest of a scan's results, so it adds nothing to the route.
+ * The workspace's CT watch baseline part (lib/workspace.js `ctSeen`, the JSON text lib/ctwatch.js
+ * reads, which loads with the Domain portfolio's CT tab) added 80 bytes.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

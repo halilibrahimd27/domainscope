@@ -109,10 +109,13 @@ function cleanUid(uid) {
  * event carries both, so a calendar shows the same reminders however late it is imported).
  * @param {Array<{ uid: string, date: Date|string, summary: string, description?: string, alarm?: string }>} events
  *   `uid`: stable per subject (lib/portfolio.js: one per domain); `alarm`: the reminders' text (default `summary`)
- * @param {{ now?: Date, name?: string|null, prodId?: string }} [opts] `name`: X-WR-CALNAME, the calendar's name on import
+ * @param {{ now?: Date, name?: string|null, prodId?: string, alarmDays?: ReadonlyArray<number> }} [opts] `name`:
+ *   X-WR-CALNAME, the calendar's name on import; `alarmDays`: the reminders, in whole days before
+ *   the event (default {@link ICS_ALARM_DAYS}; the CT watch passes its radar's thresholds)
  * @returns {string} CRLF line endings, folded, ending with CRLF
  */
-export function buildCalendar(events, { now = new Date(), name = null, prodId = ICS_PRODID } = {}) {
+export function buildCalendar(events, { now = new Date(), name = null, prodId = ICS_PRODID, alarmDays = ICS_ALARM_DAYS } = {}) {
+  const alarms = [...new Set((alarmDays || []).filter((d) => Number.isInteger(d) && d >= 0))];
   const stamp = icsDateTime(now instanceof Date ? now : new Date(now));
   // No METHOD: a METHOD:PUBLISH object must carry an ORGANIZER (RFC 5546 §3.2.1); a plain calendar file needs neither.
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', `PRODID:${prodId}`, 'CALSCALE:GREGORIAN'];
@@ -133,7 +136,7 @@ export function buildCalendar(events, { now = new Date(), name = null, prodId = 
       ...(e.description ? [`DESCRIPTION:${icsEscape(e.description)}`] : []),
       'TRANSP:TRANSPARENT'
     );
-    for (const days of ICS_ALARM_DAYS) {
+    for (const days of alarms) {
       lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `TRIGGER:-P${days}D`, `DESCRIPTION:${icsEscape(e.alarm || e.summary)}`, 'END:VALARM');
     }
     lines.push('END:VEVENT');

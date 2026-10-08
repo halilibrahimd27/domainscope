@@ -110,6 +110,12 @@ describe('buildCalendar', () => {
     assert.equal(text.match(/BEGIN:VALARM/g).length, text.match(/END:VALARM/g).length);
   });
 
+  test('other reminders on request (the CT watch\'s radar thresholds): whole days only, each once', () => {
+    const ct = buildCalendar(EVENTS.slice(0, 1), { now: NOW, alarmDays: [30, 14, 7, 7, 2.5, -1] });
+    assert.deepEqual(ct.match(/TRIGGER:-P\d+D/g), ['TRIGGER:-P30D', 'TRIGGER:-P14D', 'TRIGGER:-P7D']);
+    assert.doesNotMatch(buildCalendar(EVENTS.slice(0, 1), { now: NOW, alarmDays: [] }), /VALARM/);
+  });
+
   test('stable: the same dates give the same file but for DTSTAMP; a later date a higher SEQUENCE', () => {
     const later = buildCalendar(EVENTS, { now: new Date('2026-10-03T00:00:00Z'), name: 'DomainScope: example.com, example.org' });
     assert.equal(later.replace(/DTSTAMP:\S+/g, ''), text.replace(/DTSTAMP:\S+/g, ''));

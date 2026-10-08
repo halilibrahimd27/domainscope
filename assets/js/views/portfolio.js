@@ -13,6 +13,8 @@
  *   out what needs a look; columns sort. Exports: CSV, JSON and an .ics calendar of every expiry.
  * - The policy (Policy audit tab): presets, one row per rule and the JSON (kept in step), kept in
  *   the workspace; the matrix domain × rule with the evidence of each cell, CSV and JSON.
+ * - Certificates (CT) tab: the CT watchlist of the same domains (ui/ctwatch-panel.js over
+ *   lib/ctwatch.js, loaded with the tab on its first use).
  *
  * The run belongs to the module: it keeps going on another view (the tab title, the nav entry and
  * the favicon show its progress), a language switch keeps it, and another workspace or "Delete all
@@ -21,7 +23,7 @@
 
 import { h, clear, debounce } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, DataTable, EmptyState, ExternalLink, Icon, ProgressBar, StatCard, Tabs,
+  Alert, Badge, Button, Card, CopyButton, DataTable, EmptyState, ErrorBanner, ExternalLink, Icon, ProgressBar, Spinner, StatCard, Tabs,
   announce, checkbox, select, textInput, textarea, toast
 } from '../ui/components.js';
 import { registerStrings, formatBytes, formatNumber, formatDate, formatDateTime, formatRelative, t as translate } from '../i18n.js';
@@ -38,7 +40,7 @@ import { toCsv, toJson } from '../lib/export.js';
 import { registerSummaryBuilder, permalinkParams } from '../lib/summarycore.js';
 import { portfolioSummary, PORTFOLIO_SUMMARY_I18N } from '../lib/portfoliosummary.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
-import { mergeSignals } from '../lib/util.js';
+import { mergeSignals, onceAsync } from '../lib/util.js';
 import { NaMark, RetryButton, setRetryBusy, statusText } from '../ui/source-status.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { downloadText, timestampedName } from '../ui/download.js';
@@ -62,7 +64,9 @@ export const RISK_BADGES = Object.freeze(['critical', 'ns-unregistered', 'pendin
 /** A link carries the list only up to this many domains (a summary's link too). */
 export const MAX_LINK_DOMAINS = 50;
 /** The views' tabs. */
-export const PORTFOLIO_TABS = Object.freeze(['domains', 'policy']);
+export const PORTFOLIO_TABS = Object.freeze(['domains', 'policy', 'ct']);
+/** The Certificates (CT) tab's panel (with lib/ctwatch.js), on the tab's first use. */
+const loadCtPanel = onceAsync(() => import('../ui/ctwatch-panel.js'));
 
 registerSummaryBuilder('portfolio', portfolioSummary);
 registerStrings('en', PORTFOLIO_SUMMARY_I18N.en);
@@ -100,6 +104,8 @@ registerStrings('en', {
 
   'pf.tab.domains': 'Domains',
   'pf.tab.policy': 'Policy audit',
+  'pf.tab.ct': 'Certificates (CT)',
+  'pf.ct.failed': 'The Certificates (CT) tab could not be loaded',
 
   'pf.tile.domains': 'Domains',
   'pf.tile.expiring': 'Expire < 30 days',
@@ -287,6 +293,8 @@ registerStrings('tr', {
 
   'pf.tab.domains': 'Alan adları',
   'pf.tab.policy': 'Politika denetimi',
+  'pf.tab.ct': 'Sertifikalar (CT)',
+  'pf.ct.failed': 'Sertifikalar (CT) sekmesi yüklenemedi',
 
   'pf.tile.domains': 'Alan adları',
   'pf.tile.expiring': '< 30 günde doluyor',
@@ -635,6 +643,8 @@ export function mount(container, ctx) {
   let policyTextNow = state.workspaceData('policy') || '';
   let parsed = policyTextNow.trim() ? parsePolicy(policyTextNow) : { policy: null, errors: [] };
   let audit = null;
+  /** The Certificates (CT) tab's panel, once its module is loaded. */
+  let ctPanel = null;
 
   /* --- the box ---------------------------------------------------------------------- */
   const routeText = ctx.params.domains ? linkText(ctx.params.domains) : '';
@@ -667,6 +677,7 @@ export function mount(container, ctx) {
       session.carried = null;
       renderBoxStatus();
       renderPrompt();
+      if (ctPanel) ctPanel.refresh();
     }
   });
   const boxStatus = h('div', { class: 'pf-box-status text-sm', id: 'pf-box-status', attrs: { 'aria-live': 'polite' } });
@@ -1006,17 +1017,39 @@ export function mount(container, ctx) {
   });
 
   const policyPanel = h('div', { class: 'stack-lg pf-policy' });
+  // The CT tab reads the domains of the check on screen, else the box's.
+  const ctHost = h('div', { class: 'pf-ct-host' });
+  let ctLoading = false;
+  function openCt() {
+    if (ctPanel || ctLoading) return;
+    ctLoading = true;
+    ctHost.append(h('div', { class: 'pf-ct-loading' }, Spinner({ showLabel: true })));
+    loadCtPanel().then((mod) => {
+      clear(ctHost);
+      if (ctx.signal.aborted) return;
+      ctPanel = mod.mountCtWatch(ctHost, { ctx, domains: () => (session.job ? session.job.domains : parsePortfolioInput(box.value).domains) });
+    }).catch((err) => {
+      ctLoading = false;
+      clear(ctHost);
+      ctHost.append(ErrorBanner(err, { title: t('pf.ct.failed'), compact: true }));
+      ctx.checkOutdated();
+    });
+  }
+  cleanups.push(() => { if (ctPanel) ctPanel.destroy(); });
   const tabs = Tabs([
     { id: 'domains', label: t('pf.tab.domains'), content: () => h('div', { class: 'stack pf-domains' }, emptyEl, tilesEl, table.el) },
-    { id: 'policy', label: t('pf.tab.policy'), content: () => policyPanel }
+    { id: 'policy', label: t('pf.tab.policy'), content: () => policyPanel },
+    { id: 'ct', label: t('pf.tab.ct'), content: () => ctHost }
   ], {
     selected: session.tab,
     label: t('nav.portfolio'),
     onChange: (tab) => {
       session.tab = tab;
       if (tab === 'policy') renderPolicyMatrix();
+      if (tab === 'ct') openCt();
     }
   });
+  if (session.tab === 'ct') openCt();
 
   // No part of the form: Ctrl/Cmd+Enter in a table filter or the policy editor starts no new run.
   const results = h('div', { class: 'stack-lg pf-results', dataset: { shortcutScope: 'results' } }, headEl, tabs.el);
@@ -1165,6 +1198,7 @@ export function mount(container, ctx) {
     renderTiles();
     setFilter(session.filter);
     renderPolicy();
+    if (ctPanel) ctPanel.refresh();
     clear(notifyHost);
     if (job.status === 'running') {
       showProgress(true);

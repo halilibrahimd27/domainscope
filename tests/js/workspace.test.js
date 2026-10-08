@@ -161,6 +161,14 @@ describe('part values', () => {
     assert.equal(sanitizePart('policy', { rules: {} }), '');
   });
 
+  test('the CT watch baseline: the JSON text lib/ctwatch.js writes, kept as it is (it checks it when it reads it), capped; anything else empty', () => {
+    const text = '{"v":1,"domains":{"example.com":{"at":"2026-10-08T12:00:00.000Z","ids":{"00000000000000aa":"2026-12-01"}}}}';
+    assert.equal(sanitizePart('ctSeen', text), text);
+    assert.equal(sanitizePart('ctSeen', 'c'.repeat(WORKSPACE_LIMITS.ctSeen + 3)).length, WORKSPACE_LIMITS.ctSeen);
+    assert.equal(sanitizePart('ctSeen', { v: 1, domains: {} }), '');
+    assert.equal(sanitizePart('ctSeen', null), '');
+  });
+
   test('notes: free text with its line breaks; controls other than tab / newline dropped; capped', () => {
     assert.equal(sanitizePart('notes', 'Renewal:\r\n\tcall ops\u0007 first'), 'Renewal:\n\tcall ops first');
     assert.equal(sanitizePart('notes', 'n'.repeat(WORKSPACE_LIMITS.notes + 5)).length, WORKSPACE_LIMITS.notes);

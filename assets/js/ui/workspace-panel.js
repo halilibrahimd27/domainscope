@@ -45,7 +45,7 @@ const SAVE_DELAY_MS = 400;
 
 registerStrings('en', {
   'ws.title': 'Workspaces',
-  'ws.intro': 'Each workspace keeps its own servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy and origin map, so one customer’s data never mixes with another’s. Theme, language, resolvers and parallelism are the same in every workspace. Everything stays in this browser (IndexedDB).',
+  'ws.intro': 'Each workspace keeps its own servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy, origin map and the certificates the CT watch has seen, so one customer’s data never mixes with another’s. Theme, language, resolvers and parallelism are the same in every workspace. Everything stays in this browser (IndexedDB).',
   'ws.memoryOnly': 'Browser storage is unavailable: the workspaces last until you close this tab.',
   'ws.listTitle': 'Your workspaces',
   'ws.active': 'Active',
@@ -57,7 +57,7 @@ registerStrings('en', {
   'ws.save': 'Save',
   'ws.cancel': 'Cancel',
   'ws.delete': 'Delete “{name}”',
-  'ws.deleteConfirm': 'Delete the workspace “{name}” and everything in it: its servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy and origin map? This cannot be undone. Export it first to keep a copy.',
+  'ws.deleteConfirm': 'Delete the workspace “{name}” and everything in it: its servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy, origin map and CT watch baseline? This cannot be undone. Export it first to keep a copy.',
   'ws.deleted': 'Workspace “{name}” deleted.',
   'ws.deleteNotSaved': '“{name}” is deleted here, but not in this browser’s storage: {reason}. It comes back when the page is loaded again.',
   'ws.gone': '“{name}” was deleted in another tab.',
@@ -118,10 +118,11 @@ registerStrings('en', {
   'ws.sum.wordlist': 'a custom wordlist',
   'ws.sum.notes': 'notes',
   'ws.sum.policy': 'a domain policy',
+  'ws.sum.ctSeen': 'a CT watch baseline',
   'ws.sum.encrypted': 'was encrypted',
   'ws.importNew': 'Import as a new workspace',
   'ws.importReplace': 'Replace “{name}”',
-  'ws.replaceConfirm': 'Replace everything in “{name}” — its servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy and origin map — with the file’s? This cannot be undone.',
+  'ws.replaceConfirm': 'Replace everything in “{name}” — its servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy, origin map and CT watch baseline — with the file’s? This cannot be undone.',
   'ws.imported': 'Imported as the new workspace “{name}”.',
   'ws.replaced': '“{name}” replaced with the file’s contents.',
   'ws.err.too-large': 'The file is too large (at most {size}).',
@@ -137,7 +138,7 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'ws.title': 'Çalışma alanları',
-  'ws.intro': 'Her çalışma alanı kendi sunucularını, öğrenilen adlarını, özel kelime listesini, beklenen CA’larını, notlarını, son alan adlarını, alan adı politikasını ve origin haritasını tutar; böylece bir müşterinin verisi diğerininkine karışmaz. Tema, dil, çözümleyiciler ve paralellik her çalışma alanında aynıdır. Hepsi bu tarayıcıda kalır (IndexedDB).',
+  'ws.intro': 'Her çalışma alanı kendi sunucularını, öğrenilen adlarını, özel kelime listesini, beklenen CA’larını, notlarını, son alan adlarını, alan adı politikasını, origin haritasını ve CT izlemesinin gördüğü sertifikaları tutar; böylece bir müşterinin verisi diğerininkine karışmaz. Tema, dil, çözümleyiciler ve paralellik her çalışma alanında aynıdır. Hepsi bu tarayıcıda kalır (IndexedDB).',
   'ws.memoryOnly': 'Tarayıcı depolaması kullanılamıyor: çalışma alanları bu sekmeyi kapatana kadar tutulur.',
   'ws.listTitle': 'Çalışma alanlarınız',
   'ws.active': 'Etkin',
@@ -149,7 +150,7 @@ registerStrings('tr', {
   'ws.save': 'Kaydet',
   'ws.cancel': 'Vazgeç',
   'ws.delete': '“{name}” alanını sil',
-  'ws.deleteConfirm': '“{name}” çalışma alanı ve içindeki her şey silinsin mi: sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları, alan adı politikası ve origin haritası? Bu işlem geri alınamaz. Bir kopyasını saklamak için önce dışa aktarın.',
+  'ws.deleteConfirm': '“{name}” çalışma alanı ve içindeki her şey silinsin mi: sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları, alan adı politikası, origin haritası ve CT izleme referansı? Bu işlem geri alınamaz. Bir kopyasını saklamak için önce dışa aktarın.',
   'ws.deleted': '“{name}” çalışma alanı silindi.',
   'ws.deleteNotSaved': '“{name}” burada silindi ama bu tarayıcının depolamasından silinemedi: {reason}. Sayfa yeniden yüklendiğinde geri gelir.',
   'ws.gone': '“{name}” başka bir sekmede silindi.',
@@ -210,10 +211,11 @@ registerStrings('tr', {
   'ws.sum.wordlist': 'bir özel kelime listesi',
   'ws.sum.notes': 'notlar',
   'ws.sum.policy': 'bir alan adı politikası',
+  'ws.sum.ctSeen': 'bir CT izleme referansı',
   'ws.sum.encrypted': 'şifreliydi',
   'ws.importNew': 'Yeni çalışma alanı olarak içe aktar',
   'ws.importReplace': '“{name}” alanının yerine koy',
-  'ws.replaceConfirm': '“{name}” içindeki her şey — sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları, alan adı politikası ve origin haritası — dosyadakilerle değiştirilsin mi? Bu işlem geri alınamaz.',
+  'ws.replaceConfirm': '“{name}” içindeki her şey — sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları, alan adı politikası, origin haritası ve CT izleme referansı — dosyadakilerle değiştirilsin mi? Bu işlem geri alınamaz.',
   'ws.imported': '“{name}” adlı yeni çalışma alanı olarak içe aktarıldı.',
   'ws.replaced': '“{name}” dosyanın içeriğiyle değiştirildi.',
   'ws.err.too-large': 'Dosya çok büyük (en fazla {size}).',
@@ -297,6 +299,7 @@ export function importSummary(ws) {
   if (d.wordlist.trim()) parts.push(t('ws.sum.wordlist'));
   if (d.notes.trim()) parts.push(t('ws.sum.notes'));
   if ((d.policy || '').trim()) parts.push(t('ws.sum.policy'));
+  if (d.ctSeen) parts.push(t('ws.sum.ctSeen'));
   if (ws.encrypted) parts.push(t('ws.sum.encrypted'));
   return parts.join(' · ');
 }

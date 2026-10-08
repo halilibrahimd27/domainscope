@@ -29,7 +29,17 @@ export const STATUS_SOURCES = Object.freeze({
   // Certificate Transparency (the Domain overview's issuer lookup): Cert Spotter's anonymous
   // single-host quota is hourly; crt.sh has no published quota.
   certspotter: Object.freeze({ period: 'hour' }),
-  crtsh: Object.freeze({ period: null })
+  crtsh: Object.freeze({ period: null }),
+  // Domains on this IP (lib/reverseip.js): ip.thc.org's bucket refills in seconds, InternetDB's
+  // burst lock lasts about an hour (its lock is timed by lib/reverseip.js), Shodan's API takes one
+  // request a second; OTX, Robtex and WhoisXML publish no window. The workspace never fails.
+  thc: Object.freeze({ period: 'minutes' }),
+  otx: Object.freeze({ period: null }),
+  robtex: Object.freeze({ period: null }),
+  internetdb: Object.freeze({ period: 'hour' }),
+  shodan: Object.freeze({ period: 'minutes' }),
+  whoisxml: Object.freeze({ period: null }),
+  workspace: Object.freeze({ period: null })
 });
 
 /** Every reason code {@link sourceStatus} can return (`srcst.reason.<code>` in the UI). */

@@ -82,3 +82,11 @@ packs them with Python's own `zipfile` and `gzip` (so the zip reader is tested a
 implementation wrote): the Google report as a `.zip`, the Microsoft one as `.xml.gz`, the TLS reports as
 `.json.gz`, `reports-2026-09.zip` (a mailbox export: those files stored, a `notes.txt` that is no report and
 the `__MACOSX/` entries macOS adds) and `descriptor.zip` (sizes in data descriptors, written to a pipe).
+
+IP enrichment (lib/ipenrich.js, `tests/js/ipenrich.test.js`): `ipenrich/ripestat.json` holds RIPEstat answers of
+the four data calls IP Intel › Check routing makes (network-info, rpki-validation with each status — valid,
+invalid_asn, invalid_length, unknown —, routing-status clean, MOAS with more-specifics and low visibility, and
+unannounced, abuse-contact-finder, and an error answer), and `ipenrich/peeringdb.json` a PeeringDB `/api/net`
+record and its 404 "Entity not found" body. They are hand-written in the shape of live answers seen on
+2026-10-08 (every field the live answer had), with documentation data only: 192.0.2.0/24, 198.51.100.0/24,
+AS64496–AS64511 and `example.net`.

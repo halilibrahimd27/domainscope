@@ -187,9 +187,10 @@ describe('first-visit task picker', () => {
 });
 
 describe('keyboard shortcuts — which key means what', () => {
-  test('SHORTCUTS: Mod+Enter, Esc, /, ?, each described in both languages', () => {
-    assert.deepEqual(SHORTCUTS.map((s) => [s.id, s.keys.join('+')]), [['submit', 'Mod+Enter'], ['cancel', 'Esc'], ['focus', '/'], ['help', '?']]);
-    assert.deepEqual(SHORTCUT_COMMANDS, ['submit', 'cancel', 'focus', 'help']);
+  test('SHORTCUTS: Mod+Enter, Esc, /, Mod+K, ?, each described in both languages', () => {
+    assert.deepEqual(SHORTCUTS.map((s) => [s.id, s.keys.join('+')]),
+      [['submit', 'Mod+Enter'], ['cancel', 'Esc'], ['focus', '/'], ['palette', 'Mod+K'], ['help', '?']]);
+    assert.deepEqual(SHORTCUT_COMMANDS, ['submit', 'cancel', 'focus', 'palette', 'help']);
     for (const s of SHORTCUTS) assert.ok(hasString(`keys.${s.id}`, 'en') && hasString(`keys.${s.id}`, 'tr'), s.id);
     for (const k of ['keys.title', 'keys.note']) assert.ok(hasString(k, 'en') && hasString(k, 'tr'), k);
   });
@@ -234,6 +235,21 @@ describe('keyboard shortcuts — which key means what', () => {
     assert.equal(shortcutFor(key('Enter', { ctrlKey: true, altKey: true, target: el('input') })), null);
     assert.equal(shortcutFor(key('Enter', { ctrlKey: true, target: el('button') })), null, 'a button is no field');
     assert.equal(shortcutFor(key('Enter', { ctrlKey: true })), null, 'nothing focused');
+  });
+
+  test('Ctrl/Cmd+K opens the palette from anywhere, a field included; other modifiers or a held key do not', () => {
+    for (const target of [null, el('input'), el('textarea'), el('button'), el('div', { isContentEditable: true })]) {
+      assert.equal(shortcutFor(key('k', { ctrlKey: true, target })), 'palette', `Ctrl+K ${target && target.tagName}`);
+      assert.equal(shortcutFor(key('k', { metaKey: true, target })), 'palette', `⌘+K ${target && target.tagName}`);
+    }
+    assert.equal(shortcutFor(key('K', { ctrlKey: true })), 'palette', 'Caps Lock');
+    assert.equal(shortcutFor(key('k')), null, 'a plain k is typed');
+    assert.equal(shortcutFor(key('k', { target: el('input') })), null);
+    assert.equal(shortcutFor(key('K', { ctrlKey: true, shiftKey: true })), null, 'Ctrl+Shift+K is another shortcut');
+    assert.equal(shortcutFor(key('k', { ctrlKey: true, altKey: true })), null, 'AltGr+K types a character');
+    assert.equal(shortcutFor(key('k', { ctrlKey: true, repeat: true })), null, 'held');
+    assert.equal(shortcutFor(key('k', { ctrlKey: true, isComposing: true })), null, 'an input method composes');
+    assert.equal(shortcutFor(key('l', { ctrlKey: true })), null);
   });
 
   test('Esc cancels from anywhere, a field included', () => {
@@ -297,7 +313,7 @@ describe('keyboard shortcuts — which key means what', () => {
     assert.equal(shortcutFor(key('Enter', { ctrlKey: true, target: el('input'), keyCode: 229 })), null);
     assert.equal(shortcutFor(key('Escape', { repeat: true })), null);
     for (const k of ['a', 'k', 'Tab', ' ', 'F1', 'ArrowDown']) assert.equal(shortcutFor(key(k)), null, k);
-    assert.equal(shortcutFor(key('k', { ctrlKey: true })), null);
+    assert.equal(shortcutFor(key('j', { ctrlKey: true })), null, 'Ctrl+K is the palette, Ctrl+J nothing');
     assert.equal(shortcutFor(null), null);
   });
 });

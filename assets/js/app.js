@@ -21,7 +21,7 @@
  * `data-shortcut-scope` sub-form such as a paste box, that sub-form's own button; in one without
  * a submit — a view's results area, a DataTable — nothing), Esc the view's `"cancel"` one (on
  * screen, else in a closed tab; in a search field with text Esc clears it), '/' focuses its
- * `"focus"` input (else its first text field), '?' opens the shortcuts dialog.
+ * `"focus"` input (else its first text field), '?' opens the shortcuts dialog, Ctrl/Cmd+K the palette.
  *
  * Page session (lib/session.js, memory only): a view reports each run with
  * `ctx.runStarted(subject)`, which makes it the current target shown in the header chip; the
@@ -1233,11 +1233,14 @@ function renderHeaderActions() {
   dom.themeSeg = theme;
   const settingsBtn = IconButton({ icon: 'sliders', label: t('shell.settings'), onClick: openSettings });
   settingsBtn.dataset.control = 'settings';
+  const paletteBtn = IconButton({ icon: 'search', label: t('keys.palette'), onClick: openPalette, className: 'hide-sm' });
+  paletteBtn.dataset.control = 'palette';
+  paletteBtn.setAttribute('aria-haspopup', 'dialog');
   const gh = ButtonLink({ href: REPO_URL, label: 'GitHub', icon: 'code', variant: 'ghost', size: 'sm', external: true, title: t('shell.github') });
   gh.classList.add('gh-link');
   clear(dom.headerActions);
   dom.headerActions.append(lang.el, theme.el, themeCycleButton(settings.theme),
-    h('span', { class: 'header-sep', attrs: { 'aria-hidden': 'true' } }), settingsBtn, gh);
+    h('span', { class: 'header-sep', attrs: { 'aria-hidden': 'true' } }), paletteBtn, settingsBtn, gh);
 }
 
 function chainLabel(chain) {
@@ -1780,9 +1783,9 @@ function onShortcutKey(event) {
   // A dialog (settings, a confirmation, the Tools menu, the shortcut list) owns the keyboard; Esc closes it.
   if (globalThis.document.querySelector('dialog[open]')) return;
   const target = event.target && event.target.nodeType === 1 ? event.target : null;
-  if (command === 'help') {
+  if (command === 'help' || command === 'palette') {
     event.preventDefault();
-    openShortcutHelp();
+    (command === 'help' ? openShortcutHelp : openPalette)();
     return;
   }
   if (command === 'focus') {
@@ -1795,6 +1798,19 @@ function onShortcutKey(event) {
   if (!control) return;
   event.preventDefault();
   control.click();
+}
+
+let palette = null;
+
+/** The command palette (ui/palette.js with palette.css, on first use). */
+function openPalette() {
+  palette = palette || Promise.all([import('./ui/palette.js'), loadStylesheet('palette.css')]).then(([m]) => m.openPalette({
+    views: VIEWS, navigate, href: navHref, state, session: pageSession, done: () => { palette = null; }
+  })).catch((err) => {
+    palette = null;
+    noticeIfOutdated(pageIsOutdated);
+    toast(errorText(err), { type: 'error' });
+  });
 }
 
 let shortcutHelp = null;

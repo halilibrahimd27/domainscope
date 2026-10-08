@@ -85,6 +85,16 @@ describe('text helpers', () => {
     assert.equal(S.cleanText(null), '');
   });
 
+  test('cleanText drops every bidi mark: ALM (U+061C) like LRM and RLM, in running text, code spans and plain text', () => {
+    const ALM = String.fromCharCode(0x061c);
+    const RLM = String.fromCharCode(0x200f);
+    // a strong right-to-left mark would lay the addresses after it out right to left
+    assert.equal(S.cleanText(`Evil CA${ALM} 1.2.3.4 -> 5.6.7.8`), 'Evil CA 1.2.3.4 -> 5.6.7.8');
+    assert.equal(S.cleanText(`a${RLM}b`), 'a b');
+    assert.equal(S.mdCode(`Evil CA${ALM} 1.2.3.4`), '`Evil CA 1.2.3.4`');
+    assert.equal(S.renderParts([{ code: `x${ALM}y` }], 'text'), 'x y');
+  });
+
   test('mdEscape escapes Markdown syntax but keeps intraword underscores', () => {
     assert.equal(S.mdEscape('*bold* [x](y) <!channel> `c` ~s~ a|b \\'), '\\*bold\\* \\[x\\](y) \\<!channel\\> \\`c\\` \\~s\\~ a\\|b \\\\');
     assert.equal(S.mdEscape('No _dmarc record; key_name ok'), 'No \\_dmarc record; key_name ok');

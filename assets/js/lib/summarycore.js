@@ -87,10 +87,10 @@ export function trafficLight(summary) {
 /* Text helpers                                                             */
 /* ------------------------------------------------------------------------ */
 
-// Control characters, bidi embeddings / overrides / isolates and line / paragraph separators:
-// a pasted summary must not reorder, hide or break lines.
+// Control characters, every bidi control (ALM, LRM / RLM, embeddings / overrides / isolates) and
+// line / paragraph separators: a pasted summary must not reorder, hide or break lines.
 // eslint-disable-next-line no-control-regex
-const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]+/g;
+const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]+/g;
 
 /**
  * One line of safe text: control / bidi characters become a space, runs of spaces collapse.

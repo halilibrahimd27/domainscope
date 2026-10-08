@@ -818,4 +818,12 @@ test('dmarcCsvRows: one row per source with every column', async () => {
   assert.equal(out.find((x) => x.source_ip === '203.0.113.25').servers, 'mail01');
   assert.equal(out.find((x) => x.source_ip === '203.0.113.25').reporters, 'google.com | Enterprise Outlook');
   assert.equal(out.find((x) => x.source_ip === '203.0.113.25').first_seen, '2026-09-25T00:00:00.000Z');
+  // the service columns: empty without the view's names, else as lib/senders.js gives them
+  assert.deepEqual([r.service, r.service_type, r.service_via, r.service_confidence], ['', '', '', '']);
+  const serviceOf = (x) => (x.ip === '198.51.100.20' ? { service: 'Example ESP', type: 'marketing', via: 'dkim', confidence: 'high' } : null);
+  const named = dmarcCsvRows(agg, rows, { serviceOf });
+  for (const row of named) assert.deepEqual(Object.keys(row), [...DMARC_CSV_COLUMNS]);
+  const n = named.find((x) => x.source_ip === '198.51.100.20');
+  assert.deepEqual([n.service, n.service_type, n.service_via, n.service_confidence, n.messages], ['Example ESP', 'marketing', 'dkim', 'high', 120]);
+  assert.equal(named.find((x) => x.source_ip === '203.0.113.25').service, '');
 });

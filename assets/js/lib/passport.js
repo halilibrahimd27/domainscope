@@ -13,9 +13,11 @@
  *   instead of text (the view translates). A lookup that failed is a lib/sourcestatus.js status
  *   on its card, and the card's `retry` names the lookups a Retry asks again.
  * - Tables: {@link DNS_PROVIDERS} (name-server host → DNS provider), {@link MAIL_PLATFORMS} (MX host
- *   and SPF include → mail platform), {@link TXT_VENDORS} (TXT verification token → service; the
- *   token value is never kept, only the vendor and its key) and {@link REGISTRY_WHOIS} (the web
- *   WHOIS of registries without RDAP; any other TLD gets its IANA root-zone page).
+ *   → mail platform; whom an SPF include authorizes comes from lib/senders.js SENDER_SERVICES, the
+ *   table DMARC & TLS reports names its sources with), {@link TXT_VENDORS} (TXT verification token
+ *   → service; the token value is never kept, only the vendor and its key) and
+ *   {@link REGISTRY_WHOIS} (the web WHOIS of registries without RDAP; any other TLD gets its IANA
+ *   root-zone page).
  * - Certificate Transparency: {@link lookupCtIssuers} — ONE Cert Spotter request (the single-host
  *   allowance), crt.sh only when Cert Spotter cannot answer — lists the issuers of the domain's
  *   current certificates; the certificates card compares them with CAA (health.checkCaaAllows).
@@ -48,6 +50,7 @@ import { CERTSPOTTER_ISSUANCES, CRTSH_BASE, CT_TIMEOUT_MS, CRTSH_TIMEOUT_MS, ctC
 import { sourceStatus, dohStatus, rdapStatus } from './sourcestatus.js';
 import { trafficLight } from './summarycore.js';
 import { scoreHealth } from './healthscore.js';
+import { serviceBySpf, passportKind } from './senders.js';
 
 /** The cards of a passport, in display order. */
 export const PASSPORT_CARDS = Object.freeze(['registration', 'dns', 'mail', 'web', 'certs', 'saas', 'health']);
@@ -234,59 +237,50 @@ export function dnsHosting(nsHosts, { domain = null } = {}) {
 /* ------------------------------------------------------------------------ */
 
 /**
- * Mail platforms by their MX hosts (`mx`: suffixes, `mxPatterns`) and SPF includes (`spf`:
- * suffixes of an `include:` or `redirect=` domain). `kind`: 'mailbox' (hosted mailboxes),
- * 'gateway' (a filtering service in front of the mailboxes), 'forwarding', 'sending' (bulk or
- * transactional mail; SPF only for most). Every SPF include was checked to publish SPF on
- * 2026-09-28.
- * @type {ReadonlyArray<{ id: string, name: string, kind: 'mailbox'|'gateway'|'forwarding'|'sending', mx?: string[], mxPatterns?: RegExp[], spf?: string[] }>}
+ * Mail platforms by their MX hosts (`mx`: suffixes, `mxPatterns`). `kind`: 'mailbox' (hosted
+ * mailboxes), 'gateway' (a filtering service in front of the mailboxes), 'forwarding', 'sending'
+ * (the inbound MX of a sending service). Whom an SPF include authorizes to send comes from
+ * lib/senders.js SENDER_SERVICES ({@link spfSenders}), whose ids these share.
+ * @type {ReadonlyArray<{ id: string, name: string, kind: 'mailbox'|'gateway'|'forwarding'|'sending', mx?: string[], mxPatterns?: RegExp[] }>}
  */
 export const MAIL_PLATFORMS = freezeTable([
-  { id: 'microsoft365', name: 'Microsoft 365', kind: 'mailbox', mx: ['mail.protection.outlook.com', 'mx.microsoft'], spf: ['spf.protection.outlook.com'] },
+  { id: 'microsoft365', name: 'Microsoft 365', kind: 'mailbox', mx: ['mail.protection.outlook.com', 'mx.microsoft'] },
   { id: 'outlook', name: 'Outlook.com', kind: 'mailbox', mx: ['olc.protection.outlook.com'] },
-  { id: 'google', name: 'Google Workspace', kind: 'mailbox', mx: ['aspmx.l.google.com', 'googlemail.com', 'smtp.google.com'], spf: ['_spf.google.com'] },
-  { id: 'zoho', name: 'Zoho Mail', kind: 'mailbox', mx: ['zoho.com', 'zoho.eu', 'zoho.in', 'zoho.com.au', 'zoho.jp', 'zohomail.com'], spf: ['zoho.com', 'zoho.eu', 'zoho.in', 'zohomail.com'] },
-  { id: 'yandex', name: 'Yandex 360', kind: 'mailbox', mx: ['mx.yandex.net', 'mx.yandex.ru'], spf: ['_spf.yandex.net', '_spf.yandex.ru'] },
+  { id: 'google', name: 'Google Workspace', kind: 'mailbox', mx: ['aspmx.l.google.com', 'googlemail.com', 'smtp.google.com'] },
+  { id: 'zoho', name: 'Zoho Mail', kind: 'mailbox', mx: ['zoho.com', 'zoho.eu', 'zoho.in', 'zoho.com.au', 'zoho.jp', 'zohomail.com'] },
+  { id: 'yandex', name: 'Yandex 360', kind: 'mailbox', mx: ['mx.yandex.net', 'mx.yandex.ru'] },
   { id: 'yaani', name: 'Yaani Mail (Turkcell)', kind: 'mailbox', mx: ['yaanimail.com'] },
   { id: 'turktelekom', name: 'Türk Telekom e-posta', kind: 'mailbox', mx: ['turktelekomeposta.com'] },
-  { id: 'mailru', name: 'Mail.ru for business', kind: 'mailbox', mx: ['mxs.mail.ru'], spf: ['_spf.mail.ru'] },
-  { id: 'proton', name: 'Proton Mail', kind: 'mailbox', mx: ['protonmail.ch'], spf: ['_spf.protonmail.ch'] },
-  { id: 'icloud', name: 'iCloud Mail', kind: 'mailbox', mx: ['mail.icloud.com'], spf: ['icloud.com'] },
-  { id: 'fastmail', name: 'Fastmail', kind: 'mailbox', mx: ['messagingengine.com'], spf: ['spf.messagingengine.com'] },
-  { id: 'godaddy', name: 'GoDaddy email', kind: 'mailbox', mx: ['secureserver.net'], spf: ['secureserver.net'] },
-  { id: 'namecheap', name: 'Namecheap Private Email', kind: 'mailbox', mx: ['privateemail.com'], spf: ['spf.privateemail.com'] },
-  { id: 'ovh', name: 'OVHcloud mail', kind: 'mailbox', mx: ['mail.ovh.net', 'mail.ovh.ca'], spf: ['mx.ovh.com'] },
-  { id: 'ionos', name: 'IONOS mail', kind: 'mailbox', mx: ['ionos.com', 'ionos.de', 'ionos.co.uk', '1and1.com'], spf: ['_spf-eu.ionos.com', '_spf-us.ionos.com'] },
-  { id: 'rackspace', name: 'Rackspace Email', kind: 'mailbox', mx: ['emailsrvr.com'], spf: ['emailsrvr.com'] },
-  { id: 'titan', name: 'Titan Email', kind: 'mailbox', mx: ['titan.email'], spf: ['spf.titan.email'] },
-  { id: 'hostinger', name: 'Hostinger Email', kind: 'mailbox', mx: ['mail.hostinger.com'], spf: ['_spf.mail.hostinger.com'] },
-  { id: 'gandi', name: 'Gandi Mail', kind: 'mailbox', mx: ['mail.gandi.net'], spf: ['_mailcust.gandi.net'] },
-  { id: 'migadu', name: 'Migadu', kind: 'mailbox', mx: ['migadu.com'], spf: ['spf.migadu.com'] },
-  { id: 'tuta', name: 'Tuta', kind: 'mailbox', mx: ['tutanota.de'], spf: ['spf.tutanota.de'] },
-  { id: 'mailboxorg', name: 'mailbox.org', kind: 'mailbox', mx: ['mailbox.org'], spf: ['mailbox.org'] },
-  { id: 'mimecast', name: 'Mimecast', kind: 'gateway', mx: ['mimecast.com', 'mimecast.co.za', 'mimecast-offshore.com'], spf: ['_netblocks.mimecast.com'] },
-  { id: 'proofpoint', name: 'Proofpoint', kind: 'gateway', mx: ['pphosted.com', 'ppe-hosted.com'], spf: ['pphosted.com', 'ppe-hosted.com'] },
-  { id: 'barracuda', name: 'Barracuda Email Protection', kind: 'gateway', mx: ['barracudanetworks.com'], spf: ['barracudanetworks.com'] },
-  { id: 'cisco', name: 'Cisco Secure Email', kind: 'gateway', mx: ['iphmx.com'], spf: ['iphmx.com'] },
-  { id: 'trendmicro', name: 'Trend Micro Email Security', kind: 'gateway', mx: ['tmes.trendmicro.com', 'tmes.trendmicro.eu', 'hes.trendmicro.com'], spf: ['spf.tmes.trendmicro.com'] },
-  { id: 'sophos', name: 'Sophos Email', kind: 'gateway', mx: ['hydra.sophos.com'], spf: ['prod.hydra.sophos.com'] },
-  { id: 'symantec', name: 'Symantec Email Security.cloud', kind: 'gateway', mx: ['messagelabs.com'], spf: ['spf.messagelabs.com'] },
-  { id: 'hornetsecurity', name: 'Hornetsecurity', kind: 'gateway', mx: ['hornetsecurity.com'], spf: ['spf.hornetsecurity.com'] },
-  { id: 'cloudflare', name: 'Cloudflare Email Routing', kind: 'forwarding', mx: ['mx.cloudflare.net'], spf: ['_spf.mx.cloudflare.net'] },
-  { id: 'improvmx', name: 'ImprovMX', kind: 'forwarding', mx: ['improvmx.com'], spf: ['spf.improvmx.com'] },
-  { id: 'forwardemail', name: 'Forward Email', kind: 'forwarding', mx: ['forwardemail.net'], spf: ['spf.forwardemail.net'] },
-  { id: 'amazonses', name: 'Amazon SES', kind: 'sending', mxPatterns: [/^inbound-smtp\.[a-z0-9-]+\.amazonaws\.com$/], spf: ['amazonses.com'] },
-  { id: 'mailgun', name: 'Mailgun', kind: 'sending', mx: ['mailgun.org'], spf: ['mailgun.org'] },
-  { id: 'sendgrid', name: 'SendGrid', kind: 'sending', mx: ['mx.sendgrid.net'], spf: ['sendgrid.net'] },
-  { id: 'postmark', name: 'Postmark', kind: 'sending', mx: ['inbound.postmarkapp.com'], spf: ['spf.mtasv.net'] },
-  { id: 'mailchimp', name: 'Mailchimp', kind: 'sending', spf: ['servers.mcsv.net', 'spf.mandrillapp.com'] },
-  { id: 'brevo', name: 'Brevo', kind: 'sending', spf: ['spf.brevo.com', 'spf.sendinblue.com'] },
-  { id: 'mailjet', name: 'Mailjet', kind: 'sending', spf: ['spf.mailjet.com'] },
-  { id: 'sparkpost', name: 'SparkPost', kind: 'sending', spf: ['sparkpostmail.com'] },
-  { id: 'salesforce', name: 'Salesforce', kind: 'sending', spf: ['_spf.salesforce.com'] },
-  { id: 'hubspot', name: 'HubSpot', kind: 'sending', spf: ['hubspotemail.net'] },
-  { id: 'zendesk', name: 'Zendesk', kind: 'sending', spf: ['mail.zendesk.com'] },
-  { id: 'freshdesk', name: 'Freshdesk', kind: 'sending', spf: ['email.freshdesk.com'] }
+  { id: 'mailru', name: 'Mail.ru for business', kind: 'mailbox', mx: ['mxs.mail.ru'] },
+  { id: 'proton', name: 'Proton Mail', kind: 'mailbox', mx: ['protonmail.ch'] },
+  { id: 'icloud', name: 'iCloud Mail', kind: 'mailbox', mx: ['mail.icloud.com'] },
+  { id: 'fastmail', name: 'Fastmail', kind: 'mailbox', mx: ['messagingengine.com'] },
+  { id: 'godaddy', name: 'GoDaddy email', kind: 'mailbox', mx: ['secureserver.net'] },
+  { id: 'namecheap', name: 'Namecheap Private Email', kind: 'mailbox', mx: ['privateemail.com'] },
+  { id: 'ovh', name: 'OVHcloud mail', kind: 'mailbox', mx: ['mail.ovh.net', 'mail.ovh.ca'] },
+  { id: 'ionos', name: 'IONOS mail', kind: 'mailbox', mx: ['ionos.com', 'ionos.de', 'ionos.co.uk', '1and1.com'] },
+  { id: 'rackspace', name: 'Rackspace Email', kind: 'mailbox', mx: ['emailsrvr.com'] },
+  { id: 'titan', name: 'Titan Email', kind: 'mailbox', mx: ['titan.email'] },
+  { id: 'hostinger', name: 'Hostinger Email', kind: 'mailbox', mx: ['mail.hostinger.com'] },
+  { id: 'gandi', name: 'Gandi Mail', kind: 'mailbox', mx: ['mail.gandi.net'] },
+  { id: 'migadu', name: 'Migadu', kind: 'mailbox', mx: ['migadu.com'] },
+  { id: 'tuta', name: 'Tuta', kind: 'mailbox', mx: ['tutanota.de'] },
+  { id: 'mailboxorg', name: 'mailbox.org', kind: 'mailbox', mx: ['mailbox.org'] },
+  { id: 'mimecast', name: 'Mimecast', kind: 'gateway', mx: ['mimecast.com', 'mimecast.co.za', 'mimecast-offshore.com'] },
+  { id: 'proofpoint', name: 'Proofpoint', kind: 'gateway', mx: ['pphosted.com', 'ppe-hosted.com'] },
+  { id: 'barracuda', name: 'Barracuda Email Protection', kind: 'gateway', mx: ['barracudanetworks.com'] },
+  { id: 'cisco', name: 'Cisco Secure Email', kind: 'gateway', mx: ['iphmx.com'] },
+  { id: 'trendmicro', name: 'Trend Micro Email Security', kind: 'gateway', mx: ['tmes.trendmicro.com', 'tmes.trendmicro.eu', 'hes.trendmicro.com'] },
+  { id: 'sophos', name: 'Sophos Email', kind: 'gateway', mx: ['hydra.sophos.com'] },
+  { id: 'symantec', name: 'Symantec Email Security.cloud', kind: 'gateway', mx: ['messagelabs.com'] },
+  { id: 'hornetsecurity', name: 'Hornetsecurity', kind: 'gateway', mx: ['hornetsecurity.com'] },
+  { id: 'cloudflare', name: 'Cloudflare Email Routing', kind: 'forwarding', mx: ['mx.cloudflare.net'] },
+  { id: 'improvmx', name: 'ImprovMX', kind: 'forwarding', mx: ['improvmx.com'] },
+  { id: 'forwardemail', name: 'Forward Email', kind: 'forwarding', mx: ['forwardemail.net'] },
+  { id: 'amazonses', name: 'Amazon SES', kind: 'sending', mxPatterns: [/^inbound-smtp\.[a-z0-9-]+\.amazonaws\.com$/] },
+  { id: 'mailgun', name: 'Mailgun', kind: 'sending', mx: ['mailgun.org'] },
+  { id: 'sendgrid', name: 'SendGrid', kind: 'sending', mx: ['mx.sendgrid.net'] },
+  { id: 'postmark', name: 'Postmark', kind: 'sending', mx: ['inbound.postmarkapp.com'] }
 ]);
 
 /**
@@ -302,8 +296,8 @@ export function mailPlatformOf(exchange) {
 /**
  * The platforms an SPF record authorises by name: every `include:` in front of `all` and, without
  * an `all`, the `redirect=` domain (receivers never get past `all`: RFC 7208 §5.1, §6.1), matched
- * against {@link MAIL_PLATFORMS} `spf` suffixes. Macro domains (`%{i}…`) and unknown
- * ones are listed in `other` as written.
+ * against the SPF suffixes of lib/senders.js SENDER_SERVICES (`kind`: senders.passportKind of the
+ * service's type). Macro domains (`%{i}…`) and unknown ones are listed in `other` as written.
  * @param {object|string} spf a health.parseSpf() result or the record text
  * @returns {{ senders: Array<{ id: string, name: string, kind: string }>, other: string[] }}
  */
@@ -318,9 +312,9 @@ export function spfSenders(spf) {
   const other = [];
   for (const target of uniq(targets.map(canon))) {
     // A macro include (`%{ir}.%{v}.%{d}.spf.has.pphosted.com`) still names its service by its suffix.
-    const hit = matchTable(MAIL_PLATFORMS, target, 'spf', null);
+    const hit = serviceBySpf(target);
     if (!hit) other.push(target);
-    else if (!senders.some((s) => s.id === hit.id)) senders.push({ id: hit.id, name: hit.name, kind: hit.kind });
+    else if (!senders.some((s) => s.id === hit.id)) senders.push({ id: hit.id, name: hit.name, kind: passportKind(hit.type) });
   }
   return { senders, other };
 }

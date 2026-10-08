@@ -5,7 +5,8 @@ The tiered wordlists in this directory (wordlist-base.txt, wordlist-large.txt.gz
 wordlist-huge.txt.gz) are built by tools/build-wordlists.mjs from the permissively
 licensed sources below and are a substantial derivative of them. Their licences
 require that this notice travel with the data. See assets/data/README.md for how
-each source is used and the pinned commit.
+each source is used and the pinned commit. The sender lists in senders/ are built
+by tools/build-senders.mjs from parsedmarc's reverse DNS map (Apache-2.0, below).
 
 Locale packs (locale/<cc>.txt) and the curated core in assets/js/lib/wordlist.js
 are original DomainScope work under the project's own MIT licence (see ../../LICENSE).
@@ -56,7 +57,7 @@ Apache-2.0-licensed sources
 -----------------------------------------------------------------------
 
 The following are used under the Apache License, Version 2.0 (full text below).
-Neither upstream ships a NOTICE file.
+None of these upstreams ships a NOTICE file.
 
   * commonspeak2-wordlists — subdomains/subdomains.txt
     Copyright assetnote (Assetnote / infosec-au)
@@ -65,6 +66,16 @@ Neither upstream ships a NOTICE file.
   * altdns — words.txt
     Copyright infosec-au
     https://github.com/infosec-au/altdns
+
+  * parsedmarc — parsedmarc/resources/maps/base_reverse_dns_map.csv at commit
+    6effd806045483363428b9002b0542b651f576b6 (2026-04-20), the last version of the
+    map before it was relicensed under CC BY-SA 4.0
+    Copyright Sean Whalen and contributors
+    https://github.com/domainaware/parsedmarc
+    Used in senders/ptr-map.json and senders/isp.json, built by
+    tools/build-senders.mjs. Changed: only the mail-relevant rows kept (their types
+    renamed), the ISP rows reduced to their base domains, names trimmed; each file
+    says so in its "notice" field.
 
                                  Apache License
                            Version 2.0, January 2004

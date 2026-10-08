@@ -349,6 +349,9 @@ describe('i18n coverage', () => {
     for (const l of ['ok', 'warn', 'error']) add(`dov.health.light.${l}`);
     for (const k of ['error', 'warn', 'info']) add(`dov.health.count.${k}`);
     for (const p of passport.MAIL_PLATFORMS) if (p.kind !== 'mailbox') add(`dov.mail.kind.${p.kind}`);
+    // … and the kinds of the SPF senders it names from lib/senders.js.
+    const senders = await imp('assets/js/lib/senders.js');
+    for (const s of senders.SENDER_SERVICES) if (senders.passportKind(s.type) !== 'mailbox') add(`dov.mail.kind.${senders.passportKind(s.type)}`);
     // Certificate estate (lib/estate.js through views/estate.js): every filter, flag, kind, expiry
     // bucket, weak reason, tab and why a file is not a report.
     const estate = await imp('assets/js/lib/estate.js');
@@ -430,6 +433,13 @@ describe('i18n coverage', () => {
     for (const p of tlsrpt.TLS_POLICY_TYPES) add(`rpt.tls.policy.${p}`);
     for (const tool of views.reports.TLS_TOOLS) add(`rpt.tls.tool.${tool}`);
     for (const k of ['rpt.domainOption', 'rpt.tls.domainOption', 'rpt.kept']) add(k);
+    // … and the service behind each source (lib/senders.js): every type, the evidence (short and as a
+    // sentence), every guide, the two views, and every state of an Identify senders reverse DNS lookup.
+    for (const ty of senders.SENDER_TYPES) add(`rpt.svcType.${ty}`);
+    for (const v of senders.SENDER_VIAS) { add(`rpt.svcVia.${v}`); add(`rpt.svcHow.${v}`); }
+    for (const g of senders.SENDER_GUIDES) add(`rpt.guide.${g}`);
+    for (const v of views.reports.SOURCE_VIEWS) add(`rpt.view.${v}`);
+    for (const st of (await imp('assets/js/lib/ptrsweep.js')).FCRDNS_STATUSES) add(`rpt.ptrState.${st}`);
     // Domain portfolio (lib/portfolio.js, lib/policy.js through views/portfolio.js): every column,
     // filter, tile and risk, every state a cell words from the facts, every rule, status, preset,
     // parse error and evidence of the policy, and the summary's texts (lib/portfoliosummary.js).

@@ -26,8 +26,13 @@ export const UPDATE_CHECK_MS = 60 * 60 * 1000;
  * network tier (tools/build-ranges.mjs, about 130 KB of display-only operator space). The range
  * manifest and the small edge tier stay precached; offline, lib/netinfo.js falls back to its
  * built-in table when the whole dataset is not cached, so the network tier adds no offline weight.
+ * The sender lists (tools/build-senders.mjs) are read only by DMARC & TLS reports › Identify
+ * senders, whose reverse DNS lookups need a connection anyway: their manifest is precached, the two
+ * lists are not.
  */
-export const PRECACHE_SKIP = Object.freeze(['data/README.md', 'data/ranges/networks.json', 'data/wordlist-manifest.json']);
+export const PRECACHE_SKIP = Object.freeze([
+  'data/README.md', 'data/ranges/networks.json', 'data/senders/isp.json', 'data/senders/ptr-map.json', 'data/wordlist-manifest.json'
+]);
 /**
  * Directories under assets/ left out of the precache: the intermediate certificate shards of
  * lib/chainfix.js (256 + 16 files, about 4.2 MB; a repair reads the few it needs, usually one or

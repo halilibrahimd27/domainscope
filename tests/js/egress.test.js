@@ -600,6 +600,8 @@ const CALL_SITES = {
   'assets/js/lib/wordlist.js': ['self'],
   // the weekly provider range dataset, from this site (assets/data/ranges/)
   'assets/js/lib/netinfo.js': ['self'],
+  // DMARC & TLS reports › Identify senders: the bundled sender lists, from this site (assets/data/senders/)
+  'assets/js/lib/senders.js': ['self'],
   'assets/js/lib/scanner.js': [],
   'assets/js/lib/health.js': [],
   'assets/js/views/bulk.js': [],

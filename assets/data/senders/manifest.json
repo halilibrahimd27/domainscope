@@ -1,0 +1,86 @@
+{
+  "format": 1,
+  "generated": "2026-10-08",
+  "digest": "26cfe116beda4c14418eff532c76d4ad20208fe6743564a5f8098e85bb99de12",
+  "source": {
+    "id": "parsedmarc",
+    "name": "parsedmarc: base_reverse_dns_map.csv",
+    "repository": "https://github.com/domainaware/parsedmarc",
+    "url": "https://raw.githubusercontent.com/domainaware/parsedmarc/6effd806045483363428b9002b0542b651f576b6/parsedmarc/resources/maps/base_reverse_dns_map.csv",
+    "commit": "6effd806045483363428b9002b0542b651f576b6",
+    "committed": "2026-04-20",
+    "sha256": "7b2979d682a27a8ae4ebfe8c02bf1f71798d720b04fbe61a2aa41b54b2ad2c87",
+    "rows": 3133,
+    "types": 47
+  },
+  "licence": {
+    "spdx": "Apache-2.0",
+    "name": "Apache License, Version 2.0",
+    "copyright": "parsedmarc: Sean Whalen and contributors",
+    "url": "https://raw.githubusercontent.com/domainaware/parsedmarc/6effd806045483363428b9002b0542b651f576b6/LICENSE",
+    "notice": "Contains data from parsedmarc (https://github.com/domainaware/parsedmarc), base_reverse_dns_map.csv at commit 6effd80, Copyright Sean Whalen and contributors, licensed under the Apache License, Version 2.0. Changed by tools/build-senders.mjs: only the mail-relevant rows kept (types renamed), the ISP rows reduced to their base domains, names trimmed."
+  },
+  "files": {
+    "ptr-map.json": {
+      "bytes": 59020,
+      "sha256": "4e2e731d80aa618139d145157543fa7ce00eb8b043a4511492bde93ff9093cd2"
+    },
+    "isp.json": {
+      "bytes": 16446,
+      "sha256": "bb214120d3d31f9e8dec500580184a4435567f952ccd03e478ad2be696185b73"
+    }
+  },
+  "counts": {
+    "ptr": 1348,
+    "isp": 950,
+    "byType": {
+      "Agriculture": 3,
+      "Automotive": 6,
+      "Beauty": 2,
+      "Conglomerate": 5,
+      "Construction": 13,
+      "Consulting": 7,
+      "Defense": 2,
+      "Education": 141,
+      "Email Provider": 91,
+      "Email Security": 85,
+      "Entertainment": 11,
+      "Event Planning": 5,
+      "Finance": 46,
+      "Food": 6,
+      "Government": 58,
+      "Government Media": 1,
+      "Healthcare": 249,
+      "IaaS": 11,
+      "Industrial": 71,
+      "Insurance": 1,
+      "ISP": 950,
+      "Legal": 4,
+      "Logistics": 31,
+      "Manufacturing": 28,
+      "Marketing": 133,
+      "MSP": 161,
+      "MSSP": 4,
+      "News": 11,
+      "Nonprofit": 17,
+      "PaaS": 6,
+      "Photography": 3,
+      "Physical Security": 1,
+      "Print": 7,
+      "Publishing": 4,
+      "Real Estate": 11,
+      "Religion": 3,
+      "Retail": 54,
+      "SaaS": 220,
+      "Science": 2,
+      "Search Engine": 1,
+      "Social Media": 2,
+      "Sports": 4,
+      "Staffing": 3,
+      "Technology": 33,
+      "Travel": 19,
+      "Utilities": 1,
+      "Web Host": 604
+    }
+  }
+}

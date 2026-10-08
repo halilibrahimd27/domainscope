@@ -120,6 +120,13 @@ and `cloud.json`, `oracle.json`, `digitalocean.csv` (an RFC 8805 geofeed) and th
 true })` reads them; the builder's checks refuse documentation space, so the tests pass a permissive
 `routable`. No generator: the fixtures are small enough to edit by hand.
 
+Sender lists (tools/build-senders.mjs, `tests/js/build-senders.test.js`): `senders/` holds a
+hand-written `base_reverse_dns_map.csv` shaped like parsedmarc's map with documentation names only —
+every mail-relevant type, ISP rows (one with the type in lower case), names with quoted commas and
+doubled quotes, a base domain in capitals, one without a dot, a public suffix and a duplicate —, the
+first lines of the Apache `LICENSE` and a maps `README.md` without a licence section of its own. The
+three form a complete offline cache once copied under the builder's cache names. No generator.
+
 Mail reports (lib/dmarcreport.js, lib/tlsrpt.js, lib/zipread.js, the `reports` E2E suite): `mailreports/src/`
 holds hand-written reports in the formats reporters send, with documentation data only — a Google-style
 and a Microsoft-style DMARC aggregate report for `example.com`, a DMARCbis-style one (the `dmarc-2.0`

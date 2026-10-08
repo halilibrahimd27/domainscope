@@ -325,6 +325,77 @@
   max-width: 60rem;
 }
 
+/* The sending addresses' head: the title, and the address / service switch on its right (under it on a phone). */
+.rpt-sources-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+/* The service behind a source (or a service group): the name, its type and evidence under it. */
+.rpt-svc {
+  display: grid;
+  gap: 1px;
+  min-width: 7rem;
+  max-width: 14rem;
+}
+
+.rpt-svc-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.rpt-svc-meta {
+  color: var(--text-3);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* A hint only (a reverse name that does not point back, or the network alone): not as sure as the rest. */
+.rpt-svc[data-confidence="low"] .rpt-svc-name {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.rpt-svc-none {
+  color: var(--text-3);
+}
+
+.rpt-fix-svc {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.rpt-grp-totals {
+  margin: 0;
+}
+
+.rpt-grp-classes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rpt-grp-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
+.rpt-guide {
+  display: block;
+  max-width: 48rem;
+}
+
+.rpt-services .dt-row.rpt-grp-unnamed td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn-solid);
+}
+
 .rpt-auth {
   display: grid;
   gap: 2px;
@@ -483,9 +554,18 @@
   }
 
   .rpt-why,
-  .rpt-net {
+  .rpt-net,
+  .rpt-svc {
     min-width: 0;
     max-width: none;
+  }
+
+  .rpt-services .dt-row.rpt-grp-unnamed {
+    box-shadow: inset 3px 0 0 var(--warn-solid);
+  }
+
+  .rpt-services .dt-row.rpt-grp-unnamed td:first-child {
+    box-shadow: none;
   }
 }
 

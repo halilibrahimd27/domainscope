@@ -3,18 +3,23 @@
  * passed aligned, the parameters of a fix text, the facts Copy summary gets (the domain on screen,
  * the TLS summary of the same domain, whether the classes rest on the current SPF), and that
  * every source class, SPF line state and advice link has its look, and which rows of the sources
- * table a new classification redraws. The module is DOM-free at import. Pure Node, no network; documentation data only.
+ * table a new classification redraws; the Service column's words and the service view's groups,
+ * in English and Turkish, and what an Identify senders lookup keeps. The module is DOM-free at
+ * import. Pure Node, no network; documentation data only.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   id, titleKey, icon, alignedState, fixParams, headlineShare, summaryFacts, verdictLook, CLASS_STYLE, TLS_TOOLS, SPF_LINE_STATES, VERDICT_EXTRA_KEYS,
-  INTEL_MAX, FIX_FIRST_MAX, result, sourceRowChanged
+  INTEL_MAX, FIX_FIRST_MAX, IDENTIFY_CONCURRENCY, GROUP_LIST_MAX, SOURCE_VIEWS, result, sourceRowChanged, serviceLabel, serviceHow, groupName, ptrFact
 } from '../../assets/js/views/reports.js';
 import { SOURCE_CLASSES, FIX_CODES, DMARC_VERDICTS, aggregateDmarc, parseAggregateReport, classifySources } from '../../assets/js/lib/dmarcreport.js';
 import { buildIpIndex, parseInventory } from '../../assets/js/lib/inventory.js';
 import { TLS_RESULT_TYPES, tlsAdvice } from '../../assets/js/lib/tlsrpt.js';
 import { reportsSummary } from '../../assets/js/lib/reportsummary.js';
+import { identifySource, groupSources, SENDER_TYPES, SENDER_VIAS, IDENTIFY_MAX } from '../../assets/js/lib/senders.js';
+import { FCRDNS_STATUSES } from '../../assets/js/lib/ptrsweep.js';
+import { t, setLang } from '../../assets/js/i18n.js';
 
 test('the view interface; nothing kept before reports were read', () => {
   assert.deepEqual([id, titleKey, icon], ['reports', 'nav.reports', 'inbox']);
@@ -130,4 +135,81 @@ test('sourceRowChanged over classifySources: the same evidence redraws nothing, 
   const index = buildIpIndex(parseInventory('mail01 192.0.2.2').servers);
   assert.deepEqual(changed(before, classifySources(agg, { index })), ['192.0.2.2']);
   assert.deepEqual(changed(before, classifySources(agg, { spf: new Map([['example.com', { status: 'none' }]]) })).length, 3, 'the SPF landed: every row');
+});
+
+/* ---- the service behind each source (lib/senders.js) ---------------------------------------- */
+
+const srcRow = (over = {}) => ({
+  ip: '192.0.2.10', private: false, messages: 10, pass: 10, fail: 0, spfAligned: 0, dkimAligned: 10, cls: 'third-party',
+  headerFrom: ['example.com'], dkimAuth: [], spfAuth: [], spfNow: null, spfListed: null, ...over
+});
+const inLang = (lang, fn) => {
+  setLang(lang);
+  try {
+    return fn();
+  } finally {
+    setLang('en');
+  }
+};
+
+test('the Service column: the name, its type and evidence, "not confirmed" for a hint, an ISP or home network, in English and Turkish', () => {
+  const byDkim = identifySource(srcRow({ dkimAuth: [{ domain: 'sendgrid.net', result: 'pass' }] }));
+  const maps = { ptr: new Map(), isp: new Set(['broadband.example.net']) };
+  const isp = identifySource(srcRow({ cls: 'unknown' }), { ptrName: 'dsl-7.broadband.example.net', maps });
+  const byPtr = identifySource(srcRow(), { ptrName: 'a8-31.smtp-out.amazonses.com', ptrConfirmed: true });
+  const network = identifySource(srcRow(), { holder: { name: 'Example Hosting Ltd', asn: 64496 } });
+  assert.deepEqual(inLang('en', () => serviceLabel(byDkim, t)), { name: 'SendGrid', meta: 'Transactional email · DKIM' });
+  assert.deepEqual(inLang('tr', () => serviceLabel(byDkim, t)), { name: 'SendGrid', meta: 'İşlemsel e-posta · DKIM' });
+  assert.deepEqual(inLang('en', () => serviceLabel(isp, t)), { name: 'ISP or home network', meta: 'broadband.example.net · reverse DNS, not confirmed' });
+  assert.deepEqual(inLang('tr', () => serviceLabel(isp, t)), { name: 'İSS ya da ev ağı', meta: 'broadband.example.net · ters DNS, doğrulanmadı' });
+  assert.deepEqual(inLang('en', () => serviceLabel(byPtr, t)), { name: 'Amazon SES', meta: 'Transactional email · reverse DNS' });
+  assert.deepEqual(inLang('en', () => serviceLabel(network, t)), { name: 'Example Hosting Ltd', meta: 'AS64496 · RIPEstat' });
+  assert.equal(serviceLabel(null, t), null);
+  // how it was named, as a sentence
+  assert.equal(inLang('en', () => serviceHow(byDkim, t)), 'Named from its DKIM signature, which verified: d=sendgrid.net');
+  assert.equal(inLang('tr', () => serviceHow(byDkim, t)), 'Doğrulanan DKIM imzasından: d=sendgrid.net');
+  assert.equal(inLang('en', () => serviceHow(byPtr, t)), 'Named from its reverse DNS: a8-31.smtp-out.amazonses.com (the name resolves back to the address)');
+  assert.match(inLang('en', () => serviceHow(isp, t)), /^An ISP or home network by its reverse DNS \(dsl-7\.broadband\.example\.net\): spoofing, or a user forwarding their own mail \(the name does not resolve back/);
+  assert.equal(inLang('en', () => serviceHow(network, t)), 'Only its network is known: AS64496 Example Hosting Ltd');
+  assert.equal(serviceHow(null, t), '');
+  // every type and evidence has its words in both languages
+  for (const lang of ['en', 'tr']) {
+    inLang(lang, () => {
+      for (const ty of SENDER_TYPES) assert.ok(!t(`rpt.svcType.${ty}`).startsWith('rpt.'), `${lang} ${ty}`);
+      for (const v of SENDER_VIAS) assert.ok(!t(`rpt.svcVia.${v}`).startsWith('rpt.'), `${lang} ${v}`);
+    });
+  }
+});
+
+test('the service view: the groups named in English and Turkish, the unnamed last; the view constants', () => {
+  const rows = [
+    srcRow({ ip: '192.0.2.1', messages: 100, dkimAuth: [{ domain: 'sendgrid.net', result: 'pass' }] }),
+    srcRow({ ip: '192.0.2.3', messages: 5, cls: 'unknown' }),
+    srcRow({ ip: '198.51.100.4', messages: 7, cls: 'unknown' })
+  ];
+  const maps = { ptr: new Map(), isp: new Set(['broadband.example.net']) };
+  const ptr = { '192.0.2.3': 'a.broadband.example.net' };
+  const { groups, totals } = groupSources(rows, (r) => identifySource(r, { ptrName: ptr[r.ip], maps }));
+  assert.deepEqual(groups.map((g) => inLang('en', () => groupName(g, t))), ['SendGrid', 'ISP or home networks', 'Not identified']);
+  assert.deepEqual(groups.map((g) => inLang('tr', () => groupName(g, t))), ['SendGrid', 'İSS’ler ya da ev ağları', 'Tanımlanamadı']);
+  assert.deepEqual([totals.services, totals.addresses, totals.unnamedAddresses], [2, 3, 1]);
+  assert.equal(inLang('tr', () => t('rpt.grp.unnamedLine', { count: 1, messages: t('rpt.det.count', { count: 7 }) })), '1 adres tanımlanamadı (7 e-posta)');
+  assert.equal(inLang('en', () => t('rpt.grp.unnamedLine', { count: 1, messages: t('rpt.det.count', { count: 7 }) })), '1 address not identified (7 messages)');
+  assert.deepEqual(SOURCE_VIEWS, ['address', 'service']);
+  assert.ok(IDENTIFY_CONCURRENCY > 0 && IDENTIFY_CONCURRENCY <= 12, 'never more lookups at once than the DohClient\'s limiter');
+  assert.ok(GROUP_LIST_MAX >= 10);
+  assert.equal(IDENTIFY_MAX, 200);
+  // a guide in both languages names the service and the domain
+  assert.ok(inLang('en', () => t('rpt.guide.transactional', { service: 'Example ESP', domain: 'example.com' })).startsWith('Example ESP sends mail for your applications'));
+  assert.match(inLang('tr', () => t('rpt.guide.sendgrid', { domain: 'example.com' })), /example\.com alan adını Settings › Sender Authentication altında doğrulayın/);
+});
+
+test('ptrFact: the name that points back first, its status, an unknown status as an error', () => {
+  assert.deepEqual(ptrFact({ status: 'confirmed', names: ['a.example.net', 'b.example.net'], confirmed: ['b.example.net'] }),
+    { status: 'confirmed', name: 'b.example.net', confirmed: true });
+  assert.deepEqual(ptrFact({ status: 'mismatch', names: ['a.example.net'], confirmed: [] }), { status: 'mismatch', name: 'a.example.net', confirmed: false });
+  assert.deepEqual(ptrFact({ status: 'nxdomain', names: [], confirmed: [] }), { status: 'nxdomain', name: null, confirmed: false });
+  assert.deepEqual(ptrFact({ status: 'odd' }), { status: 'error', name: null, confirmed: false });
+  assert.deepEqual(ptrFact(null), { status: 'error', name: null, confirmed: false });
+  for (const st of FCRDNS_STATUSES) assert.equal(ptrFact({ status: st }).status, st);
 });

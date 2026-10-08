@@ -1,0 +1,18 @@
+base_reverse_dns,name,type
+cloud.example.org,Example Cloud,IaaS
+dsl.example.org,"Example Telecom, Ltd",isp
+esp.example.net,"Example ESP, Inc.",Marketing
+filter.example.net,"The ""Filter"" Company",Email Security
+gov.example.com,Example Agency,Government
+host.example.org,Example Hosting,Web Host
+hospital.example.com,Example Hospital,healthcare
+isp.example.net,Example Broadband,ISP
+Mailbox.Example.NET,Example Mail,Email Provider
+msp.example.com,Example IT Partners,MSP
+mssp.example.com,"Example SOC, managed",MSSP
+nodot-ptr,No Dot Hosting,Web Host
+co.uk,A Public Suffix,Government
+paas.example.org,Example Apps,PaaS
+saas.example.com,Example Desk,SaaS
+tech.example.com,  Example   Tech  ,Technology
+esp.example.net,Example ESP again,Marketing

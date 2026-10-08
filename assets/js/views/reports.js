@@ -8,7 +8,10 @@
  * - DMARC: the headline (compliance, the published policy, whether p=reject can come and which
  *   sources to fix first, the unknown senders), the four source classes as filter tiles (your
  *   servers, authorized third parties, forwarders, unknown senders), one row per sending address
- *   with its SPF / DKIM alignment, disposition and why it is in its class, the reporters;
+ *   with the service behind it (lib/senders.js: named from its DKIM signature, its return-path or
+ *   the SPF include that authorizes it, with no lookup), its SPF / DKIM alignment, disposition and
+ *   why it is in its class, or the same sources folded per service with totals and how to align
+ *   each service; **Identify senders** looks up what no report names; the reporters;
  * - TLS-RPT: the success rate, the policies senders found, the failures by type with advice and
  *   a link to the check that goes deeper (Domain Health's MTA-STS card, TLSA records in DNS
  *   Lookup, the MX host's certificate and its DANE tab), every failure detail.
@@ -17,7 +20,11 @@
  * in a URL); a reload, Forget, another workspace or "Delete all local data" drops them. After a
  * drop, the reported domains' SPF is looked up over the DoH resolvers (names and types only) to
  * tell your servers from third parties; an address's reverse DNS and network (lib/ipintel.js) only
- * on a click, at most {@link INTEL_MAX} per click. Offline, the reports are still read and
+ * on a click, at most {@link INTEL_MAX} per click. **Identify senders**, on a click only: the
+ * reverse DNS of at most lib/senders.js IDENTIFY_MAX addresses no report names, each name checked
+ * forward (lib/ptrsweep.js checkFcrdns, through the view's DohClient and its limiter), matched
+ * against the sender lists this site bundles (read from assets/data/senders on that click), then
+ * the network of those still unnamed as Look up asks it. Offline, the reports are still read and
  * classified from their own evidence and the server list, and the SPF line says it was not checked.
  *
  * The page session keeps only the fact that reports were read (`result()`, no subject); a drop
@@ -27,7 +34,7 @@
 
 import { h, clear } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, DataTable, Disclosure, EmptyState, FileDrop, Icon, KeyValueList, ProgressBar, StatCard, Tabs,
+  Alert, Badge, Button, Card, DataTable, Disclosure, EmptyState, FileDrop, Icon, KeyValueList, ProgressBar, SegmentedControl, StatCard, Tabs,
   announce, ipSortValue, select, toast
 } from '../ui/components.js';
 import { downloadText, timestampedName } from '../ui/download.js';
@@ -38,6 +45,10 @@ import {
 } from '../lib/dmarcreport.js';
 import { summarizeTls, tlsAdvice, tlsCsvRows, TLS_CSV_COLUMNS, TLS_RESULT_TYPES, TLS_POLICY_TYPES } from '../lib/tlsrpt.js';
 import { createIpIntel } from '../lib/ipintel.js';
+import {
+  identifySource, spfPathOf, senderGuide, identifyCandidates, groupSources, serviceCsvRows, loadSenderMaps, IDENTIFY_MAX, SERVICE_CSV_COLUMNS
+} from '../lib/senders.js';
+import { checkFcrdns, FCRDNS_STATUSES } from '../lib/ptrsweep.js';
 import { ipFieldStatus } from '../lib/sourcestatus.js';
 import { registrableDomain } from '../lib/domain.js';
 import { toCsv } from '../lib/export.js';
@@ -64,6 +75,12 @@ export const INTEL_MAX = 25;
 export const FIX_FIRST_MAX = 5;
 /** Files that could not be used listed by name (the rest counted: "+1,800 more"). */
 export const PROBLEMS_MAX = 200;
+/** Addresses an Identify senders click looks up at once (the DohClient's limiter caps the HTTP requests). */
+export const IDENTIFY_CONCURRENCY = 8;
+/** Addresses a service group's details list (the rest counted). */
+export const GROUP_LIST_MAX = 20;
+/** The two views of the sending addresses: one row per address, or per service. */
+export const SOURCE_VIEWS = Object.freeze(['address', 'service']);
 
 /** Badge / tile look of each source class. */
 export const CLASS_STYLE = Object.freeze({
@@ -84,7 +101,7 @@ registerStrings('tr', REPORTS_SUMMARY_I18N.tr);
 
 registerStrings('en', {
   'rpt.privacyTitle': 'Everything stays in this browser',
-  'rpt.privacy': 'The report files are read and unpacked here, never uploaded or saved: a reload, Forget or “Delete all local data” drops them. To tell your servers from third parties, the page then looks up the current SPF record of each reported domain over your DoH resolvers (domain names only); an address’s reverse DNS and network only when you press Look up.',
+  'rpt.privacy': 'The report files are read and unpacked here, never uploaded or saved: a reload, Forget or “Delete all local data” drops them. To tell your servers from third parties, the page then looks up the current SPF record of each reported domain over your DoH resolvers (domain names only); an address’s reverse DNS and network only when you press Look up or Identify senders.',
   'rpt.drop.title': 'Drop DMARC and TLS reports here, or choose them',
   'rpt.drop.more': 'Add more reports',
   'rpt.drop.hint': 'Up to {max} files at once: .xml, .xml.gz, .zip (a zipped mailbox folder too), .json, .json.gz',
@@ -336,12 +353,99 @@ registerStrings('en', {
   'rpt.tls.col.policy': 'Policy',
   'rpt.tls.senders': 'Sending organisations',
   'rpt.tls.col.ok': 'Succeeded',
-  'rpt.tls.col.failed': 'Failed'
+  'rpt.tls.col.failed': 'Failed',
+  'rpt.col.service': 'Service',
+  'rpt.view.label': 'Show the sending addresses',
+  'rpt.view.address': 'By address',
+  'rpt.view.service': 'By service',
+  'rpt.svc.none': 'not identified',
+  'rpt.svc.noneTitle': 'Neither the reports nor its reverse DNS name the service behind this address.',
+  'rpt.svc.unchecked': 'Not named by the reports: Identify senders looks up its reverse DNS.',
+  'rpt.svc.unconfirmed': 'not confirmed',
+  'rpt.svcType.mailbox': 'Mailbox provider',
+  'rpt.svcType.security': 'Email security',
+  'rpt.svcType.forwarding': 'Forwarding',
+  'rpt.svcType.transactional': 'Transactional email',
+  'rpt.svcType.marketing': 'Email marketing',
+  'rpt.svcType.saas': 'Software service',
+  'rpt.svcType.cloud': 'Cloud platform',
+  'rpt.svcType.hosting': 'Web hosting',
+  'rpt.svcType.msp': 'Managed IT provider',
+  'rpt.svcType.technology': 'Technology company',
+  'rpt.svcType.isp': 'ISP or home network',
+  'rpt.svcType.network': 'Network',
+  'rpt.svcVia.dkim': 'DKIM',
+  'rpt.svcVia.return-path': 'return-path',
+  'rpt.svcVia.spf-include': 'SPF include',
+  'rpt.svcVia.ptr': 'reverse DNS',
+  'rpt.svcVia.isp': 'reverse DNS',
+  'rpt.svcVia.asn': 'RIPEstat',
+  'rpt.svcHow.dkim': 'Named from its DKIM signature, which verified: d={detail}',
+  'rpt.svcHow.return-path': 'Named from its return-path, which passed SPF: {detail}',
+  'rpt.svcHow.spf-include': 'Named from the SPF include that authorizes it: include:{detail}',
+  'rpt.svcHow.ptr': 'Named from its reverse DNS: {detail}',
+  'rpt.svcHow.isp': 'An ISP or home network by its reverse DNS ({detail}): spoofing, or a user forwarding their own mail',
+  'rpt.svcHow.asn': 'Only its network is known: {detail}',
+  'rpt.svcHow.confirmed': 'the name resolves back to the address',
+  'rpt.svcHow.unconfirmed': 'the name does not resolve back to the address, so this is a hint only',
+  'rpt.guide.microsoft365': 'Microsoft 365: turn on DKIM for {domain} in the Microsoft Defender portal (Email authentication settings) and publish the selector1 and selector2 CNAMEs it shows; keep include:spf.protection.outlook.com in SPF.',
+  'rpt.guide.google': 'Google Workspace: in the Admin console (Apps › Google Workspace › Gmail › Authenticate email) generate a DKIM key for {domain}, publish it as the google._domainkey TXT record and start authentication; keep include:_spf.google.com in SPF.',
+  'rpt.guide.amazonses': 'Amazon SES: verify {domain} with Easy DKIM (three CNAMEs to dkim.amazonses.com) and set a custom MAIL FROM domain, a subdomain of {domain} with its MX and SPF records, so SPF aligns too.',
+  'rpt.guide.sendgrid': 'SendGrid: authenticate {domain} under Settings › Sender Authentication and publish the CNAMEs it gives: DKIM then signs as {domain} and the return-path is a subdomain of it.',
+  'rpt.guide.mailchimp': 'Mailchimp: authenticate {domain} under Domains and publish the k2 and k3 DKIM CNAMEs (to dkim2.mcsv.net and dkim3.mcsv.net).',
+  'rpt.guide.mandrill': 'Mailchimp Transactional (Mandrill): add {domain} as a sending domain, publish its DKIM CNAMEs and set a custom return-path domain under {domain}.',
+  'rpt.guide.mailgun': 'Mailgun: send from a domain verified in Mailgun, such as mg.{domain} with its DKIM TXT and its MX and SPF records; the return-path then stays under {domain}.',
+  'rpt.guide.postmark': 'Postmark: verify {domain} (its DKIM TXT record) and add the Return-Path CNAME (pm-bounces.{domain} to pm.mtasv.net) so SPF aligns too.',
+  'rpt.guide.sparkpost': 'SparkPost: verify {domain} as a sending domain (its DKIM TXT record) and add a bounce domain under {domain} (a CNAME to sparkpostmail.com).',
+  'rpt.guide.brevo': 'Brevo: authenticate {domain} under Senders, domains & dedicated IPs and publish the DKIM records and the brevo-code TXT record it gives.',
+  'rpt.guide.salesforce': 'Salesforce: create a DKIM key for {domain} (Setup › DKIM Keys), publish the two CNAMEs it shows, then activate the key.',
+  'rpt.guide.hubspot': 'HubSpot: connect {domain} as an email sending domain (Settings › Domains & URLs) and publish the DKIM CNAMEs it gives.',
+  'rpt.guide.zendesk': 'Zendesk: turn on digital signatures for {domain} (the zendesk1 and zendesk2 DKIM CNAMEs) and keep include:mail.zendesk.com in SPF.',
+  'rpt.guide.mailbox': '{service} hosts mailboxes. Turn on DKIM signing for {domain} in its admin settings, publish the record it gives and keep its SPF include.',
+  'rpt.guide.security': '{service} filters mail on its way out. Keep its SPF include, and have it sign DKIM as {domain} or pass your own signature through unchanged.',
+  'rpt.guide.forwarding': '{service} forwards mail. Forwarding breaks SPF; mail stays aligned when it carries a DKIM signature of {domain} that survives the relay.',
+  'rpt.guide.transactional': '{service} sends mail for your applications. Authenticate {domain} in it: DKIM as {domain} (the records it gives) and a custom return-path (bounce) domain under {domain}, so SPF aligns too.',
+  'rpt.guide.marketing': '{service} sends your campaigns. Authenticate {domain} in it so DKIM signs as {domain} (the records it gives), and use a custom return-path where it offers one.',
+  'rpt.guide.saas': '{service} sends mail as you. Look for its email or sender domain settings: DKIM for {domain} (often CNAME records) and, where it offers one, a custom return-path.',
+  'rpt.guide.cloud': 'A server in {service}’s cloud. If it is yours, authorize its address in SPF and sign its mail with DKIM for {domain}; if not, it is spoofing.',
+  'rpt.guide.hosting': 'A server at {service}, a web host: often a site’s contact form or a script. Send through your mail service over SMTP instead, or authorize the server in SPF and sign its mail with DKIM for {domain}.',
+  'rpt.guide.msp': 'A server of {service}, a managed IT provider. Ask them what sends as {domain} from there, then authorize it in SPF and sign it with DKIM.',
+  'rpt.guide.technology': 'Mail from {service}’s own servers. If you use one of its services, set up its domain authentication for {domain}; if not, it is spoofing.',
+  'rpt.guide.isp': 'An ISP or home network: spoofing, or a user forwarding their own mail. Nothing to authorize; p=reject turns spoofed mail away.',
+  'rpt.guide.network': 'Only the network is known ({service}). If no server of yours is there, this is spoofing; p=reject turns it away.',
+  'rpt.guide.forwarded': 'Mail sent through {service} and forwarded from here: SPF breaks on the way, but the original DKIM signature survives, so mail signed as {domain} keeps passing DMARC.',
+  'rpt.det.service': 'Service',
+  'rpt.det.serviceHow': 'How it was named',
+  'rpt.det.guide': 'To align it',
+  'rpt.ptrState.confirmed': '{name} (resolves back to the address)',
+  'rpt.ptrState.mismatch': '{name} (does not resolve back to the address)',
+  'rpt.ptrState.no-ptr': 'no reverse name',
+  'rpt.ptrState.nxdomain': 'no reverse name',
+  'rpt.ptrState.servfail': 'the reverse zone did not answer (SERVFAIL)',
+  'rpt.ptrState.error': 'could not be looked up',
+  'rpt.id.bulk': { one: 'Identify {count} sender', other: 'Identify {count} senders' },
+  'rpt.id.bulkTitle': 'Looks up the reverse DNS of up to {max} sending addresses that no report names, over your DoH resolvers, checks that each name points back to its address and matches it against the sender lists this site bundles; then the network (RIPEstat) of at most {intel} still unnamed.',
+  'rpt.id.busy': 'Identifying… {done} / {total}',
+  'rpt.id.started': { one: 'Identifying {count} sender…', other: 'Identifying {count} senders…' },
+  'rpt.id.done': { one: 'Identified {named} of {count} sender.', other: 'Identified {named} of {count} senders.' },
+  'rpt.id.mapsFailed': 'The sender lists this site bundles could not be loaded ({error}): only the services DomainScope knows itself were matched.',
+  'rpt.grp.caption': 'Senders of {domain} by service',
+  'rpt.grp.col.addresses': 'Addresses',
+  'rpt.grp.col.classes': 'Classes',
+  'rpt.grp.isp': 'ISP or home networks',
+  'rpt.grp.unnamed': 'Not identified',
+  'rpt.grp.unnamedHint': 'Neither the reports nor a reverse DNS lookup name these addresses yet. Identify senders looks them up; what stays unknown and fails DMARC is most likely spoofing.',
+  'rpt.grp.services': { one: '{count} service', other: '{count} services' },
+  'rpt.grp.addresses': { one: '{count} address', other: '{count} addresses' },
+  'rpt.grp.unnamedLine': { one: '{count} address not identified ({messages})', other: '{count} addresses not identified ({messages})' },
+  'rpt.grp.via': 'Named from',
+  'rpt.grp.evidence': 'Evidence',
+  'rpt.grp.list': 'Addresses'
 });
 
 registerStrings('tr', {
   'rpt.privacyTitle': 'Her şey bu tarayıcıda kalır',
-  'rpt.privacy': 'Rapor dosyaları burada okunur ve açılır; hiçbir yere yüklenmez ya da kaydedilmez: sayfayı yenilemek, Unut ya da “Tüm yerel verileri sil” onları siler. Sunucularınızı üçüncü taraflardan ayırmak için sayfa ardından raporlanan her alan adının güncel SPF kaydını DoH çözümleyicileriniz üzerinden sorgular (yalnızca alan adları); bir adresin ters DNS ve ağ bilgisi ise yalnızca Sorgula’ya bastığınızda sorulur.',
+  'rpt.privacy': 'Rapor dosyaları burada okunur ve açılır; hiçbir yere yüklenmez ya da kaydedilmez: sayfayı yenilemek, Unut ya da “Tüm yerel verileri sil” onları siler. Sunucularınızı üçüncü taraflardan ayırmak için sayfa ardından raporlanan her alan adının güncel SPF kaydını DoH çözümleyicileriniz üzerinden sorgular (yalnızca alan adları); bir adresin ters DNS ve ağ bilgisi ise yalnızca Sorgula’ya ya da Göndericileri tanımla’ya bastığınızda sorulur.',
   'rpt.drop.title': 'DMARC ve TLS raporlarını buraya bırakın ya da seçin',
   'rpt.drop.more': 'Daha fazla rapor ekleyin',
   'rpt.drop.hint': 'Aynı anda en fazla {max} dosya: .xml, .xml.gz, .zip (zip’lenmiş bir posta klasörü de), .json, .json.gz',
@@ -593,7 +697,94 @@ registerStrings('tr', {
   'rpt.tls.col.policy': 'Politika',
   'rpt.tls.senders': 'Gönderen kuruluşlar',
   'rpt.tls.col.ok': 'Başarılı',
-  'rpt.tls.col.failed': 'Başarısız'
+  'rpt.tls.col.failed': 'Başarısız',
+  'rpt.col.service': 'Hizmet',
+  'rpt.view.label': 'Gönderen adresleri göster',
+  'rpt.view.address': 'Adrese göre',
+  'rpt.view.service': 'Hizmete göre',
+  'rpt.svc.none': 'tanımlanamadı',
+  'rpt.svc.noneTitle': 'Bu adresin arkasındaki hizmeti ne raporlar ne de ters DNS kaydı söylüyor.',
+  'rpt.svc.unchecked': 'Raporlar hizmetini söylemiyor: Göndericileri tanımla, ters DNS kaydına bakar.',
+  'rpt.svc.unconfirmed': 'doğrulanmadı',
+  'rpt.svcType.mailbox': 'E-posta sağlayıcısı',
+  'rpt.svcType.security': 'E-posta güvenliği',
+  'rpt.svcType.forwarding': 'Yönlendirme',
+  'rpt.svcType.transactional': 'İşlemsel e-posta',
+  'rpt.svcType.marketing': 'E-posta pazarlaması',
+  'rpt.svcType.saas': 'Yazılım hizmeti',
+  'rpt.svcType.cloud': 'Bulut platformu',
+  'rpt.svcType.hosting': 'Web barındırma',
+  'rpt.svcType.msp': 'Yönetilen BT hizmeti',
+  'rpt.svcType.technology': 'Teknoloji şirketi',
+  'rpt.svcType.isp': 'İSS ya da ev ağı',
+  'rpt.svcType.network': 'Ağ',
+  'rpt.svcVia.dkim': 'DKIM',
+  'rpt.svcVia.return-path': 'return-path',
+  'rpt.svcVia.spf-include': 'SPF include',
+  'rpt.svcVia.ptr': 'ters DNS',
+  'rpt.svcVia.isp': 'ters DNS',
+  'rpt.svcVia.asn': 'RIPEstat',
+  'rpt.svcHow.dkim': 'Doğrulanan DKIM imzasından: d={detail}',
+  'rpt.svcHow.return-path': 'SPF’ten geçen return-path adresinden: {detail}',
+  'rpt.svcHow.spf-include': 'Onu yetkilendiren SPF include’undan: include:{detail}',
+  'rpt.svcHow.ptr': 'Ters DNS kaydından: {detail}',
+  'rpt.svcHow.isp': 'Ters DNS kaydına göre bir İSS ya da ev ağı ({detail}): sahte gönderim ya da kendi e-postasını yönlendiren bir kullanıcı',
+  'rpt.svcHow.asn': 'Yalnızca ağı biliniyor: {detail}',
+  'rpt.svcHow.confirmed': 'ad, adrese geri çözümleniyor',
+  'rpt.svcHow.unconfirmed': 'ad adrese geri çözümlenmiyor; bu yüzden yalnızca bir ipucu',
+  'rpt.guide.microsoft365': 'Microsoft 365: Microsoft Defender portalında (E-posta kimlik doğrulama ayarları) {domain} için DKIM’i açın ve gösterdiği selector1 ile selector2 CNAME kayıtlarını yayınlayın; SPF’te include:spf.protection.outlook.com kalsın.',
+  'rpt.guide.google': 'Google Workspace: Yönetici konsolunda (Uygulamalar › Google Workspace › Gmail › E-postanın kimliğini doğrula) {domain} için bir DKIM anahtarı oluşturun, google._domainkey TXT kaydı olarak yayınlayın ve kimlik doğrulamayı başlatın; SPF’te include:_spf.google.com kalsın.',
+  'rpt.guide.amazonses': 'Amazon SES: {domain} alan adını Easy DKIM ile doğrulayın (dkim.amazonses.com’a giden üç CNAME kaydı) ve SPF de hizalansın diye özel bir MAIL FROM alan adı belirleyin: MX ve SPF kayıtlarıyla {domain} altında bir alt alan adı.',
+  'rpt.guide.sendgrid': 'SendGrid: {domain} alan adını Settings › Sender Authentication altında doğrulayın ve verdiği CNAME kayıtlarını yayınlayın: DKIM böylece {domain} olarak imzalar, return-path de onun bir alt alan adı olur.',
+  'rpt.guide.mailchimp': 'Mailchimp: {domain} alan adını Domains altında doğrulayın ve k2 ile k3 DKIM CNAME kayıtlarını (dkim2.mcsv.net ve dkim3.mcsv.net’e) yayınlayın.',
+  'rpt.guide.mandrill': 'Mailchimp Transactional (Mandrill): {domain} alan adını gönderim alan adı olarak ekleyin, DKIM CNAME kayıtlarını yayınlayın ve {domain} altında özel bir return-path alan adı belirleyin.',
+  'rpt.guide.mailgun': 'Mailgun: Mailgun’da doğrulanmış bir alan adından gönderin, örneğin DKIM TXT kaydı ile MX ve SPF kayıtları olan mg.{domain}; return-path böylece {domain} altında kalır.',
+  'rpt.guide.postmark': 'Postmark: {domain} alan adını doğrulayın (DKIM TXT kaydı) ve SPF de hizalansın diye Return-Path CNAME kaydını ekleyin (pm-bounces.{domain}, pm.mtasv.net’e).',
+  'rpt.guide.sparkpost': 'SparkPost: {domain} alan adını gönderim alan adı olarak doğrulayın (DKIM TXT kaydı) ve {domain} altında bir bounce alan adı ekleyin (sparkpostmail.com’a bir CNAME).',
+  'rpt.guide.brevo': 'Brevo: {domain} alan adını Senders, domains & dedicated IPs altında doğrulayın; verdiği DKIM kayıtlarını ve brevo-code TXT kaydını yayınlayın.',
+  'rpt.guide.salesforce': 'Salesforce: {domain} için bir DKIM anahtarı oluşturun (Setup › DKIM Keys), gösterdiği iki CNAME kaydını yayınlayın, ardından anahtarı etkinleştirin.',
+  'rpt.guide.hubspot': 'HubSpot: {domain} alan adını e-posta gönderim alan adı olarak bağlayın (Settings › Domains & URLs) ve verdiği DKIM CNAME kayıtlarını yayınlayın.',
+  'rpt.guide.zendesk': 'Zendesk: {domain} için dijital imzaları açın (zendesk1 ve zendesk2 DKIM CNAME kayıtları); SPF’te include:mail.zendesk.com kalsın.',
+  'rpt.guide.mailbox': '{service} posta kutularınızı barındırıyor. Yönetim ayarlarından {domain} için DKIM imzalamayı açın, verdiği kaydı yayınlayın ve SPF include’unu koruyun.',
+  'rpt.guide.security': '{service} giden e-postanızı süzüp iletiyor. SPF include’unu koruyun; DKIM’i {domain} olarak imzalamasını ya da kendi imzanızı değiştirmeden geçirmesini sağlayın.',
+  'rpt.guide.forwarding': '{service} e-postayı yönlendiriyor. Yönlendirme SPF’i bozar; aktarımda bozulmayan bir {domain} DKIM imzası taşıyan e-posta hizalı kalır.',
+  'rpt.guide.transactional': '{service} uygulamalarınızın e-postasını gönderiyor. {domain} alan adını orada doğrulayın: DKIM {domain} olarak imzalasın (verdiği kayıtlar), SPF de hizalansın diye {domain} altında özel bir return-path (bounce) alan adı kullanın.',
+  'rpt.guide.marketing': '{service} kampanyalarınızı gönderiyor. {domain} alan adını orada doğrulayın ki DKIM {domain} olarak imzalasın (verdiği kayıtlar); sunuyorsa özel bir return-path kullanın.',
+  'rpt.guide.saas': '{service} sizin adınıza e-posta gönderiyor. E-posta ya da gönderici alan adı ayarlarına bakın: {domain} için DKIM (çoğunlukla CNAME kayıtları) ve sunuyorsa özel bir return-path.',
+  'rpt.guide.cloud': '{service} bulutunda bir sunucu. Sizinse adresini SPF’te yetkilendirin ve e-postasını {domain} için DKIM ile imzalayın; değilse bu sahte gönderimdir.',
+  'rpt.guide.hosting': 'Bir web barındırma hizmetinde ({service}) bir sunucu: çoğunlukla bir sitenin iletişim formu ya da bir betik. Bunun yerine e-posta hizmetiniz üzerinden SMTP ile gönderin ya da sunucuyu SPF’te yetkilendirip e-postasını {domain} için DKIM ile imzalayın.',
+  'rpt.guide.msp': 'Yönetilen BT hizmeti veren {service} firmasının bir sunucusu. Oradan {domain} adına neyin gönderdiğini sorun, ardından onu SPF’te yetkilendirip DKIM ile imzalayın.',
+  'rpt.guide.technology': '{service} şirketinin kendi sunucularından gelen e-posta. Onun bir hizmetini kullanıyorsanız {domain} için alan adı doğrulamasını kurun; kullanmıyorsanız bu sahte gönderimdir.',
+  'rpt.guide.isp': 'Bir İSS ya da ev ağı: sahte gönderim ya da kendi e-postasını yönlendiren bir kullanıcı. Yetkilendirilecek bir şey yok; p=reject sahte e-postayı geri çevirir.',
+  'rpt.guide.network': 'Yalnızca ağ biliniyor ({service}). Orada sizin bir sunucunuz yoksa bu sahte gönderimdir; p=reject onu geri çevirir.',
+  'rpt.guide.forwarded': '{service} üzerinden gönderilip buradan yönlendirilen e-posta: SPF yolda bozulur ama özgün DKIM imzası korunur; bu yüzden {domain} olarak imzalanan e-posta DMARC’den geçmeye devam eder.',
+  'rpt.det.service': 'Hizmet',
+  'rpt.det.serviceHow': 'Nasıl adlandırıldı',
+  'rpt.det.guide': 'Hizalamak için',
+  'rpt.ptrState.confirmed': '{name} (adrese geri çözümleniyor)',
+  'rpt.ptrState.mismatch': '{name} (adrese geri çözümlenmiyor)',
+  'rpt.ptrState.no-ptr': 'ters DNS adı yok',
+  'rpt.ptrState.nxdomain': 'ters DNS adı yok',
+  'rpt.ptrState.servfail': 'ters bölge yanıt vermedi (SERVFAIL)',
+  'rpt.ptrState.error': 'sorgulanamadı',
+  'rpt.id.bulk': '{count} göndericiyi tanımla',
+  'rpt.id.bulkTitle': 'Hiçbir raporun adını vermediği en fazla {max} gönderen adresin ters DNS kaydını DoH çözümleyicileriniz üzerinden sorgular, her adın kendi adresine geri çözümlendiğini kontrol eder ve bu sitenin paketle getirdiği gönderici listeleriyle eşleştirir; ardından hâlâ adı bilinmeyenlerden en fazla {intel} tanesinin ağını (RIPEstat) sorar.',
+  'rpt.id.busy': 'Tanımlanıyor… {done} / {total}',
+  'rpt.id.started': '{count} gönderici tanımlanıyor…',
+  'rpt.id.done': '{count} göndericiden {named} tanesi tanımlandı.',
+  'rpt.id.mapsFailed': 'Bu sitenin paketle getirdiği gönderici listeleri yüklenemedi ({error}): yalnızca DomainScope’un kendi bildiği hizmetler eşleştirildi.',
+  'rpt.grp.caption': '{domain} göndericileri, hizmete göre',
+  'rpt.grp.col.addresses': 'Adres',
+  'rpt.grp.col.classes': 'Sınıflar',
+  'rpt.grp.isp': 'İSS’ler ya da ev ağları',
+  'rpt.grp.unnamed': 'Tanımlanamadı',
+  'rpt.grp.unnamedHint': 'Bu adreslerin adını henüz ne raporlar ne de bir ters DNS sorgusu veriyor. Göndericileri tanımla onlara bakar; bilinmeyen kalıp DMARC’den geçmeyen e-posta büyük olasılıkla sahte gönderimdir.',
+  'rpt.grp.services': '{count} hizmet',
+  'rpt.grp.addresses': '{count} adres',
+  'rpt.grp.unnamedLine': '{count} adres tanımlanamadı ({messages})',
+  'rpt.grp.via': 'Neye göre adlandırıldı',
+  'rpt.grp.evidence': 'Kanıt',
+  'rpt.grp.list': 'Adresler'
 });
 
 /* ------------------------------------------------------------------------ */
@@ -703,6 +894,60 @@ export function summaryFacts({ agg, overview, spfState, tls, problems, at }) {
   };
 }
 
+/**
+ * The Service cell of a source: the name, and under it the type and the evidence ("not
+ * confirmed" for a reverse name that does not point back); an ISP or home network is named so,
+ * with its base domain under it. Null when nothing names the source.
+ * @param {import('../lib/senders.js').SenderIdentification|null} ident
+ * @param {(key: string, params?: object) => string} t
+ * @returns {{ name: string, meta: string }|null}
+ */
+export function serviceLabel(ident, t) {
+  if (!ident) return null;
+  const via = t(`rpt.svcVia.${ident.via}`);
+  const how = ident.confidence === 'low' && (ident.via === 'ptr' || ident.via === 'isp') ? `${via}, ${t('rpt.svc.unconfirmed')}` : via;
+  if (ident.via === 'isp') return { name: t('rpt.svcType.isp'), meta: `${ident.service} · ${how}` };
+  // Only the network: its AS says more than the word "network".
+  if (ident.via === 'asn') return { name: ident.service, meta: [ident.domain, via].filter(Boolean).join(' · ') };
+  return { name: ident.service, meta: `${t(`rpt.svcType.${ident.type}`)} · ${how}` };
+}
+
+/**
+ * How a source was named, as a sentence (its details, and the Service cell's tooltip).
+ * @param {import('../lib/senders.js').SenderIdentification|null} ident
+ * @param {(key: string, params?: object) => string} t
+ * @returns {string}
+ */
+export function serviceHow(ident, t) {
+  if (!ident) return '';
+  const detail = ident.via === 'asn' ? [ident.domain, ident.service].filter(Boolean).join(' ') : ident.domain;
+  const text = t(`rpt.svcHow.${ident.via}`, { detail });
+  if (ident.via !== 'ptr' && ident.via !== 'isp') return text;
+  return `${text} (${t(ident.confidence === 'low' ? 'rpt.svcHow.unconfirmed' : 'rpt.svcHow.confirmed')})`;
+}
+
+/**
+ * The name of a group of the service view: the service's, "ISP or home networks" or "Not identified".
+ * @param {{ key: string, service: string|null }} group lib/senders.js groupSources
+ * @param {(key: string) => string} t
+ * @returns {string}
+ */
+export function groupName(group, t) {
+  return group.key === 'isp' ? t('rpt.grp.isp') : group.key === 'unnamed' ? t('rpt.grp.unnamed') : group.service;
+}
+
+/**
+ * What an Identify senders lookup keeps of lib/ptrsweep.js checkFcrdns: its status, the name
+ * shown (the first that points back, else the first) and whether it was confirmed.
+ * @param {{ status: string, names?: string[], confirmed?: string[] }} v
+ * @returns {{ status: string, name: string|null, confirmed: boolean }}
+ */
+export function ptrFact(v) {
+  const confirmed = (v && v.confirmed) || [];
+  const names = (v && v.names) || [];
+  return { status: FCRDNS_STATUSES.includes(v && v.status) ? v.status : 'error', name: confirmed[0] || names[0] || null, confirmed: confirmed.length > 0 };
+}
+
 /* ------------------------------------------------------------------------ */
 /* Module state: the reports of this tab (memory only)                      */
 /* ------------------------------------------------------------------------ */
@@ -723,12 +968,19 @@ const fresh = () => ({
   // Bumped with every SPF answer stored: the classes rest on them.
   spfVersion: 0,
   spfState: new Map(),
-  intel: new Map()
+  intel: new Map(),
+  // Identify senders: ip → what its reverse DNS lookup found (ptrFact), and the click in flight ({ done, total }).
+  ptr: new Map(),
+  identifying: null,
+  // The sending addresses one per address, or folded per service (SOURCE_VIEWS).
+  view: 'address'
 });
 
 let S = fresh();
 let subscribed = false;
 let rerender = null;
+/** The sender lists this site bundles (lib/senders.js loadSenderMaps), once an Identify click read them. */
+let senderMaps = null;
 let intelService = null;
 /** The DohClient intelService asks: a new one (another resolver chain) gets a new service. */
 let intelDns = null;
@@ -780,6 +1032,12 @@ export function mount(container, ctx) {
   let readTotal = 0;
   let sourcesTable = null;
   let bulkBtn = null;
+  // The service view of the sources (S.view 'service'): its table and totals line; Identify senders' button.
+  let groupTable = null;
+  let groupTotalsEl = null;
+  let identifyBtn = null;
+  let sourcesBody = null;
+  let groupRefreshQueued = false;
   const num = (n) => formatNumber(n);
   // Every share as the headline says it: one decimal when it has one, never all or none unless it is.
   const share = (ratio) => {
@@ -1014,8 +1272,11 @@ export function mount(container, ctx) {
   }
 
   function refreshRows(ips) {
-    if (!sourcesTable) return;
-    sourcesTable.updateRows(sourcesTable.getRows().filter((row) => ips.includes(row.ip)));
+    if (sourcesTable) {
+      const set = new Set(ips);
+      sourcesTable.updateRows(sourcesTable.getRows().filter((row) => set.has(row.ip)));
+    }
+    queueGroupRefresh();
     updateBulk();
   }
 
@@ -1025,6 +1286,183 @@ export function mount(container, ctx) {
     const n = Math.min(open, INTEL_MAX);
     bulkBtn.hidden = n === 0;
     bulkBtn.querySelector('.btn-label').textContent = t('rpt.intel.bulk', { count: n });
+  }
+
+  /* --- the service behind each source (lib/senders.js) ------------------------------------- */
+  // Per row object: the identification and what it rests on (a reverse DNS lookup, Look up's data,
+  // the bundled lists). A source classified again is a new object, so it is named again too.
+  const identCache = new WeakMap();
+
+  /**
+   * The service behind a source of the domain on screen, from the reports and the current SPF
+   * (no lookup), then — once asked — its reverse DNS, the bundled lists and Look up's network.
+   */
+  function identOf(r) {
+    const fact = S.ptr.get(r.ip) || null;
+    const got = S.intel.get(r.ip);
+    const info = got && got.info ? got.info : null;
+    const cached = identCache.get(r);
+    if (cached && cached.fact === fact && cached.info === info && cached.maps === senderMaps) return cached.ident;
+    const looked = info && Array.isArray(info.ptr) && info.ptr.length ? info.ptr[0] : null;
+    const ident = identifySource(r, {
+      domain: S.domain,
+      spfPath: spfPathOf(r),
+      ptrName: fact && fact.name ? fact.name : looked,
+      ptrConfirmed: !!(fact && fact.confirmed),
+      maps: senderMaps,
+      holder: info && info.holder ? { name: info.holder, asn: info.asn } : null
+    });
+    identCache.set(r, { fact, info, maps: senderMaps, ident });
+    return ident;
+  }
+
+  /** The rows of the domain on screen that the class tiles let through. */
+  function classRows() {
+    const m = dmarcModel();
+    return m ? m.rows.filter((r) => !S.cls || r.cls === S.cls) : [];
+  }
+
+  /** The sources an Identify click would look up: those the table shows (the service view: the class's). */
+  function identifyScope() {
+    if (S.view === 'address' && sourcesTable) return sourcesTable.getVisibleRows();
+    return classRows();
+  }
+
+  /** The addresses a click looked up for good: a lookup that got no answer is asked again by the next click. */
+  const lookedUp = { has: (ip) => !!S.ptr.get(ip) && S.ptr.get(ip).status !== 'error' };
+
+  function updateIdentify() {
+    if (!identifyBtn) return;
+    const label = identifyBtn.querySelector('.btn-label');
+    const run = S.identifying;
+    identifyBtn.classList.toggle('is-busy', !!run);
+    if (run) {
+      identifyBtn.hidden = false;
+      identifyBtn.setAttribute('aria-busy', 'true');
+      identifyBtn.setAttribute('aria-disabled', 'true');
+      label.textContent = t('rpt.id.busy', { done: num(run.done), total: num(run.total) });
+      return;
+    }
+    identifyBtn.removeAttribute('aria-busy');
+    identifyBtn.removeAttribute('aria-disabled');
+    const n = identifyCandidates(identifyScope(), { identOf, checked: lookedUp, max: IDENTIFY_MAX }).length;
+    identifyBtn.hidden = n === 0;
+    label.textContent = t('rpt.id.bulk', { count: n });
+  }
+
+  /**
+   * Identify senders: the reverse DNS of the sources no report names (at most IDENTIFY_MAX),
+   * each name checked forward, through the view's DohClient (its limiter caps the requests);
+   * the bundled lists read meanwhile; then Look up's network of those still unnamed.
+   */
+  async function identify() {
+    if (S.identifying) return;
+    const todo = identifyCandidates(identifyScope(), { identOf, checked: lookedUp, max: IDENTIFY_MAX });
+    if (!todo.length || !ctx.requireOnline()) return;
+    const mine = S;
+    const sig = signal();
+    const ips = todo.map((r) => r.ip);
+    // This click's progress: a later visit's click has its own (the view left stops this one).
+    const run = { done: 0, total: ips.length };
+    const settle = () => {
+      if (mine.identifying === run) mine.identifying = null;
+    };
+    mine.identifying = run;
+    updateIdentify();
+    announce(t('rpt.id.started', { count: ips.length }));
+    let mapsFailed = null;
+    const maps = loadSenderMaps({ signal: sig }).then((x) => { senderMaps = x; }, (err) => {
+      if (err && err.name === 'AbortError') throw err;
+      mapsFailed = err;
+    });
+    // Awaited after the lookups; a Stop before then rejects it unseen.
+    maps.catch(() => {});
+    try {
+      const dns = await ctx.getDns();
+      let next = 0;
+      const worker = async () => {
+        while (next < ips.length) {
+          const ip = ips[next];
+          next += 1;
+          // checkFcrdns never rejects but with an AbortError: a failed lookup is its 'error' verdict.
+          const v = await checkFcrdns(ip, { dns, signal: sig });
+          mine.ptr.set(ip, ptrFact(v));
+          run.done += 1;
+          if (mine === S && !ctx.signal.aborted) {
+            refreshRows([ip]);
+            updateIdentify();
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(IDENTIFY_CONCURRENCY, ips.length) }, worker));
+      await maps;
+    } catch (err) {
+      settle();
+      if (!(err && err.name === 'AbortError') && !ctx.signal.aborted) toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+      if (mine === S && !ctx.signal.aborted) updateIdentify();
+      return;
+    }
+    settle();
+    if (mine !== S || ctx.signal.aborted) return;
+    if (mapsFailed) toast(t('rpt.id.mapsFailed', { error: mapsFailed.message || String(mapsFailed) }), { type: 'warn' });
+    // The lists may name sources the reports named nothing for: every row is looked at again.
+    if (sourcesTable) sourcesTable.refresh();
+    queueGroupRefresh();
+    updateIdentify();
+    // The rows as classified now (an SPF answer may have landed meanwhile), by address.
+    const rowsByIp = () => new Map((dmarcModel() || { rows: [] }).rows.map((r) => [r.ip, r]));
+    const before = rowsByIp();
+    const still = ips.filter((ip) => before.has(ip) && !identOf(before.get(ip)));
+    // Look up's network (RIPEstat, ipwho.is) for what is still unnamed, at most INTEL_MAX as a Look up click.
+    if (still.length) await lookUp(still);
+    if (mine !== S || ctx.signal.aborted) return;
+    const rows = rowsByIp();
+    const named = ips.filter((ip) => {
+      const id = rows.has(ip) ? identOf(rows.get(ip)) : null;
+      return id && id.via !== 'asn';
+    }).length;
+    announce(t('rpt.id.done', { named, count: ips.length }));
+    updateIdentify();
+  }
+
+  /* --- the service view ---------------------------------------------------------------------- */
+  /** The groups of the domain on screen, the class tiles applied. */
+  function currentGroups() {
+    return groupSources(classRows(), identOf);
+  }
+
+  function queueGroupRefresh() {
+    if (!groupTable || groupRefreshQueued) return;
+    groupRefreshQueued = true;
+    requestAnimationFrame(() => {
+      groupRefreshQueued = false;
+      refreshGroups();
+    });
+  }
+
+  /** The service view drawn again (new names, classes or a class filter): an open group stays open. */
+  function refreshGroups() {
+    if (!groupTable) return;
+    const { groups, totals } = currentGroups();
+    const drawn = new Set(groupTable.getRows().map((g) => g.key));
+    if (groups.length === drawn.size && groups.every((g) => drawn.has(g.key))) groupTable.updateRows(groups);
+    else groupTable.setRows(groups);
+    fillTotals(totals);
+    updateIdentify();
+  }
+
+  function fillTotals(totals) {
+    if (!groupTotalsEl) return;
+    const bits = [t('rpt.grp.services', { count: totals.services }), t('rpt.grp.addresses', { count: totals.addresses }), t('rpt.det.count', { count: totals.messages })];
+    if (totals.unnamedAddresses) bits.push(t('rpt.grp.unnamedLine', { count: totals.unnamedAddresses, messages: t('rpt.det.count', { count: totals.unnamedMessages }) }));
+    groupTotalsEl.textContent = bits.join(' · ');
+  }
+
+  /** The class tiles changed: the table shown follows them. */
+  function applyClassFilter() {
+    if (sourcesTable) sourcesTable.setFilter(S.cls ? (r) => r.cls === S.cls : null);
+    if (groupTable) refreshGroups();
+    updateIdentify();
   }
 
   /* --- rendering --------------------------------------------------------------------- */
@@ -1117,6 +1555,10 @@ export function mount(container, ctx) {
     clear(resultsEl);
     sourcesTable = null;
     bulkBtn = null;
+    groupTable = null;
+    groupTotalsEl = null;
+    identifyBtn = null;
+    sourcesBody = null;
     dmarcPanel = null;
     tabs = null;
     if (!hasReports()) {
@@ -1186,6 +1628,7 @@ export function mount(container, ctx) {
     if (inside && inside.dataset.action) key = `[data-action="${inside.dataset.action}"]${inside.dataset.ip ? `[data-ip="${inside.dataset.ip}"]` : ''}`;
     else if (inside && inside.dataset.cls) key = `.stat-button[data-cls="${inside.dataset.cls}"]`;
     else if (inside && inside.matches('.rpt-domain select')) key = '.rpt-domain select';
+    else if (inside && inside.matches('.rpt-view .seg-btn')) key = `.rpt-view .seg-btn[data-value="${inside.dataset.value}"]`;
     fn();
     if (key && !inside.isConnected) {
       const again = scope.querySelector(key);
@@ -1206,18 +1649,23 @@ export function mount(container, ctx) {
     const m = dmarcModel();
     if (!m) return;
     const { agg, rows, overview } = m;
-    if (keepTable && sourcesTable && dmarcParts && dmarcParts.agg === agg) {
+    if (keepTable && (sourcesTable || groupTable) && dmarcParts && dmarcParts.agg === agg) {
       keepFocus(dmarcPanel, () => {
         const head = dmarcHead(m);
         const tiles = classTiles(overview);
         dmarcParts.head.replaceWith(head);
         dmarcParts.tiles.replaceWith(tiles);
         dmarcParts = { agg, head, tiles };
-        const drawn = new Map(sourcesTable.getRows().map((r) => [r.ip, r]));
-        sourcesTable.updateRows(rows.filter((r) => {
-          const old = drawn.get(r.ip);
-          return !old || sourceRowChanged(old, r);
-        }));
+        if (sourcesTable) {
+          const drawn = new Map(sourcesTable.getRows().map((r) => [r.ip, r]));
+          sourcesTable.updateRows(rows.filter((r) => {
+            const old = drawn.get(r.ip);
+            // A row whose SPF verdict changed may be named by another include too (its service is part of the row).
+            return !old || sourceRowChanged(old, r);
+          }));
+        }
+        if (groupTable) refreshGroups();
+        updateIdentify();
       });
       return;
     }
@@ -1294,9 +1742,11 @@ export function mount(container, ctx) {
     const list = h('ol', { class: 'rpt-fix' }, all.slice(0, FIX_FIRST_MAX).map((r) => {
       const style = CLASS_STYLE[r.cls];
       const count = r.fail ? t('rpt.fix.failing', { fail: num(r.fail), messages: num(r.messages) }) : t('rpt.fix.spfOnly', { count: num(r.atRisk), messages: num(r.messages) });
+      const svc = serviceLabel(identOf(r), t);
       return h('li', { class: 'rpt-fix-item', dataset: { ip: r.ip, cls: r.cls } },
         h('div', { class: 'rpt-fix-head' },
           h('span', { class: 'mono rpt-fix-ip' }, r.ip), ' ',
+          svc ? [h('span', { class: 'rpt-fix-svc' }, svc.name), ' '] : null,
           Badge(t(`rpt.clsOne.${r.cls}`), { variant: style.variant, icon: style.icon }), ' ',
           h('span', { class: 'rpt-fix-why text-sm' }, whyText(r)), ' ',
           h('span', { class: 'rpt-fix-count text-sm' }, count)),
@@ -1345,7 +1795,7 @@ export function mount(container, ctx) {
         onClick: () => {
           S.cls = S.cls === cls ? null : cls;
           for (const el of grid.querySelectorAll('.stat-button')) el.setAttribute('aria-pressed', String(el.dataset.cls === S.cls));
-          if (sourcesTable) sourcesTable.setFilter(S.cls ? (r) => r.cls === S.cls : null);
+          applyClassFilter();
           clearBtn.hidden = !S.cls;
         }
       });
@@ -1361,7 +1811,7 @@ export function mount(container, ctx) {
       onClick: () => {
         S.cls = null;
         for (const el of grid.querySelectorAll('.stat-button')) el.setAttribute('aria-pressed', 'false');
-        if (sourcesTable) sourcesTable.setFilter(null);
+        applyClassFilter();
         clearBtn.hidden = true;
       }
     });
@@ -1423,6 +1873,7 @@ export function mount(container, ctx) {
       else if (verdict.result === 'permerror') spfNow = `${spfNow} (${spfErrorText(verdict.reason)})`;
     }
     const items = [
+      ...serviceItems(agg, r),
       [t('rpt.det.headerFrom'), r.headerFrom.join(', ')],
       [t('rpt.det.envelopeFrom'), r.envelopeFrom.join(', ')],
       [t('rpt.det.spfAuth'), auth(r.spfAuth, (a) => h('span', null, h('span', { class: 'mono' }, a.domain), a.scope ? ` (${a.scope})` : '', ': ', h('b', null, a.result)))],
@@ -1438,7 +1889,155 @@ export function mount(container, ctx) {
       r.private ? null : h('a', { class: 'text-sm', href: ctx.href('ip', { ips: r.ip, run: '0' }) }, Icon('network', { size: 14 }), ' ', t('rpt.det.openIp')));
   }
 
+  /** A source's details on the service behind it: its name, how it was named, how to align it, its reverse DNS. */
+  function serviceItems(agg, r) {
+    const ident = identOf(r);
+    const fact = S.ptr.get(r.ip);
+    const ptr = fact ? [t('rpt.det.ptr'), t(`rpt.ptrState.${fact.status}`, { name: fact.name || '' })] : null;
+    if (!ident) return [[t('rpt.det.service'), h('span', { class: 'muted' }, lookedUp.has(r.ip) ? t('rpt.svc.noneTitle') : t('rpt.svc.unchecked'))], ptr].filter(Boolean);
+    const label = serviceLabel(ident, t);
+    const guide = senderGuide(ident, r);
+    return [
+      [t('rpt.det.service'), h('span', { class: 'rpt-det-svc', dataset: { service: ident.id || '', via: ident.via } }, `${label.name} — ${t(`rpt.svcType.${ident.type}`)}`)],
+      [t('rpt.det.serviceHow'), serviceHow(ident, t)],
+      guide ? [t('rpt.det.guide'), h('span', { class: 'rpt-guide', dataset: { guide } }, t(`rpt.guide.${guide}`, { service: ident.service, domain: agg.domain }))] : null,
+      ptr
+    ].filter(Boolean);
+  }
+
+  /** The Service cell: the name, its type and evidence under it; "not identified" once looked up in vain. */
+  function serviceCell(r) {
+    const ident = identOf(r);
+    if (!ident) {
+      // Looked up for good: "not identified"; never, or a lookup that got no answer: "—", the next click asks.
+      const looked = lookedUp.has(r.ip);
+      const failed = !looked && S.ptr.has(r.ip);
+      return h('span', { class: 'rpt-svc-none text-sm', dataset: { service: 'none' },
+        title: looked ? t('rpt.svc.noneTitle') : failed ? `${t('rpt.det.ptr')}: ${t('rpt.ptrState.error')}` : t('rpt.svc.unchecked') },
+      looked ? t('rpt.svc.none') : '—');
+    }
+    const label = serviceLabel(ident, t);
+    return h('div', { class: 'rpt-svc', dataset: { service: ident.id || '', via: ident.via, confidence: ident.confidence }, title: serviceHow(ident, t) },
+      h('span', { class: 'rpt-svc-name' }, label.name),
+      h('span', { class: 'rpt-svc-meta' }, label.meta));
+  }
+
+  /** The sending addresses: one row per address, or folded per service. */
   function sourcesSection(agg, rows) {
+    const view = SegmentedControl({
+      label: t('rpt.view.label'),
+      size: 'sm',
+      className: 'rpt-view',
+      value: S.view,
+      options: SOURCE_VIEWS.map((v) => ({ value: v, label: t(`rpt.view.${v}`), icon: v === 'address' ? 'server' : 'layers' })),
+      onChange: (v) => {
+        S.view = v;
+        keepFocus(dmarcPanel, () => fillSources(agg));
+      }
+    });
+    sourcesBody = h('div', { class: 'stack-sm' });
+    fillSources(agg, rows);
+    return h('section', { class: 'stack-sm rpt-sources-section', attrs: { 'aria-label': t('rpt.sources') } },
+      h('div', { class: 'rpt-sources-head' }, h('h3', { class: 'rpt-subtitle' }, t('rpt.sources')), view.el), sourcesBody);
+  }
+
+  function identifyButton() {
+    identifyBtn = Button({
+      label: t('rpt.id.bulk', { count: 0 }), size: 'sm', variant: 'secondary', icon: 'id-card',
+      title: t('rpt.id.bulkTitle', { max: num(IDENTIFY_MAX), intel: num(INTEL_MAX) }),
+      dataset: { action: 'rpt-identify' },
+      onClick: () => identify()
+    });
+    return identifyBtn;
+  }
+
+  function fillSources(agg, rows = null) {
+    if (!sourcesBody) return;
+    clear(sourcesBody);
+    sourcesTable = null;
+    bulkBtn = null;
+    groupTable = null;
+    groupTotalsEl = null;
+    if (S.view === 'service') sourcesBody.append(...servicesView(agg));
+    else sourcesBody.append(addressTable(agg, rows || (dmarcModel() || { rows: [] }).rows));
+    updateIdentify();
+  }
+
+  /** The service view: the totals, then one row per service with its sources, how it was named and how to align it. */
+  function servicesView(agg) {
+    const { groups, totals } = currentGroups();
+    groupTotalsEl = h('p', { class: 'text-sm muted rpt-grp-totals', dataset: { role: 'rpt-grp-totals' } });
+    fillTotals(totals);
+    groupTable = DataTable({
+      caption: t('rpt.grp.caption', { domain: agg.domain }),
+      className: 'rpt-services',
+      rowKey: (g) => g.key,
+      rows: groups,
+      search: true,
+      // groupSources' order until a header is clicked: the services with the most mail first, "Not identified" last.
+      sort: null,
+      dense: true,
+      cellLabels: true,
+      maxHeight: null,
+      toolbar: identifyButton(),
+      details: (g) => groupDetails(agg, g),
+      onChange: () => updateIdentify(),
+      export: {
+        formats: ['csv'],
+        onExport: (_format, shown) => {
+          const file = downloadText(timestampedName('dmarc-services', 'csv', agg.domain),
+            toCsv(serviceCsvRows(shown), SERVICE_CSV_COLUMNS.map((key) => ({ key, header: key }))), 'text/csv;charset=utf-8');
+          toast(t('table.exported', { file }), { type: 'success', timeout: 2500 });
+        }
+      },
+      rowClass: (g) => `rpt-grp-${g.key === 'unnamed' ? 'unnamed' : g.key === 'isp' ? 'isp' : 'named'}`,
+      columns: [
+        { key: 'service', label: t('rpt.col.service'), sortable: true, wrap: true,
+          sortValue: (g) => (g.key === 'unnamed' ? null : groupName(g, t).toLowerCase()),
+          searchValue: (g) => [groupName(g, t), g.type ? t(`rpt.svcType.${g.type}`) : '', ...g.evidence, ...g.rows.map((r) => r.ip)].join(' '),
+          render: (g) => h('div', { class: 'rpt-svc', dataset: { group: g.key } },
+            h('span', { class: g.key === 'unnamed' ? 'rpt-svc-name muted' : 'rpt-svc-name' }, groupName(g, t)),
+            g.key === 'unnamed' ? null : h('span', { class: 'rpt-svc-meta' }, g.key === 'isp'
+              ? g.evidence.slice(0, 3).join(', ') + (g.evidence.length > 3 ? ` ${t('common.moreCount', { count: g.evidence.length - 3 })}` : '')
+              : `${t(`rpt.svcType.${g.type}`)} · ${g.vias.map((v) => t(`rpt.svcVia.${v}`)).join(', ')}`)) },
+        { key: 'addresses', label: t('rpt.grp.col.addresses'), sortable: true, defaultDir: 'desc', align: 'end', className: 'rpt-grp-addr' },
+        { key: 'messages', label: t('rpt.col.messages'), sortable: true, defaultDir: 'desc', align: 'end' },
+        { key: 'pass', label: t('rpt.col.pass'), sortable: true, defaultDir: 'desc', align: 'end', sortValue: (g) => (g.messages ? g.pass / g.messages : 0),
+          render: (g) => h('span', { class: ['rpt-pct', `rpt-pct-${alignedState(g.pass, g.messages).state}`] }, g.messages ? share(g.pass / g.messages) : '—') },
+        { key: 'spf', label: t('rpt.col.spf'), sortable: true, sortValue: (g) => (g.messages ? g.spfAligned / g.messages : 0), render: (g) => alignedCell(g.spfAligned, g.messages) },
+        { key: 'dkim', label: t('rpt.col.dkim'), sortable: true, sortValue: (g) => (g.messages ? g.dkimAligned / g.messages : 0), render: (g) => alignedCell(g.dkimAligned, g.messages) },
+        { key: 'classes', label: t('rpt.grp.col.classes'), wrap: true, searchValue: (g) => Object.keys(g.classes).map((c) => t(`rpt.cls.${c}`)).join(' '),
+          render: (g) => h('div', { class: 'rpt-grp-classes' }, SOURCE_CLASSES.filter((c) => g.classes[c]).map((c) => {
+            const b = Badge(`${t(`rpt.clsOne.${c}`)} ${num(g.classes[c])}`, { variant: CLASS_STYLE[c].variant, icon: CLASS_STYLE[c].icon, title: t(`rpt.clsDesc.${c}`) });
+            b.dataset.cls = c;
+            return b;
+          })) }
+      ]
+    });
+    return [groupTotalsEl, groupTable.el];
+  }
+
+  /** A service group's details: how to align it, what named it, and its sending addresses. */
+  function groupDetails(agg, g) {
+    const guide = g.key === 'unnamed' ? null : g.key === 'isp' ? 'isp' : g.guide;
+    const shown = g.rows.slice(0, GROUP_LIST_MAX);
+    const items = [
+      g.key === 'unnamed'
+        ? [t('rpt.det.guide'), h('span', { class: 'rpt-guide', dataset: { guide: 'unnamed' } }, t('rpt.grp.unnamedHint'))]
+        : [t('rpt.det.guide'), h('span', { class: 'rpt-guide', dataset: { guide } }, t(`rpt.guide.${guide}`, { service: g.service || '', domain: agg.domain }))],
+      g.vias.length ? [t('rpt.grp.via'), g.vias.map((v) => t(`rpt.svcVia.${v}`)).join(', ')] : null,
+      g.evidence.length ? [t('rpt.grp.evidence'), h('span', { class: 'mono text-sm' }, g.evidence.slice(0, 8).join(', '), g.evidence.length > 8 ? ` ${t('common.moreCount', { count: g.evidence.length - 8 })}` : '')] : null,
+      [t('rpt.grp.list'), h('ul', { class: 'rpt-grp-list' }, shown.map((r) => h('li', { dataset: { ip: r.ip } },
+        h('span', { class: 'mono' }, r.ip), ' ',
+        Badge(t(`rpt.clsOne.${r.cls}`), { variant: CLASS_STYLE[r.cls].variant, icon: CLASS_STYLE[r.cls].icon }), ' ',
+        h('span', { class: 'text-sm muted' }, t('rpt.det.count', { count: r.messages })))),
+      g.rows.length > shown.length ? h('li', { class: 'text-sm muted' }, t('common.moreCount', { count: num(g.rows.length - shown.length) })) : null)]
+    ];
+    return h('div', { class: 'stack-sm rpt-details' }, KeyValueList(items.filter(Boolean)));
+  }
+
+  /** The address view: one row per sending address. */
+  function addressTable(agg, rows) {
     bulkBtn = Button({
       label: t('rpt.intel.bulk', { count: 0 }), size: 'sm', variant: 'secondary', icon: 'search',
       title: t('rpt.intel.bulkTitle', { max: INTEL_MAX }),
@@ -1456,14 +2055,17 @@ export function mount(container, ctx) {
       dense: true,
       cellLabels: true,
       maxHeight: null,
-      toolbar: bulkBtn,
+      toolbar: [bulkBtn, identifyButton()],
       details: (r) => details(agg, r),
-      onChange: () => updateBulk(),
+      onChange: () => {
+        updateBulk();
+        updateIdentify();
+      },
       export: {
         formats: ['csv'],
         onExport: (_format, shown) => {
           const file = downloadText(timestampedName('dmarc-sources', 'csv', agg.domain),
-            toCsv(dmarcCsvRows(agg, shown), DMARC_CSV_COLUMNS.map((key) => ({ key, header: key }))), 'text/csv;charset=utf-8');
+            toCsv(dmarcCsvRows(agg, shown, { serviceOf: identOf }), DMARC_CSV_COLUMNS.map((key) => ({ key, header: key }))), 'text/csv;charset=utf-8');
           toast(t('table.exported', { file }), { type: 'success', timeout: 2500 });
         }
       },
@@ -1477,6 +2079,16 @@ export function mount(container, ctx) {
             b.dataset.cls = r.cls;
             return b;
           } },
+        { key: 'service', label: t('rpt.col.service'), sortable: true, wrap: true,
+          sortValue: (r) => {
+            const label = serviceLabel(identOf(r), t);
+            return label ? label.name.toLowerCase() : null;
+          },
+          searchValue: (r) => {
+            const label = serviceLabel(identOf(r), t);
+            return label ? `${label.name} ${label.meta}` : '';
+          },
+          render: (r) => serviceCell(r) },
         { key: 'messages', label: t('rpt.col.messages'), sortable: true, defaultDir: 'desc', align: 'end' },
         { key: 'pass', label: t('rpt.col.pass'), sortable: true, defaultDir: 'desc', align: 'end', sortValue: (r) => (r.messages ? r.pass / r.messages : 0),
           render: (r) => h('span', { class: ['rpt-pct', `rpt-pct-${alignedState(r.pass, r.messages).state}`] }, r.messages ? share(r.pass / r.messages) : '—') },
@@ -1488,8 +2100,7 @@ export function mount(container, ctx) {
       ]
     });
     updateBulk();
-    return h('section', { class: 'stack-sm rpt-sources-section', attrs: { 'aria-label': t('rpt.sources') } },
-      h('h3', { class: 'rpt-subtitle' }, t('rpt.sources')), sourcesTable.el);
+    return sourcesTable.el;
   }
 
   function reportersSection(agg) {
@@ -1652,6 +2263,8 @@ export function mount(container, ctx) {
       // A lookup the unmount stopped is not "loading" any more: the next visit asks again.
       for (const [d, st] of S.spfState) if (st === 'loading') S.spfState.delete(d);
       for (const [ip, got] of S.intel) if (got.loading) S.intel.delete(ip);
+      // Identify senders stops with the view; what it looked up stays (S.ptr).
+      S.identifying = null;
     }
   };
 }

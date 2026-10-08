@@ -85,7 +85,8 @@ export const FORWARD_OVERRIDES = Object.freeze(['forwarded', 'mailing_list', 'tr
 export const REPORT_PROBLEMS = Object.freeze([...ZIP_ERRORS, 'not-report', 'xml', 'not-dmarc', 'incomplete', 'not-json', 'not-tlsrpt', 'empty']);
 /** Columns of {@link dmarcCsvRows} (language-neutral; the view writes the same headers). */
 export const DMARC_CSV_COLUMNS = Object.freeze([
-  'domain', 'source_ip', 'class', 'reason', 'detail', 'servers', 'messages', 'dmarc_pass', 'dmarc_fail', 'spf_aligned_pass', 'dkim_aligned_pass',
+  'domain', 'source_ip', 'class', 'reason', 'detail', 'servers', 'service', 'service_type', 'service_via', 'service_confidence',
+  'messages', 'dmarc_pass', 'dmarc_fail', 'spf_aligned_pass', 'dkim_aligned_pass',
   'disposition_none', 'disposition_pass', 'disposition_quarantine', 'disposition_reject', 'spf_now', 'spf_now_term', 'spf_now_reason', 'fixes',
   'header_from', 'envelope_from',
   'spf_results', 'dkim_results', 'overrides', 'reporters', 'first_seen', 'last_seen'
@@ -1112,16 +1113,33 @@ const iso = (d) => (d instanceof Date && Number.isFinite(d.getTime()) ? d.toISOS
  * `domain=result`, DKIM with the selector: `example.com/s1=pass`).
  * @param {DomainAggregate} agg
  * @param {Array<SourceRow & ClassifiedSource>} rows
+ * @param {{ serviceOf?: (row: object) => ({ service: string, type: string, via: string, confidence: string }|null) }} [opts]
+ *   serviceOf: the service behind a source (lib/senders.js identifySource, as the view has it); the
+ *   service columns stay empty without it
  * @returns {object[]}
  */
-export function dmarcCsvRows(agg, rows) {
-  return rows.map((r) => ({
-    domain: agg.domain,
-    source_ip: r.ip,
-    class: r.cls,
-    reason: r.reason,
-    detail: r.detail || '',
-    servers: r.servers.join(' '),
+export function dmarcCsvRows(agg, rows, { serviceOf = null } = {}) {
+  return rows.map((r) => {
+    const svc = serviceOf ? serviceOf(r) : null;
+    return {
+      domain: agg.domain,
+      source_ip: r.ip,
+      class: r.cls,
+      reason: r.reason,
+      detail: r.detail || '',
+      servers: r.servers.join(' '),
+      service: svc ? svc.service : '',
+      service_type: svc ? svc.type : '',
+      service_via: svc ? svc.via : '',
+      service_confidence: svc ? svc.confidence : '',
+      ...sourceCsvRest(r)
+    };
+  });
+}
+
+/** The columns of a source after its service. */
+function sourceCsvRest(r) {
+  return {
     messages: r.messages,
     dmarc_pass: r.pass,
     dmarc_fail: r.fail,
@@ -1143,5 +1161,5 @@ export function dmarcCsvRows(agg, rows) {
     reporters: r.reporters.join(' | '),
     first_seen: iso(r.begin),
     last_seen: iso(r.end)
-  }));
+  };
 }

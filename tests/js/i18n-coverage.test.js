@@ -58,6 +58,8 @@ before(async () => {
   await imp('assets/js/ui/related-domains.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
+  // Global DNS › ISP resolvers: loaded on the first click of "Ask ISP resolvers…".
+  await imp('assets/js/ui/isp-resolvers.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -402,6 +404,10 @@ describe('i18n coverage', () => {
     for (const e of omp.FORM_ERRORS) add(`omp.err.${e}`);
     for (const e of estate.REPORT_ERRORS) add(`omp.file.${e}`);
     for (const v of ['known']) { add(`scan.srv.via.${v}`); add(`scan.hint.${v}`); add(`sub.hint.${v}`); }
+    // Global DNS › ISP resolvers (ui/isp-resolvers.js over lib/ispdns.js): why a plan is refused, what the public sources say.
+    const isp = await imp('assets/js/lib/ispdns.js');
+    for (const e of isp.ISP_PLAN_ERRORS) add(`isp.err.${e}`);
+    for (const s of ['agree', 'by-design', 'geo']) add(`isp.sum.ref.${s}`);
     assert.deepEqual(missingIn(keys), []);
   });
 

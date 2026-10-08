@@ -540,11 +540,52 @@
   position: relative;
 }
 
+/* ---- ISP resolvers (ui/isp-resolvers.js, loaded on first use) ---------------------- */
+
+.glb-isp-form {
+  display: grid;
+  grid-template-columns: 10rem minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.glb-isp-form .field {
+  min-width: 0;
+}
+
+/* The buttons line up with the inputs, under the labels. */
+.glb-isp-form .glb-buttons {
+  padding-top: 1.55rem;
+}
+
+.glb-isp-ttl,
+.glb-isp-res {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.glb-isp-status:empty {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .glb-isp-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .glb-isp-form .glb-buttons {
+    padding-top: 0;
+  }
+}
+
 /* Print (style.css hides the shell and every control): leave out the form, the empty state and the links to other tools. */
 @media print {
   .glb-form-card,
   .glb-empty,
-  .glb-links {
+  .glb-links,
+  .glb-isp-form,
+  .glb-isp-quota {
     display: none;
   }
 

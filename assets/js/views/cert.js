@@ -2163,6 +2163,7 @@ export function mount(container, ctx) {
   container.append(h('div', { class: 'stack cert-view' }, loaderHost, content));
 
   function setLoad(next, { announce = true } = {}) {
+    const shown = load ? load.result.certificates[viewState.selected] : null;
     load = next;
     setCurrentCert(state, next);
     ctx.runStarted(certTarget(next));
@@ -2170,10 +2171,16 @@ export function mount(container, ctx) {
     if (ctx.params.host) ctx.setParams({});
     if (next && next.result.leaf) {
       const key = certKey(next.result.leaf);
+      const certs = next.result.certificates;
       if (viewState.key !== key) {
         viewState.key = key;
-        viewState.selected = Math.max(0, next.result.certificates.indexOf(next.result.leaf));
+        viewState.selected = Math.max(0, certs.indexOf(next.result.leaf));
         viewState.tab = 'names';
+      } else {
+        // The same leaf in another file (another order, another chain) keeps its tab, and the
+        // certificate shown stays the one it was where the file holds it, else the leaf.
+        const i = shown ? certs.findIndex((c) => certKey(c) === certKey(shown)) : -1;
+        viewState.selected = i >= 0 ? i : Math.max(0, certs.indexOf(next.result.leaf));
       }
       if (announce) toast(t('cert.loadedToast', { name: next.name || certDisplayName(next.result.leaf) }), { type: 'success', timeout: 2500 });
     }

@@ -733,6 +733,19 @@ async function main() {
       await page.waitFor(() => [...document.querySelectorAll('[data-chain-issue]')].some((a) => a.dataset.chainIssue === 'order'));
     });
 
+    await run.step('chain.pem after chain_reversed.pem (the same leaf, now first): the server certificate stays the one shown', async () => {
+      const shown = () => page.evaluate(() => {
+        const sel = document.querySelector('[data-role="cert-select"]');
+        return sel ? sel.options[sel.selectedIndex].textContent : null;
+      });
+      assertEqual(await shown(), 'Server certificate: www.example-test.com.tr', 'chain_reversed.pem');
+      await uploadAndWait(page, 'chain.pem');
+      assertEqual(await shown(), 'Server certificate: www.example-test.com.tr', 'chain.pem: not the root at the old index');
+      await page.click(tabSel('names'));
+      const covered = await page.evaluate(() => [...document.querySelectorAll('.cert-tabs .dt-row')].some((el) => el.textContent.includes('www.example-test.com.tr')));
+      assert(covered, 'the Names tab lists the server certificate\'s names');
+    });
+
     await run.step('real_google_chain.pem: 3 certificates, ends at a cross-signed root, fullchain download', async () => {
       await uploadAndWait(page, 'real_google_chain.pem');
       await page.click(tabSel('chain'));

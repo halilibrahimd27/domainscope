@@ -1074,13 +1074,14 @@ export async function runRetireCheck({ blocks, domains, hosts = new Map(), zoneR
  *   that could not be checked at all (`domain`), a zone-file record whose live lookup failed (`zone`);
  * - `unknown`: rows that cannot be told (an SPF macro, a failed SPF lookup …; `counts.bySeverity.unknown`);
  * - `notChecked`: domains a stop left unchecked (a domain that failed is counted under `domain`);
- * - `missing`: checked domains that do not exist (DomainCheck.missing: a typo in the list?).
+ * - `missing`: checked domains that do not exist (DomainCheck.missing: a typo in the list?);
+ * - `unresolved`: known host names the caller left out of the check (its cap on names), never resolved.
  * @param {{ domains?: string[], checks?: DomainCheck[], errors?: Array<{ domain: string }>, zone?: ZoneRef[]|null,
- *   aborted?: boolean, counts?: { bySeverity?: Record<string, number> }|null }} r
+ *   aborted?: boolean, counts?: { bySeverity?: Record<string, number> }|null, unresolved?: number }} r
  * @returns {{ failed: number, failures: Record<string, number>, unknown: number, notChecked: string[], missing: string[],
- *   stopped: boolean, settled: boolean }}
+ *   unresolved: number, stopped: boolean, settled: boolean }}
  */
-export function retireGaps({ domains = [], checks = [], errors = [], zone = [], aborted = false, counts = null } = {}) {
+export function retireGaps({ domains = [], checks = [], errors = [], zone = [], aborted = false, counts = null, unresolved = 0 } = {}) {
   const failures = Object.fromEntries([...FAILURE_KINDS, 'domain', 'zone'].map((k) => [k, 0]));
   for (const c of checks || []) {
     for (const f of c.failures || []) failures[f.what] = (failures[f.what] || 0) + 1;
@@ -1092,8 +1093,12 @@ export function retireGaps({ domains = [], checks = [], errors = [], zone = [], 
   const notChecked = (domains || []).filter((d) => !done.has(d));
   const unknown = Number(counts && counts.bySeverity && counts.bySeverity.unknown) || 0;
   const missing = (checks || []).filter((c) => c && c.missing).map((c) => c.domain);
+  const left = Math.max(0, Number(unresolved) || 0);
   const stopped = !!aborted;
-  return { failed, failures, unknown, notChecked, missing, stopped, settled: !failed && !unknown && !notChecked.length && !missing.length && !stopped };
+  return {
+    failed, failures, unknown, notChecked, missing, unresolved: left, stopped,
+    settled: !failed && !unknown && !notChecked.length && !missing.length && !left && !stopped
+  };
 }
 
 /* ------------------------------------------------------------------------ */

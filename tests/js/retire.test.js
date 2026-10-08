@@ -357,7 +357,7 @@ describe('what a check could not settle', () => {
     assert.equal(built.counts.total, 1, 'only the SPF row, which cannot be told');
     const gaps = retireGaps({ domains: ['example.org'], checks: [c], counts: built.counts });
     assert.deepEqual(gaps, {
-      failed: 5, failures: { name: 1, mx: 1, ns: 1, spf: 1, https: 1, domain: 0, zone: 0 }, unknown: 1, notChecked: [], missing: [], stopped: false, settled: false
+      failed: 5, failures: { name: 1, mx: 1, ns: 1, spf: 1, https: 1, domain: 0, zone: 0 }, unknown: 1, notChecked: [], missing: [], unresolved: 0, stopped: false, settled: false
     });
     assert.deepEqual(FAILURE_KINDS.filter((k) => !(k in gaps.failures)), []);
   });
@@ -374,6 +374,10 @@ describe('what a check could not settle', () => {
     assert.deepEqual([zone.failures.zone, zone.settled], [1, false]);
     const unknown = retireGaps({ domains: ['example.net'], checks: [c], counts: { bySeverity: { unknown: 2 } } });
     assert.deepEqual([unknown.unknown, unknown.failed, unknown.settled], [2, 0, false]);
+    // Known host names the caller left out (its cap on names) were never resolved.
+    const capped = retireGaps({ domains: ['example.net'], checks: [c], counts: built.counts, unresolved: 200 });
+    assert.deepEqual([capped.unresolved, capped.failed, capped.settled], [200, 0, false]);
+    assert.equal(retireGaps({ domains: ['example.net'], checks: [c], counts: built.counts }).unresolved, 0);
     assert.equal(retireGaps().settled, true, 'nothing asked, nothing open');
   });
 

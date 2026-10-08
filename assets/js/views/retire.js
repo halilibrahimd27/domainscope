@@ -180,6 +180,7 @@ registerStrings('en', {
   'retire.head.unknown': { one: '{count} SPF result cannot be told from here', other: '{count} SPF results cannot be told from here' },
   'retire.head.notChecked': { one: '{count} domain not checked', other: '{count} domains not checked' },
   'retire.head.missing': { one: '{count} domain does not exist', other: '{count} domains do not exist' },
+  'retire.head.unresolved': { one: '{count} host name not resolved (only the first {max} are)', other: '{count} host names not resolved (only the first {max} are)' },
   'retire.head.scope': 'Not covered: internal (split-horizon) DNS and domains that are not in the list. A record found only in the zone file is not live, but a restore of the file brings it back.',
   'retire.stat.breaking': 'Must change',
   'retire.stat.mail': 'Breaks mail',
@@ -407,6 +408,7 @@ registerStrings('tr', {
   'retire.head.unknown': 'buradan anlaşılamayan {count} SPF sonucu',
   'retire.head.notChecked': '{count} alan adı kontrol edilmedi',
   'retire.head.missing': '{count} alan adı mevcut değil',
+  'retire.head.unresolved': '{count} host adı çözümlenmedi (yalnızca ilk {max} ad çözümlenir)',
   'retire.head.scope': 'Kapsam dışı: iç (split-horizon) DNS ve listede olmayan alan adları. Yalnızca zone dosyasında bulunan bir kayıt canlı değildir, ama dosya geri yüklenirse geri gelir.',
   'retire.stat.breaking': 'Değişmeli',
   'retire.stat.mail': 'E-postayı bozar',
@@ -606,7 +608,8 @@ export function zoneInternalNames(zone) {
  * ({@link zoneInternalNames}) is left out, whichever source brings it.
  * @param {string[]} domains
  * @param {{ scanHosts?: object|null, zone?: object|null, passive?: Map<string, string[]>, discovered?: Map<string, string[]> }} sources
- * @returns {{ hosts: Map<string, Array<{ name: string, source: string }>>, capped: boolean }}
+ * @returns {{ hosts: Map<string, Array<{ name: string, source: string }>>, capped: boolean, unresolved: number }}
+ *   `unresolved`: the known names past the cap, never resolved (the check is not settled then)
  */
 export function hostsForDomains(domains, { scanHosts = null, zone = null, passive = new Map(), discovered = new Map() } = {}) {
   const internal = zoneInternalNames(zone);
@@ -616,16 +619,16 @@ export function hostsForDomains(domains, { scanHosts = null, zone = null, passiv
   const passiveNames = keep([...passive.values()].flat());
   const hosts = new Map();
   let left = RETIRE_MAX_HOSTS;
-  let capped = false;
+  let unresolved = 0;
   for (const d of domains) {
     const list = knownHostsFor(d, {
       scan: scanNames, zone: zoneNames, passive: passiveNames, discovered: keep(discovered.get(d) || [])
     });
-    if (list.length > left) capped = true;
+    unresolved += Math.max(0, list.length - left);
     hosts.set(d, list.slice(0, Math.max(0, left)));
     left -= Math.min(left, list.length);
   }
-  return { hosts, capped };
+  return { hosts, capped: unresolved > 0, unresolved };
 }
 
 /**
@@ -714,7 +717,7 @@ export function changeText(c) {
 export function jobGaps(job, built) {
   return retireGaps({
     domains: job.domains, checks: [...job.checks.values()], errors: job.errors, zone: job.zoneVerified ? job.zoneRefs : [],
-    aborted: job.status === 'cancelled', counts: built.counts
+    aborted: job.status === 'cancelled', counts: built.counts, unresolved: job.unresolved || 0
   });
 }
 
@@ -730,6 +733,7 @@ export function gapTexts(gaps) {
   if (gaps.unknown) out.push(t('retire.head.unknown', { count: gaps.unknown }));
   if (gaps.notChecked.length) out.push(t('retire.head.notChecked', { count: gaps.notChecked.length }));
   if (gaps.missing && gaps.missing.length) out.push(t('retire.head.missing', { count: gaps.missing.length }));
+  if (gaps.unresolved) out.push(t('retire.head.unresolved', { count: gaps.unresolved, max: formatNumber(RETIRE_MAX_HOSTS) }));
   return out;
 }
 
@@ -777,6 +781,7 @@ export function summaryFacts(job, built, { owners = null, passive = false } = {}
     unverified: built.counts.passive || 0,
     failed: gaps.failed,
     missing: gaps.missing.length,
+    unresolved: gaps.unresolved,
     stopped: job.status === 'cancelled',
     at: job.finishedAt || job.startedAt
   };
@@ -843,7 +848,7 @@ function emit(job, type, payload) {
  * Start a check: lib/retire.runRetireCheck over the shared DohClient; each finished domain and the
  * zone's verified records are kept on the job and streamed to its listeners.
  */
-function startJob({ parsed, domains, hosts, capped, zone, dns }) {
+function startJob({ parsed, domains, hosts, capped, unresolved = 0, zone, dns }) {
   jobCounter += 1;
   const zoneRefs = zone ? zoneCandidates(zone.records, parsed.blocks) : [];
   const job = {
@@ -854,6 +859,7 @@ function startJob({ parsed, domains, hosts, capped, zone, dns }) {
     domains,
     hosts,
     capped,
+    unresolved,
     zoneOrigin: zone ? zone.origin || null : null,
     zoneRefs,
     zoneVerified: false,
@@ -1210,7 +1216,7 @@ export function mount(container, ctx) {
     if (ctx.signal.aborted) return;
     const domains = [...domainList.domains];
     // The zone's candidates are verified live even when its domain is not in the list.
-    const { hosts, capped } = currentHosts(domains);
+    const { hosts, capped, unresolved } = currentHosts(domains);
     const params = shareParams(ipsField.value, domainsField.value);
     session.route = params ? { ips: params.ips, domains: params.domains || '' } : null;
     ctx.setParams(params || {});
@@ -1218,7 +1224,7 @@ export function mount(container, ctx) {
     session.carriedDomains = null;
     const single = parsed.blocks.length === 1 && parsed.blocks[0].single ? parsed.blocks[0].first : null;
     ctx.runStarted(single);
-    const job = startJob({ parsed, domains, hosts, capped, zone: zone && Array.isArray(zone.records) ? zone : null, dns });
+    const job = startJob({ parsed, domains, hosts, capped, unresolved, zone: zone && Array.isArray(zone.records) ? zone : null, dns });
     session.job = job;
     attach(job);
     const r = resultsHost.getBoundingClientRect();

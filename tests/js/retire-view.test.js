@@ -206,7 +206,7 @@ describe('Retire an IP view helpers', () => {
     const facts = summaryFacts(job, built, { owners: 1, passive: false });
     assert.deepEqual({ ...facts, counts: undefined }, {
       label: '192.0.2.10', domains: ['example.com'], notChecked: ['example.net'], zone: null, passive: false, counts: undefined,
-      top: [{ severity: 'live', name: 'example.com', type: 'A', value: '192.0.2.10' }], owners: 1, unverified: 0, failed: 2, missing: 0, stopped: true,
+      top: [{ severity: 'live', name: 'example.com', type: 'A', value: '192.0.2.10' }], owners: 1, unverified: 0, failed: 2, missing: 0, unresolved: 0, stopped: true,
       at: new Date('2026-09-28T09:01:00Z')
     });
     setLang('en');
@@ -249,6 +249,38 @@ describe('Retire an IP view helpers', () => {
     assert.match(md, /\n- Nothing found pointing at it, but not everything could be checked \(below\)\n/);
     assert.doesNotMatch(md, /Nothing in the checked domains/);
     assert.match(md, /Not settled:\*\* 1 SPF term that cannot be told from here · 7 failed lookups/);
+  });
+
+  test('host names past the cap leave the check open: never "nothing points here", in the view or in Copy summary', () => {
+    const parsed = parseRetireTargets('192.0.2.99');
+    const many = Array.from({ length: RETIRE_MAX_HOSTS + 200 }, (_, i) => `h${i}.example.com`);
+    const { hosts, capped, unresolved } = hostsForDomains(['example.com'], { scanHosts: { names: many } });
+    assert.deepEqual([hosts.get('example.com').length, capped, unresolved], [RETIRE_MAX_HOSTS, true, 200]);
+    const check = {
+      domain: 'example.com', names: [], mx: { status: 'none', hosts: [] }, ns: { status: 'none', hosts: [] }, https: { status: 'none', hints: [] },
+      spf: { status: 'none', matches: [], unknown: [] }, failures: []
+    };
+    const job = {
+      label: parsed.label, blocks: parsed.blocks, domains: ['example.com'], checks: new Map([['example.com', check]]), errors: [],
+      zoneOrigin: null, zoneRefs: [], zoneVerified: false, capped, unresolved,
+      status: 'done', startedAt: new Date('2026-09-28T09:00:00Z'), finishedAt: new Date('2026-09-28T09:01:00Z')
+    };
+    const built = buildChanges({ blocks: parsed.blocks, checks: [check] });
+    assert.equal(built.counts.total, 0);
+    const gaps = jobGaps(job, built);
+    assert.deepEqual([gaps.unresolved, gaps.settled], [200, false]);
+    setLang('en');
+    assert.deepEqual(gapTexts(gaps), ['200 host names not resolved (only the first 1,000 are)']);
+    const md = renderMarkdown(buildSummary('retire', summaryFacts(job, built, { owners: null }), { t, lang: 'en', url: null }));
+    assert.match(md, /\n- Nothing found pointing at it, but not everything could be checked \(below\)\n/);
+    assert.doesNotMatch(md, /Nothing in the checked domains/);
+    assert.match(md, /Not settled:\*\* 200 host names not resolved \(name limit reached\)/);
+    setLang('tr');
+    assert.deepEqual(gapTexts(gaps), ['200 host adı çözümlenmedi (yalnızca ilk 1.000 ad çözümlenir)']);
+    assert.match(renderMarkdown(buildSummary('retire', summaryFacts(job, built, { owners: null }), { t, lang: 'tr', url: null })), /çözümlenmeyen 200 host adı \(ad sınırı aşıldı\)/);
+    setLang('en');
+    // Under the cap nothing is left out.
+    assert.equal(hostsForDomains(['example.com'], { scanHosts: { names: many.slice(0, 3) } }).unresolved, 0);
   });
 
   test('a domain that does not exist: its card says so, the verdict is never "nothing", the summary names it', () => {

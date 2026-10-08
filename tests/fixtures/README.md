@@ -49,6 +49,11 @@ RSA key and a CSR made with it (`bundle_other.key`, `bundle_other.csr`), `bundle
 (P-256, `CN=www.example.com`, what `openssl req -x509` makes with OpenSSL's default configuration:
 self-signed and CA:TRUE, without keyUsage or subjectAltName; its key was not kept).
 
+STARTTLS and the TLS audit of the CLI (`tests/python/test_starttls_audit.py`): `gen_starttls_fixtures.sh`
+made `starttls_ec_leaf.pem`, a self-signed EC P-256 certificate for `www.example.com` and
+`example.com`, with its throwaway key `starttls_ec_leaf.key`: with `bundle_leaf.pem` (RSA, the same
+names) a test server serves an RSA + ECDSA pair, the way a dual-certificate nginx or HAProxy does.
+
 `estate/report-a.json` and `estate/report-b.json` are `--estate --json` reports of the CLI over a
 made-up network (two sites a week apart; documentation addresses only), written by
 `python tests/python/test_estate.py --write-fixtures`: `tests/python/test_estate.py` checks that they

@@ -63,6 +63,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -126,9 +127,71 @@ NOTIFY_ENV = 'DOMAINSCOPE_NOTIFY_URL'   # --notify URL, kept out of the shell hi
 NOTIFY_TIMEOUT = 10.0       # seconds per webhook POST
 NOTIFY_RETRY_DELAY = 2.0    # seconds before the one retry
 
+# What an endpoint speaks before TLS starts. The protocol follows the port (PORT_PROTOCOLS);
+# every other port speaks TLS from the first byte, the implicit-TLS ports of mail, directory,
+# file transfer and chat (465, 993, 995, 636, 990, 5223) included. A protocol written with a
+# port names it for any number: -p 2525/smtp, a target 203.0.113.10:2525/smtp, 25/tls.
+PROTO_TLS = 'tls'
+PROTO_SMTP, PROTO_IMAP, PROTO_POP3, PROTO_FTP = 'smtp', 'imap', 'pop3', 'ftp'
+PROTO_LDAP, PROTO_XMPP, PROTO_POSTGRES = 'ldap', 'xmpp', 'postgres'
+STARTTLS_PROTOCOLS = (PROTO_SMTP, PROTO_IMAP, PROTO_POP3, PROTO_FTP, PROTO_LDAP, PROTO_XMPP,
+                      PROTO_POSTGRES)
+PROTOCOLS = (PROTO_TLS,) + STARTTLS_PROTOCOLS
+PORT_PROTOCOLS = {25: PROTO_SMTP, 587: PROTO_SMTP, 143: PROTO_IMAP, 110: PROTO_POP3,
+                  21: PROTO_FTP, 389: PROTO_LDAP, 5222: PROTO_XMPP, 5432: PROTO_POSTGRES}
+_PROTOCOL_ALIASES = {'submission': PROTO_SMTP, 'pop': PROTO_POP3, 'postgresql': PROTO_POSTGRES,
+                     'pgsql': PROTO_POSTGRES, 'xmpp-client': PROTO_XMPP}
+PROTOCOL_LABELS = {PROTO_TLS: 'TLS', PROTO_SMTP: 'SMTP', PROTO_IMAP: 'IMAP', PROTO_POP3: 'POP3',
+                   PROTO_FTP: 'FTP', PROTO_LDAP: 'LDAP', PROTO_XMPP: 'XMPP',
+                   PROTO_POSTGRES: 'PostgreSQL'}
+
 
 class UsageError(Exception):
     """Bad command line or input files; reported as ``error: ...`` with exit code 2."""
+
+
+class ProtocolPort(int):
+    """A port number written with its protocol (``2525/smtp``, ``25/tls``).
+
+    It compares, hashes, sorts and prints as the number, so it travels wherever ports do (the
+    -p list, the ports a target is written with) and :func:`endpoint_protocol` reads the
+    protocol back where the endpoint is dialled.
+    """
+
+    protocol = PROTO_TLS  # type: str
+
+    def __new__(cls, port: int, protocol: str = PROTO_TLS) -> 'ProtocolPort':
+        value = super().__new__(cls, port)
+        value.protocol = protocol
+        return value
+
+
+def parse_protocol(word: str, token: str) -> str:
+    """The protocol ``word`` names (``smtp``, ``postgresql`` -> ``postgres``); UsageError,
+    naming ``token``, for any other word."""
+    key = word.strip().lower()
+    key = _PROTOCOL_ALIASES.get(key, key)
+    if key not in PROTOCOLS:
+        raise UsageError('unknown protocol %r in %r (one of %s)'
+                         % (word, token, ', '.join(PROTOCOLS)))
+    return key
+
+
+def endpoint_protocol(port: int, overrides: Optional[Dict[int, str]] = None) -> str:
+    """The protocol spoken on ``port``: the one written with it (:class:`ProtocolPort`), else
+    the one -p names for that number (``overrides``), else :data:`PORT_PROTOCOLS`, else TLS."""
+    named = port.protocol if isinstance(port, ProtocolPort) else None
+    if named:
+        return named
+    number = int(port)
+    if overrides and number in overrides:
+        return overrides[number]
+    return PORT_PROTOCOLS.get(number, PROTO_TLS)
+
+
+def port_label(port: int, protocol: str) -> str:
+    """``443``, ``25/smtp``: a port as -p takes it, with the protocol unless it is TLS."""
+    return '%d' % port if protocol == PROTO_TLS else '%d/%s' % (port, protocol)
 
 
 def _utcnow() -> datetime:
@@ -1408,6 +1471,8 @@ class Server:
                 self.ports[key] = [None, port]
         elif port not in spec:
             spec.append(port)
+        elif isinstance(port, ProtocolPort):  # 2525/smtp after 2525: keep what it names
+            spec[spec.index(port)] = port
 
     def port_spec(self, key: str) -> List[Optional[int]]:
         """The ports of address or host name ``key`` (None = the -p ports)."""
@@ -1562,9 +1627,9 @@ TOPOLOGY_KEYS = ('ports', 'tls_ports', 'terminates_tls', 'vip', 'backends', 'nat
 _PORTS_KEYS = ('ports', 'tls_ports')
 _TOPOLOGY_MALFORMED = {'ports': 'ports', 'tls_ports': 'ports', 'terminates_tls': 'terminatesTls',
                        'vip': 'vip', 'nat': 'nat', 'backends': 'backends'}
-# Ports that usually carry no TLS (plain or STARTTLS protocols): kept in a ports= list, warned about
-_PLAIN_PORTS = frozenset((20, 21, 22, 23, 25, 53, 80, 110, 119, 143, 389, 3306, 3389, 5432, 6379,
-                          8080, 27017))
+# Ports that carry no TLS the scan can reach: kept in a ports= list, warned about. The STARTTLS
+# ports (PORT_PROTOCOLS: 21, 25, 110, 143, 389, 587, 5222, 5432) are scanned with STARTTLS.
+_PLAIN_PORTS = frozenset((20, 22, 23, 53, 80, 119, 3306, 3389, 6379, 8080, 27017))
 _TOPOLOGY_HELP = {
     'ports': 'ports= takes TLS ports 1-65535, comma separated (ports=443,8443)',
     'tls_ports': 'tls_ports= takes TLS ports 1-65535, comma separated (tls_ports=443,8443)',
@@ -1864,6 +1929,13 @@ def format_endpoint(ip: str, port: Optional[int]) -> str:
     if port is None:
         return ip
     return '[%s]:%d' % (ip, port) if ':' in ip else '%s:%d' % (ip, port)
+
+
+def endpoint_text(ip: str, port: int, protocol: str = PROTO_TLS) -> str:
+    """``203.0.113.10:443``, ``203.0.113.25:25/smtp``: :func:`format_endpoint` with the
+    protocol spoken before TLS, as a -t target writes it (none for TLS)."""
+    text = format_endpoint(ip, port)
+    return text if protocol == PROTO_TLS else '%s/%s' % (text, protocol)
 
 
 def _bad_port(text: str) -> Optional[str]:
@@ -2881,6 +2953,18 @@ def parse_target_tokens(value: str, allow_large: bool = False) -> Inventory:
     """
     builder = _InventoryBuilder('argument', allow_large)
     for token in (t for t in re.split(r'[\s,]+', value) if t):
+        # 203.0.113.10:2525/smtp, web01=203.0.113.10:2525/smtp: that endpoint speaks the protocol
+        suffix = _PROTOCOL_SUFFIX_RE.match(token)
+        if suffix:
+            protocol = parse_protocol(suffix.group(2), token)
+            name, sep, target = suffix.group(1).partition('=')
+            if sep and not name:
+                raise UsageError('invalid target %r (expected NAME=IP)' % token)
+            if not _add_endpoint_token(builder, target if sep else name, name if sep else None,
+                                       protocol, token):
+                raise UsageError('invalid target %r: a protocol goes after a port '
+                                 '(203.0.113.10:2525/smtp)' % token)
+            continue
         if '=' in token:
             name, _, target = token.partition('=')
             if not name or not target:
@@ -2928,28 +3012,38 @@ def parse_target_tokens(value: str, allow_large: bool = False) -> Inventory:
     return builder.result(0)
 
 
-def _add_endpoint_token(builder: _InventoryBuilder, token: str) -> bool:
+# A -t token whose port names its protocol (203.0.113.10:2525/smtp, [2001:db8::1]:2525/smtp,
+# web01=mail.example.net:2525/smtp); a CIDR (2001:db8::1/128) has digits after the slash
+_PROTOCOL_SUFFIX_RE = re.compile(r'^(.*:\d{1,5})/([A-Za-z][A-Za-z0-9-]*)$')
+
+
+def _add_endpoint_token(builder: _InventoryBuilder, token: str, name: Optional[str] = None,
+                        protocol: Optional[str] = None, written: Optional[str] = None) -> bool:
     """A ``-t`` token with its own port (``203.0.113.10:8443``, ``[2001:db8::1]:8443``,
-    ``web01.example.net:8443``) -> one server; False when ``token`` has no port."""
+    ``web01.example.net:8443``) -> one server (called ``name`` when given); False when
+    ``token`` has no port. ``protocol`` is the one written after the port (``/smtp``)."""
+    written = written or token
     try:
         endpoint = split_endpoint(token)
     except ValueError as exc:
-        raise UsageError('invalid target %r: %s' % (token, exc))
-    if endpoint is None:
+        raise UsageError('invalid target %r: %s' % (written, exc))
+    if endpoint is None or (protocol is not None and endpoint[1] is None):
         return False
     target, port = endpoint
+    if protocol is not None and port is not None:
+        port = ProtocolPort(port, protocol)
     ip = normalize_ip(target)
     if ip:
-        builder.add(ip, [(ip, port)], 0)
+        builder.add(name or ip, [(ip, port)], 0)
         return True
     if is_numeric_host(target):
         raise UsageError('invalid target %r: %s; write addresses as a.b.c.d'
-                         % (token, numeric_host_note(target)))
+                         % (written, numeric_host_note(target)))
     host = normalize_hostname(target)
     if host is None:
         raise UsageError('invalid target %r (expected an IP address or hostname before the '
-                         'port)' % token)
-    builder.add(target, [], 0, (), [(host, port)])
+                         'port)' % written)
+    builder.add(name or target, [], 0, (), [(host, port)])
     return True
 
 
@@ -3668,6 +3762,12 @@ class Endpoint:
     state: str = 'PENDING'   # OPEN | CLOSED | TIMEOUT
     error: Optional[str] = None
     connect_ms: Optional[int] = None
+    protocol: str = PROTO_TLS  # what is spoken before TLS: tls (nothing) or a STARTTLS one
+
+    @property
+    def label(self) -> str:
+        """``203.0.113.10:443``, ``203.0.113.25:25/smtp``: the endpoint as a target names it."""
+        return endpoint_text(self.ip, self.port, self.protocol)
 
 
 @dataclass
@@ -3696,6 +3796,8 @@ class ServerSummary:
     server: Server
     status: str
     rows: List[ProbeResult]
+    # (ip, port) -> the STARTTLS protocol of the endpoints that spoke one (smtp, imap...)
+    protocols: Dict[Tuple[str, int], str] = field(default_factory=dict)
 
 
 @dataclass
@@ -3722,6 +3824,14 @@ class ScanReport:
     # terminates_tls=no servers set aside (never connected to) without --include-backends
     skipped_backends: List[Server] = field(default_factory=list)
     include_backends: bool = False                                 # --include-backends
+    audit: Optional['TlsAudit'] = None                             # --tls-audit
+
+    def protocol_of(self, ip: str, port: int) -> str:
+        """The protocol endpoint ``ip:port`` was scanned with (tls when it is no endpoint)."""
+        for endpoint in self.endpoints:
+            if endpoint.ip == ip and endpoint.port == port:
+                return endpoint.protocol
+        return PROTO_TLS
 
     @property
     def has_topology(self) -> bool:
@@ -3760,8 +3870,10 @@ class ScanReport:
     def server_summaries(self) -> List[ServerSummary]:
         """One :class:`ServerSummary` per server, in input order."""
         grouped = self.rows_by_server()
+        protocols = {(e.ip, e.port): e.protocol for e in self.endpoints
+                     if e.protocol != PROTO_TLS}
         return [ServerSummary(server, server_status(grouped.get(server.name, [])),
-                              grouped.get(server.name, []))
+                              grouped.get(server.name, []), protocols)
                 for server in self.servers]
 
     def status_counts(self) -> Dict[str, int]:
@@ -3861,6 +3973,8 @@ def classify_exception(exc: BaseException) -> Tuple[str, str]:
     would make the server "not hosting any of the names". Phase 1 uses
     :func:`classify_connect_exception`.
     """
+    if isinstance(exc, StartTlsError):
+        return TLS_ERROR, str(exc)
     if isinstance(exc, ssl.SSLError):
         if getattr(exc, 'reason', None) == 'TLSV1_UNRECOGNIZED_NAME':
             return NOT_HOSTED, 'server rejected the name (unrecognized_name alert)'
@@ -3957,20 +4071,272 @@ def _certificate_before_client_request(messages: List[Tuple[int, str, bytes]]
     return None, None
 
 
+# =====================================================================================
+# STARTTLS: the plain-text exchange before TLS on mail, directory, file, chat and database ports
+# =====================================================================================
+
+STARTTLS_MAX_BYTES = 64 * 1024   # what a server may send before TLS starts
+_STARTTLS_LINE_MAX = 4096
+_LDAP_STARTTLS_OID = b'1.3.6.1.4.1.1466.20037'
+# LDAPMessage { messageID 1, ExtendedRequest [APPLICATION 23] { requestName [0] StartTLS } }
+_LDAP_STARTTLS_REQUEST = (b'\x30\x1d\x02\x01\x01\x77\x18\x80\x16' + _LDAP_STARTTLS_OID)
+_PG_SSL_REQUEST = (8).to_bytes(4, 'big') + (80877103).to_bytes(4, 'big')   # SSLRequest
+_XMPP_TLS_NS = 'urn:ietf:params:xml:ns:xmpp-tls'
+
+
+class StartTlsError(Exception):
+    """The exchange before TLS failed: no STARTTLS offered, refused, or not that protocol."""
+
+
+class _PlainChannel:
+    """The plain socket before STARTTLS: bounded reads of lines, bytes and XML up to a marker."""
+
+    def __init__(self, sock: socket.socket, protocol: str) -> None:
+        self.sock = sock
+        self.label = PROTOCOL_LABELS.get(protocol, protocol)
+        self.buffer = b''
+        self.total = 0
+
+    def fail(self, text: str) -> StartTlsError:
+        return StartTlsError('%s: %s' % (self.label, text))
+
+    def send(self, data: bytes) -> None:
+        self.sock.sendall(data)
+
+    def _fill(self) -> None:
+        chunk = self.sock.recv(4096)
+        if not chunk:
+            raise self.fail('the server closed the connection before TLS started')
+        self.total += len(chunk)
+        if self.total > STARTTLS_MAX_BYTES:
+            raise self.fail('more than %d bytes before TLS started' % STARTTLS_MAX_BYTES)
+        self.buffer += chunk
+
+    def line(self) -> str:
+        while b'\n' not in self.buffer:
+            if len(self.buffer) > _STARTTLS_LINE_MAX:
+                raise self.fail('a line longer than %d bytes' % _STARTTLS_LINE_MAX)
+            self._fill()
+        line, _, self.buffer = self.buffer.partition(b'\n')
+        return line.rstrip(b'\r').decode('latin-1')
+
+    def exact(self, size: int) -> bytes:
+        while len(self.buffer) < size:
+            self._fill()
+        data, self.buffer = self.buffer[:size], self.buffer[size:]
+        return data
+
+    def element(self, *markers: bytes) -> Tuple[bytes, bytes]:
+        """Read until one of ``markers`` and the ``>`` that closes it: (that marker, what was
+        read up to there); the rest stays buffered."""
+        while True:
+            hits = [(self.buffer.find(m), m) for m in markers if m in self.buffer]
+            if hits:
+                at, marker = min(hits)
+                close = self.buffer.find(b'>', at)
+                if close >= 0:
+                    data, self.buffer = self.buffer[:close + 1], self.buffer[close + 1:]
+                    return marker, data
+            self._fill()
+
+    def reply(self, ftp: bool = False) -> Tuple[int, List[str]]:
+        """An SMTP / FTP reply: its code and the text of its lines (``250-...`` continues;
+        an FTP reply may hold lines without the code until ``NNN text``)."""
+        first = self.line()
+        if len(first) < 3 or not first[:3].isdigit() or first[3:4] not in ('', ' ', '-'):
+            raise self.fail('not a %s reply: %s' % (self.label, _clip_text(first)))
+        code, lines = first[:3], [first[4:]]
+        more = first[3:4] == '-'
+        while more:
+            line = self.line()
+            if line[:3] == code and line[3:4] in ('', ' ', '-'):
+                lines.append(line[4:])
+                more = line[3:4] == '-'
+            elif ftp:
+                lines.append(line)
+            else:
+                raise self.fail('not a %s reply: %s' % (self.label, _clip_text(line)))
+        return int(code), lines
+
+    def done(self) -> None:
+        """TLS starts now: bytes the server sent past its go-ahead would not be TLS."""
+        if self.buffer:
+            raise self.fail('data after the go-ahead for TLS')
+
+
+def _clip_text(text: str, limit: int = 120) -> str:
+    text = ''.join(ch if ' ' <= ch <= '~' else '?' for ch in text.strip())
+    return text if len(text) <= limit else text[:limit - 3] + '...'
+
+
+def _starttls_smtp(channel: _PlainChannel, sni: Optional[str]) -> None:
+    code, lines = channel.reply()
+    if code != 220:
+        raise channel.fail('greeting %d %s' % (code, _clip_text(lines[-1])))
+    local = channel.sock.getsockname()[0]
+    literal = '[IPv6:%s]' % local if ':' in local else '[%s]' % local  # RFC 5321 address literal
+    channel.send(('EHLO %s\r\n' % literal).encode('ascii'))
+    code, lines = channel.reply()
+    if code != 250:
+        raise channel.fail('EHLO answered %d %s' % (code, _clip_text(lines[-1])))
+    if not any(line.split(' ', 1)[0].upper() == 'STARTTLS' for line in lines[1:]):
+        raise channel.fail('the server does not offer STARTTLS')
+    channel.send(b'STARTTLS\r\n')
+    code, lines = channel.reply()
+    if code != 220:
+        raise channel.fail('STARTTLS answered %d %s' % (code, _clip_text(lines[-1])))
+
+
+def _starttls_imap(channel: _PlainChannel, sni: Optional[str]) -> None:
+    greeting = channel.line()
+    if not greeting.upper().startswith(('* OK', '* PREAUTH')):
+        raise channel.fail('greeting %s' % _clip_text(greeting))
+    channel.send(b'a1 STARTTLS\r\n')
+    while True:
+        line = channel.line()
+        if line.startswith('* '):  # untagged (a CAPABILITY list)
+            continue
+        if line.lower().startswith('a1 '):
+            if line[3:].upper().startswith('OK'):
+                return
+            raise channel.fail('STARTTLS answered %s' % _clip_text(line[3:]))
+        raise channel.fail('unexpected answer %s' % _clip_text(line))
+
+
+def _starttls_pop3(channel: _PlainChannel, sni: Optional[str]) -> None:
+    greeting = channel.line()
+    if not greeting.startswith('+OK'):
+        raise channel.fail('greeting %s' % _clip_text(greeting))
+    channel.send(b'STLS\r\n')
+    answer = channel.line()
+    if not answer.startswith('+OK'):
+        raise channel.fail('STLS answered %s' % _clip_text(answer))
+
+
+def _starttls_ftp(channel: _PlainChannel, sni: Optional[str]) -> None:
+    code, lines = channel.reply(ftp=True)
+    if code != 220:
+        raise channel.fail('greeting %d %s' % (code, _clip_text(lines[-1])))
+    channel.send(b'AUTH TLS\r\n')
+    code, lines = channel.reply(ftp=True)
+    if code != 234:
+        raise channel.fail('AUTH TLS answered %d %s' % (code, _clip_text(lines[-1])))
+
+
+def _ber_tlv(data: bytes, pos: int, end: int) -> Tuple[int, int, int]:
+    """(tag, content start, content end) of the BER TLV at ``pos`` (LDAP servers write lengths
+    in long form, OpenLDAP with four bytes); ValueError when it does not fit before ``end``."""
+    if pos + 2 > end:
+        raise ValueError('truncated')
+    tag, size = data[pos], data[pos + 1]
+    pos += 2
+    if size & 0x80:
+        count = size & 0x7F
+        if not 1 <= count <= 4 or pos + count > end:
+            raise ValueError('bad length')
+        size = int.from_bytes(data[pos:pos + count], 'big')
+        pos += count
+    if pos + size > end:
+        raise ValueError('truncated')
+    return tag, pos, pos + size
+
+
+def _starttls_ldap(channel: _PlainChannel, sni: Optional[str]) -> None:
+    channel.send(_LDAP_STARTTLS_REQUEST)
+    head = channel.exact(2)
+    if head[0] != 0x30:
+        raise channel.fail('not an LDAP answer')
+    count = head[1] & 0x7F if head[1] & 0x80 else 0
+    if head[1] & 0x80 and not 1 <= count <= 4:
+        raise channel.fail('not an LDAP answer')
+    length = channel.exact(count) if count else b''
+    size = int.from_bytes(length, 'big') if count else head[1]
+    body = channel.exact(size)
+    try:
+        _tag, _start, after_id = _ber_tlv(body, 0, len(body))         # messageID
+        tag, start, end = _ber_tlv(body, after_id, len(body))          # ExtendedResponse
+        code_tag, code_start, code_end = _ber_tlv(body, start, end)    # resultCode
+        detail = ''
+        if code_end < end:
+            _t, _s, matched_end = _ber_tlv(body, code_end, end)        # matchedDN
+            if matched_end < end:
+                _t, text_start, text_end = _ber_tlv(body, matched_end, end)  # diagnostic
+                detail = body[text_start:text_end].decode('utf-8', 'replace')
+    except ValueError:
+        raise channel.fail('not an LDAP answer')
+    if tag != 0x78 or code_tag != 0x0A:
+        raise channel.fail('not an ExtendedResponse to StartTLS')
+    code = int.from_bytes(body[code_start:code_end], 'big')
+    if code != 0:
+        raise channel.fail('StartTLS refused (result code %d%s)'
+                           % (code, ': ' + _clip_text(detail) if detail.strip() else ''))
+
+
+def _starttls_xmpp(channel: _PlainChannel, sni: Optional[str]) -> None:
+    to = " to='%s'" % sni if sni else ''  # the XMPP domain; a host name never holds a quote
+    channel.send(("<?xml version='1.0'?><stream:stream%s version='1.0' xmlns='jabber:client' "
+                  "xmlns:stream='http://etherx.jabber.org/streams'>" % to).encode('ascii'))
+    marker, data = channel.element(b'</stream:features', b'</features', b'<stream:error',
+                                   b'</stream:stream')
+    if marker != b'</stream:features' and marker != b'</features':
+        raise channel.fail('the server ended the stream before its features')
+    if _XMPP_TLS_NS.encode('ascii') not in data:
+        raise channel.fail('the server does not offer STARTTLS')
+    channel.send(("<starttls xmlns='%s'/>" % _XMPP_TLS_NS).encode('ascii'))
+    marker, _data = channel.element(b'<proceed', b'<failure', b'<stream:error', b'</stream:stream')
+    if marker != b'<proceed':
+        raise channel.fail('STARTTLS refused')
+
+
+def _starttls_postgres(channel: _PlainChannel, sni: Optional[str]) -> None:
+    channel.send(_PG_SSL_REQUEST)
+    answer = channel.exact(1)
+    if answer == b'N':
+        raise channel.fail('the server does not accept SSL connections (ssl = off)')
+    if answer != b'S':
+        raise channel.fail('unexpected answer to the SSLRequest')
+
+
+_STARTTLS = {PROTO_SMTP: _starttls_smtp, PROTO_IMAP: _starttls_imap, PROTO_POP3: _starttls_pop3,
+             PROTO_FTP: _starttls_ftp, PROTO_LDAP: _starttls_ldap, PROTO_XMPP: _starttls_xmpp,
+             PROTO_POSTGRES: _starttls_postgres}
+
+
+def starttls(sock: socket.socket, protocol: str, sni: Optional[str] = None) -> None:
+    """Speak ``protocol`` on the connected ``sock`` up to where TLS starts (nothing for TLS).
+
+    SMTP: greeting, EHLO, STARTTLS; IMAP: ``STARTTLS``; POP3: ``STLS``; FTP: ``AUTH TLS``
+    (RFC 4217); LDAP: the StartTLS extended operation; XMPP: the client stream to the domain
+    ``sni`` and ``<starttls/>``; PostgreSQL: the SSLRequest. Raises :class:`StartTlsError`
+    (or the socket's OSError / timeout).
+    """
+    if protocol == PROTO_TLS:
+        return
+    handler = _STARTTLS.get(protocol)
+    if handler is None:
+        raise StartTlsError('unknown protocol %s' % protocol)
+    channel = _PlainChannel(sock, protocol)
+    handler(channel, sni)
+    channel.done()
+
+
 class TlsProber:
-    """Phase 2: TLS handshake with optional SNI, returning the peer certificate (DER)."""
+    """Phase 2: TLS handshake with optional SNI, returning the peer certificate (DER); on a
+    STARTTLS endpoint, after the protocol's plain-text exchange (:func:`starttls`)."""
 
     def __init__(self, context: Optional[ssl.SSLContext] = None) -> None:
         self.context = context or make_client_context()
         self._seen = threading.local()
         _watch_server_certificate(self.context, self._seen)
 
-    def __call__(self, ip: str, port: int, sni: Optional[str], timeout: float) -> TlsResult:
+    def __call__(self, ip: str, port: int, sni: Optional[str], timeout: float,
+                 protocol: str = PROTO_TLS) -> TlsResult:
         started = time.monotonic()
         sock = None
         self._seen.messages = []
         try:
             sock = socket.create_connection((_connect_address(ip), port), timeout=timeout)
+            starttls(sock, protocol, sni)
             tls = self.context.wrap_socket(sock, server_hostname=sni,
                                            do_handshake_on_connect=False)
             sock = tls  # closing the wrapper closes the underlying socket
@@ -4103,11 +4469,16 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
         set_aside = {id(server) for server in skipped}
         servers = [server for server in servers if id(server) not in set_aside]
 
+    # The protocol spoken before TLS follows the port (25: SMTP), unless the port was written
+    # with one (203.0.113.10:2525/smtp), or -p names one for that number (-p 2525/smtp).
+    overrides = port_protocols(ports)
     endpoints = {}  # type: Dict[Tuple[str, int], Endpoint]
     for server in servers:
         for ip in server.ips:
             for port in server.ports_for(ip, ports):
-                endpoints.setdefault((ip, port), Endpoint(ip, port))
+                if (ip, port) not in endpoints:
+                    endpoints[(ip, port)] = Endpoint(ip, int(port),
+                                                     protocol=endpoint_protocol(port, overrides))
 
     # Phase 1 - which ports are open at all.
     counters = {'done': 0, 'open': 0}
@@ -4176,6 +4547,8 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
     def do_tls(job: Tuple[Endpoint, Optional[str]]) -> TlsResult:
         endpoint, sni = job
         try:
+            if endpoint.protocol != PROTO_TLS:  # STARTTLS first (an injected tls_fn takes it)
+                return tls_fn(endpoint.ip, endpoint.port, sni, timeout, endpoint.protocol)
             return tls_fn(endpoint.ip, endpoint.port, sni, timeout)
         except Exception as exc:  # noqa: BLE001 - injected/unknown failures
             status, message = classify_exception(exc)
@@ -4249,6 +4622,7 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
         for ip in server.ips:
             for port in server.ports_for(ip, ports):
                 endpoint = endpoints[(ip, port)]
+                port = endpoint.port  # the number (a 2525/smtp target's port is one too)
                 if endpoint.state != OPEN:
                     results.append(ProbeResult(server.name, ip, port, PROBE_CONNECT, None, None,
                                                endpoint.state, error=endpoint.error,
@@ -4332,6 +4706,458 @@ def _verdict(server: str, endpoint: Endpoint, name: Optional[str], sni: Optional
 # =====================================================================================
 # Output: JSON, CSV, human summary
 # =====================================================================================
+
+# =====================================================================================
+# --tls-audit: the TLS versions, weak cipher suites and key types each endpoint accepts
+# =====================================================================================
+
+AUDIT_VERSIONS = ('TLSv1.0', 'TLSv1.1', 'TLSv1.2', 'TLSv1.3')
+LEGACY_VERSIONS = ('TLSv1.0', 'TLSv1.1')
+_AUDIT_VERSION_ATTRS = {'TLSv1.0': 'TLSv1', 'TLSv1.1': 'TLSv1_1', 'TLSv1.2': 'TLSv1_2',
+                        'TLSv1.3': 'TLSv1_3'}
+# Weak cipher suites, offered one family at a time with TLS 1.2 at most (OpenSSL cipher strings)
+WEAK_CIPHER_GROUPS = (('null', 'eNULL'), ('anon', 'aNULL'), ('export', 'EXP'), ('rc4', 'RC4'),
+                      ('des', 'DES'), ('3des', '3DES'))
+WEAK_CIPHER_LABELS = {'null': 'NULL (no encryption)', 'anon': 'anonymous (no authentication)',
+                      'export': 'export grade', 'rc4': 'RC4', 'des': 'DES', '3des': '3DES'}
+# The certificate key types, told apart by offering only the suites one key type signs (TLS 1.2;
+# Python cannot narrow the signature algorithms of TLS 1.3)
+AUDIT_KEY_TYPES = (('RSA', 'aRSA'), ('ECDSA', 'aECDSA'))
+AUDIT_ACCEPTED, AUDIT_REFUSED, AUDIT_UNTESTED, AUDIT_FAILED = (
+    'accepted', 'refused', 'untested', 'failed')
+AUDIT_OUTCOMES = (AUDIT_ACCEPTED, AUDIT_REFUSED, AUDIT_UNTESTED, AUDIT_FAILED)
+AUDIT_DONE, AUDIT_TIMEOUT, AUDIT_NOT_TLS = 'done', 'timeout', 'no-tls'
+AUDIT_STATUSES = (AUDIT_DONE, AUDIT_TIMEOUT, AUDIT_NOT_TLS)
+# Raised by the local TLS library before anything is sent: the check cannot be made from here
+_LOCAL_SSL_REASONS = ('NO_PROTOCOLS_AVAILABLE', 'NO_CIPHERS_AVAILABLE')
+MAX_AUDIT_LINES = 10   # endpoints per audit finding in the summary without --show-all
+
+
+@dataclass
+class AuditCheck:
+    """One audit handshake: accepted (what was agreed on), refused, untested here or failed."""
+
+    outcome: str
+    version: Optional[str] = None
+    cipher: Optional[str] = None
+    cert_sha256: Optional[str] = None
+    key_algorithm: Optional[str] = None
+    error: Optional[str] = None
+    timed_out: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {'outcome': self.outcome, 'version': self.version, 'cipher': self.cipher,
+                'certSha256': self.cert_sha256, 'keyAlgorithm': self.key_algorithm,
+                'error': self.error}
+
+
+@dataclass
+class EndpointAudit:
+    """The audit of one open ``ip:port``: the name it was asked for (None: no SNI) and the
+    outcome of each version, weak cipher family and key type."""
+
+    ip: str
+    port: int
+    protocol: str = PROTO_TLS
+    servers: List[str] = field(default_factory=list)
+    sni: Optional[str] = None
+    status: str = AUDIT_DONE   # done | timeout (the checks after it skipped) | no-tls (skipped)
+    versions: Dict[str, AuditCheck] = field(default_factory=dict)
+    ciphers: Dict[str, AuditCheck] = field(default_factory=dict)
+    key_types: Dict[str, AuditCheck] = field(default_factory=dict)
+
+    @property
+    def label(self) -> str:
+        return endpoint_text(self.ip, self.port, self.protocol)
+
+    @property
+    def legacy_versions(self) -> List[str]:
+        """TLS 1.0 / 1.1, where accepted."""
+        return [v for v in LEGACY_VERSIONS
+                if v in self.versions and self.versions[v].outcome == AUDIT_ACCEPTED]
+
+    @property
+    def weak_ciphers(self) -> List[str]:
+        """The weak cipher families accepted (``3des``, ``rc4`` ...)."""
+        return [g for g, check in self.ciphers.items() if check.outcome == AUDIT_ACCEPTED]
+
+    @property
+    def key_types_served(self) -> List[str]:
+        """``RSA`` / ``ECDSA``: the key types of the certificates served."""
+        return [k for k, check in self.key_types.items() if check.outcome == AUDIT_ACCEPTED]
+
+
+def _version_text(label: str) -> str:
+    return label.replace('TLSv', 'TLS ')
+
+
+def _audit_base_context() -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.options |= getattr(ssl, 'OP_LEGACY_SERVER_CONNECT', 0)
+    return context
+
+
+def _set_ciphers(context: ssl.SSLContext, spec: str) -> bool:
+    for candidate in (spec + ':@SECLEVEL=0', spec):  # LibreSSL has no security levels
+        try:
+            context.set_ciphers(candidate)
+            return True
+        except ssl.SSLError:
+            continue
+    return False
+
+
+AuditContext = Tuple[Optional[ssl.SSLContext], Optional[str]]   # (context, or why there is none)
+
+
+def _pinned_context(label: str) -> AuditContext:
+    """A client context offering TLS version ``label`` only, or why this Python cannot."""
+    attr = _AUDIT_VERSION_ATTRS[label]
+    cannot = '%s cannot offer %s' % (ssl.OPENSSL_VERSION, _version_text(label))
+    if not getattr(ssl, 'HAS_' + attr, False):
+        return None, cannot
+    context = _audit_base_context()
+    try:
+        version = getattr(ssl.TLSVersion, attr)
+        context.minimum_version = version
+        context.maximum_version = version
+    except (AttributeError, ValueError, ssl.SSLError):
+        return None, cannot
+    _set_ciphers(context, 'ALL')
+    return context, None
+
+
+def _cipher_context(spec: str, label: str) -> AuditContext:
+    """A client context offering only the suites ``spec`` selects, TLS 1.2 at most."""
+    context = _audit_base_context()
+    try:
+        context.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
+        context.maximum_version = ssl.TLSVersion.TLSv1_2
+    except (AttributeError, ValueError, ssl.SSLError):
+        return None, '%s cannot cap a handshake at TLS 1.2' % ssl.OPENSSL_VERSION
+    suites = [c for c in context.get_ciphers()] if _set_ciphers(context, spec) else []
+    if not [c for c in suites if c.get('protocol') != 'TLSv1.3'
+            and not str(c.get('name', '')).startswith('TLS_')]:
+        return None, '%s has no %s cipher suites' % (ssl.OPENSSL_VERSION, label)
+    return context, None
+
+
+class AuditContexts:
+    """The audit's client contexts, made once in the calling thread (setting TLS 1.0 / 1.1
+    warns on Python 3.10 and later): one per version, weak cipher family and key type, each
+    with why this Python cannot make it when it cannot."""
+
+    def __init__(self) -> None:
+        self.library = ssl.OPENSSL_VERSION
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', DeprecationWarning)
+            self.versions = {label: _pinned_context(label)
+                             for label in AUDIT_VERSIONS}  # type: Dict[str, AuditContext]
+            self.ciphers = {group: _cipher_context(spec, WEAK_CIPHER_LABELS[group])
+                            for group, spec in WEAK_CIPHER_GROUPS}  # type: Dict[str, AuditContext]
+            self.key_types = {key: _cipher_context(spec, key)
+                              for key, spec in AUDIT_KEY_TYPES}  # type: Dict[str, AuditContext]
+
+    def untestable(self) -> Dict[str, Dict[str, str]]:
+        """What this Python cannot offer, and why: ``{versions, weakCiphers, keyTypes}``."""
+        return {'versions': {k: why for k, (c, why) in self.versions.items() if c is None and why},
+                'weakCiphers': {k: why for k, (c, why) in self.ciphers.items()
+                                if c is None and why},
+                'keyTypes': {k: why for k, (c, why) in self.key_types.items()
+                             if c is None and why}}
+
+
+def _audit_failure(exc: BaseException) -> AuditCheck:
+    """The outcome of a handshake that did not complete: refused by the server (an alert, a
+    close), untested (this Python would not send it), or failed (timeout, network, STARTTLS)."""
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return AuditCheck(AUDIT_FAILED, error='timed out', timed_out=True)
+    if isinstance(exc, StartTlsError):
+        return AuditCheck(AUDIT_FAILED, error=str(exc))
+    if isinstance(exc, ssl.SSLError) and getattr(exc, 'reason', None) in _LOCAL_SSL_REASONS:
+        return AuditCheck(AUDIT_UNTESTED, error='%s would not send it: %s'
+                          % (ssl.OPENSSL_VERSION, _clean_ssl_message(exc)))
+    if isinstance(exc, (ssl.SSLError, ConnectionResetError, ConnectionAbortedError,
+                        BrokenPipeError)):
+        return AuditCheck(AUDIT_REFUSED, error=classify_exception(exc)[1])
+    return AuditCheck(AUDIT_FAILED, error=classify_exception(exc)[1])
+
+
+AuditAttempt = Callable[[str, int, str, Optional[str], ssl.SSLContext, float], AuditCheck]
+
+
+def audit_handshake(ip: str, port: int, protocol: str, sni: Optional[str],
+                    context: ssl.SSLContext, timeout: float) -> AuditCheck:
+    """One audit handshake with ``context`` (after STARTTLS where ``protocol`` says so)."""
+    sock = None
+    try:
+        sock = socket.create_connection((_connect_address(ip), port), timeout=timeout)
+        starttls(sock, protocol, sni)
+        tls = context.wrap_socket(sock, server_hostname=sni, do_handshake_on_connect=False)
+        sock = tls
+        tls.settimeout(timeout)
+        tls.do_handshake()
+        cipher = tls.cipher()
+        version = tls.version() or ''
+        check = AuditCheck(AUDIT_ACCEPTED, version='TLSv1.0' if version == 'TLSv1' else version,
+                           cipher=cipher[0] if cipher else None)
+        der = tls.getpeercert(binary_form=True)
+        if der:
+            try:
+                cert = parse_certificate(der)
+                check.cert_sha256, check.key_algorithm = cert.sha256, cert.key_algorithm
+            except _CERT_PARSE_ERRORS:
+                pass
+        return check
+    except Exception as exc:  # noqa: BLE001 - every failure becomes an outcome
+        return _audit_failure(exc)
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+def audit_endpoint(target: EndpointAudit, contexts: AuditContexts, timeout: float,
+                   attempt: Optional[AuditAttempt] = None) -> EndpointAudit:
+    """Fill ``target``: each TLS version, each weak cipher family and each key type, one
+    handshake at a time (``attempt``, :func:`audit_handshake` by default). After a timeout the
+    remaining checks are skipped (status ``timeout``); when TLS 1.2 and older are refused (TLS
+    1.3 only) no weak suite can be agreed on and the key types cannot be told apart."""
+    attempt = attempt or audit_handshake
+    timed_out = [False]
+
+    def check(entry: AuditContext) -> AuditCheck:
+        context, why = entry
+        if context is None:
+            return AuditCheck(AUDIT_UNTESTED, error=why)
+        if timed_out[0]:
+            return AuditCheck(AUDIT_UNTESTED, error='skipped after a timeout')
+        result = attempt(target.ip, target.port, target.protocol, target.sni, context, timeout)
+        timed_out[0] = timed_out[0] or result.timed_out
+        return result
+
+    for label in AUDIT_VERSIONS:
+        target.versions[label] = check(contexts.versions[label])
+    tls13_only = (target.versions['TLSv1.2'].outcome == AUDIT_REFUSED
+                  and not target.legacy_versions)
+    for group, _spec in WEAK_CIPHER_GROUPS:
+        if tls13_only and contexts.ciphers[group][0] is not None:
+            target.ciphers[group] = AuditCheck(AUDIT_REFUSED, error='TLS 1.2 and older refused')
+        else:
+            target.ciphers[group] = check(contexts.ciphers[group])
+    for key_type, _spec in AUDIT_KEY_TYPES:
+        if tls13_only and contexts.key_types[key_type][0] is not None:
+            target.key_types[key_type] = AuditCheck(
+                AUDIT_UNTESTED, error='TLS 1.3 only: Python cannot ask for one key type there')
+        else:
+            target.key_types[key_type] = check(contexts.key_types[key_type])
+    target.status = AUDIT_TIMEOUT if timed_out[0] else AUDIT_DONE
+    return target
+
+
+def audit_targets(report: ScanReport) -> List[EndpointAudit]:
+    """One :class:`EndpointAudit` per open endpoint, in scan order. It is asked for the first
+    name it hosts (else without SNI: its default certificate); one where no handshake
+    completed in the scan is not audited (``no-tls``)."""
+    hosted = (UPDATED,) + HOSTED_STATUSES
+    rows = {}  # type: Dict[Tuple[str, int], List[ProbeResult]]
+    for row in report.results:
+        rows.setdefault((row.ip, row.port), []).append(row)
+    out = []  # type: List[EndpointAudit]
+    for endpoint in report.endpoints:
+        if endpoint.state != OPEN:
+            continue
+        mine = rows.get((endpoint.ip, endpoint.port), [])
+        servers = []  # type: List[str]
+        for row in mine:
+            if row.server not in servers:
+                servers.append(row.server)
+        sni = next((row.sni for probe in (PROBE_SNI, PROBE_WILDCARD) for row in mine
+                    if row.probe == probe and row.status in hosted), None)
+        answered = any(row.cert is not None for row in mine)
+        out.append(EndpointAudit(endpoint.ip, endpoint.port, endpoint.protocol, servers, sni,
+                                 AUDIT_DONE if answered else AUDIT_NOT_TLS))
+    return out
+
+
+@dataclass
+class TlsAudit:
+    """--tls-audit: the audit of every open endpoint, and what this Python could not test."""
+
+    library: str
+    untestable: Dict[str, Dict[str, str]]
+    endpoints: List[EndpointAudit]
+    new_certs: List[CertInfo] = field(default_factory=list)   # --cert: an RSA + ECDSA pair?
+
+
+def run_tls_audit(report: ScanReport, timeout: float = DEFAULT_TIMEOUT,
+                  workers: int = DEFAULT_WORKERS, attempt: Optional[AuditAttempt] = None,
+                  contexts: Optional[AuditContexts] = None,
+                  progress: Optional[ProgressCallback] = None,
+                  cancel: Optional[threading.Event] = None) -> TlsAudit:
+    """Audit the open endpoints of ``report`` (:func:`audit_targets`): endpoints in parallel,
+    one handshake at a time to each. ``progress('audit', done, total, {})``."""
+    contexts = contexts or AuditContexts()
+    targets = audit_targets(report)
+    todo = [target for target in targets if target.status != AUDIT_NOT_TLS]
+    done = [0]
+
+    def run(target: EndpointAudit) -> EndpointAudit:
+        return audit_endpoint(target, contexts, timeout, attempt)
+
+    def on_done(_target: EndpointAudit, _result: EndpointAudit) -> None:
+        done[0] += 1
+        if progress:
+            progress('audit', done[0], len(todo), {})
+
+    if todo:
+        _parallel(run, todo, workers, on_done, cancel or threading.Event())
+    return TlsAudit(contexts.library, contexts.untestable(), targets, list(report.new_certs))
+
+
+def _expected_pairs(audit: TlsAudit) -> Set[Optional[str]]:
+    """The names asked for (None: no SNI) that RSA and ECDSA are both expected for: some
+    endpoint serves both for it, or the --cert certificates hold an RSA and an ECDSA one
+    covering it."""
+    pairs = {e.sni for e in audit.endpoints
+             if len(e.key_types_served) == len(AUDIT_KEY_TYPES)}  # type: Set[Optional[str]]
+    rsa = [c for c in audit.new_certs if c.key_algorithm == 'RSA']
+    ecdsa = [c for c in audit.new_certs if c.key_algorithm == 'EC']
+    for e in audit.endpoints:
+        if e.sni and any(c.covers(e.sni)[0] for c in rsa) and any(
+                c.covers(e.sni)[0] for c in ecdsa):
+            pairs.add(e.sni)
+    return pairs
+
+
+def audit_summary(audit: TlsAudit) -> Dict[str, Any]:
+    """The fleet: endpoints still accepting TLS 1.0 / 1.1, accepting weak cipher suites, and
+    serving one key type only where RSA + ECDSA are expected (:func:`_expected_pairs`)."""
+    audited = [e for e in audit.endpoints if e.status != AUDIT_NOT_TLS]
+
+    def where(e: EndpointAudit) -> Dict[str, Any]:
+        return {'ip': e.ip, 'port': e.port, 'protocol': e.protocol, 'servers': list(e.servers),
+                'sni': e.sni}
+
+    pairs = _expected_pairs(audit)
+    halves = []  # type: List[Dict[str, Any]]
+    for e in audited:
+        served = e.key_types_served
+        tested = [k for k, c in e.key_types.items() if c.outcome in (AUDIT_ACCEPTED, AUDIT_REFUSED)]
+        if e.sni in pairs and len(served) == 1 and len(tested) == len(AUDIT_KEY_TYPES):
+            entry = where(e)
+            entry['served'] = served[0]
+            entry['missing'] = [k for k, _spec in AUDIT_KEY_TYPES if k not in served][0]
+            halves.append(entry)
+    legacy, weak = [], []  # type: List[Dict[str, Any]], List[Dict[str, Any]]
+    for e in audited:
+        if e.legacy_versions:
+            entry = where(e)
+            entry['versions'] = e.legacy_versions
+            legacy.append(entry)
+        if e.weak_ciphers:
+            entry = where(e)
+            entry['groups'] = e.weak_ciphers
+            entry['ciphers'] = [e.ciphers[g].cipher for g in e.weak_ciphers if e.ciphers[g].cipher]
+            weak.append(entry)
+    return {'endpoints': len(audit.endpoints), 'audited': len(audited),
+            'notAudited': len(audit.endpoints) - len(audited),
+            'timedOut': sum(1 for e in audited if e.status == AUDIT_TIMEOUT),
+            'acceptingTls10': sum(1 for e in audited if 'TLSv1.0' in e.legacy_versions),
+            'acceptingTls11': sum(1 for e in audited if 'TLSv1.1' in e.legacy_versions),
+            'legacyVersions': legacy, 'weakCiphers': weak, 'oneKeyType': halves}
+
+
+def audit_to_dict(audit: TlsAudit) -> Dict[str, Any]:
+    """The ``tlsAudit`` section of the JSON report."""
+    return {
+        'library': audit.library,
+        'untestable': audit.untestable,
+        'summary': audit_summary(audit),
+        'endpoints': [{
+            'ip': e.ip, 'port': e.port, 'protocol': e.protocol, 'servers': list(e.servers),
+            'sni': e.sni, 'status': e.status,
+            'versions': {k: c.to_dict() for k, c in e.versions.items()},
+            'weakCiphers': {k: c.to_dict() for k, c in e.ciphers.items()},
+            'keyTypes': {k: c.to_dict() for k, c in e.key_types.items()},
+            'legacyVersions': e.legacy_versions, 'weakCipherGroups': e.weak_ciphers,
+            'keyTypesServed': e.key_types_served,
+        } for e in audit.endpoints],
+    }
+
+
+def render_tls_audit(audit: TlsAudit, color: bool = False, show_all: bool = False) -> str:
+    """The audit in the human summary: the findings first, then what was not tested."""
+    style = Style(color)
+    summary = audit_summary(audit)
+    limit = None if show_all else MAX_AUDIT_LINES
+    lines = [style.paint('TLS audit', 'bold') + ' - %d of %d open endpoint(s) checked with %s'
+             % (summary['audited'], summary['endpoints'], display_text(audit.library))]
+
+    def who(entry: Dict[str, Any]) -> str:
+        names = list(entry['servers'])
+        text = ', '.join(names[:3]) + (' +%d' % (len(names) - 3) if len(names) > 3 else '')
+        return '%s  %s' % (endpoint_text(entry['ip'], entry['port'], entry['protocol']),
+                           display_text(text))
+
+    def finding(title: str, entries: List[Dict[str, Any]], detail: Callable[[Dict[str, Any]], str],
+                clean: str) -> None:
+        if not entries:
+            lines.append('  ' + style.paint(clean, 'green'))
+            return
+        lines.append('  ' + style.paint('%s: %d endpoint(s)' % (title, len(entries)),
+                                        'yellow', 'bold'))
+        for entry in entries[:limit]:
+            lines.append('    %s  %s' % (who(entry), detail(entry)))
+        if limit is not None and len(entries) > limit:
+            lines.append('    ... and %d more (--show-all lists them)' % (len(entries) - limit))
+
+    untestable = audit.untestable
+    legacy_untested = [v for v in LEGACY_VERSIONS if v in untestable.get('versions', {})]
+    finding('Still accepting TLS 1.0 / 1.1', summary['legacyVersions'],
+            lambda e: ', '.join(_version_text(v) for v in e['versions']),
+            'No endpoint accepts %s' % ' or '.join(
+                _version_text(v) for v in LEGACY_VERSIONS if v not in legacy_untested)
+            if len(legacy_untested) < len(LEGACY_VERSIONS) else 'TLS 1.0 / 1.1 not tested')
+    finding('Weak cipher suites accepted', summary['weakCiphers'],
+            lambda e: ', '.join(WEAK_CIPHER_LABELS[g] for g in e['groups'])
+            + (' (%s)' % ', '.join(e['ciphers']) if e['ciphers'] else ''),
+            'No endpoint accepts the weak cipher suites tried')
+    finding('One key type of an RSA + ECDSA pair', summary['oneKeyType'],
+            lambda e: '%s only, no %s certificate%s' % (
+                e['served'], e['missing'], ' for %s' % display_text(e['sni']) if e['sni'] else ''),
+            'Every RSA + ECDSA pair is served whole')
+    gaps = ['%s (%s)' % (', '.join(_version_text(v) for v in untestable['versions']),
+                         'versions')] if untestable.get('versions') else []
+    if untestable.get('weakCiphers'):
+        gaps.append('%s (cipher suites)' % ', '.join(WEAK_CIPHER_LABELS[g]
+                                                       for g in untestable['weakCiphers']))
+    if untestable.get('keyTypes'):
+        gaps.append('%s (key types)' % ', '.join(untestable['keyTypes']))
+    if gaps:
+        lines.append('  ' + style.paint('Not tested - this Python (%s) cannot offer: %s'
+                                        % (display_text(audit.library), '; '.join(gaps)), 'dim'))
+    if summary['notAudited']:
+        lines.append('  ' + style.paint('%d endpoint(s) not audited: no TLS handshake completed '
+                                        'there in the scan' % summary['notAudited'], 'dim'))
+    if summary['timedOut']:
+        lines.append('  ' + style.paint('%d endpoint(s) timed out during the audit: the checks '
+                                        'after it were skipped' % summary['timedOut'], 'dim'))
+    if show_all:
+        for e in audit.endpoints:
+            if e.status == AUDIT_NOT_TLS:
+                continue
+            versions = [_version_text(v) for v in AUDIT_VERSIONS
+                        if e.versions[v].outcome == AUDIT_ACCEPTED]
+            lines.append('    %s  %s  versions: %s | weak: %s | keys: %s' % (
+                e.label, display_text(', '.join(e.servers)), ', '.join(versions) or 'none',
+                ', '.join(e.weak_ciphers) or 'none', ', '.join(e.key_types_served) or 'none'))
+    return '\n'.join(lines) + '\n'
+
 
 def _row_dict(row: ProbeResult, now: datetime) -> Dict[str, Any]:
     cert = row.cert
@@ -4458,8 +5284,7 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
             'excludedAddresses': report.excluded_count(),
         },
         'servers': servers,
-        'endpoints': [{'ip': e.ip, 'port': e.port, 'state': e.state, 'error': e.error,
-                       'connectMs': e.connect_ms} for e in report.endpoints],
+        'endpoints': [_endpoint_dict(e) for e in report.endpoints],
         'results': [_result_dict(report, row, now) for row in report.results],
         # target addresses --exclude removed before the scan (never connected to)
         'excluded': [{'server': e.server, 'ip': e.ip, 'excludedBy': e.rule}
@@ -4481,10 +5306,25 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
         doc['skippedBackends'] = [{'name': server.name, 'ips': list(server.ips),
                                    'topology': _topology_dict(server, behind)}
                                   for server in report.skipped_backends]
+    named = port_protocols(report.ports)
+    if named:  # -p 2525/smtp: the protocol each such port number speaks
+        doc['options']['portProtocols'] = {str(port): named[port] for port in sorted(named)}
     if estate:
         doc['options']['estate'] = True
         doc['estate'] = estate_from_report(doc, report.finished_at)
+    if report.audit is not None:
+        doc['options']['tlsAudit'] = True
+        doc['tlsAudit'] = audit_to_dict(report.audit)
     return doc
+
+
+def _endpoint_dict(endpoint: Endpoint) -> Dict[str, Any]:
+    """An ``endpoints`` entry; ``protocol`` only where STARTTLS came first (smtp, imap...)."""
+    entry = {'ip': endpoint.ip, 'port': endpoint.port, 'state': endpoint.state,
+             'error': endpoint.error, 'connectMs': endpoint.connect_ms}  # type: Dict[str, Any]
+    if endpoint.protocol != PROTO_TLS:
+        entry['protocol'] = endpoint.protocol
+    return entry
 
 
 def _topology_dict(server: Server, behind: Dict[str, List[str]]) -> Dict[str, Any]:
@@ -4747,7 +5587,7 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
     label_width = max(len(s) for s in STATUSES)
     indent = 8 + label_width
     for (ip, port), rows in by_endpoint.items():
-        label = _endpoint_label(ip, port)
+        label = endpoint_text(ip, port, summary.protocols.get((ip, port), PROTO_TLS))
         connect = next((r for r in rows if r.probe == PROBE_CONNECT), None)
         if connect is not None:
             if show_all or summary.status in (CLOSED, TIMEOUT):
@@ -5103,7 +5943,7 @@ class ProgressPrinter:
     """Single-line progress on stderr (only when it is a TTY)."""
 
     _LABELS = {'connect': 'Checking ports', 'tls': 'TLS handshakes', 'resolve': 'Resolving',
-               'retry': 'Retrying reset handshakes'}
+               'retry': 'Retrying reset handshakes', 'audit': 'TLS audit'}
 
     def __init__(self, stream: TextIO, enabled: bool) -> None:
         self.stream = stream
@@ -8287,6 +9127,9 @@ def _run_compare(args: argparse.Namespace) -> int:
     ports = parse_ports(args.ports)
     if len(ports) != 1:
         raise UsageError('--compare takes one port (-p 443)')
+    if port_protocols(ports).get(ports[0], PROTO_TLS) != PROTO_TLS:
+        raise UsageError('--compare sends an HTTPS request: -p takes a port without a STARTTLS '
+                         'protocol')
     path = args.path or '/'
     if not re.match(r'^/[\x21-\x7e]*$', path):
         raise UsageError('--path must start with "/" and hold printable ASCII only')
@@ -8663,7 +9506,18 @@ def build_parser() -> argparse.ArgumentParser:
     scan = parser.add_argument_group('scan options')
     scan.add_argument('-p', '--ports', default=DEFAULT_PORTS, metavar='LIST',
                       help='TLS ports, comma separated, ranges allowed (default: 443); a '
-                           'target written with its own port (10.0.0.5:8443) keeps that one')
+                           'target written with its own port (10.0.0.5:8443) keeps that one. '
+                           'STARTTLS follows the port: SMTP on 25 and 587, IMAP 143, POP3 110, '
+                           'FTP 21, LDAP 389, XMPP 5222, PostgreSQL 5432; name it for another '
+                           'number with PORT/PROTOCOL (2525/smtp, also 10.0.0.5:2525/smtp; '
+                           '25/tls for TLS from the first byte)')
+    scan.add_argument('--tls-audit', action='store_true',
+                      help='also audit every endpoint that answered TLS: the versions it '
+                           'accepts (TLS 1.0 to 1.3, as far as this Python can offer them), '
+                           'weak cipher suites (NULL, anonymous, export, RC4, DES, 3DES) and the '
+                           'key types it serves (RSA, ECDSA); the summary and the JSON '
+                           '("tlsAudit") list the fleet\'s legacy versions, weak suites and '
+                           'RSA + ECDSA pairs served by halves')
     scan.add_argument('-w', '--workers', type=int, default=DEFAULT_WORKERS, metavar='N',
                       help='parallel connections (default: %%(default)s; at most %d at a '
                            'time to one ip:port)' % MAX_PER_ENDPOINT)
@@ -8720,12 +9574,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_ports(text: str) -> List[int]:
-    """``'443,8443,9440-9442'`` -> ``[443, 8443, 9440, 9441, 9442]``; UsageError if invalid."""
+    """``'443,8443,9440-9442'`` -> ``[443, 8443, 9440, 9441, 9442]``; UsageError if invalid.
+
+    A port or range may name its protocol (``2525/smtp``, ``25/tls``): it is then a
+    :class:`ProtocolPort`, and that number speaks the protocol throughout the scan."""
     ports = []  # type: List[int]
     for token in (t for t in re.split(r'[\s,]+', text or '') if t):
-        match = re.match(r'^(\d{1,5})(?:-(\d{1,5}))?$', token)
+        match = re.match(r'^(\d{1,5})(?:-(\d{1,5}))?(?:/([A-Za-z][A-Za-z0-9-]*))?$', token)
         if not match:
             raise UsageError('invalid port %r' % token)
+        protocol = parse_protocol(match.group(3), token) if match.group(3) else None
         first = int(match.group(1))
         last = int(match.group(2) or first)
         if not (1 <= first <= 65535 and 1 <= last <= 65535) or last < first:
@@ -8733,11 +9591,19 @@ def parse_ports(text: str) -> List[int]:
         if last - first >= 1024:
             raise UsageError('port range %r is too large (max 1024 ports)' % token)
         for port in range(first, last + 1):
+            value = ProtocolPort(port, protocol) if protocol else port
             if port not in ports:
-                ports.append(port)
+                ports.append(value)
+            elif protocol:  # 2525,2525/smtp: the protocol written wins
+                ports[ports.index(port)] = value
     if not ports:
         raise UsageError('no ports given')
     return ports
+
+
+def port_protocols(ports: Sequence[int]) -> Dict[int, str]:
+    """The protocols -p names (``2525/smtp`` -> ``{2525: 'smtp'}``), by port number."""
+    return {int(port): port.protocol for port in ports if isinstance(port, ProtocolPort)}
 
 
 def load_new_certificate(path: str, now: Optional[datetime] = None
@@ -9190,8 +10056,9 @@ def _run(args: argparse.Namespace) -> int:
             where = '%d IP(s), %d ip:port endpoint(s)' % (ip_count, endpoint_count)
         else:
             where = '%d IP(s) x %d port(s)' % (ip_count, len(ports))
-        print('Scanning %d server(s) / %s for %d name(s) with %d workers, timeout %gs%s ...'
-              % (len(kept), where, len(probes), args.workers, args.timeout, skipped), file=err)
+        print('Scanning %d server(s) / %s for %d name(s) with %d workers, timeout %gs%s%s ...'
+              % (len(kept), where, len(probes), args.workers, args.timeout, skipped,
+                 ', then a TLS audit' if args.tls_audit else ''), file=err)
     progress = ProgressPrinter(err, enabled=not quiet and _isatty(err))
     try:
         # run_scan applies the same exclusion itself, so it is enforced where connections start.
@@ -9200,6 +10067,9 @@ def _run(args: argparse.Namespace) -> int:
                           warnings=all_warnings, exclude=exclude_rules,
                           private_cas=private_cas, strict_public=args.strict_public,
                           new_cert_files=new_cert_files, include_backends=args.include_backends)
+        if args.tls_audit:
+            report.audit = run_tls_audit(report, timeout=args.timeout, workers=args.workers,
+                                         progress=progress.update)
     finally:
         progress.finish()
     monitor = None  # type: Optional[MonitorResult]
@@ -9244,10 +10114,13 @@ def _run(args: argparse.Namespace) -> int:
     if args.json != '-' and args.csv != '-':
         width = max(60, min(160, shutil.get_terminal_size((100, 24)).columns))
         color = use_color(args.no_color, sys.stdout)
-        write_report('-', render_estate(report, estate, color=color, show_all=args.show_all,
-                                        width=width, monitor=monitor) if estate is not None else
-                     render_summary(report, color=color, show_all=args.show_all, width=width,
-                                    monitor=monitor))
+        text = render_estate(report, estate, color=color, show_all=args.show_all, width=width,
+                             monitor=monitor) if estate is not None else \
+            render_summary(report, color=color, show_all=args.show_all, width=width,
+                           monitor=monitor)
+        if report.audit is not None:
+            text += '\n' + render_tls_audit(report.audit, color=color, show_all=args.show_all)
+        write_report('-', text)
 
     notify_failed = interrupted = False
     if notify_url and notify_format and should_notify(monitor, args.notify_always):

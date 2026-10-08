@@ -252,12 +252,15 @@ function render(st, ctx) {
   const ip = normalizeIP(st.row.ip);
   const routable = isGloballyRoutable(ip);
   const r = st.result;
+  // Keyboard focus inside the panel moves to its new action (or its title) instead of dropping to the page.
+  const doc = globalThis.document;
+  const hadFocus = !!(doc && doc.activeElement && doc.activeElement !== slot && slot.contains(doc.activeElement));
   clear(slot);
   slot.dataset.state = routable ? st.status : 'not-routable';
   slot.dataset.ip = ip;
 
   let action = null;
-  if (routable && st.status !== 'done') {
+  if (routable && !r) {
     action = Button({
       label: t('ipe.check'), icon: 'search', size: 'sm', variant: 'secondary', title: t('ipe.checkTitle'),
       ariaLabel: t('ipe.checkFor', { ip }), dataset: { action: 'enrich' }, onClick: () => check(st, ctx)
@@ -274,10 +277,12 @@ function render(st, ctx) {
   else body.push(KeyValueList(resultItems(r), { className: 'ipe-facts' }));
 
   const prefix = r ? r.prefix : (knownFromInfo(st.row.info) || {}).prefix || null;
+  const title = h('h4', { class: 'ipe-title', attrs: { tabindex: '-1' } }, t('ipe.title'));
   append(slot,
-    h('div', { class: 'ipe-head' }, h('h4', { class: 'ipe-title' }, t('ipe.title')), action),
+    h('div', { class: 'ipe-head' }, title, action),
     body,
     breadcrumb(st, ctx, ip, prefix));
+  if (hadFocus) (action || title).focus({ preventScroll: true });
 }
 
 /** The facts of a result: prefix and origin, RPKI, routing, abuse contact, PeeringDB. */

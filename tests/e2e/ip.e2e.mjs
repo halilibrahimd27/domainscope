@@ -746,11 +746,15 @@ async function enrichGroup(browser, server) {
       assertEqual(p.na, [{ sources: 'ripestat-abuse', title: 'RIPEstat (abuse contact): rate limited — try again in a few minutes' }], 'the abuse contact is n/a, with its reason');
       assertEqual(p.retry, 'ripestat-abuse', 'Retry asks only the failed source');
       await page.evaluate(() => { window.__enrichFake.limited = []; window.__enrichFake.calls = []; });
-      await page.evaluate(() => document.querySelector('.ipi-enrich[data-ip="8.8.8.8"] [data-enrich-retry]').click());
+      // With the keyboard: the focus stays in the panel when the Retry it pressed is replaced.
+      await page.evaluate(() => document.querySelector('.ipi-enrich[data-ip="8.8.8.8"] [data-enrich-retry]').focus());
+      await page.press('Enter');
       await page.waitFor(() => (document.querySelector('.ipi-enrich[data-ip="8.8.8.8"]')?.textContent || '').includes('abuse@example.net'), { timeout: 15000, message: 'abuse contact after Retry' });
       assertEqual(await calls(), ['abuse-contact-finder 8.8.8.8'], 'requests of the Retry');
       const after = await panel('8.8.8.8');
       assertEqual([after.na, after.retry], [[], null], 'nothing n/a any more');
+      const focus = await page.evaluate(() => (document.activeElement && document.activeElement.closest('.ipi-enrich') ? document.activeElement.className : null));
+      assertEqual(focus, 'ipe-title', 'keyboard focus on the panel’s title, not dropped to the page');
     });
 
     await step('a private or documentation address: the panel says nothing is sent, the breadcrumb still works', async () => {

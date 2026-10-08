@@ -521,7 +521,7 @@ registerStrings('en', {
   'keys.focus': 'Jump to the tool’s main field',
   'keys.palette': 'Search the tools, or act on a domain or an IP address',
   'keys.help': 'Show this list',
-  'keys.note': 'While you type in a field, only {submit} and Esc act there (in a search box with text, Esc first clears it); / and ? are typed as usual. Fields among the results, such as a table’s filter, start nothing with {submit}.',
+  'keys.note': 'While you type in a field, only {submit}, {palette} and Esc act there (in a search box with text, Esc first clears it); / and ? are typed as usual. Fields among the results, such as a table’s filter, start nothing with {submit}.',
 
   'settings.title': 'Settings',
   'settings.dohChain': 'DNS-over-HTTPS resolvers',
@@ -841,7 +841,7 @@ registerStrings('tr', {
   'keys.focus': 'Aracın ana alanına git',
   'keys.palette': 'Araçlarda ara ya da bir alan adı veya IP adresiyle işlem yap',
   'keys.help': 'Bu listeyi göster',
-  'keys.note': 'Bir alana yazarken orada yalnızca {submit} ve Esc çalışır (içinde metin olan bir arama kutusunda Esc önce onu temizler); / ve ? her zamanki gibi yazılır. Sonuçlardaki alanlarda (örneğin bir tablonun filtresinde) {submit} hiçbir şeyi başlatmaz.',
+  'keys.note': 'Bir alana yazarken orada yalnızca {submit}, {palette} ve Esc çalışır (içinde metin olan bir arama kutusunda Esc önce onu temizler); / ve ? her zamanki gibi yazılır. Sonuçlardaki alanlarda (örneğin bir tablonun filtresinde) {submit} hiçbir şeyi başlatmaz.',
 
   'settings.title': 'Ayarlar',
   'settings.dohChain': 'DNS-over-HTTPS çözümleyicileri',

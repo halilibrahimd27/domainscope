@@ -1822,6 +1822,7 @@ function openShortcutHelp() {
   const back = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null;
   const nav = globalThis.navigator || {};
   const apple = isApplePlatform((nav.userAgentData && nav.userAgentData.platform) || nav.platform || '');
+  const caps = (keys) => keyCaps(keys, { apple }).join('+');
   const combo = (keys) => h('span', { class: 'keys-combo' }, keyCaps(keys, { apple }).map((k, i) => [
     i ? h('span', { class: 'keys-plus', attrs: { 'aria-hidden': 'true' } }, '+') : null,
     h('kbd', null, k)
@@ -1831,7 +1832,7 @@ function openShortcutHelp() {
       h('tbody', null, SHORTCUTS.map((s) => h('tr', { dataset: { key: s.id } },
         h('th', { attrs: { scope: 'row' } }, combo(s.keys)),
         h('td', null, t(`keys.${s.id}`)))))),
-    h('p', { class: 'muted text-sm' }, t('keys.note', { submit: keyCaps(['Mod', 'Enter'], { apple }).join('+') })));
+    h('p', { class: 'muted text-sm' }, t('keys.note', { submit: caps(['Mod', 'Enter']), palette: caps(['Mod', 'K']) })));
   const dialog = Modal({
     title: t('keys.title'),
     size: 'sm',

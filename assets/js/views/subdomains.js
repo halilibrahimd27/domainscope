@@ -2881,7 +2881,7 @@ export function subdomainsSummaryFacts(run) {
     status: run.status,
     counts: countHosts(hosts),
     proxied: o ? o.proxied.length : hosts.filter(isProxiedOriginHost).length,
-    withCandidates: o ? o.proxied.filter((p) => p.zone.length || p.leaks.length || p.history.length || p.siblings.length).length : 0,
+    withCandidates: o ? o.proxied.filter((p) => p.known.length || p.zone.length || p.leaks.length || p.history.length || p.siblings.length).length : 0,
     networks: o ? o.networks.length : 0,
     dangling: hosts.filter((x) => !x.wildcardSuspect && x.classification && x.classification.dangling).map((x) => x.name),
     failedSources: sourceHealthSummary(run.sourceResults).filter((x) => !x.ok && x.errorKind !== 'abort').length,

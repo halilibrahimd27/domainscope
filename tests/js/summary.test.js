@@ -379,6 +379,22 @@ describe('subdomains', () => {
     assert.equal(subdomainsSummaryFacts({ ...run, status: 'error' }), null);
   });
 
+  test('a finished scan counts a proxied host whose origin the origin map remembers among those with origin candidates, as the ORIGIN panel does', async () => {
+    const { subdomainsSummaryFacts } = await imp('assets/js/views/subdomains.js');
+    const cf = { kind: 'cloudflare', provider: { name: 'Cloudflare' }, hidesOrigin: true, dangling: false };
+    const host = (name, ip) => ({ name, wildcardSuspect: false, resolution: { status: 'NOERROR', ipv4: [ip], ipv6: [], cnames: [] }, classification: cf, servers: [] });
+    const hosts = [host('www.example.net', '104.16.5.5'), host('shop.example.net', '104.16.5.6')];
+    const remembered = (name, ip) => ({ ip, reasons: [{ kind: 'known', host: name, port: 443 }] });
+    const run = {
+      status: 'done', config: { domains: ['example.net'] }, hosts, found: new Map(), sourceResults: [], finishedAt: new Date('2026-09-27T12:00:00Z'),
+      result: { hosts, originHints: [remembered('www.example.net', '192.0.2.40'), remembered('shop.example.net', '192.0.2.41')], originNetworks: [] }
+    };
+    const facts = subdomainsSummaryFacts(run);
+    assert.deepEqual([facts.proxied, facts.withCandidates], [2, 2]);
+    const out = md(S.subdomainsSummary(facts, opts()));
+    assert.ok(lines(out).includes('- 2 hosts hide their origin behind a proxy · origin candidates for 2 of them'), out);
+  });
+
   test('a hostile name stays one inert code span (no mention, link, bidi or new line)', () => {
     const evil = `x${RLO}y<!channel>[a](https://example.org)\`@here${LS}- **fake**.example.com`;
     const doc = S.subdomainsSummary({ ...facts, dangling: [evil] }, opts());

@@ -10,12 +10,15 @@
  *   that area as last read (`carried: [{ area, from, checks }]`; `from` null when no run read it);
  * - ct: the certificates a source not read in full this run listed before (`carried: { from }`),
  *   and per source the time of its last full read (`lastFullAt`);
- * - subdomains: a host whose lookup failed keeps its last answer (`lastGood`).
+ * - subdomains: a host whose lookup failed keeps its last answer (`lastGood`);
+ * - takeover: a risk whose lookup failed is carried as last read (`carried: { from }`), never
+ *   "gone" and never better.
  * Pure: no I/O. tools/ds/commands.mjs (writing a report) and tools/ds/diff.mjs (reading a
  * baseline) share these definitions of "failed" and "read in full".
  */
 
 import { sortHostnames } from '../../assets/js/lib/domain.js';
+import { findingLookups, TAKEOVER_SEVERITIES, TAKEOVER_REF_KINDS } from '../../assets/js/lib/takeover.js';
 
 const isStr = (v) => typeof v === 'string';
 const byId = (list) => {
@@ -245,4 +248,46 @@ export function carryHosts(hosts, prev, { prevAt = null } = {}) {
     const last = lookupFailed(y) ? y.lastGood : { at, ...Object.fromEntries(ANSWER.map((k) => [k, y[k] ?? null])) };
     return last ? { ...h, lastGood: last } : h;
   });
+}
+
+/* ------------------------------------------------------------------------ */
+/* takeover                                                                 */
+/* ------------------------------------------------------------------------ */
+
+/** A takeover severity's rank, most severe first (an unknown one last). */
+export function riskRank(severity) {
+  const i = TAKEOVER_SEVERITIES.indexOf(severity);
+  return i === -1 ? TAKEOVER_SEVERITIES.length : i;
+}
+
+/** Worst first, then by host, target and kind: the order of a takeover target's risks. */
+export const riskOrder = (a, b) => riskRank(a.severity) - riskRank(b.severity) || String(a.host).localeCompare(String(b.host))
+  || String(a.target).localeCompare(String(b.target)) || TAKEOVER_REF_KINDS.indexOf(a.kind) - TAKEOVER_REF_KINDS.indexOf(b.kind);
+
+/**
+ * This run's takeover risks with what a failed lookup hides carried from the baseline: a risk of
+ * the baseline one of whose lookups failed this run (lib/takeover.js findingLookups: the query
+ * its reference came from, whether its target exists, the registration of a domain its chain
+ * names) is kept as the last run that read it found it (`carried: { from }`) — never "gone", and
+ * never better than then: this run's risk of the same key stands only when it is at least as
+ * severe. A risk the baseline carried goes on with its `from`.
+ * @param {{ risks?: object[], failures?: Array<{ name: string }> }} target this run's takeover target
+ * @param {object|null} prev the baseline's target of the same domain
+ * @param {{ prevAt?: string|null }} [opts] the baseline run's start, for a target without `checkedAt`
+ * @returns {object[]} the risks, worst first ({@link riskOrder})
+ */
+export function carryRisks(target, prev, { prevAt = null } = {}) {
+  const risks = Array.isArray(target && target.risks) ? target.risks : [];
+  const failed = new Set(((target && target.failures) || []).map((f) => f && f.name).filter(isStr));
+  if (!prev || !Array.isArray(prev.risks) || !failed.size) return [...risks].sort(riskOrder);
+  const from = isStr(prev.checkedAt) ? prev.checkedAt : prevAt;
+  const byKey = new Map(risks.map((r) => [r.key, r]));
+  for (const p of prev.risks) {
+    if (!p || !isStr(p.key) || !isStr(p.kind) || !isStr(p.host)) continue;
+    if (!findingLookups(p).some((name) => failed.has(name))) continue;
+    const now = byKey.get(p.key);
+    if (now && riskRank(now.severity) <= riskRank(p.severity)) continue;
+    byKey.set(p.key, { ...p, carried: { from: p.carried && p.carried.from !== undefined ? p.carried.from : from } });
+  }
+  return [...byKey.values()].sort(riskOrder);
 }

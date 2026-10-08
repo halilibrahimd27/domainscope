@@ -13,6 +13,7 @@
  *   node tools/ds.mjs dane fullchain.pem
  *   node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
  *   node tools/ds.mjs tls --list tls-hosts.txt --ari --revocation --json tls.json
+ *   node tools/ds.mjs takeover --list domains.txt --from-subdomains subs.json --json takeover.json
  *
  * Commands, options and exit codes: tools/ds/args.mjs (USAGE, `--help`). The checks:
  * tools/ds/commands.mjs; "Changes since the baseline": tools/ds/diff.mjs; the summary and the
@@ -306,6 +307,11 @@ export async function main(argv, io = {}) {
       if (!valid.length) throw new UsageError(`--exact: ${options.exact} lists no host name`);
       inputs.exactNames = valid;
       inputs.exactFile = basename(options.exact);
+    }
+    if (command === 'takeover') {
+      // --names / --from-subdomains: the hosts whose CNAME chains are asked (tools/ds/takeover.mjs)
+      const { takeoverInputs } = await import('./ds/takeover.mjs');
+      inputs.takeover = await takeoverInputs(options, { read: async (path, option) => decodeText(await readInput(path, option)), warn, skipped: skippedWarnings });
     }
     await checkOutputPath(options.json, '--json');
     await checkOutputPath(options.md, '--md');

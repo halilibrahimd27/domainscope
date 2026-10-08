@@ -12,7 +12,9 @@
  * globalThis.fetch of a spawned runner, and DS_FAKE_DOH_LOG=<file> receives the questions asked
  * (JSON) when the process exits; DS_FAKE_DOH=portfolio gives it the Domain portfolio's three zones
  * and their RDAP registry ({@link portfolioZone}, {@link createPortfolioFetch}: the `audit`
- * command); DS_FAKE_DOH=hang a network that never answers ({@link createHangingFetch}, the
+ * command); DS_FAKE_DOH=takeover two domains whose records name other people's domains, with their
+ * registry ({@link takeoverZone}, {@link createTakeoverFetch}: the `takeover` command);
+ * DS_FAKE_DOH=hang a network that never answers ({@link createHangingFetch}, the
  * Ctrl-C test). Documentation data only (example.com / .net / .org, example-test.com.tr,
  * 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32, the fake Cloudflare edge 104.16.1.1).
  */
@@ -219,6 +221,107 @@ export function createPortfolioFetch({ table, rdap, signed = [] }, { log = [], r
   };
 }
 
+/* ------------------------------------------------------------------------ */
+/* The takeover watch (the runner's `takeover`)                             */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Two domains of ours, example.com and example.net, in a world where example.org and
+ * example-test.com.tr are other people's: example.com's DMARC reports go to reports.example.org
+ * (not registered: RDAP 404 and NXDOMAIN), its SPF record names a:relay.example-test.com.tr and
+ * example.net's CAA iodef caa@example-test.com.tr (expiring in 20 days), example.net's
+ * `_acme-challenge` is delegated into example.com (ours: never looked up), and old.example.com is
+ * a CNAME to an Azure app that is gone. `registry` (domain → RDAP JSON, or null for a 404) can be
+ * changed between runs; dates count from `now`.
+ * @param {{ now?: number }} [opts]
+ * @returns {{ table: Record<string, Record<string, any>>, registry: Record<string, object|null> }}
+ */
+export function takeoverZone({ now = Date.now() } = {}) {
+  const iso = (days) => new Date(now + days * DAY_MS + DAY_MS / 2).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const table = {
+    'example.com': {
+      NS: ['ns1.example.net', 'ns2.example.net'], MX: [{ preference: 10, exchange: 'mx.example.com' }],
+      TXT: [['v=spf1 include:_spf.example.net a:relay.example-test.com.tr exists:%{i}._spf.example.com -all']]
+    },
+    'mx.example.com': { A: ['192.0.2.25'] },
+    '_dmarc.example.com': { TXT: [['v=DMARC1; p=reject; rua=mailto:dmarc@reports.example.org!10m, mailto:dmarc@example.com']] },
+    'selector1._domainkey.example.com': { CNAME: 'selector1.dkim.example.net' },
+    'selector1.dkim.example.net': { TXT: [['v=DKIM1; k=rsa; p=MIIBIjANBgkqh']] },
+    'old.example.com': { CNAME: 'old-app.azurewebsites.net' },
+    'www.example.com': { A: ['192.0.2.10'] },
+    'relay.example-test.com.tr': { A: ['203.0.113.25'] },
+    'example-test.com.tr': { NS: ['ns1.example-test.com.tr'] },
+    'example.net': {
+      NS: ['ns1.example.net', 'ns2.example.net'], MX: [{ preference: 10, exchange: 'mx.example.com' }], TXT: [['v=spf1 -all']],
+      CAA: [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }, { flags: 0, tag: 'iodef', value: 'mailto:caa@example-test.com.tr' }]
+    },
+    '_spf.example.net': { TXT: [['v=spf1 ip4:192.0.2.0/24 -all']] },
+    'ns1.example.net': { A: ['198.51.100.53'] },
+    'ns2.example.net': { A: ['198.51.100.54'] },
+    '_acme-challenge.example.net': { CNAME: 'example-net.acme.example.com' },
+    'example-net.acme.example.com': { TXT: [['token']] }
+  };
+  const rdapJson = (domain, status, days) => ({
+    objectClassName: 'domain', ldhName: domain.toUpperCase(), status,
+    events: [{ eventAction: 'registration', eventDate: '2001-05-01T00:00:00Z' }, { eventAction: 'expiration', eventDate: iso(days) }]
+  });
+  return {
+    table,
+    registry: { 'example-test.com.tr': rdapJson('example-test.com.tr', ['client transfer prohibited'], 20), 'example.org': null },
+    rdapJson
+  };
+}
+
+/**
+ * A fetch for {@link takeoverZone}: DoH answers from the table with CNAME chains followed across
+ * it (as a recursive resolver does; NXDOMAIN for a name with nothing at or below it, the chain
+ * kept), the IANA RDAP bootstrap naming {@link PORTFOLIO_RDAP_BASE} for .com, .net, .org and .tr,
+ * and that registry answering from `zone.registry` (a 404 for null or a domain it does not hold).
+ * @param {{ table: object, registry: object }} zone
+ * @param {{ log?: Array<{ name: string, type: string }>, rdapLog?: string[], rdapStatus?: Record<string, number> }} [opts]
+ *   `rdapStatus`: domain → an HTTP status the registry answers instead (read on every request, so a test can change it)
+ * @returns {typeof fetch}
+ */
+export function createTakeoverFetch(zone, { log = [], rdapLog = [], rdapStatus = {} } = {}) {
+  const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/rdap+json' } });
+  const below = (name) => Object.keys(zone.table).some((k) => k.endsWith(`.${name}`));
+  const answer = (qname, type) => {
+    const answers = [];
+    let name = qname;
+    for (let hop = 0; hop < 8; hop += 1) {
+      const node = zone.table[name];
+      if (!node) return { rcode: below(name) ? 'NOERROR' : 'NXDOMAIN', answers };
+      if (node.CNAME && type !== 'CNAME') {
+        answers.push({ name, type: 'CNAME', ttl: 300, data: node.CNAME });
+        name = node.CNAME;
+        continue;
+      }
+      for (const data of node[type] || []) answers.push({ name, type, ttl: 300, data });
+      return { rcode: 'NOERROR', answers };
+    }
+    return { rcode: 'SERVFAIL', answers };
+  };
+  return async (input) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (url.startsWith('https://data.iana.org/rdap/dns.json')) return json({ services: [[['com', 'net', 'org', 'tr'], [PORTFOLIO_RDAP_BASE]]] });
+    if (url.startsWith(PORTFOLIO_RDAP_BASE) || url.startsWith('https://rdap.org/')) {
+      const domain = decodeURIComponent(url.split('/domain/')[1] || '');
+      rdapLog.push(domain);
+      if (rdapStatus[domain]) return json({ errorCode: rdapStatus[domain] }, rdapStatus[domain]);
+      return zone.registry[domain] ? json(zone.registry[domain]) : json({ errorCode: 404 }, 404);
+    }
+    const m = /[?&]dns=([^&]+)/.exec(url);
+    if (!m) return new Response('not found', { status: 404 });
+    const q = decodeMessage(base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
+    const name = String(q.name).toLowerCase().replace(/[.]$/, '');
+    log.push({ name, type: q.type });
+    const out = answer(name, q.type);
+    return new Response(encodeMessage({
+      id: 0, flags: { qr: true, rd: true, ra: true }, rcode: out.rcode, questions: [{ name: q.name, type: q.type }], answers: out.answers, edns: {}
+    }), { headers: { 'content-type': 'application/dns-message' } });
+  };
+}
+
 /**
  * A fetch that never answers: each request waits for its signal (a request without one waits
  * for ever) and `onRequest(url)` hears of it. The Ctrl-C test's network.
@@ -248,6 +351,13 @@ if (process.env.DS_FAKE_DOH === '1') {
   const log = [];
   const rdapLog = [];
   globalThis.fetch = createPortfolioFetch(portfolioZone(), { log, rdapLog });
+  if (process.env.DS_FAKE_DOH_LOG) {
+    process.on('exit', () => writeFileSync(process.env.DS_FAKE_DOH_LOG, JSON.stringify({ dns: log, rdap: rdapLog })));
+  }
+} else if (process.env.DS_FAKE_DOH === 'takeover') {
+  const log = [];
+  const rdapLog = [];
+  globalThis.fetch = createTakeoverFetch(takeoverZone(), { log, rdapLog });
   if (process.env.DS_FAKE_DOH_LOG) {
     process.on('exit', () => writeFileSync(process.env.DS_FAKE_DOH_LOG, JSON.stringify({ dns: log, rdap: rdapLog })));
   }

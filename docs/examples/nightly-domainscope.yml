@@ -1,12 +1,12 @@
 # DomainScope nightly checks: a GitHub Actions template for the headless runner (tools/ds.mjs).
 #
 # Copy this file to .github/workflows/ of a PRIVATE repository of yours, next to a domains.txt
-# (one domain per line, # comments). Every night it runs Domain Health and the Certificate
-# Transparency watch for those domains (subdomain discovery, zone drift, renewal readiness and
-# the policy audit are there to switch on), commits the JSON reports and Markdown summaries
-# under results/, and keeps ONE issue: opened or updated when something changed since the night
-# before, closed on a night with no change when every check completed. The results/*.json of one
-# night are the next night's baseline; git history keeps every night.
+# (one domain per line, # comments). Every night it runs Domain Health, the Certificate
+# Transparency watch and the takeover watch for those domains (subdomain discovery, zone drift,
+# renewal readiness and the policy audit are there to switch on), commits the JSON reports and
+# Markdown summaries under results/, and keeps ONE issue: opened or updated when something changed
+# since the night before, closed on a night with no change when every check completed. The
+# results/*.json of one night are the next night's baseline; git history keeps every night.
 #
 # Read this before you switch it on:
 # - Use it in a PRIVATE repository. The results name your hosts, their addresses and your DNS
@@ -134,6 +134,12 @@ jobs:
           # ds subdomains subdomains --list domains.txt --level small
           # Only the names you list, no source and no guess (quota-free):
           # ds hosts subdomains --list domains.txt --exact hosts.txt
+          # The takeover and dependency-expiry watch (DNS and RDAP only): the domains your NS, MX, SPF,
+          # DMARC, DKIM, CAA, MTA-STS, SRV, HTTPS and _acme-challenge records point to that are
+          # unregistered, pending deletion, expired or expiring:
+          ds takeover takeover --list domains.txt
+          # The same with the CNAMEs of the hosts subdomain discovery found (switch that line on first):
+          # ds takeover takeover --list domains.txt --from-subdomains results/subdomains.json
           # Zone drift: only if the zone export belongs in this repository (see above).
           # ds drift-example drift zones/example.com.zone --origin example.com
           # Renewal readiness of the names you renew (a wildcard too):

@@ -6,7 +6,8 @@
  * A change is `{ tag, tone, counts, target, item, kind, before, after, parts }`:
  * - `tag`: render.mjs CHANGE_TAGS (NEW, GONE, WORSE, BETTER, CHANGED, FAILED, RECOVERED, FAILING,
  *   SCORE, ISSUER, NAME, CERT, CA, EXPIRING, REVOKED, EXPOSED, DANGLING; tls's RENEW-NOW, MOVED-UP and
- *   CA-NOTICE, tools/ds/tlsdiff.mjs); `tone`: 'bad' | 'good' | 'info' | 'quiet';
+ *   CA-NOTICE, tools/ds/tlsdiff.mjs; takeover's RISK, tools/ds/takeover.mjs diffTakeover); `tone`: 'bad' |
+ *   'good' | 'info' | 'quiet';
  * - `counts`: false for what is listed but never counted by --fail-on-change (nor opens the
  *   nightly issue): a move from one failure state to another (FAILING: nothing was read either
  *   way), CT sources that could not be read (FAILED / RECOVERED: the source's outage, not the
@@ -28,6 +29,7 @@ import { code, isoDay, localYesNo, sourceName, certCount } from './render.mjs';
 import { isLookupError, checkAreas, failedAreas, knownChecks, carriedFrom, lastFullTimes, lookupFailed } from './carry.mjs';
 import { seenOf, radarCrossing } from './ctwatch.mjs';
 import { diffTls, tlsTargetProblem, tlsNotes } from './tlsdiff.mjs';
+import { diffTakeover, takeoverTargetProblem, takeoverNotes } from './takeover.mjs';
 import { SEVERITY_RANK, notable, checksById, resolves, DIRECT, driftSev } from './states.mjs';
 import { textParts } from '../../assets/js/lib/summary.js';
 import { DANE_SEVERITY } from '../../assets/js/lib/dane.js';
@@ -117,7 +119,8 @@ const TARGET_CHECKS = Object.freeze({
     return itemsProblem(x.endpoints, 'endpoints', (e) => (!isStr(e.key) ? 'has no "key"' : !isStr(e.status) ? 'has no "status"' : null));
   },
   audit: (x) => itemsProblem(x.rules, 'rules', (r) => (!isStr(r.id) ? 'has no "id"' : !AUDIT_STATUSES.includes(r.status) ? 'has no "status" (pass, fail or unknown)' : null)),
-  tls: tlsTargetProblem
+  tls: tlsTargetProblem,
+  takeover: takeoverTargetProblem
 });
 
 /** A cell's outcome in an audit report (lib/policy.js POLICY_STATUSES). */
@@ -774,10 +777,14 @@ export function baselineNotes(command, before, after) {
   if (command === 'audit' && o.dkim !== undefined && o.dkim !== n.dkim) notes.push('DKIM was checked in one run and not in the other (--no-dkim): the dkim rule can move because of that.');
   if (command === 'dane' && differs('serialHex')) notes.push(`The certificate differs from the baseline's (serial ${listText(o.serialHex)} → ${listText(n.serialHex)}): statuses can move because of that rather than because of DNS.`);
   if (command === 'tls') notes.push(...tlsNotes(o, n));
+  if (command === 'takeover') notes.push(...takeoverNotes(o, n));
   return notes;
 }
 
-const DIFFS = Object.freeze({ health: diffHealth, subdomains: diffSubdomains, ct: diffCt, drift: diffDrift, renew: diffRenew, dane: diffDane, audit: diffAudit, tls: diffTls });
+const DIFFS = Object.freeze({
+  health: diffHealth, subdomains: diffSubdomains, ct: diffCt, drift: diffDrift, renew: diffRenew, dane: diffDane, audit: diffAudit,
+  tls: diffTls, takeover: diffTakeover
+});
 
 /**
  * What changed from the baseline report `before` to the report `after` of the same subcommand,

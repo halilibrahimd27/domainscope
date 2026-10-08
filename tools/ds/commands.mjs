@@ -1077,7 +1077,12 @@ async function runTlsCommand(targets, options, env) {
   return runTls(targets, options, env);
 }
 
-const RUNNERS = Object.freeze({ health: runHealth, subdomains: runSubdomains, drift: runDrift, ct: runCt, renew: runRenew, dane: runDane, audit: runAudit, tls: runTlsCommand });
+const RUNNERS = Object.freeze({
+  health: runHealth, subdomains: runSubdomains, drift: runDrift, ct: runCt, renew: runRenew, dane: runDane, audit: runAudit,
+  tls: runTlsCommand,
+  // the takeover and dependency-expiry watch: tools/ds/takeover.mjs
+  takeover: (targets, options, env) => import('./takeover.mjs').then((m) => m.runTakeover(targets, options, env))
+});
 
 /**
  * Run one subcommand.

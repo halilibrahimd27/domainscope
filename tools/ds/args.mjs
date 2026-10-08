@@ -25,6 +25,7 @@ import { PORTFOLIO_DKIM_SELECTORS } from '../../assets/js/lib/portfolio.js';
 import { CT_WATCH_DEFAULT_DAYS, CT_WATCH_MAX_DAYS, CT_WATCH_MAX_THRESHOLDS, parseRadarDays } from '../../assets/js/lib/ctwatch.js';
 import { WORKSPACE_LIMITS, sanitizeExpectedCas } from '../../assets/js/lib/workspace.js';
 import { NOTIFY_FORMATS, NOTIFY_ENV, PAGERDUTY_MAX_EVENTS, NotifyConfigError, notifyRoutes } from './notify.mjs';
+import { isDkimSelector, TAKEOVER_DKIM_SELECTORS } from '../../assets/js/lib/takeover.js';
 
 /** The runner's name in reports and messages. */
 export const DS_TOOL = 'domainscope-ds';
@@ -41,7 +42,7 @@ export const DS_VERSION = '1.0.0';
 export const EXIT = Object.freeze({ OK: 0, FAILED: 1, USAGE: 2, WRITE: 3, CHANGED: 4, NOTIFY: 5, INTERRUPTED: 130 });
 
 /** The subcommands, in help order. */
-export const COMMANDS = Object.freeze(['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit', 'tls']);
+export const COMMANDS = Object.freeze(['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit', 'tls', 'takeover']);
 
 /**
  * What each subcommand takes: `targets` 'domains' (host names, also from --list), 'names'
@@ -56,7 +57,8 @@ export const COMMAND_SPECS = Object.freeze({
   renew: Object.freeze({ targets: 'names', options: Object.freeze(['list', 'ca', 'challenge']) }),
   dane: Object.freeze({ targets: 'file', options: Object.freeze([]) }),
   audit: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'policy', 'preset', 'no-dkim']) }),
-  tls: Object.freeze({ targets: 'endpoints', options: Object.freeze(['list', 'ari', 'revocation']) })
+  tls: Object.freeze({ targets: 'endpoints', options: Object.freeze(['list', 'ari', 'revocation']) }),
+  takeover: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'names', 'from-subdomains', 'dkim-selectors']) })
 });
 
 /** What a target of each kind is, for "not …" messages. */
@@ -123,6 +125,9 @@ export function parseTlsTarget(token) {
   if (!name) return null;
   return { target: `${name}${suffix}`, host: name, address: null, port };
 }
+
+/** `takeover --dkim-selectors`: at most this many selectors besides the common ones. */
+export const DS_MAX_DKIM_SELECTORS = 20;
 
 /**
  * An `audit` target that names a file of domains rather than a domain: a path (a separator in
@@ -195,6 +200,9 @@ const OPTION_SPEC = Object.freeze({
   'no-dkim': { type: 'boolean' },
   ari: { type: 'boolean' },
   revocation: { type: 'boolean' },
+  names: { type: 'string' },
+  'from-subdomains': { type: 'string' },
+  'dkim-selectors': { type: 'string' },
   notify: { type: 'string', multiple: true },
   'notify-bad': { type: 'string', multiple: true },
   'notify-format': { type: 'string' },
@@ -240,6 +248,9 @@ const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'res
  * @property {string} notifyFormat NOTIFY_FORMATS: `auto` follows each URL
  * @property {boolean} notifyAlways post after every run (the `--notify` routes), even when nothing counts
  * @property {boolean} failOnNotifyError exit 5 when a notification was not delivered
+ * @property {string|null} names takeover: a file of host names whose CNAME chains are asked
+ * @property {string|null} fromSubdomains takeover: a `subdomains` --json report whose hosts with a CNAME are asked
+ * @property {string[]} dkimSelectors takeover: DKIM selectors followed besides the common ones
  */
 
 /**
@@ -345,6 +356,23 @@ export function expectedCaOption(values) {
   return sanitizeExpectedCas(list.map(String));
 }
 
+/**
+ * `--dkim-selectors a,b`: DKIM selectors followed besides the common ones (lib/takeover.js
+ * TAKEOVER_DKIM_SELECTORS), lower case, each once; one a name cannot be built from is refused.
+ * @param {string|undefined} value
+ * @returns {string[]}
+ */
+export function dkimSelectorOption(value) {
+  if (value === undefined) return [];
+  const list = [...new Set(splitList(String(value)).map((s) => s.toLowerCase().replace(/\._domainkey(?:\..*)?$/, '')))];
+  if (!list.length) throw new UsageError('--dkim-selectors needs at least one selector (s1,k2)');
+  const bad = list.filter((s) => !isDkimSelector(s));
+  if (bad.length) throw new UsageError(`--dkim-selectors: not a DKIM selector: ${bad.map((s) => `"${s}"`).join(', ')}`);
+  const extra = list.filter((s) => !TAKEOVER_DKIM_SELECTORS.includes(s));
+  if (extra.length > DS_MAX_DKIM_SELECTORS) throw new UsageError(`--dkim-selectors: at most ${DS_MAX_DKIM_SELECTORS} selectors besides the common ones, not ${extra.length}`);
+  return extra;
+}
+
 /** A comma-separated list of source ids, each in `allowed`. */
 function sourceList(value, allowed, name) {
   if (value === undefined) return null;
@@ -446,7 +474,7 @@ export function parseCommandLine(argv) {
   }
   if (help || version) return { command, targets: [], options: defaults(), help, version };
 
-  for (const name of ['json', 'md', 'baseline', 'exact', 'policy']) {
+  for (const name of ['json', 'md', 'baseline', 'exact', 'policy', 'names', 'from-subdomains']) {
     if (v[name] === '-') throw new UsageError(`--${name} takes a file, not "-"`);
     if (v[name] !== undefined && !String(v[name]).trim()) throw new UsageError(`--${name} needs a file name`);
   }
@@ -543,6 +571,14 @@ export function parseCommandLine(argv) {
     // `audit --policy policy.json domains.txt`: a positional file is a list of domains.
     options.lists = [...options.lists, ...rest.filter(isListArgument)];
   }
+  if (command === 'takeover') {
+    if (v.names !== undefined && v['from-subdomains'] !== undefined) {
+      throw new UsageError('--names and --from-subdomains both name the hosts to ask: give one of them');
+    }
+    options.names = v.names ?? null;
+    options.fromSubdomains = v['from-subdomains'] ?? null;
+    options.dkimSelectors = dkimSelectorOption(v['dkim-selectors']);
+  }
 
   let targets = command === 'audit' ? rest.filter((x) => !isListArgument(x)) : rest;
   if (spec.targets === 'file') {
@@ -564,6 +600,8 @@ export function parseCommandLine(argv) {
     ...options.lists.map((file) => ['--list', file]),
     ...(options.policy ? [['--policy', options.policy]] : []),
     ...(options.exact ? [['--exact', options.exact]] : []),
+    ...(options.names ? [['--names', options.names]] : []),
+    ...(options.fromSubdomains ? [['--from-subdomains', options.fromSubdomains]] : []),
     ...(spec.targets === 'file' ? [[command === 'drift' ? 'the zone file' : 'the certificate file', rest[0]]] : [])
   ];
   for (const [option, out] of [['--json', options.json], ['--md', options.md]]) {
@@ -581,6 +619,7 @@ function defaults() {
     exact: null, level: DS_DEFAULT_LEVEL, sources: null, days: DS_DEFAULT_DAYS, radar: [...DS_DEFAULT_RADAR], expectedCas: [],
     origin: null, includeOrigins: false, maxQueries: DRIFT_DEFAULT_BUDGET, ca: null, challenge: 'unknown',
     policy: null, preset: null, dkim: true, ari: false, revocation: false,
+    names: null, fromSubdomains: null, dkimSelectors: [],
     notify: [], notifyBad: [], notifyFormat: 'auto', notifyAlways: false, failOnNotifyError: false
   };
 }
@@ -630,6 +669,14 @@ commands:
                                  Encrypt, Google Trust Services, ZeroSSL, Sectigo, SSL.com
       [--revocation]             read the CRL each certificate names (no OCSP): REVOKED, with the
                                  reason and the time
+  takeover DOMAIN...             the takeover and dependency-expiry watch: the registrable domains
+                                 the records point to (NS, MX, SPF, DMARC report addresses, DKIM
+                                 CNAMEs, CAA iodef, MTA-STS, SRV, HTTPS, _acme-challenge) that are
+                                 unregistered, pending deletion, expired or expiring within 30 days,
+                                 and CNAMEs left on a released service resource
+      [--names FILE]             also the CNAME chains of these host names, or
+      [--from-subdomains FILE]   of the hosts with a CNAME in a subdomains --json report
+      [--dkim-selectors a,b]     DKIM selectors besides the ${TAKEOVER_DKIM_SELECTORS.length} common ones
 
 targets: DOMAIN / NAME / HOST[:PORT] on the command line, and --list FILE (repeatable) with one or more per
   line (# comments). An invalid entry is an error on the command line and a warning in a file.
@@ -682,6 +729,8 @@ what is sent: names and record types to the DoH resolvers (renew also asks Cloud
   tls connects to every address of each target (a TLS handshake); --ari sends each certificate's
   CertID (the issuer's key identifier and the serial number, both public) to the issuing CA's ARI
   server, --revocation downloads the CRLs the certificates name from their CAs (at most 20 MB each).
+  takeover asks the same, each registrable domain once a run; a service only its page can tell
+  (S3, GitHub Pages ...) is listed "to check": the page check stays in the app.
 
 tls changes: another certificate on an address (CERT: counted when it drops a name, changes the
   key type or the CA), a handshake that stops completing (FAILED), a worse status (WORSE), and with
@@ -699,6 +748,12 @@ ct watch: each domain's report keeps the ids of the certificates seen (the next 
   crossing before that is listed only), and the certificate in use being revoked (REVOKED).
   Cert Spotter's answers say which certificates are logged only as a precertificate; crt.sh's
   do not.
+
+takeover watch: a new risk (RISK) counts at medium severity or above - a domain the records
+  name that is unregistered, pending deletion, expired or expiring, a CNAME at a claimable service
+  that no longer exists - and so do a risk gone (GONE; "registered now - make sure it is yours"
+  when its lapsed domain is registered again), worse or better (WORSE, BETTER). A risk whose lookup
+  gave no answer is carried from the last run that read it, never gone.
 
 notifications: a webhook URL works as a password (whoever has it can post), so it is never
   printed or written: messages name its host only. Keep it in the environment (the nightly
@@ -734,4 +789,5 @@ examples:
   node tools/ds.mjs audit --preset corporate --list domains.txt --md audit.md
   node tools/ds.mjs tls --list tls-hosts.txt --ari --revocation --baseline tls.json --json tls.json
   node tools/ds.mjs tls www.example.com example.com:8443 --ari
+  node tools/ds.mjs takeover --list domains.txt --from-subdomains subs.json --baseline takeover.json --json takeover.json
 `;

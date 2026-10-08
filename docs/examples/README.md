@@ -19,9 +19,10 @@ issue step are given it.
 1. Create a private repository with a `domains.txt`: one domain per line, `#` comments.
 2. Copy `nightly-domainscope.yml` to its `.github/workflows/`, and pin `ref:` to a DomainScope
    commit SHA (or to a release tag once there is one).
-3. Switch on the steps you want (health and the Certificate Transparency watch run by default;
-   subdomain discovery, an exact host list, zone drift, renewal readiness, the policy audit and
-   the served certificates with their renewal windows and revocation are commented out).
+3. Switch on the steps you want (health, the Certificate Transparency watch and the takeover
+   watch run by default; subdomain discovery, an exact host list, the takeover watch over the
+   hosts discovery found, zone drift, renewal readiness, the policy audit and the served
+   certificates with their renewal windows and revocation are commented out).
 4. Run it once by hand (Actions › DomainScope nightly › Run workflow): the first night has no
    baseline to compare with, so it only writes `results/`.
 
@@ -80,8 +81,9 @@ the three together when you switch more checks on.
 What counts as a change mirrors the Python CLI's `--baseline`: a new or resolved health finding
 and the score, a host that appears, stops resolving, leaves its proxy or becomes a dangling CNAME,
 a new certificate issuer or a first certificate for a name, a new certificate from a CA you did
-not name, a certificate whose renewal is overdue crossing a radar day, a zone record set whose live
-state moved, a renewal verdict. Moves between failure states, Certificate Transparency sources that
+not name, a certificate whose renewal is overdue crossing a radar day, a takeover risk of medium
+severity or above that appears, goes or moves, a zone record set whose live state moved, a renewal
+verdict. Moves between failure states, Certificate Transparency sources that
 could not be read, what a failed lookup or source may hide and renewed certificates from known
 issuers are listed but never counted. GitHub's hosted runners share their IP addresses and the
 anonymous quotas of the passive sources are per address, so a source may be rate limited on some
@@ -122,6 +124,22 @@ is overdue (`EXPIRING`: less than a quarter of its lifetime left; ACME clients r
 so a 90-day certificate crossing 30 days is listed only) and the certificate in use being revoked
 (`REVOKED`).
 
+**The takeover and dependency-expiry watch.** `takeover` checks what the app's Subdomains ›
+Takeover risks and Domain Health › Dependencies check, for each domain of the list: the registrable
+domains its NS, MX and SPF records (include, redirect, a, mx, exists, ptr), DMARC report addresses,
+DKIM CNAMEs (8 common selectors, more with `--dkim-selectors`), CAA iodef addresses, MTA-STS host,
+Autodiscover and SIP SRV records, HTTPS record and `_acme-challenge` delegation point to, looked
+up over RDAP once a night each. A domain counts as unregistered only when its registry has no
+record of it **and** DNS says it does not exist; pending deletion, expired or expiring within 30
+days is reported too, and so is a CNAME left on a released service resource. With
+`--from-subdomains results/subdomains.json` (after the subdomains line) or `--names hosts.txt` the
+CNAME chains of those hosts are asked again too. A new risk of medium severity or above counts
+(`RISK`), and so do a risk gone (`GONE`), worse or better (`WORSE`, `BETTER`); a domain that had
+lapsed and is registered again while a record still names it is said as such ("make sure it is
+yours"). A risk whose lookup gave no answer is carried from the last night that read it, never
+gone. Hosts on a service only its page can tell (S3, GitHub Pages …) are listed "to check": the
+page check stays in the app, behind a click.
+
 **Served certificates, renewal windows and revocation.** `tls` (commented out: uncomment it and
 add a `tls-hosts.txt` with a host or `host:port` per line) connects to every address of each host,
 reads the certificate it serves and says whether it expired, is trusted and carries the name. With
@@ -156,6 +174,7 @@ node tools/ds.mjs renew example.com '*.example.com' --ca letsencrypt --challenge
 node tools/ds.mjs dane fullchain.pem
 node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
 node tools/ds.mjs tls www.example.com example.com:8443 --ari --revocation --json tls.json
+node tools/ds.mjs takeover --list domains.txt --from-subdomains subs.json --baseline takeover.json --json takeover.json
 ```
 
 Alerts outside the template: put the URLs in the environment rather than on the command line

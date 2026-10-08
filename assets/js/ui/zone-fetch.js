@@ -135,12 +135,17 @@ const hostOf = (url) => new URL(url).host;
  */
 const memo = { provider: ZONE_PROVIDERS[0].id, domain: '', job: null, error: null, notice: null, paint: null, status: null };
 
-/** Stop a running fetch (Forget, another workspace, "Delete all local data", leaving the view). */
-export function stopZoneFetch() {
+/**
+ * Stop a running fetch (Forget, another workspace, "Delete all local data", leaving the view).
+ * @param {{ forget?: boolean }} [opts] `forget`: drop the zone typed as well (Forget, another
+ *   workspace, "Delete all local data": it was that customer's); leaving the view keeps it
+ */
+export function stopZoneFetch({ forget = false } = {}) {
   if (memo.job) memo.job.controller.abort();
   memo.job = null;
   memo.error = null;
   memo.notice = null;
+  if (forget) memo.domain = '';
 }
 
 /** Is a fetch running? */

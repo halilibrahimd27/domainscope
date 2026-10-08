@@ -1249,7 +1249,7 @@ function abortDrift() {
 function resetSession() {
   abortDrift();
   stopParity(S.parity);
-  stopZoneFetch();
+  stopZoneFetch({ forget: true });
   S = freshSession();
 }
 

@@ -1566,6 +1566,37 @@ async function main() {
       await setLangUi(page, 'en');
     });
 
+    await run.step('the zone typed in the panel is the customer\'s: another workspace and "Delete all local data" empty the field', async () => {
+      const zoneField = () => page.evaluate(() => document.querySelector('[data-role="zone-fetch-domain"]')?.value ?? null);
+      await openFetch(page);
+      await page.type('[data-role="zone-fetch-domain"]', 'customer-a.example');
+      const wsId = await page.evaluate(() => import('./assets/js/state.js').then(async ({ state }) => {
+        const { meta } = await state.createWorkspace('Zone fetch e2e');
+        await state.switchWorkspace(meta.id);
+        return meta.id;
+      }));
+      await page.waitFor(() => !document.querySelector('.zone-summary') && !!document.querySelector('.zone-fetch'), { message: 'the switch emptied the view' });
+      await openFetch(page);
+      assertEqual(await zoneField(), '', 'another workspace: the last customer\'s zone is not in the field');
+      await page.type('[data-role="zone-fetch-domain"]', 'customer-b.example');
+      await page.evaluate((id) => import('./assets/js/state.js').then(async ({ state }) => {
+        await state.switchWorkspace(state.workspaces.find((w) => w.isDefault).id);
+        await state.deleteWorkspace(id);
+      }), wsId);
+      await openFetch(page);
+      assertEqual(await zoneField(), '', 'back in Default: nothing typed in the other workspace');
+      await page.type('[data-role="zone-fetch-domain"]', 'customer-a.example');
+      await page.evaluate(async () => (await import('./assets/js/state.js')).state.clearAll());
+      await openFetch(page);
+      assertEqual(await zoneField(), '', '"Delete all local data" empties the field');
+      // A zone imported after that names the field again.
+      await page.click('[data-sample="bind"]');
+      await page.waitFor(() => !!document.querySelector('.zone-summary'), { message: 'sample imported' });
+      await openFetch(page);
+      assertEqual(await zoneField(), 'example.com', 'the imported zone fills the empty field');
+      await page.evaluate(async () => (await import('./assets/js/state.js')).state.setInventory('web01 192.0.2.10').done);
+    });
+
     await run.step('the fetch panel at 320 and 375 px, TR/EN × light/dark: no horizontal scroll', async () => {
       await page.click('[data-action="zone-forget"]');
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'empty' });

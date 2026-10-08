@@ -437,3 +437,180 @@
     print-color-adjust: exact;
   }
 }
+
+/* --- Plan panel (ui/renewal-planner.js, .rpl-*) ------------------------------------ */
+.rnw-plan {
+  padding: 0;
+}
+
+.rnw-plan > summary {
+  padding: 14px 18px;
+  cursor: pointer;
+}
+
+.rnw-plan-host {
+  padding: 0 18px 18px;
+  min-width: 0;
+}
+
+.rpl-panel,
+.rpl-panel .card {
+  min-width: 0;
+}
+
+.rpl-h {
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+.rpl-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.rpl-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.rpl-table th,
+.rpl-table td {
+  text-align: left;
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.rpl-table thead th {
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.rpl-table tbody th {
+  font-weight: 500;
+}
+
+.rpl-table tr.rpl-now > * {
+  background: var(--accent-soft);
+}
+
+.rpl-state {
+  display: flex;
+  gap: 8px;
+}
+
+.rpl-ari-failed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.rpl-ari-row .btn .spinner {
+  margin-right: 6px;
+}
+
+/* Long labels (a CA's name, the Turkish forms) wrap instead of widening a phone's page. */
+.rpl-panel .btn {
+  max-width: 100%;
+  height: auto;
+  min-height: var(--btn-h);
+  padding-top: 5px;
+  padding-bottom: 5px;
+  line-height: 1.25;
+  white-space: normal;
+  text-align: left;
+}
+
+.rpl-years {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.rpl-year {
+  font-weight: 600;
+}
+
+.rpl-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rpl-key {
+  max-width: 320px;
+}
+
+.rpl-note {
+  color: var(--text-2);
+}
+
+.rpl-invalid {
+  color: var(--warn);
+}
+
+.rpl-unc-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.rpl-unc-list li,
+.rpl-c,
+.rpl-c-title {
+  overflow-wrap: anywhere;
+}
+
+.rpl-c {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  background: var(--surface-2);
+  min-width: 0;
+}
+
+.rpl-c-title {
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+.rpl-csr-h {
+  font-size: 0.85rem;
+  margin: 6px 0 0;
+}
+
+.rpl-link {
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .rnw-plan > summary {
+    padding: 12px 14px;
+  }
+
+  .rnw-plan-host {
+    padding: 0 12px 14px;
+  }
+
+  .rpl-c {
+    padding: 10px;
+  }
+
+  .rpl-key {
+    max-width: none;
+  }
+}
+
+@media print {
+  .rpl-sources,
+  .rpl-ari-row,
+  [data-action="rpl-download"] {
+    display: none;
+  }
+}

@@ -588,6 +588,8 @@ const CALL_SITES = {
   'assets/js/lib/keycontinuity.js': ['crtsh'],
   // Domain overview › Lookalike domains: crt.sh for the top hits; its fetch goes on to lib/rdap.js
   'assets/js/lib/lookalike.js': ['crtsh', 'rdap'],
+  // Renewal readiness › Plan: the CA's ARI window, after a click
+  'assets/js/lib/renewalplan.js': ['ari'],
   // Zone File › Fetch from deSEC / DigitalOcean, with the user's token
   'assets/js/lib/zonefetch.js': ['desec', 'digitalocean'],
   // the CCADB intermediate list, from this site (assets/data/intermediates/)
@@ -639,9 +641,9 @@ const LINK_HOSTS = {
   'assets/js/ui/dom.js': ['www.w3.org'],
   'assets/js/ui/verify-panel.js': ['globalping.io'],
   'assets/js/ui/chain-repair.js': ['www.ccadb.org'],
-  // an example CAA accounturi in the field's placeholder, never requested
-  'assets/js/views/change.js': ['acme-v02.api.letsencrypt.org'],
-  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'sslmate.com', 'www.robtex.com', 'www.shodan.io', 'www.whoisxmlapi.com'],
+  // the CA/Browser Forum ballot the lifetime schedule comes from
+  'assets/js/ui/renewal-planner.js': ['cabforum.org'],
+  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'letsencrypt.org', 'sslmate.com', 'www.robtex.com', 'www.shodan.io', 'www.whoisxmlapi.com'],
   'assets/js/views/ip.js': ['bgp.he.net']
 };
 /**

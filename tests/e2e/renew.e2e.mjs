@@ -31,7 +31,12 @@
  * an AAAA lookup no resolver answers (IPv6 not checked: "could not be checked", only IPv4 counted),
  * 320 / 375 px phones light / dark in both languages without horizontal scroll, every resolver
  * answering 429 ("could not be checked", never "ready"), zero console errors / CSP violations /
- * missing i18n keys, nothing sent outside the page.
+ * missing i18n keys, nothing sent outside the page. The Plan panel: loaded on its first open, the SC-081 schedule with the
+ * step in force, the sample's plan (over the limit it was issued under, two thirds of its lifetime, no renewal before
+ * 2030), Let's Encrypt chosen by hand: nothing sent before the click, then exactly the directory and the renewal-info of
+ * its CertID (the CA's window; a 404 shows "n/a" and why, Retry asks again), the coverage planner (the groupings, what a
+ * wildcard leaves uncovered, one certificate per environment, the CSR configurations per key type and their download,
+ * the form's names), and the panel on 320 / 375 px phones in both languages, light and dark.
  *
  * Data is documentation space only (example.com / .net, 192.0.2.0/24, 198.51.100.0/24,
  * 203.0.113.0/24, 2001:db8::/32, 10.0.0.0/8) plus provider name servers (ns.cloudflare.com, natrohost.com)
@@ -47,6 +52,7 @@ import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
   gotoRoute, installDownloadCapture, setLangUi, shot, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
+import { ariCertId, scheduleStep, validityDays } from '../../assets/js/lib/renewalplan.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const M28 = JSON.parse(readFileSync(path.join(HERE, '..', 'fixtures', 'globalping', 'm28-acme-http-404.json'), 'utf8'));
@@ -136,9 +142,21 @@ const fakeScript = () => `(() => {
     }
     return json({ error: { type: 'not_found', message: 'Not Found.' } }, 404);
   }
+  // Let's Encrypt's ACME server for the Plan panel's ARI: its directory and renewal-info (status: what renewal-info answers).
+  const ari = window.__ari = { calls: [], status: 200 };
+  function acme(url) {
+    const p = url.slice('https://acme-v02.api.letsencrypt.org'.length);
+    ari.calls.push(p);
+    if (p === '/directory') return json({ newNonce: 'https://acme-v02.api.letsencrypt.org/acme/new-nonce', renewalInfo: 'https://acme-v02.api.letsencrypt.org/acme/renewal-info' });
+    if (p.startsWith('/acme/renewal-info/') && ari.status === 200) {
+      return json({ suggestedWindow: { start: '2032-08-30T00:00:00Z', end: '2032-09-01T00:00:00Z' } }, 200, { 'retry-after': '21600' });
+    }
+    return json({ type: 'urn:ietf:params:acme:error:malformed', detail: 'Certificate not found', status: 404 }, p.startsWith('/acme/renewal-info/') ? ari.status : 404);
+  }
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
     if (url.startsWith('https://api.globalping.io/')) return globalping(url, init);
+    if (url.startsWith('https://acme-v02.api.letsencrypt.org/')) return acme(url);
     if (url.startsWith('https://data.iana.org/rdap/')) return json({ services: [] });
     const m = /[?&]dns=([^&]+)/.exec(url);
     if (!m) return realFetch(input, init);
@@ -601,6 +619,135 @@ async function main() {
       await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
       await phoneCheck(page, opts, 'renew-unknown-mobile-dark-en');
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+    });
+
+    run.group('Plan panel: lifetimes, renewal window, coverage and CSR');
+    const planText = (sel) => page.evaluate((s) => document.querySelector(s)?.textContent || '', sel);
+    const openPlan = async () => {
+      if (!(await page.evaluate(() => document.querySelector('.rnw-plan').open))) await page.click('.rnw-plan > summary');
+      await page.waitFor(() => !!document.querySelector('.rpl-panel .rpl-sched-table'), { message: 'planner loaded' });
+    };
+    await run.step('the panel loads on its first open: the SC-081 schedule with the step in force marked, nothing sent', async () => {
+      await gotoRoute(page, 'renew');
+      assert(await page.evaluate(() => !document.querySelector('.rnw-plan').open && !document.querySelector('.rpl-panel')), 'closed and not loaded');
+      await openPlan();
+      const rows = await page.evaluate(() => [...document.querySelectorAll('.rpl-sched-table tbody tr')].map((tr) => [tr.dataset.step, ...[...tr.children].slice(1).map((c) => c.textContent)]));
+      assertEqual(rows, [['before', '398 days', '398 days'], ['2026', '200 days', '200 days'], ['2027', '100 days', '100 days'], ['2029', '47 days', '10 days']], 'schedule');
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rpl-sched-table tr.rpl-now')].map((tr) => tr.dataset.step)), [scheduleStep(Date.now()).id], 'in force');
+      assertEqual(await page.evaluate(() => window.__ari.calls.length), 0, 'nothing asked');
+    });
+
+    await run.step('the sample: a lifetime over the limit it was issued under, two thirds of it as the window, no renewal before 2030, no ARI for its CA', async () => {
+      await page.evaluate(() => { document.querySelector('.rnw-cert-block').open = true; });
+      if (await page.evaluate(() => !!document.querySelector('[data-action="renew-cert-remove"]'))) await page.click('[data-action="renew-cert-remove"]');
+      await page.click('.rnw-cert-block [data-action="cert-sample"]');
+      await page.waitFor(() => document.querySelector('.rpl-state')?.dataset.source === 'two-thirds', { message: 'the sample planned' });
+      const life = validityDays(Date.parse('2026-01-01T00:00:00Z'), Date.parse('2036-01-01T00:00:00Z'));
+      const kv = await planText('.rpl-kv');
+      assert(kv.includes(`${life.toLocaleString('en-US')} days · the limit when it was issued: 398 days`), kv);
+      assert(/no publicly trusted CA can have issued it/.test(await planText('.rpl-cert')), 'over the limit');
+      assertEqual(await page.evaluate(() => document.querySelector('.rpl-ari [data-ari]')?.dataset.ari), 'other-ca', 'no ARI for a CA not in the list');
+      assertEqual(await page.evaluate(() => document.querySelectorAll('.rpl-next-table tbody tr').length), 6, 'six renewals');
+      const y0 = new Date().getUTCFullYear();
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rpl-years li')].map((li) => [li.dataset.year, li.dataset.count])),
+        Array.from({ length: Math.max(0, 2030 - y0 + 1) }, (_, i) => [String(y0 + i), '0']), 'its window opens in 2032');
+      assertEqual(await page.evaluate(() => window.__ari.calls.length), 0, 'nothing asked');
+    });
+
+    await run.step('Let’s Encrypt chosen: nothing sent before the click, then exactly its directory and the renewal-info of the CertID; the CA’s window, the focus kept', async () => {
+      await setSelect(page, '[data-role="renew-ca"]', 'letsencrypt');
+      await page.waitFor(() => !!document.querySelector('[data-action="rpl-ari"]'), { message: 'ARI offered' });
+      assert(/the issuer’s key identifier and the serial number.*to acme-v02\.api\.letsencrypt\.org/.test(await planText('.rpl-ari-privacy')), await planText('.rpl-ari-privacy'));
+      assertEqual(await page.evaluate(() => window.__ari.calls.length), 0, 'nothing before the click');
+      await page.evaluate(() => document.querySelector('[data-action="rpl-ari"]').focus());
+      await page.press('Enter');
+      await page.waitFor(() => document.querySelector('.rpl-state')?.dataset.source === 'ari', { message: 'the ARI window' });
+      const id = ariCertId({ authorityKeyId: '2d2bb41d2dd7a9408aec1a96c08b5ae58ac75864', serialHex: '577145a5506a7e185071af8b53bbee63' });
+      assertEqual(await page.evaluate(() => window.__ari.calls), ['/directory', `/acme/renewal-info/${id}`], 'the two requests');
+      assert(/suggested by Let['’]s Encrypt \(asked /.test(await planText('[data-role="rpl-window"]')), await planText('[data-role="rpl-window"]'));
+      assert(/asks to be asked again after/.test(await planText('.rpl-ari')), 'Retry-After');
+      await page.evaluate(() => document.querySelector('.rpl-cert').scrollIntoView({ block: 'start' }));
+      await shot(page, opts, 'renew-plan-cert-desktop-light-en');
+      assertEqual(await focusedAction(page), 'rpl-ari', 'the focus stays on the button');
+      assertEqual(external, [], 'nothing left the page');
+    });
+
+    await run.step('ARI answers 404: n/a and why, two thirds of the lifetime again; Retry asks ARI again', async () => {
+      await page.evaluate(() => { window.__ari.status = 404; window.__ari.calls = []; });
+      await page.click('[data-action="rpl-ari"]');
+      await page.waitFor(() => !!document.querySelector('.rpl-ari-failed[data-ari="not-found"]'), { message: 'the 404' });
+      assert(await page.evaluate(() => !!document.querySelector('.rpl-ari-failed .na-mark')), 'n/a mark');
+      assert(/Let['’]s Encrypt does not know this certificate \(HTTP 404\)/.test(await planText('.rpl-ari-failed')), await planText('.rpl-ari-failed'));
+      assertEqual(await page.evaluate(() => document.querySelector('.rpl-state').dataset.source), 'two-thirds', 'the window falls back');
+      assertEqual(await focusedAction(page), 'retry-source', 'the focus on Retry');
+      await page.evaluate(() => { window.__ari.status = 200; window.__ari.calls = []; });
+      await page.click('.rpl-ari [data-action="retry-source"]');
+      await page.waitFor(() => document.querySelector('.rpl-state')?.dataset.source === 'ari', { message: 'retried' });
+      assertEqual(await page.evaluate(() => window.__ari.calls.length), 2, 'asked again');
+    });
+
+    await run.step('the coverage planner: the groupings, what a wildcard leaves uncovered, one certificate per environment, the CSR files per key type', async () => {
+      await page.evaluate((v) => {
+        const ta = document.querySelector('[data-role="rpl-names"]');
+        ta.value = v;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }, 'example.com www.example.com api.example.com shop.example.com dev.example.com api.dev.example.com web.dev.example.com staging.example.com a.b.example.com example.net 192.0.2.1');
+      await page.waitFor(() => document.querySelectorAll('.rpl-tabs [role="tab"]').length === 3 && !!document.querySelector('.rpl-invalid'), { message: 'groupings' });
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rpl-tabs [role="tab"]')].map((b) => [b.querySelector('.tab-label').textContent, b.querySelector('.tab-badge').textContent])),
+        [['One SAN list', '1'], ['Wildcards', '2'], ['Per environment', '3']], 'tabs');
+      assert(/left out: 192\.0\.2\.1/.test(await planText('.rpl-invalid')), 'the address left out');
+      await page.evaluate(() => document.querySelectorAll('.rpl-tabs [role="tab"]')[1].click());
+      await page.waitFor(() => !!document.querySelector('.rpl-g[data-grouping="wildcard"]') && !document.querySelector('.rpl-g[data-grouping="wildcard"]').closest('[hidden]'), { message: 'wildcards' });
+      const W = '.rpl-g[data-grouping="wildcard"]';
+      assertEqual(await page.evaluate((w) => [...document.querySelectorAll(`${w} .rpl-unc-list li`)].map((li) => [li.dataset.name, li.dataset.reason]), W),
+        [['example.com', 'apex'], ['a.b.example.com', 'deeper']], 'uncovered');
+      assertEqual(await page.evaluate((w) => [...document.querySelectorAll(`${w} .rpl-c`)].map((c) => c.dataset.names), W),
+        ['example.com *.example.com *.dev.example.com a.b.example.com', 'example.net'], 'certificates');
+      const conf = await planText(`${W} [data-role="rpl-openssl"] code`);
+      assert(conf.includes('DNS.2 = *.example.com') && conf.includes('CN = example.com') && !/PRIVATE KEY/.test(conf), conf);
+      assertEqual(await planText(`${W} [data-role="rpl-openssl-cmd"] code`), 'openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout example.com.key -out example.com.csr -config example.com.cnf', 'command');
+      await setSelect(page, '[data-role="rpl-keytype"]', 'rsa-2048');
+      await page.waitFor((w) => /-newkey rsa:2048 /.test(document.querySelector(`${w} [data-role="rpl-openssl-cmd"] code`)?.textContent || ''), { args: [W], message: 'RSA' });
+      assert((await planText(`${W} [data-role="rpl-certreq"] code`)).includes('KeyLength = 2048'), 'certreq RSA');
+      await page.evaluate((w) => document.querySelector(w).scrollIntoView({ block: 'start' }), W);
+      await shot(page, opts, 'renew-plan-coverage-desktop-light-en');
+      await page.click(`${W} [data-action="rpl-download"][data-file="example.com.inf"]`);
+      const [dl] = await takeDownloads(page);
+      assert(dl && dl.name === 'example.com.inf' && dl.text.includes('_continue_ = "dns=*.dev.example.com&"\r\n'), `download: ${dl && dl.name}`);
+      await page.evaluate(() => document.querySelectorAll('.rpl-tabs [role="tab"]')[2].click());
+      await page.waitFor(() => !!document.querySelector('.rpl-g[data-grouping="environment"]'), { message: 'environments' });
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rpl-g[data-grouping="environment"] .rpl-c')].map((c) => c.dataset.env)), ['prod', 'staging', 'dev'], 'one per environment');
+      assert(await page.evaluate(() => !!document.querySelector('.rpl-g[data-grouping="environment"] [data-note="no-prod-wildcard"]')), 'no production wildcard');
+      await page.click('[data-action="rpl-from-form"]');
+      await page.waitFor(() => document.querySelectorAll('.rpl-tabs [role="tab"]').length === 2, { message: 'the form’s names' });
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="rpl-names"]').value), 'example.com\n*.example.com\nexample.net\nwww.example.net', 'the names above');
+      assertEqual(await page.evaluate(() => window.__ari.calls.length), 2, 'the planner sends nothing');
+      assertEqual(external, [], 'nothing left the page');
+    });
+
+    await run.step('the panel fits 320 / 375 px phones, light and dark, in English and Turkish', async () => {
+      for (const lang of ['en', 'tr']) {
+        if (lang === 'tr') {
+          await setLangUi(page, 'tr');
+          await page.waitFor(() => !!document.querySelector('.rnw-plan'), { message: 'view again' });
+          await openPlan();
+          await page.waitFor(() => !!document.querySelector('.rpl-state'), { message: 'the certificate kept' });
+        }
+        for (const width of [320, 375]) {
+          await page.setViewport({ width, height: 700, mobile: true });
+          for (const scheme of ['light', 'dark']) {
+            await page.emulateMedia({ 'prefers-color-scheme': scheme });
+            await assertNoHorizontalScroll(page, `plan ${width} ${scheme} ${lang}`);
+          }
+          if (width === 375) {
+            await page.evaluate(() => document.querySelector('.rnw-plan').scrollIntoView({ block: 'start' }));
+            await shot(page, opts, `renew-plan-mobile-dark-${lang}`);
+          }
+        }
+        await page.setViewport({ width: 1440, height: 900 });
+      }
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await setLangUi(page, 'en');
     });
 
     run.group('Quality');

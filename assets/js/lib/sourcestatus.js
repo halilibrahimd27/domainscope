@@ -46,7 +46,9 @@ export const STATUS_SOURCES = Object.freeze({
   internetdb: Object.freeze({ period: 'hour' }),
   shodan: Object.freeze({ period: 'minutes' }),
   whoisxml: Object.freeze({ period: null }),
-  workspace: Object.freeze({ period: null })
+  workspace: Object.freeze({ period: null }),
+  // Renewal readiness › Plan: Let's Encrypt's ARI window (no published quota for it)
+  ari: Object.freeze({ period: null })
 });
 
 /** Every reason code {@link sourceStatus} can return (`srcst.reason.<code>` in the UI). */

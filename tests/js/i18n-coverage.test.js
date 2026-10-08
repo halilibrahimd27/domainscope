@@ -79,6 +79,8 @@ before(async () => {
   await imp('assets/js/ui/report.js');
   // Domain portfolio › Certificates (CT): loaded on the tab's first use.
   await imp('assets/js/ui/ctwatch-panel.js');
+  // Renewal readiness › Plan: loaded on the panel's first open.
+  await imp('assets/js/ui/renewal-planner.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -432,6 +434,8 @@ describe('i18n coverage', () => {
     for (const k of (await imp('assets/js/ui/reverse-ip-panel.js')).generatedKeys()) add(k);
     // The DNSSEC chain (ui/dnssec-panel.js over lib/dnssec.js): every status, reason, fix and signature result.
     for (const k of (await imp('assets/js/ui/dnssec-panel.js')).generatedKeys()) add(k);
+    // Renewal readiness › Plan (ui/renewal-planner.js over lib/renewalplan.js): states, groupings, notes, environments, key types.
+    for (const k of (await imp('assets/js/ui/renewal-planner.js')).generatedKeys()) add(k);
     for (const e of omp.FORM_ERRORS) add(`omp.err.${e}`);
     for (const e of estate.REPORT_ERRORS) add(`omp.file.${e}`);
     // Domain overview › Lookalike domains (ui/lookalike-panel.js): every technique, level and reason.

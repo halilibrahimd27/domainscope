@@ -50,7 +50,7 @@ export const DATA_KINDS = Object.freeze([
 ]);
 
 /** What a service is for (the ledger's second line). `dnsHosting`: the user's own DNS provider. */
-export const EGRESS_ROLES = Object.freeze(['site', 'dns', 'ct', 'passive', 'ip', 'registration', 'probes', 'dnsHosting']);
+export const EGRESS_ROLES = Object.freeze(['site', 'dns', 'ct', 'passive', 'ip', 'registration', 'probes', 'dnsHosting', 'ca']);
 
 /**
  * What this page never sends anywhere, whatever the user does (About › What this page sent). The
@@ -198,6 +198,13 @@ export const EGRESS_SERVICES = Object.freeze([
       }),
       ep('result', ['measurementIds'], { path: '/*/measurements/*' })
     ]
+  }),
+  // Renewal readiness › Plan (lib/renewalplan.js): the CA's suggested renewal window (ACME ARI,
+  // RFC 9773), only after a click; the CertID in the path is the issuer's key identifier and the
+  // certificate's serial number.
+  service({
+    id: 'ari', name: 'Let\'s Encrypt ARI', role: 'ca', hosts: ['acme-v02.api.letsencrypt.org'],
+    endpoints: [ep('directory', ['nothing'], { path: '/directory' }), ep('renewal-info', ['certSerial'], { path: '/acme/renewal-info/*' })]
   }),
   // Zone File › Fetch from deSEC / DigitalOcean (lib/zonefetch.js): the zone name in the path, the
   // user's token in the Authorization header, only after a click.

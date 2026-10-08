@@ -20,8 +20,9 @@
  *     marked stale with the reason ("the CLI found this name on another server … on <date>");
  *     a file that is not a report is named; the next scan shows the stale entry but leaves it out
  *     of the command; Remove the stale entry;
- *   - an origin added and changed by hand from the keyboard (Enter), one deleted; switching
- *     remembering off asks first and keeps the entries; "Delete all local data" removes the map;
+ *   - an origin added and changed by hand from the keyboard (Enter), one deleted; a write from
+ *     elsewhere keeps the focus on the same row's Edit button; switching remembering off asks first
+ *     and keeps the entries, one written while it asks too; "Delete all local data" removes the map;
  *   - Turkish and dark, 375 px and 320 px: no horizontal scroll; screenshots of each state;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; nothing sent.
  */
@@ -405,6 +406,21 @@ async function main() {
       // announce() says each message; the lines that show them are no live regions of their own.
       assertEqual(await page.evaluate(() => ['om-outcome', 'om-import-result'].map((r) => document.querySelector(`[data-role="${r}"]`)?.getAttribute('aria-live') ?? null)),
         [null, null], 'no second live region');
+    });
+
+    await run.step('a write from elsewhere renders the map again: the focus stays on the same row\'s Edit button', async () => {
+      const key = await page.evaluate(() => {
+        const buttons = [...document.querySelectorAll('.om-table [data-action="om-edit"]')];
+        window.__lastEdit = buttons[buttons.length - 1];
+        window.__lastEdit.focus();
+        return window.__lastEdit.dataset.key;
+      });
+      assertEqual(key, `www.${APEX}|198.51.100.30|443`, 'the last row');
+      // A Verify batch that ends confirms an entry (the call its panel makes): the panel renders again.
+      await page.evaluate((name) => import('./assets/js/ui/origin-map.js').then(({ recordOrigins }) => recordOrigins(
+        [{ name, ip: '198.51.100.30', port: 443, outcome: 'hosted' }], { source: 'verify', at: new Date().toISOString() }).done), `www.${APEX}`);
+      await page.waitFor(() => !window.__lastEdit.isConnected, { message: 'rendered again' });
+      assertEqual(await page.evaluate(() => document.activeElement?.dataset.key), key, 'focus on that entry\'s Edit button, not the first row\'s');
     });
 
     await run.step('switching remembering off asks first and keeps the entries, also one written while it asks; the form is disabled', async () => {

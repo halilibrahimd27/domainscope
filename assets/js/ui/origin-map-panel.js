@@ -424,6 +424,8 @@ export function OriginMapPanel({ ctx }) {
     const m = map();
     const active = globalThis.document && globalThis.document.activeElement;
     const focusKey = active && el.contains(active) ? (active.dataset.role || active.dataset.action || null) : null;
+    // A row's control (Edit) is found again by its entry, never as the first row's.
+    const rowKey = focusKey && active.dataset.key;
     clear(el);
     el.append(
       keptHereOnly() ? Alert({ variant: 'warn', icon: 'alert', compact: true, message: t('omp.privacyMemory') })
@@ -434,7 +436,8 @@ export function OriginMapPanel({ ctx }) {
       clear(outcomeEl);
       outcomeEl.append(Alert({ variant: S.outcome.variant, compact: true, message: S.outcome.message, dismissible: true, onDismiss: () => { S.outcome = null; } }));
     }
-    const again = focusKey ? el.querySelector(`[data-role="${focusKey}"], [data-action="${focusKey}"]`) : null;
+    const again = focusKey ? (rowKey && [...el.querySelectorAll(`[data-action="${focusKey}"]`)].find((b) => b.dataset.key === rowKey))
+      || el.querySelector(`[data-role="${focusKey}"], [data-action="${focusKey}"]`) : null;
     if (again && !again.disabled) again.focus({ preventScroll: true });
   }
 

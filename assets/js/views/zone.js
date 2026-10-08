@@ -1439,6 +1439,10 @@ export function mount(container, ctx) {
   rerender = render;
 
   function importCard() {
+    // A file over the limit is skipped and FileDrop reads the others on: what it said stays in the
+    // banner with the zone they make (parseNow clears it). An error repaints, so a new FileDrop
+    // takes the next drop with nothing kept.
+    let skipped = [];
     const drop = FileDrop({
       accept: ACCEPT,
       multiple: true,
@@ -1449,10 +1453,19 @@ export function mount(container, ctx) {
       maxBytes: ZONE_LIMITS.maxBytes,
       className: 'zone-drop',
       onError: (msg) => {
+        skipped.push(msg);
         S.fileError = msg;
         render();
       },
-      onFiles: (files) => importFiles(files)
+      onFiles: (files) => {
+        const errors = skipped;
+        skipped = [];
+        importFiles(files);
+        if (errors.length) {
+          S.fileError = errors.join(' ');
+          render();
+        }
+      }
     });
     // '/' lands on the drop zone, which also takes a pasted export (Ctrl+V).
     drop.el.dataset.shortcut = 'focus';

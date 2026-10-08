@@ -1013,6 +1013,26 @@ async function main() {
       }
     });
 
+    await run.step('a file over the limit dropped with others: the zone they make comes with the error that names it; a good drop clears it', async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'ds-zone-e2e-'));
+      const errors = () => page.evaluate(() => [...document.querySelectorAll('.zone-page .alert-error')].map((a) => a.textContent));
+      try {
+        const big = path.join(dir, 'big.inc');
+        const main = path.join(dir, 'db.example.com');
+        await writeFile(big, `${'; filler\n'.repeat(Math.ceil((5 * 1024 * 1024 + 10) / 9))}mail IN A 192.0.2.80\n`);
+        await writeFile(main, '$ORIGIN example.com.\n$TTL 300\n@ IN SOA ns1 h 1 2 3 4 5\n@ IN NS ns1\nns1 IN A 192.0.2.53\n$INCLUDE big.inc\n');
+        await page.setFileInput('.zone-drop .filedrop-input', [main, big]);
+        await page.waitFor(() => /^db\.example\.com/.test(document.querySelector('.zone-files')?.textContent || '')
+          && [...document.querySelectorAll('.zone-page .alert-error')].some((a) => /big\.inc is too large/.test(a.textContent)), { message: 'imported, the skipped file said' });
+        await page.setFileInput('.zone-drop .filedrop-input', [main]);
+        await page.waitFor(() => ![...document.querySelectorAll('.zone-page .alert-error')].some((a) => /too large/.test(a.textContent)), { message: 'a good drop clears it' });
+        await sleep(300);
+        assertEqual((await errors()).filter((x) => /too large/.test(x)), [], 'and it does not come back');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
     await run.step('Forget → empty state, toast, session cleared, no note; nothing persisted; hash only tab=', async () => {
       // A finished live check of this zone, kept over a trip away: Forget drops it with its note.
       await clickTab(page, 'live');

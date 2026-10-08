@@ -334,6 +334,16 @@
   gap: 8px;
 }
 
+.chg-cut-list-actions {
+  gap: 8px;
+}
+
+/* The public resolvers' cache-flush pages, under the checklist. */
+.chg-cut-flush {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 640px) {
   .chg-cut-plan-fields {
     grid-template-columns: minmax(0, 1fr);
@@ -352,6 +362,7 @@
 @media print {
   .chg-cut-strip,
   .chg-cut-list-head,
+  .chg-cut-flush,
   [data-action="check-watch"] {
     display: none;
   }

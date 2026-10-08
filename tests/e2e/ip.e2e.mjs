@@ -14,8 +14,10 @@
  * run's row; Copy summary and the print header link to the rows shown, never to an address
  * carried into the box; the CSV
  * says "n/a" in every language; stat cards with a zero count fold into one sentence; Copy
- * summary says how many lookups failed when every source failed (EN + TR); 1440 and 375 px,
- * light and dark, English and Turkish.
+ * summary says how many lookups failed when every source failed (EN + TR); the provider network
+ * tier of the weekly range dataset names 1.1.1.1's and 8.8.8.8's operators ("Cloudflare network,
+ * not necessarily proxied", "Google network") while the fake RIPEstat names another AS, in the
+ * cell, its tooltip, the CSV and the JSON; 1440 and 375 px, light and dark, English and Turkish.
  *
  * OFFLINE enrichment group (always runs): a row's "Routing, RPKI and abuse contact" panel with
  * RIPEstat's routing calls and PeeringDB answered in the page: nothing is sent before Check
@@ -667,6 +669,33 @@ async function offlineGroup(browser, server) {
       } finally {
         await page.evaluate(async () => { (await import('./assets/js/state.js')).state.clearInventory(); });
       }
+    });
+
+    await step('the provider network tier names a direct address’s operator at once, also when RIPEstat names another AS (1.1.1.1, 8.8.8.8)', async () => {
+      // The fake RIPEstat gives every address AS64500: only the weekly range dataset (served with the
+      // page, assets/data/ranges) can name Cloudflare's and Google's networks here.
+      await gotoHash(page, '#/about', 'about');
+      await gotoHash(page, '#/ip?ips=1.1.1.1,8.8.8.8,203.0.113.7', 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows looked up' });
+      const ops = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.ipi-row')].map((tr) => {
+        const op = tr.querySelector('.ipi-op');
+        return [tr.querySelector('.ipi-ip').textContent, op ? {
+          network: op.dataset.network, relation: op.dataset.relation, source: op.dataset.source, text: op.textContent, title: op.querySelector('.badge')?.title || ''
+        } : null];
+      })));
+      const cf = ops['1.1.1.1'];
+      assertEqual(cf && [cf.network, cf.relation, cf.source], ['cloudflare', 'outside-proxy-ranges', 'ranges'], '1.1.1.1');
+      assert(/Cloudflare network/.test(cf.text) && /not necessarily proxied/.test(cf.text), `1.1.1.1 cell: ${cf.text}`);
+      assert(/outside the ranges Cloudflare proxies websites from/.test(cf.title) && /the provider list of \d{4}-\d{2}-\d{2}/.test(cf.title), `1.1.1.1 tooltip: ${cf.title}`);
+      const g = ops['8.8.8.8'];
+      assertEqual(g && [g.network, g.relation, g.source], ['google', 'hosted', 'ranges'], '8.8.8.8');
+      assert(/Google network/.test(g.text) && /cloud · published range/.test(g.text), `8.8.8.8 cell: ${g.text}`);
+      assertEqual(ops['203.0.113.7'], null, 'a documentation address is in no network tier: the plain classification');
+      const files = await exportFiles(page);
+      assertEqual(JSON.parse(files[1].text).find((r) => r.ip === '1.1.1.1').network,
+        { id: 'cloudflare', name: 'Cloudflare', asn: null, category: 'cdn', relation: 'outside-proxy-ranges', source: 'ranges' }, 'the JSON export');
+      const line = files[0].text.split(/\r?\n/).find((l) => l.startsWith('8.8.8.8'));
+      assert(line.includes('Direct · Google network') && !/\(AS/.test(line.split(',')[1] || ''), `CSV row: ${line}`);
     });
 
     for (const [n, scheme, lang, width] of [[30, 'dark', 'tr', 1440], [31, 'light', 'en', 375], [32, 'dark', 'tr', 375]]) {

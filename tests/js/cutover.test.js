@@ -5,7 +5,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   WATCH_TIMING, CACHE_KINDS, PLAN_LOW_TTLS, PLAN_DEFAULT_LOW, COMMON_TTLS, PLAN_ERRORS, PLAN_NOTES, CUTOVER_I18N, nextWatch, watchProgress,
-  cacheCountdown, lastExpiry, clockLeft, observedTtl, likelyTtl, defaultChangeAt, ttlPlan, planStamp, planChecklist
+  cacheCountdown, lastExpiry, clockLeft, observedTtl, likelyTtl, defaultChangeAt, ttlPlan, planStamp, planChecklist, planEvents, planCalendar,
+  FLUSH_LINKS, PLAN_ALARM_MINUTES, PLAN_EVENT_MINUTES, PLAN_PRODID
 } from '../../assets/js/lib/cutover.js';
 import { CHECK_RESOLVERS, CHECK_TIMING, checkRound, nextCheck, pairKey } from '../../assets/js/lib/changecheck.js';
 
@@ -234,5 +235,67 @@ describe('TTL plan', () => {
     const ph = (s) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(',');
     assert.deepEqual(Object.keys(CUTOVER_I18N.tr).sort(), Object.keys(CUTOVER_I18N.en).sort());
     for (const [k, v] of Object.entries(CUTOVER_I18N.en)) assert.equal(ph(CUTOVER_I18N.tr[k]), ph(v), k);
+  });
+});
+
+describe('the plan as a calendar (.ics)', () => {
+  const changeAt = Date.UTC(2026, 9, 8, 11, 0, 0);
+  const now = changeAt - 2 * 3600_000;
+  const plan = ttlPlan({ changeAt, currentTtl: 3600, lowTtl: 300, now });
+  const opts = { zone: 'example.com', records: ['www.example.com A', 'api.example.com CNAME'], url: 'https://example.org/#/change/check?z=example.com' };
+  const unfold = (text) => text.replace(/\r\n /g, '');
+
+  test('one event per step at its time; a reminder before each thing to do, none for "live"', () => {
+    const events = planEvents(plan, { ...opts, lang: 'en' });
+    assert.deepEqual(events.map((e) => [e.step, e.start]), [
+      ['lower', changeAt - 3600_000], ['change', changeAt], ['live', changeAt + 300_000], ['raise', changeAt + 600_000]
+    ]);
+    assert.deepEqual(events.map((e) => e.summary), [
+      'Lower the TTL in example.com: 3600 s → 300 s', 'Make the DNS change in example.com', 'Every resolver serves the change (example.com)',
+      'Raise the TTL in example.com back to 3600 s'
+    ]);
+    assert.deepEqual(events.map((e) => e.alarmMinutes), [undefined, undefined, [], undefined]);
+    for (const e of events) {
+      assert.match(e.description, /Records: www\.example\.com A · api\.example\.com CNAME/);
+      assert.match(e.description, /Check: https:\/\/example\.org\/#\/change\/check\?z=example\.com$/);
+    }
+  });
+
+  test('the change’s event names the public resolvers’ cache-flush pages', () => {
+    const [, change] = planEvents(plan, { ...opts, lang: 'en' });
+    assert.match(change.description, /^Make the change now: copies cached with the old TTL have expired, and every resolver serves the new records within 300 s\./);
+    for (const link of FLUSH_LINKS) assert.ok(change.description.includes(`${link.name}: ${link.url}`), link.id);
+    const [lower] = planEvents(plan, { ...opts, lang: 'en' });
+    assert.ok(!lower.description.includes(FLUSH_LINKS[0].url), 'only the change says so');
+  });
+
+  test('stable UIDs: the same zone and record sets keep them; another check gets others', () => {
+    const a = planEvents(plan, { ...opts, lang: 'en' }).map((e) => e.uid);
+    assert.deepEqual(planEvents(ttlPlan({ changeAt: changeAt + 3600_000, currentTtl: 3600, now }), { ...opts, lang: 'tr' }).map((e) => e.uid), a, 'a new time, another language: the same events');
+    assert.match(a[0], /^cutover-lower-[0-9a-f]{8}@domainscope$/);
+    assert.notDeepEqual(planEvents(plan, { ...opts, records: ['www.example.com AAAA'] }).map((e) => e.uid), a);
+  });
+
+  test('a TTL already low: the change and "live" only, with why there is nothing to lower', () => {
+    const low = planEvents(ttlPlan({ changeAt, currentTtl: 120, now }), { ...opts, lang: 'en' });
+    assert.deepEqual(low.map((e) => e.step), ['change', 'live']);
+    assert.match(low[0].description, /^Make the change now \(the TTL is already 120 s, nothing to lower first\)/);
+    assert.deepEqual(planEvents({ ok: false, error: 'ttl' }, opts), []);
+  });
+
+  test('planCalendar: an iCalendar file named after the zone, in English or Turkish', () => {
+    const text = planCalendar(plan, { ...opts, lang: 'tr', now });
+    const flat = unfold(text);
+    assert.ok(text.startsWith('BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//DomainScope//DNS cutover//EN\r\n'));
+    assert.match(flat, /\r\nX-WR-CALNAME:DNS geçişi — example\.com\r\n/);
+    assert.equal(flat.split('BEGIN:VEVENT').length - 1, 4);
+    assert.match(flat, /\r\nDTSTART:20261008T100000Z\r\nDTEND:20261008T101500Z\r\nSUMMARY:example\.com için TTL değerini düşürün: 3600 sn → 300 sn\r\n/);
+    assert.match(flat, /\r\nDTSTART:20261008T110000Z\r\n/);
+    assert.equal((flat.match(/TRIGGER:-PT15M/g) || []).length, 3, 'lower, change and raise');
+    assert.match(flat, /Kullanıcıları için hızlandırmak/);
+    assert.equal(planCalendar({ ok: false, error: 'time' }, opts), '');
+    assert.equal(PLAN_ALARM_MINUTES, 15);
+    assert.equal(PLAN_EVENT_MINUTES, 15);
+    assert.equal(PLAN_PRODID, '-//DomainScope//DNS cutover//EN');
   });
 });

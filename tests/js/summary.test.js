@@ -297,6 +297,19 @@ describe('global', () => {
     assert.deepEqual(tr.slice(1, 3), ['- Tüm yanıtlar aynı', '- 43 kaynağın 41 tanesi aynı yanıtı verdi']);
     assert.doesNotMatch(tr.join(' '), /farklı yanıt/);
   });
+
+  test('an expected value: how many of the sources that answered serve it, the value as a code span, in both languages', () => {
+    const verdict = { state: 'differ', groups: [{ key: 'a' }, { key: 'b' }], operators: [], findings: [] };
+    const expected = { pattern: '198.51.100.20', mode: 'exact', match: 38, judged: 41 };
+    const en = lines(md(S.globalSummary({ ...base, failed: 0, verdict, expected }, opts())));
+    assert.equal(en[3], '- Expected value (exact): `198.51.100.20` — served by 38 of 41 sources');
+    const tr = lines(md(S.globalSummary({ ...base, failed: 0, verdict, expected: { ...expected, mode: 'regex', pattern: '^198\\.51' } }, opts('tr'))));
+    assert.equal(tr[3], '- Beklenen değer (regex): `^198\\.51` — 41 kaynaktan 38 tanesi döndürüyor');
+    const none = lines(md(S.globalSummary({ ...base, failed: 0, verdict, expected: { ...expected, match: 0, judged: 0, mode: 'contains' } }, opts())));
+    assert.equal(none[3], '- Expected value (contains): `198.51.100.20` — no source has answered yet');
+    const without = lines(md(S.globalSummary({ ...base, failed: 0, verdict, expected: null }, opts())));
+    assert.ok(!without.some((l) => /Expected value/.test(l)), 'no expected value: no line');
+  });
 });
 
 describe('subdomains', () => {

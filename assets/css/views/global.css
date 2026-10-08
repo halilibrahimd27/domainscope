@@ -45,14 +45,135 @@
   color: var(--text-2);
 }
 
+/* The expected value (lib/expected.js): the value, then how it is matched, under name and type. */
+.glb-expect {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 10.5rem;
+  gap: 12px;
+  align-items: start;
+}
+
+.glb-expect .field {
+  min-width: 0;
+}
+
 @media (max-width: 700px) {
-  .glb-form {
+  .glb-form,
+  .glb-expect {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .glb-buttons .btn {
     width: 100%;
   }
+}
+
+/* ---- the expected value's card ---------------------------------------------------- */
+
+.glb-exp {
+  display: grid;
+  gap: 8px;
+  padding: 14px 18px;
+  border-left: 3px solid var(--warn-solid);
+}
+
+.glb-exp[data-state="done"] {
+  border-left-color: var(--ok-solid);
+}
+
+.glb-exp[data-state="running"],
+.glb-exp[data-state="none"] {
+  border-left-color: var(--border-strong, var(--border));
+}
+
+/* Grid items shrink to the card on a phone; the card's buttons wrap their long labels. */
+.glb-exp > * {
+  min-width: 0;
+}
+
+.glb-exp .btn {
+  height: auto;
+  min-height: var(--btn-h);
+  max-width: 100%;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  white-space: normal;
+  line-height: 1.25;
+  text-align: left;
+}
+
+.glb-exp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.glb-exp-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 15px;
+}
+
+.glb-exp-value {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.glb-exp-count {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.glb-exp-bar {
+  flex: 1 1 8rem;
+  max-width: 16rem;
+}
+
+.glb-exp-line,
+.glb-exp-flush {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.glb-exp-actions:empty,
+.glb-exp-soa[hidden] {
+  display: none;
+}
+
+.glb-exp-soa {
+  align-items: flex-start;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.glb-exp-soa-body,
+.glb-soa {
+  align-self: stretch;
+}
+
+.glb-soa {
+  align-items: flex-start;
+}
+
+.glb-soa > .glb-soa-status,
+.glb-soa > .glb-soa-result {
+  align-self: stretch;
+}
+
+.glb-soa-status:empty,
+.glb-soa-result:empty {
+  display: none;
+}
+
+/* A row's expected-value mark sits before its answer (the row's left edge keeps its group colour). */
+.glb-exp-mark {
+  margin-right: 6px;
 }
 
 .glb-empty {
@@ -585,7 +706,10 @@
   .glb-empty,
   .glb-links,
   .glb-isp-form,
-  .glb-isp-quota {
+  .glb-isp-quota,
+  .glb-exp-actions,
+  .glb-exp-flush,
+  .glb-exp-soa .btn {
     display: none;
   }
 

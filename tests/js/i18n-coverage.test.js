@@ -87,6 +87,8 @@ before(async () => {
   await imp('assets/js/ui/cutover.js');
   // Global DNS › ISP resolvers: loaded on the first click of "Ask ISP resolvers…".
   await imp('assets/js/ui/isp-resolvers.js');
+  // Global DNS › Expected value › the zone's name server: loaded on the first click of its button.
+  await imp('assets/js/ui/soa-probe.js');
   // Domain Health v2 (problems first, the Web card): loaded with the first report.
   await imp('assets/js/ui/health-v2.js');
   // SSL Targets › Rollout: loaded on the tab's first show.

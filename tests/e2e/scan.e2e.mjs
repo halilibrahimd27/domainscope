@@ -47,6 +47,10 @@
  *     keys in targets.txt; then the Renewal plan of an RSA + ECDSA pair (renew_a_*.pem, an
  *     emulated example.com): the matrix without the plain-HTTP backend, which is listed apart, the
  *     work list's Topology column, Turkish at 375 px
+ *   - offline (an exact zone scan of an emulated example.net, the range dataset's network tier
+ *     answered with documentation ranges): Behind CDN lists a name in Cloudflare's network outside
+ *     its proxy ranges apart ("not necessarily proxied"), and names AWS's space on the origin
+ *     networks (no owner lookup needed) and on the zone origin's hint; Turkish, 375 px, dark
  *   - --offline skips the live scan (desktop and phone groups) and resolves no host name but the
  *     local server's
  *   - zero console errors, exceptions and CSP violations; failures of the third-party APIs
@@ -518,6 +522,44 @@ export const ZONE_HANDOFF_INPUT = {
   label: 'E2E zone · example.net',
   counts: { names: 6, origins: 3, skipped: 0 }
 };
+
+/**
+ * The Behind CDN network-tier group: documentation ranges stand in for two operators' published
+ * space — 198.51.100.0/24 in Cloudflare's network (outside every proxy range), 203.0.113.0/24 in
+ * AWS's — so the labels do not depend on the weekly dataset's real prefixes.
+ */
+const TIER_NETWORKS = { cloudflare: ['198.51.100.0/24'], aws: ['203.0.113.0/24'] };
+/** The emulated apex of that group: www proxied (a Cloudflare edge), spectrum in Cloudflare's network, the rest in AWS's. */
+const TIER_DNS = {
+  'example.net': { A: ['203.0.113.10'] },
+  'www.example.net': { A: ['104.16.5.5'] },
+  'spectrum.example.net': { A: ['198.51.100.25'] },
+  'api.example.net': { A: ['203.0.113.14'] }
+};
+/** The zone hand-off of that group: www's origin is 203.0.113.50 (in AWS's space, no server of the list). */
+const TIER_ZONE_INPUT = {
+  v: 1,
+  origin: 'example.net',
+  names: ['example.net', 'www.example.net', 'spectrum.example.net', 'api.example.net'],
+  wildcardBases: [],
+  delegations: [],
+  proxied: [{ name: 'www.example.net', ips: ['203.0.113.50'], host: null }],
+  skipped: [],
+  label: 'E2E zone · example.net',
+  counts: { names: 4, origins: 1, skipped: 0 }
+};
+/** A page script: the range dataset's network tier (assets/data/ranges/networks.json) answered with {@link TIER_NETWORKS}. */
+const networkTierScript = `(() => {
+  const NETWORKS = ${JSON.stringify(TIER_NETWORKS)};
+  const inner = window.fetch;
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (new URL(url, location.href).pathname.endsWith('/assets/data/ranges/networks.json')) {
+      return new Response(JSON.stringify(NETWORKS), { headers: { 'content-type': 'application/json' } });
+    }
+    return inner(input, init);
+  };
+})();`;
 
 /**
  * A page script (installed before the app loads) that answers every DoH query under `apex` from
@@ -1624,6 +1666,88 @@ async function main() {
         await tab.evaluate(async () => (await import('./assets/js/state.js')).state.setSession('zone', undefined));
         await tab.waitFor(() => !document.querySelector('[data-role="zone-chip"]'), { message: 'chip gone after Forget' });
         await assertClean(tab, 'zone hand-off (SSL Targets)', origin);
+      } finally {
+        await tab.close();
+        await page.evaluate(restoreSetup, saved);
+      }
+    });
+
+    run.group('Behind CDN: the provider network tier (an exact zone scan, emulated DNS, a stand-in network tier)');
+    await run.step('a name in a CDN’s network outside its proxy ranges is listed apart; cloud space is named on the origin networks and hints', async () => {
+      const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+      const saved = await page.evaluate(storedSetup);
+      try {
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(ZONE_HANDOFF_APEX, TIER_DNS) });
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: networkTierScript });
+        await tab.goto(`${server.url}#/about`);
+        await waitReady(tab);
+        await setLangUi(tab, 'en');
+        await tab.evaluate(async (zone) => {
+          localStorage.setItem('ssds.scan.options', JSON.stringify({ sources: [], bruteforce: 'smart', permutations: false, originHints: true }));
+          const { state } = await import('./assets/js/state.js');
+          await state.setInventory('').done;
+          state.setSession('zone', zone);
+          state.setSession('zoneScanIntent', { v: 1, target: 'scan', domain: zone.origin, mode: 'exact', autostart: false, at: Date.now() });
+          location.hash = `#/scan?domain=${zone.origin}`;
+        }, TIER_ZONE_INPUT);
+        await tab.waitFor(() => document.querySelector('.scan-step-domains [data-role="zone-chip"]'), { timeout: 15000, message: 'zone chip in step 2' });
+        await tab.evaluate(() => document.querySelector('[data-action="scan-run"]').click());
+        const done = await tab.waitFor(() => {
+          const ui = document.querySelector('.scan-run-ui');
+          const st = ui && ui.querySelector('.scan-run').dataset.status;
+          return st && st !== 'running' ? st : false;
+        }, { timeout: 60000, message: 'exact zone scan done' });
+        assertEqual(done, 'done', 'status');
+        await tab.evaluate(() => document.querySelector('.scan-tabs [data-tab="cdn"]').click());
+        const cdn = await tab.waitFor(() => {
+          const pick = (el) => (el ? { network: el.dataset.network, relation: el.dataset.relation, text: el.textContent, title: el.title } : null);
+          const tier = [...document.querySelectorAll('.scan-cdn-tier tbody tr.dt-row')];
+          if (!tier.length) return false;
+          return {
+            title: [...document.querySelectorAll('.scan-tab-cdn .scan-subtitle')].map((x) => x.textContent),
+            tier: tier.map((tr) => ({ text: tr.textContent, label: pick(tr.querySelector('.scan-net-label')) })),
+            owners: [...document.querySelectorAll('.scan-networks-table tbody tr.dt-row')].map((tr) => ({
+              cidr: tr.querySelector('td').textContent, label: pick(tr.querySelector('.scan-net-label')), lookup: !!tr.querySelector('[data-action="scan-net-owner"]'),
+              sweep: tr.querySelector('.scan-net-sweep')?.dataset.sweep || null, shared: tr.querySelector('.scan-net-sweep')?.dataset.shared || null
+            })),
+            quick: document.querySelector('.scan-cli-quick code')?.textContent || '',
+            hints: [...document.querySelectorAll('.scan-hints-table tbody tr.dt-row')].map((tr) => ({ ip: tr.querySelector('td').textContent, label: pick(tr.querySelector('.scan-net-label')) }))
+          };
+        }, { timeout: 15000, message: 'Behind CDN with the network tier' });
+        assert(cdn.title.includes('In a CDN’s network, not necessarily proxied'), `subtitles: ${cdn.title.join(' | ')}`);
+        assertEqual(cdn.tier.length, 1, `one name in Cloudflare's network: ${JSON.stringify(cdn.tier)}`);
+        assert(/spectrum\.example\.net/.test(cdn.tier[0].text) && /198\.51\.100\.25/.test(cdn.tier[0].text) && /Cloudflare network/.test(cdn.tier[0].text), `tier row: ${cdn.tier[0].text}`);
+        assertEqual([cdn.tier[0].label.network, cdn.tier[0].label.relation], ['cloudflare', 'outside-proxy-ranges'], 'its label');
+        assert(/not necessarily proxied/.test(cdn.tier[0].label.title), `its tooltip: ${cdn.tier[0].label.title}`);
+        const aws = cdn.owners.find((n) => n.cidr === '203.0.113.0/24');
+        assert(aws && aws.label && aws.label.network === 'aws' && !aws.lookup, `203.0.113.0/24 owned by AWS's network, no lookup needed: ${JSON.stringify(cdn.owners)}`);
+        assert(/AWS network/.test(aws.label.text) && /Other customers’ servers share this space/.test(aws.label.title), `owner label: ${JSON.stringify(aws.label)}`);
+        // Shared space is never swept whole: its two known addresses, one by one (lib/scanner.js).
+        assertEqual([aws.sweep, aws.shared], ['ips', '1'], 'AWS’s /24 is shared: its addresses only');
+        assert(!cdn.quick.includes('203.0.113.0/24'), `the sweep never widens to AWS’s /24: ${cdn.quick}`);
+        const hint = cdn.hints.find((x) => x.ip === '203.0.113.50');
+        assert(hint && hint.label && hint.label.network === 'aws', `the zone origin's hint names AWS's network: ${JSON.stringify(cdn.hints)}`);
+        assertEqual(cdn.hints.filter((x) => x.ip.startsWith('104.16.')).length, 0, 'never an edge address as a hint');
+        await assertNoHorizontalScroll(tab, 'Behind CDN network tier desktop');
+        await shot(tab, opts, 'scan-cdn-network-tier-desktop-light-en');
+        for (const [lang, scheme] of [['tr', 'dark'], ['en', 'light']]) {
+          await setLangUi(tab, lang);
+          await tab.emulateMedia({ 'prefers-color-scheme': scheme });
+          await tab.evaluate(() => document.querySelector('.scan-tabs [data-tab="cdn"]').click());
+          await tab.waitFor(() => !!document.querySelector('.scan-cdn-tier tbody tr.dt-row'), { message: `tier table ${lang}` });
+          if (lang === 'tr') {
+            const tr = await tab.evaluate(() => [...document.querySelectorAll('.scan-tab-cdn .scan-subtitle')].map((x) => x.textContent));
+            assert(tr.includes('Bir CDN’in ağında, proxy’li olmayabilir'), `TR subtitle: ${tr.join(' | ')}`);
+            assert(/Cloudflare ağı/.test(await tab.evaluate(() => document.querySelector('.scan-cdn-tier .scan-net-label').textContent)), 'TR label');
+          }
+          await tab.setViewport({ width: 375, height: 812, mobile: true });
+          await assertNoHorizontalScroll(tab, `Behind CDN network tier ${lang} ${scheme} 375`);
+          await tab.evaluate(() => document.querySelector('.scan-cdn-tier').scrollIntoView({ block: 'start' }));
+          await shot(tab, opts, `scan-cdn-network-tier-mobile-${scheme}-${lang}`);
+          await tab.setViewport({ width: 1440, height: 900 });
+        }
+        await assertClean(tab, 'Behind CDN network tier', origin);
       } finally {
         await tab.close();
         await page.evaluate(restoreSetup, saved);

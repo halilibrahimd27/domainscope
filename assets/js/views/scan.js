@@ -63,6 +63,8 @@ import {
   toCsv, toJson, scanHostRows, scanServerRows, namesForCli, targetsForCli, cliCommand, cliServerName, HOST_COLUMNS, SERVER_COLUMNS
 } from '../lib/export.js';
 import { getResolver } from '../lib/resolvers.js';
+import { loadRanges, rangesInfo } from '../lib/netinfo.js';
+import { networkLabel, firstNetworkLabel } from '../lib/networklabel.js';
 import { pemEncode } from '../lib/x509.js';
 import { errorKind, onceAsync, splitList } from '../lib/util.js';
 import { backToLastRun, fillReplaces, isFillOnly } from '../lib/session.js';
@@ -477,6 +479,13 @@ registerStrings('en', {
   'scan.cdn.col.reasons': 'Evidence',
   'scan.cdn.col.servers': 'Your server',
   'scan.cdn.col.hosts': 'About',
+  'scan.cdn.tierTitle': 'In a CDN’s network, not necessarily proxied',
+  'scan.cdn.tierDesc': 'These names point into a CDN’s own network, outside the ranges it proxies websites from, so they count as direct servers here. Most are the CDN’s own services; but a website proxied from a customer’s own address block, or through a TCP / UDP proxy (Cloudflare Spectrum), hides its origin like the hosts above — confirm with the CLI where it matters.',
+  'scan.cdn.col.network': 'Network',
+  'scan.cdn.col.addresses': 'Addresses',
+  'scan.net.badge': '{name} network',
+  'scan.net.title.outside-proxy-ranges': 'In {name}’s network (the provider list of {updated}), outside the ranges {name} proxies websites from: not necessarily proxied.',
+  'scan.net.title.hosted': 'In the address space {name} publishes (the provider list of {updated}): a server on {name}’s network, reached directly. Other customers’ servers share this space.',
   'scan.hint.spf': 'SPF',
   'scan.hint.mx': 'MX',
   'scan.hint.direct-sibling': 'Sibling',
@@ -879,6 +888,13 @@ registerStrings('tr', {
   'scan.cdn.col.reasons': 'Kanıt',
   'scan.cdn.col.servers': 'Sunucunuz',
   'scan.cdn.col.hosts': 'İlgili adlar',
+  'scan.cdn.tierTitle': 'Bir CDN’in ağında, proxy’li olmayabilir',
+  'scan.cdn.tierDesc': 'Bu adlar bir CDN’in kendi ağına, ama web sitelerini proxy’lediği aralıkların dışına işaret ediyor; bu yüzden burada doğrudan sunucu sayılıyor. Çoğu CDN’in kendi hizmetleridir; ancak bir müşterinin kendi adres bloğundan ya da bir TCP / UDP proxy’si (Cloudflare Spectrum) üzerinden proxy’lenen bir web sitesi, asıl sunucusunu yukarıdaki host’lar gibi gizler — önemli olduğu yerde CLI ile doğrulayın.',
+  'scan.cdn.col.network': 'Ağ',
+  'scan.cdn.col.addresses': 'Adresler',
+  'scan.net.badge': '{name} ağı',
+  'scan.net.title.outside-proxy-ranges': '{name} ağında ({updated} tarihli sağlayıcı listesi), ancak {name} tarafından proxy’lenen web sitelerinin aralıklarının dışında: proxy’li olmayabilir.',
+  'scan.net.title.hosted': '{name} tarafından yayımlanan adres alanında ({updated} tarihli sağlayıcı listesi): {name} ağında, doğrudan erişilen bir sunucu. Bu alanı başka müşterilerin sunucuları da paylaşır.',
   'scan.hint.spf': 'SPF',
   'scan.hint.mx': 'MX',
   'scan.hint.direct-sibling': 'Kardeş ad',
@@ -3533,6 +3549,27 @@ function buildRunUI(run, ctx, { onFinish }) {
       return;
     }
     const hidden = r.hosts.filter((x) => x.classification.hidesOrigin);
+    // The provider network tier (lib/networklabel.js) names who operates an address no edge range
+    // holds: "AWS network", "Cloudflare network, not necessarily proxied". Its dataset loads once per
+    // page; drawn before it has, the tab is drawn again when it arrives.
+    if (rangesInfo().source !== 'data') {
+      loadRanges().then((info) => { if (info.source === 'data' && run.result === r && cdnPanel.isConnected) renderCdnTab(); }, () => {});
+    }
+    const updated = rangesInfo().updated;
+    const netBadge = (label) => {
+      const el = Badge(t('scan.net.badge', { name: label.name }), {
+        variant: 'direct', icon: label.category === 'hosting' ? 'server' : 'cloud', className: 'scan-net-label',
+        title: t(`scan.net.title.${label.relation}`, { name: label.name, updated })
+      });
+      el.dataset.network = label.id;
+      el.dataset.relation = label.relation;
+      return el;
+    };
+    // Direct names in a CDN's own network, outside its proxy ranges (Cloudflare's AS13335 / AS209242).
+    const tierHosts = r.hosts.filter((x) => !x.wildcardSuspect && x.classification && x.classification.kind === 'direct')
+      .map((x) => ({ host: x, ips: [...((x.resolution && x.resolution.ipv4) || []), ...((x.resolution && x.resolution.ipv6) || [])] }))
+      .map((e) => ({ ...e, label: firstNetworkLabel(e.ips, e.host.classification) }))
+      .filter((e) => e.label && e.label.relation === 'outside-proxy-ranges');
     // Origin networks without wildcard suspects (and a CLI command the CLI accepts), shared with
     // Subdomains; the remembered origins as the workspace's origin map has them now (read once).
     const origins = originIndex(state.workspaceData('origins'));
@@ -3551,6 +3588,9 @@ function buildRunUI(run, ctx, { onFinish }) {
         else el.append(h('span', { class: 'muted' }, t('sub.org.owner.error')));
       };
       if (net.provider) { el.append(h('span', null, net.provider.name)); return el; }
+      // A network-tier operator's published space (lib/networklabel.js) needs no owner lookup.
+      const label = networkLabel({ ip: (net.ips || [])[0] || null });
+      if (label) { el.append(netBadge(label)); return el; }
       if (cdnOwnerCache.has(net.cidr)) { fill(cdnOwnerCache.get(net.cidr)); return el; }
       el.append(Button({
         label: t('sub.org.owner.lookup'), icon: 'search', size: 'sm', variant: 'ghost', dataset: { action: 'scan-net-owner', cidr: net.cidr },
@@ -3688,6 +3728,32 @@ function buildRunUI(run, ctx, { onFinish }) {
       ].filter(Boolean)
     }).el);
 
+    // Names in a CDN's own network but outside its proxy ranges: direct here, not necessarily proxied.
+    if (tierHosts.length) {
+      cdnPanel.append(h('h3', { class: 'scan-subtitle' }, t('scan.cdn.tierTitle')),
+        h('p', { class: 'muted text-sm' }, t('scan.cdn.tierDesc')),
+        DataTable({
+          caption: t('scan.cdn.tierTitle'),
+          rows: tierHosts,
+          dense: true,
+          rowKey: (e) => e.host.name,
+          sort: { key: 'name', dir: 'asc' },
+          className: 'scan-cdn-tier',
+          export: { filename: 'cdn-network-hosts', subject },
+          columns: [
+            { key: 'name', label: t('scan.col.name'), mono: true, sortable: true, sortValue: (e) => hostSortKey(e.host.name), searchValue: (e) => e.host.name, exportValue: (e) => e.host.name, render: (e) => e.host.name },
+            {
+              key: 'network', label: t('scan.cdn.col.network'), sortable: true, sortValue: (e) => e.label.name,
+              exportValue: (e) => t('scan.net.badge', { name: e.label.name }), render: (e) => netBadge(e.label)
+            },
+            {
+              key: 'addresses', label: t('scan.cdn.col.addresses'), mono: true, className: 'scan-col-ips',
+              searchValue: (e) => e.ips.join(' '), exportValue: (e) => e.ips.join(' '), render: (e) => TruncatedList(e.ips, { max: 2 })
+            }
+          ]
+        }).el);
+    }
+
     // Origin networks: the /24 · /48 blocks the non-proxied names live in, plus a ready-to-run
     // CLI sweep of those blocks with the proxied names (no input files needed).
     if (hidden.length) {
@@ -3729,7 +3795,11 @@ function buildRunUI(run, ctx, { onFinish }) {
             },
             {
               key: 'owner', label: t('scan.cdn.col.owner'),
-              exportValue: (n) => (n.provider ? n.provider.name : ''),
+              exportValue: (n) => {
+                if (n.provider) return n.provider.name;
+                const label = networkLabel({ ip: (n.ips || [])[0] || null });
+                return label ? t('scan.net.badge', { name: label.name }) : '';
+              },
               render: (n) => ownerCell(n)
             }
           ]
@@ -3839,9 +3909,13 @@ function buildRunUI(run, ctx, { onFinish }) {
             sortValue: (o) => (o.servers[0] ? o.servers[0].name : ''),
             searchValue: (o) => o.servers.map((s) => s.name).join(' '),
             exportValue: (o) => o.servers.map((s) => s.name).join(' '),
-            render: (o) => (o.servers.length
-              ? h('div', { class: 'cluster' }, o.servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server' })))
-              : (o.provider ? Badge(o.provider.name, { variant: 'platform' }) : null))
+            render: (o) => {
+              if (o.servers.length) return h('div', { class: 'cluster' }, o.servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server' })));
+              if (o.provider) return Badge(o.provider.name, { variant: 'platform' });
+              // Not one of your servers, in no edge range: whose published space holds it (a cloud server's).
+              const label = networkLabel({ ip: o.ip });
+              return label ? netBadge(label) : null;
+            }
           },
           {
             key: 'hosts', label: t('scan.cdn.col.hosts'), mono: true,

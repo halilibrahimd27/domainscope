@@ -12,6 +12,7 @@ import { DohClient } from '../../assets/js/lib/doh.js';
 import { RESOLVERS, DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
 import { decodeMessage, encodeMessage, base64UrlDecode } from '../../assets/js/lib/dnswire.js';
 import { AbortError } from '../../assets/js/lib/util.js';
+import { RANGES_FORMAT, installRanges } from '../../assets/js/lib/netinfo.js';
 import { WORDLIST_SMALL, clearWordlistCache, loadWordlist } from '../../assets/js/lib/wordlist.js';
 import { readFile } from 'node:fs/promises';
 
@@ -1485,6 +1486,34 @@ describe('discovery engine v3: per-host candidate networks (noise capped)', () =
     assert.equal(net.shared, false, 'documentation space is not a known shared provider range');
     assert.equal(net.sweep, 'cidr');
     assert.equal(net.provider, null);
+  });
+
+  test('an operator’s published space (the range dataset’s network tier) is shared too: its known addresses only, never the /24', async () => {
+    const A = 'cloudy.example';
+    const zone = {
+      [A]: { A: ['192.0.2.5'] },
+      [`api.${A}`]: { A: ['192.0.2.6'] },
+      [`www.${A}`]: { CNAME: 'proxy.cdn.cloudflare.net' },
+      'proxy.cdn.cloudflare.net': { A: ['104.16.5.5'] }
+    };
+    // 192.0.2.0/24 stands in for AWS's published ranges; the edge tier is the dataset's own.
+    assert.equal(installRanges({ manifest: { format: RANGES_FORMAT, generated: '2026-10-08' }, edges: { cloudflare: ['104.16.0.0/13'] }, networks: { aws: ['192.0.2.0/24'] } }).source, 'data');
+    try {
+      const { fetchImpl, dns } = mkWorld({ zone });
+      const scan = await runScan({
+        domains: [A], sources: [], bruteforce: 'small', wordlist: ['api'],
+        mine: false, permutationBudget: 0, recursive: false, originHints: true, resolverLeak: false, balance: false, dns, fetchImpl
+      });
+      const net = scan.originNetworks.find((n) => n.cidr === '192.0.2.0/24');
+      assert.equal(net.provider, null, 'no edge range: no provider');
+      assert.equal(net.shared, true, 'AWS’s space is multi-tenant');
+      assert.equal(net.sweep, 'ips', 'two addresses there: still swept one by one');
+      assert.ok(scan.cliTargets.includes('192.0.2.5') && scan.cliTargets.includes('192.0.2.6') && !scan.cliTargets.includes('192.0.2.0/24'), `targets: ${scan.cliTargets}`);
+      assert.equal(byName(scan).get(A).classification.kind, 'direct', 'the classification is unchanged: direct, with the network named');
+      assert.equal(byName(scan).get(A).classification.network.id, 'aws');
+    } finally {
+      installRanges(null);
+    }
   });
 });
 

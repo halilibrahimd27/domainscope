@@ -4,7 +4,9 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCalendar, foldIcsLine, icsEscape, ICS_FOLD_OCTETS, ICS_ALARM_DAYS, ICS_PRODID } from '../../assets/js/lib/ics.js';
+import {
+  buildCalendar, buildEventCalendar, foldIcsLine, icsEscape, ICS_FOLD_OCTETS, ICS_ALARM_DAYS, ICS_PRODID, ICS_EVENT_MINUTES, ICS_ALARM_MINUTES
+} from '../../assets/js/lib/ics.js';
 
 // The event's day is the local day the table shows: a time zone east of UTC tells it from the UTC day.
 process.env.TZ = 'Europe/Istanbul';
@@ -168,5 +170,49 @@ describe('folding and escaping', () => {
     assert.equal(icsEscape('a\\b;c,d\ne\r\nf\rg'), 'a\\\\b\\;c\\,d\\ne\\nf\\ng');
     assert.equal(icsEscape('tab\there\u0007bell\u001b'), 'tab\therebell');
     assert.equal(icsEscape(null), '');
+  });
+});
+
+describe('buildEventCalendar (timed events: a DNS cutover’s steps)', () => {
+  const START = Date.UTC(2026, 9, 8, 13, 0, 0);
+  const STEPS = [
+    { uid: 'cutover-lower-abc@domainscope', start: START, summary: 'Lower the TTL in example.com: 3600 s → 300 s', description: 'Why: copies expire.\nRecords: www.example.com A' },
+    { uid: 'cutover-live-abc@domainscope', start: new Date(START + 3900000), summary: 'Every resolver serves the change', alarmMinutes: [] },
+    { uid: 'cutover-raise-abc@domainscope', start: new Date(START + 4200000).toISOString(), end: START + 7800000, summary: 'Raise the TTL' }
+  ];
+
+  test('UTC start and end, 15 minutes by default, a reminder 15 minutes before; an event may have none or its own end', () => {
+    const text = buildEventCalendar(STEPS, { now: NOW, name: 'DNS cutover — example.com', prodId: '-//DomainScope//DNS cutover//EN' });
+    const lines = unfold(text).split('\r\n');
+    assert.equal(lines[2], 'PRODID:-//DomainScope//DNS cutover//EN');
+    assert.equal(lines[4], 'X-WR-CALNAME:DNS cutover — example.com');
+    const events = unfold(text).split('BEGIN:VEVENT').slice(1);
+    assert.equal(events.length, 3);
+    assert.match(events[0], /\r\nDTSTART:20261008T130000Z\r\nDTEND:20261008T131500Z\r\n/);
+    assert.match(events[0], /\r\nDESCRIPTION:Why: copies expire\.\\nRecords: www\.example\.com A\r\n/);
+    assert.match(events[0], /BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nDESCRIPTION:Lower the TTL in example\.com: 3600 s → 300 s\r\nEND:VALARM/);
+    assert.doesNotMatch(events[1], /VALARM/, 'no reminder for this one');
+    assert.match(events[1], /\r\nDTSTART:20261008T140500Z\r\n/, 'a Date');
+    assert.match(events[2], /\r\nDTSTART:20261008T141000Z\r\nDTEND:20261008T151000Z\r\n/, 'a string start and its own end');
+    assert.doesNotMatch(text, /METHOD:/);
+  });
+
+  test('SEQUENCE: the minutes from 2000 to the file’s time — a later file is a later revision of the same UIDs', () => {
+    const seq = (now) => Number(/SEQUENCE:(\d+)/.exec(buildEventCalendar(STEPS.slice(0, 1), { now }))[1]);
+    assert.equal(seq(new Date('2000-01-01T00:10:00Z')), 10);
+    assert.ok(seq(new Date('2026-10-08T12:00:00Z')) > seq(new Date('2026-10-08T11:59:00Z')));
+    assert.equal(seq(Date.UTC(2026, 9, 8, 12, 0)), seq(new Date('2026-10-08T12:00:30Z')), 'a number works like a Date');
+  });
+
+  test('other durations and reminders; an event without a usable time is left out; CRLF and 75 octets throughout', () => {
+    const text = buildEventCalendar([...STEPS, { uid: 'x', start: 'not a time', summary: 'nope' }], { now: NOW, minutes: 30, alarmMinutes: [60, 5, 5, -1, 1.5] });
+    assert.equal(text.split('BEGIN:VEVENT').length - 1, 3);
+    assert.match(unfold(text), /DTSTART:20261008T130000Z\r\nDTEND:20261008T133000Z/);
+    assert.equal((unfold(text).split('BEGIN:VEVENT')[1].match(/TRIGGER:/g) || []).length, 2, '60 and 5, each once');
+    assert.ok(text.endsWith('\r\n'));
+    assert.doesNotMatch(text.replace(/\r\n/g, ''), /[\r\n]/);
+    for (const line of text.split('\r\n')) assert.ok(octets(line) <= ICS_FOLD_OCTETS, line);
+    assert.equal(ICS_EVENT_MINUTES, 15);
+    assert.deepEqual([...ICS_ALARM_MINUTES], [15]);
   });
 });

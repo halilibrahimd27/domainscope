@@ -22,7 +22,7 @@ import {
   baseDomainsFromNames, certCovers
 } from './domain.js';
 import {
-  classifyResolution, matchProviderByIP, normalizeIP, parseCidr, parseIP, ipInCidr, isPrivateIP, formatIP,
+  classifyResolution, matchProviderByIP, matchNetworkByIP, normalizeIP, parseCidr, parseIP, ipInCidr, isPrivateIP, formatIP,
   isSharedProvider
 } from './netinfo.js';
 import { buildIpIndex, lookupServers } from './inventory.js';
@@ -98,8 +98,10 @@ export { SCAN_STAGES, HOST_SPECIFIC_HINT_KINDS, estimateQueries, learnedLabelsFr
  * @property {string[]} hosts the DNS-only host names that resolve into the block
  * @property {object|null} provider netinfo provider of the block (usually null for a real origin)
  * @property {boolean} shared extension (v3): the block sits in known multi-tenant space (a CDN / cloud /
- *   hosting / platform PROVIDERS range) where one /24 serves many unrelated customers — offline only;
- *   ipintel.describeNetwork resolves the AS owner on demand for the rest
+ *   hosting / platform PROVIDERS range, or an operator's whole published or announced space from the
+ *   range dataset's network tier: AWS, Google Cloud, Oracle, DigitalOcean, Cloudflare's own network)
+ *   where one /24 serves many unrelated customers — offline only; ipintel.describeNetwork resolves
+ *   the AS owner on demand for the rest
  * @property {'cidr'|'ips'} sweep extension (v3): how the CLI targets this block — the whole /24
  *   ('cidr') or its exact addresses ('ips': an IPv6 /48, a shared /24 with no inventory, or a single IP)
  */
@@ -2067,7 +2069,8 @@ export async function runScan(config = {}, hooks = {}) {
   //  - IPv6: exact addresses only — a /48 has 2^80 hosts and ssl_origin_scan.py
   //    rejects any block over 2^20, so the whole command would fail;
   //  - a /24 holding an inventory server the user owns → sweep it whole;
-  //  - a shared cloud / hosting / CDN /24 (a PROVIDERS range) with no inventory →
+  //  - a shared cloud / hosting / CDN /24 (a PROVIDERS range, or an operator's
+  //    published space in the range dataset's network tier) with no inventory →
   //    exact IPs only, so a single origin does not silently widen into a
   //    multi-tenant block the user does not own;
   //  - otherwise the /24 when the block clusters ≥ 2 origins, else the exact IP(s).
@@ -2082,7 +2085,10 @@ export async function runScan(config = {}, hooks = {}) {
     .map((net) => {
       const ips = [...net.ips].sort(compareIp);
       const provider = matchProviderByIP(ips[0]) || null;
-      const out = { cidr: net.cidr, ips, hosts: sortHostnames([...net.hosts]), provider, shared: isSharedProvider(provider) };
+      // No edge range holds it: an operator's whole published space (AWS, Google Cloud …) is as
+      // multi-tenant as a provider's range, and never the user's to sweep whole.
+      const operator = provider ? null : matchNetworkByIP(ips[0]);
+      const out = { cidr: net.cidr, ips, hosts: sortHostnames([...net.hosts]), provider, shared: isSharedProvider(provider || operator) };
       out.sweep = sweepDecision(out); // 'cidr' | 'ips' — what the CLI targets carry for this block
       return out;
     })

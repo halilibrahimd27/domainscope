@@ -82,8 +82,11 @@ export function healthSummary({ report }, opts) {
  * answers from how many sources (with none, only how many failed), who operates them, the
  * findings and the addresses seen. A verdict that rests on a branch only mainland China takes
  * which the control could not confirm (a `geoSplits` entry without `line`) is worded as likely.
+ * With an expected value (Global DNS › Expected value), a line says how many of the sources that
+ * answered serve it.
  * @param {{ name: string, type: string, verdict: object|null, total: number, answered: number,
- *   failed?: number, cancelled?: boolean, addresses?: number, at?: Date }} facts `at`: when the check ended
+ *   failed?: number, cancelled?: boolean, addresses?: number, at?: Date,
+ *   expected?: { pattern: string, mode: 'exact'|'contains'|'regex', match: number, judged: number }|null }} facts `at`: when the check ended
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {SummaryDoc}
  */
@@ -114,9 +117,18 @@ export function globalSummary(facts, opts) {
     count: (f.members || []).length, rcode: f.rcode || '', type: facts.type
   })]);
   if (findings.length > 3) findingLines.push([t('sum.moreFindings', { count: findings.length - 3 })]);
+  // Global DNS › Expected value (lib/expected.js): how many of the sources that answered serve it.
+  const ex = facts.expected && facts.expected.pattern ? facts.expected : null;
+  const modeKey = { exact: 'sum.global.mode.exact', contains: 'sum.global.mode.contains', regex: 'sum.global.mode.regex' };
+  const expectedLine = ex ? [
+    t('sum.global.expected', { mode: t(modeKey[ex.mode] || modeKey.exact) }), ' ', code(ex.pattern), ' ',
+    Number(ex.judged) > 0 ? t('sum.global.expectedCount', { count: Number(ex.match) || 0, match: k.num(Number(ex.match) || 0), judged: k.num(Number(ex.judged)) })
+      : t('sum.global.expectedNone')
+  ] : null;
   return doc('global', k.title('global', [code(facts.name), ` ${cleanText(facts.type)}`]), [
     [state],
     sources,
+    expectedLine,
     operators.length && v.state !== 'by-design' ? [t('sum.global.operators', { list: opList })] : null,
     ...findingLines,
     [t('sum.global.addresses', { count: Number(facts.addresses) || 0 })]
@@ -893,6 +905,13 @@ const STRINGS = [
     { one: '{total} kaynağın {answered} tanesi aynı yanıtı verdi', other: '{total} kaynağın {answered} tanesinden {count} farklı yanıt' }]],
   ['sum.global.errors', [{ one: '{count} source failed', other: '{count} sources failed' }, '{count} kaynak başarısız']],
   ['sum.global.operators', ['Operated by {list}', 'İşleten: {list}']],
+  ['sum.global.expected', ['Expected value ({mode}):', 'Beklenen değer ({mode}):']],
+  ['sum.global.mode.exact', ['exact', 'tam eşleşme']],
+  ['sum.global.mode.contains', ['contains', 'içerir']],
+  ['sum.global.mode.regex', ['regex', 'regex']],
+  ['sum.global.expectedCount', [{ one: '— served by {match} of {judged} sources', other: '— served by {match} of {judged} sources' },
+    '— {judged} kaynaktan {match} tanesi döndürüyor']],
+  ['sum.global.expectedNone', ['— no source has answered yet', '— henüz yanıt veren kaynak yok']],
   ['sum.global.addresses', [{ zero: 'No addresses', one: '{count} address seen worldwide', other: '{count} addresses seen worldwide' },
     { zero: 'Adres yok', other: 'Dünya genelinde {count} adres görüldü' }]],
   ['sum.global.find.rcode', [{ one: '{rcode} from {count} source', other: '{rcode} from {count} sources' }, '{count} kaynaktan {rcode}']],

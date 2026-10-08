@@ -144,3 +144,61 @@ export function buildCalendar(events, { now = new Date(), name = null, prodId = 
   lines.push('END:VCALENDAR');
   return `${lines.map(foldIcsLine).join('\r\n')}\r\n`;
 }
+
+/** How long a timed event lasts unless it says otherwise, in minutes. */
+export const ICS_EVENT_MINUTES = 15;
+/** The reminders of a timed event unless the caller picks others, in minutes before it. */
+export const ICS_ALARM_MINUTES = Object.freeze([15]);
+/** 2000-01-01T00:00Z: the epoch of a timed calendar's SEQUENCE (minutes since then). */
+const SEQUENCE_EPOCH = Date.UTC(2000, 0, 1);
+
+/** A Date of a time given as a Date, a number (ms epoch) or a parsable string; null when unusable. */
+function timeOf(value) {
+  const d = value instanceof Date ? value : (typeof value === 'number' || typeof value === 'string' ? new Date(value) : null);
+  return d && Number.isFinite(d.getTime()) ? d : null;
+}
+
+/**
+ * An iCalendar file of timed events (the steps of a DNS cutover): each starts at its time, in UTC
+ * (`DTSTART:…Z`, the same moment in every calendar's time zone), lasts `minutes` (or until its own
+ * later `end`) and carries a display alarm `alarmMinutes` before it. SEQUENCE is the minutes from
+ * 2000-01-01 to `now`: a file made later is a later revision of the same UIDs, so importing a
+ * changed plan moves its events instead of adding new ones. No METHOD (see {@link buildCalendar}).
+ * @param {Array<{ uid: string, start: Date|number|string, end?: Date|number|string, summary: string, description?: string, alarm?: string,
+ *   alarmMinutes?: number[] }>} events `alarmMinutes`: the event's own reminders instead of the file's ([] for none)
+ * @param {{ now?: Date|number, name?: string|null, prodId?: string, minutes?: number, alarmMinutes?: ReadonlyArray<number> }} [opts]
+ * @returns {string} CRLF line endings, folded, ending with CRLF
+ */
+export function buildEventCalendar(events, { now = new Date(), name = null, prodId = ICS_PRODID, minutes = ICS_EVENT_MINUTES, alarmMinutes = ICS_ALARM_MINUTES } = {}) {
+  const made = timeOf(now) || new Date();
+  const stamp = icsDateTime(made);
+  const sequence = Math.max(0, Math.floor((made.getTime() - SEQUENCE_EPOCH) / 60000));
+  const length = Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes) : ICS_EVENT_MINUTES;
+  const alarms = [...new Set((alarmMinutes || []).filter((m) => Number.isInteger(m) && m >= 0))];
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', `PRODID:${prodId}`, 'CALSCALE:GREGORIAN'];
+  if (name) lines.push(`X-WR-CALNAME:${icsEscape(name)}`);
+  for (const e of events || []) {
+    const start = timeOf(e && e.start);
+    if (!start) continue;
+    const ownEnd = timeOf(e.end);
+    const end = ownEnd && ownEnd > start ? ownEnd : new Date(start.getTime() + length * 60000);
+    lines.push(
+      'BEGIN:VEVENT',
+      `UID:${cleanUid(e.uid)}`,
+      `DTSTAMP:${stamp}`,
+      `SEQUENCE:${sequence}`,
+      `DTSTART:${icsDateTime(start)}`,
+      `DTEND:${icsDateTime(end)}`,
+      `SUMMARY:${icsEscape(e.summary)}`,
+      ...(e.description ? [`DESCRIPTION:${icsEscape(e.description)}`] : []),
+      'TRANSP:TRANSPARENT'
+    );
+    const own = Array.isArray(e.alarmMinutes) ? [...new Set(e.alarmMinutes.filter((m) => Number.isInteger(m) && m >= 0))] : alarms;
+    for (const m of own) {
+      lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `TRIGGER:-PT${m}M`, `DESCRIPTION:${icsEscape(e.alarm || e.summary)}`, 'END:VALARM');
+    }
+    lines.push('END:VEVENT');
+  }
+  lines.push('END:VCALENDAR');
+  return `${lines.map(foldIcsLine).join('\r\n')}\r\n`;
+}

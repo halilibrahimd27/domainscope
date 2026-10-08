@@ -13,20 +13,23 @@
  * - **TTL planner**: from the TTL the resolvers returned (rounded up to a common TTL; editable), a
  *   low TTL and a change time, the plan — lower the TTL at T − its TTL, change at T, live by
  *   T + the low TTL, raise it back from T + 2 × the low TTL — and its checklist in English or
- *   Turkish, to copy.
+ *   Turkish, to copy, or as a calendar file (.ics, one event per step with a reminder before
+ *   each thing to do), with the public resolvers' cache-flush pages to speed the change up.
  *
  * Nothing here sends anything: the rounds are the page's own (names and types to the four
- * resolvers). The planner's fields are kept with the check for the page session.
+ * resolvers); the flush pages are links the user opens. The planner's fields are kept with the
+ * check for the page session.
  */
 
 import { h, clear, debounce } from './dom.js';
-import { Alert, Button, CodeBlock, CopyButton, Disclosure, Icon, SegmentedControl, announce, select, textInput } from './components.js';
+import { Alert, Button, CodeBlock, CopyButton, Disclosure, ExternalLink, Icon, SegmentedControl, announce, select, textInput } from './components.js';
 import { registerStrings, getLang, localeTag, formatDateTime, formatNumber } from '../i18n.js';
 import { state } from '../state.js';
 import { startJob, NotifyButton } from './jobs.js';
+import { downloadText, timestampedName } from './download.js';
 import {
-  CUTOVER_I18N, PLAN_LOW_TTLS, PLAN_DEFAULT_LOW, nextWatch, watchProgress, cacheCountdown, lastExpiry, clockLeft, observedTtl, likelyTtl,
-  defaultChangeAt, ttlPlan, planChecklist
+  CUTOVER_I18N, FLUSH_LINKS, PLAN_LOW_TTLS, PLAN_DEFAULT_LOW, nextWatch, watchProgress, cacheCountdown, lastExpiry, clockLeft, observedTtl, likelyTtl,
+  defaultChangeAt, ttlPlan, planChecklist, planCalendar
 } from '../lib/cutover.js';
 
 registerStrings('en', {
@@ -65,8 +68,12 @@ registerStrings('en', {
   'chg.cut.plan.err.ttl': 'Type the current TTL in seconds (a whole number from 1 to 2147483647).',
   'chg.cut.plan.err.low': 'Pick the TTL to lower it to.',
   'chg.cut.plan.err.time': 'Pick the time of the change.',
-  'chg.cut.plan.lang': 'Language of the checklist',
-  'chg.cut.plan.copy': 'Copy checklist'
+  'chg.cut.plan.lang': 'Language of the checklist and the calendar',
+  'chg.cut.plan.copy': 'Copy checklist',
+  'chg.cut.plan.ics': 'Add to calendar (.ics)',
+  'chg.cut.plan.icsTitle': 'One event per step at its time, with a reminder 15 minutes before each thing to do — for Outlook, Google Calendar or Apple Calendar',
+  'chg.cut.plan.icsSaved': 'Saved {file}',
+  'chg.cut.plan.flush': 'Right after the change, ask the public resolvers to drop their cached copy — their users get the change at once:'
 });
 
 registerStrings('tr', {
@@ -105,8 +112,12 @@ registerStrings('tr', {
   'chg.cut.plan.err.ttl': 'Mevcut TTL değerini saniye olarak yazın (1 ile 2147483647 arasında bir tam sayı).',
   'chg.cut.plan.err.low': 'Düşürülecek TTL değerini seçin.',
   'chg.cut.plan.err.time': 'Değişikliğin zamanını seçin.',
-  'chg.cut.plan.lang': 'Kontrol listesinin dili',
-  'chg.cut.plan.copy': 'Kontrol listesini kopyala'
+  'chg.cut.plan.lang': 'Kontrol listesinin ve takvimin dili',
+  'chg.cut.plan.copy': 'Kontrol listesini kopyala',
+  'chg.cut.plan.ics': 'Takvime ekle (.ics)',
+  'chg.cut.plan.icsTitle': 'Her adım için kendi saatinde bir etkinlik; yapılacak her işten 15 dakika önce bir hatırlatma — Outlook, Google Takvim ya da Apple Takvim için',
+  'chg.cut.plan.icsSaved': '{file} kaydedildi',
+  'chg.cut.plan.flush': 'Değişiklikten hemen sonra genel çözümleyicilerden önbellekteki kopyayı silmelerini isteyin — kullanıcıları değişikliği hemen alır:'
 });
 
 /** How long a watch outlives its page (a language switch mounts the page again at once). */
@@ -338,8 +349,19 @@ export function mountCutover({ ctx, check, memo, view, actions, before = null, s
     langCtl.el.dataset.control = 'cut-lang';
     const copy = CopyButton(() => text, { label: t('chg.cut.plan.copy'), size: 'sm', variant: 'secondary', toastOnCopy: true });
     copy.dataset.action = 'cut-copy';
-    planOut.append(h('div', { class: 'chg-cut-list-head' }, langCtl.el, copy),
-      CodeBlock(text, { wrap: true, copy: false, label: plan.lang === 'tr' ? 'Türkçe' : 'English', className: 'chg-cut-list' }));
+    // The same steps as calendar events, in the checklist's language (lib/cutover.js planCalendar).
+    const ics = Button({
+      label: t('chg.cut.plan.ics'), icon: 'calendar', size: 'sm', variant: 'secondary', title: t('chg.cut.plan.icsTitle'), dataset: { action: 'cut-ics' },
+      onClick: () => {
+        const cal = planCalendar(p, { lang: plan.lang, zone: check.zone, records: check.sets.map((s) => `${s.name} ${s.type}`), url: url(), now: Date.now() });
+        const file = downloadText(timestampedName('dns-cutover', 'ics', check.zone), cal, 'text/calendar;charset=utf-8');
+        ctx.toast(t('chg.cut.plan.icsSaved', { file }), { type: 'success', timeout: 2500 });
+      }
+    });
+    const flush = h('p', { class: 'muted text-sm chg-cut-flush', dataset: { part: 'flush' } }, t('chg.cut.plan.flush'), ' ',
+      FLUSH_LINKS.flatMap((l, i) => [i ? ' · ' : null, ExternalLink(l.url, l.name, { className: 'chg-cut-flush-link' })]).filter(Boolean));
+    planOut.append(h('div', { class: 'chg-cut-list-head' }, langCtl.el, h('div', { class: 'cluster chg-cut-list-actions' }, copy, ics)),
+      CodeBlock(text, { wrap: true, copy: false, label: plan.lang === 'tr' ? 'Türkçe' : 'English', className: 'chg-cut-list' }), flush);
   }
 
   /* --- the page's life ------------------------------------------------------------- */

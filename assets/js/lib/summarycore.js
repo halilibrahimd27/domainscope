@@ -46,7 +46,7 @@ export const PERMALINK_PARAMS = Object.freeze({
   cert: Object.freeze([]),
   renew: Object.freeze(['names', 'ca', 'challenge']),
   estate: Object.freeze([]),
-  global: Object.freeze(['name', 'type', 'geo']),
+  global: Object.freeze(['name', 'type', 'geo', 'expect', 'match']),
   lookup: Object.freeze(['name', 'type', 'resolver', 'dnssec', 'cd']),
   change: Object.freeze([]),
   ip: Object.freeze(['ips']),

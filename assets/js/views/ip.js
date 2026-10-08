@@ -8,7 +8,10 @@
  * the row's cell keeps the count and the first names.
  *
  * Data: lib/ipintel.js (RIPEstat + ipwho.is fallback + DoH PTR). Private addresses never
- * leave the browser. Results stream into the table; CSV/JSON export.
+ * leave the browser. Results stream into the table; CSV/JSON export. A plain direct address on a
+ * well-known network is named in the operator cell (lib/networklabel.js): from the weekly provider
+ * list's network tier at once ("Cloudflare network · not necessarily proxied", "AWS network"), with
+ * its origin AS once RIPEstat names the same operator, else from the AS alone.
  *
  * "Copy summary" above the stat cards: one line for Jira / Slack (lib/summary.js) with the time the
  * lookup ended; it says how many addresses are in the server list (never a server's name, the
@@ -36,7 +39,8 @@ import { createIpIntel, networkHint } from '../lib/ipintel.js';
 import { ipFieldStatus, ipRetrySources, ipSourceChips, sourceStatus, IP_FIELDS, EXPORT_NA } from '../lib/sourcestatus.js';
 import { foldZeroStats } from '../lib/density.js';
 import { NaMark, RetryButton, SourceChip, setRetryBusy, statusText } from '../ui/source-status.js';
-import { classifyResolution, ipVersion, isPrivateIP, normalizeIP } from '../lib/netinfo.js';
+import { classifyResolution, ipVersion, isPrivateIP, loadRanges, normalizeIP, rangesInfo } from '../lib/netinfo.js';
+import { networkLabel } from '../lib/networklabel.js';
 import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
 import { Flag } from '../ui/flag.js';
@@ -142,6 +146,11 @@ registerStrings('en', {
   'ipi.net.long.outside-proxy-ranges': 'This address is on {name}’s own network (AS{asn}) but outside the ranges {name} publishes for the websites it proxies — so it is one of {name}’s own services (1.1.1.1, for example, is a DNS resolver), not a website hidden behind {name}.',
   'ipi.net.long.cdn-edge': 'Announced by {name} (AS{asn}), a CDN / security proxy that publishes no list of its edge addresses — most likely an edge server in front of a website whose own server is hidden.',
   'ipi.net.long.hosted': 'Announced by {name} (AS{asn}): a server or service on {name}’s network, reached directly with no CDN in front.',
+  'ipi.net.short.ranges.outside-proxy-ranges': 'not necessarily proxied',
+  'ipi.net.short.ranges.hosted': '{category} · published range',
+  'ipi.net.long.ranges.outside-proxy-ranges': 'This address is in {name}’s network (the provider list of {updated}) but outside the ranges {name} proxies websites from, so it is not necessarily proxied: one of {name}’s own services (1.1.1.1, for example, is a DNS resolver), a customer’s own address block or a TCP / UDP proxy — not a website hidden behind {name}.',
+  'ipi.net.long.ranges.hosted': 'This address is in the address space {name} publishes (the provider list of {updated}): a server or service on {name}’s network, reached directly with no CDN in front.',
+  'ipi.net.asOrigin': 'Origin AS: AS{asn}.',
   'ipi.net.cat.cdn': 'CDN',
   'ipi.net.cat.waf': 'CDN / WAF',
   'ipi.net.cat.cloud': 'cloud',
@@ -228,6 +237,11 @@ registerStrings('tr', {
   'ipi.net.long.outside-proxy-ranges': 'Bu adres {name} ağına (AS{asn}) ait, ancak {name} tarafından proxy’lenen web siteleri için yayımlanan aralıkların dışında — yani bir {name} hizmeti (örneğin 1.1.1.1 bir DNS çözümleyicisidir), arkasına gizlenmiş bir web sitesi değil.',
   'ipi.net.long.cdn-edge': '{name} (AS{asn}) tarafından duyuruluyor: kenar sunucu adreslerini yayımlamayan bir CDN / güvenlik proxy’si — büyük olasılıkla, asıl sunucusu gizlenmiş bir web sitesinin önündeki kenar sunucusu.',
   'ipi.net.long.hosted': '{name} (AS{asn}) tarafından duyuruluyor: {name} ağında, önünde CDN olmadan doğrudan erişilen bir sunucu ya da hizmet.',
+  'ipi.net.short.ranges.outside-proxy-ranges': 'proxy’li olmayabilir',
+  'ipi.net.short.ranges.hosted': '{category} · yayımlanan aralık',
+  'ipi.net.long.ranges.outside-proxy-ranges': 'Bu adres {name} ağında ({updated} tarihli sağlayıcı listesi), ancak {name} tarafından proxy’lenen web sitelerinin aralıklarının dışında; yani proxy’li olmayabilir: bir {name} hizmeti (örneğin 1.1.1.1 bir DNS çözümleyicisidir), bir müşterinin kendi adres bloğu ya da bir TCP / UDP proxy’si — {name} arkasına gizlenmiş bir web sitesi değil.',
+  'ipi.net.long.ranges.hosted': 'Bu adres {name} tarafından yayımlanan adres alanında ({updated} tarihli sağlayıcı listesi): {name} ağında, önünde CDN olmadan doğrudan erişilen bir sunucu ya da hizmet.',
+  'ipi.net.asOrigin': 'Kaynak AS: AS{asn}.',
   'ipi.net.cat.cdn': 'CDN',
   'ipi.net.cat.waf': 'CDN / WAF',
   'ipi.net.cat.cloud': 'bulut',
@@ -332,13 +346,22 @@ export function mount(container, ctx) {
   /* --- helpers ----------------------------------------------------------------- */
   const hostLink = (host) => h('a', { class: 'ipi-host mono', href: ctx.href('lookup', { name: host, type: 'A,AAAA' }) }, host);
   const flag = (cc) => Flag(cc, { className: 'ipi-flag' });
-  /** Well-known network behind a plain 'direct' address (display only, see ipintel.networkHint). */
-  const hintOf = (r) => (r.info ? networkHint(r.info, r.classification) : null);
-  const hintText = (hint) => ({
-    badge: t('ipi.net.badge', { name: hint.name }),
-    short: t(`ipi.net.short.${hint.relation}`, { asn: hint.asn, category: t(`ipi.net.cat.${hint.category}`) }),
-    long: t(`ipi.net.long.${hint.relation}`, { name: hint.name, asn: hint.asn })
-  });
+  /**
+   * The provider network of a plain 'direct' address (display only, lib/networklabel.js): the range
+   * dataset's network tier (offline, at once: "Cloudflare network, not necessarily proxied", "AWS
+   * network"), with the origin AS once RIPEstat named the same operator — else the AS-based hint
+   * alone (ipintel.networkHint: Akamai, Hetzner …).
+   */
+  const hintOf = (r) => networkLabel({ classification: r.classification, ip: r.ip, hint: r.info ? networkHint(r.info, r.classification) : null });
+  const hintText = (hint) => {
+    const category = t(`ipi.net.cat.${hint.category}`);
+    const short = hint.asn !== null ? t(`ipi.net.short.${hint.relation}`, { asn: hint.asn, category })
+      : t(`ipi.net.short.ranges.${hint.relation}`, { category });
+    const long = hint.source === 'asn' ? t(`ipi.net.long.${hint.relation}`, { name: hint.name, asn: hint.asn })
+      : [t(`ipi.net.long.ranges.${hint.relation}`, { name: hint.name, updated: rangesInfo().updated }), hint.asn !== null ? t('ipi.net.asOrigin', { asn: hint.asn }) : null]
+        .filter(Boolean).join(' ');
+    return { badge: t('ipi.net.badge', { name: hint.name }), short, long };
+  };
 
   /* --- input ----------------------------------------------------------------------- */
   const input = textarea({
@@ -421,7 +444,7 @@ export function mount(container, ctx) {
       operator: r.classification.provider ? r.classification.provider.name : r.classification.kind,
       network: (() => {
         const hint = hintOf(r);
-        return hint ? { id: hint.id, name: hint.name, asn: hint.asn, category: hint.category, relation: hint.relation } : null;
+        return hint ? { id: hint.id, name: hint.name, asn: hint.asn, category: hint.category, relation: hint.relation, source: hint.source } : null;
       })(),
       ptr: r.info ? r.info.ptr : [],
       asn: r.info ? r.info.asn : null,
@@ -470,7 +493,7 @@ export function mount(container, ctx) {
         exportValue: (r) => {
           const base = r.classification.provider ? r.classification.provider.name : t(`kind.${r.classification.kind}`);
           const hint = hintOf(r);
-          return hint ? `${base} · ${hintText(hint).badge} (AS${hint.asn})` : base;
+          return hint ? `${base} · ${hintText(hint).badge}${hint.asn !== null ? ` (AS${hint.asn})` : ''}` : base;
         },
         render: renderOperator
       },
@@ -580,7 +603,8 @@ export function mount(container, ctx) {
   }
 
   /** Operator cell: the classification badge, or for plain 'direct' addresses on a well-known
-   *  network (1.1.1.1 → AS13335) a badge naming that network plus a one-line explanation. */
+   *  network (1.1.1.1 → Cloudflare's, an EC2 address → AWS's) a badge naming that network plus a
+   *  one-line explanation; `data-source` says where the label comes from (ranges, asn, both). */
   function renderOperator(r) {
     const hint = hintOf(r);
     if (!hint) return KindBadge(r.classification);
@@ -588,7 +612,7 @@ export function mount(container, ctx) {
     const edge = hint.relation === 'cdn-edge';
     const badge = Badge(text.badge, { variant: edge ? 'cdn' : 'direct', icon: edge ? 'zap' : (hint.category === 'hosting' ? 'server' : 'cloud'), title: text.long });
     badge.dataset.kind = r.classification.kind;
-    return h('div', { class: 'ipi-op', dataset: { network: hint.id, relation: hint.relation } },
+    return h('div', { class: 'ipi-op', dataset: { network: hint.id, relation: hint.relation, source: hint.source } },
       badge, h('span', { class: 'muted text-xs ipi-op-note' }, text.short));
   }
 
@@ -926,6 +950,9 @@ export function mount(container, ctx) {
     progress.el.hidden = false;
     progress.setVariant('default');
     try {
+      // The range dataset's network tier names the operator of a direct address at once (lib/networklabel.js):
+      // wait for its one load per page. A failed load leaves the built-in table, and only the AS-based hint.
+      await loadRanges({ signal });
       const dns = await ctx.getDns();
       const byIp = new Map();
       const addIp = (ip, host = null, cnames = []) => {

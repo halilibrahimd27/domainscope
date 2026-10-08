@@ -22,17 +22,25 @@
  * - "ISP resolvers" (ui/isp-resolvers.js, loaded on first use): Globalping probes ask their own
  *   resolvers — the ISPs' — for the same name and type; their rows join the check (kind 'isp'),
  *   so the groups, the IP table and the verdict (stale at these ISPs) take them in.
- * - Shareable: `#/global?name=www.example.com&type=A` (optional `geo=0`) runs on open; with
- *   `run=0` (a name carried over from another tool, lib/session.js) it is only filled in. The
- *   finished check is kept for the page session (`result()` / `snapshot()`).
+ * - "Expected value" (lib/expected.js): exact, contains or regex against every answer — each row
+ *   says whether it serves the value yet (and until when it may keep the old one), a card counts
+ *   them and gives the worst-case wait after a change (the old answer's TTL; for a name that did
+ *   not exist, the zone's negative-cache time), with the public resolvers' cache-flush pages and,
+ *   on a click, one Globalping SOA question to the zone's own name server (ui/soa-probe.js,
+ *   loaded on first use). Editing it asks nothing again: the answers on screen are judged anew.
+ * - Shareable: `#/global?name=www.example.com&type=A` (optional `geo=0`, `expect=` and
+ *   `match=contains|regex`) runs on open; with `run=0` (a name carried over from another tool,
+ *   lib/session.js) it is only filled in. The finished check is kept for the page session
+ *   (`result()` / `snapshot()`).
  */
 
-import { h, clear } from '../ui/dom.js';
+import { h, clear, append, debounce } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, Icon, KindBadge, ProgressBar,
+  Alert, Badge, Button, Card, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink, Icon, KindBadge, ProgressBar,
   Section, StatCard, TruncatedList, checkbox, ipSortValue, select, setButtonBusy, textInput
 } from '../ui/components.js';
-import { registerStrings, hasString, formatNumber, formatDuration, formatRegion } from '../i18n.js';
+import { registerStrings, hasString, formatNumber, formatDuration, formatRegion, formatDateTime, formatRelative, localeTag } from '../i18n.js';
+import { EXPECT_MAX_LENGTH, EXPECT_MODES, FLUSH_LINKS, cacheEnd, expectedEta, expectedTally, expectedVerdict, parseExpected } from '../lib/expected.js';
 import { RESOLVERS, GEO_VANTAGES, getAnyResolver } from '../lib/resolvers.js';
 import { Flag } from '../ui/flag.js';
 import { checkPropagation, propagationVerdict, splitChain } from '../lib/propagation.js';
@@ -220,7 +228,48 @@ registerStrings('en', {
   'glb.scopeTitle': 'ECS scope returned by the authoritative server: /24 means the answer is specific to this subnet, /0 means everyone gets the same answer.',
   'glb.scopeNone': 'Not reported',
   'glb.links': 'More about this name:',
-  'glb.ttlTitle': 'Cached for {human}'
+  'glb.ttlTitle': 'Cached for {human}',
+
+  'glb.exp.label': 'Expected value (optional)',
+  'glb.exp.placeholder': '198.51.100.20 — or NXDOMAIN, a host name, a text',
+  'glb.exp.hint': 'After a DNS change: each answer is marked as serving it or not yet, with the worst-case wait. Exact compares the records (several separated by commas; NXDOMAIN or NODATA for none); contains and regex read the whole answer, the CNAME chain too.',
+  'glb.exp.mode': 'Match',
+  'glb.exp.mode.exact': 'Exact',
+  'glb.exp.mode.contains': 'Contains',
+  'glb.exp.mode.regex': 'Regex',
+  'glb.exp.err.regex': 'Not a valid regular expression: {detail}',
+  'glb.exp.err.long': 'At most {max} characters.',
+  'glb.exp.match': 'Matches',
+  'glb.exp.mismatch': 'Not yet',
+  'glb.exp.mismatchTitle': 'Another answer than the expected value: this source may keep it cached until {time}.',
+  'glb.exp.mismatchTitleNoTtl': 'Another answer than the expected value.',
+  'glb.exp.mismatchTitleExpired': 'Another answer than the expected value; this source’s cached copy has expired since — check again to see it now.',
+  'glb.exp.col': 'Expected value',
+  'glb.exp.title': 'Expected value',
+  'glb.exp.count': { one: 'Served by {match} of {judged} source', other: 'Served by {match} of {judged} sources' },
+  'glb.exp.failed': { one: '{count} failed', other: '{count} failed' },
+  'glb.exp.done': 'Every source that answered serves the expected value.',
+  'glb.exp.none': 'No source has answered yet.',
+  'glb.exp.notYet': {
+    one: '{count} source still gives another answer; its cached copy expires by {time} ({left}).',
+    other: '{count} sources still give another answer; the last of their cached copies expires by {time} ({left}).'
+  },
+  'glb.exp.notYetNoTtl': { one: '{count} source still gives another answer.', other: '{count} sources still give another answer.' },
+  'glb.exp.worst': 'Worst case for any resolver in the world: {duration} after the change was published.',
+  'glb.exp.worstRecord': 'The old answer’s TTL is most likely {ttl} s (the highest an answer here still carried was {seen} s).',
+  'glb.exp.negAnswers': 'Where the name or record did not exist before, a resolver that asked then keeps that “no such record” answer for the zone’s negative-cache time: {ttl} s, read from the SOA in their answers.',
+  'glb.exp.negNs': 'Where the name or record did not exist before, a resolver that asked then keeps that “no such record” answer for the zone’s negative-cache time: {ttl} s, as the zone’s name server {ns} serves it.',
+  'glb.exp.worstUnknown': 'The old answer carried no TTL, so there is no worst case to give.',
+  'glb.exp.flush': 'Speed it up: ask the public resolvers to drop their cached copy —',
+  'glb.exp.onlyMissing': { one: 'Show only the source not there yet', other: 'Show only the {count} sources not there yet' },
+  'glb.exp.filterOn': 'Showing only the sources that do not serve the expected value yet',
+  'glb.exp.expired': {
+    one: '{count} source gave another answer; its cached copy has expired since — check again to see it now.',
+    other: '{count} sources gave another answer; their cached copies have expired since — check again to see them now.'
+  },
+  'glb.exp.probe': 'Ask the zone’s name server (1 Globalping probe)',
+  'glb.exp.probeHint': 'One Globalping probe asks the zone’s own name server for the SOA of this name: whether the name exists there, and the zone’s negative-cache time. Nothing is sent before you press it.',
+  'glb.exp.probeLoadFailed': 'The name server check could not be loaded.'
 });
 
 registerStrings('tr', {
@@ -375,7 +424,42 @@ registerStrings('tr', {
   'glb.scopeTitle': 'Yetkili sunucunun döndürdüğü ECS kapsamı: /24 yanıtın bu alt ağa özel olduğunu, /0 herkesin aynı yanıtı aldığını gösterir.',
   'glb.scopeNone': 'Bildirilmedi',
   'glb.links': 'Bu ad hakkında daha fazlası:',
-  'glb.ttlTitle': '{human} boyunca önbellekte tutulur'
+  'glb.ttlTitle': '{human} boyunca önbellekte tutulur',
+
+  'glb.exp.label': 'Beklenen değer (isteğe bağlı)',
+  'glb.exp.placeholder': '198.51.100.20 — ya da NXDOMAIN, bir host adı, bir metin',
+  'glb.exp.hint': 'Bir DNS değişikliğinden sonra: her yanıt, beklenen değeri döndürüyor ya da henüz döndürmüyor olarak işaretlenir; en kötü durumda ne kadar bekleneceği de gösterilir. Tam eşleşme kayıtları karşılaştırır (birden fazlasını virgülle ayırın; hiç kayıt yoksa NXDOMAIN ya da NODATA); içerir ve regex, CNAME zinciri dahil yanıtın tamamını okur.',
+  'glb.exp.mode': 'Eşleşme',
+  'glb.exp.mode.exact': 'Tam',
+  'glb.exp.mode.contains': 'İçerir',
+  'glb.exp.mode.regex': 'Regex',
+  'glb.exp.err.regex': 'Geçerli bir düzenli ifade değil: {detail}',
+  'glb.exp.err.long': 'En fazla {max} karakter.',
+  'glb.exp.match': 'Eşleşiyor',
+  'glb.exp.mismatch': 'Henüz değil',
+  'glb.exp.mismatchTitle': 'Beklenen değerden farklı bir yanıt: bu kaynak onu {time} saatine kadar önbellekte tutabilir.',
+  'glb.exp.mismatchTitleNoTtl': 'Beklenen değerden farklı bir yanıt.',
+  'glb.exp.mismatchTitleExpired': 'Beklenen değerden farklı bir yanıt; bu kaynağın önbellekteki kopyasının süresi o zamandan beri doldu — güncel hâlini görmek için yeniden kontrol edin.',
+  'glb.exp.col': 'Beklenen değer',
+  'glb.exp.title': 'Beklenen değer',
+  'glb.exp.count': '{judged} kaynaktan {match} tanesi döndürüyor',
+  'glb.exp.failed': '{count} tanesi başarısız',
+  'glb.exp.done': 'Yanıt veren her kaynak beklenen değeri döndürüyor.',
+  'glb.exp.none': 'Henüz yanıt veren kaynak yok.',
+  'glb.exp.notYet': '{count} kaynak hâlâ başka bir yanıt veriyor; önbellekteki kopyalarının sonuncusunun süresi en geç {time} saatinde ({left}) doluyor.',
+  'glb.exp.notYetNoTtl': '{count} kaynak hâlâ başka bir yanıt veriyor.',
+  'glb.exp.worst': 'Dünyadaki herhangi bir çözümleyici için en kötü durum: değişiklik yayımlandıktan {duration} sonra.',
+  'glb.exp.worstRecord': 'Eski yanıtın TTL değeri büyük olasılıkla {ttl} sn (buradaki bir yanıtın hâlâ taşıdığı en yüksek değer {seen} sn).',
+  'glb.exp.negAnswers': 'Ad ya da kayıt daha önce yoksa, o zaman soran bir çözümleyici bu “kayıt yok” yanıtını bölgenin negatif önbellek süresi boyunca tutar: {ttl} sn (yanıtlarındaki SOA kaydından okundu).',
+  'glb.exp.negNs': 'Ad ya da kayıt daha önce yoksa, o zaman soran bir çözümleyici bu “kayıt yok” yanıtını bölgenin negatif önbellek süresi boyunca tutar: {ttl} sn (bölgenin ad sunucusu {ns} böyle bildiriyor).',
+  'glb.exp.worstUnknown': 'Eski yanıtta TTL değeri yoktu; bu yüzden bir en kötü durum verilemiyor.',
+  'glb.exp.flush': 'Hızlandırmak için genel çözümleyicilerden önbellekteki kopyayı silmelerini isteyin —',
+  'glb.exp.onlyMissing': 'Yalnızca değişikliğin henüz ulaşmadığı {count} kaynağı göster',
+  'glb.exp.filterOn': 'Yalnızca beklenen değeri henüz döndürmeyen kaynaklar gösteriliyor',
+  'glb.exp.expired': '{count} kaynak başka bir yanıt vermişti; önbellekteki kopyalarının süresi o zamandan beri doldu — güncel hâlini görmek için yeniden kontrol edin.',
+  'glb.exp.probe': 'Bölgenin ad sunucusuna sor (1 Globalping ölçümü)',
+  'glb.exp.probeHint': 'Tek bir Globalping ölçüm noktası, bölgenin kendi ad sunucusuna bu adın SOA kaydını sorar: ad orada var mı ve bölgenin negatif önbellek süresi ne. Düğmeye basana kadar hiçbir şey gönderilmez.',
+  'glb.exp.probeLoadFailed': 'Ad sunucusu kontrolü yüklenemedi.'
 });
 
 /* ------------------------------------------------------------------------ */
@@ -529,6 +613,26 @@ export function mount(container, ctx) {
     if (s < 172800) return `${formatNumber(Math.round(s / 3600))} h`;
     return `${formatNumber(Math.round(s / 86400))} d`;
   };
+  /** A wait in words, in the UI language (Intl unit names): '45 seconds', '15 minutes', '1 hour', '2 days'. */
+  const waitText = (s) => {
+    const unit = (n, name) => {
+      try {
+        return new Intl.NumberFormat(localeTag(), { style: 'unit', unit: name, unitDisplay: 'long', maximumFractionDigits: 1 }).format(n);
+      } catch {
+        return `${formatNumber(n)} ${name}`;
+      }
+    };
+    if (s < 120) return unit(s, 'second');
+    if (s < 3600) return unit(Math.round(s / 60), 'minute');
+    if (s < 172800) return unit(Math.round(s / 360) / 10, 'hour');
+    return unit(Math.round(s / 8640) / 10, 'day');
+  };
+  /** A time of day in the UI language ('15:42'), with its date when it is not today. */
+  const clockTime = (ms, now = Date.now()) => {
+    const d = new Date(ms);
+    if (new Date(now).toDateString() !== d.toDateString()) return formatDateTime(d);
+    return new Intl.DateTimeFormat(localeTag(), { hour: '2-digit', minute: '2-digit' }).format(d);
+  };
   const hostLink = (host) => h('a', { class: 'glb-host mono', href: ctx.href('lookup', { name: host }) }, host);
   const ipLink = (ip) => h('a', { class: 'glb-ip mono', href: ctx.href('ip', { ips: ip }) }, ip);
   const flag = (cc, title = null) => Flag(cc, { className: 'glb-flag', title });
@@ -568,6 +672,36 @@ export function mount(container, ctx) {
   typeField.input.dataset.role = 'global-type';
   const geoField = checkbox({ label: t('glb.geo', { count: formatNumber(GEO_VANTAGES.length) }), checked: initialGeo });
   geoField.input.dataset.role = 'global-geo';
+  // The expected value (lib/expected.js): judged against the answers on screen, never a new question.
+  const initialMatch = EXPECT_MODES.includes(restored?.match ?? ctx.params.match) ? (restored?.match ?? ctx.params.match) : 'exact';
+  const expectField = textInput({
+    label: t('glb.exp.label'),
+    value: restored?.expect ?? ctx.params.expect ?? '',
+    placeholder: t('glb.exp.placeholder'),
+    hint: t('glb.exp.hint'),
+    mono: true,
+    className: 'glb-expect-value',
+    attrs: { 'data-role': 'global-expect', maxlength: String(EXPECT_MAX_LENGTH), enterkeyhint: 'done' },
+    onInput: () => expectSoon(),
+    onEnter: () => applyExpected()
+  });
+  const matchField = select({
+    label: t('glb.exp.mode'),
+    options: EXPECT_MODES.map((m) => ({ value: m, label: t(`glb.exp.mode.${m}`) })),
+    value: initialMatch,
+    className: 'glb-expect-mode',
+    onChange: () => applyExpected()
+  });
+  matchField.input.dataset.role = 'global-match';
+  /** The expected value of the check on screen, parsed for its record type (null: none typed, or not usable). */
+  let expectedNow = null;
+  /** Show only the rows that do not serve the expected value yet (the card's toggle). */
+  let missingOnly = false;
+  /** The zone's own name server's answer to the SOA question (ui/soa-probe.js) for the check on screen, or null. */
+  let soaResult = null;
+  /** Whether the tables carry the export-only "Expected value" column now. */
+  let columnsWithExpected = false;
+  const expectSoon = debounce(() => applyExpected(), 250);
   const runBtn = Button({ label: t('glb.run'), icon: 'play', variant: 'primary', className: 'glb-run', dataset: { action: 'run', shortcut: 'submit' }, onClick: () => start() });
   const stopBtn = Button({ label: t('common.stop'), icon: 'stop', variant: 'secondary', className: 'glb-stop', dataset: { action: 'stop', shortcut: 'cancel' }, onClick: () => stop() });
   stopBtn.hidden = true;
@@ -598,6 +732,7 @@ export function mount(container, ctx) {
     className: 'glb-form-card',
     children: h('div', { class: 'stack' },
       h('div', { class: 'glb-form' }, nameField.el, typeField.el, h('div', { class: 'glb-buttons' }, runBtn, stopBtn)),
+      h('div', { class: 'glb-expect' }, expectField.el, matchField.el),
       h('div', { class: 'glb-form-foot' }, geoField.el, examples),
       how)
   });
@@ -616,6 +751,30 @@ export function mount(container, ctx) {
   const legendEl = h('div', { class: 'glb-legend', attrs: { role: 'group', 'aria-label': t('glb.groups.title') } });
   const filterNote = h('div', { class: 'glb-filter-note', hidden: true });
   const linksEl = h('div', { class: 'glb-links cluster text-sm' });
+
+  /* --- the expected value's card (lib/expected.js; the name server probe: ui/soa-probe.js) ---- */
+  const expValueEl = h('p', { class: 'glb-exp-value' });
+  const expCountEl = h('div', { class: 'glb-exp-count', dataset: { role: 'exp-count' } });
+  const expNoteEl = h('div', { class: 'glb-exp-note' });
+  const expLastEl = h('p', { class: 'glb-exp-line', hidden: true, dataset: { role: 'exp-last' } });
+  const expWorstEl = h('p', { class: 'glb-exp-line', hidden: true, dataset: { role: 'exp-worst' } });
+  const expFlushEl = h('p', { class: 'muted text-sm glb-exp-flush', hidden: true, dataset: { role: 'exp-flush' } }, t('glb.exp.flush'), ' ',
+    FLUSH_LINKS.flatMap((l, i) => [i ? ' · ' : null, ExternalLink(l.url, l.name)]).filter(Boolean));
+  const expToggle = Button({
+    label: t('glb.exp.onlyMissing', { count: 0 }), icon: 'filter', size: 'sm', variant: 'ghost', dataset: { action: 'exp-missing' },
+    onClick: () => setMissingOnly(!missingOnly)
+  });
+  expToggle.setAttribute('aria-pressed', 'false');
+  const soaOpen = Button({
+    label: t('glb.exp.probe'), icon: 'server', size: 'sm', variant: 'secondary', title: t('glb.exp.probeHint'), dataset: { action: 'soa-open' },
+    onClick: () => openSoa(null, { run: true })
+  });
+  const soaBody = h('div', { class: 'glb-exp-soa-body' });
+  const soaSlot = h('div', { class: 'stack-sm glb-exp-soa', hidden: true, dataset: { role: 'soa-slot' } }, soaOpen, soaBody);
+  const expectCard = h('section', { class: 'card glb-exp', hidden: true, dataset: { role: 'expected' }, attrs: { 'aria-labelledby': 'glb-exp-title' } },
+    h('div', { class: 'glb-exp-head' },
+      h('h2', { class: 'glb-exp-title', id: 'glb-exp-title' }, Icon('target', { size: 16 }), h('span', null, t('glb.exp.title'))), expValueEl),
+    expCountEl, expNoteEl, expLastEl, expWorstEl, expFlushEl, h('div', { class: 'cluster glb-exp-actions' }, expToggle), soaSlot);
 
   let filterKey = null;
   let groups = [];
@@ -716,6 +875,8 @@ export function mount(container, ctx) {
         kind ? h('span', { class: 'muted text-xs glb-fail-text' }, kind) : null);
     }
     const parts = [];
+    const mark = expectedMark(row);
+    if (mark) parts.push(mark);
     if (row.filtered) parts.push(Badge(t('glb.value.blocked'), { variant: 'warn', icon: 'filter', title: t('glb.value.blockedTitle') }));
     if (v.length === 1 && v[0] === 'NXDOMAIN') parts.push(Badge('NXDOMAIN', { variant: 'nxdomain', icon: 'x-circle', title: t('class.nxdomain') }));
     else if (v.length === 1 && v[0] === 'NODATA') parts.push(Badge(t('glb.value.nodata'), { variant: 'unresolved', title: t('glb.value.nodataTitle') }));
@@ -726,6 +887,24 @@ export function mount(container, ctx) {
       if (chain.length) parts.push(chainLine(chain));
     }
     return h('div', { class: 'glb-answer' }, parts);
+  }
+
+  /**
+   * The expected value's mark on an answer (lib/expected.js): "Matches", or "Not yet" with, in its
+   * tooltip, until when this source may keep the answer it gave. None without an expected value.
+   */
+  function expectedMark(row) {
+    const verdict = expectedNow ? expectedVerdict(row, expectedNow) : null;
+    if (verdict !== 'match' && verdict !== 'mismatch') return null;
+    const end = verdict === 'mismatch' ? cacheEnd(row) : null;
+    const badge = verdict === 'match'
+      ? Badge(t('glb.exp.match'), { variant: 'ok', icon: 'check', className: 'glb-exp-mark' })
+      : Badge(t('glb.exp.mismatch'), {
+        variant: 'warn', icon: 'clock', className: 'glb-exp-mark',
+        title: !end ? t('glb.exp.mismatchTitleNoTtl') : end <= Date.now() ? t('glb.exp.mismatchTitleExpired') : t('glb.exp.mismatchTitle', { time: clockTime(end) })
+      });
+    badge.dataset.exp = verdict;
+    return badge;
   }
 
   function renderStatus(row) {
@@ -773,9 +952,51 @@ export function mount(container, ctx) {
     return g.letter ? `0${g.letter.padStart(3, ' ')}` : g.filtered ? '1' : '2';
   };
   const answerText = (row) => (row.pending ? '' : isNotAsked(row) ? 'NOT ASKED' : isBrowserBlocked(row) ? 'UNAVAILABLE' : row.values.join(' '));
-  const rowClass = (row) => ['glb-row', groupClass(rowGroup(row)), { 'is-pending': row.pending, 'is-unavailable': isSkipped(row) }];
+  const rowClass = (row) => {
+    const exp = expectedNow ? expectedVerdict(row, expectedNow) : null;
+    return ['glb-row', groupClass(rowGroup(row)), {
+      'is-pending': row.pending, 'is-unavailable': isSkipped(row), 'glb-exp-match': exp === 'match', 'glb-exp-miss': exp === 'mismatch'
+    }];
+  };
+  /** The expected value's verdict as an export-only column (CSV / JSON), present while there is one. */
+  const expectedColumn = {
+    key: 'expected', label: t('glb.exp.col'), display: false,
+    exportValue: (r) => (expectedNow ? expectedVerdict(r, expectedNow) || '' : '')
+  };
 
   /* --- resolvers table ------------------------------------------------------ */
+  const resolverColumns = [
+    {
+      key: 'group', label: t('glb.col.group'), sortable: true, sortValue: groupSort, width: '4rem',
+      render: (r) => (isBrowserBlocked(r) ? unavailableMark() : groupMark(rowGroup(r))),
+      exportValue: (r) => rowGroup(r)?.letter || (r.pending ? '' : isBrowserBlocked(r) ? 'UNAVAILABLE' : rowGroup(r)?.error ? 'ERROR' : 'BLOCKED')
+    },
+    {
+      key: 'resolver', label: t('glb.col.resolver'), sortable: true, sortValue: (r) => r.resolver.name,
+      exportValue: (r) => r.resolver.name,
+      render: (r) => h('div', { class: 'glb-res' },
+        h('span', { class: 'glb-res-name' }, r.resolver.name),
+        h('span', { class: 'muted text-xs' }, r.resolver.operator))
+    },
+    {
+      key: 'location', label: t('glb.col.location'), sortable: true,
+      sortValue: (r) => r.resolver.countryCode || '',
+      exportValue: (r) => [r.resolver.countryCode ? formatRegion(r.resolver.countryCode, r.resolver.location) : t('glb.anycast'), r.response?.nsid || ''].filter(Boolean).join(' '),
+      render: (r) => h('div', { class: 'glb-loc' },
+        h('span', null, flag(r.resolver.countryCode), ' ', r.resolver.countryCode ? formatRegion(r.resolver.countryCode, r.resolver.location) : t('glb.anycast')),
+        r.response && r.response.nsid ? h('span', { class: 'glb-pop mono text-xs', title: `${t('glb.popTitle')}: ${r.response.nsid}` }, t('glb.pop', { id: r.response.nsid })) : null)
+    },
+    {
+      key: 'filtering', label: t('glb.col.filtering'), sortable: true, sortValue: (r) => r.resolver.filtering || '',
+      exportValue: (r) => r.resolver.filtering || '',
+      render: (r) => (r.resolver.filtering ? Badge(t(`settings.filter.${r.resolver.filtering}`), { icon: 'filter' }) : null)
+    },
+    { key: 'ttl', label: t('glb.col.ttl'), sortable: true, align: 'end', sortValue: (r) => (r.pending ? null : minAnswerTtl(r.response)), render: renderTtl },
+    { key: 'status', label: t('glb.col.status'), sortable: true, sortValue: (r) => (r.pending ? null : r.response?.rcode || 'ERROR'), render: renderStatus, exportValue: (r) => (r.pending ? '' : r.response?.rcode || (isBrowserBlocked(r) ? 'UNAVAILABLE' : 'ERROR')) },
+    { key: 'ad', label: t('glb.col.dnssec'), sortable: true, sortValue: (r) => (r.pending || !r.response?.ok ? null : r.response.ad), render: renderAd, exportValue: (r) => (r.response?.ad ? 'AD' : '') },
+    { key: 'latency', label: t('glb.col.latency'), sortable: true, align: 'end', sortValue: latencyValue, render: renderLatency, exportValue: latencyValue },
+    { key: 'answer', label: t('glb.col.answer'), render: renderAnswer, searchValue: answerText, exportValue: answerText }
+  ];
   const resolverTable = DataTable({
     caption: t('glb.res.title'),
     rowKey: (r) => r.key,
@@ -783,38 +1004,7 @@ export function mount(container, ctx) {
     dense: true,
     maxHeight: null,
     export: exportOpts.resolvers,
-    columns: [
-      {
-        key: 'group', label: t('glb.col.group'), sortable: true, sortValue: groupSort, width: '4rem',
-        render: (r) => (isBrowserBlocked(r) ? unavailableMark() : groupMark(rowGroup(r))),
-        exportValue: (r) => rowGroup(r)?.letter || (r.pending ? '' : isBrowserBlocked(r) ? 'UNAVAILABLE' : rowGroup(r)?.error ? 'ERROR' : 'BLOCKED')
-      },
-      {
-        key: 'resolver', label: t('glb.col.resolver'), sortable: true, sortValue: (r) => r.resolver.name,
-        exportValue: (r) => r.resolver.name,
-        render: (r) => h('div', { class: 'glb-res' },
-          h('span', { class: 'glb-res-name' }, r.resolver.name),
-          h('span', { class: 'muted text-xs' }, r.resolver.operator))
-      },
-      {
-        key: 'location', label: t('glb.col.location'), sortable: true,
-        sortValue: (r) => r.resolver.countryCode || '',
-        exportValue: (r) => [r.resolver.countryCode ? formatRegion(r.resolver.countryCode, r.resolver.location) : t('glb.anycast'), r.response?.nsid || ''].filter(Boolean).join(' '),
-        render: (r) => h('div', { class: 'glb-loc' },
-          h('span', null, flag(r.resolver.countryCode), ' ', r.resolver.countryCode ? formatRegion(r.resolver.countryCode, r.resolver.location) : t('glb.anycast')),
-          r.response && r.response.nsid ? h('span', { class: 'glb-pop mono text-xs', title: `${t('glb.popTitle')}: ${r.response.nsid}` }, t('glb.pop', { id: r.response.nsid })) : null)
-      },
-      {
-        key: 'filtering', label: t('glb.col.filtering'), sortable: true, sortValue: (r) => r.resolver.filtering || '',
-        exportValue: (r) => r.resolver.filtering || '',
-        render: (r) => (r.resolver.filtering ? Badge(t(`settings.filter.${r.resolver.filtering}`), { icon: 'filter' }) : null)
-      },
-      { key: 'ttl', label: t('glb.col.ttl'), sortable: true, align: 'end', sortValue: (r) => (r.pending ? null : minAnswerTtl(r.response)), render: renderTtl },
-      { key: 'status', label: t('glb.col.status'), sortable: true, sortValue: (r) => (r.pending ? null : r.response?.rcode || 'ERROR'), render: renderStatus, exportValue: (r) => (r.pending ? '' : r.response?.rcode || (isBrowserBlocked(r) ? 'UNAVAILABLE' : 'ERROR')) },
-      { key: 'ad', label: t('glb.col.dnssec'), sortable: true, sortValue: (r) => (r.pending || !r.response?.ok ? null : r.response.ad), render: renderAd, exportValue: (r) => (r.response?.ad ? 'AD' : '') },
-      { key: 'latency', label: t('glb.col.latency'), sortable: true, align: 'end', sortValue: latencyValue, render: renderLatency, exportValue: latencyValue },
-      { key: 'answer', label: t('glb.col.answer'), render: renderAnswer, searchValue: answerText, exportValue: answerText }
-    ]
+    columns: resolverColumns
   });
 
   /* --- geo tables: the locations Google is asked for, and mainland China (AliDNS) ---------- */
@@ -1062,6 +1252,47 @@ export function mount(container, ctx) {
     }
   }
 
+  /* --- the zone's own name server: ui/soa-probe.js, loaded on first use (Globalping) ---------- */
+  const loadSoa = onceAsync(() => import('../ui/soa-probe.js'));
+  /** The mounted probe panel (null until first use): run / reset / refresh / busy / snapshot / teardown. */
+  let soaPanel = null;
+  /** What the panel may read of the check on screen, and where its answer goes (the card's worst case). */
+  const soaHost = {
+    ctx,
+    check: () => (current ? { name: current.name, type: current.type, busy: !!current.controller } : null),
+    expected: () => expectedNow,
+    onResult(result) {
+      soaResult = result || null;
+      if (current) renderExpected();
+    }
+  };
+  /** Load and mount the probe panel (`meta`: its snapshot after a re-mount); `run`: send the probe (after the gate). */
+  async function openSoa(meta = null, { run = false } = {}) {
+    if (soaPanel) {
+      if (run) soaPanel.run();
+      return soaPanel;
+    }
+    setButtonBusy(soaOpen, true);
+    try {
+      const mod = await loadSoa();
+      if (ctx.signal.aborted) return null;
+      if (!soaPanel) {
+        clear(soaBody);
+        soaPanel = mod.mountSoaProbe(soaBody, soaHost, { restored: meta });
+      }
+      soaOpen.hidden = true;
+      if (run) soaPanel.run();
+      return soaPanel;
+    } catch (err) {
+      ctx.checkOutdated();
+      clear(soaBody);
+      soaBody.append(ErrorBanner(err, { compact: true, title: t('glb.exp.probeLoadFailed'), onRetry: () => openSoa(meta, { run }) }));
+      return null;
+    } finally {
+      setButtonBusy(soaOpen, false);
+    }
+  }
+
   const emptyEl = EmptyState({
     icon: 'globe',
     title: t('glb.emptyTitle'),
@@ -1083,17 +1314,18 @@ export function mount(container, ctx) {
       failed,
       cancelled: !current.done,
       addresses: current.ips.size,
-      at: current.finishedAt
+      at: current.finishedAt,
+      expected: expectedNow ? { pattern: expectedNow.pattern, mode: expectedNow.mode, ...expectedTally(current.rows, expectedNow) } : null
     };
   };
   const summary = SummaryButton({
     kind: 'global',
     facts: summaryFacts,
     disabled: true,
-    url: () => (current ? ctx.shareUrl(permalinkParams('global', { name: current.name, type: current.type, geo: current.geo ? null : '0' })) : null)
+    url: () => (current ? ctx.shareUrl(permalinkParams('global', checkParams(current))) : null)
   });
   const results = h('div', { class: 'stack-lg glb-results', hidden: true, dataset: { shortcutScope: 'results' } },
-    h('div', { class: 'stack' }, progress, summaryEl, statsGrid, h('div', { class: 'glb-results-bar' }, linksEl, summary.el)),
+    h('div', { class: 'stack' }, progress, summaryEl, expectCard, statsGrid, h('div', { class: 'glb-results-bar' }, linksEl, summary.el)),
     legendCard, ipSection, resSection, geoSection, ispSection);
 
   container.append(h('div', { class: 'stack-lg glb-view' }, formCard, h('div', { class: 'glb-empty card' }, emptyEl), results));
@@ -1132,6 +1364,9 @@ export function mount(container, ctx) {
     row.filtered = !!item.filtered;
     row.addresses = Array.isArray(item.addresses) ? item.addresses : [];
     row.scopePrefix = Number.isFinite(item.scopePrefix) ? item.scopePrefix : null;
+    // When it answered (its cached copy's countdown starts then), and whether it is no answer to judge.
+    row.at = Number.isFinite(Number(item.at)) && item.at !== null ? Number(item.at) : Date.now();
+    row.skipped = isBrowserBlocked(row);
     if (!row.filtered) {
       const index = ctx.getInventoryIndex();
       const { chain } = splitChain(row.values);
@@ -1184,8 +1419,112 @@ export function mount(container, ctx) {
     renderLegend();
     renderStats();
     renderSummary();
+    renderExpected();
     const done = current.rows.filter((r) => !r.pending).length;
     if (!current.done) progress.set(done, current.rows.length);
+  }
+
+  /* --- the expected value ------------------------------------------------------------- */
+
+  /** The expected value as the fields hold it, for a record type (the check's); why not, at the field. */
+  function readExpected(type = current ? current.type : (GLOBAL_TYPES.includes(typeField.value) ? typeField.value : 'A')) {
+    const parsed = parseExpected({ mode: matchField.value, pattern: expectField.value, type });
+    expectField.setError(parsed.ok || parsed.error === 'empty' ? null
+      : parsed.error === 'regex' ? t('glb.exp.err.regex', { detail: parsed.detail || '' })
+        : t('glb.exp.err.long', { max: formatNumber(EXPECT_MAX_LENGTH) }));
+    return parsed.ok ? parsed : null;
+  }
+
+  /** The route params of the expected value (none without one; `match` only when it is not exact). */
+  const expectParams = () => (expectedNow ? { expect: expectedNow.pattern, match: expectedNow.mode === 'exact' ? null : expectedNow.mode } : {});
+
+  /** The export-only "Expected value" column, while there is one (the tables are redrawn only when that changes). */
+  function syncExpectedColumns() {
+    if (columnsWithExpected === !!expectedNow) return;
+    columnsWithExpected = !!expectedNow;
+    const extra = expectedNow ? [expectedColumn] : [];
+    resolverTable.setColumns([...resolverColumns, ...extra]);
+    geoTable.setColumns([...geoColumns(), ...extra]);
+    chinaTable.setColumns([...geoColumns({ withResolver: true }), ...extra]);
+  }
+
+  /** The fields changed: judge the answers on screen again (nothing is asked) and keep the value in the link. */
+  function applyExpected() {
+    expectedNow = readExpected();
+    syncExpectedColumns();
+    if (!expectedNow && missingOnly) setMissingOnly(false);
+    else if (missingOnly) applyFilters();
+    if (!current) return;
+    ctx.setParams(checkParams(current));
+    setHeaderActions();
+    renderAll();
+  }
+
+  /** Show only the rows that do not serve the expected value yet (or every row again). */
+  function setMissingOnly(on) {
+    missingOnly = !!on && !!expectedNow;
+    if (missingOnly) filterKey = null;
+    applyFilters();
+    if (current) renderExpected();
+  }
+
+  /**
+   * Re-render the expected value's card: the value, how many sources serve it, until when the
+   * others may keep the old answer, the worst case anywhere, the flush pages and the name server
+   * probe. Hidden without an expected value or a check.
+   */
+  function renderExpected() {
+    const show = !!(current && expectedNow);
+    expectCard.hidden = !show;
+    if (!show) return;
+    const rows = current.rows;
+    const tally = expectedTally(rows, expectedNow);
+    const running = !current.done && !current.cancelled;
+    const eta = expectedEta(rows, expectedNow, { authoritative: soaResult && soaResult.state === 'ok' ? soaResult : null });
+    expectCard.dataset.state = !tally.judged ? (running ? 'running' : 'none') : tally.done ? 'done' : 'pending';
+    clear(expValueEl);
+    expValueEl.append(h('code', { class: 'mono glb-exp-pattern' }, expectedNow.pattern), ' ',
+      h('span', { class: 'muted text-sm glb-exp-mode' }, t(`glb.exp.mode.${expectedNow.mode}`)));
+    clear(expCountEl);
+    Object.assign(expCountEl.dataset, { match: String(tally.match), mismatch: String(tally.mismatch), judged: String(tally.judged) });
+    if (tally.judged) {
+      const pct = Math.round((tally.match / tally.judged) * 100);
+      append(expCountEl,
+        h('span', { class: 'glb-exp-count-text' }, t('glb.exp.count', { count: tally.judged, match: formatNumber(tally.match), judged: formatNumber(tally.judged) })),
+        tally.failed ? h('span', { class: 'muted text-sm' }, t('glb.exp.failed', { count: tally.failed })) : null,
+        h('span', { class: 'glb-bar glb-exp-bar', attrs: { 'aria-hidden': 'true' } }, h('span', { class: 'glb-bar-fill', style: { width: `${pct}%` } })));
+    } else {
+      expCountEl.append(h('span', { class: 'muted text-sm' }, running ? t('glb.sum.running') : t('glb.exp.none')));
+    }
+    clear(expNoteEl);
+    if (tally.done && !running) expNoteEl.append(Alert({ variant: 'ok', compact: true, message: t('glb.exp.done') }));
+    const pending = eta.mismatched > 0;
+    const now = Date.now();
+    expLastEl.hidden = !pending;
+    expWorstEl.hidden = !pending;
+    expFlushEl.hidden = !pending;
+    if (pending) {
+      expLastEl.textContent = !eta.last ? t('glb.exp.notYetNoTtl', { count: eta.mismatched })
+        : eta.last <= now ? t('glb.exp.expired', { count: eta.mismatched })
+          : t('glb.exp.notYet', { count: eta.mismatched, time: clockTime(eta.last, now), left: formatRelative(eta.last, now) });
+      const worst = [eta.seconds !== null ? t('glb.exp.worst', { duration: waitText(eta.seconds) }) : t('glb.exp.worstUnknown')];
+      if (eta.positive && eta.recordTtl !== null) worst.push(t('glb.exp.worstRecord', { ttl: formatNumber(eta.recordTtl), seen: formatNumber(eta.observedTtl) }));
+      if (eta.negative && eta.negativeTtl !== null) {
+        worst.push(eta.negativeFrom === 'name-server' ? t('glb.exp.negNs', { ttl: formatNumber(eta.negativeTtl), ns: soaResult.ns })
+          : t('glb.exp.negAnswers', { ttl: formatNumber(eta.negativeTtl) }));
+      }
+      expWorstEl.textContent = worst.join(' ');
+      expWorstEl.dataset.seconds = eta.seconds === null ? '' : String(eta.seconds);
+    }
+    expToggle.hidden = !pending && !missingOnly;
+    expToggle.querySelector('.btn-label').textContent = missingOnly ? t('glb.group.showAll') : t('glb.exp.onlyMissing', { count: eta.mismatched });
+    expToggle.setAttribute('aria-pressed', String(missingOnly));
+    // The name server probe: once the check has ended, while some answer is not there yet — or to
+    // keep its result (or its run) on screen.
+    const kept = !!soaResult || !!(soaPanel && soaPanel.busy());
+    soaSlot.hidden = running || !(pending || kept);
+    soaOpen.hidden = !!soaPanel;
+    if (soaPanel) soaPanel.refresh();
   }
 
   function renderLegend() {
@@ -1214,22 +1553,46 @@ export function mount(container, ctx) {
     }
   }
 
+  /** Show only the rows of one answer group (or every row again): the expected value's filter goes. */
   function setFilter(key) {
     filterKey = key;
-    const g = key ? groupByKey.get(key) : null;
-    const fn = g ? (row) => !row.pending && !isSkipped(row) && row.values.join('\n') === key : null;
+    if (key) missingOnly = false;
+    applyFilters();
+    if (key && current) renderExpected();
+  }
+
+  /** The tables' filter: one answer group's rows, or the rows not serving the expected value yet, or none. */
+  function applyFilters() {
+    const g = filterKey ? groupByKey.get(filterKey) : null;
+    let fn = null;
+    let ipFn = null;
+    if (g) {
+      fn = (row) => !row.pending && !isSkipped(row) && row.values.join('\n') === filterKey;
+      ipFn = (ipRow) => [...ipRow.members].some((k) => g.members.includes(k));
+    } else if (missingOnly && expectedNow) {
+      fn = (row) => expectedVerdict(row, expectedNow) === 'mismatch';
+      ipFn = (ipRow) => [...ipRow.members].some((k) => {
+        const row = current && current.rowByKey.get(k);
+        return !!row && fn(row);
+      });
+    }
     resolverTable.setFilter(fn);
     geoTable.setFilter(fn);
     chinaTable.setFilter(fn);
     if (ispPanel) ispPanel.setFilter(fn);
-    ipTable.setFilter(g ? (ipRow) => [...ipRow.members].some((k) => g.members.includes(k)) : null);
+    ipTable.setFilter(ipFn);
     clear(filterNote);
-    filterNote.hidden = !g;
+    filterNote.hidden = !fn;
     if (g) {
       filterNote.append(
         Icon('filter', { size: 14 }),
         h('span', null, g.letter ? t('glb.group.filterOn', { letter: g.letter }) : t(g.error ? 'glb.group.error' : 'glb.group.blocked')),
         Button({ label: t('glb.group.showAll'), size: 'sm', variant: 'ghost', onClick: () => setFilter(null) }));
+    } else if (fn) {
+      filterNote.append(
+        Icon('filter', { size: 14 }),
+        h('span', null, t('glb.exp.filterOn')),
+        Button({ label: t('glb.group.showAll'), size: 'sm', variant: 'ghost', onClick: () => setMissingOnly(false) }));
     }
     legendEl.querySelectorAll('.glb-chip').forEach((b) => {
       const on = b.title === (g ? g.values.join('\n') : null) && !!g;
@@ -1509,9 +1872,9 @@ export function mount(container, ctx) {
       Button({ label: t('common.rerun'), icon: 'refresh', size: 'sm', dataset: { action: 'rerun' }, onClick: () => rerunCheck() }));
   }
 
-  /** The route params of a check (what a shared link runs). */
+  /** The route params of a check (what a shared link runs), with the expected value judged against it. */
   function checkParams(check) {
-    return { name: check.name, type: check.type, geo: check.geo ? null : '0' };
+    return { name: check.name, type: check.type, geo: check.geo ? null : '0', ...expectParams() };
   }
 
   /** Re-run: the check on screen again (its name, type and locations), not what the box holds now. */
@@ -1571,7 +1934,9 @@ export function mount(container, ctx) {
     const type = GLOBAL_TYPES.includes(typeField.value) ? typeField.value : 'A';
     const geo = geoField.checked;
     if (!ctx.requireOnline({ quiet: auto })) return;
-    ctx.setParams({ name, type, geo: geo ? null : '0' });
+    // The expected value is read for the type this check asks (an exact value splits per type).
+    expectedNow = readExpected(type);
+    ctx.setParams({ name, type, geo: geo ? null : '0', ...expectParams() });
     ctx.runStarted(name);
     await runCheck(name, type, geo);
   }
@@ -1596,13 +1961,21 @@ export function mount(container, ctx) {
       controls: [] // AliDNS's answers on behalf of a subnet outside China (lib/propagation.js)
     };
     filterKey = null;
+    missingOnly = false;
     groups = [];
     groupByKey = new Map();
+    // The expected value for this check's type; the name server's answer belonged to the last one.
+    expectedNow = readExpected(type);
+    syncExpectedColumns();
+    soaResult = null;
+    if (soaPanel) soaPanel.reset();
     resolverTable.setFilter(null);
     geoTable.setFilter(null);
     chinaTable.setFilter(null);
     ipTable.setFilter(null);
     ipTable.setSearch('');
+    clear(filterNote);
+    filterNote.hidden = true;
     resolverTable.setRows(rows.filter((r) => r.kind === 'resolver'));
     geoTable.setRows(rows.filter((r) => r.kind === 'geo' && !isChinaRow(r)));
     chinaTable.setRows(rows.filter(isChinaRow));
@@ -1683,10 +2056,14 @@ export function mount(container, ctx) {
       current.rowByKey.set(row.key, row);
     }
     if (isp.length || snap.isp) openIsp(snap.isp || null);
-    for (const item of [...snap.items, ...(Array.isArray(snap.controls) ? snap.controls : [])]) applyItem(item);
+    // An answer kept from before keeps its time (its cached copy's countdown); an older snapshot's: the check's end.
+    const endedAt = snap.at ? new Date(snap.at).getTime() : null;
+    for (const item of [...snap.items, ...(Array.isArray(snap.controls) ? snap.controls : [])]) applyItem({ ...item, at: item.at ?? endedAt });
     current.done = !!snap.done;
     current.cancelled = !snap.done;
     current.finishedAt = snap.at ? new Date(snap.at) : new Date();
+    // The name server's answer of this check (ui/soa-probe.js): shown again, nothing sent.
+    if (snap.soa) openSoa(snap.soa);
     if (renderTimer) {
       clearTimeout(renderTimer);
       renderTimer = null;
@@ -1696,6 +2073,13 @@ export function mount(container, ctx) {
   }
 
   /* --- initial state --------------------------------------------------------- */
+  // An expected value from a link or a re-mount: its export column from the start.
+  expectedNow = readExpected();
+  syncExpectedColumns();
+  // "Expires by 15:42 (in 25 minutes)" ages: the card is drawn again while a source is not there yet.
+  const expTicker = setInterval(() => {
+    if (current && !expectCard.hidden && expectCard.dataset.state === 'pending' && !current.controller) renderExpected();
+  }, 30000);
   if (restored && Array.isArray(restored.items) && restored.items.length && restored.name) {
     restore(restored);
     // The kept check under a name carried over from another tool: the box takes the name.
@@ -1710,18 +2094,22 @@ export function mount(container, ctx) {
     teardown() {
       if (renderTimer) clearTimeout(renderTimer);
       renderTimer = null;
+      clearInterval(expTicker);
       if (current && current.controller) current.controller.abort();
       if (ispPanel) ispPanel.teardown();
+      if (soaPanel) soaPanel.teardown();
     },
     snapshot() {
-      if (!current) return { name: nameField.value, type: typeField.value, geo: geoField.checked, carried };
+      const expect = { expect: expectField.value, match: matchField.value };
+      if (!current) return { name: nameField.value, type: typeField.value, geo: geoField.checked, carried, ...expect };
       const items = current.rows.filter((r) => !r.pending).map((r) => ({
         key: r.key, response: r.response, values: r.values, filtered: r.filtered, addresses: r.addresses, scopePrefix: r.scopePrefix, notAsked: !!r.notAsked,
+        at: r.at ?? null,
         ...(r.kind === 'isp' ? { kind: 'isp', isp: r.isp, ttl: r.ttl, expiresAt: r.expiresAt, status: r.status } : {})
       }));
       return {
         name: current.name, type: current.type, geo: current.geo, items, controls: current.controls, done: current.done, at: current.finishedAt,
-        draft: nameField.value, carried, isp: ispPanel ? ispPanel.snapshot() : null
+        draft: nameField.value, carried, isp: ispPanel ? ispPanel.snapshot() : null, soa: soaPanel ? soaPanel.snapshot() : null, ...expect
       };
     },
     result() {
@@ -1743,6 +2131,9 @@ export function mount(container, ctx) {
       const type = String(params.type || 'A').toUpperCase();
       typeField.value = GLOBAL_TYPES.includes(type) ? type : 'A';
       geoField.checked = params.geo !== '0';
+      // A link's expected value replaces the fields' (a link without one clears them).
+      expectField.value = params.expect || '';
+      matchField.value = EXPECT_MODES.includes(params.match) ? params.match : 'exact';
       start();
       return true;
     }

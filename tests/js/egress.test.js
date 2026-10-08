@@ -637,6 +637,8 @@ const LINK_HOSTS = {
   ],
   // Domain Health › Delegation: the public write-ups of the Sitting Ducks attack and the provider list
   'assets/js/lib/delegation.js': ['blogs.infoblox.com', 'eclypsium.com', 'github.com'],
+  // Global DNS › Expected value and the cutover planner: the public resolvers' cache-flush pages (opened by the user)
+  'assets/js/lib/expected.js': ['developers.google.com', 'one.one.one.one'],
   // the page each takeover catalogue entry rests on (Subdomains › Takeover risks links it)
   'assets/js/lib/takeover.js': ['github.com', 'learn.microsoft.com', 'docs.github.com', 'cloud.google.com', 'hackerone.com'],
   // Domain Health › Web: the HSTS preload list's status page and MDN's Observatory report (no CORS / a page)

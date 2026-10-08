@@ -13,11 +13,21 @@
  * - {@link ttlPlan}: lower the TTL to the low TTL at T − the current TTL, make the change at T,
  *   expect it on every resolver by T + the low TTL, raise the TTL back from T + 2 × the low TTL.
  *   {@link planChecklist} writes it out in English or Turkish ({@link CUTOVER_I18N}).
+ * - {@link planEvents} / {@link planCalendar}: the same steps as calendar events — an iCalendar
+ *   file (lib/ics.js) with a reminder before each step; the change's event names the public
+ *   resolvers' cache-flush pages ({@link FLUSH_LINKS}).
+ *
+ * {@link COMMON_TTLS} and {@link likelyTtl} live in lib/expected.js (Global DNS's expected value
+ * reads them too) and are re-exported here.
  *
  * DOM-free and without a clock of its own (every time is passed in); runs in browsers and Node 22.
  */
 
 import { CHECK_RESOLVERS, CHECK_TIMING, nextCheck, pairKey } from './changecheck.js';
+import { COMMON_TTLS, FLUSH_LINKS, likelyTtl } from './expected.js';
+import { buildEventCalendar } from './ics.js';
+
+export { COMMON_TTLS, FLUSH_LINKS, likelyTtl };
 
 /** A watch's timing: a check's backoff, but it stops only after 24 hours (it asks while the page is open). */
 export const WATCH_TIMING = Object.freeze({ ...CHECK_TIMING, stopAfter: 24 * 3600 * 1000 });
@@ -27,8 +37,6 @@ export const CACHE_KINDS = Object.freeze(['old', 'empty', 'ttl', 'other']);
 export const PLAN_LOW_TTLS = Object.freeze([60, 120, 300, 600]);
 /** The low TTL a plan uses unless another is picked. */
 export const PLAN_DEFAULT_LOW = 300;
-/** TTLs zones commonly use: a TTL a resolver counted down is read as the next one up. */
-export const COMMON_TTLS = Object.freeze([60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 604800]);
 /** Why there is no plan: the current TTL, the low TTL or the change time is not usable. */
 export const PLAN_ERRORS = Object.freeze(['ttl', 'low', 'time']);
 /**
@@ -164,18 +172,6 @@ export function observedTtl(check, latest, resolvers = CHECK_RESOLVERS) {
 }
 
 /**
- * The zone's TTL a counted-down TTL most likely started from: the smallest of {@link COMMON_TTLS}
- * that is not lower (a TTL above them all stays as it is), or null for no TTL.
- * @param {number|null} seen seconds
- * @returns {number|null}
- */
-export function likelyTtl(seen) {
-  const v = Number(seen);
-  if (seen === null || seen === undefined || !Number.isFinite(v) || v <= 0) return null;
-  return COMMON_TTLS.find((x) => x >= v) ?? Math.min(Math.ceil(v), TTL_MAX);
-}
-
-/**
  * The first change time a plan proposes: once copies with the current TTL can have expired after
  * the TTL is lowered now, rounded up to the next quarter of an hour.
  * @param {number} now ms epoch
@@ -243,7 +239,18 @@ export const CUTOVER_I18N = Object.freeze({
     'chg.cut.list.changeLow': 'At {time}: make the change (the TTL is already {ttl} s, nothing to lower first).',
     'chg.cut.list.live': 'By {time}: every resolver serves the new records.',
     'chg.cut.list.check': 'Check: {url}',
-    'chg.cut.list.raise': 'From {time}: raise the TTL back to {to} s, once the check shows the change everywhere.'
+    'chg.cut.list.raise': 'From {time}: raise the TTL back to {to} s, once the check shows the change everywhere.',
+    'chg.cut.ics.name': 'DNS cutover — {zone}',
+    'chg.cut.ics.lower': 'Lower the TTL in {zone}: {from} s → {to} s',
+    'chg.cut.ics.change': 'Make the DNS change in {zone}',
+    'chg.cut.ics.live': 'Every resolver serves the change ({zone})',
+    'chg.cut.ics.raise': 'Raise the TTL in {zone} back to {to} s',
+    'chg.cut.ics.lowerDesc': 'Lower the TTL of these records from {from} s to {to} s, so that every copy cached with the old TTL has expired by the change.',
+    'chg.cut.ics.changeDesc': 'Make the change now: copies cached with the old TTL have expired, and every resolver serves the new records within {ttl} s.',
+    'chg.cut.ics.changeLowDesc': 'Make the change now (the TTL is already {ttl} s, nothing to lower first): every resolver serves the new records within {ttl} s.',
+    'chg.cut.ics.liveDesc': 'Every resolver serves the new records by now. Check it before you raise the TTL.',
+    'chg.cut.ics.raiseDesc': 'Raise the TTL back to {to} s once the check shows the change everywhere.',
+    'chg.cut.ics.flush': 'To speed it up for their users, ask the public resolvers to drop their cached copy:'
   }),
   tr: Object.freeze({
     'chg.cut.list.title': 'DNS geçiş planı — zone {zone}',
@@ -253,7 +260,18 @@ export const CUTOVER_I18N = Object.freeze({
     'chg.cut.list.changeLow': 'Saat {time}: değişikliği yapın (TTL zaten {ttl} sn; önce düşürülecek bir şey yok).',
     'chg.cut.list.live': 'En geç {time}: tüm çözümleyiciler yeni kayıtları döndürür.',
     'chg.cut.list.check': 'Kontrol: {url}',
-    'chg.cut.list.raise': '{time} itibarıyla: kontrol değişikliği her yerde gösterince TTL değerini yeniden {to} sn’ye yükseltin.'
+    'chg.cut.list.raise': '{time} itibarıyla: kontrol değişikliği her yerde gösterince TTL değerini yeniden {to} sn’ye yükseltin.',
+    'chg.cut.ics.name': 'DNS geçişi — {zone}',
+    'chg.cut.ics.lower': '{zone} için TTL değerini düşürün: {from} sn → {to} sn',
+    'chg.cut.ics.change': '{zone} için DNS değişikliğini yapın',
+    'chg.cut.ics.live': 'Tüm çözümleyiciler değişikliği döndürür ({zone})',
+    'chg.cut.ics.raise': '{zone} için TTL değerini yeniden {to} sn’ye yükseltin',
+    'chg.cut.ics.lowerDesc': 'Eski TTL ile önbelleğe alınan her kopyanın süresi değişiklik anına kadar dolsun diye bu kayıtların TTL değerini {from} sn’den {to} sn’ye düşürün.',
+    'chg.cut.ics.changeDesc': 'Değişikliği şimdi yapın: eski TTL ile önbelleğe alınan kopyaların süresi doldu; tüm çözümleyiciler yeni kayıtları en geç {ttl} sn içinde döndürür.',
+    'chg.cut.ics.changeLowDesc': 'Değişikliği şimdi yapın (TTL zaten {ttl} sn; önce düşürülecek bir şey yok): tüm çözümleyiciler yeni kayıtları en geç {ttl} sn içinde döndürür.',
+    'chg.cut.ics.liveDesc': 'Tüm çözümleyiciler artık yeni kayıtları döndürüyor. TTL değerini yükseltmeden önce kontrol edin.',
+    'chg.cut.ics.raiseDesc': 'Kontrol değişikliği her yerde gösterince TTL değerini yeniden {to} sn’ye yükseltin.',
+    'chg.cut.ics.flush': 'Kullanıcıları için hızlandırmak isterseniz genel çözümleyicilerden önbellekteki kopyayı silmelerini isteyin:'
   })
 });
 
@@ -300,4 +318,76 @@ export function planChecklist(plan, { lang = 'en', zone, records = [], url = nul
   if (records.length) out.push(tx('chg.cut.list.records', { records: records.join(' · ') }));
   out.push('', ...steps.map((s, i) => `[ ] ${i + 1}. ${s}`));
   return `${out.join('\n')}\n`;
+}
+
+/* ------------------------------------------------------------------------ */
+/* The plan as a calendar                                                   */
+/* ------------------------------------------------------------------------ */
+
+/** Minutes before each step that its calendar reminder rings. */
+export const PLAN_ALARM_MINUTES = 15;
+/** How long each step's calendar event lasts, in minutes. */
+export const PLAN_EVENT_MINUTES = 15;
+/** The PRODID of a cutover calendar. */
+export const PLAN_PRODID = '-//DomainScope//DNS cutover//EN';
+
+/** A short, stable hex key of a plan's zone and record sets: the same check keeps its event UIDs. */
+function planKey(zone, records) {
+  let h = 0x811c9dc5;
+  for (const ch of `${String(zone || '').toLowerCase()}|${records.join(',').toLowerCase()}`) {
+    h ^= ch.codePointAt(0);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+/**
+ * The steps of a plan as calendar events, in English or Turkish: what to do (with the zone), why,
+ * the record sets and the check link; the change's event also lists the public resolvers'
+ * cache-flush pages. Each event's UID is stable for the zone, its record sets and the step, so a
+ * newer file of the same check moves the events instead of adding new ones.
+ * @param {TtlPlan} plan
+ * @param {{ lang?: 'en'|'tr', zone: string, records?: string[], url?: string|null }} opts
+ * @returns {Array<{ uid: string, step: string, start: number, summary: string, description: string }>}
+ */
+export function planEvents(plan, { lang = 'en', zone, records = [], url = null } = {}) {
+  if (!plan || !plan.ok) return [];
+  const tx = (key, params) => planText(lang, key, params);
+  const key = planKey(zone, records);
+  const tail = [
+    records.length ? tx('chg.cut.list.records', { records: records.join(' · ') }) : null,
+    url ? tx('chg.cut.list.check', { url }) : null
+  ].filter(Boolean);
+  const flush = [tx('chg.cut.ics.flush'), ...FLUSH_LINKS.map((l) => `${l.name}: ${l.url}`)].join('\n');
+  const steps = [];
+  if (plan.lower) {
+    steps.push(['lower', plan.lowerAt, tx('chg.cut.ics.lower', { zone, from: plan.currentTtl, to: plan.lowTtl }),
+      tx('chg.cut.ics.lowerDesc', { from: plan.currentTtl, to: plan.lowTtl })]);
+  }
+  steps.push(['change', plan.changeAt, tx('chg.cut.ics.change', { zone }),
+    `${plan.lower ? tx('chg.cut.ics.changeDesc', { ttl: plan.lowTtl }) : tx('chg.cut.ics.changeLowDesc', { ttl: plan.currentTtl })}\n\n${flush}`]);
+  steps.push(['live', plan.liveBy, tx('chg.cut.ics.live', { zone }), tx('chg.cut.ics.liveDesc')]);
+  if (plan.lower) steps.push(['raise', plan.raiseAt, tx('chg.cut.ics.raise', { zone, to: plan.currentTtl }), tx('chg.cut.ics.raiseDesc', { to: plan.currentTtl })]);
+  // A reminder before each thing to do; "every resolver serves it" is a moment to check, not to prepare for.
+  return steps.map(([step, start, summary, what]) => ({
+    uid: `cutover-${step}-${key}@domainscope`, step, start, summary, description: [what, ...tail].join('\n\n'),
+    ...(step === 'live' ? { alarmMinutes: [] } : {})
+  }));
+}
+
+/**
+ * The plan as an iCalendar file (RFC 5545): one event per step at its time (UTC), each
+ * {@link PLAN_EVENT_MINUTES} minutes long with a reminder {@link PLAN_ALARM_MINUTES} minutes
+ * before it, the calendar named after the zone.
+ * @param {TtlPlan} plan
+ * @param {{ lang?: 'en'|'tr', zone: string, records?: string[], url?: string|null, now?: Date|number }} opts
+ * @returns {string} '' without a usable plan
+ */
+export function planCalendar(plan, { lang = 'en', zone, records = [], url = null, now = Date.now() } = {}) {
+  const events = planEvents(plan, { lang, zone, records, url });
+  if (!events.length) return '';
+  return buildEventCalendar(events, {
+    now: new Date(now), name: planText(lang, 'chg.cut.ics.name', { zone }), prodId: PLAN_PRODID,
+    minutes: PLAN_EVENT_MINUTES, alarmMinutes: [PLAN_ALARM_MINUTES]
+  });
 }

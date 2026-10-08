@@ -245,6 +245,19 @@ describe('the registry', () => {
     assert.deepEqual([...NEVER_SENT], ['certificates', 'keys', 'zone', 'inventory', 'workspace', 'tracking']);
   });
 
+  test('Never sent: the inventory names every way one of its addresses leaves (Verify’s origin check, IP Intel’s lookup)', async () => {
+    await import('../../assets/js/ui/egress-panel.js');
+    const { t, setLang } = await import('../../assets/js/i18n.js');
+    try {
+      setLang('en');
+      assert.match(t('egress.never.inventory'), /Verify’s opt-in origin check.*IP Intel.*“My servers’ IPs”/);
+      setLang('tr');
+      assert.match(t('egress.never.inventory'), /Doğrula’nın isteğe bağlı asıl sunucu kontrolü.*IP Bilgisi.*“Sunucularımın IP’leri”/);
+    } finally {
+      setLang('en');
+    }
+  });
+
   test('every DoH resolver is a DNS-over-HTTPS host of the registry, named as the resolver', () => {
     for (const r of RESOLVERS) {
       const c = classifyUrl(`${r.url}?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE`);

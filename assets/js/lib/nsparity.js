@@ -20,7 +20,9 @@
  *   cap (the rest is skipped `budget`, and the CLI checks it all for free). The budget is
  *   reserved before each POST, so parallel queries never overspend;
  * - the SOA of each server is asked first: a server that refuses the zone, is not authoritative
- *   for it or cannot be reached costs that one probe and nothing more.
+ *   for it or cannot be reached costs that one probe and nothing more;
+ * - an ALIAS / ANAME record set (a provider's flattening, kept as text by the parser) is judged by
+ *   the A and AAAA questions at its name the extras ask: the new server must answer addresses.
  *
  * What it reports, per record set: same, different, missing (at the new provider), unproxied
  * (a proxied record the new server answers with its origin), extra (a record at the apex or www
@@ -595,6 +597,39 @@ export function parityRow(row, { ns, origin, hosts, autoTtl }) {
   return out;
 }
 
+/** Provider pseudo types (kept as text by lib/zoneparse.js) whose name the provider answers with the target's addresses. */
+const ADDRESS_ALIAS_TYPES = new Set(['ALIAS', 'ANAME']);
+const isAddressQuestion = (q) => q.type === 'A' || q.type === 'AAAA';
+
+/**
+ * An ALIAS / ANAME record set (skipped by lib/zonedrift.js: its value is text) judged by the new
+ * server's answers to the A and AAAA questions at its name: the provider flattens it, so the name
+ * must answer addresses (or a CNAME). The target is never asked (`target-hidden`); none at all is
+ * `missing`, a failed question without an answer to the other one an `error`.
+ * @param {ParityRow} row
+ * @param {Array<{ q: { name: string, type: string }, resp: object }>} answers
+ * @returns {ParityRow}
+ */
+function aliasRow(row, answers) {
+  const own = [];
+  let failure = null;
+  for (const { q, resp } of answers) {
+    if (!resp.ok || (resp.rcode !== 'NOERROR' && resp.rcode !== 'NXDOMAIN')) {
+      failure = failure || (!resp.ok ? (resp.errorKind === 'timeout' ? 'timeout' : resp.errorKind === 'budget' ? 'budget' : 'transport')
+        : resp.rcode === 'REFUSED' ? 'refused' : 'servfail');
+      continue;
+    }
+    own.push(...resp.answers.filter((rr) => canon(rr.name) === q.name && (rr.type === q.type || rr.type === 'CNAME')));
+  }
+  const out = { ...row, reasons: [], live: [], added: [], removed: [], rcode: answers[0].resp.rcode ?? null };
+  if (own.length) {
+    const ttls = own.map((rr) => rr.ttl).filter(Number.isFinite);
+    return { ...out, status: 'same', reasons: ['target-hidden'], live: [...new Set(own.map((rr) => rr.text))], liveTtl: ttls.length ? Math.min(...ttls) : null };
+  }
+  if (failure) return { ...out, status: 'error', reasons: [failure] };
+  return { ...out, status: 'missing', reasons: [answers.every((a) => a.resp.rcode === 'NXDOMAIN') ? 'nxdomain' : 'nodata'] };
+}
+
 function extraRow(ns, q, resp) {
   const base = {
     ns, name: q.name, type: q.type, driftStatus: null, reasons: [], file: [], live: [], added: [], removed: [],
@@ -764,6 +799,10 @@ export async function runParity(zone, opts = {}) {
       }
       safeCall(onServer, { ...server });
       if (server.role !== 'full' || server.state !== 'ok') continue;
+      // An ALIAS / ANAME record set waits for the extra A and AAAA questions at its name, which judge it (aliasRow).
+      const qs = extras ? extraQueries(zone, { skipPrivate }) : [];
+      const byAddress = (name) => ['A', 'AAAA'].every((type) => qs.some((q) => q.name === name && q.type === type));
+      const held = [];
       const report = await driftZone(zone, {
         dns: dnsOf,
         signal: inner.signal,
@@ -776,18 +815,33 @@ export async function runParity(zone, opts = {}) {
         now,
         onRow: (row) => {
           driftRows.set(server.ns, (driftRows.get(server.ns) || 0) + 1);
-          emit(parityRow(row, { ns: server.ns, origin, hosts, autoTtl }));
+          const out = parityRow(row, { ns: server.ns, origin, hosts, autoTtl });
+          if (ADDRESS_ALIAS_TYPES.has(row.type) && row.status === 'skipped' && row.reasons.includes('unsupported-type') && byAddress(row.name)) held.push(out);
+          else emit(out);
         }
       });
-      if (report.aborted || aborted()) break;
-      if (extras) {
-        const qs = extraQueries(zone, { skipPrivate });
+      if (report.aborted || aborted()) {
+        for (const row of held) emit(row);
+        break;
+      }
+      if (qs.length) {
         const answers = await Promise.all(qs.map((q) => dnsOf.query(q.name, q.type, { signal: inner.signal }).then(
           (resp) => ({ q, resp }), (err) => (errorKind(err) === 'abort' ? null : { q, resp: failed(q.name, q.type, server.ns, 'network', String(err)) })
         )));
+        const judged = new Set();
+        for (const row of held) {
+          const own = answers.filter((a) => a && a.q.name === row.name && isAddressQuestion(a.q));
+          // A stop took one of its questions: it stays skipped (not compared).
+          if (own.length < 2) emit(row);
+          else {
+            emit(aliasRow(row, own));
+            judged.add(row.name);
+          }
+        }
         const seen = new Set();
         for (const a of answers) {
-          if (!a) continue;
+          // The addresses of an ALIAS / ANAME name are its answer, not records the file lacks.
+          if (!a || (judged.has(a.q.name) && isAddressQuestion(a.q))) continue;
           for (const row of extraRow(server.ns, a.q, a.resp)) {
             if (seen.has(row.key)) continue;
             seen.add(row.key);
@@ -865,6 +919,9 @@ export function signedInFile(zone) {
   return !!idx.origin && idx.unique.some((r) => DNSSEC_RECORD_TYPES.has(r.type) && idx.inZone(r.name));
 }
 
+/** Skip reasons of record sets the run could not compare: the verdict never says 'ready' over them. */
+const UNCOMPARED_REASONS = new Set(['not-queryable', 'budget', 'unsupported-type', 'escaped-name']);
+
 /**
  * The headline of a finished run: `verdict` 'ready' (every compared record set is the same, and
  * every server serves the zone), 'fix' (missing or different records, or a server that does not
@@ -873,9 +930,12 @@ export function signedInFile(zone) {
  * 'check' or 'ready'; cli/dns_parity.py says the same), 'check' (a
  * finished run with only extra / unproxied records, TTL differences or serials out of step),
  * 'partial' again for a finished run that left record sets out (a type Globalping cannot ask,
- * past the probe cap), or 'blocked' (every server was asked, and none could be
- * compared). `unchecked` counts the record sets left for the CLI, those without an answer, and
- * those a stop kept from being asked (`result.notReached`); `stopped` says the run did not finish.
+ * past the probe cap, a value the file holds as text only, such as an ALIAS the extra apex
+ * questions could not judge, or a name that cannot be asked), or 'blocked' (every server was
+ * asked, and none could be compared). `unchecked` counts those record sets, those without an
+ * answer, and those a stop kept from being asked (`result.notReached`); `stopped` says the run
+ * did not finish. Record sets skipped on purpose (internal-looking, DNSSEC, below a cut) are not
+ * counted.
  * @param {object} result {@link runParity}
  * @returns {{ verdict: 'ready'|'fix'|'check'|'partial'|'blocked', counts: Object<string, number>, ttl: number,
  *   unchecked: number, badServers: number, compared: number, stopped: boolean }}
@@ -885,7 +945,7 @@ export function paritySummary(result) {
   const rows = (result && result.rows) || [];
   const servers = (result && result.nameservers) || [];
   const ttl = rows.filter((r) => r.reasons.includes('ttl-differs')).length;
-  const unchecked = rows.filter((r) => r.status === 'skipped' && (r.reasons.includes('not-queryable') || r.reasons.includes('budget'))).length
+  const unchecked = rows.filter((r) => r.status === 'skipped' && r.reasons.some((x) => UNCOMPARED_REASONS.has(x))).length
     + rows.filter((r) => r.status === 'error').length + (Number.isFinite(result && result.notReached) ? result.notReached : 0);
   const badServers = servers.filter((s) => s.state !== 'ok' && s.state !== 'not-run').length;
   const compared = servers.filter((s) => s.role === 'full' && s.state === 'ok').length;

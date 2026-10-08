@@ -16,6 +16,7 @@ import {
 } from '../../assets/js/lib/nsparity.js';
 import { GlobalpingError, GP_DNS_TYPES, createGlobalping } from '../../assets/js/lib/globalping.js';
 import { DRIFT_REASONS } from '../../assets/js/lib/zonedrift.js';
+import { parseZone } from '../../assets/js/lib/zoneparse.js';
 import { zone, cfZone, P, D } from '../fixtures/zones-analysis/zone-builder.mjs';
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'globalping');
@@ -412,6 +413,36 @@ describe('runParity', () => {
     assert.equal(result.rows.filter((r) => r.status === 'extra').length, 2, 'the A and the AAAA question at www found the same CNAME: one row');
   });
 
+  test('an ALIAS at the apex (kept as text, never compared itself): the new server must answer addresses there', async () => {
+    const z = parseZone([
+      '$ORIGIN example.com.', '$TTL 300', '@ IN SOA ns1.example.org. hostmaster.example.com. 7 3600 600 604800 300',
+      '@ IN NS ns1.example.org.', '@ IN ALIAS myapp.example.net.', 'www IN CNAME myapp.example.net.',
+      '@ IN MX 10 mail.example.net.', '@ IN TXT "v=spf1 -all"'
+    ].join('\n'), { format: 'bind' });
+    assert.deepEqual(z.records.filter((r) => r.type === 'ALIAS').map((r) => [r.data, r.unsupported]), [[null, true]]);
+    const base = {
+      'example.com|NS': [[300, `${NS1}.`]], 'www.example.com|CNAME': [[300, 'myapp.example.net.']],
+      'example.com|MX': [[300, '10 mail.example.net.']], 'example.com|TXT': [[300, '"v=spf1 -all"']]
+    };
+    const switchOf = (result) => parityRunbook(z, result, { nameservers: [NS1] }).find((s) => s.id === 'switch').state;
+    // The new provider's import dropped the ALIAS: after the switch the apex has no address.
+    const dropped = await run(z, { [NS1]: { records: base } }, { nameservers: [NS1] });
+    assert.equal(status(dropped.row(`${NS1}|example.com|ALIAS`)), 'missing nodata');
+    assert.deepEqual([paritySummary(dropped.result).verdict, switchOf(dropped.result)], ['fix', 'blocked']);
+    // Served (flattened by the new provider): the apex answers addresses, which are not extra records.
+    const served = await run(z, { [NS1]: { records: { ...base, 'example.com|A': [[300, '192.0.2.10']] } } }, { nameservers: [NS1] });
+    const alias = served.row(`${NS1}|example.com|ALIAS`);
+    assert.deepEqual([status(alias), alias.live], ['same target-hidden', ['192.0.2.10']]);
+    assert.deepEqual(served.result.rows.filter((r) => r.status === 'extra').map((r) => r.key), []);
+    assert.deepEqual([paritySummary(served.result).verdict, switchOf(served.result)], ['ready', 'todo']);
+    assert.equal(served.client.calls.length, served.result.planned, 'the apex A / AAAA questions were planned already');
+    // Without the apex questions it is not compared at all: never 'ready'.
+    const off = await run(z, { [NS1]: { records: base } }, { nameservers: [NS1], extras: false });
+    assert.equal(status(off.row(`${NS1}|example.com|ALIAS`)), 'skipped unsupported-type');
+    const sum = paritySummary(off.result);
+    assert.deepEqual([sum.verdict, sum.unchecked, switchOf(off.result)], ['partial', 1, 'warn']);
+  });
+
   test('a first server that refuses the zone costs one probe; the next one is compared instead', async () => {
     const { result, client } = await run(z, { [NS1]: { refuse: true }, [NS2]: { records: good } }, { nameservers: [NS1, NS2] });
     assert.deepEqual(result.nameservers.map((s) => [s.ns, s.role, s.state]), [[NS1, 'full', 'refused'], [NS2, 'full', 'ok']]);
@@ -632,6 +663,13 @@ describe('summary and runbook', () => {
     assert.deepEqual([unanswered.verdict, unanswered.unchecked], ['partial', 1]);
     // A type only the CLI asks (CAA) is no unanswered question: extra rows still make it 'check'.
     assert.equal(paritySummary({ ...clean, counts: { same: 2, extra: 1 }, rows: [{ status: 'skipped', reasons: ['not-queryable'] }] }).verdict, 'check');
+    // A value the file does not decode, a name that cannot be asked: never compared, so never 'ready'.
+    for (const reason of ['unsupported-type', 'escaped-name']) {
+      const sum = paritySummary({ ...clean, rows: [{ status: 'skipped', reasons: [reason] }] });
+      assert.deepEqual([sum.verdict, sum.unchecked], ['partial', 1], reason);
+    }
+    // Skipped on purpose (internal, DNSSEC, below a cut): not a gap of the comparison.
+    assert.equal(paritySummary({ ...clean, rows: [{ status: 'skipped', reasons: ['private'] }, { status: 'skipped', reasons: ['dnssec-type'] }] }).verdict, 'ready');
   });
 
   test('the toast of a run that ends away from its tab: "nothing to fix" only for a finished clean run', async () => {

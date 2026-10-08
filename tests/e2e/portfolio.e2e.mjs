@@ -20,9 +20,15 @@
  * the alarms 30 and 7 days before); the policy: a preset, the rule controls and the JSON kept in
  * step and in the workspace, a rule that does not exist said and left out, the matrix with the
  * evidence of each cell and its CSV; Copy summary; Esc stops a run (rows not looked up offer
- * "Look up"); 375 / 320 px without horizontal scroll, TR / EN × light / dark; offline, the shell's
- * note and Check portfolio sending nothing; zero console errors / CSP violations / missing i18n
- * keys, nothing sent outside the page.
+ * "Look up"); the Certificates (CT) tab (ui/ctwatch-panel.js, loaded on its first use) over a fake
+ * Cert Spotter and crt.sh answered in the page: nothing sent before Check CT, Cert Spotter one
+ * request at a time and crt.sh after its 429, the tiles and flags (new since the workspace's
+ * baseline, an unexpected CA, a wildcard, a precertificate only, a superseded certificate), the
+ * radar's colours, a domain both sources failed as "⚠ n/a" with a Retry of that domain, the
+ * baseline written to the workspace and a second check with nothing new, the CSV and the .ics
+ * (a UID per name set, reminders on the radar's days); 375 / 320 px without horizontal scroll,
+ * TR / EN × light / dark; offline, the shell's note and Check portfolio sending nothing (Check CT
+ * neither); zero console errors / CSP violations / missing i18n keys, nothing sent outside the page.
  *
  * Data is documentation space only (example.com / .net / .org, example-test.com.tr, 192.0.2.0/24,
  * 198.51.100.0/24, 203.0.113.0/24).
@@ -33,6 +39,8 @@ import { pathToFileURL } from 'node:url';
 import { startServer } from './serve.mjs';
 import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
 import { launchBrowser } from './cdp.mjs';
+import { spotterRow, crtshRow } from '../js/ct-fake.mjs';
+import { certId, CT_EXPORT_COLUMNS } from '../../assets/js/lib/ctwatch.js';
 import {
   BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
   gotoRoute, installDownloadCapture, setLangUi, shot, stubClipboard, takeClipboard, takeDownloads, waitReady
@@ -94,11 +102,48 @@ const RDAP = {
   'example.net': rdapJson('example.net', ['client transfer prohibited'], 12)
 };
 
-/** In-page stubs: DoH from the zone (NXDOMAIN outside it), the RDAP bootstrap and registry. */
+/** Certificate Transparency for the CT tab: Cert Spotter rows of example.com and example.org, crt.sh's of example-test.com.tr. */
+const LE = "C=US, O=Let's Encrypt, CN=R11";
+const OTHER_CA = 'C=US, O=Example Other CA, CN=Example Other CA R3';
+const CT_CERTS = {
+  // renewed by B: superseded
+  A: { names: ['example.com', 'www.example.com'], notBefore: iso(-80), notAfter: iso(10), serial: 1, issuer: LE },
+  B: { names: ['example.com', 'www.example.com'], notBefore: iso(-5), notAfter: iso(85), serial: 2, issuer: LE },
+  // 5 days left: the radar's last band
+  C: { names: ['*.example.com'], notBefore: iso(-85), notAfter: iso(5), serial: 3, issuer: LE },
+  // another CA, logged only as a precertificate
+  D: { names: ['shop.example.com'], notBefore: iso(-2), notAfter: iso(88), serial: 4, issuer: OTHER_CA, friendly: 'Example Other CA', precert: true },
+  E: { names: ['example.org', 'www.example.org'], notBefore: iso(-30), notAfter: iso(60), serial: 5, issuer: LE }
+};
+/** A certificate as a crt.sh row has it: dates in UTC without a zone, the serial in hex. */
+const crtOf = (c) => ({ names: c.names, notBefore: c.notBefore.replace(/Z$/, ''), notAfter: c.notAfter.replace(/Z$/, ''), serial: c.serial.toString(16).padStart(2, '0'), issuer: c.issuer });
+const CT = {
+  spotter: {
+    'example.com': ['A', 'B', 'C', 'D'].map((k) => spotterRow(CT_CERTS[k])),
+    'example.org': [spotterRow(CT_CERTS.E)]
+  },
+  // crt.sh lists the same certificates (one row each, `deduplicate=Y`): the same ids, so a check
+  // that falls back to it marks nothing new
+  crtsh: {
+    'example.com': ['A', 'B', 'C', 'D'].map((k, i) => crtshRow({ id: 9101 + i, ...crtOf(CT_CERTS[k]) })),
+    'example.org': [crtshRow({ id: 9201, ...crtOf(CT_CERTS.E) })],
+    'example-test.com.tr': [crtshRow({ id: 9001, names: ['example-test.com.tr', 'www.example-test.com.tr'], notBefore: iso(-10).replace(/Z$/, ''), notAfter: iso(80).replace(/Z$/, ''), serial: '06', issuer: LE })]
+  }
+};
+/** The workspace's baseline: example.com checked a week ago, with A and C. */
+const CT_SEEN = JSON.stringify({
+  v: 1,
+  domains: { 'example.com': { at: new Date(NOW - 7 * DAY).toISOString(), ids: { [certId({ intermediate: 'R11', serialHex: '01' })]: iso(10).slice(0, 10), [certId({ intermediate: 'R11', serialHex: '03' })]: iso(5).slice(0, 10) } } }
+});
+
+/** In-page stubs: DoH from the zone (NXDOMAIN outside it), the RDAP bootstrap and registry, Cert Spotter and crt.sh. */
 export const fakeScript = () => `(() => {
   const Z = ${JSON.stringify(ZONE)};
   const SIGNED = ${JSON.stringify(SIGNED)};
   const RDAP = ${JSON.stringify(RDAP)};
+  const CT = ${JSON.stringify(CT)};
+  window.__ctLog = [];
+  window.__ctStatus = {};
   window.__dnsLog = [];
   window.__rdapLog = [];
   window.__rcodes = {};
@@ -111,8 +156,24 @@ export const fakeScript = () => `(() => {
     const timer = setTimeout(resolve, ms);
     signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
   });
+  const ctJson = (v, status = 200, headers = {}) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json', ...headers } });
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (url.startsWith('https://api.certspotter.com/v1/issuances?')) {
+      const u = new URL(url);
+      const d = u.searchParams.get('domain');
+      window.__ctLog.push({ source: 'certspotter', domain: d, after: u.searchParams.get('after'), subdomains: u.searchParams.get('include_subdomains'), expand: u.searchParams.getAll('expand') });
+      const status = window.__ctStatus['certspotter|' + d];
+      if (status) return ctJson({ code: 'rate_limited', message: 'Rate limit exceeded' }, status, { 'retry-after': '5' });
+      return ctJson(u.searchParams.get('after') ? [] : (CT.spotter[d] || []));
+    }
+    if (url.startsWith('https://crt.sh/?')) {
+      const d = (new URL(url).searchParams.get('q') || '').replace(/^%[.]/, '');
+      window.__ctLog.push({ source: 'crtsh', domain: d });
+      const status = window.__ctStatus['crtsh|' + d];
+      if (status) return new Response('Too Many Requests', { status, headers: { 'retry-after': '120' } });
+      return ctJson(CT.crtsh[d] || []);
+    }
     if (url.startsWith('https://data.iana.org/rdap/')) return json({ services: [[['com', 'net', 'org', 'test'], ['https://rdap.example.net/']]] });
     if (url.startsWith('https://rdap.example.net/') || url.startsWith('https://rdap.org/')) {
       const name = decodeURIComponent(url.split('/domain/')[1] || '');
@@ -174,6 +235,19 @@ const rowOf = (page, domain) => page.evaluate((d) => {
 }, domain);
 const waitDone = (page, message = 'portfolio checked') => page.waitFor(() => !!document.querySelector('.pf-head[data-status="done"], .pf-head[data-status="stopped"]')
   && !document.querySelector('[data-action="pf-run"]').hidden && !document.querySelector('.pf-pending'), { timeout: 40000, message });
+
+/** The CT tab: its check done (or stopped) and Check CT back. */
+const waitCt = (page, message = 'CT checked') => page.waitFor(() => !!document.querySelector('.pf-ct .pf-head[data-status="done"], .pf-ct .pf-head[data-status="stopped"]')
+  && !document.querySelector('[data-action="ct-run"]').hidden, { timeout: 40000, message });
+const ctTiles = (page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.pf-ct-tiles [data-ct-tile]')]
+  .map((el) => [el.dataset.ctTile, el.querySelector('.stat-value').textContent.trim()])));
+/** The CT table's rows: the names, the flags and the radar band of each. */
+const ctRows = (page) => page.evaluate(() => [...document.querySelectorAll('.pf-ct-table tbody tr.dt-row')].map((tr) => ({
+  names: [...tr.querySelectorAll('td.pf-ct-names .mono')].map((e) => e.textContent).join(' '),
+  flags: [...tr.querySelectorAll('[data-flag]')].map((e) => e.dataset.flag),
+  band: ([...tr.classList].find((c) => c.startsWith('pf-ct-band-')) || '').replace('pf-ct-band-', '') || null
+})));
+const setCtFilter = (page, value) => page.evaluate((v) => { const s = document.querySelector('[data-role="ct-filter"]'); s.value = v; s.dispatchEvent(new Event('change')); }, value);
 
 async function main() {
   const opts = cliOptions();
@@ -429,6 +503,98 @@ async function main() {
       await page.waitFor(() => !document.querySelector('.pf-pending') && !document.querySelector('.pf-table [data-row] [aria-busy="true"]'), { timeout: 20000, message: 'the row looked up' });
     });
 
+    run.group('Certificates (CT)');
+    await run.step('the CT tab loads on its first use and sends nothing: the portfolio\'s domains, public certificates only, the quota', async () => {
+      await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
+      await page.evaluate((seen) => import('./assets/js/state.js').then(async ({ state }) => {
+        await state.setWorkspaceData('expectedCas', ["Let's Encrypt"]);
+        await state.setWorkspaceData('ctSeen', seen);
+      }), CT_SEEN);
+      await page.click('.pf-results .tab[data-tab="ct"]');
+      await page.waitFor(() => !!document.querySelector('[data-action="ct-run"]'), { message: 'the CT panel' });
+      assert(/^3 domains from the portfolio list/.test(await text(page, '.pf-ct-domains')), await text(page, '.pf-ct-domains'));
+      assert(/publicly trusted certificates only/.test(await text(page, '.pf-ct-form')), 'CT lists public certificates only');
+      assert(await page.evaluate(() => !!document.querySelector('.pf-ct-empty .empty') && document.querySelector('.pf-ct-results').hidden), 'the empty state');
+      assert(/^Cert Spotter: 0 of 10 /.test(await text(page, '[data-role="ct-quota"]')), await text(page, '[data-role="ct-quota"]'));
+      assertEqual(await page.evaluate(() => window.__ctLog.length), 0, 'nothing sent');
+    });
+
+    await run.step('Check CT: Cert Spotter one request at a time, crt.sh after its 429; new since the baseline, an unexpected CA, a wildcard, a precertificate, the radar', async () => {
+      await page.evaluate(() => { window.__ctStatus['certspotter|example-test.com.tr'] = 429; window.__ctStatus['crtsh|example-test.com.tr'] = 429; });
+      await page.click('[data-action="ct-run"]');
+      await waitCt(page);
+      const log = await page.evaluate(() => window.__ctLog.map((x) => `${x.source} ${x.domain}${x.after ? ' (next page)' : ''}`));
+      assertEqual(log, ['certspotter example.com', 'certspotter example.com (next page)', 'certspotter example.org', 'certspotter example.org (next page)',
+        'certspotter example-test.com.tr', 'crtsh example-test.com.tr'], 'the requests, in turn');
+      assertEqual(await page.evaluate(() => `${window.__ctLog[0].subdomains} ${window.__ctLog[0].expand.join(',')}`), 'true dns_names,issuer,cert_der', 'the subdomain search, the DER expanded');
+      assertEqual(await ctTiles(page), { current: '4', expiring: '1', new: '2', unexpected: '1', wildcard: '1', precert: '1' }, 'tiles');
+      assertEqual(await ctRows(page), [
+        { names: '*.example.com', flags: ['wildcard'], band: 'last' },
+        { names: 'example.org www.example.org', flags: [], band: null },
+        { names: 'example.com www.example.com', flags: ['new'], band: null },
+        { names: 'shop.example.com', flags: ['new', 'unexpected', 'precert'], band: null }
+      ], 'the newest of each name set, the soonest expiry first');
+      assert(await page.evaluate(() => !!document.querySelector('[data-role="ct-failed"] [data-domain="example-test.com.tr"] .pf-na [data-action="retry-source"]')), 'both sources failed: n/a with a Retry');
+      assert(/1 domain is checked for the first time in this workspace \(example\.org\)/.test(await text(page, '[data-note="first"]')), await text(page, '[data-note="first"]'));
+      assert(/^Cert Spotter: 5 of 10 /.test(await text(page, '[data-role="ct-quota"]')), await text(page, '[data-role="ct-quota"]'));
+      const seen = JSON.parse(await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.workspaceData('ctSeen'))));
+      assertEqual(Object.keys(seen.domains).sort(), ['example.com', 'example.org'], 'the baseline: the domains read');
+      assertEqual(Object.keys(seen.domains['example.com'].ids).length, 4, 'example.com: what it had, and what is new');
+      await setCtFilter(page, 'all');
+      const all = await ctRows(page);
+      assertEqual(all.length, 5, 'every unexpired certificate');
+      assertEqual(all.filter((r) => r.flags.includes('superseded')).map((r) => r.names), ['example.com www.example.com'], 'the renewed one is superseded');
+      await page.click('.pf-ct-tiles [data-ct-tile="precert"]');
+      assertEqual((await ctRows(page)).map((r) => r.names), ['shop.example.com'], 'a tile filters');
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="ct-filter"]').value), 'precert', 'the select follows');
+      await page.click('.pf-ct-tiles [data-ct-tile="current"]');
+      await shot(page, opts, 'portfolio-ct-desktop-light-en');
+    });
+
+    await run.step('Retry asks only that domain again: crt.sh answers this time, and the line says why Cert Spotter did not', async () => {
+      await page.evaluate(() => { delete window.__ctStatus['crtsh|example-test.com.tr']; window.__ctLog.length = 0; });
+      await page.click('[data-role="ct-failed"] [data-action="retry-source"]');
+      await page.waitFor(() => !document.querySelector('[data-role="ct-failed"]') && document.querySelectorAll('.pf-ct-table tbody tr.dt-row').length === 5, { timeout: 20000, message: 'read again' });
+      const log = await page.evaluate(() => window.__ctLog.map((x) => `${x.source} ${x.domain}`));
+      assert(log.length > 0 && log.every((l) => l.endsWith(' example-test.com.tr')) && log.at(-1) === 'crtsh example-test.com.tr', log.join(', '));
+      const line = await text(page, '[data-role="ct-reads"] [data-domain="example-test.com.tr"]');
+      assert(/crt\.sh · 1 certificate · crt\.sh answered: Cert Spotter’s quota was used up/.test(line), line);
+    });
+
+    await run.step('exports: the CSV of the rows shown; the .ics with a UID per name set and reminders on the radar\'s days', async () => {
+      await takeDownloads(page);
+      await page.click('[data-action="ct-csv"]');
+      await page.click('[data-action="ct-ics"]');
+      await page.waitFor(() => (window.__downloads || []).length === 2, { message: 'two downloads' });
+      const [csv, ics] = await takeDownloads(page);
+      assert(/^ct-watch-.*\.csv$/.test(csv.name), csv.name);
+      assert(csv.text.startsWith(`${CT_EXPORT_COLUMNS.join(',')}\r\n`), csv.text.slice(0, 160));
+      assertEqual(csv.text.trim().split('\r\n').length, 6, 'a header and the five rows shown');
+      assert(/^ct-expiry-.*\.ics$/.test(ics.name) && /text\/calendar/.test(ics.type), `${ics.name} ${ics.type}`);
+      const unfolded = ics.text.replace(/\r\n /g, '');
+      const uids = unfolded.match(/^UID:.*$/gm) || [];
+      assertEqual(uids.length, 5, 'one event per current name set');
+      assert(uids.every((u) => /^UID:ct-[0-9a-f]{16}@domainscope\r?$/.test(u)), uids.join(' '));
+      for (const d of [30, 14, 7]) assertEqual((ics.text.match(new RegExp(`TRIGGER:-P${d}D`, 'g')) || []).length, 5, `${d} days before`);
+      assert(/^SUMMARY:Certificate expires: \*\.example\.com\r?$/m.test(unfolded), 'worded');
+    });
+
+    await run.step('a second check while Cert Spotter waits out its 429: crt.sh for every domain, the same ids, nothing new; it says what it compared with', async () => {
+      await page.evaluate(() => { window.__ctLog.length = 0; });
+      await page.click('[data-action="ct-run"]');
+      await waitCt(page, 'checked again');
+      assertEqual((await page.evaluate(() => window.__ctLog.map((x) => `${x.source} ${x.domain}`))).sort(), ['crtsh example-test.com.tr', 'crtsh example.com', 'crtsh example.org'], 'crt.sh only');
+      assert(await page.evaluate(() => !!document.querySelector('[data-role="ct-quota"] [data-quota="out"]')), 'the quota line says Cert Spotter waits');
+      const tiles = await ctTiles(page);
+      assertEqual([tiles.current, tiles.new, tiles.precert], ['5', '0', '0'], 'the same certificates, nothing new; crt.sh cannot tell a precertificate');
+      assert(/crt\.sh does not say which entries are precertificates/.test(await text(page, '.pf-ct-sources')), 'says so');
+      assert(await page.evaluate(() => !document.querySelector('[data-note="first"]')), 'no first check any more');
+      assert(/^Compared with the check of /.test(await text(page, '.pf-ct [data-note="compared"]')), await text(page, '.pf-ct [data-note="compared"]'));
+      await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.setWorkspaceData('expectedCas', [])));
+      await page.waitFor(() => document.querySelector('.pf-ct-tiles [data-ct-tile="unexpected"] .stat-value')?.textContent.trim() === '0', { message: 'no expected CAs: no flag' });
+      await page.click('.pf-results .tab[data-tab="domains"]');
+    });
+
     run.group('Phone 375 and 320 px, desktop, Turkish / English, light / dark');
     await run.step('the table and the matrix as cards: no horizontal scroll; TR / EN × light / dark, both tabs', async () => {
       await page.click('[data-action="pf-run"]');
@@ -453,6 +619,10 @@ async function main() {
           await tab('policy');
           await assertNoHorizontalScroll(page, `policy ${scheme} ${lang}`);
           await shot(page, opts, `portfolio-policy-mobile-${scheme}-${lang}`);
+          await tab('ct');
+          assertEqual(await page.evaluate(() => document.querySelectorAll('.pf-ct-table tbody tr.dt-row').length), 5, `the CT check kept (${lang})`);
+          await assertNoHorizontalScroll(page, `ct ${scheme} ${lang}`);
+          await shot(page, opts, `portfolio-ct-mobile-${scheme}-${lang}`);
         }
       }
       await tab('domains');
@@ -483,6 +653,9 @@ async function main() {
       assertEqual(parkedWhole, ['-all'], '"-all" never breaks after its hyphen');
       await tab('policy');
       await shot(page, opts, 'portfolio-policy-mobile320-dark-tr');
+      await tab('ct');
+      await assertNoHorizontalScroll(page, 'ct 320 tr dark');
+      await shot(page, opts, 'portfolio-ct-mobile320-dark-tr');
       await tab('domains');
       await assertNoHorizontalScroll(page, 'portfolio 320 tr dark');
       await shot(page, opts, 'portfolio-results-mobile320-dark-tr');
@@ -536,6 +709,26 @@ async function main() {
         await setOnline(true);
       }
       await page.waitFor(() => document.querySelector('#page-offline')?.hidden === true, { message: 'the note goes once online' });
+    });
+
+    await run.step('offline: Check CT sends nothing either', async () => {
+      const setOnline = async (on) => {
+        await page.send('Network.emulateNetworkConditions', { offline: !on, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+        await page.waitFor((o) => navigator.onLine === o, { args: [on], message: `navigator.onLine ${on}` });
+      };
+      await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
+      await page.click('.pf-results .tab[data-tab="ct"]');
+      const before = await page.evaluate(() => window.__ctLog.length);
+      await setOnline(false);
+      try {
+        await page.click('[data-action="ct-run"]');
+        await page.waitFor(() => [...document.querySelectorAll('.toast')].some((x) => /this needs the network/.test(x.textContent)), { message: 'the offline toast' });
+        assertEqual(await page.evaluate(() => window.__ctLog.length), before, 'nothing sent');
+        assert(await page.evaluate(() => document.querySelector('[data-action="ct-stop"]').hidden), 'nothing running');
+      } finally {
+        await setOnline(true);
+      }
+      await page.click('.pf-results .tab[data-tab="domains"]');
     });
 
     run.group('Quality');

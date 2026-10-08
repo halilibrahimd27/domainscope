@@ -353,7 +353,7 @@ export function mountCtWatch(host, { ctx, domains }) {
   const headEl = h('div', { class: 'pf-ct-head-wrap' });
   const tiles = Object.fromEntries(CT_TILES.map((k) => [k, StatCard({ label: '', value: 0, onClick: () => setFilter(S.filter === k && k !== 'current' ? 'current' : k), pressed: false })]));
   for (const [k, tile] of Object.entries(tiles)) {
-    tile.el.dataset.tile = k;
+    tile.el.dataset.ctTile = k;
     tile.el.title = t('ctw.tile.hint');
   }
   const tilesEl = h('div', { class: 'pf-tiles pf-ct-tiles' }, Object.values(tiles).map((x) => x.el));

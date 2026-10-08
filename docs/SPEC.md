@@ -1219,11 +1219,12 @@ What is never sent:
 
 Every (name, type) is queried once.
 ```js
-export function planDrift(zone, { skip, skipPrivate = true, wildcardProbes = true, resolveTargets = false, maxQueries, queryTypes }) -> { rrsets, queries /* EXACTLY what driftZone sends */,
+export function planDrift(zone, { skip, skipPrivate = true, wildcardProbes = true, resolveTargets = false, maxQueries, queryTypes, dnssecTypes }) -> { rrsets, queries /* EXACTLY what driftZone sends */,
   needed, overBudget, maxQueries, names, skipped: { private, occluded, outOfZone, unsupported, escaped, dnssec, synthesized, wildcard, type, budget }, targetsHidden, internalShare }
   // queryTypes: the only types the transport can ask (§5.52: Globalping's); an RRset whose queries need another is skipped `not-queryable` at no cost
+  // dnssecTypes: more types skipped `dnssec-type` besides RRSIG and NSEC* (§5.52: DNSKEY, CDNSKEY)
 export async function driftZone(zone, { dns, resolver, signal, onRow, onProgress, maxQueries = 2000, concurrency = 6, skip, skipPrivate = true, wildcardProbes = true,
-  resolveTargets = false, queryTypes, labelFn, now }) -> { origin, startedAt, finishedAt, aborted, queries, planned, resolverPolicy,
+  resolveTargets = false, queryTypes, dnssecTypes, labelFn, now }) -> { origin, startedAt, finishedAt, aborted, queries, planned, resolverPolicy,
   preflight: { originExists, liveSerial, fileSerial, serial: 'same'|'newer'|'older'|'unknown', fileNs, liveNs, nsMatch: 'same'|'overlap'|'disjoint'|'unknown' }, rows: DriftRow[], counts }
   // Never rejects on DNS failure or cancel (aborted: true). Free rows stream first, then 2 preflight queries (SOA, NS at the origin),
   // then every other RRset. A missing origin (NXDOMAIN) turns every remaining row into error / nxdomain without another query.
@@ -2185,10 +2186,10 @@ export function checkFromRequest(req) -> { zone, sets }, encodeCheck(check) -> {
 Tests: `tests/js/changecheck.test.js` (the goldens' links round-trip, the family named where the values would read it wrong; limits, a near-limit link as URLSearchParams; every verdict; the schedule, a check no resolver answers stopping as `failed`).
 
 ### 5.52 `lib/nsparity.js` — the zone compared with the NEW provider's name servers (before the NS switch)
-DOM-free. The Zone File's live check compares the file with public DNS, which the current provider still answers; this module asks the new name servers themselves, before the registrar's NS records change. Each (name, type) is one Globalping DNS measurement (§3, `dnsQueryRequest`) with `resolver` = the new server's host name, read back into the DohClient response shape lib/zonedrift.js reads (the answers parsed by lib/zoneparse.js one line at a time, `aa` from the dig flags line, a referral's NS records and glue from the authority / additional sections), so the whole plan and evaluation of §5.23 applies: names and types only, internal-looking names skipped by default, the hidden targets of proxied / flattened / alias records never queried, one query per unique (name, type), `queryTypes: PARITY_QUERY_TYPES` (CAA, TLSA … are `not-queryable`: the CLI's job).
+DOM-free. The Zone File's live check compares the file with public DNS, which the current provider still answers; this module asks the new name servers themselves, before the registrar's NS records change. Each (name, type) is one Globalping DNS measurement (§3, `dnsQueryRequest`) with `resolver` = the new server's host name, read back into the DohClient response shape lib/zonedrift.js reads (the answers parsed by lib/zoneparse.js one line at a time, `aa` from the dig flags line, a referral's NS records and glue from the authority / additional sections), so the whole plan and evaluation of §5.23 applies: names and types only, internal-looking names skipped by default, the hidden targets of proxied / flattened / alias records never queried, one query per unique (name, type), `queryTypes: PARITY_QUERY_TYPES` (CAA, TLSA … are `not-queryable`: the CLI's job), `dnssecTypes: PARITY_SIGNED_TYPES` (DNSKEY and CDNSKEY are skipped `dnssec-type` with RRSIG and NSEC*, never asked: the signer publishes them, and the new provider's keys never match the old one's — cli/dns_parity.py's "signed live"; the runbook's DNSSEC step covers the keys).
 ```js
 export const PARITY_MODES = ['first', 'all'], PARITY_MAX_PROBES = 100, PARITY_MAX_NAMESERVERS = 8, PARITY_CONCURRENCY = 4,
-  PARITY_EXTRA_TYPES = ['A', 'AAAA', 'MX', 'TXT'], PARITY_WWW_TYPES = ['A', 'AAAA'], PARITY_QUERY_TYPES /* GP_DNS_TYPES without ANY */,
+  PARITY_EXTRA_TYPES = ['A', 'AAAA', 'MX', 'TXT'], PARITY_WWW_TYPES = ['A', 'AAAA'], PARITY_QUERY_TYPES /* GP_DNS_TYPES without ANY */, PARITY_SIGNED_TYPES = ['DNSKEY', 'CDNSKEY'],
   PARITY_STATUSES = ['same', 'different', 'missing', 'unproxied', 'extra', 'skipped', 'error'], PARITY_SEVERITY,
   PARITY_REASONS = ['ttl-differs', 'ns-new', 'ns-mismatch', 'ns-by-address', 'extra-record', 'cname-kept', 'below-cut'] /* + DRIFT_REASONS */,
   NS_STATES = ['ok', 'refused', 'not-authoritative', 'no-zone', 'servfail', 'unreachable', 'failed', 'not-run'], NS_ISSUES, PARITY_STOPS,

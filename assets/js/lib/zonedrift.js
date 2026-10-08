@@ -254,6 +254,7 @@ function buildPlan(zone, opts) {
   const skipSet = new Set(opts.skip ? [...opts.skip].map(canon) : []);
   if (opts.skipPrivate !== false) for (const n of privateLookingNames(zone)) skipSet.add(n);
   const queryTypes = opts.queryTypes ? new Set([...opts.queryTypes].map((t) => String(t).toUpperCase())) : null;
+  const dnssecTypes = opts.dnssecTypes ? new Set([...DNSSEC_TYPES, ...[...opts.dnssecTypes].map((t) => String(t).toUpperCase())]) : DNSSEC_TYPES;
 
   const groups = new Map();
   for (const r of idx.unique) {
@@ -289,7 +290,7 @@ function buildPlan(zone, opts) {
     if (recs.every((r) => idx.occludedRecords.has(r))) { zero(item, 'occluded', null, 'occluded'); continue; }
     // outside the origin: name servers ignore it (the parser's OUT_OF_ZONE), and it may be someone else's name
     if (origin && !idx.inZone(g.name)) { zero(item, 'skipped', 'out-of-zone', 'outOfZone'); continue; }
-    if (DNSSEC_TYPES.has(g.type)) { zero(item, 'skipped', 'dnssec-type', 'dnssec'); continue; }
+    if (dnssecTypes.has(g.type)) { zero(item, 'skipped', 'dnssec-type', 'dnssec'); continue; }
     item.valid = recs.filter((r) => usable(r, idx));
     if (!item.valid.length) { zero(item, 'skipped', 'unsupported-type', 'unsupported'); continue; }
     if (!encodable(g.name)) { zero(item, 'skipped', 'escaped-name', 'escaped'); continue; }
@@ -370,8 +371,9 @@ function buildPlan(zone, opts) {
  * queries go out) or the run is cancelled.
  * @param {object} zone
  * @param {{ skip?: Iterable<string>, skipPrivate?: boolean, wildcardProbes?: boolean, resolveTargets?: boolean,
- *   maxQueries?: number, queryTypes?: Iterable<string> }} [opts] `queryTypes`: the only types the transport can
- *   ask (an RRset needing another one is skipped `not-queryable`); default: any
+ *   maxQueries?: number, queryTypes?: Iterable<string>, dnssecTypes?: Iterable<string> }} [opts] `queryTypes`: the
+ *   only types the transport can ask (an RRset needing another one is skipped `not-queryable`); default: any;
+ *   `dnssecTypes`: more types skipped `dnssec-type` besides RRSIG and NSEC* (lib/nsparity.js: the keys)
  * @returns {{ rrsets: number, queries: number, needed: number, overBudget: boolean, maxQueries: number,
  *   names: number, skipped: { private: number, occluded: number, outOfZone: number, unsupported: number, escaped: number,
  *   dnssec: number, synthesized: number, wildcard: number, type: number, budget: number }, targetsHidden: number,
@@ -673,6 +675,7 @@ function safeCall(fn, arg) {
  * @param {boolean} [opts.resolveTargets=false] also query external flattened / alias targets
  * @param {Iterable<string>} [opts.queryTypes] the only types `dns` can ask: an RRset needing another is
  *   skipped (`not-queryable`) at no cost; the SOA + NS preflight types must be among them
+ * @param {Iterable<string>} [opts.dnssecTypes] more types skipped `dnssec-type`, never asked, besides RRSIG and NSEC*
  * @param {() => string} [opts.labelFn=randomLabel] the wildcard probe label
  * @param {() => Date} [opts.now]
  * @returns {Promise<{ origin: string|null, startedAt: Date, finishedAt: Date, aborted: boolean, queries: number,

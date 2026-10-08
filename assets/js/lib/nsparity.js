@@ -62,6 +62,8 @@ export const PARITY_EXTRA_TYPES = Object.freeze(['A', 'AAAA', 'MX', 'TXT']);
 export const PARITY_WWW_TYPES = Object.freeze(['A', 'AAAA']);
 /** What a parity check can ask: Globalping's DNS types without ANY (minimal answers, RFC 8482). */
 export const PARITY_QUERY_TYPES = Object.freeze(GP_DNS_TYPES.filter((t) => t !== 'ANY'));
+/** Keys the signer publishes, skipped `dnssec-type` with RRSIG and NSEC*: a new provider's never match the old one's (cli/dns_parity.py's rule). */
+export const PARITY_SIGNED_TYPES = Object.freeze(['DNSKEY', 'CDNSKEY']);
 /** Row statuses (closed set; the view translates `par.status.<status>`). */
 export const PARITY_STATUSES = Object.freeze(['same', 'different', 'missing', 'unproxied', 'extra', 'skipped', 'error']);
 export const PARITY_SEVERITY = Object.freeze({
@@ -236,7 +238,7 @@ export function planParity(zone, { nameservers = [], mode = 'first', extras = tr
   const ns = [...new Set((nameservers || []).map(String))].slice(0, PARITY_MAX_NAMESERVERS);
   const full = m === 'all' ? ns : ns.slice(0, 1);
   const serial = m === 'all' ? [] : ns.slice(1);
-  const common = { skipPrivate, wildcardProbes, queryTypes: PARITY_QUERY_TYPES };
+  const common = { skipPrivate, wildcardProbes, queryTypes: PARITY_QUERY_TYPES, dnssecTypes: PARITY_SIGNED_TYPES };
   const whole = planDrift(zone, { ...common, maxQueries: DRIFT_MAX_BUDGET });
   const extra = extras ? extraQueries(zone, { skipPrivate }) : [];
   const idx = zoneIndex(zone);
@@ -811,6 +813,7 @@ export async function runParity(zone, opts = {}) {
         skipPrivate,
         wildcardProbes,
         queryTypes: PARITY_QUERY_TYPES,
+        dnssecTypes: PARITY_SIGNED_TYPES,
         labelFn,
         now,
         onRow: (row) => {

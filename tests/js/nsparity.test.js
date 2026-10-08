@@ -443,6 +443,20 @@ describe('runParity', () => {
     assert.deepEqual([sum.verdict, sum.unchecked, switchOf(off.result)], ['partial', 1, 'warn']);
   });
 
+  test('a signed export: the old provider\'s DNSKEY / CDNSKEY are signed live, never asked or compared (the CLI\'s rule)', async () => {
+    const key = { flags: 257, protocol: 3, algorithm: 13, publicKey: 'AAAA' };
+    const z = zone([SOA_ROW, ['@', 'NS', 'ns1.example.org.'], ['@', 'DNSKEY', key], ['@', 'CDNSKEY', key], ['@', 'A', '192.0.2.10']]);
+    const plan = planParity(z, { nameservers: [NS1], extras: false });
+    assert.deepEqual([plan.skipped.dnssec, plan.skipped.type], [2, 0], 'not a type left to the CLI');
+    const records = { 'example.com|NS': [[300, `${NS1}.`]], 'example.com|A': [[300, '192.0.2.10']], 'example.com|DNSKEY': [[300, '257 3 13 BBBB']] };
+    const { result, client, row } = await run(z, { [NS1]: { records } }, { nameservers: [NS1], extras: false });
+    assert.equal(status(row(`${NS1}|example.com|DNSKEY`)), 'skipped dnssec-type');
+    assert.equal(status(row(`${NS1}|example.com|CDNSKEY`)), 'skipped dnssec-type');
+    assert.ok(!client.calls.some((b) => b.measurementOptions.query.type === 'DNSKEY'), 'never asked');
+    assert.deepEqual([paritySummary(result).verdict, paritySummary(result).unchecked], ['ready', 0]);
+    assert.equal(parityRunbook(z, result, { nameservers: [NS1] }).find((s) => s.id === 'dnssec').state, 'todo', 'the DNSSEC step still says what to do');
+  });
+
   test('a first server that refuses the zone costs one probe; the next one is compared instead', async () => {
     const { result, client } = await run(z, { [NS1]: { refuse: true }, [NS2]: { records: good } }, { nameservers: [NS1, NS2] });
     assert.deepEqual(result.nameservers.map((s) => [s.ns, s.role, s.state]), [[NS1, 'full', 'refused'], [NS2, 'full', 'ok']]);

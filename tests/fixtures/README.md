@@ -78,6 +78,19 @@ Deep CA comes from the certificate records and a PEM report row, the others from
 report". `--dataset` rebuilds only the test dataset from the PEM files (after a change to the
 builder's output). The shared DER encoder of both generators is `der-builder.mjs`.
 
+Embedded SCTs (lib/sct.js, tests/js/sct.test.js, the Transparency group of the cert E2E suite):
+`gen_sct_fixtures.mjs` writes `sct/` with keys it never saves — "DomainScope Test SCT CA"
+(`sct_ca.pem`), seven test CT logs that sign real RFC 6962 SCTs over each leaf's precertificate
+entry (issuer key hash, the TBS without the SCT extension), and `sct/log_list.json`, a list of
+six of them in the format of Google's CT log list v3 (three "Example Log Operator" operators, the
+states usable, retired, readonly and pending, two static-ct-api logs whose SCTs carry a
+`leaf_index` extension; the seventh log is in no list). The `www.example.com` leaves, issued from
+2026-09-01: `sct_compliant.pem` (90 days, two operators), `sct_one_operator.pem` (one operator,
+one log retired after the SCT), `sct_long.pem` / `sct_long_ok.pem` (397 days with two and three
+SCTs), `sct_unknown.pem` (an unknown and a pending log), `sct_static_only.pem` (no RFC 6962 log,
+which Apple wants) and `sct_precert.pem` (a precertificate: the CT poison, no SCTs). `--force`
+makes new keys, so the log IDs change: the tests read them from `log_list.json`.
+
 Mail reports (lib/dmarcreport.js, lib/tlsrpt.js, lib/zipread.js, the `reports` E2E suite): `mailreports/src/`
 holds hand-written reports in the formats reporters send, with documentation data only — a Google-style
 and a Microsoft-style DMARC aggregate report for `example.com`, a DMARCbis-style one (the `dmarc-2.0`

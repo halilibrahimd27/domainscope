@@ -590,6 +590,8 @@ const CALL_SITES = {
   'assets/js/lib/lookalike.js': ['crtsh', 'rdap'],
   // Renewal readiness › Plan: the CA's ARI window, after a click
   'assets/js/lib/renewalplan.js': ['ari'],
+  // Certificate › Transparency: Google's CT log list, else this site's copy (assets/data/ctlogs.json)
+  'assets/js/lib/sct.js': ['ctloglist', 'self'],
   // Zone File › Fetch from deSEC / DigitalOcean, with the user's token
   'assets/js/lib/zonefetch.js': ['desec', 'digitalocean'],
   // the CCADB intermediate list, from this site (assets/data/intermediates/)
@@ -643,7 +645,7 @@ const LINK_HOSTS = {
   'assets/js/ui/chain-repair.js': ['www.ccadb.org'],
   // the CA/Browser Forum ballot the lifetime schedule comes from
   'assets/js/ui/renewal-planner.js': ['cabforum.org'],
-  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'letsencrypt.org', 'sslmate.com', 'www.robtex.com', 'www.shodan.io', 'www.whoisxmlapi.com'],
+  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'googlechrome.github.io', 'hackertarget.com', 'letsencrypt.org', 'sslmate.com', 'www.robtex.com', 'www.shodan.io', 'www.whoisxmlapi.com'],
   'assets/js/views/ip.js': ['bgp.he.net']
 };
 /**

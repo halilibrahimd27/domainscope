@@ -68,6 +68,18 @@ describe('Domain portfolio view helpers', () => {
     assert.deepEqual(shareParams(Array.from({ length: MAX_LINK_DOMAINS + 1 }, (_, i) => `d${i}.example.com`)), {}, 'a long list stays out of the URL');
   });
 
+  test('the expiring tile says under 30 days, as it counts (the red band): a row showing "30 days left" is not in it', () => {
+    const at = (n) => facts('example.org', { registration: { daysLeft: n, expiry: n < 30 ? 'error' : 'warn', expires: day(n + 0.5) } });
+    assert.ok(matchesFilter(at(29), 'expiring') && !matchesFilter(at(30), 'expiring'));
+    const nsAt = (n) => facts('example.com', { ns: nsOn([nsDomain('example.net', n)]) });
+    assert.ok(matchesFilter(nsAt(29), 'ns') && !matchesFilter(nsAt(30), 'ns'), 'the name server domain tile has the same edge');
+    for (const lang of ['en', 'tr']) {
+      setLang(lang);
+      assert.match(t('pf.tile.expiring'), /^[^≤]*< 30\b/, `${lang}: ${t('pf.tile.expiring')}`);
+    }
+    setLang('en');
+  });
+
   test('filters: expiring, critical, no transfer lock, name server domains (never the own one), no RDAP, failed lookups, the policy, what needs a look', () => {
     const fine = facts('example.com');
     const soon = facts('example.org', { registration: { daysLeft: 20, expiry: 'error', expires: day(20) } });

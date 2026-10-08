@@ -102,7 +102,7 @@ registerStrings('en', {
   'pf.tab.policy': 'Policy audit',
 
   'pf.tile.domains': 'Domains',
-  'pf.tile.expiring': 'Expire ≤ 30 days',
+  'pf.tile.expiring': 'Expire < 30 days',
   'pf.tile.critical': 'Critical status',
   'pf.tile.unlocked': 'No transfer lock',
   'pf.tile.ns': 'Name server domain at risk',
@@ -289,7 +289,7 @@ registerStrings('tr', {
   'pf.tab.policy': 'Politika denetimi',
 
   'pf.tile.domains': 'Alan adları',
-  'pf.tile.expiring': '≤ 30 günde doluyor',
+  'pf.tile.expiring': '< 30 günde doluyor',
   'pf.tile.critical': 'Kritik durum',
   'pf.tile.unlocked': 'Transfer kilidi yok',
   'pf.tile.ns': 'Riskli ad sunucusu alan adı',

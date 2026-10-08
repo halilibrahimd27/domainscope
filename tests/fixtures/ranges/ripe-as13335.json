@@ -1,0 +1,15 @@
+{
+  "status": "ok",
+  "status_code": 200,
+  "data_call_name": "announced-prefixes",
+  "data": {
+    "prefixes": [
+      { "prefix": "192.0.2.0/24", "timelines": [{ "starttime": "2026-09-24T00:00:00", "endtime": "2026-10-08T00:00:00" }] },
+      { "prefix": "198.51.100.32/27", "timelines": [{ "starttime": "2026-09-24T00:00:00", "endtime": "2026-10-08T00:00:00" }] },
+      { "prefix": "2001:db8:cf::/48", "timelines": [{ "starttime": "2026-09-24T00:00:00", "endtime": "2026-10-08T00:00:00" }] }
+    ],
+    "resource": "13335",
+    "latest_time": "2026-10-08T00:00:00",
+    "earliest_time": "2026-09-24T00:00:00"
+  }
+}

@@ -101,6 +101,16 @@ SCTs), `sct_unknown.pem` (an unknown and a pending log), `sct_static_only.pem` (
 which Apple wants) and `sct_precert.pem` (a precertificate: the CT poison, no SCTs). `--force`
 makes new keys, so the log IDs change: the tests read them from `log_list.json`.
 
+Provider IP ranges (tools/build-ranges.mjs, `tests/js/build-ranges.test.js`): `ranges/` holds one
+hand-written answer per published list, each shaped exactly like the real source but with
+documentation prefixes only (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `2001:db8::/32`)
+— `cloudflare-ips-v4.txt` / `cloudflare-ips-v6.txt` (one prefix a line), `fastly.json`, `aws.json`
+(CloudFront tagged, plus other services), `github-meta.json` (Pages among other keys), `goog.json`
+and `cloud.json`, `oracle.json`, `digitalocean.csv` (an RFC 8805 geofeed) and the two RIPEstat
+`ripe-as*.json`. They are a complete offline cache, so `downloadSource(..., { cache: FIX, offline:
+true })` reads them; the builder's checks refuse documentation space, so the tests pass a permissive
+`routable`. No generator: the fixtures are small enough to edit by hand.
+
 Mail reports (lib/dmarcreport.js, lib/tlsrpt.js, lib/zipread.js, the `reports` E2E suite): `mailreports/src/`
 holds hand-written reports in the formats reporters send, with documentation data only — a Google-style
 and a Microsoft-style DMARC aggregate report for `example.com`, a DMARCbis-style one (the `dmarc-2.0`

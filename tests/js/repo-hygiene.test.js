@@ -11,6 +11,10 @@
  *        (netinfo.matchProviderByIP) or an ECS vantage subnet (GEO_VANTAGES); or
  *      - well-known public infrastructure / a conventional placeholder listed in
  *        WELL_KNOWN below, with its owner.
+ *    The provider range dataset (assets/data/ranges, tools/build-ranges.mjs) is
+ *    product data too: the prefixes of its two tier files are exempt, one by one,
+ *    while each file matches the SHA-256 its manifest records and the manifest
+ *    names exactly the builder's official sources (a hand edit fails).
  *    Anything else — an origin IP captured from a live scan, this machine's
  *    egress address, a customer's server — fails with file:line. Use a
  *    documentation range instead (192.0.2.x, 198.51.100.x, 203.0.113.x).
@@ -32,6 +36,8 @@ import { dirname, extname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ipInCidr, matchProviderByIP } from '../../assets/js/lib/netinfo.js';
 import { GEO_VANTAGES } from '../../assets/js/lib/resolvers.js';
+import { createHash } from 'node:crypto';
+import { SOURCES as RANGE_SOURCES } from '../../tools/build-ranges.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -52,6 +58,15 @@ const isPrivateFile = (rel) => rel === '.private-denylist' || rel.endsWith('.loc
  */
 const DER_SHARD = /^(?:assets\/data|tests\/fixtures)\/intermediates\/ski\/[0-9a-f]+\.json$/;
 const blankDer = (rel, text) => (DER_SHARD.test(rel) ? text.replace(/"der":"[A-Za-z0-9+/=]*"/g, '"der":""') : text);
+/**
+ * The two tier files of the provider range dataset (tools/build-ranges.mjs): the prefixes the
+ * providers publish for allow-listing, merged, one JSON string a line. An address there is exempt
+ * only as the network of such a prefix string ("3.0.0.0/15"), and only while the file matches its
+ * manifest (checked below); any other literal in them, and every other file, is scanned as usual.
+ */
+const RANGE_TIER = /^assets\/data\/ranges\/(?:edges|networks)\.json$/;
+const isRangePrefix = (rel, text, index, ip) => RANGE_TIER.test(rel) && text[index - 1] === '"'
+  && /^\/\d{1,3}"/.test(text.slice(index + ip.length, index + ip.length + 5));
 
 const toRel = (p) => relative(ROOT, p).split(sep).join('/');
 
@@ -237,6 +252,27 @@ test('hygiene: only the base64 DER values of the intermediate shards are left ou
   assert.ok(repoFiles().some((f) => DER_SHARD.test(f.rel) && f.text.includes('"owner"')), 'the shards are still scanned');
 });
 
+test('hygiene: the provider range dataset is the builder\'s own output, so only its prefixes are exempt', () => {
+  const dir = join(ROOT, 'assets', 'data', 'ranges');
+  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+  assert.deepEqual(manifest.sources.map((s) => s.url), RANGE_SOURCES.map((s) => s.url), 'the sources of tools/build-ranges.mjs');
+  const tiers = readdirSync(dir).filter((f) => f !== 'manifest.json');
+  assert.deepEqual(tiers.sort(), Object.keys(manifest.files).sort(), 'every file of the dataset is in its manifest');
+  for (const name of tiers) {
+    const text = readFileSync(join(dir, name), 'utf8');
+    assert.equal(createHash('sha256').update(text).digest('hex'), manifest.files[name].sha256,
+      `assets/data/ranges/${name} differs from its manifest: rebuild it with tools/build-ranges.mjs, never by hand`);
+    assert.ok(RANGE_TIER.test(`assets/data/ranges/${name}`), name);
+  }
+  // the exemption covers a prefix string of a tier file, nothing else
+  assert.ok(isRangePrefix('assets/data/ranges/edges.json', '"192.0.2.0/24",', 1, '192.0.2.0'));
+  assert.ok(isRangePrefix('assets/data/ranges/networks.json', '"192.0.2.128/25"\n', 1, '192.0.2.128'));
+  assert.equal(isRangePrefix('assets/data/ranges/edges.json', 'see 192.0.2.0/24', 4, '192.0.2.0'), false);
+  assert.equal(isRangePrefix('assets/data/ranges/edges.json', '"192.0.2.1",', 1, '192.0.2.1'), false);
+  assert.equal(isRangePrefix('assets/data/ranges/manifest.json', '"192.0.2.0/24",', 1, '192.0.2.0'), false);
+  assert.equal(isRangePrefix('tests/fixtures/ranges/edges.json', '"192.0.2.0/24",', 1, '192.0.2.0'), false);
+});
+
 test('hygiene: every IPv4 literal is documentation space, product data or well-known infrastructure', () => {
   const files = repoFiles();
   assert.ok(files.length > 50, `scanned ${files.length} files`);
@@ -245,7 +281,7 @@ test('hygiene: every IPv4 literal is documentation space, product data or well-k
   for (const { rel, text } of files) {
     if (!/\d\.\d/.test(text)) continue;
     for (const { ip, index, asName } of ipv4Literals(text)) {
-      if (!checkIp(ip, asName)) bad.push(`${rel}:${lineOf(text, index)} ${ip}`);
+      if (!checkIp(ip, asName) && !isRangePrefix(rel, text, index, ip)) bad.push(`${rel}:${lineOf(text, index)} ${ip}`);
     }
   }
   assert.deepEqual(bad, [], `real-world IPv4 addresses found — use 192.0.2.x / 198.51.100.x / 203.0.113.x instead (or, for public infrastructure, add it to WELL_KNOWN with its owner):\n  ${bad.join('\n  ')}`);

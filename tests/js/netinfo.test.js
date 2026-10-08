@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
   ipVersion, normalizeIP, parseIP, parseCidr, ipInCidr, isPrivateIP, privateRangeOf, isGloballyRoutable,
   reversePtrName, formatIP, RANGES_UPDATED, PROVIDERS, getProvider,
-  matchProviderByIP, matchProviderByCname, classifyResolution, isSharedProvider, SHARED_PROVIDER_CATEGORIES
+  matchProviderByIP, matchProviderByCname, classifyResolution, isSharedProvider, SHARED_PROVIDER_CATEGORIES,
+  RANGES_FORMAT, NETWORKS, installRanges, loadRanges, rangesInfo, matchNetworkByIP
 } from '../../assets/js/lib/netinfo.js';
 
 /* -------------------------------------------------------------------- */
@@ -450,4 +451,144 @@ test('isSharedProvider: a DNS-only steering provider and null / unknown are not 
   assert.equal(isSharedProvider(undefined), false);
   assert.equal(isSharedProvider({}), false);
   assert.equal(isSharedProvider({ category: 'router' }), false, 'an unknown category is not shared');
+});
+
+/* -------------------------------------------------------------------- */
+/* the weekly range dataset (installRanges / loadRanges / rangesInfo)   */
+/* -------------------------------------------------------------------- */
+
+// Documentation prefixes only; none is in the built-in table above, so a match proves the dataset
+// (not the built-in table) is in use. 198.51.100.0/24 stands in for a provider's edge ranges.
+const SAMPLE = Object.freeze({
+  manifest: { format: RANGES_FORMAT, generated: '2026-10-08' },
+  edges: { cloudflare: ['198.51.100.0/24', '2001:db8:cf::/48'], fastly: ['203.0.113.64/26'] },
+  networks: { aws: ['203.0.113.0/25'], cloudflare: ['198.51.100.0/23'] }
+});
+const rangeJson = (body) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+/** A fake fetch serving the three dataset files by name; `over` replaces one body (or a thrower). */
+const rangeFetch = (over = {}) => {
+  const files = { 'manifest.json': SAMPLE.manifest, 'edges.json': SAMPLE.edges, 'networks.json': SAMPLE.networks, ...over };
+  return async (url) => rangeJson(files[String(url).split('/').pop()]);
+};
+
+test('ranges: with no dataset loaded, the built-in table is in use and there is no network tier', () => {
+  const info = rangesInfo();
+  assert.equal(info.source, 'built-in');
+  assert.equal(info.updated, RANGES_UPDATED);
+  assert.equal(info.error, null);
+  assert.deepEqual(info.networks, {});
+  assert.equal(matchNetworkByIP('203.0.113.1'), null);
+  assert.equal(matchProviderByIP('198.51.100.1'), null, 'a documentation address is in no built-in edge range');
+});
+
+test('ranges: installRanges swaps a provider\'s edge table and adds the network tier; null restores the built-in', () => {
+  try {
+    const info = installRanges(SAMPLE);
+    assert.equal(info.source, 'data');
+    assert.equal(info.updated, '2026-10-08');
+    assert.equal(info.error, null);
+    assert.equal(info.edges.cloudflare, 2, 'the dataset list, not the built-in one');
+    assert.equal(info.edges.fastly, 1);
+    assert.equal(info.edges.cloudfront, getProvider('cloudfront').cidrs.length, 'a provider the dataset omits keeps its built-in ranges');
+    assert.equal(info.networks.aws, 1);
+    // the edge tier decides matchProviderByIP
+    assert.equal(matchProviderByIP('198.51.100.1').id, 'cloudflare');
+    assert.equal(matchProviderByIP('2001:db8:cf::5').id, 'cloudflare');
+    assert.equal(matchProviderByIP('203.0.113.70').id, 'fastly');
+    assert.equal(matchProviderByIP('203.0.113.200'), null, 'outside every edge range');
+    // the network tier names an operator (display only)
+    assert.equal(matchNetworkByIP('203.0.113.10').id, 'aws');
+    assert.equal(matchNetworkByIP('198.51.100.1').id, 'cloudflare');
+  } finally {
+    assert.equal(installRanges(null).source, 'built-in');
+  }
+  assert.equal(matchProviderByIP('198.51.100.1'), null, 'the built-in table is back');
+  assert.equal(matchNetworkByIP('203.0.113.10'), null);
+});
+
+test('ranges: classifyResolution takes the kind from the edge tier and names the network of a direct answer', () => {
+  try {
+    installRanges(SAMPLE);
+    const edge = classifyResolution({ ipv4: ['198.51.100.1'] });
+    assert.equal(edge.kind, 'cloudflare');
+    assert.equal(edge.provider.id, 'cloudflare');
+    assert.equal(edge.network, undefined, 'an edge answer carries no network key');
+    const direct = classifyResolution({ ipv4: ['203.0.113.10'] });
+    assert.equal(direct.kind, 'direct');
+    assert.equal(direct.network.id, 'aws');
+    assert.equal(direct.network.tier, 'network');
+    assert.equal(classifyResolution({ ipv4: ['203.0.113.200'] }).network, undefined, 'an address in no tier is a plain direct answer');
+  } finally {
+    installRanges(null);
+  }
+});
+
+test('ranges: a dataset of another format or a bad shape is refused whole, errorKind "parse"', () => {
+  try {
+    for (const bad of [
+      { manifest: { format: 2, generated: '2026-10-08' }, edges: {}, networks: {} },
+      { manifest: { format: RANGES_FORMAT }, edges: {}, networks: {} }, // no date
+      { manifest: SAMPLE.manifest, edges: { cloudflare: ['not-a-prefix'] }, networks: {} },
+      { manifest: SAMPLE.manifest, edges: { cloudflare: [] }, networks: {} }, // an empty list
+      { manifest: SAMPLE.manifest, edges: [], networks: {} } // not an object
+    ]) {
+      const info = installRanges(bad);
+      assert.equal(info.source, 'built-in', JSON.stringify(bad.manifest));
+      assert.equal(info.errorKind, 'parse');
+      assert.ok(info.error);
+    }
+    assert.equal(matchProviderByIP('198.51.100.1'), null, 'a refused dataset never touches the ranges');
+  } finally {
+    installRanges(null);
+  }
+});
+
+test('ranges: NETWORKS is the frozen list of network-tier operators the builder fills', () => {
+  assert.ok(Object.isFrozen(NETWORKS));
+  assert.ok(NETWORKS.length >= 5);
+  assert.ok(NETWORKS.every((n) => n.tier === 'network' && typeof n.id === 'string' && typeof n.name === 'string'));
+  assert.ok(NETWORKS.some((n) => n.id === 'cloudflare') && NETWORKS.some((n) => n.id === 'aws'));
+});
+
+test('ranges: loadRanges reads the three files through an injected fetch, installs them, then reuses them', async () => {
+  try {
+    const info = await loadRanges({ fetchImpl: rangeFetch() });
+    assert.equal(info.source, 'data');
+    assert.equal(matchProviderByIP('198.51.100.1').id, 'cloudflare');
+    assert.equal(matchNetworkByIP('203.0.113.10').id, 'aws');
+    let calls = 0;
+    await loadRanges({ fetchImpl: async (u) => { calls += 1; return rangeFetch()(u); } });
+    assert.equal(calls, 0, 'the installed dataset is reused without fetching again');
+  } finally {
+    installRanges(null);
+  }
+});
+
+test('ranges: a failed load leaves the built-in table in use, as a status, and is retried next time', async () => {
+  try {
+    const info = await loadRanges({ fetchImpl: async () => new Response('busy', { status: 503 }), timeoutMs: 2000 });
+    assert.equal(info.source, 'built-in');
+    assert.equal(info.errorKind, 'http');
+    assert.ok(info.error);
+    assert.equal(matchProviderByIP('198.51.100.1'), null);
+    // a refused download (bad JSON) is a parse failure
+    const bad = await loadRanges({ fetchImpl: async () => rangeJson(undefined), timeoutMs: 2000 });
+    assert.equal(bad.source, 'built-in');
+    // the next call tries again and can succeed
+    assert.equal((await loadRanges({ fetchImpl: rangeFetch() })).source, 'data');
+  } finally {
+    installRanges(null);
+  }
+});
+
+test('ranges: only an abort of the signal rejects loadRanges (the shared load is untouched)', async () => {
+  try {
+    // callers await loadRanges, so an already-aborted signal surfaces as a rejection
+    await assert.rejects(
+      (async () => loadRanges({ fetchImpl: async () => { throw new Error('not awaited'); }, signal: AbortSignal.abort() }))(),
+      (e) => e.name === 'AbortError'
+    );
+  } finally {
+    installRanges(null);
+  }
 });

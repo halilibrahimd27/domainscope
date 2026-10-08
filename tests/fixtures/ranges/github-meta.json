@@ -1,0 +1,8 @@
+{
+  "verifiable_password_authentication": false,
+  "hooks": ["198.51.100.200/29"],
+  "web": ["198.51.100.208/28"],
+  "pages": ["198.51.100.153/32", "198.51.100.154/32", "2001:db8:9::153/128"],
+  "actions": ["198.51.100.224/27"],
+  "domains": { "website": ["*.example.com"] }
+}

@@ -138,6 +138,34 @@ describe('intermediates.yml', () => {
   });
 });
 
+describe('ranges.yml', () => {
+  const yml = read('.github/workflows/ranges.yml');
+  const j = jobs(yml);
+
+  test('runs weekly and by hand, one at a time', () => {
+    assert.match(yml, /^name: Ranges$/m);
+    assert.deepEqual(keysAt(block(yml, 'on'), 2).sort(), ['schedule', 'workflow_dispatch']);
+    assert.match(block(yml, 'on').join('\n'), /schedule:\n {4}- cron: '\d+ \d+ \* \* \d'/);
+    assert.match(yml, /^concurrency:\n {2}group: ranges\n {2}cancel-in-progress: false$/m);
+  });
+
+  test('builds, checks the data before anything is pushed, and only ever proposes it in a pull request', () => {
+    assert.deepEqual(Object.keys(j), ['rebuild']);
+    assert.doesNotMatch(block(yml, 'permissions').join('\n'), /write/, 'write access only in the job');
+    assert.match(j.rebuild, /^ {6}contents: write$/m);
+    assert.match(j.rebuild, /^ {6}pull-requests: write$/m);
+    const build = j.rebuild.indexOf('run: node tools/build-ranges.mjs');
+    const check = j.rebuild.indexOf('run: node --test tests/js/build-ranges.test.js');
+    const push = j.rebuild.indexOf('git push --force origin "$branch"');
+    assert.ok(build > 0 && check > build && push > check, 'build, then check, then push');
+    assert.match(j.rebuild, /^ {10}branch=bot\/ranges$/m);
+    assert.match(j.rebuild, /git add -- assets\/data\/ranges/);
+    assert.match(j.rebuild, /gh pr create --head "\$branch" --base main/);
+    assert.doesNotMatch(j.rebuild, /push[^\n]*\bmain\b/, 'never pushes to main');
+    assert.ok(existsSync(join(ROOT, 'tools', 'build-ranges.mjs')));
+  });
+});
+
 describe('pages.yml', () => {
   const j = jobs(pages);
 
@@ -168,7 +196,7 @@ describe('pages.yml', () => {
 test('every action of the workflows and the nightly template is pinned to a commit SHA, its version in a comment', () => {
   // A tag can be moved; a commit cannot. The deploy job can write to Pages, the bot job to this
   // repository, and the template's copies to their users' repositories.
-  for (const file of ['.github/workflows/ci.yml', '.github/workflows/intermediates.yml', '.github/workflows/pages.yml', 'docs/examples/nightly-domainscope.yml']) {
+  for (const file of ['.github/workflows/ci.yml', '.github/workflows/intermediates.yml', '.github/workflows/ranges.yml', '.github/workflows/pages.yml', 'docs/examples/nightly-domainscope.yml']) {
     const uses = [...read(file).matchAll(/^ +(?:- )?uses: (.+)$/gm)].map((m) => m[1]).filter((u) => !u.startsWith('./'));
     assert.ok(uses.length >= 2, file);
     for (const u of uses) assert.match(u, /^actions\/[a-z-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/, `${file}: ${u}`);

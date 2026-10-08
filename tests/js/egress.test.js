@@ -598,6 +598,8 @@ const CALL_SITES = {
   // the CCADB intermediate list, from this site (assets/data/intermediates/)
   'assets/js/lib/chainfix.js': ['self'],
   'assets/js/lib/wordlist.js': ['self'],
+  // the weekly provider range dataset, from this site (assets/data/ranges/)
+  'assets/js/lib/netinfo.js': ['self'],
   'assets/js/lib/scanner.js': [],
   'assets/js/lib/health.js': [],
   'assets/js/views/bulk.js': [],

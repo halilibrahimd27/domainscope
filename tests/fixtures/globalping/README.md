@@ -137,6 +137,15 @@ refused, a wildcard target too.
 | `d13-tcp-aaaa.json` | AAAA over TCP (`protocol: 'TCP'`) |
 | `d14-proxied-a.json` | A of a proxied name at Cloudflare: edge addresses, no CNAME |
 
+**DNS through the probes' own resolvers** (Global DNS › ISP resolvers, `lib/ispdns.js`):
+`isp-default-resolvers.json` is written by hand in the shape of a live measurement of 2026-10-08
+without `measurementOptions.resolver` (two probes, read once from a scratch script; no live data is
+kept). Each probe asks its default resolver: `result.resolver` reads `private` for a private one
+(the dig SERVER line is masked as `x.x.x.x`) or the address of a public one, and the TTLs are what
+is left of each cache. Six probes: Berlin and Chicago (through Google Public DNS) on the new
+address, Istanbul still on the old one with 1,500 s left, a resolver in São Paulo that timed out,
+a cached NXDOMAIN in Sydney with its SOA in the authority section, and Johannesburg still asking.
+
 **HTTPS GET at an address** (Retire an IP › old and new server, captured 2026-09-28, 2 probes):
 `h01` is a GET of `/` at 140.82.121.3 with `request.host` github.com, `h02` the same at
 140.82.121.4 with `locations` = h01's id: the same probe answered both (GitHub's addresses and

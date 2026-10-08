@@ -165,11 +165,11 @@ export const EGRESS_SERVICES = Object.freeze([
       ep('limits', ['nothing'], { path: '/*/limits' }),
       // One endpoint for every check: lib/globalping.js says whether the body sends an address
       // (Verify, the old-versus-new server comparison), a host name alone (MTA-STS, HTTP-01) or a DNS
-      // question for a name server (Zone File › New name servers); a request without its note may
-      // have sent any of them.
+      // question for a name server (Zone File › New name servers) or for the probes' own resolvers
+      // (Global DNS › ISP resolvers); a request without its note may have sent any of them.
       ep('create', ['dnsQuestions', 'nameServers', 'hostnames', 'ipNamePairs'], {
         path: '/*/measurements',
-        notes: { 'host-target': ['hostnames'], 'ip-target': ['ipNamePairs'], 'dns-query': ['dnsQuestions', 'nameServers'] }
+        notes: { 'host-target': ['hostnames'], 'ip-target': ['ipNamePairs'], 'dns-query': ['dnsQuestions', 'nameServers'], 'dns-own': ['dnsQuestions'] }
       }),
       ep('result', ['measurementIds'], { path: '/*/measurements/*' })
     ]

@@ -19,7 +19,7 @@ const STEER = cname('tp.frontier.example.com');
 
 describe('propagationVerdict', () => {
   test('exports its states and finding codes', () => {
-    assert.deepEqual(VERDICT_STATES, ['none', 'unresolved', 'agree', 'by-design', 'geo', 'differ']);
+    assert.deepEqual(VERDICT_STATES, ['none', 'unresolved', 'agree', 'by-design', 'geo', 'stale', 'differ']);
     assert.deepEqual(VERDICT_FINDINGS, ['rcode', 'nxdomain', 'nodata', 'private', 'mixed', 'cname', 'operators', 'direct', 'records']);
     assert.deepEqual(splitChain(['192.0.2.1', 'CNAME a.example.net', 'CNAME b.example.net']), { plain: ['192.0.2.1'], chain: ['a.example.net', 'b.example.net'] });
   });

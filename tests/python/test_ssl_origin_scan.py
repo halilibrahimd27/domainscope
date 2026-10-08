@@ -4925,7 +4925,7 @@ class CompatibilityTests(unittest.TestCase):
                   'textwrap', 'threading', 'time', 'concurrent.futures', 'dataclasses',
                   'datetime', 'typing', 'ctypes', 'msvcrt', 'codecs', 'stat', 'unicodedata',
                   'encodings', 'http.client', 'urllib.error', 'urllib.parse',
-                  'urllib.request'}
+                  'urllib.request', 'warnings'}
         self.assertLessEqual(imports, stdlib, imports - stdlib)
 
 

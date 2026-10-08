@@ -653,7 +653,7 @@ describe('x509 loadCertificates', () => {
 
   test('two bundles in one input: the first opens, the second is said to be skipped', async () => {
     const der = read('p12_rsa_aes.p12');
-    const r = await loadCertificates(pemEncode(der, 'PKCS12') + pemEncode(read('p12_ec_aes128.p12'), 'PKCS12'), { password: PASS });
+    const r = await loadCertificates(pemEncode(der, 'PKCS12') + pemEncode(read('p12_ec_aes128.p12'), 'PKCS12'), { password: PASS, now: NOW }); // the bundles' certificates expire on 2050-01-01
     assert.equal(r.leaf.subjectCN, 'p12.example.com');
     assert.deepEqual(r.warnings, [{ code: 'PARSE_ERROR', detail: 'PKCS#12 bundle 2: not opened (one bundle per file; load it on its own)' }]);
   });

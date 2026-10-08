@@ -5,7 +5,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -185,6 +185,8 @@ test('build-ranges: downloads are checked before they are cached, and --offline 
     assert.deepEqual(JSON.parse(text).addresses, ['198.51.100.0/27']);
     assert.deepEqual(calls, [{ url: 'https://api.fastly.com/public-ip-list', ua: calls[0].ua, signal: true }]);
     assert.match(calls[0].ua, /^domainscope-build-ranges/);
+    // fresh by the clock the process has: a time-travel run (tests/time-travel.mjs) moves the clock, not the file system
+    await utimes(join(cache, src.file), new Date(), new Date());
     assert.equal(await downloadSource(src, { cache, fetchImpl, log: quiet }), text);
     assert.equal(calls.length, 1, 'cached for 12 h');
     assert.equal(await readFile(join(cache, src.file), 'utf8'), text);

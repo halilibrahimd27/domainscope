@@ -163,8 +163,9 @@ describe('cert view: where the file\'s chain stops short of a root (chainEndVerd
       url: new URL('../fixtures/intermediates/manifest.json', import.meta.url).href,
       fetchImpl: async (url) => new Response(readFileSync(new URL(url)), { status: 200 })
     });
-    const verdict = async (...files) => chainEndVerdict({ status: 'done', repair: await repairChain(read(...files), { store, now: new Date('2026-09-28T12:00:00Z') }) });
-    assert.deepEqual(analyzeChain(read('chainfix_leaf_deep.pem', 'chainfix_deep_ca.pem').certificates).issues.map((i) => i.code), ['ends-at']);
+    const now = new Date('2026-09-28T12:00:00Z'); // the Deep CA expires on 2038-06-01: the real clock would add 'expired' then
+    const verdict = async (...files) => chainEndVerdict({ status: 'done', repair: await repairChain(read(...files), { store, now }) });
+    assert.deepEqual(analyzeChain(read('chainfix_leaf_deep.pem', 'chainfix_deep_ca.pem').certificates, null, now).issues.map((i) => i.code), ['ends-at']);
     assert.equal(await verdict('chainfix_leaf_deep.pem', 'chainfix_deep_ca.pem'), 'intermediate');
     assert.equal(await verdict('chainfix_leaf.pem', 'chainfix_inter.pem'), 'root');
   });
@@ -198,7 +199,8 @@ describe('cert view: the bundled sample certificate', () => {
   });
 
   test('a leaf for example.com / example.net and its intermediate, from a made-up CA, valid for years', () => {
-    const r = parseCertificates(text, { now: new Date('2026-09-27T00:00:00Z') });
+    const now = new Date('2026-09-27T00:00:00Z');
+    const r = parseCertificates(text, { now });
     assert.equal(r.certificates.length, 2);
     assert.deepEqual(r.warnings, []);
     const leaf = r.leaf;
@@ -211,7 +213,7 @@ describe('cert view: the bundled sample certificate', () => {
     assert.equal(leaf.issuer.O, 'DomainScope Sample');
     assert.ok(leaf.notAfter >= new Date('2035-12-31T00:00:00Z'), 'does not expire on screen any time soon');
     assert.deepEqual(caaIssuerInfo(leaf.issuer), [], 'not a public CA: the CT tab never searches crt.sh for it by itself');
-    const chain = analyzeChain(r.certificates, leaf);
+    const chain = analyzeChain(r.certificates, leaf, now);
     assert.deepEqual(chain.ordered.map((c) => c.subjectCN), ['example.com', 'DomainScope Sample Intermediate CA']);
     assert.deepEqual(chain.issues.map((i) => i.code), ['ends-at'], 'leaf + intermediate, the root left to trust stores');
   });

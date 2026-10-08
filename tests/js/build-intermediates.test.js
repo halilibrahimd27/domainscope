@@ -95,6 +95,8 @@ describe('downloadCsv', () => {
       assert.deepEqual(await downloadCsv(source, required, t.opts), [{ 'SHA-256 Fingerprint': 'AA', 'PEM Info': 'x' }]);
       assert.equal(readFileSync(t.file, 'utf8'), good);
       assert.ok(t.calls[0].init.signal instanceof AbortSignal, 'with a time limit');
+      // fresh by the clock the process has: a time-travel run (tests/time-travel.mjs) moves the clock, not the file system
+      utimesSync(t.file, new Date(), new Date());
       assert.equal((await downloadCsv(source, required, t.opts)).length, 1);
       assert.equal(t.calls.length, 1, 'the second call read the cache');
     } finally {

@@ -610,6 +610,11 @@ const LINK_HOSTS = {
     'tiarap.org', 'www.alidns.com'
   ],
   'assets/js/lib/sourceinfo.js': ['hackertarget.com', 'sslmate.com'],
+  // the blocklists' delist / lookup pages (the lists themselves are asked through the DoH resolver)
+  'assets/js/lib/dnsbl.js': [
+    'check.spamhaus.org', 'www.barracudacentral.org', 'www.spamcop.net', 'psbl.org', 'mailspike.io', 'www.uceprotect.net', 'www.s5h.net',
+    'dronebl.org', 'www.blocklist.de', 'www.backscatterer.org', 'www.nordspam.com', 'spameatingmonkey.com', '0spam.org', 'www.surbl.org', 'admin.uribl.com'
+  ],
   // where a DNS provider's read-only token is made, and how (deSEC's token page is on its API host,
   // desec.io/tokens: a desec URL the registry gives no endpoint)
   'assets/js/lib/zonefetch.js': ['desec.readthedocs.io', 'cloud.digitalocean.com', 'docs.digitalocean.com'],

@@ -64,13 +64,16 @@ reads; issuers are named from the certificate's issuer DN, so crt.sh and Cert Sp
 alike.
 
 **The policy audit.** `audit` checks each domain of the list against the rules of a policy (a
-`policy.json` exported from the app's Domain portfolio, or `--preset baseline`, `strict-mail` or
-`parked`): the registration from the registry's RDAP server (expiry, transfer lock, critical
-statuses), the name servers' own domains and their expiry, DNSSEC, CAA and the mail posture. It
+`policy.json` exported from the app's Domain portfolio, or `--preset baseline`, `strict-mail`,
+`parked` or `corporate`): the registration from the registry's RDAP server (expiry, transfer lock
+and how deep it goes, critical statuses, the registrar's class), the name servers' own domains,
+their expiry and DNS providers, DNSSEC, CAA and the mail posture. It
 exits 4 while a rule fails, so the issue stays open with the failing rules until every one
 passes; a rule that could not be checked (a TLD without RDAP, a lookup that failed) is no
 failure, unless it failed when last checked (--baseline): it still counts as failed. The night
-after compares with the last night that checked it.
+after compares with the last night that checked it. Whatever the policy, the summary also lists
+each domain's security score on CSC's eight measures as a table (the lowest score first, at most
+100 rows); the score never changes the exit code.
 
 **The Certificate Transparency watch.** `ct` raises what the app's Domain portfolio ›
 Certificates (CT) tab shows. Each domain's report keeps the ids of the certificates seen (the

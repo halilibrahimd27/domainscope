@@ -159,8 +159,9 @@ describe('explainCaa', () => {
     const c = explainCaa(set, { name: 'www.example.com', foundAt: 'example.com' });
     assert.deepEqual(c.rows.map((r) => [r.kind, r.ca && r.ca.name, r.usable]), [
       ['issue', "Let's Encrypt", true], ['issue', 'Google Trust Services', true], ['issuewild', null, false],
-      ['iodef', null, false], ['issuemail', null, false], ['unknown', null, false]
+      ['iodef', null, false], ['issuemail', null, true], ['unknown', null, false]
     ]);
+    assert.deepEqual([c.rows[4].issuer, c.rows[4].deny], ['ca.example.net', false]);
     assert.deepEqual([c.rows[0].methods, c.rows[0].accountUri], [['dns-01'], 'https://acme-v02.api.letsencrypt.org/acme/acct/1']);
     assert.equal(c.rows[2].deny, true);
     assert.deepEqual([c.inherited, c.anyone, c.blocked, c.denyAll, c.wild], [true, false, false, false, 'deny']);
@@ -181,6 +182,19 @@ describe('explainCaa', () => {
     assert.deepEqual([deny.denyAll, deny.wild], [true, 'same']);
     const wild = explainCaa(rrs([{ name: 'example.org', type: 'CAA', data: { flags: 0, tag: 'issuewild', value: 'letsencrypt.org; validationmethods=http-01' } }]));
     assert.equal(wild.rows[0].problem, 'wildcard-method');
+    // issuemail (RFC 9495) and issuevmc read like issue: an empty issuer forbids S/MIME and VMC certificates.
+    const mail = explainCaa(rrs([
+      { name: 'example.org', type: 'CAA', data: { flags: 0, tag: 'issuemail', value: ';' } },
+      { name: 'example.org', type: 'CAA', data: { flags: 0, tag: 'issuevmc', value: ';' } },
+      { name: 'example.org', type: 'CAA', data: { flags: 0, tag: 'issuemail', value: 'DigiCert.com; accounturi=https://acme.example.net/acct/1' } },
+      { name: 'example.org', type: 'CAA', data: { flags: 0, tag: 'issuevmc', value: 'bad issuer!' } }
+    ]));
+    assert.deepEqual(mail.rows.map((r) => [r.kind, r.issuer, r.deny, r.usable, r.problem]), [
+      ['issuemail', null, true, false, null], ['issuevmc', null, true, false, null],
+      ['issuemail', 'digicert.com', false, true, null], ['issuevmc', 'bad issuer!', false, false, 'invalid-issuer']
+    ]);
+    assert.deepEqual([mail.rows[2].ca && mail.rows[2].ca.id, mail.rows[2].accountUri], ['digicert', 'https://acme.example.net/acct/1']);
+    assert.deepEqual([mail.anyone, mail.denyAll], [true, false], 'neither says who may issue TLS certificates');
     assert.deepEqual(caOfIssuer('LetsEncrypt.org.'), { id: 'letsencrypt', name: "Let's Encrypt" });
     assert.equal(caOfIssuer('ca.example.net'), null);
     assert.ok(CAA_KINDS.includes('issuewild') && Object.isFrozen(CAA_KINDS));
@@ -242,10 +256,41 @@ describe('explainName', () => {
     assert.deepEqual([txtDown.spf.state, txtDown.spf.error], ['failed', 'timeout']);
     const reverse = await explainName('1.2.0.192.in-addr.arpa', { dns: zoneDns({}) });
     assert.deepEqual([reverse.spf, reverse.dmarc, reverse.caa, reverse.svcb], [null, null, null, []]);
-    // A top-level domain: no organizational domain, no CAA tree; a section that breaks says so alone.
-    const tld = await explainName('com', { dns: zoneDns({ com: { TXT: 'v=spf1 -all' } }) });
-    assert.deepEqual([tld.spf.state, tld.dmarc, tld.caa, tld.svcb.map((s) => s.state)], ['failed', null, null, ['none']]);
-    assert.match(tld.spf.error, /Invalid domain/);
+    // A top-level domain: no SPF to expand (check_host() needs two labels), no organizational domain, no CAA tree.
+    const tldDns = zoneDns({ com: { TXT: 'v=spf1 -all' } });
+    const tld = await explainName('com', { dns: tldDns });
+    assert.deepEqual([tld.spf, tld.dmarc, tld.caa, tld.svcb.map((s) => s.state)], [null, null, null, ['none']]);
+    assert.ok(!tldDns.calls.some((c) => c.type === 'TXT'), 'its TXT is not asked');
     await assert.rejects(explainName('example.com', { dns: zoneDns(ZONE), signal: AbortSignal.abort() }), { name: 'AbortError' });
+  });
+
+  test('DMARC for a name below the organizational domain: when it has MX hosts (asked once if the lookup did not), never for other _ names', async () => {
+    const zone = {
+      'mail.example.com': { MX: [{ preference: 10, exchange: 'mx1.example.com' }], A: '192.0.2.5' },
+      'web.example.com': { A: '192.0.2.6' },
+      '_dmarc.example.com': { TXT: 'v=DMARC1; p=reject' },
+      '_spf.example.com': { TXT: 'v=spf1 ip4:198.51.100.0/24 -all' }
+    };
+    const dns = zoneDns(zone);
+    const mail = await explainName('mail.example.com', { dns });
+    assert.deepEqual([mail.spf.state, mail.dmarc && mail.dmarc.state, mail.dmarc && mail.dmarc.inherited], ['none', 'ok', true]);
+    assert.equal(dns.calls.filter((c) => c.name === 'mail.example.com' && c.type === 'MX').length, 1, 'MX asked once');
+    // The lookup's own MX answer decides the same, and is not asked again.
+    const known = zoneDns(zone);
+    const own = await known.query('mail.example.com', 'MX');
+    const again = await explainName('mail.example.com', { dns: known, known: new Map([['MX', own]]) });
+    assert.equal(again.dmarc.state, 'ok');
+    assert.equal(known.calls.filter((c) => c.type === 'MX').length, 1, 'only the lookup asked MX');
+    // No MX, no SPF: a web host. A registrable domain does not need MX asked.
+    const web = zoneDns(zone);
+    assert.equal((await explainName('web.example.com', { dns: web })).dmarc, null);
+    const apex = zoneDns(zone);
+    assert.equal((await explainName('example.com', { dns: apex })).dmarc.state, 'ok');
+    assert.ok(!apex.calls.some((c) => c.type === 'MX'), 'no MX for a registrable domain');
+    // An MX question that got no answer does not hide DMARC.
+    assert.equal((await explainName('web.example.com', { dns: zoneDns(zone, { fail: { 'web.example.com|MX': 'timeout' } }) })).dmarc.state, 'ok');
+    // An SPF include target has SPF but sends no mail of its own: no DMARC, as no CAA, for a _ name.
+    const spf = await explainName('_spf.example.com', { dns: zoneDns(zone) });
+    assert.deepEqual([spf.spf.state, spf.dmarc, spf.caa], ['ok', null, null]);
   });
 });

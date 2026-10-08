@@ -19,7 +19,7 @@
  * DOM-free; texts are codes the view words (`xpl.*`).
  */
 
-import { parseSpf, parseDmarc, parseCaa, findCaa, findDmarc, spfLookupCount, spfMxHosts, spfTreeChecks, CAA_ISSUERS } from './health.js';
+import { parseSpf, parseDmarc, parseCaa, parseCaaIssueValue, findCaa, findDmarc, spfLookupCount, spfMxHosts, spfTreeChecks, CAA_ISSUERS } from './health.js';
 import { base64Decode, hexEncode } from './dnswire.js';
 import { normalizeIP, ipVersion } from './ip.js';
 import { registrableDomain } from './domain.js';
@@ -190,7 +190,10 @@ export function caOfIssuer(issuer) {
 }
 
 /**
- * A CAA record set tag by tag, and who may issue (RFC 8659 §4; RFC 8657).
+ * A CAA record set tag by tag, and who may issue (RFC 8659 §4; RFC 8657). `issuemail` (RFC 9495) and
+ * `issuevmc` (Verified Mark Certificates) values read like `issue` (issuer, parameters; an empty issuer
+ * forbids those certificates, `deny`) but only their syntax is checked: the RFC 8657 parameters are
+ * defined for TLS certificates.
  * @param {Array<object>} records CAA RRs (`rr.data` = { flags, tag, value }) or their data
  * @param {{ name?: string|null, foundAt?: string|null }} [opts] `name`: the name certificates are for;
  *   `foundAt`: where the tree climb found the set (a parent's applies to the name, RFC 8659 §3)
@@ -224,6 +227,14 @@ export function explainCaa(records, { name = null, foundAt = null } = {}) {
         ...base, kind: tag, issuer: issuer || null, ca: issuer ? caOfIssuer(issuer) : null, deny: !issuer && e.valid,
         accountUri: e.accountUri, methods: e.methods, otherParams: e.otherParams,
         problem: e.error || e.problem || null, usable: !!(e.valid && e.issuer && !e.problem), valid: e.valid
+      });
+    } else if (tag === 'issuemail' || tag === 'issuevmc') {
+      const e = parseCaaIssueValue(d.value);
+      const issuer = e.issuer.replace(/\.$/, '');
+      rows.push({
+        ...base, kind: tag, issuer: issuer || null, ca: issuer ? caOfIssuer(issuer) : null, deny: !issuer && e.valid,
+        accountUri: e.accountUri, methods: e.methods, otherParams: e.otherParams,
+        problem: e.error || null, usable: !!(e.valid && issuer), valid: e.valid
       });
     } else if (tag === 'iodef') {
       rows.push({ ...base, kind: 'iodef', valid: p.iodef[0].valid });
@@ -559,10 +570,13 @@ async function spfSection(name, { dns, signal, txt, spfType, nullMx }) {
  * Everything the Explain panel shows for one name, each section on its own (a failed question
  * fails only its section: `state: 'failed'` with the error and the response, for a "n/a" + Retry).
  *
- * - SPF: the name's TXT records (not for a reverse name or the root).
+ * - SPF: the name's TXT records (not for a reverse name, the root or a top-level domain:
+ *   check_host() needs two labels, RFC 7208 §4.3).
  * - DMARC: at `_dmarc.<name>` — the record itself when the name is a `_dmarc` name — for a
- *   registrable domain, or a name with SPF or MX records (the names that send mail); an
- *   organizational domain's record applies to a subdomain without one (RFC 7489 §6.6.3).
+ *   registrable domain, or a name with SPF or MX records (the names that send mail; its MX is
+ *   asked once when the lookup did not, and one that got no answer does not hide DMARC); an
+ *   organizational domain's record applies to a subdomain without one (RFC 7489 §6.6.3). Not for
+ *   another `_` name (`_spf.<domain>` holds a policy, it sends no mail).
  * - CAA: the set that applies to the name (RFC 8659 tree climbing), not for `_` names.
  * - HTTPS (and SVCB when the lookup asked it): the records, and the A / AAAA records of every
  *   service-mode target, for the address hints; not for `_` names unless the lookup asked.
@@ -588,11 +602,11 @@ export async function explainName(name, { dns, signal, known = new Map() } = {})
     return { ...extra, state: 'failed', error: String((err && err.message) || err), failure: null };
   });
 
-  const txtP = askKnown(n, 'TXT');
+  const txtP = singleLabel ? null : askKnown(n, 'TXT');
   const mx = known.get('MX');
   const nullMx = !!(mx && answered(mx) && ofType(mx, 'MX').length === 1 && ofType(mx, 'MX')[0].data && ofType(mx, 'MX')[0].data.exchange === '.');
 
-  const spfP = mailName ? Promise.resolve(null) : safe(txtP.then((txt) => spfSection(n, { dns, signal, txt, spfType: known.get('SPF'), nullMx })));
+  const spfP = mailName || singleLabel ? Promise.resolve(null) : safe(txtP.then((txt) => spfSection(n, { dns, signal, txt, spfType: known.get('SPF'), nullMx })));
 
   const dmarcP = safe((async () => {
     if (mailName) {
@@ -602,9 +616,15 @@ export async function explainName(name, { dns, signal, known = new Map() } = {})
       const recs = ofType(txt, 'TXT').map(txtText).filter((s) => /^v\s*=\s*DMARC1\s*(?:;|$)/i.test(s));
       return dmarcState(recs, { domain, foundAt: domain, inherited: false });
     }
-    const spf = await spfP;
-    const sends = (spf && spf.state === 'ok') || (mx && answered(mx) && ofType(mx, 'MX').length > 0 && !nullMx);
-    if (singleLabel || !(registrableDomain(n) === n || sends)) return null;
+    if (singleLabel || underscored) return null;
+    if (registrableDomain(n) !== n) {
+      // Below the organizational domain only a name that sends mail: SPF, or MX hosts (not a null MX).
+      const spf = await spfP;
+      if (!(spf && spf.state === 'ok')) {
+        const mxRes = await askKnown(n, 'MX');
+        if (answered(mxRes) && !ofType(mxRes, 'MX').some((rr) => rr.data && rr.data.exchange !== '.')) return null;
+      }
+    }
     const found = await findDmarc(n, { dns, signal });
     if (found.error) return { state: 'failed', error: found.error, failure: found.failure };
     return dmarcState(found.records, { domain: n, foundAt: found.foundAt, inherited: found.inherited });

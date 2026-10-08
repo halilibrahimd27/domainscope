@@ -10,7 +10,9 @@
  * lookup meter, Domain Health's findings, every term in order with its result and cost, an include's
  * policy one click away with "only a pass counts", a string join that breaks a term; "Does an address
  * pass?" for an address an include lists, one its carve-out leaves out (softfail), one only an
- * %{i} macro lists (pass, asked for that address), an mx host, a bad address; the flatten preview;
+ * %{i} macro lists (pass, asked for that address), an mx host, a bad address; an a: host whose A
+ * question got no answer (cannot tell, kept by the flatten preview), a sender that cannot be one;
+ * the flatten preview; CAA that forbids S/MIME and VMC certificates;
  * DMARC tag by tag (pct, an external report domain) and inherited by a subdomain with its CAA; CAA
  * who may issue; HTTPS with a stale address hint and the ECH configuration decoded; the lookup's own
  * answers never asked again; a failed question as "n/a" with a Retry; a new lookup closes the panel;
@@ -171,11 +173,19 @@ const ZONE = {
   'mx1.example.com': { A: ['203.0.113.25'] },
   '_spf.example.net': { TXT: [['v=spf1 -ip4:198.51.100.66 ip4:198.51.100.0/24 ~all']] },
   '203.0.113.7._allow.example.com': { A: ['127.0.0.2'] },
-  '_dmarc.example.com': { TXT: [['v=DMARC1; p=quarantine; pct=50; rua=mailto:dmarc@example.com,mailto:reports@example.net']] },
+  '_dmarc.example.com': { TXT: [['v=DMARC1; p=quarantine; pct=50; rua=mailto:dmarc@example.com,mailto:reports@example.net; ri=3600']] },
   'shop.example.com': { A: ['192.0.2.30'], TXT: [['v=spf1 include:_spf.example.net -all']] },
   'split.example.org': { TXT: [['v=spf1 ip4:192.0.2.0/24', 'include:_spf.example.net -all']] },
   '_dmarc.example.org': { TXT: [['v=DMARC1; p=reject']] },
   'mail.example.net': { TXT: [['v=spf1 -all']], MX: [{ preference: 10, exchange: 'mx1.example.com' }] },
+  // An a: host whose A question the test fails (its AAAA answers); CAA that forbids S/MIME and VMC certificates.
+  'mail.example.org': {
+    TXT: [['v=spf1 a:relay.example.org mx -all']],
+    MX: [{ preference: 10, exchange: 'mx1.example.org' }],
+    CAA: [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }, { flags: 0, tag: 'issuemail', value: ';' }, { flags: 0, tag: 'issuevmc', value: ';' }]
+  },
+  'relay.example.org': { A: ['192.0.2.10'], AAAA: ['2001:db8::10'] },
+  'mx1.example.org': { A: ['203.0.113.26'] },
   '_dmarc.example.net': { TXT: [['v=DMARC1; p=reject']] }
 };
 
@@ -330,7 +340,8 @@ async function explainGroup(browser, server) {
       // The DMARC record: pct, an external report domain that must allow the reports.
       assert(info.dmarc.includes('Published at _dmarc.example.com.') && info.dmarc.includes('treated as suspicious') && info.dmarc.includes('Only 50% of it; the rest gets none.'), info.dmarc.slice(0, 400));
       assert(info.dmarc.includes('example.com._report._dmarc.example.net'), 'the external report domain');
-      assertEqual(info.dmarcRows.map((r) => r[0]), ['v', 'p', 'sp', 'pct', 'rua', 'adkim', 'aspf'], 'DMARC rows');
+      assertEqual(info.dmarcRows.map((r) => r[0]), ['v', 'p', 'sp', 'pct', 'rua', 'adkim', 'aspf', 'ri'], 'DMARC rows');
+      assert(info.dmarc.includes('Aggregate report interval: 1 h'), 'the report interval');
       assert(info.caa.includes("May issue: Let's Encrypt (letsencrypt.org)") && info.caa.includes('Wildcard certificates: no CA') && info.caa.includes('Only with dns-01 validation.'), info.caa);
       assertEqual(info.caaRows, [['issue', '1'], ['issuewild', '0'], ['iodef', '0']], 'CAA rows');
       assertEqual(info.svcbNotes, ['h3', 'hint-stale', 'ech'], 'HTTPS notes');
@@ -398,6 +409,31 @@ async function explainGroup(browser, server) {
       assert(split.dmarc.includes('the organizational domain’s record at _dmarc.example.org applies'), `a name with SPF sends mail: ${split.dmarc.slice(0, 300)}`);
     });
 
+    await step('an A question that got no answer: the a term says so, the check cannot tell, the preview keeps it; CAA forbids S/MIME and VMC; a sender that is none', async () => {
+      await page.evaluate(() => { window.__xplFail = ['relay.example.org|A']; });
+      const info = await openExplain(page, 'mail.example.org', 'TXT');
+      assertEqual(info.spf.steps, [['a:relay.example.org', 'pass', 'partial'], ['mx', 'pass', 'ok'], ['-all', 'fail', 'ok']], 'steps');
+      assert(info.spf.text.includes('Got no answer here for the IPv4 addresses of relay.example.org'), info.spf.text.slice(0, 700));
+      const v = await checkAddress(page, '192.0.2.10');
+      assertEqual([v.result, v.reason, v.term], ['unknown', 'lookup-failed', 'a:relay.example.org'], v.text);
+      await page.click('.xpl-flat summary');
+      const flat = await page.evaluate(() => ({
+        record: document.querySelector('.xpl-flat-record code').textContent,
+        notes: [...document.querySelectorAll('.xpl-flat .xpl-finding')].map((f) => f.dataset.code)
+      }));
+      assertEqual(flat, { record: 'v=spf1 a:relay.example.org ip4:203.0.113.26 -all', notes: ['failed'] }, 'the flatten preview');
+      assert(info.caa.includes('No CA may issue S/MIME (email) certificates (an empty value).')
+        && info.caa.includes('No CA may issue Verified Mark Certificates (an empty value).'), info.caa);
+      // A space cannot be in a MAIL FROM: the field says so, its disclosure open, and no verdict stays.
+      await page.click('.xpl-check-more summary');
+      await page.type('[data-role="explain-sender"]', 'a b@example.org');
+      await page.click('[data-action="explain-check"]');
+      await page.waitFor(() => !document.querySelector('.xpl-verdict')
+        && /Enter an email address/.test(document.querySelector('.xpl-check-more[open] .field-error:not([hidden])')?.textContent || ''),
+      { timeout: 20000, message: 'the sender field error' });
+      await page.evaluate(() => { window.__xplFail = []; });
+    });
+
     await step('a question that got no answer: "n/a" with a Retry that asks again; a new lookup closes the panel', async () => {
       // A question nothing asked before (the DoH client's cache would answer it otherwise).
       await page.evaluate(() => { window.__xplFail = ['_dmarc.example.net|TXT']; });
@@ -438,6 +474,7 @@ async function explainGroup(browser, server) {
         if (lang === 'tr') {
           assertEqual(info.title, 'Kayıtları açıkla', 'Turkish title');
           assert(info.spf.text.includes('DNS sorguları: 3/10') && info.caa.includes('Sertifika verebilir'), info.spf.text.slice(0, 300));
+          assert(info.dmarc.includes('Toplu rapor aralığı: 1 sa (alıcıların çoğu yine de günde bir gönderir).'), info.dmarc.slice(0, 600));
         }
         await page.click('.xpl-spf .xpl-child summary');
         const v = await checkAddress(page, '198.51.100.20');

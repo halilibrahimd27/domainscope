@@ -160,10 +160,30 @@ describe('spfFlatten', () => {
       'open.example.net': { TXT: 'v=spf1 +all' }
     };
     const f = spfFlatten((await spfLookupCount('example.net', { dns: zoneDns(open) })).tree);
-    assert.deepEqual([f.terms, f.exact, f.notes[0].code], [['all'], false, 'passes-all']);
+    // `all` says exactly what the include did: a warning, not an inexact preview.
+    assert.deepEqual([f.terms, f.exact, f.notes[0].code], [['all'], true, 'passes-all']);
     const many = Array.from({ length: 40 }, (_, i) => `ip4:198.51.100.${i * 4}/30`).join(' ');
     const big = spfFlatten((await spfLookupCount('example.net', { dns: zoneDns({}), record: `v=spf1 ${many} -all` })).tree);
     assert.ok(big.length > SPF_UDP_SAFE_LENGTH && !big.fits && big.strings === Math.ceil(big.length / 255), `${big.length}`);
     assert.equal(spfFlatten(null), null);
+  });
+
+  test('an a term whose A or AAAA question got no answer is kept as written, and its step says which family is missing', async () => {
+    const zone = {
+      'example.com': { TXT: 'v=spf1 a:relay.example.com include:_spf.example.net -all' },
+      'relay.example.com': { A: '192.0.2.10', AAAA: '2001:db8::10' },
+      '_spf.example.net': { TXT: 'v=spf1 a:out.example.net -all' },
+      'out.example.net': { A: '198.51.100.10', AAAA: '2001:db8::20' }
+    };
+    const fail = { 'relay.example.com|A': 'timeout', 'out.example.net|AAAA': 'timeout' };
+    // A client with query() only, as the Explain panel's.
+    const r = await spfLookupCount('example.com', { dns: { query: zoneDns(zone, { fail }).query } });
+    const f = spfFlatten(r.tree);
+    assert.deepEqual(f.terms, ['a:relay.example.com', 'include:_spf.example.net', '-all'], 'nothing published from half an answer');
+    assert.deepEqual(f.notes.map((n) => [n.code, n.term]), [['failed', 'a:relay.example.com'], ['kept-include', 'include:_spf.example.net']]);
+    const [a, inc] = spfPolicy(r.tree).steps;
+    assert.deepEqual([a.state, a.lost, a.detail, a.addresses], ['partial', ['A'], 'timeout', ['2001:db8::10']]);
+    assert.deepEqual([inc.child.steps[0].state, inc.child.steps[0].lost], ['partial', ['AAAA']]);
+    assert.ok(SPF_STEP_STATES.includes('partial'));
   });
 });

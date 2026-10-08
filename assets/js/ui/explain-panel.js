@@ -24,7 +24,9 @@
 import { h, clear } from './dom.js';
 import { Alert, Badge, Button, CodeBlock, CopyButton, Disclosure, SeverityIcon, Spinner, announce, textInput } from './components.js';
 import { registerStrings, formatNumber, formatDateTime } from '../i18n.js';
-import { HEALTH_I18N, spfCheckHost, SPF_EVAL_RESULTS, SPF_UNKNOWN_REASONS, SPF_PERMERROR_REASONS, SPF_MACRO_NEEDS } from '../lib/health.js';
+import {
+  HEALTH_I18N, spfCheckHost, parseSpfSender, parseSpfHelo, SPF_EVAL_RESULTS, SPF_UNKNOWN_REASONS, SPF_PERMERROR_REASONS, SPF_MACRO_NEEDS
+} from '../lib/health.js';
 import { explainName, DMARC_MEANINGS, DMARC_ISSUES, DMARC_FO, CAA_KINDS, ECH_ERRORS, SVCB_NOTES, HINT_STATUSES } from '../lib/records.js';
 import { SPF_STEP_KINDS, SPF_STEP_STATES, SPF_POLICY_STATES, SPF_FLATTEN_NOTES, SPF_UDP_SAFE_LENGTH } from '../lib/spfexplain.js';
 import { normalizeIP } from '../lib/ip.js';
@@ -104,6 +106,7 @@ registerStrings('en', {
   'xpl.spf.state.macro': 'Built from {needs}: not known until a message arrives — try the check below.',
   'xpl.spf.state.skipped': 'Not asked: this page’s query cap for one policy was reached.',
   'xpl.spf.state.dns-error': 'Got no answer here ({detail}).',
+  'xpl.spf.state.partial': 'Got no answer here for the {family} addresses of {target} ({detail}): only the addresses shown are known.',
   'xpl.spf.state.no-record': '{target} publishes no SPF record: receivers stop with a permanent error (permerror).',
   'xpl.spf.state.multiple-records': '{target} publishes several SPF records: receivers stop with a permanent error (permerror).',
   'xpl.spf.state.loop': 'Leads back to a policy already on the way (a loop): permerror.',
@@ -131,6 +134,9 @@ registerStrings('en', {
   'xpl.check.helo': 'HELO name',
   'xpl.check.heloHint': 'Fills in %{h}. Optional.',
   'xpl.check.invalid': 'Enter an IPv4 or IPv6 address (e.g. 192.0.2.10).',
+  'xpl.check.senderInvalid': 'Enter an email address (e.g. postmaster@example.com) or only a domain.',
+  'xpl.check.heloInvalid': 'Enter a host name (e.g. mail.example.com).',
+  'xpl.check.unaskable': 'a macro expanded to {name}, which is not a host name this page can ask',
   'xpl.check.running': 'Checking {ip}…',
   'xpl.check.verdict.pass': '{ip} may send mail as {domain}: {term} in the policy of {holder} lets it.',
   'xpl.check.verdict.fail': '{ip} may not send mail as {domain}: {term} in the policy of {holder} fails it.',
@@ -171,7 +177,7 @@ registerStrings('en', {
   'xpl.flat.note.failed': 'Kept as it is: {term} could not be read here.',
   'xpl.flat.note.kept-include': 'Kept as an include: the policy behind {term} has terms that depend on the sender or could not be read.',
   'xpl.flat.note.exceptions': 'Not exact: {term} in the policy of {holder} makes an exception that a flat list of passes cannot express.',
-  'xpl.flat.note.passes-all': 'Not exact: the policy of {holder} passes everyone ({term}), which ends the record.',
+  'xpl.flat.note.passes-all': 'The policy of {holder} passes everyone ({term}): the include matches every sender, so the record ends there with all.',
 
   'xpl.dmarc.title': 'DMARC: what receivers do with mail that fails',
   'xpl.dmarc.at': 'Published at _dmarc.{domain}.',
@@ -210,7 +216,7 @@ registerStrings('en', {
   'xpl.dmarc.m.aspf.default': 'SPF alignment relaxed (the default).',
   'xpl.dmarc.m.fo': 'Failure reports are asked for when: {options}.',
   'xpl.dmarc.m.rf': 'Failure report format: {format}.',
-  'xpl.dmarc.m.ri': 'Aggregate reports every {time} (most receivers send them daily anyway).',
+  'xpl.dmarc.m.ri': 'Aggregate report interval: {time} (most receivers send one a day anyway).',
   'xpl.dmarc.m.psd.y': 'The record of a public suffix domain (DMARCbis).',
   'xpl.dmarc.m.psd.n': 'Not a public suffix domain (DMARCbis).',
   'xpl.dmarc.m.psd.u': 'Whether this is a public suffix domain is not said (DMARCbis).',
@@ -261,6 +267,8 @@ registerStrings('en', {
   'xpl.caa.kind.unknown': 'Unknown property: CAs ignore it.',
   'xpl.caa.deny': 'No CA may issue (an empty value).',
   'xpl.caa.denyWild': 'No CA may issue wildcard certificates (an empty value).',
+  'xpl.caa.denyMail': 'No CA may issue S/MIME (email) certificates (an empty value).',
+  'xpl.caa.denyVmc': 'No CA may issue Verified Mark Certificates (an empty value).',
   'xpl.caa.unknownCritical': 'Unknown and critical: every CA must refuse to issue.',
   'xpl.caa.iodefBad': 'Not a mailto: or https: address: unusable.',
   'xpl.caa.methods': 'Only with {methods} validation.',
@@ -356,7 +364,7 @@ registerStrings('tr', {
   'xpl.spf.none': '{name} için SPF kaydı yok; alıcılar gerçek sunucularını sahtelerinden ayıramaz (SPF sonucu: none).',
   'xpl.spf.type99': 'Sorgu, SPF türünde (99) bir kayıt da buldu: bu tür artık kullanılmıyor ve hiçbir alıcı onu okumuyor (RFC 7208 §3.1). Yalnızca TXT kaydı geçerlidir.',
   'xpl.spf.meter': 'DNS sorguları: {count}/{limit}',
-  'xpl.spf.meterTitle': 'RFC 7208 §4.6.4: include, a, mx, ptr, exists ve redirect her include içinde birer sorgu harcar. {limit} sorgu aşılınca alıcılar kalıcı hatayla (permerror) durur.',
+  'xpl.spf.meterTitle': 'RFC 7208 §4.6.4: include, a, mx, ptr, exists ve redirect, include’ların içindekiler de dahil, birer sorgu harcar. {limit} sorgu aşılınca alıcılar kalıcı hatayla (permerror) durur.',
   'xpl.spf.voids': 'Hiçbir şey bulamayan sorgular: {count}/{limit}',
   'xpl.spf.size': { one: '{count} parçada {length} karakter', other: '{count} parçada {length} karakter' },
   'xpl.spf.branches': 'En çok harcayanlar: {list}',
@@ -392,6 +400,7 @@ registerStrings('tr', {
   'xpl.spf.state.macro': 'Bu ad {needs} ile kuruluyor: bir ileti gelmeden bilinemez — aşağıdaki kontrolü deneyin.',
   'xpl.spf.state.skipped': 'Sorulmadı: bu sayfanın bir politika için koyduğu sorgu sınırına ulaşıldı.',
   'xpl.spf.state.dns-error': 'Burada yanıt alınamadı ({detail}).',
+  'xpl.spf.state.partial': '{target} adının {family} adresleri için burada yanıt alınamadı ({detail}): yalnızca gösterilen adresler biliniyor.',
   'xpl.spf.state.no-record': '{target} SPF kaydı yayımlamıyor: alıcılar kalıcı hatayla (permerror) durur.',
   'xpl.spf.state.multiple-records': '{target} birden fazla SPF kaydı yayımlıyor: alıcılar kalıcı hatayla (permerror) durur.',
   'xpl.spf.state.loop': 'Yolda zaten geçilen bir politikaya geri dönüyor (döngü): permerror.',
@@ -419,6 +428,9 @@ registerStrings('tr', {
   'xpl.check.helo': 'HELO adı',
   'xpl.check.heloHint': '%{h} makrosunu doldurur. İsteğe bağlı.',
   'xpl.check.invalid': 'Bir IPv4 ya da IPv6 adresi girin (ör. 192.0.2.10).',
+  'xpl.check.senderInvalid': 'Bir e-posta adresi (ör. postmaster@example.com) ya da yalnızca bir alan adı girin.',
+  'xpl.check.heloInvalid': 'Bir ana makine adı girin (ör. mail.example.com).',
+  'xpl.check.unaskable': 'bir makronun oluşturduğu {name}, bu sayfanın sorabileceği bir ana makine adı değil',
   'xpl.check.running': '{ip} kontrol ediliyor…',
   'xpl.check.verdict.pass': '{ip}, {domain} adına e-posta gönderebilir: {holder} politikasındaki {term} izin veriyor.',
   'xpl.check.verdict.fail': '{ip}, {domain} adına e-posta gönderemez: {holder} politikasındaki {term} onu reddediyor (fail).',
@@ -459,7 +471,7 @@ registerStrings('tr', {
   'xpl.flat.note.failed': 'Olduğu gibi bırakıldı: {term} burada okunamadı.',
   'xpl.flat.note.kept-include': 'include olarak bırakıldı: {term} arkasındaki politikada gönderene bağlı ya da okunamayan ifadeler var.',
   'xpl.flat.note.exceptions': 'Tam karşılık değil: {holder} politikasındaki {term} bir istisna yapıyor; düz bir izin listesi bunu ifade edemez.',
-  'xpl.flat.note.passes-all': 'Tam karşılık değil: {holder} politikası herkesi geçiriyor ({term}) ve bu kaydı orada bitiriyor.',
+  'xpl.flat.note.passes-all': '{holder} politikası herkesi geçiriyor ({term}): include her gönderenle eşleşir, bu yüzden kayıt orada all ile biter.',
 
   'xpl.dmarc.title': 'DMARC: alıcılar doğrulamadan geçemeyen e-postayla ne yapar',
   'xpl.dmarc.at': '_dmarc.{domain} adında yayımlanmış.',
@@ -498,7 +510,7 @@ registerStrings('tr', {
   'xpl.dmarc.m.aspf.default': 'SPF hizalaması gevşek (varsayılan).',
   'xpl.dmarc.m.fo': 'Hata raporu şu durumlarda istenir: {options}.',
   'xpl.dmarc.m.rf': 'Hata raporu biçimi: {format}.',
-  'xpl.dmarc.m.ri': 'Toplu raporlar her {time} bir (alıcıların çoğu yine de günlük gönderir).',
+  'xpl.dmarc.m.ri': 'Toplu rapor aralığı: {time} (alıcıların çoğu yine de günde bir gönderir).',
   'xpl.dmarc.m.psd.y': 'Bir genel sonek (public suffix) alan adının kaydı (DMARCbis).',
   'xpl.dmarc.m.psd.n': 'Genel sonek (public suffix) alan adı değil (DMARCbis).',
   'xpl.dmarc.m.psd.u': 'Genel sonek alan adı olup olmadığı belirtilmemiş (DMARCbis).',
@@ -549,6 +561,8 @@ registerStrings('tr', {
   'xpl.caa.kind.unknown': 'Bilinmeyen özellik: otoriteler yok sayar.',
   'xpl.caa.deny': 'Hiçbir otorite sertifika veremez (boş değer).',
   'xpl.caa.denyWild': 'Hiçbir otorite joker sertifika veremez (boş değer).',
+  'xpl.caa.denyMail': 'Hiçbir otorite S/MIME (e-posta) sertifikası veremez (boş değer).',
+  'xpl.caa.denyVmc': 'Hiçbir otorite Doğrulanmış Marka Sertifikası (VMC) veremez (boş değer).',
   'xpl.caa.unknownCritical': 'Bilinmeyen ve kritik: her otorite sertifika vermeyi reddetmek zorunda.',
   'xpl.caa.iodefBad': 'mailto: ya da https: adresi değil: kullanılamaz.',
   'xpl.caa.methods': 'Yalnızca {methods} doğrulamasıyla.',
@@ -648,6 +662,8 @@ const RESULT_VARIANT = Object.freeze({
 const RESULT_ICON = Object.freeze({ pass: 'check', fail: 'x-circle', softfail: 'alert', permerror: 'x-circle', temperror: 'alert', unknown: 'help' });
 const SEVERITY_ORDER = Object.freeze({ error: 0, warn: 1, info: 2, ok: 3 });
 const LOWER = Object.freeze({ reject: 'quarantine', quarantine: 'none', none: 'none' });
+/** The CAA properties whose value names an issuer, and how an empty one (a deny) is said. */
+const CAA_DENY = Object.freeze({ issue: 'xpl.caa.deny', issuewild: 'xpl.caa.denyWild', issuemail: 'xpl.caa.denyMail', issuevmc: 'xpl.caa.denyVmc' });
 
 /**
  * The Explain panel of one lookup.
@@ -768,7 +784,10 @@ export function ExplainPanel({ ctx, name, types = [], responses = [], resolver =
     if (step.state !== 'ok' && !(step.state === 'macro' && step.kind === 'exists')) {
       stateLine = h('p', { class: ['xpl-step-state', `xpl-state-${step.state}`], dataset: { state: step.state } },
         step.state === 'macro' ? t('xpl.spf.state.macro', { needs: needsText(step.missing) })
-          : t(`xpl.spf.state.${step.state}`, { target: step.target || p.target || '?', detail: step.detail || '?' }));
+          : t(`xpl.spf.state.${step.state}`, {
+            target: step.target || p.target || p.host || '?', detail: step.detail || '?',
+            family: (step.lost || []).map((f) => (f === 'AAAA' ? 'IPv6' : 'IPv4')).join(', ')
+          }));
     }
     const shown = step.result === null ? '' : noMatch ? 'no-match' : step.effective || step.result;
     const li = h('li', { class: 'xpl-step', dataset: { term: step.term, kind: step.kind, state: step.state, result: shown } },
@@ -830,15 +849,30 @@ export function ExplainPanel({ ctx, name, types = [], responses = [], resolver =
     const out = h('div', { class: 'xpl-check-out', attrs: { 'aria-live': 'polite' } });
     const more = Disclosure({ summary: t('xpl.check.more'), className: 'xpl-check-more', children: h('div', { class: 'xpl-check-extra' }, senderField.el, heloField.el) });
 
+    /** A field that cannot be what it asks for: its error, and no verdict of another input left on screen. */
+    const refuse = (field, message, inMore = false) => {
+      if (checkController) checkController.abort();
+      clear(out);
+      field.setError(message);
+      if (inMore) more.open = true;
+      field.focus();
+    };
+
     async function check() {
-      ipField.setError(null);
+      for (const f of [ipField, senderField, heloField]) f.setError(null);
       const ip = normalizeIP(String(ipField.value || '').trim());
       if (!ip) {
-        // The verdict of another address must not stay next to this one.
-        if (checkController) checkController.abort();
-        clear(out);
-        ipField.setError(t('xpl.check.invalid'));
-        ipField.focus();
+        refuse(ipField, t('xpl.check.invalid'));
+        return;
+      }
+      const sender = String(senderField.value || '').trim() || null;
+      if (sender && !parseSpfSender(sender)) {
+        refuse(senderField, t('xpl.check.senderInvalid'), true);
+        return;
+      }
+      const helo = String(heloField.value || '').trim() || null;
+      if (helo && !parseSpfHelo(helo)) {
+        refuse(heloField, t('xpl.check.heloInvalid'), true);
         return;
       }
       if (!ctx.requireOnline()) return;
@@ -851,8 +885,7 @@ export function ExplainPanel({ ctx, name, types = [], responses = [], resolver =
       try {
         const client = await ctx.getDns();
         const r = await spfCheckHost(name, ip, {
-          dns: dnsFor(client, false), signal: mergeSignals(ctx.signal, mine.signal), record: spf.record,
-          sender: String(senderField.value || '').trim() || null, helo: String(heloField.value || '').trim() || null
+          dns: dnsFor(client, false), signal: mergeSignals(ctx.signal, mine.signal), record: spf.record, sender, helo
         });
         if (destroyed || checkController !== mine) return;
         clear(out);
@@ -882,9 +915,13 @@ export function ExplainPanel({ ctx, name, types = [], responses = [], resolver =
   function verdictBlock(r) {
     const v = r.verdict;
     const params = { ip: r.ip, domain: r.domain, term: v.term || '—', holder: v.holder || r.domain };
+    // A macro whose letters were all given but made no host name: said, not "needs what only a message carries".
+    const made = v.reason === 'macro' ? (r.unaskable || []).find((u) => u.term === v.term && u.holder === v.holder) : null;
+    const unknownWhy = () => (made ? t('xpl.check.unaskable', { name: made.name })
+      : t(`xpl.check.unknown.${SPF_UNKNOWN_REASONS.includes(v.reason) ? v.reason : 'lookup-failed'}`));
     let text;
     if (v.result === 'permerror') text = t('xpl.check.verdict.permerror', { ...params, reason: t(`xpl.check.perm.${SPF_PERMERROR_REASONS.includes(v.reason) ? v.reason : 'syntax'}`) });
-    else if (v.result === 'unknown') text = t('xpl.check.verdict.unknown', { ...params, reason: t(`xpl.check.unknown.${SPF_UNKNOWN_REASONS.includes(v.reason) ? v.reason : 'lookup-failed'}`) });
+    else if (v.result === 'unknown') text = t('xpl.check.verdict.unknown', { ...params, reason: unknownWhy() });
     else if (v.result === 'neutral' && !v.term) text = t('xpl.check.verdict.neutralNone', params);
     else text = t(`xpl.check.verdict.${v.result}`, params);
     const lines = [h('p', { class: 'xpl-verdict-text' }, text)];
@@ -1007,15 +1044,15 @@ export function ExplainPanel({ ctx, name, types = [], responses = [], resolver =
     }
     const rows = x.rows.map((r) => {
       const lines = [];
-      if (r.kind === 'issue' || r.kind === 'issuewild') {
-        if (r.deny) lines.push(t(r.kind === 'issue' ? 'xpl.caa.deny' : 'xpl.caa.denyWild'));
+      if (Object.hasOwn(CAA_DENY, r.kind)) {
+        if (r.deny) lines.push(t(CAA_DENY[r.kind]));
         else lines.push(t(`xpl.caa.kind.${r.kind}`, { ca: r.ca ? `${r.ca.name} (${r.issuer})` : r.issuer || '?' }));
         if (r.methods) lines.push(t('xpl.caa.methods', { methods: r.methods.join(', ') }));
         if (r.accountUri) lines.push(t('xpl.caa.account', { account: r.accountUri }));
         if (r.otherParams.length) lines.push(t('xpl.caa.params', { params: r.otherParams.map((p) => `${p.tag}=${p.value}`).join('; ') }));
       } else if (r.kind === 'iodef') lines.push(r.valid ? t('xpl.caa.kind.iodef', { value: r.value }) : t('xpl.caa.iodefBad'));
       else if (r.kind === 'unknown') lines.push(r.critical ? t('xpl.caa.unknownCritical') : t('xpl.caa.kind.unknown'));
-      else lines.push(t(`xpl.caa.kind.${r.kind}`, { ca: r.value.split(';')[0].trim() || r.value, value: r.value }));
+      else lines.push(t(`xpl.caa.kind.${r.kind}`, { value: r.value }));
       const problem = r.problem ? h('div', { class: 'xpl-issue' }, SeverityIcon('error'), ' ', t('xpl.caa.problem', { problem: t(`health.caa.problem.${r.problem}`) })) : null;
       return {
         dataset: { tag: r.tag, kind: r.kind, usable: r.usable ? '1' : '0' },

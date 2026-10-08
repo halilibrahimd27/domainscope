@@ -24,11 +24,17 @@ import { formatIP, ipVersion, normalizeIP } from './ip.js';
 
 /** What a term does (`xpl.spf.kind.<code>`). */
 export const SPF_STEP_KINDS = Object.freeze(['ip4', 'ip4-range', 'ip6', 'ip6-range', 'a', 'mx', 'include', 'redirect', 'exists', 'ptr', 'all']);
-/** What became of a term's lookup (`xpl.spf.state.<code>`; `ok` is said by the term itself). */
-export const SPF_STEP_STATES = Object.freeze(['ok', 'void', 'macro', 'skipped', 'dns-error', 'no-record', 'multiple-records', 'loop', 'depth', 'too-many-mx']);
+/**
+ * What became of a term's lookup (`xpl.spf.state.<code>`; `ok` is said by the term itself). `partial`: an `a`
+ * term whose A or AAAA question got no answer here, next to the other family's addresses (`lost`).
+ */
+export const SPF_STEP_STATES = Object.freeze(['ok', 'void', 'macro', 'skipped', 'dns-error', 'partial', 'no-record', 'multiple-records', 'loop', 'depth', 'too-many-mx']);
 /** Why a policy has no terms to show (`xpl.spf.policy.<code>`). */
 export const SPF_POLICY_STATES = Object.freeze(['ok', 'no-record', 'multiple-records', 'dns-error']);
-/** Why the flatten preview kept a term as it is, or is not exact (`xpl.spf.flat.<code>`). */
+/**
+ * The flatten preview's notes (`xpl.flat.note.<code>`): why it kept a term as it is (`sender`, `failed`,
+ * `kept-include`), why it is not exact (`exceptions`), and an include that passes everyone (`passes-all`).
+ */
 export const SPF_FLATTEN_NOTES = Object.freeze(['sender', 'failed', 'kept-include', 'exceptions', 'passes-all']);
 /** RFC 7208 §3.4: keep the record within about 450 characters so the DNS answer fits 512 octets of UDP. */
 export const SPF_UDP_SAFE_LENGTH = 450;
@@ -91,8 +97,9 @@ function rangeInfo(value, prefix) {
  * @property {string|null} target the host name it expanded to (null: a macro that could not be expanded, or none)
  * @property {string[]} macros the macro letters it uses; @property {string[]} missing those it could not expand
  * @property {string[]|null} addresses an `a` term's addresses; @property {string[]|null} hosts an `mx` term's hosts
+ * @property {string[]} lost the address families ('A', 'AAAA') of an `a` term whose question got no answer here
  * @property {string} state one of {@link SPF_STEP_STATES}
- * @property {string|null} detail the error text of a lookup that failed
+ * @property {string|null} detail the error text of a lookup that failed (of the first lost family for `partial`)
  * @property {SpfPolicy|null} child the policy an include or redirect leads to
  */
 
@@ -148,6 +155,7 @@ function stepState(t) {
   if (t.skipped) return 'skipped';
   if (t.error) return SPF_STEP_STATES.includes(t.error) ? t.error : 'dns-error';
   if (t.lookup && !t.target && (t.macro || (t.missing && t.missing.length))) return 'macro';
+  if (Array.isArray(t.familyErrors) && t.familyErrors.length) return 'partial';
   if (t.void) return 'void';
   return 'ok';
 }
@@ -171,6 +179,7 @@ export function spfPolicy(tree, { chain = [], scope = 'top' } = {}) {
     const failure = t.error ? (tree.errors || []).find((e) => e.code === t.error && (e.target === t.target || e.target === null)) : null;
     const childChain = [...chain, { kind: redirect ? 'redirect' : 'include', qualifier: t.qualifier || '+' }];
     const eff = redirect ? null : effectiveQualifier(chain, t.qualifier || '+');
+    const lost = Array.isArray(t.familyErrors) ? t.familyErrors.filter((f) => f && f.type) : [];
     return {
       n: i + 1,
       term: t.term,
@@ -187,8 +196,9 @@ export function spfPolicy(tree, { chain = [], scope = 'top' } = {}) {
       missing: Array.isArray(t.missing) ? [...t.missing] : [],
       addresses: Array.isArray(t.addresses) ? [...t.addresses] : null,
       hosts: Array.isArray(t.hosts) ? [...t.hosts] : null,
+      lost: lost.map((f) => f.type),
       state: stepState(t),
-      detail: failure && failure.detail ? failure.detail : null,
+      detail: failure && failure.detail ? failure.detail : lost.length ? lost[0].error || null : null,
       child: t.child ? spfPolicy(t.child, { chain: childChain, scope: redirect ? 'redirect' : 'include' }) : null
     };
   });
@@ -285,7 +295,9 @@ export function spfStringIssues(strings) {
  *
  * - The checked domain's own terms keep their order and qualifiers: `a` / `mx` become their
  *   addresses (with the term's CIDR length), an include the addresses its policy passes, with the
- *   include's qualifier; a redirect hands over the whole policy it names, its `all` included.
+ *   include's qualifier; a redirect hands over the whole policy it names, its `all` included. An
+ *   `a` / `mx` host one of whose address families got no answer here is kept as written (`failed`):
+ *   half an answer would publish a record that fails the other family's mail.
  * - An include (or redirect) whose policy — or one below it — holds a term that depends on the
  *   sender (`exists`, `ptr`, a macro) or could not be read is kept, named by the domain it expanded
  *   to (`kept-include`); so is such a term of the checked domain's own (`sender`, `failed`). A kept
@@ -293,12 +305,12 @@ export function spfStringIssues(strings) {
  * - Inside an include only passes count: its fail / softfail / neutral terms only stop the include
  *   from matching some addresses, which a flat list cannot say — the preview leaves them out and is
  *   not exact (`exceptions`); an include that passes everyone becomes `all` with its qualifier
- *   (`passes-all`).
+ *   (`passes-all`: exact, since that is what the include does, but said).
  * - A term the same as one before it, or inside an earlier range with the same qualifier, is left out.
  *
  * The addresses are the providers' today: a flattened record must be refreshed when they change.
  * @param {object|null} tree lib/health.js spfLookupCount().tree
- * @param {{ mxAddresses?: Map<string, { addresses: string[], error?: string|null }> }} [opts] the
+ * @param {{ mxAddresses?: Map<string, { addresses: string[], error?: string|null, familyErrors?: object[] }> }} [opts] the
  *   addresses of the hosts the mx terms name (lib/health.js spfMxHosts)
  * @returns {{ record: string, terms: string[], length: number, strings: number, lookups: number,
  *   addressTerms: number, exact: boolean, fits: boolean, notes: Array<{ code: string, term: string, holder: string }> }|null}
@@ -330,9 +342,11 @@ export function spfFlatten(tree, { mxAddresses = new Map() } = {}) {
     out.push({ q, text: `${prefix(q)}${text}`, range: null });
     lookups += cost;
   };
-  const mxResolved = (t) => (t.hosts || []).every((h) => mxAddresses.has(h) && !mxAddresses.get(h).error);
+  // Both address families answered (lib/doh.js HostResolution.familyErrors names one that did not).
+  const whole = (x) => !(Array.isArray(x.familyErrors) && x.familyErrors.length);
+  const mxResolved = (t) => (t.hosts || []).every((h) => mxAddresses.has(h) && !mxAddresses.get(h).error && whole(mxAddresses.get(h)));
   const readable = (t) => !!t.target && !t.error && !t.skipped && !t.forIp;
-  const resolved = (t) => readable(t) && (t.mechanism === 'a' ? Array.isArray(t.addresses) : Array.isArray(t.hosts) && mxResolved(t));
+  const resolved = (t) => readable(t) && (t.mechanism === 'a' ? Array.isArray(t.addresses) && whole(t) : Array.isArray(t.hosts) && mxResolved(t));
   /** Can every term of this policy and below be written as addresses? */
   const flattenable = (node, depth) => {
     if (!node || typeof node.record !== 'string' || depth > MAX_DEPTH) return false;
@@ -429,7 +443,7 @@ export function spfFlatten(tree, { mxAddresses = new Map() } = {}) {
     strings: Math.max(1, Math.ceil(record.length / TXT_STRING_MAX)),
     lookups,
     addressTerms: out.filter((x) => x.range).length,
-    exact: !notes.some((n) => n.code === 'exceptions' || n.code === 'passes-all'),
+    exact: !notes.some((n) => n.code === 'exceptions'),
     fits: record.length <= SPF_UDP_SAFE_LENGTH,
     notes
   };

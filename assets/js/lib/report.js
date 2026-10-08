@@ -19,7 +19,7 @@
  *   lib/summarycore.js PERMALINK_PARAMS), never a result — so the recipient runs it again.
  * - Words come from the injected `t` in the UI language: the overview's own strings for its cards
  *   (`dov.*`, views/domain.js), lib/health.js HEALTH_I18N for the checks and {@link REPORT_I18N}
- *   (`rpt.*`) for the rest. A lookup that failed is a status ("⚠ n/a — reason", the injected
+ *   (`crep.*`) for the rest. A lookup that failed is a status ("⚠ n/a — reason", the injected
  *   `statusText`), never an empty cell. Dates are UTC (`2026-10-08 13:47 UTC`), the same for every
  *   reader of the file. Never a TXT verification token, the inventory or workspace data.
  * - The app prints the same body (ui/report.js: a shadow root with REPORT_CSS as a constructed
@@ -156,68 +156,68 @@ export function renderHtml(node) {
 
 /**
  * The report's CSS: the app's light palette and type, one column, severity colours with a glyph
- * and a word, and a print layout (no background, sections kept whole). Selectors start at `.rpt`
+ * and a word, and a print layout (no background, sections kept whole). Selectors start at `.crep`
  * (the file's body, or the app's print host), so the sheet styles nothing else.
  */
 export const REPORT_CSS = [
-  '.rpt{--text:#14171c;--text-2:#464d5b;--muted:#5d6675;--border:#e2e5ea;--surface:#fff;--surface-2:#f6f7f9;--accent:#1d4ed8;',
+  '.crep{--text:#14171c;--text-2:#464d5b;--muted:#5d6675;--border:#e2e5ea;--surface:#fff;--surface-2:#f6f7f9;--accent:#1d4ed8;',
   '--ok:#157a3d;--ok-bg:#ebf7ef;--ok-border:#bfe4cb;--info:#1d4ed8;--info-bg:#edf3ff;--info-border:#cadbfd;',
   '--warn:#975a06;--warn-bg:#fdf5e6;--warn-border:#f1d9a8;--error:#b9232a;--error-bg:#fdeeee;--error-border:#f4c4c6;',
   'margin:0;padding:32px 16px 48px;background:#f4f5f7;color:var(--text);',
   'font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue","Noto Sans",Arial,sans-serif;',
   '-webkit-print-color-adjust:exact;print-color-adjust:exact;overflow-wrap:anywhere}',
-  '.rpt *{box-sizing:border-box}',
-  '.rpt-page{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:16px}',
-  '.rpt code,.rpt .rpt-mono{font-family:ui-monospace,"SFMono-Regular","SF Mono","Cascadia Mono","Segoe UI Mono",Menlo,Consolas,monospace;font-size:.92em}',
-  '.rpt h1,.rpt h2,.rpt h3,.rpt p{margin:0}',
-  '.rpt a{color:var(--accent)}',
-  '.rpt-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 20px}',
-  '.rpt-head{display:flex;flex-direction:column;gap:10px}',
-  '.rpt-kicker{color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}',
-  '.rpt h1.rpt-subject{font-size:26px;line-height:1.2;font-weight:700}',
-  '.rpt-sub{color:var(--text-2)}',
-  '.rpt-meta{align-self:flex-start;border-collapse:collapse;font-size:13px}',
-  '.rpt-meta th{color:var(--muted);font-weight:500;text-align:left;padding:2px 16px 2px 0;vertical-align:top;white-space:nowrap}',
-  '.rpt-meta td{padding:2px 0}',
-  '.rpt-verdict{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;border:1px solid var(--border);border-left-width:4px;border-radius:8px;padding:12px 14px}',
-  '.rpt-light-ok{border-color:var(--ok-border);border-left-color:var(--ok);background:var(--ok-bg)}',
-  '.rpt-light-warn{border-color:var(--warn-border);border-left-color:var(--warn);background:var(--warn-bg)}',
-  '.rpt-light-error{border-color:var(--error-border);border-left-color:var(--error);background:var(--error-bg)}',
-  '.rpt-score{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}',
-  '.rpt-verdict-label{font-weight:600}',
-  '.rpt-verdict-body{flex-basis:100%;color:var(--text-2)}',
-  '.rpt-counts{display:flex;flex-wrap:wrap;gap:6px;list-style:none;margin:0;padding:0}',
-  '.rpt-section{display:flex;flex-direction:column;gap:10px;break-inside:avoid-page}',
-  '.rpt-section h2{font-size:16px;font-weight:650}',
-  '.rpt-facts{width:100%;border-collapse:collapse}',
-  '.rpt-facts th,.rpt-facts td{border-top:1px solid var(--border);padding:7px 0;text-align:left;vertical-align:top}',
-  '.rpt-facts tr:first-child th,.rpt-facts tr:first-child td{border-top:0}',
-  '.rpt-facts th{width:32%;padding-right:16px;color:var(--text-2);font-weight:500}',
-  '.rpt-values{list-style:none;margin:0;padding:0}',
-  '.rpt-badge{display:inline-block;border:1px solid var(--border);border-radius:999px;padding:0 8px;font-size:12px;font-weight:600;white-space:nowrap;background:var(--surface-2)}',
-  '.rpt-sev-ok .rpt-badge,.rpt-badge.rpt-sev-ok{color:var(--ok);background:var(--ok-bg);border-color:var(--ok-border)}',
-  '.rpt-sev-info .rpt-badge,.rpt-badge.rpt-sev-info{color:var(--info);background:var(--info-bg);border-color:var(--info-border)}',
-  '.rpt-sev-warn .rpt-badge,.rpt-badge.rpt-sev-warn{color:var(--warn);background:var(--warn-bg);border-color:var(--warn-border)}',
-  '.rpt-sev-error .rpt-badge,.rpt-badge.rpt-sev-error{color:var(--error);background:var(--error-bg);border-color:var(--error-border)}',
-  'td.rpt-sev-warn,td.rpt-sev-error{font-weight:600}',
-  'td.rpt-sev-warn{color:var(--warn)}td.rpt-sev-error{color:var(--error)}td.rpt-sev-ok{color:var(--ok)}',
-  '.rpt-note{border-left:3px solid var(--border);padding:2px 0 2px 10px;color:var(--text-2)}',
-  '.rpt-note.rpt-sev-warn{border-left-color:var(--warn)}.rpt-note.rpt-sev-error{border-left-color:var(--error)}.rpt-note.rpt-sev-info{border-left-color:var(--info)}',
-  '.rpt-items{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}',
-  '.rpt-item{border:1px solid var(--border);border-left-width:4px;border-radius:8px;padding:10px 12px;break-inside:avoid}',
-  '.rpt-item.rpt-sev-error{border-left-color:var(--error)}.rpt-item.rpt-sev-warn{border-left-color:var(--warn)}.rpt-item.rpt-sev-info{border-left-color:var(--info)}',
-  '.rpt-item-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px}',
-  '.rpt-item-group{color:var(--muted);font-size:12px}',
-  '.rpt-item-detail{margin-top:4px;color:var(--text-2)}',
-  '.rpt-passed{margin:0;padding-left:18px;columns:2;column-gap:24px;color:var(--text-2)}',
-  '.rpt-group{font-size:13px;font-weight:600;color:var(--muted)}',
-  '.rpt-muted{color:var(--muted)}',
-  '.rpt-method ul{margin:0;padding-left:18px;color:var(--text-2)}',
-  '.rpt-foot{color:var(--muted);font-size:12px;display:flex;flex-direction:column;gap:4px;padding:0 4px}',
-  '@media (max-width:640px){.rpt{padding:16px 12px 32px}.rpt-card{padding:14px}.rpt-facts th{width:40%}.rpt-passed{columns:1}}',
+  '.crep *{box-sizing:border-box}',
+  '.crep-page{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:16px}',
+  '.crep code,.crep .crep-mono{font-family:ui-monospace,"SFMono-Regular","SF Mono","Cascadia Mono","Segoe UI Mono",Menlo,Consolas,monospace;font-size:.92em}',
+  '.crep h1,.crep h2,.crep h3,.crep p{margin:0}',
+  '.crep a{color:var(--accent)}',
+  '.crep-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 20px}',
+  '.crep-head{display:flex;flex-direction:column;gap:10px}',
+  '.crep-kicker{color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}',
+  '.crep h1.crep-subject{font-size:26px;line-height:1.2;font-weight:700}',
+  '.crep-sub{color:var(--text-2)}',
+  '.crep-meta{align-self:flex-start;border-collapse:collapse;font-size:13px}',
+  '.crep-meta th{color:var(--muted);font-weight:500;text-align:left;padding:2px 16px 2px 0;vertical-align:top;white-space:nowrap}',
+  '.crep-meta td{padding:2px 0}',
+  '.crep-verdict{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;border:1px solid var(--border);border-left-width:4px;border-radius:8px;padding:12px 14px}',
+  '.crep-light-ok{border-color:var(--ok-border);border-left-color:var(--ok);background:var(--ok-bg)}',
+  '.crep-light-warn{border-color:var(--warn-border);border-left-color:var(--warn);background:var(--warn-bg)}',
+  '.crep-light-error{border-color:var(--error-border);border-left-color:var(--error);background:var(--error-bg)}',
+  '.crep-score{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}',
+  '.crep-verdict-label{font-weight:600}',
+  '.crep-verdict-body{flex-basis:100%;color:var(--text-2)}',
+  '.crep-counts{display:flex;flex-wrap:wrap;gap:6px;list-style:none;margin:0;padding:0}',
+  '.crep-section{display:flex;flex-direction:column;gap:10px;break-inside:avoid-page}',
+  '.crep-section h2{font-size:16px;font-weight:650}',
+  '.crep-facts{width:100%;border-collapse:collapse}',
+  '.crep-facts th,.crep-facts td{border-top:1px solid var(--border);padding:7px 0;text-align:left;vertical-align:top}',
+  '.crep-facts tr:first-child th,.crep-facts tr:first-child td{border-top:0}',
+  '.crep-facts th{width:32%;padding-right:16px;color:var(--text-2);font-weight:500}',
+  '.crep-values{list-style:none;margin:0;padding:0}',
+  '.crep-badge{display:inline-block;border:1px solid var(--border);border-radius:999px;padding:0 8px;font-size:12px;font-weight:600;white-space:nowrap;background:var(--surface-2)}',
+  '.crep-sev-ok .crep-badge,.crep-badge.crep-sev-ok{color:var(--ok);background:var(--ok-bg);border-color:var(--ok-border)}',
+  '.crep-sev-info .crep-badge,.crep-badge.crep-sev-info{color:var(--info);background:var(--info-bg);border-color:var(--info-border)}',
+  '.crep-sev-warn .crep-badge,.crep-badge.crep-sev-warn{color:var(--warn);background:var(--warn-bg);border-color:var(--warn-border)}',
+  '.crep-sev-error .crep-badge,.crep-badge.crep-sev-error{color:var(--error);background:var(--error-bg);border-color:var(--error-border)}',
+  'td.crep-sev-warn,td.crep-sev-error{font-weight:600}',
+  'td.crep-sev-warn{color:var(--warn)}td.crep-sev-error{color:var(--error)}td.crep-sev-ok{color:var(--ok)}',
+  '.crep-note{border-left:3px solid var(--border);padding:2px 0 2px 10px;color:var(--text-2)}',
+  '.crep-note.crep-sev-warn{border-left-color:var(--warn)}.crep-note.crep-sev-error{border-left-color:var(--error)}.crep-note.crep-sev-info{border-left-color:var(--info)}',
+  '.crep-items{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}',
+  '.crep-item{border:1px solid var(--border);border-left-width:4px;border-radius:8px;padding:10px 12px;break-inside:avoid}',
+  '.crep-item.crep-sev-error{border-left-color:var(--error)}.crep-item.crep-sev-warn{border-left-color:var(--warn)}.crep-item.crep-sev-info{border-left-color:var(--info)}',
+  '.crep-item-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px}',
+  '.crep-item-group{color:var(--muted);font-size:12px}',
+  '.crep-item-detail{margin-top:4px;color:var(--text-2)}',
+  '.crep-passed{margin:0;padding-left:18px;columns:2;column-gap:24px;color:var(--text-2)}',
+  '.crep-group{font-size:13px;font-weight:600;color:var(--muted)}',
+  '.crep-muted{color:var(--muted)}',
+  '.crep-method ul{margin:0;padding-left:18px;color:var(--text-2)}',
+  '.crep-foot{color:var(--muted);font-size:12px;display:flex;flex-direction:column;gap:4px;padding:0 4px}',
+  '@media (max-width:640px){.crep{padding:16px 12px 32px}.crep-card{padding:14px}.crep-facts th{width:40%}.crep-passed{columns:1}}',
   '@page{margin:14mm 12mm}',
-  '@media print{.rpt{background:#fff;padding:0;font-size:12px}.rpt-page{max-width:none;gap:10px}',
-  '.rpt-card{border-radius:0;border-width:0 0 1px;padding:10px 0}.rpt a{color:inherit}.rpt h2{break-after:avoid}}'
+  '@media print{.crep{background:#fff;padding:0;font-size:12px}.crep-page{max-width:none;gap:10px}',
+  '.crep-card{border-radius:0;border-width:0 0 1px;padding:10px 0}.crep a{color:inherit}.crep h2{break-after:avoid}}'
 ].join('');
 
 /* ------------------------------------------------------------------------ */
@@ -297,9 +297,9 @@ function words(opts = {}) {
   const has = typeof opts.has === 'function' ? opts.has : () => true;
   const statusText = typeof opts.statusText === 'function' ? opts.statusText : (f) => (f && (f.reason || f.error)) || '';
   const say = (key, params, fallback) => (key && has(key) ? t(key, params) : fallback);
-  const na = (failure) => t('rpt.na', { reason: statusText(failure) || t('rpt.lookupFailed') });
+  const na = (failure) => t('crep.na', { reason: statusText(failure) || t('crep.lookupFailed') });
   // lib/health passes booleans as the English words 'yes' / 'no' and a failed lookup as 'lookup failed'.
-  const local = { yes: 'common.yes', no: 'common.no', [LOOKUP_FAILED]: 'rpt.lookupFailed' };
+  const local = { yes: 'common.yes', no: 'common.no', [LOOKUP_FAILED]: 'crep.lookupFailed' };
   const params = (p) => Object.fromEntries(Object.entries(p || {})
     .map(([k, v]) => [k, typeof v === 'string' && Object.hasOwn(local, v) ? t(local[v]) : v]));
   return { t, say, na, params, statusText };
@@ -340,9 +340,9 @@ function verdictOf(summary, w, { body = true } = {}) {
   return {
     light,
     score,
-    label: w.t(`rpt.light.${light}`),
-    body: body ? w.t(`rpt.light.${light}Body`, { count: total }) : null,
-    counts: REPORT_SEVERITIES.filter((k) => n(k)).map((k) => ({ severity: k, text: w.t(`rpt.count.${k}`, { count: n(k) }) }))
+    label: w.t(`crep.light.${light}`),
+    body: body ? w.t(`crep.light.${light}Body`, { count: total }) : null,
+    counts: REPORT_SEVERITIES.filter((k) => n(k)).map((k) => ({ severity: k, text: w.t(`crep.count.${k}`, { count: n(k) }) }))
   };
 }
 
@@ -525,7 +525,7 @@ export function domainReport(input, opts) {
       if (caa && caa.foundAt && caa.foundAt !== d) notes.push(note(null, t('dov.certs.inherited', { name: caa.foundAt })));
       const ct = card.ct;
       const verdicts = { allowed: 'dov.certs.ctAllowed', restricted: 'dov.certs.ctRestricted', denied: 'dov.certs.ctDenied', unknown: 'dov.certs.ctUnknown' };
-      if (!ct) rows.push(row(t('dov.certs.ct'), t('rpt.ctNotAsked')));
+      if (!ct) rows.push(row(t('dov.certs.ct'), t('crep.ctNotAsked')));
       else if (ct.state === 'failed') rows.push(row(t('dov.certs.ct'), (ct.failures || []).map(na).join(' · ') || na(null), { severity: 'warn' }));
       else if (ct.state === 'ok') {
         rows.push(row(t('dov.certs.ct'), ct.issuers.length ? ct.issuers.map((i) => [i.name, t('dov.certs.ctCount', { count: i.count }),
@@ -547,7 +547,7 @@ export function domainReport(input, opts) {
       const s = card.saas;
       if (!s) return {};
       return {
-        rows: [row(t('rpt.services'), s.vendors.length ? s.vendors.map((v) => (v.count > 1 ? t('dov.saas.chip', { name: v.name, count: v.count }) : v.name)).join(', ') : t('dov.saas.none'))],
+        rows: [row(t('crep.services'), s.vendors.length ? s.vendors.map((v) => (v.count > 1 ? t('dov.saas.chip', { name: v.name, count: v.count }) : v.name)).join(', ') : t('dov.saas.none'))],
         notes: [s.other ? note(null, t('dov.saas.other', { count: s.other })) : null, note(null, t('dov.saas.note'))].filter(Boolean)
       };
     },
@@ -556,8 +556,8 @@ export function domainReport(input, opts) {
       if (!card.summary) return {};
       const v = verdictOf(card.summary, w, { body: false });
       return {
-        rows: [row(t('rpt.verdict'), `${v.label} · ${t('dov.health.score', { score: v.score })}`, { severity: v.light }),
-          v.counts.length ? row(t('rpt.counts'), v.counts.map((c) => c.text).join(' · ')) : null]
+        rows: [row(t('crep.verdict'), `${v.label} · ${t('dov.health.score', { score: v.score })}`, { severity: v.light }),
+          v.counts.length ? row(t('crep.counts'), v.counts.map((c) => c.text).join(' · ')) : null]
       };
     }
   };
@@ -584,7 +584,7 @@ export function domainReport(input, opts) {
     problems: health && health.report ? problemsOf(health.report.checks, w) : [],
     problemsKnown: !!(health && health.report),
     sections,
-    method: ['rpt.method.domain.dns', 'rpt.method.domain.rdap', 'rpt.method.domain.ct', 'rpt.method.domain.health', 'rpt.method.when', 'rpt.method.private'].map((k) => t(k))
+    method: ['crep.method.domain.dns', 'crep.method.domain.rdap', 'crep.method.domain.ct', 'crep.method.domain.health', 'crep.method.when', 'crep.method.private'].map((k) => t(k))
   };
 }
 
@@ -612,35 +612,35 @@ export function healthReport(input, opts) {
 
   const notesItems = byGroup('info').flatMap(({ list }) => list.map((c) => checkItem(c, w)));
   const passed = byGroup('ok').map(({ g, list }) => ({ group: groupName(g), titles: list.map((c) => checkItem(c, w).title) }));
-  const failedText = t('rpt.na', { reason: t('rpt.lookupFailed') });
+  const failedText = t('crep.na', { reason: t('crep.lookupFailed') });
   const known = (key, value) => (failed.has(key) ? failedText : value);
-  const list = (xs) => (Array.isArray(xs) && xs.length ? xs.map(String) : t('rpt.none'));
+  const list = (xs) => (Array.isArray(xs) && xs.length ? xs.map(String) : t('crep.none'));
   const reg = r.rdap && typeof r.rdap === 'object' ? r.rdap : null;
   const dnssec = r.dnssec || null;
   const records = [
     row('NS', known('ns', list(rec.ns)), { mono: true }),
-    row('SOA', known('soa', rec.soa ? `${rec.soa.mname || ''} · ${rec.soa.serial ?? ''}` : t('rpt.none')), { mono: true }),
-    row('MX', known('mx', Array.isArray(rec.mx) && rec.mx.length ? rec.mx.map((m) => `${m.preference} ${m.exchange}`) : t('rpt.none')), { mono: true }),
+    row('SOA', known('soa', rec.soa ? `${rec.soa.mname || ''} · ${rec.soa.serial ?? ''}` : t('crep.none')), { mono: true }),
+    row('MX', known('mx', Array.isArray(rec.mx) && rec.mx.length ? rec.mx.map((m) => `${m.preference} ${m.exchange}`) : t('crep.none')), { mono: true }),
     row('A', known('a', list(rec.a)), { mono: true }),
     row('AAAA', known('aaaa', list(rec.aaaa)), { mono: true }),
-    row('SPF', known('txt', rec.spf || t('rpt.none')), { mono: true }),
-    row('DMARC', rec.dmarc || (r.dmarc && r.dmarc.record) || t('rpt.none'), { mono: true }),
-    row('DKIM', Array.isArray(rec.dkim) && rec.dkim.length ? rec.dkim.map((k) => `${k.selector} · ${k.keyType || ''}${k.keyBits ? ` ${k.keyBits}` : ''}`.trim()) : t('rpt.none'), { mono: true }),
-    row('CAA', Array.isArray(rec.caa) && rec.caa.length ? rec.caa.map((c) => `${c.flags} ${c.tag} "${c.value}"`) : t('rpt.none'), { mono: true }),
-    row('MTA-STS', known('mtaSts', rec.mtaSts || t('rpt.none')), { mono: true }),
-    row('TLS-RPT', known('tlsRpt', rec.tlsRpt || t('rpt.none')), { mono: true }),
-    row('BIMI', known('bimi', rec.bimi || t('rpt.none')), { mono: true }),
-    dnssec ? row('DNSSEC', t(dnssec.validated ? 'rpt.dnssec.validated' : dnssec.signed ? 'rpt.dnssec.signed' : dnssec.signed === false ? 'rpt.dnssec.unsigned' : 'rpt.dnssec.unknown'),
+    row('SPF', known('txt', rec.spf || t('crep.none')), { mono: true }),
+    row('DMARC', rec.dmarc || (r.dmarc && r.dmarc.record) || t('crep.none'), { mono: true }),
+    row('DKIM', Array.isArray(rec.dkim) && rec.dkim.length ? rec.dkim.map((k) => `${k.selector} · ${k.keyType || ''}${k.keyBits ? ` ${k.keyBits}` : ''}`.trim()) : t('crep.none'), { mono: true }),
+    row('CAA', Array.isArray(rec.caa) && rec.caa.length ? rec.caa.map((c) => `${c.flags} ${c.tag} "${c.value}"`) : t('crep.none'), { mono: true }),
+    row('MTA-STS', known('mtaSts', rec.mtaSts || t('crep.none')), { mono: true }),
+    row('TLS-RPT', known('tlsRpt', rec.tlsRpt || t('crep.none')), { mono: true }),
+    row('BIMI', known('bimi', rec.bimi || t('crep.none')), { mono: true }),
+    dnssec ? row('DNSSEC', t(dnssec.validated ? 'crep.dnssec.validated' : dnssec.signed ? 'crep.dnssec.signed' : dnssec.signed === false ? 'crep.dnssec.unsigned' : 'crep.dnssec.unknown'),
       { severity: dnssec.broken ? 'error' : dnssec.validated ? 'ok' : null }) : null,
-    reg && reg.registrar ? row(t('rpt.registrar'), String(reg.registrar)) : null,
-    reg && reg.expires ? row(t('rpt.expires'), utcDay(reg.expires)) : null
+    reg && reg.registrar ? row(t('crep.registrar'), String(reg.registrar)) : null,
+    reg && reg.expires ? row(t('crep.expires'), utcDay(reg.expires)) : null
   ].filter(hasValue);
 
   const sections = [];
-  if (notesItems.length) sections.push({ id: 'notes', title: t('rpt.notes'), items: notesItems });
-  if (passed.length) sections.push({ id: 'passed', title: t('rpt.passed'), passed });
-  sections.push({ id: 'records', title: t('rpt.records'), rows: records });
-  const zone = r.zone && r.zone !== r.domain ? t('rpt.zone', { zone: r.zone }) : null;
+  if (notesItems.length) sections.push({ id: 'notes', title: t('crep.notes'), items: notesItems });
+  if (passed.length) sections.push({ id: 'passed', title: t('crep.passed'), passed });
+  sections.push({ id: 'records', title: t('crep.records'), rows: records });
+  const zone = r.zone && r.zone !== r.domain ? t('crep.zone', { zone: r.zone }) : null;
   return {
     kind: 'health',
     subject: String(r.domain || ''),
@@ -650,8 +650,8 @@ export function healthReport(input, opts) {
     problems: problemsOf(checks, w),
     problemsKnown: true,
     sections,
-    method: [t('rpt.method.health.checks'), selectors.length ? t('rpt.method.health.dkim', { list: selectors.join(', ') }) : null,
-      t('rpt.method.health.score'), t('rpt.method.when'), t('rpt.method.private')].filter(Boolean)
+    method: [t('crep.method.health.checks'), selectors.length ? t('crep.method.health.dkim', { list: selectors.join(', ') }) : null,
+      t('crep.method.health.score'), t('crep.method.when'), t('crep.method.private')].filter(Boolean)
   };
 }
 
@@ -679,29 +679,29 @@ export function reportLinkParams(kind, input) {
 /* ------------------------------------------------------------------------ */
 
 /** A severity's badge: glyph and word. */
-const badge = (sev, t) => el('span', { class: `rpt-badge rpt-sev-${sev}` }, `${SEVERITY_GLYPHS[sev] || ''} ${t(`rpt.sev.${sev}`)}`.trim());
+const badge = (sev, t) => el('span', { class: `crep-badge crep-sev-${sev}` }, `${SEVERITY_GLYPHS[sev] || ''} ${t(`crep.sev.${sev}`)}`.trim());
 
 /** One fact's value cell. */
 function valueCell(r) {
-  const cls = [r.severity ? `rpt-sev-${r.severity}` : null, r.mono ? 'rpt-mono' : null].filter(Boolean).join(' ') || null;
-  const value = Array.isArray(r.value) ? el('ul', { class: 'rpt-values' }, r.value.map((v) => el('li', null, v))) : r.value;
+  const cls = [r.severity ? `crep-sev-${r.severity}` : null, r.mono ? 'crep-mono' : null].filter(Boolean).join(' ') || null;
+  const value = Array.isArray(r.value) ? el('ul', { class: 'crep-values' }, r.value.map((v) => el('li', null, v))) : r.value;
   return el('td', { class: cls }, value);
 }
 
 /** A list of checks (problems, notes). */
-const itemList = (items, t) => el('ol', { class: 'rpt-items' }, items.map((i) => el('li', { class: `rpt-item rpt-sev-${i.severity}` },
-  el('div', { class: 'rpt-item-head' }, badge(i.severity, t), el('strong', null, i.title), i.group ? el('span', { class: 'rpt-item-group' }, i.group) : null),
-  i.detail ? el('p', { class: 'rpt-item-detail' }, i.detail) : null)));
+const itemList = (items, t) => el('ol', { class: 'crep-items' }, items.map((i) => el('li', { class: `crep-item crep-sev-${i.severity}` },
+  el('div', { class: 'crep-item-head' }, badge(i.severity, t), el('strong', null, i.title), i.group ? el('span', { class: 'crep-item-group' }, i.group) : null),
+  i.detail ? el('p', { class: 'crep-item-detail' }, i.detail) : null)));
 
 /** A section of facts, notes, checks or passed checks. */
 function sectionNode(s, t) {
-  return el('section', { class: 'rpt-card rpt-section', 'data-section': s.id },
+  return el('section', { class: 'crep-card crep-section', 'data-section': s.id },
     el('h2', null, s.title),
-    s.rows && s.rows.length ? el('table', { class: 'rpt-facts' }, el('tbody', null, s.rows.map((r) => el('tr', null, el('th', { scope: 'row' }, r.label), valueCell(r))))) : null,
-    (s.notes || []).map((n) => el('p', { class: `rpt-note${n.severity ? ` rpt-sev-${n.severity}` : ''}` }, n.text,
+    s.rows && s.rows.length ? el('table', { class: 'crep-facts' }, el('tbody', null, s.rows.map((r) => el('tr', null, el('th', { scope: 'row' }, r.label), valueCell(r))))) : null,
+    (s.notes || []).map((n) => el('p', { class: `crep-note${n.severity ? ` crep-sev-${n.severity}` : ''}` }, n.text,
       n.href && isWebUrl(n.href) ? [' — ', el('a', { href: n.href, rel: 'noreferrer' }, n.href)] : null)),
     s.items && s.items.length ? itemList(s.items, t) : null,
-    (s.passed || []).map((p) => [el('h3', { class: 'rpt-group' }, p.group), el('ul', { class: 'rpt-passed' }, p.titles.map((x) => el('li', null, x)))]));
+    (s.passed || []).map((p) => [el('h3', { class: 'crep-group' }, p.group), el('ul', { class: 'crep-passed' }, p.titles.map((x) => el('li', null, x)))]));
 }
 
 /**
@@ -717,31 +717,31 @@ export function reportBody(doc, opts) {
   const generated = asDate(opts.generatedAt) || new Date();
   const v = doc.verdict;
   const link = opts.link && isWebUrl(opts.link) ? String(opts.link) : null;
-  const head = el('header', { class: 'rpt-card rpt-head' },
-    el('p', { class: 'rpt-kicker' }, t(`rpt.kind.${doc.kind}`)),
-    el('h1', { class: 'rpt-subject rpt-mono' }, doc.subject),
-    doc.subtitle ? el('p', { class: 'rpt-sub' }, doc.subtitle) : null,
-    el('table', { class: 'rpt-meta' }, el('tbody', null,
-      doc.at ? el('tr', null, el('th', { scope: 'row' }, t('rpt.resultAt')), el('td', null, el('time', { datetime: doc.at.toISOString() }, utcTime(doc.at)))) : null,
-      el('tr', null, el('th', { scope: 'row' }, t('rpt.generatedAt')), el('td', null, el('time', { datetime: generated.toISOString() }, utcTime(generated)))),
-      el('tr', null, el('th', { scope: 'row' }, t('rpt.tool')), el('td', null, t('rpt.toolValue', { version }))))),
-    v ? el('div', { class: `rpt-verdict rpt-light-${v.light}`, 'data-light': v.light, 'data-score': v.score },
-      el('span', { class: 'rpt-score' }, `${v.score}/100`),
-      el('span', { class: 'rpt-verdict-label' }, v.label),
-      el('ul', { class: 'rpt-counts' }, v.counts.map((c) => el('li', { class: `rpt-sev-${c.severity}` }, el('span', { class: 'rpt-badge' }, `${SEVERITY_GLYPHS[c.severity]} ${c.text}`)))),
-      v.body ? el('p', { class: 'rpt-verdict-body' }, v.body) : null) : null);
-  const problems = el('section', { class: 'rpt-card rpt-section rpt-problems', 'data-section': 'problems' },
-    el('h2', null, t('rpt.problems')),
-    doc.problems.length ? itemList(doc.problems, t) : el('p', { class: 'rpt-muted' }, t(doc.problemsKnown === false ? 'rpt.problemsUnknown' : 'rpt.noProblems')));
-  const method = el('section', { class: 'rpt-card rpt-section rpt-method', 'data-section': 'method' },
-    el('h2', null, t('rpt.method')),
+  const head = el('header', { class: 'crep-card crep-head' },
+    el('p', { class: 'crep-kicker' }, t(`crep.kind.${doc.kind}`)),
+    el('h1', { class: 'crep-subject crep-mono' }, doc.subject),
+    doc.subtitle ? el('p', { class: 'crep-sub' }, doc.subtitle) : null,
+    el('table', { class: 'crep-meta' }, el('tbody', null,
+      doc.at ? el('tr', null, el('th', { scope: 'row' }, t('crep.resultAt')), el('td', null, el('time', { datetime: doc.at.toISOString() }, utcTime(doc.at)))) : null,
+      el('tr', null, el('th', { scope: 'row' }, t('crep.generatedAt')), el('td', null, el('time', { datetime: generated.toISOString() }, utcTime(generated)))),
+      el('tr', null, el('th', { scope: 'row' }, t('crep.tool')), el('td', null, t('crep.toolValue', { version }))))),
+    v ? el('div', { class: `crep-verdict crep-light-${v.light}`, 'data-light': v.light, 'data-score': v.score },
+      el('span', { class: 'crep-score' }, `${v.score}/100`),
+      el('span', { class: 'crep-verdict-label' }, v.label),
+      el('ul', { class: 'crep-counts' }, v.counts.map((c) => el('li', { class: `crep-sev-${c.severity}` }, el('span', { class: 'crep-badge' }, `${SEVERITY_GLYPHS[c.severity]} ${c.text}`)))),
+      v.body ? el('p', { class: 'crep-verdict-body' }, v.body) : null) : null);
+  const problems = el('section', { class: 'crep-card crep-section crep-problems', 'data-section': 'problems' },
+    el('h2', null, t('crep.problems')),
+    doc.problems.length ? itemList(doc.problems, t) : el('p', { class: 'crep-muted' }, t(doc.problemsKnown === false ? 'crep.problemsUnknown' : 'crep.noProblems')));
+  const method = el('section', { class: 'crep-card crep-section crep-method', 'data-section': 'method' },
+    el('h2', null, t('crep.method')),
     el('ul', null, doc.method.map((m) => el('li', null, m))));
-  const foot = el('footer', { class: 'rpt-foot' },
-    link ? el('p', null, `${t('rpt.rerun')}: `, el('a', { href: link, rel: 'noreferrer' }, link)) : null,
-    link ? el('p', null, t('rpt.rerunNote')) : null,
-    el('p', null, t('rpt.foot', { version })));
-  return el('body', { class: `rpt rpt-${doc.kind}` },
-    el('div', { class: 'rpt-page' }, head, problems, doc.sections.map((s) => sectionNode(s, t)), method, foot));
+  const foot = el('footer', { class: 'crep-foot' },
+    link ? el('p', null, `${t('crep.rerun')}: `, el('a', { href: link, rel: 'noreferrer' }, link)) : null,
+    link ? el('p', null, t('crep.rerunNote')) : null,
+    el('p', null, t('crep.foot', { version })));
+  return el('body', { class: `crep crep-${doc.kind}` },
+    el('div', { class: 'crep-page' }, head, problems, doc.sections.map((s) => sectionNode(s, t)), method, foot));
 }
 
 /**
@@ -752,7 +752,7 @@ export function reportBody(doc, opts) {
  */
 export function reportTitle(doc, opts) {
   const { t } = words(opts);
-  return t('rpt.title', { kind: t(`rpt.kind.${doc.kind}`), domain: doc.subject });
+  return t('crep.title', { kind: t(`crep.kind.${doc.kind}`), domain: doc.subject });
 }
 
 /**
@@ -797,143 +797,143 @@ export function buildReport(kind, input, opts) {
 /* ------------------------------------------------------------------------ */
 
 /**
- * English and Turkish texts of the report (`rpt.*`) and of its panel (ui/report.js). Register with
+ * English and Turkish texts of the report (`crep.*`) and of its panel (ui/report.js). Register with
  * `registerStrings('en', REPORT_I18N.en)` / `registerStrings('tr', REPORT_I18N.tr)`.
  * @type {{ en: Object<string, string|object>, tr: Object<string, string|object> }}
  */
 export const REPORT_I18N = Object.freeze({
   en: Object.freeze({
-    'rpt.kind.domain': 'Domain overview',
-    'rpt.kind.health': 'Domain Health report',
-    'rpt.title': '{kind} · {domain}',
-    'rpt.resultAt': 'Result from',
-    'rpt.generatedAt': 'Report made',
-    'rpt.tool': 'Tool',
-    'rpt.toolValue': 'DomainScope {version}',
-    'rpt.problems': 'Problems and advice',
-    'rpt.noProblems': 'No errors or warnings.',
-    'rpt.problemsUnknown': 'The health checks did not run, so problems are not known.',
-    'rpt.sev.error': 'Error',
-    'rpt.sev.warn': 'Warning',
-    'rpt.sev.info': 'Note',
-    'rpt.sev.ok': 'Passed',
-    'rpt.light.error': 'Problems found',
-    'rpt.light.warn': 'Needs attention',
-    'rpt.light.ok': 'Healthy',
-    'rpt.light.errorBody': 'Fix the errors first — they break mail delivery, resolution or security for real users.',
-    'rpt.light.warnBody': 'Nothing is broken, but some settings are weak or risky.',
-    'rpt.light.okBody': { one: 'No problems found in {count} check.', other: 'No problems found in {count} checks.' },
-    'rpt.count.error': { one: '{count} error', other: '{count} errors' },
-    'rpt.count.warn': { one: '{count} warning', other: '{count} warnings' },
-    'rpt.count.info': { one: '{count} note', other: '{count} notes' },
-    'rpt.count.ok': { one: '{count} passed', other: '{count} passed' },
-    'rpt.counts': 'Checks',
-    'rpt.verdict': 'Verdict',
-    'rpt.services': 'Verified by TXT',
-    'rpt.na': '⚠ n/a — {reason}',
-    'rpt.lookupFailed': 'the lookup failed',
-    'rpt.none': 'none',
-    'rpt.ctNotAsked': 'Not looked up: Certificate Transparency is asked only on its own button.',
-    'rpt.notes': 'Notes',
-    'rpt.passed': 'Passed checks',
-    'rpt.records': 'Records read',
-    'rpt.registrar': 'Registrar',
-    'rpt.expires': 'Expires',
-    'rpt.zone': 'Checked in the zone {zone}.',
-    'rpt.dnssec.validated': 'Signed and validated',
-    'rpt.dnssec.signed': 'Signed, not validated',
-    'rpt.dnssec.unsigned': 'Not signed',
-    'rpt.dnssec.unknown': 'Not known',
-    'rpt.method': 'What was checked',
-    'rpt.method.domain.dns': 'DNS: NS, SOA, DS and DNSKEY, MX, TXT (SPF and service verifications), DMARC, the A, AAAA and HTTPS records of the domain and of its www name, and CAA, asked over DNS-over-HTTPS from the browser.',
-    'rpt.method.domain.rdap': 'Registration: the registry’s RDAP service (registrar, dates, status flags, DNSSEC delegation).',
-    'rpt.method.domain.ct': 'Certificate issuers: Certificate Transparency (Cert Spotter, or crt.sh when it cannot answer), only when they were asked for.',
-    'rpt.method.domain.health': 'Problems and the score: Domain Health’s checks on the same answers. The score starts at 100 and loses 20 points per error and 6 per warning.',
-    'rpt.method.health.checks': 'NS, SOA, MX, SPF with its 10-lookup limit, DMARC, DKIM, CAA, DNSSEC, wildcard records, MTA-STS, TLS-RPT, BIMI, IPv6, HTTPS records and the RDAP registration, asked over DNS-over-HTTPS from the browser.',
-    'rpt.method.health.dkim': 'DKIM: the common selectors and the ones added to the check: {list}.',
-    'rpt.method.health.score': 'The score starts at 100 and loses 20 points per error and 6 per warning; notes cost nothing.',
-    'rpt.method.when': 'The answers are those the resolvers and registries gave at the time of the result; caches elsewhere may still hold older ones.',
-    'rpt.method.private': 'Not in this report: TXT verification tokens, server inventories and workspace data.',
-    'rpt.rerun': 'Run it again',
-    'rpt.rerunNote': 'The link carries only the domain and the options, never a result: opening it runs the check again in the browser.',
-    'rpt.foot': 'Made in the browser with DomainScope {version}. This file has no scripts and loads nothing from the network.',
+    'crep.kind.domain': 'Domain overview',
+    'crep.kind.health': 'Domain Health report',
+    'crep.title': '{kind} · {domain}',
+    'crep.resultAt': 'Result from',
+    'crep.generatedAt': 'Report made',
+    'crep.tool': 'Tool',
+    'crep.toolValue': 'DomainScope {version}',
+    'crep.problems': 'Problems and advice',
+    'crep.noProblems': 'No errors or warnings.',
+    'crep.problemsUnknown': 'The health checks did not run, so problems are not known.',
+    'crep.sev.error': 'Error',
+    'crep.sev.warn': 'Warning',
+    'crep.sev.info': 'Note',
+    'crep.sev.ok': 'Passed',
+    'crep.light.error': 'Problems found',
+    'crep.light.warn': 'Needs attention',
+    'crep.light.ok': 'Healthy',
+    'crep.light.errorBody': 'Fix the errors first — they break mail delivery, resolution or security for real users.',
+    'crep.light.warnBody': 'Nothing is broken, but some settings are weak or risky.',
+    'crep.light.okBody': { one: 'No problems found in {count} check.', other: 'No problems found in {count} checks.' },
+    'crep.count.error': { one: '{count} error', other: '{count} errors' },
+    'crep.count.warn': { one: '{count} warning', other: '{count} warnings' },
+    'crep.count.info': { one: '{count} note', other: '{count} notes' },
+    'crep.count.ok': { one: '{count} passed', other: '{count} passed' },
+    'crep.counts': 'Checks',
+    'crep.verdict': 'Verdict',
+    'crep.services': 'Verified by TXT',
+    'crep.na': '⚠ n/a — {reason}',
+    'crep.lookupFailed': 'the lookup failed',
+    'crep.none': 'none',
+    'crep.ctNotAsked': 'Not looked up: Certificate Transparency is asked only on its own button.',
+    'crep.notes': 'Notes',
+    'crep.passed': 'Passed checks',
+    'crep.records': 'Records read',
+    'crep.registrar': 'Registrar',
+    'crep.expires': 'Expires',
+    'crep.zone': 'Checked in the zone {zone}.',
+    'crep.dnssec.validated': 'Signed and validated',
+    'crep.dnssec.signed': 'Signed, not validated',
+    'crep.dnssec.unsigned': 'Not signed',
+    'crep.dnssec.unknown': 'Not known',
+    'crep.method': 'What was checked',
+    'crep.method.domain.dns': 'DNS: NS, SOA, DS and DNSKEY, MX, TXT (SPF and service verifications), DMARC, the A, AAAA and HTTPS records of the domain and of its www name, and CAA, asked over DNS-over-HTTPS from the browser.',
+    'crep.method.domain.rdap': 'Registration: the registry’s RDAP service (registrar, dates, status flags, DNSSEC delegation).',
+    'crep.method.domain.ct': 'Certificate issuers: Certificate Transparency (Cert Spotter, or crt.sh when it cannot answer), only when they were asked for.',
+    'crep.method.domain.health': 'Problems and the score: Domain Health’s checks on the same answers. The score starts at 100 and loses 20 points per error and 6 per warning.',
+    'crep.method.health.checks': 'NS, SOA, MX, SPF with its 10-lookup limit, DMARC, DKIM, CAA, DNSSEC, wildcard records, MTA-STS, TLS-RPT, BIMI, IPv6, HTTPS records and the RDAP registration, asked over DNS-over-HTTPS from the browser.',
+    'crep.method.health.dkim': 'DKIM: the common selectors and the ones added to the check: {list}.',
+    'crep.method.health.score': 'The score starts at 100 and loses 20 points per error and 6 per warning; notes cost nothing.',
+    'crep.method.when': 'The answers are those the resolvers and registries gave at the time of the result; caches elsewhere may still hold older ones.',
+    'crep.method.private': 'Not in this report: TXT verification tokens, server inventories and workspace data.',
+    'crep.rerun': 'Run it again',
+    'crep.rerunNote': 'The link carries only the domain and the options, never a result: opening it runs the check again in the browser.',
+    'crep.foot': 'Made in the browser with DomainScope {version}. This file has no scripts and loads nothing from the network.',
 
-    'rpt.panel.title': 'Customer report',
-    'rpt.panel.body': 'One HTML file with this result — the problems and their advice first, then the facts, when and how it was checked — in a light, print-friendly design and in the interface language. It has no scripts and loads nothing, so it can go to a customer as it is. It is made in your browser: nothing is sent.',
-    'rpt.panel.link': 'Add a link that runs it again',
-    'rpt.panel.linkHint': 'The link carries only the inputs ({inputs}), never a result or anything from your workspace: whoever opens it runs the check with their own requests.',
-    'rpt.panel.copyLink': 'Copy the link',
-    'rpt.panel.download': 'Download HTML',
-    'rpt.panel.print': 'Print / save as PDF',
-    'rpt.panel.saved': 'Report saved as {name}',
-    'rpt.panel.noPrint': 'This browser cannot print the report from here: download it and print the file.',
-    'rpt.panel.failed': 'The report could not be made: {error}'
+    'crep.panel.title': 'Customer report',
+    'crep.panel.body': 'One HTML file with this result — the problems and their advice first, then the facts, when and how it was checked — in a light, print-friendly design and in the interface language. It has no scripts and loads nothing, so it can go to a customer as it is. It is made in your browser: nothing is sent.',
+    'crep.panel.link': 'Add a link that runs it again',
+    'crep.panel.linkHint': 'The link carries only the inputs ({inputs}), never a result or anything from your workspace: whoever opens it runs the check with their own requests.',
+    'crep.panel.copyLink': 'Copy the link',
+    'crep.panel.download': 'Download HTML',
+    'crep.panel.print': 'Print / save as PDF',
+    'crep.panel.saved': 'Report saved as {name}',
+    'crep.panel.noPrint': 'This browser cannot print the report from here: download it and print the file.',
+    'crep.panel.failed': 'The report could not be made: {error}'
   }),
   tr: Object.freeze({
-    'rpt.kind.domain': 'Alan adı özeti',
-    'rpt.kind.health': 'Alan adı sağlığı raporu',
-    'rpt.title': '{kind} · {domain}',
-    'rpt.resultAt': 'Sonucun zamanı',
-    'rpt.generatedAt': 'Raporun hazırlandığı zaman',
-    'rpt.tool': 'Araç',
-    'rpt.toolValue': 'DomainScope {version}',
-    'rpt.problems': 'Sorunlar ve öneriler',
-    'rpt.noProblems': 'Hata ya da uyarı yok.',
-    'rpt.problemsUnknown': 'Sağlık kontrolleri çalışmadı; sorunlar bilinmiyor.',
-    'rpt.sev.error': 'Hata',
-    'rpt.sev.warn': 'Uyarı',
-    'rpt.sev.info': 'Not',
-    'rpt.sev.ok': 'Geçti',
-    'rpt.light.error': 'Sorun bulundu',
-    'rpt.light.warn': 'İlgilenilmesi gerekiyor',
-    'rpt.light.ok': 'Sağlıklı',
-    'rpt.light.errorBody': 'Önce hataları giderin — gerçek kullanıcılar için e-posta teslimini, çözümlemeyi ya da güvenliği bozuyorlar.',
-    'rpt.light.warnBody': 'Bozuk bir şey yok ama bazı ayarlar zayıf ya da riskli.',
-    'rpt.light.okBody': '{count} kontrolde sorun bulunmadı.',
-    'rpt.count.error': '{count} hata',
-    'rpt.count.warn': '{count} uyarı',
-    'rpt.count.info': '{count} not',
-    'rpt.count.ok': '{count} geçti',
-    'rpt.counts': 'Kontroller',
-    'rpt.verdict': 'Sonuç',
-    'rpt.services': 'TXT ile doğrulayanlar',
-    'rpt.na': '⚠ alınamadı — {reason}',
-    'rpt.lookupFailed': 'sorgu başarısız oldu',
-    'rpt.none': 'yok',
-    'rpt.ctNotAsked': 'Sorgulanmadı: Certificate Transparency yalnızca kendi düğmesiyle sorgulanır.',
-    'rpt.notes': 'Notlar',
-    'rpt.passed': 'Geçen kontroller',
-    'rpt.records': 'Okunan kayıtlar',
-    'rpt.registrar': 'Kayıt firması',
-    'rpt.expires': 'Bitiş tarihi',
-    'rpt.zone': '{zone} zone’unda kontrol edildi.',
-    'rpt.dnssec.validated': 'İmzalı ve doğrulandı',
-    'rpt.dnssec.signed': 'İmzalı, doğrulanmadı',
-    'rpt.dnssec.unsigned': 'İmzalı değil',
-    'rpt.dnssec.unknown': 'Bilinmiyor',
-    'rpt.method': 'Neler kontrol edildi',
-    'rpt.method.domain.dns': 'DNS: NS, SOA, DS ve DNSKEY, MX, TXT (SPF ve hizmet doğrulamaları), DMARC, alan adının ve www adının A, AAAA ve HTTPS kayıtları ile CAA; tarayıcıdan DNS-over-HTTPS ile soruldu.',
-    'rpt.method.domain.rdap': 'Kayıt bilgileri: kayıt kuruluşunun RDAP hizmeti (kayıt firması, tarihler, durum bayrakları, DNSSEC yetkilendirmesi).',
-    'rpt.method.domain.ct': 'Sertifika sağlayıcıları: Certificate Transparency (Cert Spotter; yanıt veremezse crt.sh), yalnızca istendiğinde.',
-    'rpt.method.domain.health': 'Sorunlar ve puan: aynı yanıtlar üzerinde Alan adı sağlığı kontrolleri. Puan 100’den başlar; her hata 20, her uyarı 6 puan düşürür.',
-    'rpt.method.health.checks': 'NS, SOA, MX, 10 sorgu sınırıyla SPF, DMARC, DKIM, CAA, DNSSEC, Wildcard kayıtlar, MTA-STS, TLS-RPT, BIMI, IPv6, HTTPS kayıtları ve RDAP kayıt bilgileri; tarayıcıdan DNS-over-HTTPS ile soruldu.',
-    'rpt.method.health.dkim': 'DKIM: yaygın seçiciler ve kontrole eklenenler: {list}.',
-    'rpt.method.health.score': 'Puan 100’den başlar; her hata 20, her uyarı 6 puan düşürür; notlar puan düşürmez.',
-    'rpt.method.when': 'Yanıtlar, çözümleyicilerin ve kayıt kuruluşlarının sonucun zamanında verdikleridir; başka yerlerdeki önbellekler daha eski yanıtları tutuyor olabilir.',
-    'rpt.method.private': 'Bu raporda olmayanlar: TXT doğrulama belirteçleri, sunucu envanterleri ve çalışma alanı verileri.',
-    'rpt.rerun': 'Yeniden çalıştır',
-    'rpt.rerunNote': 'Bağlantı yalnızca alan adını ve seçenekleri taşır, hiçbir sonucu taşımaz: açıldığında kontrol tarayıcıda yeniden çalışır.',
-    'rpt.foot': 'Tarayıcıda DomainScope {version} ile hazırlandı. Bu dosyada betik yoktur ve ağdan hiçbir şey yüklemez.',
+    'crep.kind.domain': 'Alan adı özeti',
+    'crep.kind.health': 'Alan adı sağlığı raporu',
+    'crep.title': '{kind} · {domain}',
+    'crep.resultAt': 'Sonucun zamanı',
+    'crep.generatedAt': 'Raporun hazırlandığı zaman',
+    'crep.tool': 'Araç',
+    'crep.toolValue': 'DomainScope {version}',
+    'crep.problems': 'Sorunlar ve öneriler',
+    'crep.noProblems': 'Hata ya da uyarı yok.',
+    'crep.problemsUnknown': 'Sağlık kontrolleri çalışmadı; sorunlar bilinmiyor.',
+    'crep.sev.error': 'Hata',
+    'crep.sev.warn': 'Uyarı',
+    'crep.sev.info': 'Not',
+    'crep.sev.ok': 'Geçti',
+    'crep.light.error': 'Sorun bulundu',
+    'crep.light.warn': 'İlgilenilmesi gerekiyor',
+    'crep.light.ok': 'Sağlıklı',
+    'crep.light.errorBody': 'Önce hataları giderin — gerçek kullanıcılar için e-posta teslimini, çözümlemeyi ya da güvenliği bozuyorlar.',
+    'crep.light.warnBody': 'Bozuk bir şey yok ama bazı ayarlar zayıf ya da riskli.',
+    'crep.light.okBody': '{count} kontrolde sorun bulunmadı.',
+    'crep.count.error': '{count} hata',
+    'crep.count.warn': '{count} uyarı',
+    'crep.count.info': '{count} not',
+    'crep.count.ok': '{count} geçti',
+    'crep.counts': 'Kontroller',
+    'crep.verdict': 'Sonuç',
+    'crep.services': 'TXT ile doğrulayanlar',
+    'crep.na': '⚠ alınamadı — {reason}',
+    'crep.lookupFailed': 'sorgu başarısız oldu',
+    'crep.none': 'yok',
+    'crep.ctNotAsked': 'Sorgulanmadı: Certificate Transparency yalnızca kendi düğmesiyle sorgulanır.',
+    'crep.notes': 'Notlar',
+    'crep.passed': 'Geçen kontroller',
+    'crep.records': 'Okunan kayıtlar',
+    'crep.registrar': 'Kayıt firması',
+    'crep.expires': 'Bitiş tarihi',
+    'crep.zone': '{zone} zone’unda kontrol edildi.',
+    'crep.dnssec.validated': 'İmzalı ve doğrulandı',
+    'crep.dnssec.signed': 'İmzalı, doğrulanmadı',
+    'crep.dnssec.unsigned': 'İmzalı değil',
+    'crep.dnssec.unknown': 'Bilinmiyor',
+    'crep.method': 'Neler kontrol edildi',
+    'crep.method.domain.dns': 'DNS: NS, SOA, DS ve DNSKEY, MX, TXT (SPF ve hizmet doğrulamaları), DMARC, alan adının ve www adının A, AAAA ve HTTPS kayıtları ile CAA; tarayıcıdan DNS-over-HTTPS ile soruldu.',
+    'crep.method.domain.rdap': 'Kayıt bilgileri: kayıt kuruluşunun RDAP hizmeti (kayıt firması, tarihler, durum bayrakları, DNSSEC yetkilendirmesi).',
+    'crep.method.domain.ct': 'Sertifika sağlayıcıları: Certificate Transparency (Cert Spotter; yanıt veremezse crt.sh), yalnızca istendiğinde.',
+    'crep.method.domain.health': 'Sorunlar ve puan: aynı yanıtlar üzerinde Alan adı sağlığı kontrolleri. Puan 100’den başlar; her hata 20, her uyarı 6 puan düşürür.',
+    'crep.method.health.checks': 'NS, SOA, MX, 10 sorgu sınırıyla SPF, DMARC, DKIM, CAA, DNSSEC, Wildcard kayıtlar, MTA-STS, TLS-RPT, BIMI, IPv6, HTTPS kayıtları ve RDAP kayıt bilgileri; tarayıcıdan DNS-over-HTTPS ile soruldu.',
+    'crep.method.health.dkim': 'DKIM: yaygın seçiciler ve kontrole eklenenler: {list}.',
+    'crep.method.health.score': 'Puan 100’den başlar; her hata 20, her uyarı 6 puan düşürür; notlar puan düşürmez.',
+    'crep.method.when': 'Yanıtlar, çözümleyicilerin ve kayıt kuruluşlarının sonucun zamanında verdikleridir; başka yerlerdeki önbellekler daha eski yanıtları tutuyor olabilir.',
+    'crep.method.private': 'Bu raporda olmayanlar: TXT doğrulama belirteçleri, sunucu envanterleri ve çalışma alanı verileri.',
+    'crep.rerun': 'Yeniden çalıştır',
+    'crep.rerunNote': 'Bağlantı yalnızca alan adını ve seçenekleri taşır, hiçbir sonucu taşımaz: açıldığında kontrol tarayıcıda yeniden çalışır.',
+    'crep.foot': 'Tarayıcıda DomainScope {version} ile hazırlandı. Bu dosyada betik yoktur ve ağdan hiçbir şey yüklemez.',
 
-    'rpt.panel.title': 'Müşteri raporu',
-    'rpt.panel.body': 'Bu sonucu içeren tek bir HTML dosyası — önce sorunlar ve öneriler, ardından bulgular, ne zaman ve nasıl kontrol edildiği — açık renkli, yazdırmaya uygun bir tasarımda ve arayüz dilinde. Betik içermez ve hiçbir şey yüklemez; olduğu gibi müşteriye gönderilebilir. Tarayıcınızda hazırlanır: hiçbir şey gönderilmez.',
-    'rpt.panel.link': 'Yeniden çalıştıran bir bağlantı ekle',
-    'rpt.panel.linkHint': 'Bağlantı yalnızca girdileri ({inputs}) taşır; hiçbir sonucu ya da çalışma alanınızdan bir şeyi taşımaz: açan kişi kontrolü kendi sorgularıyla çalıştırır.',
-    'rpt.panel.copyLink': 'Bağlantıyı kopyala',
-    'rpt.panel.download': 'HTML indir',
-    'rpt.panel.print': 'Yazdır / PDF olarak kaydet',
-    'rpt.panel.saved': 'Rapor kaydedildi: {name}',
-    'rpt.panel.noPrint': 'Bu tarayıcı raporu buradan yazdıramıyor: indirip dosyayı yazdırın.',
-    'rpt.panel.failed': 'Rapor hazırlanamadı: {error}'
+    'crep.panel.title': 'Müşteri raporu',
+    'crep.panel.body': 'Bu sonucu içeren tek bir HTML dosyası — önce sorunlar ve öneriler, ardından bulgular, ne zaman ve nasıl kontrol edildiği — açık renkli, yazdırmaya uygun bir tasarımda ve arayüz dilinde. Betik içermez ve hiçbir şey yüklemez; olduğu gibi müşteriye gönderilebilir. Tarayıcınızda hazırlanır: hiçbir şey gönderilmez.',
+    'crep.panel.link': 'Yeniden çalıştıran bir bağlantı ekle',
+    'crep.panel.linkHint': 'Bağlantı yalnızca girdileri ({inputs}) taşır; hiçbir sonucu ya da çalışma alanınızdan bir şeyi taşımaz: açan kişi kontrolü kendi sorgularıyla çalıştırır.',
+    'crep.panel.copyLink': 'Bağlantıyı kopyala',
+    'crep.panel.download': 'HTML indir',
+    'crep.panel.print': 'Yazdır / PDF olarak kaydet',
+    'crep.panel.saved': 'Rapor kaydedildi: {name}',
+    'crep.panel.noPrint': 'Bu tarayıcı raporu buradan yazdıramıyor: indirip dosyayı yazdırın.',
+    'crep.panel.failed': 'Rapor hazırlanamadı: {error}'
   })
 });

@@ -483,7 +483,7 @@ async function main() {
     run.group('Customer report');
     const openReport = async () => {
       await page.click('.dov-head [data-action="report"]');
-      await page.waitFor(() => !!document.querySelector('dialog.rpt-modal[open]'), { message: 'report panel' });
+      await page.waitFor(() => !!document.querySelector('dialog.crep-modal[open]'), { message: 'report panel' });
     };
     await run.step('Report › Download HTML: one file, no script, the crafted SPF record escaped, no token, the permalink; nothing sent', async () => {
       await page.type('[data-role="dov-name"]', 'example.org');
@@ -491,8 +491,8 @@ async function main() {
       await waitBuilt(page, 'example.org overview');
       const before = await counts(page);
       await openReport();
-      assert(/nothing is sent/.test(await text(page, 'dialog.rpt-modal')), await text(page, 'dialog.rpt-modal'));
-      await page.click('dialog.rpt-modal [data-action="report-download"]');
+      assert(/nothing is sent/.test(await text(page, 'dialog.crep-modal')), await text(page, 'dialog.crep-modal'));
+      await page.click('dialog.crep-modal [data-action="report-download"]');
       await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'downloaded' });
       const [file] = await takeDownloads(page);
       assert(/^domain-overview-report-example\.org-\d{8}-\d{4}\.html$/.test(file.name), file.name);
@@ -502,45 +502,45 @@ async function main() {
       assert(file.text.includes('Invalid terms: &lt;script&gt;alert(1)&lt;/script&gt;.'), 'the crafted TXT value, escaped');
       assert(!file.text.includes('E2ETOKENorg'), 'no verification token');
       assert(/<a href="http:\/\/[^"]+\/domainscope\/#\/domain\?name=example\.org" rel="noreferrer">/.test(file.text), 'the re-run link');
-      assert(/<section class="rpt-card rpt-section rpt-problems" data-section="problems">/.test(file.text), 'problems first');
+      assert(/<section class="crep-card crep-section crep-problems" data-section="problems">/.test(file.text), 'problems first');
       assertEqual(await counts(page), before, 'nothing sent');
-      assert(await page.evaluate(() => !document.querySelector('dialog.rpt-modal')), 'the panel closed');
+      assert(await page.evaluate(() => !document.querySelector('dialog.crep-modal')), 'the panel closed');
     });
 
     await run.step('Report › Print / save as PDF: the report alone on paper, styled, not on screen; gone after printing', async () => {
       const sheets = await page.evaluate(() => {
         window.__prints = [];
-        window.print = () => window.__prints.push(document.querySelector('.rpt-print-host')?.shadowRoot?.textContent || null);
+        window.print = () => window.__prints.push(document.querySelector('.crep-print-host')?.shadowRoot?.textContent || null);
         return document.adoptedStyleSheets.length;
       });
       await openReport();
-      await page.click('dialog.rpt-modal [data-action="report-print"]');
+      await page.click('dialog.crep-modal [data-action="report-print"]');
       await page.waitFor(() => window.__prints.length === 1, { message: 'printed' });
       const printed = await page.evaluate(() => window.__prints[0]);
       assert(printed && printed.includes('Invalid terms: <script>alert(1)</script>.') && printed.includes('Problems and advice'), String(printed).slice(0, 300));
       await page.send('Emulation.setEmulatedMedia', { media: 'print' });
       const paper = await page.evaluate(() => {
-        const root = document.querySelector('.rpt-print-host').shadowRoot;
-        const subject = root.querySelector('.rpt-subject');
+        const root = document.querySelector('.crep-print-host').shadowRoot;
+        const subject = root.querySelector('.crep-subject');
         return {
           shown: [...document.body.children].filter((el) => getComputedStyle(el).display !== 'none').map((el) => el.className),
           scripts: root.querySelectorAll('script').length, subject: subject.textContent, weight: getComputedStyle(subject).fontWeight
         };
       });
       await page.send('Emulation.setEmulatedMedia', { media: '' });
-      assertEqual(paper, { shown: ['rpt-print-host'], scripts: 0, subject: 'example.org', weight: '700' }, 'on paper');
-      assertEqual(await page.evaluate(() => getComputedStyle(document.querySelector('.rpt-print-host')).display), 'none', 'not on screen');
+      assertEqual(paper, { shown: ['crep-print-host'], scripts: 0, subject: 'example.org', weight: '700' }, 'on paper');
+      assertEqual(await page.evaluate(() => getComputedStyle(document.querySelector('.crep-print-host')).display), 'none', 'not on screen');
       await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
-      assertEqual(await page.evaluate(() => [!!document.querySelector('.rpt-print-host'), document.adoptedStyleSheets.length]), [false, sheets], 'gone after printing');
+      assertEqual(await page.evaluate(() => [!!document.querySelector('.crep-print-host'), document.adoptedStyleSheets.length]), [false, sheets], 'gone after printing');
     });
 
     await run.step('in Turkish: the panel and the file in Turkish; unticked, the file has no link', async () => {
       await setLangUi(page, 'tr');
       await page.waitFor(() => !!document.querySelector('.dov-head [data-action="report"]'), { message: 'kept after the language switch' });
       await openReport();
-      assertEqual(await text(page, 'dialog.rpt-modal .modal-title'), 'Müşteri raporu', 'title');
-      await page.evaluate(() => document.querySelector('dialog.rpt-modal [data-role="report-link"]').click());
-      await page.click('dialog.rpt-modal [data-action="report-download"]');
+      assertEqual(await text(page, 'dialog.crep-modal .modal-title'), 'Müşteri raporu', 'title');
+      await page.evaluate(() => document.querySelector('dialog.crep-modal [data-role="report-link"]').click());
+      await page.click('dialog.crep-modal [data-action="report-download"]');
       await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'downloaded' });
       const [file] = await takeDownloads(page);
       assert(file.text.startsWith('<!doctype html>\n<html lang="tr">') && file.text.includes('Sorunlar ve öneriler') && file.text.includes('Geçersiz ifadeler: &lt;script&gt;'), file.text.slice(0, 200));

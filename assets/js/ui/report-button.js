@@ -10,14 +10,14 @@ import { registerStrings, t } from '../i18n.js';
 import { onceAsync } from '../lib/util.js';
 
 registerStrings('en', {
-  'rpt.button': 'Report',
-  'rpt.buttonTitle': 'A customer report of this result: one HTML file, or print / save as PDF',
-  'rpt.loadFailed': 'The report could not be loaded. Check the connection and try again.'
+  'crep.button': 'Report',
+  'crep.buttonTitle': 'A customer report of this result: one HTML file, or print / save as PDF',
+  'crep.loadFailed': 'The report could not be loaded. Check the connection and try again.'
 });
 registerStrings('tr', {
-  'rpt.button': 'Rapor',
-  'rpt.buttonTitle': 'Bu sonucun müşteri raporu: tek bir HTML dosyası ya da yazdır / PDF olarak kaydet',
-  'rpt.loadFailed': 'Rapor yüklenemedi. Bağlantıyı kontrol edip yeniden deneyin.'
+  'crep.button': 'Rapor',
+  'crep.buttonTitle': 'Bu sonucun müşteri raporu: tek bir HTML dosyası ya da yazdır / PDF olarak kaydet',
+  'crep.loadFailed': 'Rapor yüklenemedi. Bağlantıyı kontrol edip yeniden deneyin.'
 });
 
 /** The panel, loaded on the first click (a failed load is tried again on the next). */
@@ -35,11 +35,11 @@ const loadPanel = onceAsync(() => import('./report.js'));
  */
 export function ReportButton(ctx, kind, input, { disabled = false } = {}) {
   const btn = Button({
-    label: t('rpt.button'),
+    label: t('crep.button'),
     icon: 'file-text',
     size: 'sm',
     variant: 'secondary',
-    title: t('rpt.buttonTitle'),
+    title: t('crep.buttonTitle'),
     dataset: { action: 'report', kind },
     onClick: async () => {
       const data = input();
@@ -49,7 +49,7 @@ export function ReportButton(ctx, kind, input, { disabled = false } = {}) {
         panel = await loadPanel();
       } catch {
         ctx.checkOutdated();
-        toast(t('rpt.loadFailed'), { type: 'error' });
+        toast(t('crep.loadFailed'), { type: 'error' });
         return;
       }
       panel.openReport(ctx, kind, data);

@@ -12,6 +12,8 @@ import { readFileSync } from 'node:fs';
 import * as i18n from '../../assets/js/i18n.js';
 import { HEALTH_GROUPS } from '../../assets/js/views/health.js';
 import '../../assets/js/views/domain.js';
+// DMARC & TLS reports: its `rpt.*` keys and `.rpt-` classes must stay clear of the customer report's.
+import '../../assets/js/views/reports.js';
 import {
   REPORT_CSP, REPORT_CSS, REPORT_I18N, REPORT_KINDS, REPORT_SEVERITIES, REPORT_FILE_BASES, buildReport, domainReport, el, escapeHtml,
   healthReport, isWebUrl, renderHtml, reportBody, reportHtml, reportLinkParams, utcDay, utcTime
@@ -113,9 +115,12 @@ const words = (lang) => {
 };
 
 let domainInput = null;
+/** Keys of REPORT_I18N some other module had registered before the report's. */
+let taken = null;
 let healthInput = null;
 
 before(async () => {
+  taken = Object.keys(REPORT_I18N.en).filter((k) => i18n.hasString(k, 'en') || i18n.hasString(k, 'tr'));
   i18n.registerStrings('en', REPORT_I18N.en);
   i18n.registerStrings('tr', REPORT_I18N.tr);
   clearRdapCache();
@@ -194,7 +199,7 @@ describe('renderHtml: the serializer escapes every value and refuses what is not
     }
     assert.throws(() => renderHtml(el('style', null, 'body{background:url(https://example.net/x)}')), TypeError);
     assert.throws(() => renderHtml(el('style', null, REPORT_CSS, 'p{}')), TypeError);
-    assert.ok(renderHtml(el('style', null, REPORT_CSS)).startsWith('<style>.rpt{'));
+    assert.ok(renderHtml(el('style', null, REPORT_CSS)).startsWith('<style>.crep{'));
     assert.doesNotMatch(REPORT_CSS, /<\/|url\(|@import|expression\(/i, 'the stylesheet loads nothing and never closes its element');
   });
 
@@ -259,7 +264,7 @@ describe('domainReport: the overview as one inert file', () => {
     assert.deepEqual(reg.rows.find((r) => r.label === 'Expires'), { label: 'Expires', value: '2027-08-13 · 318 days left', severity: 'ok' });
     assert.equal(reg.rows.find((r) => r.label === 'Transfer lock').value, 'Off');
     const certs = doc.sections.find((s) => s.id === 'certs');
-    assert.ok(certs.rows.some((r) => r.value === REPORT_I18N.en['rpt.ctNotAsked']), 'CT not asked: said so');
+    assert.ok(certs.rows.some((r) => r.value === REPORT_I18N.en['crep.ctNotAsked']), 'CT not asked: said so');
   });
 
   test('without a link (or with one that is not http(s)) the footer has none', () => {
@@ -293,7 +298,7 @@ describe('domainReport: the overview as one inert file', () => {
     const doc = domainReport({ cards: passportCards({ domain: 'example.com' }, { now: NOW }), domain: 'example.com', at: NOW }, words('en'));
     for (const s of doc.sections) assert.equal(s.notes[0].text, 'Not looked up: the build was stopped.', s.id);
     assert.equal(doc.verdict, null);
-    assert.ok(reportHtml(doc, words('en')).includes(REPORT_I18N.en['rpt.problemsUnknown']));
+    assert.ok(reportHtml(doc, words('en')).includes(REPORT_I18N.en['crep.problemsUnknown']));
   });
 });
 
@@ -339,9 +344,9 @@ describe('healthReport: the checks with their problems and advice first', () => 
 
   test("lib/health's words for a failed lookup and for yes / no are put in the UI language", () => {
     assert.ok(SRC.includes(`const LOOKUP_FAILED = '${LOOKUP_FAILED_PARAM}';`), 'the same constant as lib/health.js');
-    const check = { id: 'x.y', severity: 'warn', titleKey: 'rpt.test.title', detailKey: 'rpt.test.detail', params: { a: LOOKUP_FAILED_PARAM, b: 'yes' }, group: 'dns' };
-    i18n.registerStrings('en', { 'rpt.test.title': 'T', 'rpt.test.detail': '{a} / {b}' });
-    i18n.registerStrings('tr', { 'rpt.test.title': 'T', 'rpt.test.detail': '{a} / {b}' });
+    const check = { id: 'x.y', severity: 'warn', titleKey: 'crep.test.title', detailKey: 'crep.test.detail', params: { a: LOOKUP_FAILED_PARAM, b: 'yes' }, group: 'dns' };
+    i18n.registerStrings('en', { 'crep.test.title': 'T', 'crep.test.detail': '{a} / {b}' });
+    i18n.registerStrings('tr', { 'crep.test.title': 'T', 'crep.test.detail': '{a} / {b}' });
     const doc = healthReport({ report: { domain: 'example.com', checks: [check], summary: { ok: 0, info: 0, warn: 1, error: 0 } } }, words('tr'));
     assert.equal(doc.problems[0].detail, 'sorgu başarısız oldu / Evet');
   });
@@ -374,11 +379,17 @@ describe('the re-run link carries the inputs only', () => {
     const doc = domainReport(domainInput, opts);
     const body = renderHtml(reportBody(doc, opts));
     assert.ok(reportHtml(doc, opts).includes(body));
-    assert.ok(body.startsWith('<body class="rpt rpt-domain"><div class="rpt-page">'));
+    assert.ok(body.startsWith('<body class="crep crep-domain"><div class="crep-page">'));
   });
 });
 
 describe('texts', () => {
+  test('no other view registers a key of the report (the DMARC & TLS reports view owns rpt.*)', () => {
+    assert.deepEqual(taken, []);
+    assert.ok(Object.keys(REPORT_I18N.en).every((k) => k.startsWith('crep.')));
+    assert.doesNotMatch(REPORT_CSS, /\.rpt-/);
+  });
+
   test('English and Turkish have the same keys and placeholders, none empty', () => {
     assert.deepEqual(Object.keys(REPORT_I18N.tr).sort(), Object.keys(REPORT_I18N.en).sort());
     const ph = (v) => [...JSON.stringify(v).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().filter((x, i, a) => a.indexOf(x) === i).join();
@@ -390,10 +401,10 @@ describe('texts', () => {
   });
 
   test('every key the builders ask for exists in both languages', () => {
-    const literal = [...SRC.matchAll(/\bt\('((?:rpt|dov|common)\.[A-Za-z0-9.?~+-]+)'/g)].map((m) => m[1]);
+    const literal = [...SRC.matchAll(/\bt\('((?:crep|dov|common)\.[A-Za-z0-9.?~+-]+)'/g)].map((m) => m[1]);
     const built = [
-      ...REPORT_KINDS.map((k) => `rpt.kind.${k}`), ...REPORT_SEVERITIES.map((s) => `rpt.sev.${s}`), ...REPORT_SEVERITIES.map((s) => `rpt.count.${s}`),
-      ...['ok', 'warn', 'error'].flatMap((l) => [`rpt.light.${l}`, `rpt.light.${l}Body`]),
+      ...REPORT_KINDS.map((k) => `crep.kind.${k}`), ...REPORT_SEVERITIES.map((s) => `crep.sev.${s}`), ...REPORT_SEVERITIES.map((s) => `crep.count.${s}`),
+      ...['ok', 'warn', 'error'].flatMap((l) => [`crep.light.${l}`, `crep.light.${l}Body`]),
       ...PASSPORT_CARDS.map((c) => `dov.card.${c}`), ...['validated', 'signed', 'failing', 'unsigned'].map((s) => `dov.dns.dnssec.${s}`),
       ...['-', '~', '?', '+', 'none', 'many', 'invalid'].map((s) => `dov.mail.spf.${s}`), ...['reject', 'quarantine', 'none', 'many', 'invalid'].map((s) => `dov.mail.dmarc.${s}`),
       ...['gateway', 'forwarding', 'sending'].map((k) => `dov.mail.kind.${k}`)

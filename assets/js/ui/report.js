@@ -28,8 +28,8 @@ registerStrings('en', REPORT_I18N.en);
 registerStrings('tr', REPORT_I18N.tr);
 
 /** The page while a report prints: only the report on paper, nothing of it on screen. */
-const PAGE_CSS = '@media screen{.rpt-print-host{display:none!important}}'
-  + '@media print{body>:not(.rpt-print-host){display:none!important}.rpt-print-host{display:block}}'
+const PAGE_CSS = '@media screen{.crep-print-host{display:none!important}}'
+  + '@media print{body>:not(.crep-print-host){display:none!important}.crep-print-host{display:block}}'
   + '@page{margin:14mm 12mm}';
 
 /** The print host on the page, and the function that removes it. */
@@ -79,13 +79,13 @@ export function endPrint() {
  */
 export function printReport(body) {
   if (!canPrintReport()) {
-    toast(t('rpt.panel.noPrint'), { type: 'warn' });
+    toast(t('crep.panel.noPrint'), { type: 'warn' });
     return false;
   }
   endPrint();
   const doc = globalThis.document;
   const win = globalThis.window;
-  const host = h('div', { class: 'rpt-print-host', dataset: { report: 'print' } });
+  const host = h('div', { class: 'crep-print-host', dataset: { report: 'print' } });
   const root = host.attachShadow({ mode: 'open' });
   root.adoptedStyleSheets = [sheetOf(REPORT_CSS)];
   root.append(reportDom(body, 'div'));
@@ -122,33 +122,33 @@ export async function openReport(ctx, kind, input) {
   const linkParams = reportLinkParams(kind, input);
   const link = () => ctx.shareUrl(permalinkParams(kind, linkParams));
   const linkBox = checkbox({
-    label: t('rpt.panel.link'),
+    label: t('crep.panel.link'),
     checked: true,
-    hint: t('rpt.panel.linkHint', { inputs: Object.values(linkParams).join(' · ') })
+    hint: t('crep.panel.linkHint', { inputs: Object.values(linkParams).join(' · ') })
   });
   linkBox.input.dataset.role = 'report-link';
   /** The builder's options at the moment of the click: the time, the link if it is wanted. */
   const options = () => ({ t, lang: getLang(), has, statusText, version: ctx.version, generatedAt: new Date(), link: linkBox.input.checked ? link() : null });
   const fail = (err) => {
-    toast(t('rpt.panel.failed', { error: err && err.message ? err.message : String(err) }), { type: 'error' });
+    toast(t('crep.panel.failed', { error: err && err.message ? err.message : String(err) }), { type: 'error' });
     return false;
   };
   const modal = Modal({
-    title: t('rpt.panel.title'),
-    className: 'rpt-modal',
+    title: t('crep.panel.title'),
+    className: 'crep-modal',
     content: h('div', { class: 'stack' },
-      h('p', { class: 'text-sm' }, t('rpt.panel.body')),
+      h('p', { class: 'text-sm' }, t('crep.panel.body')),
       linkBox.el,
-      h('div', null, CopyButton(link, { label: t('rpt.panel.copyLink'), size: 'sm', variant: 'ghost' }))),
+      h('div', null, CopyButton(link, { label: t('crep.panel.copyLink'), size: 'sm', variant: 'ghost' }))),
     actions: [
-      { label: t('rpt.panel.print'), icon: 'file', value: 'print', dataset: { action: 'report-print' } },
+      { label: t('crep.panel.print'), icon: 'file', value: 'print', dataset: { action: 'report-print' } },
       {
-        label: t('rpt.panel.download'), icon: 'download', variant: 'primary', value: 'download', autofocus: true, dataset: { action: 'report-download' },
+        label: t('crep.panel.download'), icon: 'download', variant: 'primary', value: 'download', autofocus: true, dataset: { action: 'report-download' },
         onClick: () => {
           try {
             const { doc, html } = buildReport(kind, input, options());
             const name = downloadText(timestampedName(REPORT_FILE_BASES[kind], 'html', doc.subject), html, 'text/html;charset=utf-8');
-            toast(t('rpt.panel.saved', { name }), { type: 'success' });
+            toast(t('crep.panel.saved', { name }), { type: 'success' });
           } catch (err) {
             return fail(err);
           }

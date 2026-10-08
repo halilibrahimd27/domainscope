@@ -720,6 +720,31 @@ async function mtaStsGroup(browser, server) {
       assert(printed.endsWith(`/domainscope/#/health?domain=${shown}`), `the print header links to the printed report: ${printed}`);
     });
 
+    await step('after the stop the report on screen still works: Copy link, the filter, RDAP Retry, the policy check, and it is kept on leaving', async () => {
+      const shown = await page.evaluate(() => document.querySelector('.hlt-hero-domain').textContent);
+      await takeClipboard(page);
+      await page.click('.page-actions .copy-btn');
+      await page.waitFor(() => window.__clip.length === 1, { message: 'Copy link' });
+      const link = (await takeClipboard(page))[0];
+      assert(link.endsWith(`/domainscope/#/health?domain=${shown}`), `Copy link shares the report on screen: ${link}`);
+      await page.click('[data-control="health-filter"] [data-value="problems"]');
+      const sev = await page.evaluate(() => [...document.querySelectorAll('.hlt-check')].map((c) => c.dataset.severity));
+      assert(sev.length > 0 && sev.every((s) => s === 'warn' || s === 'error'), `the filter re-renders the checks: ${sev}`);
+      await page.click('[data-control="health-filter"] [data-value="all"]');
+      const rdapBefore = await page.evaluate(() => window.__rdap.calls.length);
+      await page.click('.hlt-rdap [data-action="retry-source"]');
+      await page.waitFor((n) => window.__rdap.calls.length > n, { args: [rdapBefore], timeout: 15000, message: 'RDAP Retry asks RDAP again' });
+      await page.evaluate(() => { window.__gp.next.push('ok'); });
+      const before = (await gpCalls()).length;
+      await page.click('[data-action="mtasts-check"]');
+      await page.waitFor((sel) => document.querySelector(`${sel}[data-state="done"] [data-mtasts-headline="ok"]`),
+        { args: [MTASTS_CARD], timeout: 20000, message: 'the policy check of the report on screen' });
+      assertEqual(posts((await gpCalls()).slice(before)).length, 1, 'one measurement');
+      await gotoHash(page, '#/lookup', 'lookup');
+      await gotoHash(page, '#/health', 'health');
+      await page.waitFor((d) => document.querySelector('.hlt-hero-domain')?.textContent === d, { args: [shown], timeout: 10000, message: 'the report is kept on leaving' });
+    });
+
     await step('a failed MX lookup: the DNS card says so, and the policy check says it compared nothing, never "no MX"', async () => {
       const domain = `mxfail.${MAIL_APEX}`;
       await gotoHash(page, `#/health?domain=${domain}`, 'health');
@@ -873,7 +898,7 @@ async function mtaStsGroup(browser, server) {
       assertEqual(netHits, [], 'https requests that reached the network');
       assert(!blocked.some((u) => u.includes('globalping')), `Globalping never reached the zone guard: ${blocked}`);
       const calls = await gpCalls();
-      assertEqual(posts(calls).length, 11, 'eleven fake probes in total');
+      assertEqual(posts(calls).length, 12, 'twelve fake probes in total');
       await checkI18n(page);
       await assertClean(page, 'mta-sts offline');
     });

@@ -1483,14 +1483,31 @@ export function mount(container, ctx) {
     run(domain, extra);
   }
 
+  /**
+   * A check stopped or failed: the report on screen is still `shown`'s, so its controls (the
+   * filter, RDAP Retry, the policy check), Copy link and the kept result read that check again.
+   * Its policy check, stopped with the new check, starts over (a paid measurement is read again).
+   */
+  function showAgain(shown) {
+    current = shown;
+    const p = shown.policy;
+    if (p && p.status === 'running') {
+      shown.policy = null;
+      if (p.pendingId) checkPolicy({ pendingId: p.pendingId });
+      else renderPolicy();
+    }
+  }
+
   async function run(domain, extraSelectors) {
+    // The check whose report stays on screen until this one's replaces it.
+    const shown = current && current.report ? current : (current && current.shown) || null;
     if (current && current.controller) current.controller.abort();
     if (current && current.policy && current.policy.controller) current.policy.controller.abort();
     if (current && current.rdapRetry) current.rdapRetry.abort();
     const controller = new AbortController();
     const state = {
       domain, selectors: extraSelectors.slice(), controller, report: null, finishedAt: null,
-      selectorCount: DEFAULT_DKIM_SELECTORS.length + extraSelectors.length, policy: null
+      selectorCount: DEFAULT_DKIM_SELECTORS.length + extraSelectors.length, policy: null, shown
     };
     current = state;
     clear(errorEl);
@@ -1526,7 +1543,11 @@ export function mount(container, ctx) {
     } finally {
       if (current === state) {
         state.controller = null;
-        if (!ctx.signal.aborted) setRunning(false);
+        state.shown = null;
+        if (!ctx.signal.aborted) {
+          setRunning(false);
+          if (!state.report && shown) showAgain(shown);
+        }
       }
     }
   }

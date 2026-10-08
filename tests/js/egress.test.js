@@ -621,7 +621,7 @@ const LINK_HOSTS = {
   'assets/js/ui/chain-repair.js': ['www.ccadb.org'],
   // the CA/Browser Forum ballot the lifetime schedule comes from
   'assets/js/ui/renewal-planner.js': ['cabforum.org'],
-  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'sslmate.com'],
+  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'letsencrypt.org', 'sslmate.com'],
   'assets/js/views/ip.js': ['bgp.he.net']
 };
 /**

@@ -666,6 +666,8 @@ async function main() {
       assertEqual(await page.evaluate(() => window.__ari.calls), ['/directory', `/acme/renewal-info/${id}`], 'the two requests');
       assert(/suggested by Let['’]s Encrypt \(asked /.test(await planText('[data-role="rpl-window"]')), await planText('[data-role="rpl-window"]'));
       assert(/asks to be asked again after/.test(await planText('.rpl-ari')), 'Retry-After');
+      await page.evaluate(() => document.querySelector('.rpl-cert').scrollIntoView({ block: 'start' }));
+      await shot(page, opts, 'renew-plan-cert-desktop-light-en');
       assertEqual(await focusedAction(page), 'rpl-ari', 'the focus stays on the button');
       assertEqual(external, [], 'nothing left the page');
     });
@@ -707,6 +709,8 @@ async function main() {
       await setSelect(page, '[data-role="rpl-keytype"]', 'rsa-2048');
       await page.waitFor((w) => /-newkey rsa:2048 /.test(document.querySelector(`${w} [data-role="rpl-openssl-cmd"] code`)?.textContent || ''), { args: [W], message: 'RSA' });
       assert((await planText(`${W} [data-role="rpl-certreq"] code`)).includes('KeyLength = 2048'), 'certreq RSA');
+      await page.evaluate((w) => document.querySelector(w).scrollIntoView({ block: 'start' }), W);
+      await shot(page, opts, 'renew-plan-coverage-desktop-light-en');
       await page.click(`${W} [data-action="rpl-download"][data-file="example.com.inf"]`);
       const [dl] = await takeDownloads(page);
       assert(dl && dl.name === 'example.com.inf' && dl.text.includes('_continue_ = "dns=*.dev.example.com&"\r\n'), `download: ${dl && dl.name}`);

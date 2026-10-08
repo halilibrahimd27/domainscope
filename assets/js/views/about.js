@@ -128,6 +128,8 @@ registerStrings('en', {
   'about.src.rdapLimit': 'IANA bootstrap + the registries’ own servers; rdap.org only as the fallback, at most one request a second (left alone for a minute after it answers “rate limited”). Some country TLDs (for example .de, .jp, .tr) publish no RDAP service.',
   'about.src.globalping': 'Globalping (jsDelivr): TLS checks of your public server addresses from probes worldwide (SSL Targets › Verify), and one HTTPS fetch of a domain’s MTA-STS policy (Domain Health).',
   'about.src.globalpingLimit': '250 probes per hour per IP address without an account, shared by Verify and the MTA-STS check; results are public by measurement ID for about six months.',
+  'about.src.ari': 'Let’s Encrypt’s ACME Renewal Information (RFC 9773): the renewal window Let’s Encrypt suggests for one of its certificates (Renewal readiness › Plan), only after a click — two requests, its ACME directory and the certificate’s renewal-info.',
+  'about.src.ariLimit': 'No published quota; the answer says when to ask again (Retry-After). It knows only certificates Let’s Encrypt issued.',
   'about.resolversTitle': 'The {count} DNS-over-HTTPS resolvers (verified {date})',
   'about.res.name': 'Resolver',
   'about.res.location': 'Location',
@@ -146,6 +148,7 @@ registerStrings('en', {
   'about.priv5': 'Requests carry no referrer, so services do not learn which page you used.',
   'about.privZone': 'An imported zone file is read in your browser and kept only in this tab’s memory: it is never uploaded or saved, and a reload, Forget or “Delete all local data” clears it. Only what you click sends anything: the Live check, or a scan of the zone’s names that you start, sends record names (and the Live check their types; never the values or origin addresses) to your DNS resolvers — a scan that also runs discovery asks the passive sources about the domain as usual. Names that look internal are skipped by default.',
   'about.privZoneFetch': 'Fetch from deSEC or DigitalOcean (Zone File) sends the zone name and the API token you paste to that provider only, and only from a click. The token stays in this tab’s memory for that one fetch: it is never saved (not in the browser, not in a workspace), never logged or sent anywhere else, and its field is emptied as soon as the fetch starts. Use a read-only token.',
+  'about.privRenewalPlan': 'Renewal readiness › Plan computes the lifetime schedule, the renewals and the coverage plan in your browser, and writes the CSR configurations there; no key is ever made in the page. Only “Ask Let’s Encrypt for its renewal window” sends a request: the certificate’s identifier — its issuer’s key identifier and its serial number, both public in Certificate Transparency — to Let’s Encrypt’s ACME server, and nothing else.',
   'about.privRetire': 'Retire an IP compares the addresses in your browser. A check sends the names it looks up to your DNS resolvers: each domain’s own name and records, the host names this page session knows, and the zone file’s records that point at the address (a wildcard record: a random name under it) — never a host name the zone file marks as internal, and its own domain is not filled in when it looks internal; a domain you type in is checked as typed. Only on a click, the passive lookup sends each address to HackerTarget and ip.thc.org (never a private one), and a discovery sends its wordlist guesses as DNS lookups.',
   'about.privReports': 'DMARC & TLS reports reads the report files in your browser and keeps them only in this tab’s memory: they are never uploaded or saved, nothing about them goes into a link, and a reload, Forget, another workspace or “Delete all local data” drops them. After a drop it looks up the current SPF record of each reported domain, and what that record includes, over your DNS resolvers (names and types only); the reverse DNS and network of a sending address go to your resolvers and to RIPEstat / ipwho.is only when you press Look up, never for a private address.',
   'about.privOffline': 'The app’s own files — and a wordlist tier once a scan has used it — are kept in this browser’s cache by a service worker, so DomainScope starts without a connection and can be installed as an app; Certificate, Certificate estate, Zone File, DNS change request, DMARC & TLS reports, Servers and About then work offline. The offline copy never holds anything you type, import or look up, nor any answer from a third party.',
@@ -264,6 +267,8 @@ registerStrings('tr', {
   'about.src.rdapLimit': 'IANA bootstrap + kayıt kuruluşlarının kendi sunucuları; rdap.org yalnızca yedek olarak, saniyede en fazla bir istekle (“hız sınırı” yanıtından sonra bir dakika sorulmaz). Bazı ülke uzantılarının (ör. .de, .jp, .tr) RDAP hizmeti yok.',
   'about.src.globalping': 'Globalping (jsDelivr): genel sunucu adreslerinizin dünya çapındaki ölçüm noktalarından TLS kontrolü (SSL Hedefleri › Doğrula) ve bir alan adının MTA-STS politikasının HTTPS ile bir kez alınması (Alan Adı Sağlığı).',
   'about.src.globalpingLimit': 'Hesapsız IP adresi başına saatte 250 ölçüm; Doğrula ve MTA-STS kontrolü bu kotayı paylaşır. Sonuçlar ölçüm kimliğiyle yaklaşık altı ay herkese açık.',
+  'about.src.ari': 'Let’s Encrypt’in ACME Renewal Information hizmeti (RFC 9773): Let’s Encrypt’in kendi sertifikalarından biri için önerdiği yenileme aralığı (Yenileme hazırlığı › Plan), yalnızca bir tıklamadan sonra — iki istek: ACME dizini ve sertifikanın renewal-info kaydı.',
+  'about.src.ariLimit': 'Yayımlanmış bir kota yok; yanıt ne zaman yeniden sorulacağını söyler (Retry-After). Yalnızca Let’s Encrypt’in verdiği sertifikaları tanır.',
   'about.resolversTitle': '{count} DNS-over-HTTPS çözümleyicisi ({date} tarihinde doğrulandı)',
   'about.res.name': 'Çözümleyici',
   'about.res.location': 'Konum',
@@ -282,6 +287,7 @@ registerStrings('tr', {
   'about.priv5': 'İstekler referrer bilgisi taşımaz; hizmetler hangi sayfayı kullandığınızı öğrenmez.',
   'about.privZone': 'İçe aktardığınız zone dosyası tarayıcınızda okunur ve yalnızca bu sekmenin belleğinde tutulur: hiçbir yere yüklenmez ya da kaydedilmez; sayfayı yenilemek, Unut ya da “Tüm yerel verileri sil” onu siler. Yalnızca tıkladığınız işlemler bir şey gönderir: Canlı kontrol ya da başlattığınız bir zone adları taraması, DNS çözümleyicilerinize kayıt adlarını (Canlı kontrol türlerini de; değerleri ya da origin adreslerini asla) gönderir — keşfi de çalıştıran bir tarama, her zamanki gibi alan adını pasif kaynaklara sorar. İç ağa ait görünen adlar varsayılan olarak atlanır.',
   'about.privZoneFetch': 'deSEC ya da DigitalOcean’dan getir (Zone Dosyası), zone adını ve yapıştırdığınız API anahtarını yalnızca o sağlayıcıya ve yalnızca bir tıklamayla gönderir. Anahtar yalnızca o tek okuma için bu sekmenin belleğinde durur: hiçbir yere kaydedilmez (ne tarayıcıya ne bir çalışma alanına), günlüğe yazılmaz ya da başka bir yere gönderilmez ve okuma başladığı anda alanı boşaltılır. Salt okunur bir anahtar kullanın.',
+  'about.privRenewalPlan': 'Yenileme hazırlığı › Plan; ömür takvimini, yenilemeleri ve kapsam planını tarayıcınızda hesaplar ve CSR yapılandırmalarını orada yazar; sayfada hiçbir anahtar üretilmez. Yalnızca “Let’s Encrypt yenileme aralığını sor” düğmesi bir istek gönderir: sertifikanın kimliği — veren otoritenin anahtar kimliği ve seri numarası; ikisi de Certificate Transparency’de herkese açık — Let’s Encrypt’in ACME sunucusuna gider, başka hiçbir şey gitmez.',
   'about.privRetire': 'IP emekliye ayırma adresleri tarayıcınızda karşılaştırır. Bir kontrol, sorguladığı adları DNS çözümleyicilerinize gönderir: her alan adının kendi adı ve kayıtları, bu sayfa oturumunun bildiği host adları ve zone dosyasının adresi gösteren kayıtları (joker bir kayıt için altındaki rastgele bir ad) — zone dosyasının iç ağa ait saydığı bir host adını asla; zone’un kendi alan adı da iç ağa ait görünüyorsa kutuya eklenmez. Kutuya yazdığınız bir alan adı yazdığınız gibi kontrol edilir. Yalnızca tıkladığınızda pasif sorgu her adresi HackerTarget ve ip.thc.org’a gönderir (özel adresleri asla), bir keşif de kelime listesi tahminlerini DNS sorgusu olarak gönderir.',
   'about.privReports': 'DMARC ve TLS raporları, rapor dosyalarını tarayıcınızda okur ve yalnızca bu sekmenin belleğinde tutar: hiçbir yere yüklenmez ya da kaydedilmez, hiçbir bağlantıya girmez; sayfayı yenilemek, Unut, başka bir çalışma alanı ya da “Tüm yerel verileri sil” onları siler. Dosyaları bıraktığınızda raporlanan her alan adının güncel SPF kaydını ve bu kaydın içerdiklerini DNS çözümleyicileriniz üzerinden sorgular (yalnızca adlar ve türler); gönderen bir adresin ters DNS ve ağ bilgisi ise yalnızca Sorgula’ya bastığınızda çözümleyicilerinize ve RIPEstat / ipwho.is’e gider, özel bir adres için asla.',
   'about.privOffline': 'Uygulamanın kendi dosyaları — ve bir taramanın kullandığı kelime listesi katmanları — bir service worker tarafından bu tarayıcının önbelleğinde tutulur; böylece DomainScope bağlantı olmadan açılır ve uygulama olarak yüklenebilir; Sertifika, Sertifika envanteri, Zone Dosyası, DNS değişiklik talebi, DMARC ve TLS raporları, Sunucular ve Hakkında da çevrimdışı çalışır. Çevrimdışı kopya yazdığınız, içe aktardığınız ya da sorguladığınız hiçbir şeyi ve üçüncü tarafların hiçbir yanıtını tutmaz.',
@@ -340,7 +346,8 @@ const SOURCES = [
   { name: 'RIPEstat', url: 'https://stat.ripe.net/', key: 'ripe' },
   { name: 'ipwho.is', url: 'https://ipwho.is/', key: 'ipwho' },
   { name: 'RDAP', url: 'https://about.rdap.org/', key: 'rdap' },
-  { name: 'Globalping', url: 'https://globalping.io/', key: 'globalping' }
+  { name: 'Globalping', url: 'https://globalping.io/', key: 'globalping' },
+  { name: 'Let’s Encrypt ARI', url: 'https://letsencrypt.org/', key: 'ari' }
 ];
 
 const CLI_EXAMPLES = [
@@ -533,6 +540,7 @@ export function mount(container, ctx) {
     ['file-text', 'about.privZone'],
     ['key', 'about.privZoneFetch'],
     ['unlink', 'about.privRetire'],
+    ['refresh', 'about.privRenewalPlan'],
     ['inbox', 'about.privReports'],
     ['target', 'about.privSession'],
     ['download', 'about.privOffline'],

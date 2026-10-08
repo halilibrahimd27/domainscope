@@ -2150,20 +2150,22 @@ async function main() {
     });
     const moduleSrc = () => tab.evaluate(() => document.querySelector('script[type="module"]').getAttribute('src'));
     try {
-      await step('boots from v/<version>/assets/; About links reach the licences, the CLI and its source on GitHub', async () => {
+      await step('boots from v/<version>/assets/; About links reach the licences, the three CLIs and the source on GitHub', async () => {
         await tab.goto(`${pages.url}#/about`);
         await waitReady(tab);
         assertEqual(await moduleSrc(), 'v/e2e-one/assets/js/app.js', 'module script');
         const links = await tab.evaluate(() => ({
           licences: document.querySelector('a[href$="/THIRD_PARTY_LICENSES.txt"]')?.href,
           downloads: [...document.querySelectorAll('a[download="ssl_origin_scan.py"]')].map((a) => a.href),
+          others: ['dns_parity.py', 'ip_intel.py'].map((file) => document.querySelector(`#about-cli a[download="${file}"]`)?.href ?? null),
           source: [...document.querySelectorAll('#about-cli a.btn')].find((a) => !a.hasAttribute('download'))?.href
         }));
         assertEqual(links.licences, `${pages.url}v/e2e-one/assets/data/THIRD_PARTY_LICENSES.txt`, 'licences link');
         assert(links.downloads.length === 2 && links.downloads.every((u) => u === `${pages.url}cli/ssl_origin_scan.py`), `downloads: ${links.downloads}`);
         // GitHub Pages serves .py as application/octet-stream: the site's copy would download, not show
         assertEqual(links.source, `${REPO_URL}/blob/main/cli/ssl_origin_scan.py`, 'View source');
-        for (const url of [links.licences, links.downloads[0]]) {
+        assertEqual(links.others.join(' '), `${pages.url}cli/dns_parity.py ${pages.url}cli/ip_intel.py`, 'the other CLIs (the whole cli/ is in the bundle)');
+        for (const url of [links.licences, links.downloads[0], ...links.others]) {
           assertEqual(await tab.evaluate(async (u) => (await fetch(u, { method: 'HEAD' })).status, url), 200, url);
         }
         await gotoRoute(tab, 'subdomains');

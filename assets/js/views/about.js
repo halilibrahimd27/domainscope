@@ -30,6 +30,8 @@ export const icon = 'info';
 export const CLI_PATH = 'cli/ssl_origin_scan.py';
 /** The DNS provider move's CLI (Zone File › New name servers hands it the zone). */
 export const PARITY_CLI_PATH = 'cli/dns_parity.py';
+/** The reverse-IP CLI: the names an address serves or served, from inside your network. */
+export const IP_INTEL_CLI_PATH = 'cli/ip_intel.py';
 
 /**
  * The wordlist and data licence texts, resolved from this module: the Pages bundle serves assets/ under
@@ -180,6 +182,8 @@ registerStrings('en', {
   'about.ex8': 'Before DNS moves a name to a new server: the old and the new server’s answers side by side (private addresses too)',
   'about.parityDesc': 'Moving DNS to another provider: asks the new name servers for every record set of a zone file, from your machine, and lists what is missing, different or extra there. Python 3.8+, a single file.',
   'about.parityEx': 'Zone File › New name servers downloads the zone and gives this command',
+  'about.ipIntelDesc': 'Reverse IP from inside your network: the names an address, a range or a list serves or served — its TLS certificates with and without SNI, PTR, free passive DNS (mnemonic too, which no browser can ask) and the services of your own keys, read from environment variables only — and where each name points now. A private address goes to no third party. Python 3.8+, a single file.',
+  'about.ipIntelEx': 'The names of an address and of a range in your network, with a JSON report',
   'about.statusesTitle': 'Result statuses',
   'about.st.UPDATED': 'Serves the new certificate for the name.',
   'about.st.NEEDS_UPDATE': 'Serves a certificate that covers the name, but not the new one — install it here.',
@@ -326,6 +330,8 @@ registerStrings('tr', {
   'about.ex8': 'DNS bir adı yeni sunucuya taşımadan önce: eski ve yeni sunucunun yanıtları yan yana (özel adresler de olur)',
   'about.parityDesc': 'DNS’i başka bir sağlayıcıya taşırken: bir zone dosyasındaki her kayıt kümesini kendi makinenizden yeni ad sunucularına sorar; orada eksik, farklı ya da fazladan olanları listeler. Python 3.8+, tek dosya.',
   'about.parityEx': 'Zone File › Yeni ad sunucuları zone’u indirir ve bu komutu verir',
+  'about.ipIntelDesc': 'Ağınızın içinden ters IP: bir adresin, aralığın ya da listenin bugün sunduğu veya geçmişte sunduğu adlar — SNI’li ve SNI’siz TLS sertifikaları, PTR, ücretsiz pasif DNS (hiçbir tarayıcının soramadığı mnemonic dahil) ve yalnızca ortam değişkenlerinden okunan anahtarlarınızla çalışan servisler — ve her adın bugün nereye çözümlendiği. Özel adresler hiçbir üçüncü tarafa gönderilmez. Python 3.8+, tek dosya.',
+  'about.ipIntelEx': 'Bir adresin ve ağınızdaki bir aralığın adları, JSON raporuyla',
   'about.statusesTitle': 'Sonuç durumları',
   'about.st.UPDATED': 'Bu ad için yeni sertifikayı sunuyor.',
   'about.st.NEEDS_UPDATE': 'Adı kapsayan bir sertifika sunuyor ama yenisi değil — buraya kurun.',
@@ -620,7 +626,15 @@ export function mount(container, ctx) {
           h('div', { class: 'muted text-sm' }, t('about.parityDesc'))),
         h('div', { class: 'cluster' },
           ButtonLink({ href: PARITY_CLI_PATH, label: t('common.download'), icon: 'download', variant: 'secondary', download: 'dns_parity.py' }))),
-      CodeBlock('python3 dns_parity.py example.com.parity.zone --ns ns1.example.net ns2.example.net', { label: t('about.parityEx'), wrap: true }))
+      CodeBlock('python3 dns_parity.py example.com.parity.zone --ns ns1.example.net ns2.example.net', { label: t('about.parityEx'), wrap: true }),
+      h('div', { class: 'about-cli-bar card' },
+        h('span', { class: 'about-cli-icon' }, Icon('network', { size: 20 })),
+        h('div', { class: 'about-cli-text' },
+          h('div', { class: 'about-cli-file mono' }, 'ip_intel.py'),
+          h('div', { class: 'muted text-sm' }, t('about.ipIntelDesc'))),
+        h('div', { class: 'cluster' },
+          ButtonLink({ href: IP_INTEL_CLI_PATH, label: t('common.download'), icon: 'download', variant: 'secondary', download: 'ip_intel.py' }))),
+      CodeBlock('python3 ip_intel.py domains 203.0.113.10 10.0.0.0/24 --json names.json', { label: t('about.ipIntelEx'), wrap: true }))
   });
 
   /* Self-hosting */

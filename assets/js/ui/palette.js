@@ -92,6 +92,9 @@ export function generatedKeys() {
   return [...ACTION_IDS.map((id) => `pal.act.${id}`), ...ENTRY_TYPES.map((type) => `pal.type.${type}`)];
 }
 
+/** The most characters of the box the "nothing matches" line repeats (a pasted block would fill the dialog). */
+const QUERY_SHOWN = 60;
+
 /** The open palette (one at a time). */
 let openApi = null;
 
@@ -214,7 +217,9 @@ export function openPalette({ views, navigate, href, state, session, done = () =
     list.append(...options);
     list.hidden = !options.length;
     input.setAttribute('aria-expanded', String(options.length > 0));
-    status.textContent = options.length ? t('pal.count', { count: options.length }) : t('pal.none', { query: query.trim() });
+    const shown = query.trim();
+    status.textContent = options.length ? t('pal.count', { count: options.length })
+      : t('pal.none', { query: shown.length > QUERY_SHOWN ? `${shown.slice(0, QUERY_SHOWN)}…` : shown });
     status.classList.toggle('pal-status-none', !options.length);
     setActive(0);
   }
@@ -225,7 +230,28 @@ export function openPalette({ views, navigate, href, state, session, done = () =
     if (params) navigate(view, params);
     else globalThis.location.hash = href(view);
     left = globalThis.location.hash !== before;
+    close();
+  }
+
+  let settled = false;
+
+  /**
+   * The palette is done: the shell may open it again and the focus goes back. Run at once by
+   * {@link close}, and by the dialog's own close (Esc): the `close` event of a dialog closed by a
+   * tap can come late (under Chrome's touch emulation it waited for the next key press).
+   */
+  function settle() {
+    if (settled) return;
+    settled = true;
+    openApi = null;
+    done();
+    if (!left && back && back.isConnected) back.focus({ preventScroll: true });
+  }
+
+  /** Close the dialog and settle at once. */
+  function close() {
     modal.close();
+    settle();
   }
 
   let reading = false;
@@ -243,7 +269,7 @@ export function openPalette({ views, navigate, href, state, session, done = () =
       return;
     }
     left = true;
-    modal.close();
+    close();
     navigate('cert', {}, { force: true });
   }
 
@@ -273,7 +299,7 @@ export function openPalette({ views, navigate, href, state, session, done = () =
       choose(entries[active]);
     } else if (/^k$/i.test(event.key) && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
       event.preventDefault();
-      modal.close();
+      close();
     }
   });
 
@@ -281,14 +307,10 @@ export function openPalette({ views, navigate, href, state, session, done = () =
     title: t('pal.title'),
     className: 'pal-modal',
     content,
-    onClose: () => {
-      openApi = null;
-      done();
-      if (!left && back && back.isConnected) back.focus({ preventScroll: true });
-    }
+    onClose: settle
   });
   render();
   modal.open();
-  openApi = { close: () => modal.close() };
+  openApi = { close };
   return openApi;
 }

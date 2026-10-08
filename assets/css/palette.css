@@ -64,6 +64,7 @@
   margin: 0;
   color: var(--text-3);
   font-size: 12.5px;
+  overflow-wrap: anywhere;
 }
 
 .pal-status-none {

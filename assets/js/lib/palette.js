@@ -255,8 +255,8 @@ export function highlightRanges(text, positions) {
 /* ------------------------------------------------------------------------ */
 
 /**
- * A network in CIDR notation (`192.0.2.0/24`, `2001:db8::/48`) with its host bits masked off, or
- * null; a bare address (a /32 or /128) is no network.
+ * A network in CIDR notation (`192.0.2.0/24`, `2001:db8::/48`), its address as typed (Reverse DNS
+ * says so when host bits are set), or null; a bare address (no prefix) is no network.
  * @param {string} token
  * @returns {string|null}
  */

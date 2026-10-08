@@ -730,6 +730,19 @@ async function paletteGroup(browser, server) {
     await pal.waitFor(() => document.documentElement.dataset.view === 'health' && location.hash === '#/health?domain=example.org&run=0',
       { message: 'Domain Health filled in' });
     assert(!await isOpen(), 'closed');
+  });
+
+  await step('320 px: a long pasted block that matches nothing is cut in the status line and scrolls nothing sideways', async () => {
+    await pal.setViewport({ width: 320, height: 568, mobile: true });
+    await openWith();
+    const block = `-----BEGIN PRIVATE KEY-----${'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC'.repeat(8)}-----END PRIVATE KEY-----`;
+    await search(block);
+    const said = await pal.evaluate(() => document.querySelector('.pal-status').textContent);
+    assert(said.startsWith('Nothing matches “-----BEGIN PRIVATE KEY-----') && said.includes('…”') && said.length < 200, `cut: ${said}`);
+    assertEqual(await entries(), [], 'a private key is no certificate');
+    await assertNoHorizontalScroll(pal, 'palette with a long block at 320 px');
+    await pal.press('Escape');
+    await pal.waitFor(() => !document.querySelector('dialog.pal-modal'));
     await pal.setViewport({ width: 1280, height: 800 });
   });
 

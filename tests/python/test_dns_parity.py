@@ -325,6 +325,21 @@ class ZoneFileTests(unittest.TestCase):
         with self.assertRaises(dp.UsageError):
             dp.parse_zone('www 300 IN A 192.0.2.1\n')
 
+    def test_the_soa_owner_completes_the_relative_owners_after_it(self):
+        zone = dp.parse_zone('example.org. 300 IN SOA ns1.example.org. h. 1 2 3 4 5\n'
+                             'example.org. 300 IN MX 10 mail\nmail 300 IN A 192.0.2.25\n')
+        by = {(r.name, r.rtype): r for r in zone.records}
+        self.assertEqual(sorted(by), [('example.org', 'MX'), ('example.org', 'SOA'), ('mail.example.org', 'A')])
+        self.assertEqual(dp.file_value(by[('example.org', 'MX')], zone.origin)[0], (10, 'mail.example.org'))
+        self.assertEqual(zone.warnings, [])
+        path = ROOT / 'tests' / 'fixtures' / 'zones' / 'cpanel-example.com.db.txt'
+        cpanel = dp.parse_zone(path.read_text(encoding='utf-8'), source=path.name)
+        names = {(r.name, r.rtype) for r in cpanel.records}
+        self.assertEqual(cpanel.origin, 'example.com')
+        self.assertEqual(len(cpanel.records), 34, 'every record of the cPanel export, as zoneparse.js reads it')
+        self.assertTrue({('mail.example.com', 'CNAME'), ('www.example.com', 'CNAME'), ('ftp.example.com', 'A')} <= names)
+        self.assertEqual([w for w in cpanel.warnings if 'without an origin' in w], [])
+
     def test_a_second_origin_completes_the_relative_names_of_its_records(self):
         zone = dp.parse_zone(SUB_ORIGIN_TEXT)
         by = {(r.name, r.rtype): r for r in zone.records}

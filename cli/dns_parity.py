@@ -450,6 +450,10 @@ def parse_zone(text: str, origin: Optional[str] = None, source: str = '') -> Zon
             ttl = default_ttl if default_ttl is not None else last_ttl
         if rtype == 'SOA' and zone_origin is None:
             zone_origin = owner
+            if current is None:
+                # cPanel and others write an absolute SOA owner and no $ORIGIN: the relative
+                # owners after it are under the zone, as in zoneparse.js.
+                current = owner
         if rtype == 'SOA' and ttl is None and len(toks) >= 7:
             ttl = parse_ttl(toks[6].text)
         last_ttl = ttl if ttl is not None else last_ttl

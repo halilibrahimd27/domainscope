@@ -56,6 +56,8 @@
  * cert.e2e.mjs and bulk.e2e.mjs.
  */
 
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -2042,6 +2044,119 @@ async function main() {
           assert(/^- \d+ hosts found · \d+ covered by the certificate$/.test(lines[2]), `hosts line: ${lines[2]}`);
           assertEqual(lines[3], '- 1 passive source failed: the list may be incomplete', 'the failed source, before the servers line');
           assertEqual(lines[4], '- 2 servers in your list need the certificate: `db01`, `web01`', 'the servers line follows');
+        });
+
+        run.group('Rollout board and deploy snippets (the same offline scan; nothing leaves the page)');
+        // The fixture's SHA-256 as OpenSSL prints it: the board's id, and what every check compares with.
+        const pem = readFileSync(path.join(FIXTURES, 'ec_wildcard.pem'), 'utf8');
+        const fpHex = createHash('sha256').update(Buffer.from(pem.replace(/-----[^-]+-----/g, '').replace(/\s+/g, ''), 'base64')).digest('hex');
+        const fpColon = fpHex.toUpperCase().match(/../g).join(':');
+        const boardInPage = () => tab.evaluate(() => [...document.querySelectorAll('.ro-board tbody tr.dt-row')].map((tr) => ({
+          name: tr.querySelector('.ro-name')?.textContent || '',
+          steps: [...tr.querySelectorAll('input[data-ro-step]')].map((i) => i.checked).join()
+        })));
+        const counts = () => tab.evaluate(() => ({ ...(document.querySelector('.ro-counts')?.dataset || {}) }));
+        const box = (key, step) => `input[data-ro-key="${key}"][data-ro-step="${step}"]`;
+        const section = (id) => tab.evaluate((x) => document.querySelector(`.ro-sec[data-section="${x}"] code`)?.textContent || '', id);
+        const pick = (role, value) => tab.evaluate((r, v) => {
+          const sel = document.querySelector(`[data-role="${r}"]`);
+          sel.value = v;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }, role, value);
+
+        await run.step('Rollout: built on the first show of its tab; one row per server that needs the certificate, then the addresses outside the list', async () => {
+          assertEqual(await tab.evaluate(() => !!document.querySelector('.ro-panel')), false, 'no board before the tab is shown');
+          await openTab('rollout');
+          await tab.waitFor(() => document.querySelectorAll('.ro-board tbody tr.dt-row').length >= 2, { message: 'board rows' });
+          const rows = await boardInPage();
+          process.stdout.write(`        board: ${rows.map((r) => r.name).join(', ')}\n`);
+          assertEqual(rows.slice(0, 2).map((r) => r.name), ['db01', 'web01'], 'the servers from the list first');
+          assert(rows.slice(2).every((r) => /^203\.0\.113\.\d+$/.test(r.name)), `then the addresses outside the list: ${rows.map((r) => r.name)}`);
+          assert(rows.every((r) => r.steps === 'false,false,false'), 'nothing ticked yet');
+          const c = await counts();
+          assertEqual([c.total, c.verified, c.installed], [String(rows.length), '0', '0'], 'counts');
+        });
+
+        await run.step('ticking Reloaded ticks Installed too, keeps the focus, updates the counts and the tab badge; the board is in the workspace (another tab reads it)', async () => {
+          await tab.click(box('s:web01', 'reloaded'));
+          await tab.waitFor((sel) => document.querySelector(sel)?.checked === true, { args: [box('s:web01', 'installed')], message: 'Installed follows' });
+          const focus = await tab.evaluate(() => [document.activeElement?.dataset.roKey, document.activeElement?.dataset.roStep]);
+          assertEqual(focus, ['s:web01', 'reloaded'], 'focus stays on the box');
+          const c = await counts();
+          assertEqual([c.installed, c.reloaded, c.verified], ['1', '1', '0'], 'counts');
+          await tab.waitFor(() => /^0\/\d+$/.test(document.querySelector('.scan-tabs [data-tab="rollout"] .tab-badge')?.textContent || ''), { message: 'tab badge verified/total' });
+          // A new page of the same browser opens the workspace from IndexedDB: the ticks survive a reload.
+          const other = await browser.newPage('about:blank', { width: 1024, height: 768 });
+          try {
+            await other.goto(`${server.url}#/about`);
+            await waitReady(other);
+            const stored = await other.waitFor(async () => {
+              const { state } = await import('./assets/js/state.js');
+              return state.workspaceData('rollout') || false;
+            }, { timeout: 8000, message: 'the rollout part in the other page' });
+            const board = JSON.parse(stored).boards[0];
+            assertEqual(board.id, fpHex, 'the board is named by the certificate fingerprint');
+            const row = board.rows.find((r) => r.k === 's:web01');
+            assert(row && row.i && row.r && !row.v, `web01 installed and reloaded: ${JSON.stringify(row)}`);
+          } finally {
+            await other.close();
+          }
+        });
+
+        await run.step('deploy snippets for web01: nginx with a fingerprint check per address, IIS in PowerShell, a bad namespace refused with a warning', async () => {
+          await tab.click('[data-action="ro-snippets"][data-ro-key="s:web01"]');
+          await tab.waitFor(() => document.activeElement?.dataset.role === 'ro-snip-server' && document.activeElement.value === 's:web01', { message: 'web01 picked, focus on it' });
+          const verify = await section('verify');
+          assert(/-connect '203\.0\.113\.20:443' -servername '(www\.)?wild\.example\.net'/.test(verify), verify);
+          assert(verify.includes(`grep -qiE '${fpColon}'`), 'compared with the new certificate SHA-256');
+          assert(/curl --resolve '(www\.)?wild\.example\.net:443:203\.0\.113\.20'/.test(verify), 'curl --resolve');
+          assert((await section('config')).includes('ssl_certificate '), 'nginx configuration');
+          assertEqual(await section('test'), 'sudo nginx -t', 'config test');
+          await pick('ro-snip-platform', 'iis');
+          await tab.waitFor(() => document.querySelector('.ro-sec[data-section="config"]')?.dataset.shell === 'powershell', { message: 'IIS in PowerShell' });
+          assert((await section('config')).includes('Import-PfxCertificate'), 'Import-PfxCertificate');
+          assert((await section('verify')).includes('GetCertHashString'), 'a PowerShell check, no openssl needed');
+          await pick('ro-snip-platform', 'kubernetes');
+          await tab.waitFor(() => document.querySelector('[data-ro-opt="namespace"]'), { message: 'namespace field' });
+          await tab.type('[data-ro-opt="namespace"]', 'Web Prod');
+          await tab.waitFor(() => document.querySelector('.ro-warnings [data-warn="bad-option"]'), { message: 'the bad namespace is a warning' });
+          assert((await section('install')).includes("--namespace 'default'"), 'the default namespace is used');
+        });
+
+        await run.step('Export CSV: one line per row, the ticks with their times', async () => {
+          await takeDownloads(tab);
+          await tab.click('[data-action="ro-export"]');
+          await tab.waitFor(() => (window.__downloads || []).length === 1, { message: 'one download' });
+          const [file] = await takeDownloads(tab);
+          assert(/rollout/.test(file.name) && file.name.endsWith('.csv'), file.name);
+          const lines = file.text.replace(/^﻿/, '').trim().split('\r\n');
+          assertEqual(lines[0], 'Server,Address outside the inventory,Certificate set,Addresses,Names,Stage,Installed,Reloaded,Verified,Verified by,Verify tab', 'header');
+          const web = lines.find((l) => l.startsWith('web01,'));
+          assert(web && /,reloaded,\d{4}-\d\d-\d\dT[^,]+,\d{4}-\d\d-\d\dT[^,]+,,,unchecked$/.test(web), `web01 line: ${web}`);
+        });
+
+        await run.step('Clear the board asks first; Turkish at 375 and 320 px (light and dark) without horizontal scroll; nothing left the page', async () => {
+          await tab.click('[data-action="ro-reset"]');
+          await tab.waitFor(() => document.querySelector('dialog.modal[open] .btn-danger'), { message: 'the confirm dialog' });
+          await tab.click('dialog.modal[open] .btn-danger');
+          await tab.waitFor(() => document.querySelector('.ro-counts')?.dataset.installed === '0', { message: 'every tick removed' });
+          await setLangUi(tab, 'tr');
+          await openTab('rollout');
+          await tab.waitFor(() => document.querySelector('.ro-board'), { message: 'the board in Turkish' });
+          assertEqual(await tab.evaluate(() => document.querySelector('.scan-tabs [data-tab="rollout"] .tab-label')?.textContent), 'Dağıtım', 'tab label');
+          for (const scheme of ['light', 'dark']) {
+            await tab.emulateMedia({ 'prefers-color-scheme': scheme });
+            for (const width of [375, 320]) {
+              await tab.setViewport({ width, height: 800, mobile: true });
+              await assertNoHorizontalScroll(tab, `Rollout ${width} px ${scheme}`);
+            }
+          }
+          await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+          await tab.setViewport({ width: 1440, height: 900 });
+          await setLangUi(tab, 'en');
+          assertEqual(await tab.evaluate(() => window.__zoneBlocked), [], 'nothing but DNS left the page');
+          await assertNoMissingKeys(tab);
+          await assertClean(tab, 'rollout', origin);
         });
       } finally {
         await tab.close();

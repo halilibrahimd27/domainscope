@@ -119,6 +119,7 @@ registerStrings('en', {
   'ws.sum.notes': 'notes',
   'ws.sum.policy': 'a domain policy',
   'ws.sum.ctSeen': 'a CT watch baseline',
+  'ws.sum.rollout': 'a Rollout board',
   'ws.sum.encrypted': 'was encrypted',
   'ws.importNew': 'Import as a new workspace',
   'ws.importReplace': 'Replace “{name}”',
@@ -212,6 +213,7 @@ registerStrings('tr', {
   'ws.sum.notes': 'notlar',
   'ws.sum.policy': 'bir alan adı politikası',
   'ws.sum.ctSeen': 'bir CT izleme referansı',
+  'ws.sum.rollout': 'bir dağıtım panosu',
   'ws.sum.encrypted': 'şifreliydi',
   'ws.importNew': 'Yeni çalışma alanı olarak içe aktar',
   'ws.importReplace': '“{name}” alanının yerine koy',
@@ -300,6 +302,7 @@ export function importSummary(ws) {
   if (d.notes.trim()) parts.push(t('ws.sum.notes'));
   if ((d.policy || '').trim()) parts.push(t('ws.sum.policy'));
   if (d.ctSeen) parts.push(t('ws.sum.ctSeen'));
+  if (d.rollout) parts.push(t('ws.sum.rollout'));
   if (ws.encrypted) parts.push(t('ws.sum.encrypted'));
   return parts.join(' · ');
 }

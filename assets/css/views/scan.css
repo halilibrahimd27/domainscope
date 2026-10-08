@@ -1615,3 +1615,64 @@
 .scan-known-stale td {
   color: var(--text-3);
 }
+
+/* Rollout tab (ui/rollout-panel.js): the steps of a row (a tick, when, who), the progress line and
+   the deploy snippets of one server. */
+.ro-step {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+
+.ro-when {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.ro-counts {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ro-board .ro-row-done td {
+  background: var(--ok-bg);
+}
+
+.ro-board .ro-row-saved td {
+  color: var(--text-2);
+}
+
+.ro-snip-fields {
+  align-items: end;
+}
+
+.ro-sec-title {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.ro-notes {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+}
+
+@media (max-width: 640px) {
+  .ro-snip-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .ro-step {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+}
+
+@media print {
+  .ro-actions,
+  .ro-snippets,
+  .ro-board [data-action="ro-snippets"] {
+    display: none;
+  }
+}

@@ -87,6 +87,8 @@ before(async () => {
   await imp('assets/js/ui/isp-resolvers.js');
   // Domain Health v2 (problems first, the Web card): loaded with the first report.
   await imp('assets/js/ui/health-v2.js');
+  // SSL Targets › Rollout: loaded on the tab's first show.
+  await imp('assets/js/ui/rollout-panel.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -450,6 +452,8 @@ describe('i18n coverage', () => {
     for (const k of (await imp('assets/js/ui/dnssec-panel.js')).generatedKeys()) add(k);
     // Renewal readiness › Plan (ui/renewal-planner.js over lib/renewalplan.js): states, groupings, notes, environments, key types.
     for (const k of (await imp('assets/js/ui/renewal-planner.js')).generatedKeys()) add(k);
+    // The Rollout tab (ui/rollout-panel.js): steps, stages, Verify verdicts, platforms, options, sections, notes, warnings.
+    for (const k of (await imp('assets/js/ui/rollout-panel.js')).generatedKeys()) add(k);
     for (const e of omp.FORM_ERRORS) add(`omp.err.${e}`);
     for (const e of estate.REPORT_ERRORS) add(`omp.file.${e}`);
     // Domain overview › Lookalike domains (ui/lookalike-panel.js): every technique, level and reason.

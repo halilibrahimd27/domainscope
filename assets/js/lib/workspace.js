@@ -2,7 +2,8 @@
  * lib/workspace.js — customer workspaces: named, separate sets of what belongs to one customer
  * (the server inventory, the learned names, the custom wordlist, the expected CAs, free-text
  * notes, the domains worked on, the domain policy of the portfolio audit (lib/policy.js), the
- * origin map of its proxied names and the certificates its CT watch has seen (lib/ctwatch.js)), so a DUPLICATE_IP never mixes two customers' servers and a label
+ * origin map of its proxied names, the certificates its CT watch has seen (lib/ctwatch.js) and the
+ * Rollout board), so a DUPLICATE_IP never mixes two customers' servers and a label
  * learned from one customer's scans is never tried under another customer's domains.
  * Settings about the tool itself (theme, language, resolvers, parallelism) stay global (state.js).
  *
@@ -47,7 +48,7 @@ import { randomLabel } from './util.js';
 export const DEFAULT_WORKSPACE_ID = 'default';
 
 /** What one workspace holds. */
-export const WORKSPACE_PARTS = Object.freeze(['inventory', 'learned', 'wordlist', 'expectedCas', 'notes', 'recent', 'policy', 'origins', 'ctSeen']);
+export const WORKSPACE_PARTS = Object.freeze(['inventory', 'learned', 'wordlist', 'expectedCas', 'notes', 'recent', 'policy', 'origins', 'ctSeen', 'rollout']);
 
 /** Bounds: workspaces, name and notes length (characters), list lengths, stored text sizes. */
 export const WORKSPACE_LIMITS = Object.freeze({
@@ -268,9 +269,10 @@ export function sanitizePart(part, value) {
     case 'expectedCas': return sanitizeExpectedCas(value);
     case 'notes': return typeof value === 'string' ? cut(value.replace(/\r\n?/g, '\n').replace(TEXT_JUNK_RE, ''), WORKSPACE_LIMITS.notes) : '';
     case 'recent': return sanitizeRecent(value);
-    // The portfolio's policy as the editor holds it: JSON text, read (and checked) by lib/policy.js
-    // where it is used, so a draft with a mistake is kept as typed.
+    // JSON text, checked where it is read (lib/policy.js, which keeps a draft with a mistake as
+    // typed; lib/rollout.js).
     case 'policy': return typeof value === 'string' ? cut(value.replace(/\r\n?/g, '\n').replace(TEXT_JUNK_RE, ''), WORKSPACE_LIMITS.policy) : '';
+    case 'rollout': return typeof value === 'string' && value.length <= 262144 ? value : '';
     case 'origins': return sanitizeOriginMap(value);
     // The CT watch's baseline: JSON text too, read by lib/ctwatch.js.
     case 'ctSeen': return typeof value === 'string' ? cut(value, WORKSPACE_LIMITS.ctSeen) : '';
@@ -280,7 +282,7 @@ export function sanitizePart(part, value) {
 
 /** Every part of a workspace, empty. */
 export function emptyWorkspaceData() {
-  return { inventory: null, learned: null, wordlist: '', expectedCas: [], notes: '', recent: [], policy: '', origins: null, ctSeen: '' };
+  return Object.fromEntries(WORKSPACE_PARTS.map((part) => [part, sanitizePart(part)]));
 }
 
 /**

@@ -128,6 +128,8 @@ registerStrings('en', {
   'about.src.rdapLimit': 'IANA bootstrap + the registries’ own servers; rdap.org only as the fallback, at most one request a second (left alone for a minute after it answers “rate limited”). Some country TLDs (for example .de, .jp, .tr) publish no RDAP service.',
   'about.src.globalping': 'Globalping (jsDelivr): TLS checks of your public server addresses from probes worldwide (SSL Targets › Verify), and one HTTPS fetch of a domain’s MTA-STS policy (Domain Health).',
   'about.src.globalpingLimit': '250 probes per hour per IP address without an account, shared by Verify and the MTA-STS check; results are public by measurement ID for about six months.',
+  'about.src.observatory': 'Mozilla HTTP Observatory (MDN): the HTTP security grade of a domain’s web site (Domain Health › Web), on a click; the API sends CORS headers.',
+  'about.src.observatoryLimit': 'One scan per click; Mozilla answers a scan of the last few minutes from its cache. The host name is sent, never an internal name or a private address.',
   'about.resolversTitle': 'The {count} DNS-over-HTTPS resolvers (verified {date})',
   'about.res.name': 'Resolver',
   'about.res.location': 'Location',
@@ -138,6 +140,7 @@ registerStrings('en', {
   'about.privacyTitle': 'Privacy',
   'about.privacyDesc': 'Designed so sensitive data never leaves your machine, except what you choose to check from the internet: the public IP / host name pairs in Verify, a domain’s MTA-STS policy host in Domain Health, a zone’s record names asked at its new name servers and the old and new address of a server you move.',
   'about.privMove': 'Only when you press Compare: Zone File › New name servers sends the record names and types it asks, with the new name servers, to Globalping, whose probes ask those servers directly (the values, the origin addresses and the names that look internal stay here); Retire an IP › Compare the old and the new server sends the two public addresses with the host name, port and path, and one probe sends an HTTPS GET to each. Each asks for consent once per page session, private addresses are never sent (the CLI’s dns_parity.py and ssl_origin_scan.py --compare work from inside your network), and anyone with a measurement ID can read the results for about six months. The comparisons are made here.',
+  'about.privObservatory': 'Only when you press “Check HTTP security”: Domain Health › Web sends the domain name (nothing else) to Mozilla’s HTTP Observatory, which loads the site from its servers and grades its headers. An internal name or a site with only private addresses is never sent; the HSTS preload list is a link, never a request.',
   'about.priv1': 'No backend, no analytics, no cookies, no tracking.',
   'about.priv2': 'Certificates are parsed in your browser. Private keys are never needed; if a file contains one it is ignored and never displayed.',
   'about.privChain': 'A missing intermediate is looked up in this site’s own copy of the CCADB list of public intermediates: the page reads a few small files of the site (usually one or two), each chosen by the first two hex digits of the key identifier of an intermediate it looks for (or, for a certificate that names no key identifier, by the first hex digit of a SHA-256 hash of its issuer’s name), and never sends the certificate anywhere. Those files are not kept for offline use, so a lookup needs a connection.',
@@ -264,6 +267,8 @@ registerStrings('tr', {
   'about.src.rdapLimit': 'IANA bootstrap + kayıt kuruluşlarının kendi sunucuları; rdap.org yalnızca yedek olarak, saniyede en fazla bir istekle (“hız sınırı” yanıtından sonra bir dakika sorulmaz). Bazı ülke uzantılarının (ör. .de, .jp, .tr) RDAP hizmeti yok.',
   'about.src.globalping': 'Globalping (jsDelivr): genel sunucu adreslerinizin dünya çapındaki ölçüm noktalarından TLS kontrolü (SSL Hedefleri › Doğrula) ve bir alan adının MTA-STS politikasının HTTPS ile bir kez alınması (Alan Adı Sağlığı).',
   'about.src.globalpingLimit': 'Hesapsız IP adresi başına saatte 250 ölçüm; Doğrula ve MTA-STS kontrolü bu kotayı paylaşır. Sonuçlar ölçüm kimliğiyle yaklaşık altı ay herkese açık.',
+  'about.src.observatory': 'Mozilla HTTP Observatory (MDN): bir alan adının web sitesinin HTTP güvenlik notu (Alan Adı Sağlığı › Web), tıklamayla; API CORS başlıkları gönderir.',
+  'about.src.observatoryLimit': 'Tıklama başına bir tarama; Mozilla son birkaç dakikanın taramasını önbelleğinden yanıtlar. Host adı gönderilir; iç adlar ve özel adresler asla gönderilmez.',
   'about.resolversTitle': '{count} DNS-over-HTTPS çözümleyicisi ({date} tarihinde doğrulandı)',
   'about.res.name': 'Çözümleyici',
   'about.res.location': 'Konum',
@@ -274,6 +279,7 @@ registerStrings('tr', {
   'about.privacyTitle': 'Gizlilik',
   'about.privacyDesc': 'Hassas verilerin makinenizden hiç çıkmaması için tasarlandı; istisna, internetten kontrol etmeyi seçtiklerinizdir: Doğrula’daki genel IP / host adı çiftleri, Alan Adı Sağlığı’nda bir alan adının MTA-STS politika sunucusu, yeni ad sunucularına sorulan zone kayıt adları ve taşıdığınız bir sunucunun eski ve yeni adresi.',
   'about.privMove': 'Yalnızca Karşılaştır’a bastığınızda: Zone Dosyası › Yeni ad sunucuları, sorduğu kayıt adlarını ve türlerini yeni ad sunucularıyla birlikte Globalping’e gönderir; ölçüm noktaları bu sunuculara doğrudan sorar (değerler, origin adresleri ve iç ağa ait görünen adlar burada kalır). IP emekliye ayırma › Eski ve yeni sunucuyu karşılaştırın ise iki genel adresi host adı, port ve yolla birlikte gönderir; bir ölçüm noktası her adrese bir HTTPS GET isteği yollar. Her ikisi de sayfa oturumu başına bir kez onay ister, özel adresler asla gönderilmez (CLI’daki dns_parity.py ve ssl_origin_scan.py --compare ağınızın içinden çalışır) ve ölçüm kimliğini bilen herkes sonuçları yaklaşık altı ay okuyabilir. Karşılaştırmalar burada yapılır.',
+  'about.privObservatory': 'Yalnızca “HTTP güvenliğini kontrol et” düğmesine bastığınızda: Alan Adı Sağlığı › Web, alan adını (başka hiçbir şeyi değil) Mozilla HTTP Observatory’ye gönderir; Observatory siteyi kendi sunucularından açar ve başlıklarını notlar. İç adlar ve yalnızca özel adresleri olan siteler asla gönderilmez; HSTS ön yükleme listesi bir bağlantıdır, istek değil.',
   'about.priv1': 'Sunucu yok, analitik yok, çerez yok, izleme yok.',
   'about.priv2': 'Sertifikalar tarayıcınızda ayrıştırılır. Özel anahtar hiçbir zaman gerekmez; dosyada varsa yok sayılır ve asla gösterilmez.',
   'about.privChain': 'Eksik bir ara sertifika, CCADB’nin herkese açık ara sertifika listesinin bu sitedeki kopyasında aranır: sayfa, aradığı her ara sertifikanın anahtar kimliğinin ilk iki onaltılık basamağına (anahtar kimliği belirtmeyen bir sertifikada, onu verenin adının SHA-256 özetinin ilk onaltılık basamağına) göre seçilen birkaç küçük site dosyasını (çoğunlukla bir ya da iki) okur ve sertifikayı hiçbir yere göndermez. Bu dosyalar çevrimdışı kullanım için saklanmaz; bu yüzden arama için bağlantı gerekir.',
@@ -340,7 +346,8 @@ const SOURCES = [
   { name: 'RIPEstat', url: 'https://stat.ripe.net/', key: 'ripe' },
   { name: 'ipwho.is', url: 'https://ipwho.is/', key: 'ipwho' },
   { name: 'RDAP', url: 'https://about.rdap.org/', key: 'rdap' },
-  { name: 'Globalping', url: 'https://globalping.io/', key: 'globalping' }
+  { name: 'Globalping', url: 'https://globalping.io/', key: 'globalping' },
+  { name: 'Mozilla HTTP Observatory', url: 'https://developer.mozilla.org/en-US/observatory', key: 'observatory' }
 ];
 
 const CLI_EXAMPLES = [
@@ -538,7 +545,8 @@ export function mount(container, ctx) {
     ['download', 'about.privOffline'],
     ['globe', 'about.priv6'],
     ['mail', 'about.priv7'],
-    ['swap', 'about.privMove']
+    ['swap', 'about.privMove'],
+    ['shield', 'about.privObservatory']
   ];
   const privacy = section('privacy', {
     title: t('about.privacyTitle'),

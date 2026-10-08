@@ -21,6 +21,7 @@ import { targetOf, carryHealth, carryHosts, carryCt, ctIssuers, ctCertOrder, loo
 import { isSubdomainOf, sortHostnames } from '../../assets/js/lib/domain.js';
 import { chunk, throwIfAborted } from '../../assets/js/lib/util.js';
 import { textParts, renderParts } from '../../assets/js/lib/summary.js';
+import { scoreHealth } from '../../assets/js/lib/healthscore.js';
 import { createCtCooldown, CT_COOLDOWN_MS } from '../../assets/js/lib/ctcert.js';
 
 const APP = 'DomainScope';
@@ -117,16 +118,18 @@ async function defaultSourceIds() {
  * lookup failed, the checks the last run that read it found (`carried`, carry.mjs carryHealth);
  * `report` is the report itself (the view's "Report (JSON)").
  * @param {object} report lib/health.js domainHealth() result
- * @param {{ t: Function, healthScore: Function, trafficLight: Function }} kit
+ * @param {{ t: Function, trafficLight: Function }} kit (the score and its grade: lib/healthscore.js, SPEC §5.78)
  * @param {{ prev?: object|null, prevAt?: string|null }} [baseline] the baseline's target of the
  *   domain and the baseline run's start
  * @returns {object}
  */
-export function healthTarget(report, { t, healthScore, trafficLight }, { prev = null, prevAt = null } = {}) {
+export function healthTarget(report, { t, trafficLight }, { prev = null, prevAt = null } = {}) {
+  const graded = scoreHealth(report.checks);
   const x = {
     target: report.domain,
     checkedAt: isoTime(report.checkedAt),
-    score: healthScore(report.summary),
+    score: graded.score,
+    grade: graded.grade,
     light: trafficLight(report.summary),
     summary: { ...report.summary },
     failedLookups: [...(report.failedLookups || [])],
@@ -140,14 +143,14 @@ export function healthTarget(report, { t, healthScore, trafficLight }, { prev = 
 
 async function runHealth(targets, options, env) {
   const { domainHealth } = await import('../../assets/js/lib/health.js');
-  const { healthSummary, healthScore, trafficLight } = await import('../../assets/js/lib/summary.js');
+  const { healthSummary, trafficLight } = await import('../../assets/js/lib/summary.js');
   const out = [];
   const docs = [];
   const prevAt = env.baseline ? env.baseline.startedAt ?? null : null;
   for (const [i, domain] of targets.entries()) {
     env.progress(`health ${domain} (${i + 1}/${targets.length})`);
     const report = await domainHealth(domain, { dns: env.dns, fetchImpl: env.fetchImpl, signal: env.signal });
-    out.push(healthTarget(report, { t: env.t, healthScore, trafficLight }, { prev: targetOf(env.baseline, domain), prevAt }));
+    out.push(healthTarget(report, { t: env.t, trafficLight }, { prev: targetOf(env.baseline, domain), prevAt }));
     docs.push(healthSummary({ report }, { t: env.t, now: env.now() }));
   }
   return { options: { resolvers: [...options.chain] }, targets: out, docs, warnings: [] };

@@ -34,8 +34,9 @@
  */
 
 import { isPrivateIP } from './netinfo.js';
+import { scoreHealth } from './healthscore.js';
 import {
-  BUILDER_KIT, SUMMARY_CORE_I18N, SUMMARY_MAX_PROBLEMS, cleanText, healthScore, registerSummaryBuilder, textParts, trafficLight
+  BUILDER_KIT, SUMMARY_CORE_I18N, SUMMARY_MAX_PROBLEMS, cleanText, registerSummaryBuilder, textParts, trafficLight
 } from './summarycore.js';
 
 export * from './summarycore.js';
@@ -45,6 +46,12 @@ const { kit, doc, code, strong, isoDay, whenText, problemLines } = BUILDER_KIT;
 /* ------------------------------------------------------------------------ */
 /* Builders                                                                 */
 /* ------------------------------------------------------------------------ */
+
+/** The score and letter of a report (lib/healthscore.js, SPEC §5.78), as the view's hero shows them. */
+function gradeOf(report) {
+  const g = scoreHealth(report.checks);
+  return { score: g.score, grade: g.grade };
+}
 
 /**
  * Domain Health: the verdict and score, the counts, the worst problems (errors, then warnings).
@@ -64,7 +71,7 @@ export function healthSummary({ report }, opts) {
   const tally = k.counts([['sum.count.error', s.error], ['sum.count.warn', s.warn], ['sum.count.info', s.info], ['sum.count.ok', s.ok]]);
   const listed = problemLines(k, problems);
   return doc('health', k.title('health', [code(report.domain)]), [
-    [t('sum.health.verdict', { verdict: t(`sum.health.light.${light}`), score: healthScore(s) })],
+    [t('sum.health.verdictGrade', { verdict: t(`sum.health.light.${light}`), ...gradeOf(report) })],
     tally ? [tally] : null,
     ...(listed.length ? listed : [[t('sum.health.noProblems')]])
   ], { when: whenText(t, 'sum.at.checked', report.checkedAt, opts.now || new Date()), url: opts.url });
@@ -792,6 +799,7 @@ for (const [kind, build] of Object.entries(BUILDERS)) registerSummaryBuilder(kin
 
 const STRINGS = [
   ['sum.health.verdict', ['{verdict} · score {score}/100', '{verdict} · puan {score}/100']],
+  ['sum.health.verdictGrade', ['{verdict} · grade {grade} · score {score}/100', '{verdict} · not {grade} · puan {score}/100']],
   ['sum.health.light.ok', ['Healthy', 'Sağlıklı']],
   ['sum.health.light.warn', ['Needs attention', 'İlgilenilmesi gerekiyor']],
   ['sum.health.light.error', ['Problems found', 'Sorun bulundu']],

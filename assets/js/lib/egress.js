@@ -174,6 +174,12 @@ export const EGRESS_SERVICES = Object.freeze([
       ep('result', ['measurementIds'], { path: '/*/measurements/*' })
     ]
   }),
+  // Domain Health › Web (lib/observatory.js): Mozilla's HTTP Observatory scans the site's headers
+  // from its servers; one POST per click, the host name in ?host=.
+  service({
+    id: 'observatory', name: 'Mozilla HTTP Observatory', role: 'probes', hosts: ['observatory-api.mdn.mozilla.net'],
+    endpoints: [ep('scan', ['domains'], { path: '/api/*/scan' })]
+  }),
   // Zone File › Fetch from deSEC / DigitalOcean (lib/zonefetch.js): the zone name in the path, the
   // user's token in the Authorization header, only after a click.
   service({

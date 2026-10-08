@@ -571,6 +571,7 @@ const CALL_SITES = {
   'assets/js/lib/ptrsweep.js': ['ripestat'],
   'assets/js/lib/rdap.js': ['rdap-bootstrap', 'rdap'],
   'assets/js/lib/globalping.js': ['globalping'],
+  'assets/js/lib/observatory.js': ['observatory'],
   'assets/js/lib/passport.js': ['certspotter', 'crtsh', 'rdap'],
   // the Domain portfolio: hands its fetch to lib/rdap.js (and its DNS client to lib/passport.js)
   'assets/js/lib/portfolio.js': [],
@@ -610,6 +611,9 @@ const LINK_HOSTS = {
     'tiarap.org', 'www.alidns.com'
   ],
   'assets/js/lib/sourceinfo.js': ['hackertarget.com', 'sslmate.com'],
+  // Domain Health › Web: the HSTS preload list's status page and MDN's Observatory report (no CORS / a page)
+  'assets/js/lib/healthweb.js': ['hstspreload.org'],
+  'assets/js/lib/observatory.js': ['developer.mozilla.org'],
   // where a DNS provider's read-only token is made, and how (deSEC's token page is on its API host,
   // desec.io/tokens: a desec URL the registry gives no endpoint)
   'assets/js/lib/zonefetch.js': ['desec.readthedocs.io', 'cloud.digitalocean.com', 'docs.digitalocean.com'],
@@ -619,7 +623,7 @@ const LINK_HOSTS = {
   'assets/js/ui/chain-repair.js': ['www.ccadb.org'],
   // an example CAA accounturi in the field's placeholder, never requested
   'assets/js/views/change.js': ['acme-v02.api.letsencrypt.org'],
-  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'sslmate.com'],
+  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'developer.mozilla.org', 'globalping.io', 'hackertarget.com', 'sslmate.com'],
   'assets/js/views/ip.js': ['bgp.he.net']
 };
 /**

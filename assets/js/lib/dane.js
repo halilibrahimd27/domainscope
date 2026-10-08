@@ -26,8 +26,9 @@
  *
  * What the verdicts rely on:
  * - A TLSA record set matches when ANY usable record matches (RFC 6698 §2.1). DANE-EE (3) and
- *   PKIX-EE (1) are compared with the leaf, DANE-TA (2) and PKIX-TA (0) with the other
- *   certificates of the loaded file (the chain).
+ *   PKIX-EE (1) are compared with the leaf, DANE-TA (2) and PKIX-TA (0) with the CA
+ *   certificates of the chain on the leaf's issuance path (RFC 7671 §5.2.2): a CA of the file
+ *   that issued none of them, such as another leaf's intermediate, is never a trust anchor.
  * - SMTP ignores the PKIX usages 0 and 1 (RFC 7672 §3.1.3); records with unknown parameters or
  *   a digest of the wrong length are unusable everywhere. Without a usable record, senders
  *   still require TLS but do not authenticate it (RFC 7672 §2.2).
@@ -196,7 +197,7 @@ export function tlsaRecordText(owner, rec) {
  * Does one TLSA record match the new certificate?
  * @param {{ usage: number, selector: number, matchingType: number, data: string }} rec
  * @param {{ service?: 'smtp'|'https', leaf?: Associations|null, anchors?: Array<{ assoc: Associations }> }} ctx
- *   `anchors`: the other certificates of the loaded file (the chain)
+ *   `anchors`: the CA certificates on the leaf's issuance path (the chain)
  * @returns {{ usable: boolean, matches: boolean|null, matchedBy: 'leaf'|'chain'|null, anchor: number|null,
  *   issue: string|null }} `matches` is null for a DANE-TA / PKIX-TA record when the file holds no chain
  */
@@ -555,11 +556,19 @@ export function issuedBy(leaf, ca) {
 }
 
 /**
- * The anchors a DANE-TA record may pin: the other certificates of the file, the leaf's
- * issuer marked ({@link issuedBy}).
+ * The anchors a DANE-TA record may pin: the certificates of the chain on the leaf's issuance
+ * path (its issuer, that issuer's issuer, and so on), the leaf's issuer marked ({@link issuedBy}).
+ * DANE clients accept a trust anchor only on the path they build from the leaf (RFC 7671
+ * §5.2.2), so a CA that issued none of them — another leaf's intermediate in a renewal bundle,
+ * an unrelated certificate of the file — never makes a record match.
  */
 async function anchorsOf(leaf, chain, subtle) {
-  const list = (Array.isArray(chain) ? chain : []).filter((c) => c && c !== leaf && c.der instanceof Uint8Array && c.spkiDer instanceof Uint8Array);
+  const all = (Array.isArray(chain) ? chain : []).filter((c) => c && c !== leaf && c.der instanceof Uint8Array && c.spkiDer instanceof Uint8Array);
+  const path = [leaf];
+  for (let i = 0; i < path.length; i++) {
+    for (const c of all) if (!path.includes(c) && issuedBy(path[i], c)) path.push(c);
+  }
+  const list = all.filter((c) => path.includes(c));
   const out = [];
   for (const c of list) {
     if (out.some((a) => a.cert.der.length === c.der.length && a.cert.der.every((b, i) => b === c.der[i]))) continue;

@@ -495,6 +495,33 @@ describe('checkDane', () => {
     assert.equal(D.daneSummary(alone).headline, 'warn');
   });
 
+  test('DANE-TA: only the CA certificates on the leaf\'s issuance path count, never another leaf\'s CA (RFC 7671 §5.2.2)', async () => {
+    // A renewal bundle: www.example.com (Bundle Intermediate > Bundle Root) next to the root of another file.
+    const B = certsOf('bundle_leaf.pem').leaf;
+    const INTER = certsOf('bundle_inter.pem').certificates[0];
+    const BROOT = certsOf('bundle_root.pem').certificates[0];
+    const [INTER_A, BROOT_A] = [await D.certAssociations(INTER), await D.certAssociations(BROOT)];
+    const run = async (leaf, chain, data, owner = '_443._tcp.www.example.com') => {
+      const zone = { [`${owner}|TLSA`]: tlsa(owner, [rec(2, 1, 1, data)]) };
+      const report = await D.checkDane({ leaf, chain }, { dns: client(zone).dns, mx: false });
+      return { report, ep: report.endpoints.find((e) => e.qname === owner) };
+    };
+    // A record pinning the other file's root: its CA issued nothing on this leaf's path.
+    const off = await run(B, [CHAIN_ROOT, INTER, BROOT], ROOT_A[1][1]);
+    assert.equal(off.ep.status, 'ta-mismatch');
+    assert.deepEqual(off.ep.suggestions.map((s) => [s.usage, s.selector, s.matchingType, s.data]), [[2, 1, 1, INTER_A[1][1]]]);
+    assert.deepEqual(off.report.associations.anchors.map((a) => [a.subjectCN, a.issuer]),
+      [['Example Test Bundle Intermediate CA', true], ['Example Test Bundle Root CA', false]]);
+    assert.equal(D.daneSummary(off.report).headline, 'warn');
+    // The root two levels up is on the path: it matches.
+    const up = await run(B, [CHAIN_ROOT, INTER, BROOT], BROOT_A[1][1]);
+    assert.deepEqual([up.ep.status, up.ep.records[0].matchedBy, up.ep.records[0].anchor], ['safe', 'chain', 1]);
+    // Only certificates of another chain: nothing to compare with, not a match.
+    const none = await run(CHAIN_LEAF, [INTER, BROOT], INTER_A[1][1], '_443._tcp.www.example-test.com.tr');
+    assert.equal(none.ep.status, 'ta-unchecked');
+    assert.deepEqual(none.report.associations.anchors, []);
+  });
+
   test('noCache: a check again right after publishing asks the resolvers again', async () => {
     const zone = {
       'example.net|MX': mx('example.net', [[10, 'wild.example.net']]),

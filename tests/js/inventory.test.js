@@ -936,6 +936,8 @@ test('topology keys: TLS ports that usually carry no TLS (22, 80, 3306 …) repl
     [1, 'TOPOLOGY', 'plainPorts', 'ports=22,80'], [3, 'TOPOLOGY', 'plainPorts', 'tls_ports=3306']
   ]);
   assert.deepEqual(parseInventory('hostname,ip,ports\nweb01,10.0.0.1,"22,80"').warnings.map((w) => [w.line, w.reason]), [[2, 'plainPorts']]);
+  // the CLI speaks STARTTLS on the mail, directory and database ports, and RDP's TLS on 3389
+  assert.deepEqual(parseInventory('mail01 10.0.0.25 ports=25,587,143,389,5432\nts01 10.0.0.30 ports=3389').warnings, []);
 });
 
 test('topology keys: terminates_tls given both ways keeps yes, the safe value, and warns', () => {

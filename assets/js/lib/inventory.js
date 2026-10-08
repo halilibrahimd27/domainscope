@@ -255,8 +255,8 @@ export const TOPOLOGY_REASONS = Object.freeze(['ports', 'terminatesTls', 'vip', 
   'unknownBackend', 'selfBackend', 'conflict', 'noServer', 'groupVars', 'noTermination', 'vipMixed', 'cycle',
   'ownedAddress', 'nearMiss']);
 const MALFORMED_REASON = { ports: 'ports', tls_ports: 'ports', terminates_tls: 'terminatesTls', vip: 'vip', nat: 'nat', backends: 'backends' };
-/** Ports that carry no TLS: kept in a ports= list, with a warning (the CLI does STARTTLS on 25, 143…). */
-const PLAIN_PORTS = new Set([20, 22, 23, 53, 80, 119, 3306, 3389, 6379, 8080, 27017]);
+/** Ports that carry no TLS: kept in a ports= list, with a warning (the CLI does STARTTLS on 25, 143…, RDP's TLS on 3389). */
+const PLAIN_PORTS = new Set([20, 22, 23, 53, 80, 119, 3306, 6379, 8080, 27017]);
 const isPortsKey = (k) => k === 'ports' || k === 'tls_ports';
 /** Keys a letter off one (on a line, a CSV header): warned about, not read. */
 const NEAR_MISS = new Map(Object.entries({ backend: 'backends', port: 'ports', tls_port: 'tls_ports', vips: 'vip',

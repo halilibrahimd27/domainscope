@@ -79,6 +79,8 @@ const JS = join(ASSETS, 'js');
  * The command palette keeps only its key (Ctrl/Cmd+K, lib/shellnav.js), the header button, the
  * shortcut list's row, the lazy import and i18n.js's `stringIn` on the route; ui/palette.js,
  * lib/palette.js and palette.css load on its first use: 401 bytes.
+ * With every wave 6 feature merged (the workspace's Rollout part and the provider ranges' precache
+ * skip in lib/pwa.js included): ≈ 333 KB (340,510 bytes), 38,370 bytes under the budget.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

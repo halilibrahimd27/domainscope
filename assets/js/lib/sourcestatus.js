@@ -29,7 +29,9 @@ export const STATUS_SOURCES = Object.freeze({
   // Certificate Transparency (the Domain overview's issuer lookup): Cert Spotter's anonymous
   // single-host quota is hourly; crt.sh has no published quota.
   certspotter: Object.freeze({ period: 'hour' }),
-  crtsh: Object.freeze({ period: null })
+  crtsh: Object.freeze({ period: null }),
+  // Google's CT log list (Certificate › Transparency): a static file, no quota.
+  ctloglist: Object.freeze({ period: null })
 });
 
 /** Every reason code {@link sourceStatus} can return (`srcst.reason.<code>` in the UI). */

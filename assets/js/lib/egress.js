@@ -118,6 +118,9 @@ export const EGRESS_SERVICES = Object.freeze([
     id: 'certspotter', name: 'Cert Spotter', role: 'ct', hosts: ['api.certspotter.com'],
     endpoints: [ep('issuances', ['domains'], { path: '/*/issuances' })]
   }),
+  // Certificate › Transparency (lib/sct.js): Google's CT log list, the same file for everyone, read
+  // when the tab first opens; nothing about the certificate is sent.
+  service({ id: 'ctloglist', name: 'Google CT log list', role: 'ct', hosts: ['www.gstatic.com'], endpoints: [ep('log-list', ['nothing'], { path: '/ct/**' })] }),
   service({
     id: 'hackertarget', name: 'HackerTarget', role: 'passive', hosts: ['api.hackertarget.com'],
     endpoints: [

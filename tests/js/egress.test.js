@@ -575,6 +575,8 @@ const CALL_SITES = {
   // the Domain portfolio: hands its fetch to lib/rdap.js (and its DNS client to lib/passport.js)
   'assets/js/lib/portfolio.js': [],
   'assets/js/lib/keycontinuity.js': ['crtsh'],
+  // Certificate › Transparency: Google's CT log list, else this site's copy (assets/data/ctlogs.json)
+  'assets/js/lib/sct.js': ['ctloglist', 'self'],
   // Zone File › Fetch from deSEC / DigitalOcean, with the user's token
   'assets/js/lib/zonefetch.js': ['desec', 'digitalocean'],
   // the CCADB intermediate list, from this site (assets/data/intermediates/)
@@ -619,7 +621,7 @@ const LINK_HOSTS = {
   'assets/js/ui/chain-repair.js': ['www.ccadb.org'],
   // an example CAA accounturi in the field's placeholder, never requested
   'assets/js/views/change.js': ['acme-v02.api.letsencrypt.org'],
-  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'sslmate.com'],
+  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'googlechrome.github.io', 'hackertarget.com', 'sslmate.com'],
   'assets/js/views/ip.js': ['bgp.he.net']
 };
 /**

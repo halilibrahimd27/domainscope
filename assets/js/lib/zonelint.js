@@ -270,7 +270,10 @@ export function lintZone(zone) {
   for (const [name, recs] of idx.byName) {
     const cnames = recs.filter((r) => r.type === 'CNAME');
     if (cnames.length) {
-      const others = [...new Set(recs.filter((r) => !CNAME_COMPANIONS.has(r.type)).map((r) => r.type))].sort();
+      // Cloudflare flattens an apex CNAME into the A / AAAA it serves: only those clash with it there.
+      const flattened = idx.cloudflare && name === idx.origin;
+      const others = [...new Set(recs.filter((r) => !CNAME_COMPANIONS.has(r.type) && (!flattened || ADDRESS_TYPES.has(r.type)))
+        .map((r) => r.type))].sort();
       if (others.length) {
         push('CNAME_AND_OTHER_DATA', cnames[0], { name, types: others }, `CNAME next to ${others.join(', ')}`, recs);
       }

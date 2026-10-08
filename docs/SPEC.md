@@ -1156,7 +1156,7 @@ export const SEVERITY_ORDER = ['error', 'warn', 'info'], CAA_KNOWN_TAGS, CF_PROX
 export const LINT_I18N = { en, tr }   // `zone.lint.<CODE>` (title) and `zone.lint.<CODE>.why` of every code, EN and TR; the Zone File view and the DNS change request register them
 ```
 The rules:
-- CNAME conflicts: CNAME with other data or at the apex, multiple CNAMEs, loops, chains of more than 8 hops. Multiple CNAMEs and multiple SPF records are counted per routing variant (a Route 53 / cli53 SetIdentifier, an octoDNS pool value or geo code), since variants are never served together.
+- CNAME conflicts: CNAME with other data (on Cloudflare, which flattens an apex CNAME, only A / AAAA at the apex) or at the apex, multiple CNAMEs, loops, chains of more than 8 hops. Multiple CNAMEs and multiple SPF records are counted per routing variant (a Route 53 / cli53 SetIdentifier, an octoDNS pool value or geo code), since variants are never served together.
 - Targets: MX / NS / SRV pointing to a CNAME, a target that is an IP address, dangling in-zone targets.
 - Duplicates and hidden data: DUPLICATE_RR, data occluded by a delegation or a DNAME.
 - Addresses: private, localhost and non-global IPv6.

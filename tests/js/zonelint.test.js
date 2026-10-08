@@ -70,6 +70,15 @@ describe('CNAME rules', () => {
     assert.deepEqual(cf.params, { name: 'example.com', target: 'lb.example.net' });
   });
 
+  test('a flattened apex CNAME on Cloudflare sits next to the SOA, NS, MX and TXT; only A / AAAA there conflict with it', () => {
+    const apex = [SOA, ['@', 'NS', 'ns1.example.com.'], ['@', 'CNAME', 'myapp.example.net.', P], ['@', 'MX', '10 mail.example.com.', D], ['@', 'TXT', 'v=spf1 -all', D]];
+    assert.deepEqual(find(cfZone(apex), 'CNAME_AND_OTHER_DATA'), []);
+    assert.deepEqual(find(cfZone([...apex, ['@', 'A', '192.0.2.10', P]]), 'CNAME_AND_OTHER_DATA').map((f) => f.params.types), [['A']]);
+    // Outside Cloudflare, and below the apex on Cloudflare, a CNAME is still alone at its name.
+    assert.deepEqual(find(zone(apex.map((row) => row.slice(0, 3))), 'CNAME_AND_OTHER_DATA').map((f) => f.params.types), [['MX', 'NS', 'SOA', 'TXT']]);
+    assert.deepEqual(find(cfZone([['www', 'CNAME', '@', D], ['www', 'TXT', 'x', D]]), 'CNAME_AND_OTHER_DATA').map((f) => f.params.types), [['TXT']]);
+  });
+
   test('MULTIPLE_CNAME counts unique CNAMEs only', () => {
     assert.deepEqual(find(zone([['a', 'CNAME', 'b'], ['a', 'CNAME', 'c'], ['b', 'A', '192.0.2.1'], ['c', 'A', '192.0.2.2']]), 'MULTIPLE_CNAME')[0].params,
       { name: 'a.example.com', count: 2 });

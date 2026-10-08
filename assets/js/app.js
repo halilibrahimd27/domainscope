@@ -855,10 +855,10 @@ function preloadWhenIdle(def) {
  * "reload page" alert once {@link moduleReloadReason} says only a reload helps (Retry cannot then).
  * A network failure keeps the Retry and never claims an update.
  */
-function viewLoadFailure(def, params, sp, err) {
+function viewLoadFailure(def, params, sp, err, sub) {
   const maybeStale = isStaleModuleError(err);
   if (maybeStale && err.name === 'SyntaxError') return outdatedAlert(err);
-  const banner = ErrorBanner(err, { title: t('shell.viewLoadFailed'), onRetry: () => showRoute(def.id, params, { force: true, searchParams: sp }) });
+  const banner = ErrorBanner(err, { title: t('shell.viewLoadFailed'), onRetry: () => showRoute(def.id, params, { force: true, searchParams: sp, sub }) });
   if (maybeStale) {
     moduleReloadReason(err).then((reason) => {
       if (reason && banner.isConnected) banner.replaceWith(outdatedAlert(err, reason));
@@ -1069,7 +1069,7 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
     // Logged on purpose: E2E runs fail on console errors, so a broken view never goes unnoticed.
     console.error(`[view:${def.id}] failed to load`, err);
     clear(dom.pageBody);
-    dom.pageBody.append(viewLoadFailure(def, params, sp, err));
+    dom.pageBody.append(viewLoadFailure(def, params, sp, err, sub));
     finishRoute(def);
     return;
   }
@@ -1102,7 +1102,7 @@ async function showRoute(id, params, { force = false, restored = null, searchPar
       clear(dom.pageBody);
       dom.pageBody.append(ErrorBanner(err, {
         title: t('shell.viewCrashed'),
-        onRetry: () => showRoute(def.id, params, { force: true, searchParams: sp })
+        onRetry: () => showRoute(def.id, params, { force: true, searchParams: sp, sub })
       }));
       console.error(`[view:${def.id}] mount failed`, err);
     }

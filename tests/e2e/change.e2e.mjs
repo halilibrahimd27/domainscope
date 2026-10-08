@@ -26,7 +26,8 @@
  * while a slow round runs (its answers shown, nothing scheduled after it); no resolver answering
  * at all (said so after the first round, stopped as failed after three); a language switch that
  * resumes the check without asking again; a check opened offline (it says so, schedules nothing and
- * asks once the connection is back); a link that cannot be read (nothing sent); a builder
+ * asks once the connection is back); a link that cannot be read (nothing sent); Retry after the check
+ * page crashed (the check page again, its link kept); a builder
  * link near the length limit opens; 320 / 375 px phones light / dark in
  * both languages without horizontal scroll; no console errors, CSP violations or missing i18n
  * keys; nothing sent outside the page.
@@ -446,6 +447,34 @@ async function main() {
       await page.waitFor(() => /This check link cannot be read/.test(document.querySelector('#page-body')?.textContent || ''), { message: 'bad link' });
       assert(/One of its records cannot be read: is www NS/.test(await text(page, '#page-body')), 'the record named');
       assertEqual(await dnsLog(page), [], 'nothing sent');
+    });
+
+    await run.step('Retry after the check page crashed opens the check page again, on its link', async () => {
+      const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      try {
+        await tab.send('Network.enable');
+        await tab.send('Network.setBlockedURLs', { urls: ['https://*'] });
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeScript() });
+        // views/change.js as served, with a mount() that throws the first time (patched in flight).
+        await tab.send('Fetch.enable', { patterns: [{ urlPattern: '*/views/change.js', requestStage: 'Response' }] });
+        tab.conn.on('Fetch.requestPaused', async (p) => {
+          const { body, base64Encoded } = await tab.send('Fetch.getResponseBody', { requestId: p.requestId });
+          const src = (base64Encoded ? Buffer.from(body, 'base64').toString('utf8') : body).replace('export function mount(container, ctx) {',
+            "export function mount(container, ctx) {\n  if (!globalThis.__crashed) { globalThis.__crashed = true; throw new Error('mount crashed once'); }");
+          await tab.send('Fetch.fulfillRequest', {
+            requestId: p.requestId, responseCode: 200, body: Buffer.from(src, 'utf8').toString('base64'),
+            responseHeaders: [{ name: 'Content-Type', value: 'text/javascript; charset=utf-8' }]
+          });
+        }, tab.sessionId);
+        const hash = '#/change/check?z=example.com&r=is+www+A+192.0.2.10';
+        await tab.goto(`${server.url}${hash}`);
+        await tab.waitFor(() => window.__crashed && document.querySelector('#page-body .alert button'), { message: 'the crash with its Retry', timeout: 15000 });
+        await tab.evaluate(() => document.querySelector('#page-body .alert button').click());
+        await tab.waitFor(() => document.querySelector('.chg-view[data-page]'), { message: 'a page after Retry', timeout: 15000 });
+        assertEqual(await tab.evaluate(() => [!!document.querySelector('[data-page="check"]'), location.hash]), [true, hash], 'the check page, its link kept');
+      } finally {
+        await tab.close();
+      }
     });
 
     run.group('Phones 320 / 375 px, light / dark, English / Turkish');

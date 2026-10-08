@@ -269,6 +269,23 @@ test('matchProviderByCname: regex patterns (S3, Vercel)', () => {
   assert.equal(matchProviderByCname('abcd.vercel-dns-017.com').id, 'vercel');
 });
 
+test('matchProviderByCname: a hostile near-miss name (a hyphen run in a label) is matched in linear time', () => {
+  // A CNAME / PTR target is untrusted: a pattern that backtracks over a hyphen run froze the tab
+  // (s3 + 26 × "-a": 5.6 s; two such labels: effectively forever).
+  const run = (n) => `-a`.repeat(n);
+  const hostile = [`s3${run(24)}.attacker.example`, `s3${run(30)}.x${run(30)}.attacker.example`, `x.s3${run(30)}.s3${run(30)}.amazonaws.example`];
+  for (const name of hostile) {
+    const t0 = performance.now();
+    assert.equal(matchProviderByCname(name), null, name);
+    classifyResolution({ status: 'NOERROR', ipv4: ['192.0.2.10'], cnames: [name] });
+    assert.ok(performance.now() - t0 < 250, `${name.length} characters took ${Math.round(performance.now() - t0)} ms`);
+  }
+  // The names it is for still match.
+  for (const name of ['s3.amazonaws.com', 'bucket.s3.dualstack.us-east-1.amazonaws.com', 'b.s3-website.eu-west-1.amazonaws.com', 'b.s3.cn-north-1.amazonaws.com.cn']) {
+    assert.equal(matchProviderByCname(name).id, 'aws-s3', name);
+  }
+});
+
 /* -------------------------------------------------------------------- */
 /* classifyResolution (priority order)                                  */
 /* -------------------------------------------------------------------- */

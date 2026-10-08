@@ -278,8 +278,10 @@ export const PROVIDERS = Object.freeze([
     id: 'aws-s3', name: 'Amazon S3', category: 'platform', hidesOrigin: false, certManagedByProvider: true,
     cnameSuffixes: ['s3.amazonaws.com'],
     // s3.amazonaws.com, s3-website-us-east-1.amazonaws.com, bucket.s3.eu-west-1.amazonaws.com,
-    // bucket.s3-website.eu-central-1.amazonaws.com, s3.dualstack.… (label must start with "s3")
-    cnamePatterns: [/(?:^|\.)s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com(?:\.cn)?$/],
+    // bucket.s3-website.eu-central-1.amazonaws.com, s3.dualstack.… (label must start with "s3").
+    // One way to split a name: a hyphen is never both a separator and a label character (a
+    // near-miss with a long hyphen run backtracked exponentially on an untrusted CNAME / PTR).
+    cnamePatterns: [/(?:^|\.)s3(?:-[a-z0-9-]+)?(?:\.[a-z0-9-]+)*\.amazonaws\.com(?:\.cn)?$/],
     homepage: 'https://aws.amazon.com/s3/'
   }),
   defineProvider({

@@ -123,7 +123,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 
 | Feature | Where | Roadmap item |
 | --- | --- | --- |
-| A command palette (Ctrl/⌘+K, or the header's search button, which phones up to 600 px leave out): a tool found by its name or description in English or Turkish with a Turkish-safe fuzzy match, the actions on a typed domain or host name (Subdomains, Domain overview, Domain Health, DNS Lookup MX / TXT / CAA, Global DNS, Renewal readiness), IP address (IP Intel, Domains on this IP, Reverse DNS, Retire an IP), network or AS number (a Reverse DNS sweep) or pasted certificate (Certificate), the current target and the workspace's recent domains; an accessible combobox dialog, every entry filled in and never run, 380 bytes on the start route | Shell (`lib/palette.js`, `ui/palette.js`, loaded on first use) | [P0.12](#p012-universal-search-command-palette-and-keyboard-shortcuts) |
+| A command palette (Ctrl/⌘+K, or the header's search button, which phones up to 600 px leave out): a tool found by its name or description in English or Turkish with a Turkish-safe fuzzy match, the actions on a typed domain or host name (Subdomains, Domain overview, Domain Health, DNS Lookup MX / TXT / CAA, Global DNS, Renewal readiness), IP address (IP Intel, Domains on this IP, Reverse DNS, Retire an IP), network or AS number (a Reverse DNS sweep) or pasted certificate (Certificate), the current target and the workspace's recent domains; an accessible combobox dialog, every entry filled in and never run, 401 bytes on the start route | Shell (`lib/palette.js`, `ui/palette.js`, loaded on first use) | [P0.12](#p012-universal-search-command-palette-and-keyboard-shortcuts) |
 
 ## P0 — next iteration
 

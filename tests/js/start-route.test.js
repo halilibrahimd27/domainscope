@@ -67,7 +67,7 @@ const JS = join(ASSETS, 'js');
  * ≈ 5.5 KB: ≈ 369 KB (377,888 bytes), 992 bytes under the budget. The command palette keeps only
  * its key (Ctrl/Cmd+K, lib/shellnav.js), the header button, the shortcut list's row, the lazy import
  * and i18n.js's `stringIn` on the route; ui/palette.js, lib/palette.js and palette.css load on its
- * first use: 380 bytes, ≈ 369 KB (378,268 bytes), 612 bytes under the budget.
+ * first use: 401 bytes, ≈ 369 KB (378,289 bytes), 591 bytes under the budget.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

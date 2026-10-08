@@ -31,7 +31,7 @@
 import { throwIfAborted, errorKind } from './util.js';
 import { normalizeHostname, registrableDomain } from './domain.js';
 import { normalizeIP, ipVersion, isPrivateIP } from './netinfo.js';
-import { spfLookupCount, spfEvaluate, spfMxHosts } from './health.js';
+import { spfLookupCount, spfEvaluate, spfMxHosts, parseSpf } from './health.js';
 import { lookupServers } from './inventory.js';
 import { unpackFile, containerOf, toBytes, ZIP_ERRORS, ZIP_LIMITS } from './zipread.js';
 import { parseTlsReport } from './tlsrpt.js';
@@ -865,8 +865,17 @@ export async function loadSpfContext(domain, { dns: client, signal, noCache = fa
  */
 
 const orgOf = (d) => registrableDomain(d) || d;
-/** An SPF pass given by `all` itself (`+all`, `all`): every address passes, so it says nothing about this one. */
-const passesAll = (v) => !!v && v.result === 'pass' && /^\+?all$/i.test(v.term || '');
+/**
+ * An SPF pass that says nothing about the address: given by `all` itself (`+all`, `all`), or by a
+ * term with a /0 prefix for the address's family (`ip4:0.0.0.0/0`, `ip6:::/0`, `a/0`, `mx//0`), which
+ * every address of that family matches.
+ */
+function passesAll(v, ip) {
+  if (!v || v.result !== 'pass') return false;
+  if (/^\+?all$/i.test(v.term || '')) return true;
+  const t = v.term ? parseSpf(`v=spf1 ${v.term}`).terms[0] : null;
+  return !!t && (ipVersion(ip) === 6 ? t.cidr6 : t.cidr4) === 0;
+}
 /** A verdict that tells nothing about the address: none at all, `unknown`, or a permerror. */
 const untold = (v) => !v || v.result === 'unknown' || v.result === 'permerror';
 const isKnown = (r) => r.cls === 'yours' || r.cls === 'third-party';
@@ -930,15 +939,15 @@ export function classifySources(agg, { spf = new Map(), index = new Map() } = {}
     return { ...s, servers, spfNow, spfDomain, spfListed, atRisk, cls: null, reason: null, detail: null, fixes: [] };
   });
 
-  // Pass 1: the server list and the SPF decide. A pass by `+all` authorizes every address, so it
-  // tells no sender apart (the overview's `spf-all` note says so).
+  // Pass 1: the server list and the SPF decide. A pass by `+all` (or a /0 range) authorizes every
+  // address, so it tells no sender apart (the overview's `spf-all` note says so).
   for (const r of rows) {
     const auth = r.spfNow && r.spfNow.result === 'pass' ? r.spfNow : null;
     const listed = !auth && r.spfListed && r.spfListed.result === 'pass' ? r.spfListed : null;
     const by = auth || listed;
     if (r.servers.length) {
       Object.assign(r, { cls: 'yours', reason: 'inventory', detail: r.servers.join(', ') });
-    } else if (by && !passesAll(by)) {
+    } else if (by && !passesAll(by, r.ip)) {
       const foreign = foreignOnPath(by, orgOf(r.spfDomain || agg.domain));
       Object.assign(r, foreign ? { cls: 'third-party', reason: auth ? 'spf-include' : 'include-listed', detail: foreign }
         : { cls: 'yours', reason: auth ? 'spf' : 'spf-listed', detail: by.term });
@@ -1071,7 +1080,7 @@ export function dmarcOverview(agg, rows, { spfChecked = true } = {}) {
   if (spfError) notes.push('spf-permerror');
   if (p.p === 'quarantine' && p.pct >= 100 && !testing && verdict === 'ready') notes.push('quarantine');
   if (rows.some((r) => r.dispositions.reject > 0 && isKnown(r))) notes.push('rejected-now');
-  if (rows.some((r) => passesAll(r.spfNow))) notes.push('spf-all');
+  if (rows.some((r) => passesAll(r.spfNow, r.ip))) notes.push('spf-all');
   return {
     domain: agg.domain,
     messages: agg.messages,

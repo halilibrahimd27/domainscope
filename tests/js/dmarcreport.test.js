@@ -666,6 +666,26 @@ describe('classifySources — yours, authorized third parties, forwarders, unkno
     assert.ok(!dmarcOverview(agg, classifySources(agg)).notes.includes('spf-all'));
   });
 
+  test('an SPF range of every address of the family (ip4:0.0.0.0/0, ip6:::/0) tells no sender apart either, like +all', async () => {
+    const { domains } = aggregateDmarc([report(GOOGLE_XML)]);
+    const agg = domains[0];
+    const classify = async (record) => {
+      const spf = new Map([['example.com', await loadSpfContext('example.com', { dns: fakeDns({ 'example.com': { TXT: [[record]] } }) })]]);
+      const rows = classifySources(agg, { spf });
+      return { rows, by: Object.fromEntries(rows.map((r) => [r.ip, r])) };
+    };
+    const { rows, by } = await classify('v=spf1 ip4:192.0.2.10 ip4:0.0.0.0/0 ip6:::/0 -all');
+    assert.equal(by['192.0.2.200'].spfNow.term, 'ip4:0.0.0.0/0');
+    assert.deepEqual(brief(by['192.0.2.200']), ['unknown', 'none', null], 'a spoofer is no server of yours because the /0 range passes it');
+    assert.deepEqual(brief(by['203.0.113.26']), ['unknown', 'none', null], 'nor is a sender with SPF only');
+    assert.equal(by['2001:db8:25::10'].spfNow.term, 'ip6:::/0');
+    assert.deepEqual(brief(by['2001:db8:25::10']), ['yours', 'dkim-signed', 'mail2026'], 'DKIM still decides');
+    assert.ok(dmarcOverview(agg, rows).notes.includes('spf-all'));
+    // A /0 range of the other family still lets the record tell an address apart.
+    const other = await classify('v=spf1 ip6:::/0 ip4:203.0.113.26 -all');
+    assert.deepEqual(brief(other.by['203.0.113.26']), ['yours', 'spf', 'ip4:203.0.113.26']);
+  });
+
   test('an SPF record that gives receivers a permerror: whom it lists still decides the class; the fix names the record', async () => {
     const classify = async (table, xml) => {
       const agg = aggOf(xml);

@@ -10,6 +10,10 @@
  * "Copy summary" in the summary card: the answer in one line for Jira / Slack (lib/summary.js),
  * with the link of that query and the time its last answer arrived.
  *
+ * "DNSSEC chain" in the summary card (ui/dnssec-panel.js over lib/dnssec.js, loaded on its first
+ * click): the chain of trust of the name and one of the looked-up types, validated in this browser
+ * from the IANA root trust anchors down, zone by zone; a new lookup closes it.
+ *
  * Shareable: `#/lookup?name=example.com&type=MX` (type may repeat or be comma-separated;
  * optional `resolver=<id>`, `dnssec=1`, `cd=1`). An IP address as name becomes a PTR query.
  * With `run=0` (a name carried over from another tool, lib/session.js) the form is only filled
@@ -36,7 +40,7 @@ import { classifyResolution, ipVersion, normalizeIP, reversePtrName } from '../l
 import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
 import { CAA_ISSUERS } from '../lib/health.js';
-import { mergeSignals } from '../lib/util.js';
+import { mergeSignals, onceAsync } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
@@ -110,6 +114,8 @@ registerStrings('en', {
   'lkp.noRecords': 'No records:',
   'lkp.noRecordsBody': 'The name exists but has no records of these types (NODATA).',
   'lkp.copyAll': 'Copy all (dig format)',
+  'lkp.dnssecChain': 'DNSSEC chain',
+  'lkp.dnssecChainTitle': 'Validate the chain of trust of this answer from the root trust anchors down, in this browser',
   'lkp.links': 'More about this name:',
 
   'lkp.card.records': { zero: 'No records', one: '{count} record', other: '{count} records' },
@@ -263,6 +269,8 @@ registerStrings('tr', {
   'lkp.noRecords': 'Kayıt yok:',
   'lkp.noRecordsBody': 'Ad mevcut ama bu türlerde kaydı yok (NODATA).',
   'lkp.copyAll': 'Tümünü kopyala (dig biçimi)',
+  'lkp.dnssecChain': 'DNSSEC zinciri',
+  'lkp.dnssecChainTitle': 'Bu yanıtın güven zincirini kök güven çapalarından başlayarak tarayıcınızda doğrular',
   'lkp.links': 'Bu ad hakkında daha fazlası:',
 
   'lkp.card.records': { zero: 'Kayıt yok', other: '{count} kayıt' },
@@ -698,9 +706,11 @@ export function mount(container, ctx) {
   const summaryEl = h('div', { class: 'lkp-summary' });
   const noteEl = h('div', { class: 'lkp-note' });
   const cardsEl = h('div', { class: 'lkp-cards' });
+  // DNSSEC chain (ui/dnssec-panel.js, loaded on the first click of the summary's button).
+  const dnssecEl = h('div', { class: 'lkp-dnssec' });
   const emptyEl = h('div', { class: 'card lkp-empty' }, EmptyState({ icon: 'search', title: t('lkp.emptyTitle'), message: t('lkp.emptyBody') }));
   // No part of the form: Ctrl/Cmd+Enter in a field here starts no new lookup.
-  const results = h('div', { class: 'stack lkp-results', hidden: true, dataset: { shortcutScope: 'results' } }, summaryEl, noteEl, cardsEl);
+  const results = h('div', { class: 'stack lkp-results', hidden: true, dataset: { shortcutScope: 'results' } }, summaryEl, noteEl, dnssecEl, cardsEl);
   container.append(h('div', { class: 'stack-lg lkp-view' }, formCard, emptyEl, results));
 
   /*
@@ -1423,6 +1433,7 @@ export function mount(container, ctx) {
       const actions = h('div', { class: 'lkp-sum-actions cluster' },
         CopyButton(allText, { label: t('lkp.copyAll'), size: 'sm', variant: 'secondary' }),
         summary,
+        Button({ label: t('lkp.dnssecChain'), icon: 'shield', size: 'sm', variant: 'secondary', title: t('lkp.dnssecChainTitle'), dataset: { action: 'dnssec-chain' }, onClick: () => openDnssec(q) }),
         q.ptrFor ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('ip', { ips: q.ptrFor }) }, Icon('network', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.ip'))) : null,
         !q.ptrFor && q.name !== '.' ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('global', { name: q.name, type: ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'CAA', 'HTTPS', 'SOA'].includes(q.types[0]) ? q.types[0] : 'A' }) }, Icon('globe', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.global'))) : null,
         !q.ptrFor && q.name.includes('.') ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('health', { domain: q.name.replace(/^_dmarc\./, '') }) }, Icon('activity', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.health'))) : null);
@@ -1453,6 +1464,35 @@ export function mount(container, ctx) {
     prev.types = types;
   }
 
+  /** The DNSSEC chain of the lookup on screen: { q, panel } (ui/dnssec-panel.js). */
+  let dnssec = null;
+  const loadDnssec = onceAsync(() => import('../ui/dnssec-panel.js'));
+
+  async function openDnssec(q) {
+    if (dnssec && dnssec.q === q) {
+      dnssec.panel.el.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    let mod;
+    try {
+      mod = await loadDnssec();
+    } catch (err) {
+      ctx.checkOutdated();
+      ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+      return;
+    }
+    if (!current || current.q !== q || ctx.signal.aborted) return;
+    closeDnssec();
+    dnssec = { q, panel: mod.DnssecPanel({ ctx, name: q.name, types: q.types, resolver: q.resolver }) };
+    dnssecEl.append(dnssec.panel.el);
+    dnssec.panel.run();
+  }
+
+  function closeDnssec() {
+    if (dnssec) dnssec.panel.destroy();
+    dnssec = null;
+  }
+
   /** Ask one type of the current lookup (a run, or the Retry of a query that got no answer). */
   async function queryType(state, type, signal) {
     const dns = await ctx.getDns();
@@ -1467,6 +1507,7 @@ export function mount(container, ctx) {
   async function run(q, preset = null, { at = null, elapsed = null } = {}) {
     if (current && current.controller) current.controller.abort();
     if (current) current.life.abort();
+    closeDnssec();
     const controller = new AbortController();
     // `life` ends with this lookup (a new one, or the view going away): it cancels Retries too.
     const life = new AbortController();

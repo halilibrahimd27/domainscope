@@ -119,7 +119,7 @@ export const ENGINE_MODULES = Object.freeze(['lib/scanner.js', 'lib/sources.js',
  */
 export const VIEWS = Object.freeze([
   // A scan's progress and results (ui/subdomains-run.js) load with its first scan, after the engine.
-  { id: 'subdomains', group: 'discover', icon: 'layers', css: ['views/subdomains.css'], preload: [...ENGINE_MODULES, 'ui/subdomains-run.js', 'lib/export.js'], load: () => import('./views/subdomains.js') },
+  { id: 'subdomains', group: 'discover', icon: 'layers', css: ['views/subdomains.css'], preload: [...ENGINE_MODULES, 'ui/subdomains-run.js', 'lib/export.js', 'lib/subtabs.js'], load: () => import('./views/subdomains.js') },
   { id: 'domain', group: 'discover', icon: 'id-card', css: ['views/domain.css'], load: () => import('./views/domain.js') },
   // "Show the fix" (ui/fix-panel.js, loaded on first use) is styled by views/fix.css; Compare and Convert
   // (ui/zone-tools.js, loaded on their first use, modulepreloaded when idle) by views/zonetools.css

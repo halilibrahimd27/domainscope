@@ -2262,7 +2262,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     const start = src.slice(src.indexOf('async function start()'), src.indexOf('function cancel()'));
     assert.ok(start.indexOf('session.tab = null;') !== -1 && start.indexOf('session.tab = null;') < start.indexOf("ctx.setParams({ domain: v.domains.join(',') });"));
     // update(): an edited `tab=` opens that tab without a re-mount.
-    assert.match(src, /const tab = parseSubTab\(params\.tab\);\s*if \(tab && ui\) ui\.showTab\(tab\);/);
+    assert.match(src, /const tab = ui \? runUi\.parseSubTab\(params\.tab\) : null;\s*if \(tab\) ui\.showTab\(tab\);/);
     // A stat card filters the hosts and hands the focus to the Hosts tab (the card hides with its panel).
     assert.match(src, /function pickFilter\(f\) \{\s*setFilter\(f\);\s*showTab\('hosts', \{ focus: true \}\);/);
     // A click on the tab already shown is a choice (the component fires onChange only for a change) …

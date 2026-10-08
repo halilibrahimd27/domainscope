@@ -43,6 +43,9 @@ import {
   realOriginNetworks, reasonText, routeTargets, sourceHealthText, sourceNote, techniqueCounts
 } from '../views/subdomains.js';
 
+/** The view reads a route's `tab=` through the loaded run UI, so lib/subtabs.js stays off the start route. */
+export { parseSubTab } from '../lib/subtabs.js';
+
 /** Filters offered in the segmented control. */
 export const SEGMENT_FILTERS = Object.freeze(['all', 'resolving', 'cloudflare', 'direct', 'unresolved']);
 

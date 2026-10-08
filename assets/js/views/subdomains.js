@@ -79,7 +79,6 @@ import { knownForScan, originIndex, originTarget, rememberedRows } from '../lib/
 import { backToLastRun, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { buildFittedSweepCommand, validateTargets, validateNames } from '../lib/cmdline.js';
-import { parseSubTab } from '../lib/subtabs.js';
 import { getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList, onceAsync } from '../lib/util.js';
 import { scanFraction } from '../lib/jobprogress.js';
@@ -3451,9 +3450,9 @@ export function mount(container, ctx) {
 
   active = {
     applyParams(params) {
-      // A new `tab=` (an edited or pasted URL) opens that results tab.
-      const tab = parseSubTab(params.tab);
-      if (tab && ui) ui.showTab(tab);
+      // A new `tab=` (an edited or pasted URL) opens that results tab: a run's, drawn by the loaded run UI.
+      const tab = ui ? runUi.parseSubTab(params.tab) : null;
+      if (tab) ui.showTab(tab);
       const list = routeTargets(new URLSearchParams(params), params);
       if (!list.length) {
         session.text = domainField.value;

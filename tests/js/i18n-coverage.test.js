@@ -58,6 +58,8 @@ before(async () => {
   await imp('assets/js/ui/related-domains.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
+  // The command palette: the shell loads it on the first Ctrl/Cmd+K.
+  await imp('assets/js/ui/palette.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -343,6 +345,8 @@ describe('i18n coverage', () => {
     const [zt, zc] = await Promise.all([imp('assets/js/ui/zone-tools.js'), imp('assets/js/lib/zoneconvert.js')]);
     for (const k of zt.generatedKeys()) add(k);
     for (const code of zc.PITFALL_CODES) for (const target of Object.keys(zc.PITFALL_SEVERITY[code])) add(zc.pitfallKey(code, target));
+    // The command palette (ui/palette.js over lib/palette.js): every action and entry type.
+    for (const k of (await imp('assets/js/ui/palette.js')).generatedKeys()) add(k);
     // About › What this page sent (ui/egress-panel.js over lib/egress.js): every data kind, service
     // role and never-sent item the ledger words from the registry.
     const egress = await imp('assets/js/lib/egress.js');

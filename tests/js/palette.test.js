@@ -80,6 +80,8 @@ describe('matchWord and scoreFields — how a word matches a text', () => {
     const tool = { title: 'Reverse DNS', altTitle: 'Ters DNS', desc: 'The PTR of every address' };
     assert.ok(scoreFields(['ters'], tool).score > scoreFields(['ptr'], tool).score, 'a title beats a description');
     assert.equal(scoreFields(['ters', 'nothing'], tool), null);
+    assert.equal(scoreFields(['very'], tool), null, 'a description matches at the start of a word only');
+    assert.equal(matchWord('ery', 'every', { inside: false }), null);
     assert.deepEqual(scoreFields(['rev'], tool).title, [0, 1, 2], 'the matched title letters');
     assert.deepEqual(scoreFields(['ters'], tool).title, [], 'the other language’s title is not highlighted');
   });

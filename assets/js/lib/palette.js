@@ -160,14 +160,15 @@ function subsequence(word, text, preferStarts) {
 
 /**
  * How well one folded word matches a folded text, or null: 1 the text starts with it, 0.85 one of
- * its words does, 0.6 it is inside a word, and for a `fuzzy` text (a title) 0.3–0.55 when its
- * letters appear in order. A one-letter word matches only the start of a word.
+ * its words does, 0.6 it is inside a word (unless `inside` is false: a description, where that
+ * finds noise), and for a `fuzzy` text (a title) 0.3–0.55 when its letters appear in order. A
+ * one-letter word matches only the start of a word.
  * @param {string} word folded, not empty
  * @param {string} text folded
- * @param {{ fuzzy?: boolean }} [opts]
+ * @param {{ fuzzy?: boolean, inside?: boolean }} [opts]
  * @returns {{ score: number, positions: number[] }|null} `positions`: the matched characters of `text`
  */
-export function matchWord(word, text, { fuzzy = false } = {}) {
+export function matchWord(word, text, { fuzzy = false, inside: within = true } = {}) {
   if (!word || !text) return null;
   const span = (at) => Array.from({ length: word.length }, (_, k) => at + k);
   if (text.startsWith(word)) return { score: 1, positions: span(0) };
@@ -179,7 +180,7 @@ export function matchWord(word, text, { fuzzy = false } = {}) {
     at = text.indexOf(word, at + 1);
   }
   if (word.length < 2) return null;
-  if (inside !== -1) return { score: 0.6, positions: span(inside) };
+  if (inside !== -1 && within) return { score: 0.6, positions: span(inside) };
   if (!fuzzy) return null;
   const positions = subsequence(word, text, true) || subsequence(word, text, false);
   if (!positions) return null;
@@ -202,8 +203,9 @@ export function queryWords(text) {
 const WEIGHTS = Object.freeze({ title: 1, altTitle: 0.9, keywords: 0.8, desc: 0.5, altDesc: 0.45 });
 
 /**
- * Score a searchable entry against folded words: every word must match one of its fields; the
- * score is the sum of each word's best field match times the field's weight.
+ * Score a searchable entry against folded words: every word must match one of its fields (a
+ * description only at the start of one of its words); the score is the sum of each word's best
+ * field match times the field's weight.
  * @param {string[]} words folded ({@link queryWords})
  * @param {{ title?: string, altTitle?: string, keywords?: string, desc?: string, altDesc?: string }} fields
  *   plain texts (folded here)
@@ -217,7 +219,7 @@ export function scoreFields(words, fields) {
   for (const word of words) {
     let best = null;
     for (const [k, w] of Object.entries(WEIGHTS)) {
-      const m = matchWord(word, folded[k], { fuzzy: k === 'title' || k === 'altTitle' });
+      const m = matchWord(word, folded[k], { fuzzy: k === 'title' || k === 'altTitle', inside: k !== 'desc' && k !== 'altDesc' });
       if (m && (!best || m.score * w > best.score)) best = { score: m.score * w, key: k, positions: m.positions };
     }
     if (!best) return null;

@@ -195,6 +195,13 @@ registerStrings('tr', {
   'rip.toRetireMany': 'Bu IP’leri emekliye ayır'
 });
 
+/**
+ * One service per DNS client for the page session (the module stays loaded across re-mounts): its
+ * caches, and InternetDB's lockout, which outlives even a new service.
+ */
+const INTERNETDB_LOCK = { until: null };
+let shared = null;
+
 /** The status filter's choices: every status a row can have. */
 const FILTER_STATUSES = NAME_STATUSES;
 /** Registrable domains offered as Subdomains hand-offs at most. */
@@ -248,7 +255,7 @@ export function parseAddresses(text) {
  *   snapshot: () => object|null, restore: (snap: object|null) => void, focus: () => void, running: () => boolean }}
  */
 export function ReverseIpPanel({ ctx, getIntel, workspaceFor, onNames = null }) {
-  let svc = null;
+  let svc = shared ? shared.svc : null;
   /** @type {Map<string, object>} ip → IpReverse (results so far) */
   let lookups = new Map();
   /** @type {Map<string, Set<string>>} ip → sources still asked */
@@ -533,8 +540,16 @@ export function ReverseIpPanel({ ctx, getIntel, workspaceFor, onNames = null }) 
 
   /* --- running ------------------------------------------------------------------------- */
   async function service() {
-    if (!svc) svc = createReverseIp({ dns: await ctx.getDns(), intel: await getIntel() });
+    const dns = await ctx.getDns();
+    if (!shared || shared.dns !== dns) shared = { dns, svc: createReverseIp({ dns, intel: await getIntel(), lock: INTERNETDB_LOCK }) };
+    svc = shared.svc;
     return svc;
+  }
+
+  /** The addresses a run left before their sources all answered: their row cells offer the button again. */
+  function releaseAsking() {
+    if (onNames) for (const ip of asking.keys()) onNames(ip, null, 'idle');
+    asking.clear();
   }
 
   function stop() {
@@ -559,7 +574,10 @@ export function ReverseIpPanel({ ctx, getIntel, workspaceFor, onNames = null }) 
   async function go(parsed) {
     // Nothing is sent for an address that stays here: only a public one needs the network.
     if (parsed.ips.some((ip) => !isLocalOnly(ip)) && !ctx.requireOnline()) return;
-    if (run && run.controller) run.controller.abort();
+    if (run && run.controller) {
+      run.controller.abort();
+      releaseAsking();
+    }
     const controller = new AbortController();
     const mine = { controller, stopped: false, retrying: new Set() };
     run = mine;
@@ -578,6 +596,7 @@ export function ReverseIpPanel({ ctx, getIntel, workspaceFor, onNames = null }) 
     setRunning(true);
     setProgress(t('rip.asking'));
     const typed = keys();
+    const completed = [];
     try {
       const s = await service();
       for (const ip of parsed.ips) {
@@ -599,6 +618,7 @@ export function ReverseIpPanel({ ctx, getIntel, workspaceFor, onNames = null }) 
         if (!live()) return;
         lookups.set(ip, res);
         asking.delete(ip);
+        completed.push(ip);
         rows = mergeNames([...lookups.values()], { previous: rows });
         table.setRows(rows);
         renderAll();
@@ -614,7 +634,9 @@ export function ReverseIpPanel({ ctx, getIntel, workspaceFor, onNames = null }) 
       } else {
         ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
       }
-      finish();
+      // An address whose sources did not all answer is not reported as done.
+      releaseAsking();
+      finish(completed);
     } finally {
       if (run === mine) {
         mine.controller = null;
@@ -645,12 +667,13 @@ export function ReverseIpPanel({ ctx, getIntel, workspaceFor, onNames = null }) 
     if (live()) table.updateRows(rows);
   }
 
-  function finish() {
+  /** The end of a run: the progress line goes, the count is announced, `done` (the addresses whose sources all answered) reported. */
+  function finish(done = [...lookups.keys()]) {
     setProgress('');
     const ips = [...lookups.keys()].join(', ');
     if (!ctx.signal.aborted) announce(rows.length ? t('rip.found', { count: rows.length, ips }) : t('rip.none', { ips }));
-    if (!rows.length && lookups.size) note('info', t('rip.none', { ips }));
-    for (const ip of lookups.keys()) report(ip);
+    if (!rows.length && done.length) note('info', t('rip.none', { ips }));
+    for (const ip of done) report(ip);
   }
 
   /** "Check more": the next batch of unchecked names. */

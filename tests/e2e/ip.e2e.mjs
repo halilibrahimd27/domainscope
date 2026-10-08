@@ -640,7 +640,7 @@ const RIP_DNS = {
  */
 const RIP_FAKE_SCRIPT = (dns) => `(() => {
   const realFetch = window.fetch.bind(window);
-  const fake = window.__rip = { dns: ${JSON.stringify(dns)}, data: {}, calls: [], dnsNames: [], blocked: [], otx429: [], idb429: false,
+  const fake = window.__rip = { dns: ${JSON.stringify(dns)}, data: {}, calls: [], dnsNames: [], blocked: [], otx429: [], idb429: false, slow: 0,
     shodanKey: ${JSON.stringify(RIP_SHODAN_KEY)}, whoisKey: ${JSON.stringify(RIP_WHOIS_KEY)} };
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   const text = (body, status = 200, type = 'text/plain') => new Response(body, { status, headers: { 'content-type': type } });
@@ -689,6 +689,13 @@ const RIP_FAKE_SCRIPT = (dns) => `(() => {
     if (host === 'otx.alienvault.com') {
       const ip = u.pathname.split('/')[5];
       fake.calls.push('otx ' + ip);
+      const sig = (init && init.signal) || null;
+      if (fake.slow) {
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, fake.slow);
+          if (sig) sig.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+        });
+      }
       if (fake.otx429.includes(ip)) return text('Too Many Requests', 429);
       const list = data(ip).otx || [];
       return json({ passive_dns: list.map((hostname) => ({ address: ip, hostname, first: '2025-01-01T00:00:00', last: '2026-10-03T07:53:19', record_type: 'A' })), count: list.length });
@@ -1002,6 +1009,27 @@ async function reverseIpGroup(browser, server) {
       assertEqual(total, 305, 'every name checked');
       i = await rip();
       assertEqual(i.more, null, 'nothing left');
+    });
+
+    await step('Stop while an address is still asked: its row offers Find domains again, never a spinner', async () => {
+      await page.evaluate(() => {
+        window.__rip.slow = 5000;
+        window.__rip.data['198.51.100.50'] = { ht: ['slow.example.com'] };
+      });
+      await gotoHash(page, '#/ip?ips=198.51.100.50', 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'row looked up' });
+      const btn = '[data-action="reverse"][data-ip="198.51.100.50"]';
+      await page.evaluate((sel) => document.querySelector(sel).click(), btn);
+      await page.waitFor((sel) => document.querySelector(sel)?.getAttribute('aria-busy') === 'true', { args: [btn], timeout: 10000, message: 'row busy' });
+      await page.evaluate(() => document.querySelector('[data-action="rip-stop"]').click());
+      await waitRip('stopped');
+      const state = await page.evaluate((sel) => {
+        const b = document.querySelector(sel);
+        return b ? { busy: b.getAttribute('aria-busy'), disabled: b.disabled } : null;
+      }, btn);
+      assertEqual(state, { busy: null, disabled: false }, 'the row button, usable again');
+      assert((await rip()).notes.some((n) => /^Stopped/.test(n)), 'the panel says it stopped');
+      await page.evaluate(() => { window.__rip.slow = 0; });
     });
 
     await step('a language re-mount shows the lookup again in Turkish, with nothing sent and no key kept', async () => {

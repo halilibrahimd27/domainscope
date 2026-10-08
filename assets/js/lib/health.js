@@ -2257,7 +2257,10 @@ function analyzeMailExtras(mtaR, tlsR, bimiR, { hasMail, dmarcPolicy }) {
     const id = tag(mta[0], 'id');
     checks.push(id ? makeCheck('mta-sts.present', 'ok', { id }) : makeCheck('mta-sts.invalid', 'warn', { count: 1 }));
   } else if (hasMail && !failed(mtaR)) checks.push(makeCheck('mta-sts.missing', 'info', {}));
-  if (tls.length) checks.push(makeCheck('tls-rpt.present', 'ok', { rua: tag(tls[0], 'rua') || '—' }));
+  // RFC 8460 §3: senders report only to exactly one record, and its rua is required.
+  const rua = tls.length === 1 ? tag(tls[0], 'rua') : '';
+  if (rua) checks.push(makeCheck('tls-rpt.present', 'ok', { rua }));
+  else if (tls.length) checks.push(makeCheck('tls-rpt.invalid', 'warn', { count: tls.length }));
   else if (hasMail && !failed(tlsR)) checks.push(makeCheck('tls-rpt.missing', 'info', {}));
   if (bimi.length) {
     checks.push(makeCheck('bimi.present', 'ok', { logo: tag(bimi[0], 'l') || '—' }));
@@ -2842,6 +2845,9 @@ const STRINGS = [
   ['tls-rpt.missing', ['No TLS reporting', 'TLS raporlama yok'],
     ['A _smtp._tls record (RFC 8460) lets senders report TLS delivery problems to you.',
       '_smtp._tls kaydı (RFC 8460), gönderenlerin TLS teslimat sorunlarını size bildirmesini sağlar.']],
+  ['tls-rpt.invalid', ['Invalid TLS reporting record', 'Geçersiz TLS raporlama kaydı'],
+    ['There must be exactly one "v=TLSRPTv1; rua=…" record ({count} found, or rua missing); otherwise senders send no TLS reports (RFC 8460 §3). For several report addresses, list them in one rua, separated by commas.',
+      'Tam olarak bir adet “v=TLSRPTv1; rua=…” kaydı olmalıdır ({count} bulundu ya da rua eksik); aksi hâlde gönderenler TLS raporu göndermez (RFC 8460 §3). Birden çok rapor adresi için adresleri tek bir rua içinde virgülle ayırarak yazın.']],
   ['bimi.present', ['BIMI record found', 'BIMI kaydı bulundu'],
     ['Logo: {logo}.', 'Logo: {logo}.']],
   ['bimi.dmarc-weak', ['BIMI needs an enforcing DMARC policy', 'BIMI zorlayıcı DMARC politikası gerektirir'],

@@ -574,17 +574,19 @@ export function mtaStsTxtInvalid(report) {
 /**
  * What lib/mtasts.validateMtaSts needs from a health report besides the fetch: the MX exchanges
  * (undefined when the MX lookup failed: not known, never "no MX"), the `_mta-sts` /
- * `_smtp._tls` records (null = not published, undefined = not known) and whether senders reject
- * the `_mta-sts` records (`txtInvalid`, {@link mtaStsTxtInvalid}).
+ * `_smtp._tls` records (null = not published, undefined = not known; `tlsRpt` is null as well when
+ * senders reject the `_smtp._tls` records, the tls-rpt.invalid check: they send no reports) and
+ * whether senders reject the `_mta-sts` records (`txtInvalid`, {@link mtaStsTxtInvalid}).
  * @param {object} report a lib/health.domainHealth report
  * @returns {{ mxHosts: string[]|undefined, txt: string|null|undefined, txtInvalid: number, tlsRpt: string|null|undefined }}
  */
 export function mtaStsContext(report) {
+  const tlsRptInvalid = (report.checks || []).some((c) => c.id === 'tls-rpt.invalid');
   return {
     mxHosts: lookupFailed(report, 'mx') ? undefined : (report.records.mx || []).map((m) => m.exchange),
     txt: knownRecord(report, 'mtaSts'),
     txtInvalid: mtaStsTxtInvalid(report),
-    tlsRpt: knownRecord(report, 'tlsRpt')
+    tlsRpt: tlsRptInvalid ? null : knownRecord(report, 'tlsRpt')
   };
 }
 

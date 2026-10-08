@@ -2005,6 +2005,31 @@ test('mail extras: a failed _mta-sts / _smtp._tls lookup is "not known", never "
   assert.deepEqual(nx.failedLookups, [], 'NXDOMAIN reports carry the field too');
 });
 
+test('mail extras: two v=TLSRPTv1 records, or one without rua, mean no TLS reports (RFC 8460 §3)', async () => {
+  const zone = goodZone();
+  const fetch = {
+    finished: true, failure: null, httpStatus: 200, contentType: 'text/plain', location: null, truncated: false, tls: null,
+    body: 'version: STSv1\nmode: testing\nmx: mx1.example.com\nmx: mx2.example.com\nmax_age: 1209600\n'
+  };
+  const testingIds = (r) => validateMtaSts({ domain: 'example.com', fetch, ...mtaStsContext(r) }).findings.map((f) => f.id);
+  zone['_smtp._tls.example.com'].TXT = ['v=TLSRPTv1; rua=mailto:tls@example.com', 'v=TLSRPTv1; rua=mailto:tls2@example.com'];
+  let r = await run('example.com', fakeDns(zone));
+  assertRenderable(r);
+  lacks(r, 'tls-rpt.present');
+  assert.equal(has(r, 'tls-rpt.invalid', 'warn').params.count, 2);
+  assert.ok(testingIds(r).includes('mode.testing-no-report'), 'senders send no reports for a testing policy');
+  zone['_smtp._tls.example.com'].TXT = ['v=TLSRPTv1;'];
+  r = await run('example.com', fakeDns(zone));
+  lacks(r, 'tls-rpt.present');
+  assert.equal(has(r, 'tls-rpt.invalid', 'warn').params.count, 1);
+  assert.ok(testingIds(r).includes('mode.testing-no-report'));
+  zone['_smtp._tls.example.com'].TXT = ['v=TLSRPTv1; rua=mailto:tls@example.com,https://tlsrpt.example.net/v1'];
+  r = await run('example.com', fakeDns(zone));
+  assert.equal(has(r, 'tls-rpt.present', 'ok').params.rua, 'mailto:tls@example.com,https://tlsrpt.example.net/v1');
+  lacks(r, 'tls-rpt.invalid');
+  assert.ok(!testingIds(r).includes('mode.testing-no-report'));
+});
+
 test('a failed MX lookup is "not known": the MTA-STS policy check never reads it as "no MX"', async () => {
   const zone = goodZone();
   const r = await run('example.com', fakeDns(zone, { fail: { 'example.com|MX': 'timeout' } }));

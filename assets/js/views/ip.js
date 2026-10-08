@@ -26,7 +26,7 @@
 
 import { h, clear } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, DataTable, EmptyState, ExternalLink, KeyValueList, KindBadge, ProgressBar, StatCard,
+  Alert, Badge, Button, Card, CopyButton, DataTable, EmptyState, ErrorBanner, ExternalLink, KeyValueList, KindBadge, ProgressBar, StatCard,
   TruncatedList, announce, ipSortValue, setButtonBusy, textarea
 } from '../ui/components.js';
 import { registerStrings, formatNumber, formatRegion, localeTag } from '../i18n.js';
@@ -38,7 +38,7 @@ import { classifyResolution, ipVersion, isPrivateIP, normalizeIP } from '../lib/
 import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
 import { Flag } from '../ui/flag.js';
-import { mergeSignals, splitList } from '../lib/util.js';
+import { mergeSignals, onceAsync, splitList } from '../lib/util.js';
 import { commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
 import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
@@ -56,6 +56,9 @@ export const MAX_IPS = 250;
 export const MAX_HOSTS = 100;
 
 const EXAMPLE = '8.8.8.8\n1.1.1.1\n2606:4700:4700::1111\n9.9.9.9\ngithub.com\n';
+
+/** A row's routing, RPKI, abuse contact and CIDR breadcrumb panel, loaded when a row's details first open. */
+const loadEnrich = onceAsync(() => import('../ui/ip-enrich-panel.js'));
 
 registerStrings('en', {
   'ipi.inputLabel': 'IP addresses or host names',
@@ -636,7 +639,14 @@ export function mount(container, ctx) {
           h('a', { href: ctx.href('lookup', { name: r.ip }) }, t('nav.lookup')))
       });
     }
-    return KeyValueList(items, { className: 'ipi-details' });
+    const list = KeyValueList(items, { className: 'ipi-details' });
+    if (r.pending || !ipVersion(r.ip)) return list;
+    const slot = h('section', { class: 'ipi-enrich' });
+    loadEnrich().then((m) => m.mountIpEnrich(slot, r, ctx), (err) => {
+      ctx.checkOutdated();
+      slot.append(ErrorBanner(err, { compact: true }));
+    });
+    return h('div', { class: 'stack' }, list, slot);
   }
 
   /* --- run -------------------------------------------------------------------------------- */

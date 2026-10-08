@@ -17,6 +17,13 @@
  * summary says how many lookups failed when every source failed (EN + TR); 1440 and 375 px,
  * light and dark, English and Turkish.
  *
+ * OFFLINE enrichment group (always runs): a row's "Routing, RPKI and abuse contact" panel with
+ * RIPEstat's routing calls and PeeringDB answered in the page: nothing is sent before Check
+ * routing, nor for a private or documentation address; the CIDR breadcrumb lists the saved
+ * servers per range; RPKI valid / invalid, MOAS and more-specific flags; a 429 is n/a whose Retry
+ * asks only that source; a kept result shows at once after a language re-mount; 1440 and 375 px,
+ * light and dark, English and Turkish.
+ *
  * --no-quota-apis blocks ipwho.is and HackerTarget in the browser (their anonymous daily quotas
  * are small): the reverse-IP step then checks the error path instead of spending a unit.
  *
@@ -215,6 +222,7 @@ async function main() {
 
   try {
     await offlineGroup(browser, server);
+    await enrichGroup(browser, server);
     if (!OFFLINE) await liveGroups(browser, server);
   } finally {
     await browser.close();
@@ -687,6 +695,207 @@ async function offlineGroup(browser, server) {
       assertEqual(blocked, [], 'requests the zone script had to block');
       await checkI18n(page);
       await assertClean(page, 'offline');
+    });
+  } finally {
+    await page.setViewport({ width: 1440, height: 900 });
+    await page.close();
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Offline: a row's routing, RPKI and abuse contact panel                   */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * RIPEstat's network-info, rpki-validation, routing-status and abuse-contact-finder and PeeringDB,
+ * answered in the page (installed last: the outermost fetch wrapper; prefix-overview stays with
+ * IP_FAKE_SCRIPT, which gives every address its /24 and AS64500). 193.0.6.0/24 is clean and RPKI
+ * valid; 8.8.8.0/24 is announced by two origins with a more-specific route and an RPKI ROA for
+ * another AS. A call named in `window.__enrichFake.limited` answers 429. `calls` lists
+ * "<call> <resource or asn> [prefix]" per request.
+ */
+const ENRICH_FAKE_SCRIPT = `(() => {
+  const inner = window.fetch;
+  const fake = window.__enrichFake = { limited: [], calls: [] };
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const ok = (data) => json({ status: 'ok', data_call_status: 'supported', data });
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    const u = new URL(url, location.href);
+    const call = u.hostname === 'www.peeringdb.com' ? 'peeringdb' : u.hostname === 'stat.ripe.net' ? u.pathname.split('/')[2] : null;
+    if (!['network-info', 'rpki-validation', 'routing-status', 'abuse-contact-finder', 'peeringdb'].includes(call)) return inner(input, init);
+    const what = u.searchParams.get('resource') || u.searchParams.get('asn');
+    const prefix = u.searchParams.get('prefix');
+    fake.calls.push(call + ' ' + what + (prefix ? ' ' + prefix : ''));
+    if (fake.limited.includes(call)) return new Response('Too Many Requests', { status: 429 });
+    const v8 = (what + (prefix || '')).includes('8.8.8.');
+    if (call === 'rpki-validation') {
+      return ok(v8
+        ? { resource: '64500', prefix, status: 'invalid_asn', validator: 'routinator', validating_roas: [{ origin: '64501', prefix: '8.8.8.0/24', max_length: 24, validity: 'invalid_asn' }] }
+        : { resource: '64500', prefix, status: 'valid', validator: 'routinator', validating_roas: [{ origin: '64500', prefix: '193.0.6.0/24', max_length: 24, validity: 'valid' }] });
+    }
+    if (call === 'routing-status') {
+      return ok({
+        resource: what, first_seen: { prefix: what, origin: '64500', time: '2004-05-06T08:00:00' },
+        visibility: { v4: { ris_peers_seeing: 98, total_ris_peers: 98 }, v6: { ris_peers_seeing: 0, total_ris_peers: 0 } },
+        origins: v8 ? [{ origin: 64500 }, { origin: 64501 }] : [{ origin: 64500 }],
+        more_specifics: v8 ? [{ prefix: '8.8.8.0/25', origin: 64501 }] : [], less_specifics: []
+      });
+    }
+    if (call === 'abuse-contact-finder') return ok({ abuse_contacts: ['abuse@example.net'], authoritative_rir: 'ripe' });
+    if (call === 'network-info') return ok({ asns: ['64500'], prefix: what.split('.').slice(0, 3).join('.') + '.0/24' });
+    return what === '64500'
+      ? json({ data: [{ id: 1001, asn: 64500, name: 'Example Networks', website: 'https://www.example.net/', info_type: 'Content', info_types: ['Content'], info_scope: 'Global', policy_general: 'Selective' }], meta: {} })
+      : json({ data: [], meta: { error: 'Entity not found' } }, 404);
+  };
+})();`;
+
+/** The panel of the row of `ip` (its details opened): state, crumbs, the chosen range's servers, n/a marks. */
+function enrichInfo(ip) {
+  const slot = document.querySelector(`.ipi-enrich[data-ip="${ip}"]`);
+  if (!slot) return null;
+  return {
+    state: slot.dataset.state,
+    text: slot.textContent.replace(/\s+/g, ' '),
+    check: !!slot.querySelector('[data-action="enrich"]'),
+    retry: slot.querySelector('[data-enrich-retry]')?.dataset.sources || null,
+    crumbs: [...slot.querySelectorAll('.ipe-crumb')].map((b) => `${b.dataset.cidr}=${b.dataset.count}${b.getAttribute('aria-pressed') === 'true' ? '*' : ''}`),
+    servers: [...slot.querySelectorAll('.ipe-server-list li')].map((li) => li.textContent.replace(/\s+/g, ' ').trim()),
+    na: [...slot.querySelectorAll('.na-mark')].map((m) => ({ sources: m.dataset.na, title: m.title })),
+    rpki: [...slot.querySelectorAll('.ipe-rpki-row')].map((r) => `${r.dataset.asn}:${r.dataset.status}`),
+    flags: slot.querySelector('.ipe-routing')?.dataset.flags ?? null
+  };
+}
+
+/** Open the details of the row of `ip` (once) and wait for its panel. */
+async function openEnrich(page, ip) {
+  await page.evaluate((x) => {
+    const row = [...document.querySelectorAll('.ipi-row')].find((r) => r.querySelector('.ipi-ip')?.textContent === x);
+    if (row.querySelector('.dt-expand-btn').getAttribute('aria-expanded') !== 'true') row.querySelector('.dt-expand-btn').click();
+  }, ip);
+  await page.waitFor((x) => !!document.querySelector(`.ipi-enrich[data-ip="${x}"] .ipe-head`), { args: [ip], timeout: 15000, message: `panel of ${ip}` });
+}
+
+async function enrichGroup(browser, server) {
+  group('Offline: a row’s routing, RPKI and abuse contact (RIPEstat and PeeringDB answered in the page)');
+  const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+  const netHits = await networkGuard(page);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript('in-addr.arpa', PTR_ZONE) });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: IP_FAKE_SCRIPT });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: ENRICH_FAKE_SCRIPT });
+  await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+  const calls = () => page.evaluate(() => window.__enrichFake.calls.slice());
+  const panel = (ip) => page.evaluate(enrichInfo, ip);
+  try {
+    await step('the panel sends nothing before “Check routing”; the breadcrumb lists your servers per range', async () => {
+      await page.goto(`${server.url}#/about`);
+      await waitReady(page);
+      await setLangUi(page, 'en');
+      await page.evaluate(async () => {
+        (await import('./assets/js/state.js')).state.setInventory('web-1 193.0.6.139\nweb-2 193.0.6.140\nedge 193.0.0.10\nlan-box 10.0.0.1\n');
+      });
+      await gotoHash(page, '#/ip?ips=193.0.6.139,8.8.8.8,10.0.0.1,192.0.2.10', 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows looked up' });
+      await openEnrich(page, '193.0.6.139');
+      const p = await panel('193.0.6.139');
+      assertEqual([p.state, p.check], ['idle', true], 'idle, with its button');
+      assert(p.text.includes('Nothing has been sent yet.') && p.text.includes('PeeringDB'), `privacy note: ${p.text}`);
+      assertEqual(await calls(), [], 'no enrichment request before the click');
+      // The narrowest range that holds another of your servers is chosen.
+      assertEqual(p.crumbs, ['193.0.0.0/8=3', '193.0.0.0/16=3', '193.0.6.0/24=2*', '193.0.6.139/32=1'], 'crumbs with server counts');
+      assertEqual(p.servers, ['web-1 193.0.6.139 this address', 'web-2 193.0.6.140'], 'servers in the /24');
+      await page.evaluate(() => document.querySelector('.ipi-enrich[data-ip="193.0.6.139"] .ipe-crumb[data-cidr="193.0.0.0/16"]').click());
+      const wide = await panel('193.0.6.139');
+      assertEqual(wide.servers, ['web-1 193.0.6.139 this address', 'edge 193.0.0.10', 'web-2 193.0.6.140'], 'servers in the /16: this address first, then by name');
+      assertEqual(wide.crumbs.filter((c) => c.endsWith('*')), ['193.0.0.0/16=3*'], 'one crumb pressed');
+    });
+
+    await step('Check routing: prefix and origin, RPKI valid with its ROA, clean routing, abuse contact, PeeringDB', async () => {
+      await page.evaluate(() => document.querySelector('.ipi-enrich[data-ip="193.0.6.139"] [data-action="enrich"]').click());
+      await page.waitFor(() => document.querySelector('.ipi-enrich[data-ip="193.0.6.139"]')?.dataset.state === 'done', { timeout: 15000, message: 'enriched' });
+      assertEqual((await calls()).sort(), ['abuse-contact-finder 193.0.6.139', 'peeringdb 64500', 'routing-status 193.0.6.0/24', 'rpki-validation AS64500 193.0.6.0/24'],
+        'the row’s prefix and origin were used: no network-info');
+      const p = await panel('193.0.6.139');
+      assertEqual([p.rpki, p.flags, p.na, p.retry, p.check], [['64500:valid'], '', [], null, false], 'valid, clean, nothing failed');
+      for (const s of ['193.0.6.0/24', 'Origin AS AS64500', 'ROA 193.0.6.0/24 · max length /24 · AS64500', 'One origin, seen by 98 of 98 RIS peers', 'abuse@example.net', 'registered at RIPE NCC', 'Example Networks', 'Content', 'peering: Selective']) {
+        assert(p.text.includes(s), `panel text has “${s}”: ${p.text}`);
+      }
+      assertEqual(p.servers, ['web-1 193.0.6.139 this address', 'edge 193.0.0.10', 'web-2 193.0.6.140'], `the chosen range is kept (${p.crumbs.join(' ')})`);
+    });
+
+    await step('an invalid origin, MOAS and a more-specific route are flagged; a 429 is n/a whose Retry asks only that source', async () => {
+      await page.evaluate(() => { window.__enrichFake.limited = ['abuse-contact-finder']; window.__enrichFake.calls = []; });
+      await openEnrich(page, '8.8.8.8');
+      await page.evaluate(() => document.querySelector('.ipi-enrich[data-ip="8.8.8.8"] [data-action="enrich"]').click());
+      await page.waitFor(() => document.querySelector('.ipi-enrich[data-ip="8.8.8.8"]')?.dataset.state === 'done', { timeout: 15000, message: 'enriched' });
+      const p = await panel('8.8.8.8');
+      assertEqual([p.rpki, p.flags], [['64500:invalid-asn'], 'moas more-specifics'], 'RPKI and routing flags');
+      assert(p.text.includes('Announced by AS64500, AS64501 (MOAS)') && p.text.includes('8.8.8.0/25 (AS64501)'), `flags explained: ${p.text}`);
+      assert(p.text.includes('networks that validate RPKI drop this route'), `invalid explained: ${p.text}`);
+      assertEqual(p.na, [{ sources: 'ripestat-abuse', title: 'RIPEstat (abuse contact): rate limited — try again in a few minutes' }], 'the abuse contact is n/a, with its reason');
+      assertEqual(p.retry, 'ripestat-abuse', 'Retry asks only the failed source');
+      await page.evaluate(() => { window.__enrichFake.limited = []; window.__enrichFake.calls = []; });
+      // With the keyboard: the focus stays in the panel when the Retry it pressed is replaced.
+      await page.evaluate(() => document.querySelector('.ipi-enrich[data-ip="8.8.8.8"] [data-enrich-retry]').focus());
+      await page.press('Enter');
+      await page.waitFor(() => (document.querySelector('.ipi-enrich[data-ip="8.8.8.8"]')?.textContent || '').includes('abuse@example.net'), { timeout: 15000, message: 'abuse contact after Retry' });
+      assertEqual(await calls(), ['abuse-contact-finder 8.8.8.8'], 'requests of the Retry');
+      const after = await panel('8.8.8.8');
+      assertEqual([after.na, after.retry], [[], null], 'nothing n/a any more');
+      const focus = await page.evaluate(() => (document.activeElement && document.activeElement.closest('.ipi-enrich') ? document.activeElement.className : null));
+      assertEqual(focus, 'ipe-title', 'keyboard focus on the panel’s title, not dropped to the page');
+    });
+
+    await step('a private or documentation address: the panel says nothing is sent, the breadcrumb still works', async () => {
+      await page.evaluate(() => { window.__enrichFake.calls = []; });
+      await openEnrich(page, '10.0.0.1');
+      const p = await panel('10.0.0.1');
+      assertEqual([p.state, p.check], ['not-routable', false], 'not routable: no button');
+      assert(p.text.includes('Not a globally routable address'), `note: ${p.text}`);
+      // No other server in any range: the /24 is chosen.
+      assertEqual(p.crumbs, ['10.0.0.0/8=1', '10.0.0.0/16=1', '10.0.0.0/24=1*', '10.0.0.1/32=1'], 'the address’s own server only');
+      await openEnrich(page, '192.0.2.10');
+      assertEqual((await panel('192.0.2.10')).state, 'not-routable', 'documentation space');
+      assertEqual(await calls(), [], 'nothing asked for either');
+    });
+
+    for (const [scheme, lang, width] of [['dark', 'tr', 1440], ['light', 'en', 375], ['dark', 'tr', 375]]) {
+      await step(`[${scheme}, ${lang.toUpperCase()}, ${width} px] a kept result shows at once after a re-mount, reads well and fits`, async () => {
+        await page.setViewport(width < 600 ? { width, height: 812, mobile: true } : { width, height: 900 });
+        await page.emulateMedia({ 'prefers-color-scheme': scheme });
+        await setLangUi(page, lang);
+        await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows kept' });
+        const before = (await calls()).length;
+        await openEnrich(page, '193.0.6.139');
+        const p = await panel('193.0.6.139');
+        assertEqual([p.state, (await calls()).length - before], ['done', 0], 'the kept result, no new request');
+        if (lang === 'tr') {
+          for (const s of ['Yönlendirme, RPKI ve abuse iletişimi', 'Geçerli', 'en fazla /24', 'Tek kaynak; 98 RIS eşinden 98 tanesi görüyor', 'kayıt: RIPE NCC', 'İçerik', 'içindeki sunucularınız']) {
+            assert(p.text.includes(s), `TR panel text has “${s}”: ${p.text}`);
+          }
+        }
+        await page.evaluate(() => document.querySelector('.ipi-enrich[data-ip="193.0.6.139"]').scrollIntoView());
+        await assertNoHorizontalScroll(page, `enrich ${scheme} ${lang} ${width}`);
+        await shot(page, `ip-enrich-${width < 600 ? 'mobile' : 'desktop'}-${scheme}-${lang}`);
+      });
+    }
+
+    await step('“Delete all local data” forgets which addresses were checked: the panel is idle again, nothing sent', async () => {
+      await page.evaluate(async () => { await (await import('./assets/js/state.js')).state.clearAll(); });
+      await gotoHash(page, '#/about', 'about');
+      await gotoHash(page, '#/ip?ips=193.0.6.139', 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'row looked up' });
+      const before = (await calls()).length;
+      await openEnrich(page, '193.0.6.139');
+      const p = await panel('193.0.6.139');
+      assertEqual([p.state, p.check, (await calls()).length - before], ['idle', true, 0], 'no kept answer, no request');
+    });
+
+    await step('nothing left the page; i18n complete; no console errors', async () => {
+      assertEqual(netHits, [], 'https requests that reached the network');
+      assertEqual(await page.evaluate(() => window.__zoneBlocked.slice()), [], 'requests the zone script had to block');
+      await checkI18n(page);
+      await assertClean(page, 'enrich');
     });
   } finally {
     await page.setViewport({ width: 1440, height: 900 });

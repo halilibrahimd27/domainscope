@@ -29,7 +29,14 @@ export const STATUS_SOURCES = Object.freeze({
   // Certificate Transparency (the Domain overview's issuer lookup): Cert Spotter's anonymous
   // single-host quota is hourly; crt.sh has no published quota.
   certspotter: Object.freeze({ period: 'hour' }),
-  crtsh: Object.freeze({ period: null })
+  crtsh: Object.freeze({ period: null }),
+  // IP Intel › Check routing (lib/ipenrich.js): RIPEstat's data calls, and PeeringDB, whose
+  // anonymous throttle pauses for seconds (it says 10).
+  'ripestat-network': Object.freeze({ period: 'minutes' }),
+  'ripestat-rpki': Object.freeze({ period: 'minutes' }),
+  'ripestat-routing': Object.freeze({ period: 'minutes' }),
+  'ripestat-abuse': Object.freeze({ period: 'minutes' }),
+  peeringdb: Object.freeze({ period: 'minutes' })
 });
 
 /** Every reason code {@link sourceStatus} can return (`srcst.reason.<code>` in the UI). */

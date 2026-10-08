@@ -569,6 +569,8 @@ const CALL_SITES = {
   'assets/js/lib/sources.js': ['crtsh', 'certspotter', 'hackertarget', 'anubis', 'otx', 'thc'],
   'assets/js/lib/ipintel.js': ['ripestat', 'ipwhois', 'hackertarget', 'thc'],
   'assets/js/lib/ptrsweep.js': ['ripestat'],
+  // IP Intel › Check routing: RPKI, routing status, abuse contact and the origin's PeeringDB record
+  'assets/js/lib/ipenrich.js': ['ripestat', 'peeringdb'],
   'assets/js/lib/rdap.js': ['rdap-bootstrap', 'rdap'],
   'assets/js/lib/globalping.js': ['globalping'],
   'assets/js/lib/passport.js': ['certspotter', 'crtsh', 'rdap'],

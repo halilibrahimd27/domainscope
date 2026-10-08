@@ -61,6 +61,8 @@ before(async () => {
   subRun = await imp('assets/js/ui/subdomains-run.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
+  // IP Intel › a row's routing, RPKI and abuse contact panel: loaded when a row's details first open.
+  await imp('assets/js/ui/ip-enrich-panel.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -402,6 +404,8 @@ describe('i18n coverage', () => {
     // every source and stale reason, why the form refuses an entry, why a CLI report could not be read.
     const [om, omp] = await Promise.all([imp('assets/js/ui/origin-map.js'), imp('assets/js/ui/origin-map-panel.js')]);
     for (const k of om.generatedKeys()) add(k);
+    // IP Intel › Check routing (ui/ip-enrich-panel.js): RPKI statuses, routing flags, PeeringDB types, sources.
+    for (const k of (await imp('assets/js/ui/ip-enrich-panel.js')).generatedKeys()) add(k);
     for (const e of omp.FORM_ERRORS) add(`omp.err.${e}`);
     for (const e of estate.REPORT_ERRORS) add(`omp.file.${e}`);
     for (const v of ['known']) { add(`scan.srv.via.${v}`); add(`scan.hint.${v}`); add(`sub.hint.${v}`); }

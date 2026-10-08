@@ -1,0 +1,139 @@
+{
+  "network-info": {
+    "messages": [],
+    "see_also": [],
+    "version": "1.1",
+    "data_call_name": "network-info",
+    "data_call_status": "supported",
+    "cached": false,
+    "data": { "asns": ["64496"], "prefix": "192.0.2.0/24" },
+    "query_id": "20261008100000-00000000-0000-0000-0000-000000000001",
+    "process_time": 2,
+    "server_id": "app000",
+    "build_version": "live.2026.10.1.0",
+    "status": "ok",
+    "status_code": 200,
+    "time": "2026-10-08T10:00:00.000000"
+  },
+  "network-info-unannounced": {
+    "data_call_status": "supported",
+    "data": { "asns": [], "prefix": null },
+    "status": "ok",
+    "status_code": 200
+  },
+  "rpki-valid": {
+    "messages": [],
+    "data_call_name": "rpki-validation",
+    "data_call_status": "supported",
+    "data": {
+      "resource": "64496",
+      "prefix": "192.0.2.0/24",
+      "validating_roas": [{ "origin": "64496", "prefix": "192.0.2.0/24", "validity": "valid", "max_length": 24 }],
+      "status": "valid",
+      "validator": "routinator"
+    },
+    "status": "ok",
+    "status_code": 200
+  },
+  "rpki-invalid-asn": {
+    "messages": [],
+    "data_call_status": "supported",
+    "data": {
+      "resource": "64497",
+      "prefix": "192.0.2.0/24",
+      "validating_roas": [{ "origin": "64496", "prefix": "192.0.2.0/24", "validity": "invalid_asn", "max_length": 24 }],
+      "status": "invalid_asn",
+      "validator": "routinator"
+    },
+    "status": "ok",
+    "status_code": 200
+  },
+  "rpki-invalid-length": {
+    "messages": [],
+    "data_call_status": "supported",
+    "data": {
+      "resource": "64496",
+      "prefix": "192.0.2.0/25",
+      "validating_roas": [{ "origin": "64496", "prefix": "192.0.2.0/24", "validity": "invalid_length", "max_length": 24 }],
+      "status": "invalid_length",
+      "validator": "routinator"
+    },
+    "status": "ok",
+    "status_code": 200
+  },
+  "rpki-unknown": {
+    "messages": [],
+    "data_call_status": "supported",
+    "data": { "resource": "64496", "prefix": "198.51.100.0/24", "validating_roas": [], "status": "unknown", "validator": "routinator" },
+    "status": "ok",
+    "status_code": 200
+  },
+  "routing-status": {
+    "messages": [],
+    "data_call_name": "routing-status",
+    "data_call_status": "supported",
+    "data": {
+      "first_seen": { "prefix": "192.0.2.0/24", "origin": "64496", "time": "2002-11-06T16:00:00" },
+      "last_seen": { "prefix": "192.0.2.0/24", "origin": "64496", "time": "2026-10-08T08:00:00" },
+      "visibility": { "v4": { "ris_peers_seeing": 98, "total_ris_peers": 98 }, "v6": { "ris_peers_seeing": 0, "total_ris_peers": 0 } },
+      "origins": [{ "origin": 64496, "route_objects": ["RADB"] }],
+      "less_specifics": [{ "prefix": "192.0.0.0/9", "origin": 64510 }, { "prefix": "192.0.0.0/12", "origin": 64510 }],
+      "more_specifics": [],
+      "resource": "192.0.2.0/24",
+      "query_time": "2026-10-08T00:00:00"
+    },
+    "status": "ok",
+    "status_code": 200
+  },
+  "routing-status-moas": {
+    "messages": [],
+    "data_call_status": "supported",
+    "data": {
+      "first_seen": { "prefix": "192.0.2.0/24", "origin": "64496", "time": "2019-03-01T08:00:00" },
+      "last_seen": { "prefix": "192.0.2.0/24", "origin": "64497", "time": "2026-10-08T08:00:00" },
+      "visibility": { "v4": { "ris_peers_seeing": 31, "total_ris_peers": 98 }, "v6": { "ris_peers_seeing": 0, "total_ris_peers": 0 } },
+      "origins": [{ "origin": 64496, "route_objects": ["RIPE"] }, { "origin": 64497, "route_objects": [] }],
+      "less_specifics": [],
+      "more_specifics": [{ "prefix": "192.0.2.0/25", "origin": 64497 }, { "prefix": "192.0.2.128/25", "origin": 64497 }],
+      "resource": "192.0.2.0/24",
+      "query_time": "2026-10-08T00:00:00"
+    },
+    "status": "ok",
+    "status_code": 200
+  },
+  "routing-status-unannounced": {
+    "data_call_status": "supported",
+    "data": {
+      "first_seen": null,
+      "last_seen": null,
+      "visibility": { "v4": { "ris_peers_seeing": 0, "total_ris_peers": 98 }, "v6": { "ris_peers_seeing": 0, "total_ris_peers": 0 } },
+      "origins": [],
+      "less_specifics": [],
+      "more_specifics": [],
+      "resource": "198.51.100.0/24"
+    },
+    "status": "ok",
+    "status_code": 200
+  },
+  "abuse-contact": {
+    "messages": [],
+    "data_call_name": "abuse-contact-finder",
+    "data_call_status": "supported",
+    "data": {
+      "abuse_contacts": ["abuse@example.net"],
+      "authoritative_rir": "ripe",
+      "latest_time": "2026-10-08T10:04:42",
+      "earliest_time": "2026-10-08T10:04:42",
+      "parameters": { "resource": "192.0.2.10", "cache": null }
+    },
+    "status": "ok",
+    "status_code": 200
+  },
+  "error": {
+    "messages": [["error", "The given resource is not valid."]],
+    "data_call_status": "supported",
+    "data": {},
+    "status": "error",
+    "status_code": 400
+  }
+}

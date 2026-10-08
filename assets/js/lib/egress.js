@@ -142,9 +142,16 @@ export const EGRESS_SERVICES = Object.freeze([
       ep('prefixes', ['asNumbers'], { path: '/data/announced-prefixes/*' }),
       ep('prefix-overview', ['ipAddresses'], { path: '/data/prefix-overview/*' }),
       ep('geo', ['ipAddresses'], { path: '/data/maxmind-geo-lite/*' }),
-      ep('reverse-dns', ['ipAddresses'], { path: '/data/reverse-dns-ip/*' })
+      ep('reverse-dns', ['ipAddresses'], { path: '/data/reverse-dns-ip/*' }),
+      // IP Intel › Check routing (lib/ipenrich.js): the address, its announced prefix and origin AS
+      ep('network-info', ['ipAddresses'], { path: '/data/network-info/*' }),
+      ep('rpki-validation', ['ipAddresses', 'asNumbers'], { path: '/data/rpki-validation/*' }),
+      ep('routing-status', ['ipAddresses'], { path: '/data/routing-status/*' }),
+      ep('abuse-contact', ['ipAddresses'], { path: '/data/abuse-contact-finder/*' })
     ]
   }),
+  // IP Intel › Check routing (lib/ipenrich.js): the origin AS number, paced and once per AS.
+  service({ id: 'peeringdb', name: 'PeeringDB', role: 'ip', hosts: ['www.peeringdb.com'], endpoints: [ep('net', ['asNumbers'], { path: '/api/net' })] }),
   // One API, /<address>, with one caller (lib/ipintel.js; the code scan holds it to that).
   service({ id: 'ipwhois', name: 'ipwho.is', role: 'ip', hosts: ['ipwho.is'], endpoints: [ep('address', ['ipAddresses'], { path: '/*' })] }),
   service({ id: 'rdap-bootstrap', name: 'IANA', role: 'registration', hosts: ['data.iana.org'], endpoints: [ep('bootstrap', ['nothing'], { path: '/rdap/*' })] }),

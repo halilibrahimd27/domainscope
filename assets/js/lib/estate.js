@@ -12,7 +12,8 @@
  * - {@link mergeReports}: several reports as one: on an ip:port that more than one report scanned,
  *   each name (and the handshake without SNI) takes the newest report's answer
  *   ({@link MergedReports}.overlaps says which endpoints), names asked are the union, and
- *   {@link MergedReports}.origin names the newest report of each endpoint.
+ *   {@link MergedReports}.origin names the newest report of each endpoint; a certificate's details
+ *   come from the newest report that holds it, with what that one lacks from the others.
  * - {@link estateOf}: the estate of one report dict — the same algorithm as the CLI's
  *   `estate_from_report`, so one report's result equals its `estate` section (tests/fixtures/estate):
  *   expiry buckets ({@link ESTATE_BUCKETS}), kinds ({@link ESTATE_KINDS}), one name served with
@@ -217,11 +218,20 @@ function keyOf(item) {
   return endpointKey(normalizeIP(item.ip) || item.ip, item.port);
 }
 
+/** A certificate's details from `primary`, with the fields it does not have taken from `other`. */
+function withGaps(primary, other) {
+  if (!isObject(primary) || !isObject(other)) return isObject(primary) ? primary : other;
+  const out = { ...primary };
+  for (const [field, value] of Object.entries(other)) if (!(field in out)) out[field] = value;
+  return out;
+}
+
 /**
  * @typedef {object} MergedReports
- * @property {object} doc one report dict: names (union), certificates, results (each probe of
- *   an ip:port from the newest report that asked it), endpoints (each ip:port from the newest
- *   report that scanned it), finishedAt (the newest)
+ * @property {object} doc one report dict: names (union), certificates (each from the newest
+ *   report that holds it, the fields it lacks from the others), results (each probe of an ip:port
+ *   from the newest report that asked it), endpoints (each ip:port from the newest report that
+ *   scanned it), finishedAt (the newest)
  * @property {Map<string, number>} origin `${ip}|${port}` → the index of the newest report that scanned it
  * @property {Map<string, number[]>} sources `${ip}|${port}|${sha256}` → the reports whose answers put
  *   that certificate on that endpoint (several reports only)
@@ -291,6 +301,7 @@ export function mergeReports(reports) {
   const names = [];
   const named = new Set();
   const certificates = {};
+  const certFrom = new Map();
   const results = [];
   const sources = new Map();
   let endpoints = [];
@@ -304,7 +315,14 @@ export function mergeReports(reports) {
       }
     }
     if (isObject(doc.certificates)) {
-      for (const [sha, info] of Object.entries(doc.certificates)) if (!(sha in certificates)) certificates[sha] = info;
+      for (const [sha, info] of Object.entries(doc.certificates)) {
+        const had = certFrom.get(sha);
+        // the newest report's details (the later one on a tie), with what it lacks from the others
+        // (an older CLI writes no public-key hashes and no kinds)
+        if (had === undefined) certificates[sha] = info;
+        else certificates[sha] = times[i] >= times[had] ? withGaps(info, certificates[sha]) : withGaps(certificates[sha], info);
+        if (had === undefined || times[i] >= times[had]) certFrom.set(sha, i);
+      }
     }
     for (const row of Array.isArray(doc.results) ? doc.results : []) {
       const key = keyOf(row);

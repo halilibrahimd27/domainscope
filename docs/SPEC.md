@@ -2072,7 +2072,8 @@ export function readEstateReport(text, { name }) -> { ok: true, report: EstateRe
                                               // 'not-json', 'not-report' (no "tool": "ssl_origin_scan"), 'version' (another major; detail: it), 'no-results'
 EstateReport = { name, doc, startedAt: Date|null, finishedAt: Date|null, estate /* options.estate */, keyHashes /* every certificates{} entry has spkiSha256 */, id /* the same scan read twice */ }
 export function mergeReports(reports) -> { doc, origin: Map<'ip|port', index>, sources: Map<'ip|port|sha256', index[]>, overlaps: string[] }
-  // one report: as it is; several: names asked = the union, certificates{} = the union; on an ip:port several reports scanned, each probe (no SNI, or one name)
+  // one report: as it is; several: names asked = the union, certificates{} = the union (a certificate's entry from the newest report holding it, the fields it
+  // lacks — an older CLI's missing spkiSha256 or kind — from the others, so the flags do not depend on the order); on an ip:port several reports scanned, each probe (no SNI, or one name)
   // takes the newest report's answer (finishedAt; a tie → the later one), so a name only an older report asked keeps its answer, and a port the newest report found
   // closed or silent drops the older answers there; `origin` = the newest report of each endpoint, `sources` = the reports behind a certificate on an endpoint
 export function estateOf(doc, { now /* default: doc.finishedAt */ }) -> Estate   // the CLI's estate_from_report, field for field (tests/fixtures/estate)

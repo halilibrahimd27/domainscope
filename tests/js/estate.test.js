@@ -200,6 +200,26 @@ describe('mergeReports', () => {
     assert.ok(!estate.certificates.some((c) => c.sha256 === '773223c65605a70c8fef4da270b24e8ce1874cf142e64ba827d2ba7ac134003f'), 'the renewal was only there');
   });
 
+  test('a certificate in several reports: its details from the newest, what that one lacks from the others, in any order', () => {
+    const now = Date.parse('2026-09-28T12:00:00Z');
+    const facts = (estate) => estate.certificates.map((c) => `${c.sha256} ${c.kind} ${c.privateCa} ${c.spkiSha256 ? 'key' : '-'} ${c.flags.join(',')}`).sort();
+    const want = estateOf(docA(), { now });
+    assert.ok(want.sharedKeys.length > 0 && want.certificates.some((c) => c.kind === 'private-ca'), 'the fixture has both');
+    // an older run whose kinds the newer one corrects (it was run without --private-ca) ...
+    const before = docA();
+    before.finishedAt = '2026-09-21T12:00:00.000Z';
+    for (const entry of Object.values(before.certificates)) Object.assign(entry, { kind: 'other', privateCa: null });
+    // ... and a later run of an older CLI, which writes no public-key hashes
+    const oldCli = docA();
+    oldCli.finishedAt = '2026-09-30T12:00:00.000Z';
+    for (const entry of Object.values(oldCli.certificates)) delete entry.spkiSha256;
+    for (const order of [[before, oldCli], [oldCli, before]]) {
+      const merged = estateOf(mergeReports(order.map((doc) => ({ doc }))).doc, { now });
+      assert.deepEqual(facts(merged), facts(want), order.map((d) => d.finishedAt).join(' then '));
+      assert.equal(merged.sharedKeys.length, want.sharedKeys.length);
+    }
+  });
+
   test('junk in the list is skipped, a report without endpoints is counted from its rows', () => {
     const b = docB();
     delete b.endpoints;

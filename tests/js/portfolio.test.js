@@ -182,6 +182,15 @@ describe('the list', () => {
     assert.deepEqual(p, { domains: ['example.net', 'example.org'], reduced: [], invalid: [], capped: 2 }, 'example.com (five host names) and example-test.com.tr left out');
     assert.equal(PORTFOLIO_MAX_DOMAINS, 300);
   });
+
+  test('a large paste of junk (a log, a CSV) parses in linear time, the box re-parses it on every keystroke', () => {
+    const text = Array.from({ length: 30000 }, (_, i) => `12:00:${i} status_${i}=200 example.com`).join('\n');
+    const t0 = performance.now();
+    const p = parsePortfolioInput(text);
+    const ms = performance.now() - t0;
+    assert.deepEqual([p.domains, p.invalid.length, p.invalid[0], p.invalid.at(-1)], [['example.com'], 60000, '12:00:0', 'status_29999=200'], 'every junk token once, in input order');
+    assert.ok(ms < 1000, `${Math.round(ms)} ms for 60,000 distinct junk tokens`);
+  });
 });
 
 describe('RDAP statuses read for risk', () => {

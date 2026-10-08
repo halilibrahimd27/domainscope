@@ -94,12 +94,12 @@ export function parsePortfolioInput(text, { max = PORTFOLIO_MAX_DOMAINS } = {}) 
     .flatMap((line) => line.split(/[\s,;]+/)).map((s) => s.trim()).filter(Boolean);
   const domains = [];
   const reduced = [];
-  const invalid = [];
+  const invalid = new Set();
   const left = new Set();
   for (const token of tokens) {
     const p = passportDomain(token);
     if (!p) {
-      if (!invalid.includes(token)) invalid.push(token);
+      invalid.add(token);
       continue;
     }
     if (domains.includes(p.domain)) continue;
@@ -110,7 +110,7 @@ export function parsePortfolioInput(text, { max = PORTFOLIO_MAX_DOMAINS } = {}) 
     domains.push(p.domain);
     if (p.host) reduced.push({ input: p.host, domain: p.domain });
   }
-  return { domains, reduced, invalid, capped: left.size };
+  return { domains, reduced, invalid: [...invalid], capped: left.size };
 }
 
 /* ------------------------------------------------------------------------ */

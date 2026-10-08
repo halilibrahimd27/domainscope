@@ -133,6 +133,7 @@ registerStrings('en', {
   'ipi.det.links': 'Open elsewhere',
   'ipi.det.hosts': 'Host names you entered',
   'ipi.det.network': 'Network',
+  'ipi.det.blocklists': 'Blocklists',
 
   'ipi.net.badge': '{name} network',
   'ipi.net.short.outside-proxy-ranges': 'AS{asn} · not a proxied-site range',
@@ -218,6 +219,7 @@ registerStrings('tr', {
   'ipi.det.links': 'Başka yerde aç',
   'ipi.det.hosts': 'Girdiğiniz host adları',
   'ipi.det.network': 'Ağ',
+  'ipi.det.blocklists': 'Kara listeler',
 
   'ipi.net.badge': '{name} ağı',
   'ipi.net.short.outside-proxy-ranges': 'AS{asn} · proxy’li site aralığı değil',
@@ -305,6 +307,10 @@ function getIntel(dns) {
   }
   return intelService;
 }
+
+/** The Blocklists panel of a row's details (ui/dnsbl-panel.js), loaded when details first open. */
+let dnsblModule = null;
+const loadDnsbl = () => (dnsblModule ||= import('../ui/dnsbl-panel.js').catch((err) => { dnsblModule = null; throw err; }));
 
 /* ------------------------------------------------------------------------ */
 /* View                                                                     */
@@ -655,6 +661,7 @@ export function mount(container, ctx) {
           h('a', { href: ctx.href('lookup', { name: r.ip }) }, t('nav.lookup')))
       });
     }
+    if (!isPrivateIP(r.ip)) items.push({ key: t('ipi.det.blocklists'), value: blocklistSlot(r) });
     const list = KeyValueList(items, { className: 'ipi-details' });
     if (r.pending || !ipVersion(r.ip)) return list;
     const slot = h('section', { class: 'ipi-enrich' });
@@ -663,6 +670,16 @@ export function mount(container, ctx) {
       slot.append(ErrorBanner(err, { compact: true }));
     });
     return h('div', { class: 'stack' }, list, slot);
+  }
+
+  /** A row's Blocklists panel: nothing is asked before its button; the same panel across re-renders. */
+  function blocklistSlot(r) {
+    const slot = h('div', { class: 'ipi-bl-slot' });
+    loadDnsbl().then((m) => slot.append(m.dnsblPanel(r, ctx)), () => {
+      ctx.checkOutdated();
+      slot.append(Alert({ variant: 'error', compact: true, message: t('error.title') }));
+    });
+    return slot;
   }
 
   /* --- run -------------------------------------------------------------------------------- */

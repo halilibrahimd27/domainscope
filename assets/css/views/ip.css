@@ -431,3 +431,137 @@
     display: none;
   }
 }
+
+/* Row details › Blocklists (ui/dnsbl-panel.js): one table per address or domain asked. */
+.ipi-bl {
+  max-width: 56rem;
+  min-width: 0;
+}
+
+.ipi-bl-intro,
+.ipi-bl-sent,
+.ipi-bl-privacy,
+.ipi-bl-status,
+.ipi-bl-never,
+.ipi-bl-clean,
+.ipi-bl-skip {
+  margin: 0;
+}
+
+.ipi-bl-actions {
+  align-items: center;
+}
+
+.ipi-bl-status[data-state="failed"] {
+  color: var(--error);
+}
+
+.ipi-bl-target {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ipi-bl-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.ipi-bl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.ipi-bl-table th,
+.ipi-bl-table td {
+  padding: 5px 10px 5px 0;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.ipi-bl-table thead th {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.ipi-bl-name,
+.ipi-bl-zone {
+  display: block;
+}
+
+.ipi-bl-name {
+  font-weight: 550;
+}
+
+.ipi-bl-zone {
+  overflow-wrap: break-word;
+}
+
+.ipi-bl-dig code {
+  overflow-wrap: anywhere;
+}
+
+.ipi-bl-result {
+  white-space: nowrap;
+}
+
+.ipi-bl-row[data-status="listed"] .ipi-bl-name {
+  color: var(--error);
+}
+
+.ipi-bl-details {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ipi-bl-dig {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+@media (max-width: 640px) {
+  /* The details row is as wide as the scrolling table: keep the panel inside the visible part. */
+  .ipi-bl {
+    max-width: calc(100vw - 88px);
+  }
+
+  .ipi-bl-table thead {
+    display: none;
+  }
+
+  .ipi-bl-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .ipi-bl-table th,
+  .ipi-bl-table td {
+    padding: 0;
+    border-bottom: 0;
+  }
+
+  .ipi-bl-table td:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Print: the results stay, the buttons and notes about sending go. */
+@media print {
+  .ipi-bl-actions .btn,
+  .ipi-bl-sent,
+  .ipi-bl-privacy {
+    display: none;
+  }
+}

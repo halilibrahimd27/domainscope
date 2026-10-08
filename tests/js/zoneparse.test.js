@@ -1681,6 +1681,18 @@ describe('limits', () => {
     assert.ok(codes(z).includes('RECORDS_TRUNCATED'));
     assert.ok(ms < budget(1500), `${Math.round(ms)} ms`);
   });
+
+  test('a cli53 "; AWS" comment of one long run of letters is read in linear time (it was quadratic: 2 s a line)', () => {
+    const run = 'a'.repeat(60000);
+    const text = `$ORIGIN example.com.\n$TTL 300\n${Array.from({ length: 5 }, (_, i) => `h${i} IN A 192.0.2.${i + 1} ; AWS ${run}`).join('\n')}\n` +
+      'app 60 IN A 192.0.2.21 ; AWS routing="WEIGHTED" weight=90 identifier="blue"\n';
+    const t0 = performance.now();
+    const z = P(text);
+    const ms = performance.now() - t0;
+    assert.equal(z.records.length, 6);
+    assert.deepEqual([find(z, 'app.example.com').routing.policy, find(z, 'app.example.com').routing.id], ['weighted', 'blue']);
+    assert.ok(ms < budget(300), `${Math.round(ms)} ms`);
+  });
 });
 
 /* ------------------------------------------------------------------------ */

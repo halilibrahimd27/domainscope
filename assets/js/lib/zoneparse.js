@@ -2007,7 +2007,9 @@ function parseAwsRouting(comment) {
   const m = /^\s*AWS\s+(.*)$/.exec(comment);
   if (!m) return null;
   const kv = Object.create(null);
-  for (const x of m[1].matchAll(/([A-Za-z]+)=("(?:[^"\\]|\\.)*"|\S+)/g)) {
+  // A key starts a run of letters (the lookbehind): inside a run with no "=" after it, every other
+  // start fails at once, so a long run costs linear time, not quadratic.
+  for (const x of m[1].matchAll(/(?<![A-Za-z])([A-Za-z]+)=("(?:[^"\\]|\\.)*"|\S+)/g)) {
     let v = x[2];
     if (v.startsWith('"')) {
       try {

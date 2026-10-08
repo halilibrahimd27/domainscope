@@ -41,7 +41,8 @@ import { requestSignature, requestCount } from './egresslog.js';
  * - keyHash: the SHA-256 of a certificate's public key;
  * - measurementIds: ids the service gave out, sent back to read the results;
  * - apiToken: the user's own API token for that service, in a request header (Zone File › Fetch
- *   from deSEC / DigitalOcean: for one fetch, never stored).
+ *   from deSEC / DigitalOcean: for one fetch, never stored) or in the query (IP Intel › Domains on
+ *   this IP: Shodan's and WhoisXML's key, for one request per address, never stored).
  */
 export const DATA_KINDS = Object.freeze([
   'appFiles', 'nothing', 'dnsQuestions', 'nameServers', 'domains', 'hostnames', 'ipNamePairs', 'ipAddresses', 'asNumbers', 'certSerial',
@@ -126,13 +127,30 @@ export const EGRESS_SERVICES = Object.freeze([
     ]
   }),
   service({ id: 'anubis', name: 'Anubis', role: 'passive', hosts: ['anubisdb.com'], endpoints: [ep('subdomains', ['domains'], { path: '/anubis/subdomains/*' })] }),
-  service({ id: 'otx', name: 'AlienVault OTX', role: 'passive', hosts: ['otx.alienvault.com'], endpoints: [ep('passive-dns', ['domains'], { path: '/api/*/indicators/domain/*/passive_dns' })] }),
+  service({
+    id: 'otx', name: 'AlienVault OTX', role: 'passive', hosts: ['otx.alienvault.com'],
+    endpoints: [
+      ep('passive-dns', ['domains'], { path: '/api/*/indicators/domain/*/passive_dns' }),
+      // IP Intel › Domains on this IP (lib/reverseip.js): /api/v1/indicators/IPv4|IPv6/<address>/passive_dns
+      ep('address-passive-dns', ['ipAddresses'], { path: '/api/*/indicators/*/*/passive_dns' })
+    ]
+  }),
   service({
     id: 'thc', name: 'ip.thc.org', role: 'passive', hosts: ['ip.thc.org'],
     endpoints: [
       ep('subdomains', ['domains'], { path: '/api/*/lookup/subdomains' }),
       ep('reverseip', ['ipAddresses'], { path: '/api/*/lookup' })
     ]
+  }),
+  // IP Intel › Domains on this IP (lib/reverseip.js), one address per request and only on a click:
+  // Robtex's free passive DNS, Shodan InternetDB (no key), and with the key the user types there
+  // (in the query, for that one request: never stored) Shodan's host lookup and WhoisXML's reverse IP.
+  service({ id: 'robtex', name: 'Robtex', role: 'passive', hosts: ['freeapi.robtex.com'], endpoints: [ep('reverse', ['ipAddresses'], { path: '/pdns/reverse/*' })] }),
+  service({ id: 'internetdb', name: 'Shodan InternetDB', role: 'ip', hosts: ['internetdb.shodan.io'], endpoints: [ep('address', ['ipAddresses'], { path: '/*' })] }),
+  service({ id: 'shodan', name: 'Shodan', role: 'ip', hosts: ['api.shodan.io'], endpoints: [ep('host', ['ipAddresses', 'apiToken'], { path: '/shodan/host/*' })] }),
+  service({
+    id: 'whoisxml', name: 'WhoisXML API', role: 'passive', hosts: ['reverse-ip.whoisxmlapi.com'],
+    endpoints: [ep('reverse-ip', ['ipAddresses', 'apiToken'], { path: '/api/*', param: 'ip' })]
   }),
   service({
     id: 'ripestat', name: 'RIPEstat', role: 'ip', hosts: ['stat.ripe.net'],

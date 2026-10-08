@@ -36,7 +36,17 @@ export const STATUS_SOURCES = Object.freeze({
   'ripestat-rpki': Object.freeze({ period: 'minutes' }),
   'ripestat-routing': Object.freeze({ period: 'minutes' }),
   'ripestat-abuse': Object.freeze({ period: 'minutes' }),
-  peeringdb: Object.freeze({ period: 'minutes' })
+  peeringdb: Object.freeze({ period: 'minutes' }),
+  // Domains on this IP (lib/reverseip.js): ip.thc.org's bucket refills in seconds, InternetDB's
+  // burst lock lasts about an hour (its lock is timed by lib/reverseip.js), Shodan's API takes one
+  // request a second; OTX, Robtex and WhoisXML publish no window. The workspace never fails.
+  thc: Object.freeze({ period: 'minutes' }),
+  otx: Object.freeze({ period: null }),
+  robtex: Object.freeze({ period: null }),
+  internetdb: Object.freeze({ period: 'hour' }),
+  shodan: Object.freeze({ period: 'minutes' }),
+  whoisxml: Object.freeze({ period: null }),
+  workspace: Object.freeze({ period: null })
 });
 
 /** Every reason code {@link sourceStatus} can return (`srcst.reason.<code>` in the UI). */

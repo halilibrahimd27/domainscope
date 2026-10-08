@@ -288,6 +288,12 @@ describe('the registry', () => {
       [`${HACKERTARGET_REVERSE_IP}?q=192.0.2.1`, 'hackertarget', 'reverseip', ['ipAddresses']],
       ['https://anubisdb.com/anubis/subdomains/example.com', 'anubis', 'subdomains', ['domains']],
       ['https://otx.alienvault.com/api/v1/indicators/domain/example.com/passive_dns', 'otx', 'passive-dns', ['domains']],
+      ['https://otx.alienvault.com/api/v1/indicators/IPv4/192.0.2.10/passive_dns', 'otx', 'address-passive-dns', ['ipAddresses']],
+      ['https://otx.alienvault.com/api/v1/indicators/IPv6/2001:db8::10/passive_dns', 'otx', 'address-passive-dns', ['ipAddresses']],
+      ['https://freeapi.robtex.com/pdns/reverse/192.0.2.10', 'robtex', 'reverse', ['ipAddresses']],
+      ['https://internetdb.shodan.io/192.0.2.10', 'internetdb', 'address', ['ipAddresses']],
+      ['https://api.shodan.io/shodan/host/192.0.2.10?key=k', 'shodan', 'host', ['ipAddresses', 'apiToken']],
+      ['https://reverse-ip.whoisxmlapi.com/api/v1?apiKey=k&ip=192.0.2.10', 'whoisxml', 'reverse-ip', ['ipAddresses', 'apiToken']],
       ['https://ip.thc.org/api/v1/lookup/subdomains', 'thc', 'subdomains', ['domains']],
       [THC_REVERSE_IP, 'thc', 'reverseip', ['ipAddresses']],
       // IP data
@@ -568,6 +574,8 @@ const CALL_SITES = {
   'assets/js/lib/ctcert.js': ['certspotter', 'crtsh'],
   'assets/js/lib/sources.js': ['crtsh', 'certspotter', 'hackertarget', 'anubis', 'otx', 'thc'],
   'assets/js/lib/ipintel.js': ['ripestat', 'ipwhois', 'hackertarget', 'thc'],
+  // IP Intel › Domains on this IP (HackerTarget and ip.thc.org through lib/ipintel.js)
+  'assets/js/lib/reverseip.js': ['otx', 'robtex', 'internetdb', 'shodan', 'whoisxml'],
   'assets/js/lib/ptrsweep.js': ['ripestat'],
   // IP Intel › Check routing: RPKI, routing status, abuse contact and the origin's PeeringDB record
   'assets/js/lib/ipenrich.js': ['ripestat', 'peeringdb'],
@@ -621,7 +629,7 @@ const LINK_HOSTS = {
   'assets/js/ui/chain-repair.js': ['www.ccadb.org'],
   // an example CAA accounturi in the field's placeholder, never requested
   'assets/js/views/change.js': ['acme-v02.api.letsencrypt.org'],
-  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'sslmate.com'],
+  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'sslmate.com', 'www.robtex.com', 'www.shodan.io', 'www.whoisxmlapi.com'],
   'assets/js/views/ip.js': ['bgp.he.net']
 };
 /**

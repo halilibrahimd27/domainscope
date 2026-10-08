@@ -63,6 +63,8 @@ before(async () => {
   await imp('assets/js/ui/zone-tools.js');
   // IP Intel › a row's routing, RPKI and abuse contact panel: loaded when a row's details first open.
   await imp('assets/js/ui/ip-enrich-panel.js');
+  // IP Intel › Domains on this IP: loaded on the first "Find domains".
+  await imp('assets/js/ui/reverse-ip-panel.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -406,6 +408,8 @@ describe('i18n coverage', () => {
     for (const k of om.generatedKeys()) add(k);
     // IP Intel › Check routing (ui/ip-enrich-panel.js): RPKI statuses, routing flags, PeeringDB types, sources.
     for (const k of (await imp('assets/js/ui/ip-enrich-panel.js')).generatedKeys()) add(k);
+    // IP Intel › Domains on this IP (ui/reverse-ip-panel.js over lib/reverseip.js): every status and source.
+    for (const k of (await imp('assets/js/ui/reverse-ip-panel.js')).generatedKeys()) add(k);
     for (const e of omp.FORM_ERRORS) add(`omp.err.${e}`);
     for (const e of estate.REPORT_ERRORS) add(`omp.file.${e}`);
     for (const v of ['known']) { add(`scan.srv.via.${v}`); add(`scan.hint.${v}`); add(`sub.hint.${v}`); }

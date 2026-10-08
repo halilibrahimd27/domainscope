@@ -1,6 +1,7 @@
 /*
  * views/ip.css — "IP Intel" view (.ipi-*), with its routing panel in a row's details
  * (ui/ip-enrich-panel.js, .ipe-*).
+ * Domains on this IP (ui/reverse-ip-panel.js, loaded on the first "Find domains"): .rip-*.
  */
 
 .ipi-input .textarea {
@@ -46,7 +47,9 @@
 /* Copy summary above the stat cards, at the end of the row */
 .ipi-results-bar {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  gap: 8px;
 }
 
 .ipi-stats {
@@ -173,11 +176,108 @@
   position: relative;
 }
 
+/* Domains on this IP: the address box beside its buttons, the key fields side by side, the chips, the table, the hand-offs. */
+.ipi-reverse-host[hidden] {
+  display: none;
+}
+
+.rip-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+}
+
+.rip-form .rip-addresses {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.rip-run {
+  margin-bottom: 2px;
+}
+
+.rip-keyfields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.rip-privacy {
+  margin: 0;
+}
+
+.rip-chip {
+  max-width: 100%;
+}
+
+.rip-chip[data-state="idle"] {
+  color: var(--text-3);
+}
+
+.rip-servers,
+.rip-extra {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rip-filters {
+  gap: 8px;
+}
+
+.rip-status {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rip-sources {
+  white-space: normal;
+}
+
+.rip-more,
+.rip-handoff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.rip-more[hidden],
+.rip-handoff[hidden] {
+  display: none;
+}
+
+.rip-left {
+  margin: 0;
+}
+
+.rip-handoff .btn {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .rip-keyfields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rip-run {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
 /* Print (style.css hides the shell and every control): leave out the form, the empty state and the Copy summary bar. */
 @media print {
   .ipi-form-card,
   .ipi-empty,
-  .ipi-results-bar {
+  .ipi-results-bar,
+  .rip-form,
+  .rip-keys,
+  .rip-more,
+  .rip-handoff {
     display: none;
   }
 

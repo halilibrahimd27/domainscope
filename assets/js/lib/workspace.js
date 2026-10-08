@@ -20,8 +20,9 @@
  * First run: what the app kept before workspaces existed (the inventory and the learned names in
  * localStorage, the custom wordlist in this tab's sessionStorage: {@link LEGACY_KEYS}) moves into
  * Default in one transaction, together with the 'meta' record. The old keys are removed only once
- * that transaction has committed, so an interrupted migration loses nothing and runs again on the
- * next load. Without persistent storage the old data is read into memory and left where it is.
+ * that transaction has committed, so an interrupted migration loses nothing: it goes with the page's
+ * next write that commits, or runs again on the next load. Without persistent storage the old data
+ * is read into memory and left where it is.
  *
  * Several tabs: a BroadcastChannel-like `channel` tells the other tabs what changed, and a tab
  * re-reads a part of its active workspace that another tab wrote ({@link WorkspaceStore}
@@ -549,6 +550,8 @@ export function createWorkspaceStore({
   let initialised = false;
   /** Default's legacy data while its migration could not be written (overlaid on every load of Default). */
   let pendingLegacy = null;
+  /** A migration whose write failed (persistent store): the next write that commits carries it. */
+  let unmigrated = null;
   let opening = null;
   const listeners = new Set();
   /** Writes not settled yet. */
@@ -678,13 +681,25 @@ export function createWorkspaceStore({
       create = true;
       list = true;
     }
+    // Its 'meta' record ends a migration not written yet: Default's parts as this tab has them go too.
+    const migration = unmigrated;
+    if (migration && id === DEFAULT_WORKSPACE_ID) {
+      pendingLegacy = { ...pendingLegacy, ...parts };
+      parts = pendingLegacy;
+    }
     const puts = create ? [[metaKey(id), metas.get(id)]] : [];
     const deletes = [];
     for (const [part, value] of Object.entries(parts)) {
       if (isEmptyPart(value)) deletes.push(dataKey(id, part));
       else puts.push([dataKey(id, part), value]);
     }
-    if (!initialised) puts.push([META_KEY, { v: STORE_VERSION, createdAt: at, migrated: [] }]);
+    if (migration && id !== DEFAULT_WORKSPACE_ID) {
+      const def = metas.get(DEFAULT_WORKSPACE_ID);
+      metas.set(DEFAULT_WORKSPACE_ID, { ...def, createdAt: def.createdAt || at, updatedAt: at });
+      puts.push([metaKey(DEFAULT_WORKSPACE_ID), metas.get(DEFAULT_WORKSPACE_ID)]);
+      for (const [part, value] of Object.entries(pendingLegacy || {})) if (!isEmptyPart(value)) puts.push([dataKey(DEFAULT_WORKSPACE_ID, part), value]);
+    }
+    if (!initialised) puts.push([META_KEY, { v: STORE_VERSION, createdAt: at, migrated: migration ? migration.migrated : [] }]);
     const guard = create ? null : {
       key: metaKey(id),
       update: (stored) => {
@@ -704,7 +719,11 @@ export function createWorkspaceStore({
         lastError = null;
         if (uncreated.get(id) === parts) uncreated.delete(id);
         for (const key of written) unwritten.delete(key);
-        if (id === DEFAULT_WORKSPACE_ID && pendingLegacy) pendingLegacy = null;
+        if (migration) {
+          if (unmigrated === migration) unmigrated = null;
+          removeLegacy(legacy || {}, migration.present);
+        }
+        if ((id === DEFAULT_WORKSPACE_ID || migration) && pendingLegacy) pendingLegacy = null;
         post(list ? { type: 'list' } : { type: 'data', id, parts: Object.keys(parts) });
         return true;
       } catch (err) {
@@ -796,6 +815,7 @@ export function createWorkspaceStore({
         } catch (err) {
           lastError = err;
           pendingLegacy = old.data;
+          if (persistent) unmigrated = { migrated, present: old.present };
         }
       }
     }
@@ -821,6 +841,8 @@ export function createWorkspaceStore({
       emit({ type: 'destroyed' });
       return;
     }
+    // Another tab wrote: the store holds the migrated data, and this tab's copy would undo newer saves.
+    unmigrated = null;
     if (msg.type === 'data' && msg.id === activeId && Array.isArray(msg.parts)) {
       const id = activeId;
       const parts = msg.parts.filter((p) => WORKSPACE_PARTS.includes(p));
@@ -853,6 +875,7 @@ export function createWorkspaceStore({
     data = emptyWorkspaceData();
     initialised = false;
     pendingLegacy = null;
+    unmigrated = null;
     generation += 1;
     slots.clear();
     unwritten.clear();

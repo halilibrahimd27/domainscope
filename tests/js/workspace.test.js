@@ -565,6 +565,80 @@ describe('the first-run migration into Default', () => {
     assert.equal(legacy.local.getItem(LEGACY_KEYS.inventory), null);
   });
 
+  test('a failed write goes with the next write that commits (a recent domain, a new workspace): the old data is stored, then the old keys go', async () => {
+    for (const write of [(store) => store.recordRecent('example.com'), (store) => store.create('Acme')]) {
+      const backend = createMemoryBackend([], { persistent: true });
+      backend.fail.add('write');
+      const legacy = legacyStorages();
+      const store = makeStore({ backend, legacy });
+      await store.open();
+      backend.fail.delete('write');
+      await write(store);
+      await store.idle();
+      assert.equal(store.lastError, null);
+      const records = new Map(backend.entries());
+      assert.equal(records.get('wsdata/default/inventory').text, INVENTORY_A);
+      assert.deepEqual(records.get('meta').migrated.sort(), ['inventory', 'learned', 'wordlist']);
+      assert.ok(records.get('wsmeta/default').createdAt, 'Default has its dates, as after the migration');
+      assert.equal(legacy.local.getItem(LEGACY_KEYS.inventory), null, 'removed once stored');
+      assert.equal(legacy.session.getItem(LEGACY_KEYS.wordlist), null);
+      // This tab: Default still holds it after a trip to another workspace …
+      const other = store.list().find((m) => m.id !== DEFAULT_WORKSPACE_ID) || (await store.create('Beta')).meta;
+      await store.switchTo(other.id);
+      await store.switchTo(DEFAULT_WORKSPACE_ID);
+      assert.equal(store.data.inventory.text, INVENTORY_A);
+      // … and so does the next load, which migrates nothing again.
+      const next = makeStore({ backend, legacy });
+      assert.deepEqual((await next.open()).migrated, []);
+      assert.equal(next.data.inventory.text, INVENTORY_A);
+      assert.deepEqual(Object.keys(next.data.learned.labels), ['api', 'vpn']);
+      assert.equal(next.data.wordlist, 'billing\nportal');
+    }
+  });
+
+  test('a Default part saved while the migration is not written is stored as saved, by whichever write commits', async () => {
+    for (const failFirst of [true, false]) {
+      const backend = createMemoryBackend([], { persistent: true });
+      backend.fail.add('write');
+      const legacy = legacyStorages();
+      const store = makeStore({ backend, legacy });
+      await store.open();
+      if (failFirst) {
+        await store.save('inventory', { text: INVENTORY_B });
+        backend.fail.delete('write');
+        await store.recordRecent('example.com');
+      } else {
+        // Two writes in flight at once: the second must not carry the old inventory over the new one.
+        backend.fail.delete('write');
+        store.save('inventory', { text: INVENTORY_B });
+        store.recordRecent('example.com');
+      }
+      await store.idle();
+      const next = makeStore({ backend, legacy });
+      await next.open();
+      assert.equal(next.data.inventory.text, INVENTORY_B, `failFirst ${failFirst}`);
+      assert.equal(next.data.wordlist, 'billing\nportal');
+      assert.deepEqual(next.data.recent.map((r) => r.value), ['example.com']);
+    }
+  });
+
+  test('once another tab has written, the store holds the old data: this tab no longer carries its copy over it', async () => {
+    const { a, b, flush } = channelPair();
+    const backend = createMemoryBackend([], { persistent: true });
+    backend.fail.add('write');
+    const legacy = legacyStorages();
+    const one = makeStore({ backend, legacy, channel: a });
+    await one.open();
+    backend.fail.delete('write');
+    const two = makeStore({ backend, legacy: { local: legacy.local, session: new MemoryStorage() }, channel: b });
+    await two.open();
+    await two.save('inventory', { text: INVENTORY_B });
+    await flush();
+    await one.recordRecent('example.com');
+    await one.idle();
+    assert.equal(new Map(backend.entries()).get('wsdata/default/inventory').text, INVENTORY_B);
+  });
+
   test('Default\'s migrated data survives a trip to another workspace while it could not be written', async () => {
     const backend = createMemoryBackend([], { persistent: true });
     const store = makeStore({ backend, legacy: legacyStorages() });

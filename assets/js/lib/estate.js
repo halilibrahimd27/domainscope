@@ -72,6 +72,11 @@ const EXPIRY_LIMITS = [[0, 'expired'], [7, '7d'], [30, '30d'], [90, '90d']];
 export const ESTATE_CSV_COLUMNS = Object.freeze(['sha256', 'subject_cn', 'issuer', 'kind', 'not_after', 'days_left',
   'expiry', 'key', 'signature_algorithm', 'spki_sha256', 'hostnames', 'covers_asked', 'server', 'ip', 'port',
   'default_cert', 'served_for', 'flags', 'weak'].map((key) => Object.freeze({ key, header: key })));
+/** The columns the CLI's `--ari` adds after them (cli/ssl_origin_scan.py ARI_CSV_COLUMNS). */
+export const ESTATE_ARI_COLUMNS = Object.freeze(['ari_start', 'ari_end', 'ari_explanation', 'ari_error'].map((key) => Object.freeze({ key, header: key })));
+/** The columns the CLI's `--revocation` adds (cli/ssl_origin_scan.py REVOCATION_CSV_COLUMNS). */
+export const ESTATE_REVOCATION_COLUMNS = Object.freeze(['revocation', 'revoked_at', 'revocation_reason', 'revocation_error']
+  .map((key) => Object.freeze({ key, header: key })));
 
 /* ------------------------------------------------------------------------ */
 /* Small rules shared with the CLI                                          */
@@ -387,6 +392,12 @@ export function mergeReports(reports) {
  * @property {boolean} isCA
  * @property {string[]} weak {@link ESTATE_WEAK_REASONS}
  * @property {string[]} coversAsked the names asked it covers
+ * @property {object} [ari] the CA's renewal window, as the CLI's `--ari` wrote it ({ ca, certId, start, end,
+ *   explanationURL, checkedAt, retryAfter, status, error, carried? }); only in reports that have it
+ * @property {object} [revocation] what its CRL says, as `--revocation` wrote it ({ status: good|revoked|unknown,
+ *   reason, reasonCode, time, crl, checkedAt, thisUpdate, nextUpdate, signature, error })
+ * @property {{ state: 'before'|'open'|'past', days: number }|null} [ariWindow] where today is in that window
+ *   ({@link estateAriWindow}); with `ari` only
  * @property {string[]} flags {@link ESTATE_FLAGS}
  * @property {EstateEndpoint[]} endpoints
  */
@@ -519,6 +530,9 @@ function estateEntry(sha, row, info, probes, nowMs) {
   const algorithm = text('keyAlgorithm');
   const signature = text('signatureAlgorithm');
   const spki = text('spkiSha256');
+  // --ari / --revocation: carried along only when the report has them (the CLI's _estate_entry alike)
+  const extra = Object.fromEntries(['ari', 'revocation'].filter((key) => isObject(data[key])).map((key) => [key, data[key]]));
+  if (extra.ari) extra.ariWindow = estateAriWindow(extra.ari, nowMs);
   return {
     sha256: sha,
     subjectCN: text('subjectCN', row.certSubjectCN),
@@ -542,6 +556,7 @@ function estateEntry(sha, row, info, probes, nowMs) {
     isCA: data.isCA === true,
     weak: weakReasons(algorithm, bits, signature),
     coversAsked: probes.filter((p) => certCovers(hostnames, p.sni).covered).map((p) => p.name),
+    ...extra,
     flags: [],
     endpoints: []
   };
@@ -626,8 +641,26 @@ function sharedKeys(certificates) {
 /* ------------------------------------------------------------------------ */
 
 /**
- * Does a certificate pass a filter ({@link ESTATE_FILTERS})? `attention`: any flag, or it expires
- * within 30 days or has expired; `expiring`: expired or within 30 days; `private`: self-signed
+ * Where a moment is in a certificate's ARI renewal window (the CLI's `--ari` record): `before`
+ * (`days`: whole days until it opens, rounded up), `open` or `past`; null without a window (no
+ * record, an error, a date that does not parse). The CLI's window_state.
+ * @param {object|null|undefined} ari
+ * @param {number} [nowMs]
+ * @returns {{ state: 'before'|'open'|'past', days: number }|null}
+ */
+export function estateAriWindow(ari, nowMs = Date.now()) {
+  if (!isObject(ari) || ari.error) return null;
+  const start = typeof ari.start === 'string' ? Date.parse(ari.start) : NaN;
+  const end = typeof ari.end === 'string' ? Date.parse(ari.end) : NaN;
+  if (Number.isNaN(start) || Number.isNaN(end)) return null;
+  if (nowMs < start) return { state: 'before', days: Math.ceil((start - nowMs) / DAY_MS) };
+  return { state: nowMs <= end ? 'open' : 'past', days: 0 };
+}
+
+/**
+ * Does a certificate pass a filter ({@link ESTATE_FILTERS})? `attention`: any flag, it expires
+ * within 30 days or has expired, its CRL lists it (`--revocation`) or its CA's renewal window is
+ * open or past (`--ari`); `expiring`: expired or within 30 days; `private`: self-signed
  * or from a --private-ca; `origin-ca`: a Cloudflare Origin CA certificate; the others: its flag.
  * @param {EstateCertificate} cert
  * @param {string} filter
@@ -637,7 +670,8 @@ export function estateMatches(cert, filter) {
   if (!cert) return false;
   const soon = cert.expiry === 'expired' || cert.expiry === '7d' || cert.expiry === '30d';
   switch (filter) {
-    case 'attention': return soon || cert.flags.length > 0;
+    case 'attention': return soon || cert.flags.length > 0 || (isObject(cert.revocation) && cert.revocation.status === 'revoked')
+      || (isObject(cert.ariWindow) && cert.ariWindow.state !== 'before');
     case 'expiring': return soon;
     case 'private': return cert.kind === 'self-signed' || cert.kind === 'private-ca';
     case 'origin-ca': return cert.kind === 'origin-ca';
@@ -657,7 +691,8 @@ export function estateFilterCounts(estate) {
 }
 
 /**
- * One CSV row per certificate, endpoint and server, the CLI's `--estate --csv` rows. With
+ * One CSV row per certificate, endpoint and server, the CLI's `--estate --csv` rows (with its
+ * `--ari` / `--revocation` cells when the estate has them, {@link estateStatusColumns}). With
  * `reportName(endpoint, cert)` (several reports merged) each row also names its report (`report`).
  * @param {{ certificates: EstateCertificate[] }} estate
  * @param {{ certificates?: EstateCertificate[], reportName?: (endpoint: EstateEndpoint, cert: EstateCertificate) => string }} [opts]
@@ -666,7 +701,9 @@ export function estateFilterCounts(estate) {
  */
 export function estateCsvRows(estate, { certificates = null, reportName = null } = {}) {
   const rows = [];
+  const extra = estateStatusColumns(estate);
   for (const cert of certificates || (estate && estate.certificates) || []) {
+    const status = statusCells(cert, extra);
     for (const endpoint of cert.endpoints) {
       for (const server of endpoint.servers.length ? endpoint.servers : ['']) {
         const row = {
@@ -688,7 +725,8 @@ export function estateCsvRows(estate, { certificates = null, reportName = null }
           default_cert: endpoint.defaultCert ? 'yes' : 'no',
           served_for: endpoint.names.join(' '),
           flags: cert.flags.join(' '),
-          weak: cert.weak.join(' ')
+          weak: cert.weak.join(' '),
+          ...status
         };
         if (reportName) row.report = reportName(endpoint, cert);
         rows.push(row);
@@ -699,12 +737,61 @@ export function estateCsvRows(estate, { certificates = null, reportName = null }
 }
 
 /**
+ * The columns the CLI's `--ari` / `--revocation` add to the estate CSV, after its own: the ARI
+ * ones when a certificate of the estate has an `ari` record, the revocation ones when one has a
+ * `revocation` record (cli/ssl_origin_scan.py estate_status_columns).
+ * @param {{ certificates?: EstateCertificate[] }} estate
+ * @returns {Array<{ key: string, header: string }>}
+ */
+export function estateStatusColumns(estate) {
+  const certs = (estate && estate.certificates) || [];
+  return [
+    ...(certs.some((c) => isObject(c.ari)) ? ESTATE_ARI_COLUMNS : []),
+    ...(certs.some((c) => isObject(c.revocation)) ? ESTATE_REVOCATION_COLUMNS : [])
+  ];
+}
+
+/** Where the certificates are in their ARI windows ({@link estateStatusCounts}; `error`: no window read). */
+export const ESTATE_ARI_STATES = Object.freeze(['open', 'past', 'before', 'error']);
+/** What their CRLs say ({@link estateStatusCounts}). */
+export const ESTATE_REVOCATION_STATES = Object.freeze(['revoked', 'unknown', 'good']);
+
+/**
+ * How many certificates are where in their CA's renewal window ({@link ESTATE_ARI_STATES}) and
+ * what their CRLs say ({@link ESTATE_REVOCATION_STATES}), the CLI's "Renewal windows and
+ * revocation" line; a part is null when no certificate has its record.
+ * @param {{ certificates?: EstateCertificate[] }} estate
+ * @returns {{ ari: Record<string, number>|null, revocation: Record<string, number>|null }}
+ */
+export function estateStatusCounts(estate) {
+  const certs = (estate && estate.certificates) || [];
+  const withAri = certs.filter((c) => isObject(c.ari));
+  const withRevocation = certs.filter((c) => isObject(c.revocation));
+  const ari = withAri.length ? Object.fromEntries(ESTATE_ARI_STATES.map((s) => [s, 0])) : null;
+  for (const c of withAri) ari[isObject(c.ariWindow) ? c.ariWindow.state : 'error'] += 1;
+  const revocation = withRevocation.length ? Object.fromEntries(ESTATE_REVOCATION_STATES.map((s) => [s, 0])) : null;
+  for (const c of withRevocation) revocation[c.revocation.status === 'good' || c.revocation.status === 'revoked' ? c.revocation.status : 'unknown'] += 1;
+  return { ari, revocation };
+}
+
+/** A certificate's cells of the {@link estateStatusColumns} (the CLI's status_csv_cells). */
+function statusCells(cert, columns) {
+  const ari = isObject(cert.ari) ? cert.ari : {};
+  const rev = isObject(cert.revocation) ? cert.revocation : {};
+  const value = {
+    ari_start: ari.start || '', ari_end: ari.end || '', ari_explanation: ari.explanationURL || '', ari_error: ari.error || '',
+    revocation: rev.status || '', revoked_at: rev.time || '', revocation_reason: rev.reason || '', revocation_error: rev.error || ''
+  };
+  return Object.fromEntries(columns.map((c) => [c.key, value[c.key]]));
+}
+
+/**
  * The CSV text of {@link estateCsvRows} (lib/export.js toCsv: BOM, CRLF, spreadsheet-safe cells).
  * @param {{ certificates: EstateCertificate[] }} estate
  * @param {{ certificates?: EstateCertificate[], reportName?: (endpoint: EstateEndpoint, cert: EstateCertificate) => string }} [opts]
  * @returns {string}
  */
 export function estateCsv(estate, opts = {}) {
-  const columns = opts.reportName ? [...ESTATE_CSV_COLUMNS, { key: 'report', header: 'report' }] : ESTATE_CSV_COLUMNS;
+  const columns = [...ESTATE_CSV_COLUMNS, ...estateStatusColumns(estate), ...(opts.reportName ? [{ key: 'report', header: 'report' }] : [])];
   return toCsv(estateCsvRows(estate, opts), columns);
 }

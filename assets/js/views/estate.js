@@ -15,7 +15,9 @@
  *   reports read so far), the numbers as tiles that filter the table (each counts certificates;
  *   its hint the names or keys behind them), the kinds, and three tabs:
  *   Certificates (filter, search, a row's details: fingerprints and where it is served; CSV of
- *   what the filter shows, the CLI's --estate --csv columns), Same name, different certificates,
+ *   what the filter shows, the CLI's --estate --csv columns; a report made with --ari or
+ *   --revocation adds a renewal-window (ARI) or a revocation column, its counts in the overview
+ *   and its records in the details, ui/revocation.js), Same name, different certificates,
  *   and Shared keys. "Copy summary" (lib/summary.js estateSummary) above the numbers: the counts,
  *   what expires first and what needs a look, by certificate name only — never an address or a
  *   server of the reports — and a link to the view without them.
@@ -32,10 +34,12 @@ import {
 import { downloadText, timestampedName } from '../ui/download.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { permalinkParams } from '../ui/view-summaries.js';
+import { AriCell, RevocationCell, statusDetails } from '../ui/revocation.js';
 import { formatDate, formatDateTime, formatNumber, registerStrings } from '../i18n.js';
 import {
-  ESTATE_BUCKETS, ESTATE_FILTERS, ESTATE_KINDS, ESTATE_MAX_BYTES, ESTATE_MAX_REPORTS, SHARED_KEY_WIDE_HOSTS, estateCsv,
-  estateFilterCounts, estateMatches, estateOf, mergeReports, readEstateReport, sharedKeyNeedsLook
+  ESTATE_ARI_STATES, ESTATE_BUCKETS, ESTATE_FILTERS, ESTATE_KINDS, ESTATE_MAX_BYTES, ESTATE_MAX_REPORTS, ESTATE_REVOCATION_STATES,
+  SHARED_KEY_WIDE_HOSTS, estateCsv, estateFilterCounts, estateMatches, estateOf, estateStatusCounts, mergeReports, readEstateReport,
+  sharedKeyNeedsLook
 } from '../lib/estate.js';
 
 /** Route id (`#/estate`). */
@@ -696,6 +700,7 @@ export function mount(container, ctx) {
   }
 
   function overviewLine(estate) {
+    const status = estateStatusCounts(estate);
     const part = (label, items) => h('div', { class: 'estate-line' },
       h('span', { class: 'estate-line-label' }, label),
       h('span', { class: 'estate-line-items' }, items));
@@ -705,7 +710,14 @@ export function mount(container, ctx) {
       }))),
       part(t('estate.kinds'), ESTATE_KINDS.map((k) => Badge(`${t(`estate.kind.${k}`)} ${formatNumber(estate.counts.kinds[k])}`, {
         variant: 'neutral', className: `estate-kind estate-kind-${k}`
-      }))));
+      }))),
+      // the CLI's --ari / --revocation, when a report has them
+      status.ari ? part(t('rev.col.ari'), ESTATE_ARI_STATES.map((s) => Badge(`${t(`rev.sum.ari.${s}`)} ${formatNumber(status.ari[s])}`, {
+        variant: status.ari[s] && (s === 'open' || s === 'past') ? 'error' : 'neutral', className: `estate-ari estate-ari-${s}`
+      }))) : null,
+      status.revocation ? part(t('rev.col.revocation'), ESTATE_REVOCATION_STATES.map((s) => Badge(`${t(`rev.sum.rev.${s}`)} ${formatNumber(status.revocation[s])}`, {
+        variant: status.revocation[s] && s === 'revoked' ? 'error' : 'neutral', className: `estate-rev estate-rev-${s}`
+      }))) : null);
   }
 
   function resultTabs(estate) {
@@ -727,6 +739,9 @@ export function mount(container, ctx) {
   /* --- Certificates --------------------------------------------------------- */
   function certificatesPanel(estate) {
     const counts = estateFilterCounts(estate);
+    // the CLI's --ari / --revocation: a column each, next to the expiry, when a report has them
+    const hasAri = estate.certificates.some((c) => c.ari);
+    const hasRevocation = estate.certificates.some((c) => c.revocation);
     const filter = select({
       label: t('estate.filter.label'),
       className: 'estate-filter',
@@ -777,6 +792,16 @@ export function mount(container, ctx) {
             h('span', { class: 'nowrap' }, c.notAfter ? formatDate(new Date(c.notAfter), { utc: true }) : '—'),
             Badge(daysText(c.daysLeft), { variant: bucketVariant(c.expiry), className: 'estate-days' }))
         },
+        ...(hasAri ? [{
+          key: 'ari', label: t('rev.col.ari'), sortable: true, searchable: false, className: 'estate-col-ari',
+          sortValue: (c) => (c.ariWindow ? Date.parse(c.ari.start) : Number.MAX_SAFE_INTEGER),
+          render: (c) => AriCell(c.ari, c.ariWindow)
+        }] : []),
+        ...(hasRevocation ? [{
+          key: 'revocation', label: t('rev.col.revocation'), sortable: true, searchable: false, className: 'estate-col-revocation',
+          sortValue: (c) => ({ revoked: 0, unknown: 1, good: 2 })[c.revocation && c.revocation.status] ?? 3,
+          render: (c) => RevocationCell(c.revocation)
+        }] : []),
         {
           key: 'issuer', label: t('estate.col.issuer'), sortable: true, wrap: true, sortValue: (c) => c.issuer || '',
           render: (c) => h('div', { class: 'estate-issuer' },
@@ -843,7 +868,8 @@ export function mount(container, ctx) {
         c.privateCa ? row(t('estate.d.privateCa'), c.privateCa) : null,
         c.weak.length ? row(t('estate.d.weak'), c.weak.map((w) => t(`estate.weak.${w}`)).join(' · ')) : null,
         row(t('estate.d.names'), c.hostnames.length ? TruncatedList(c.hostnames, { max: 8, inline: true }) : '—'),
-        row(t('estate.d.covers'), c.coversAsked.length ? TruncatedList(c.coversAsked, { max: 8, inline: true }) : t('estate.d.coversNone'))),
+        row(t('estate.d.covers'), c.coversAsked.length ? TruncatedList(c.coversAsked, { max: 8, inline: true }) : t('estate.d.coversNone')),
+        statusDetails(c).map(([label, value, mono]) => row(label, value, mono))),
       h('div', { class: 'estate-d-served' },
         h('div', { class: 'field-label' }, t('estate.d.servedTitle')),
         h('ul', { class: 'estate-d-endpoints' }, c.endpoints.map((e) => {

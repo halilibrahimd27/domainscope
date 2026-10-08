@@ -7,9 +7,10 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  ESTATE_BUCKETS, ESTATE_CSV_COLUMNS, ESTATE_FILTERS, ESTATE_FLAGS, ESTATE_KINDS, ESTATE_MAX_BYTES, REPORT_ERRORS,
-  SHARED_KEY_WIDE_HOSTS, estateCsv, estateCsvRows, estateFilterCounts, estateMatches, estateOf, expiryBucket, keyLabel,
-  mergeReports, readEstateReport, sharedKeyNeedsLook, weakReasons
+  ESTATE_ARI_COLUMNS, ESTATE_ARI_STATES, ESTATE_BUCKETS, ESTATE_CSV_COLUMNS, ESTATE_FILTERS, ESTATE_FLAGS, ESTATE_KINDS, ESTATE_MAX_BYTES,
+  ESTATE_REVOCATION_COLUMNS, ESTATE_REVOCATION_STATES, REPORT_ERRORS, SHARED_KEY_WIDE_HOSTS, estateAriWindow, estateCsv, estateCsvRows,
+  estateFilterCounts, estateMatches, estateOf, estateStatusColumns, estateStatusCounts, expiryBucket, keyLabel, mergeReports, readEstateReport,
+  sharedKeyNeedsLook, weakReasons
 } from '../../assets/js/lib/estate.js';
 
 const text = (f) => readFileSync(new URL(`../fixtures/estate/${f}`, import.meta.url), 'utf8');
@@ -265,6 +266,66 @@ describe('filters and CSV', () => {
     assert.equal(some.length, 3);
     assert.equal(some[0].report, 'report-a.json');
     assert.ok(estateCsv(estate, { reportName: () => 'x' }).split('\r\n')[0].endsWith(',report'));
+  });
+
+  test('--ari and --revocation: the records ride along, today in the window, the attention filter and the CLI\'s extra columns', () => {
+    const doc = docA();
+    const [a, b, c] = Object.keys(doc.certificates);
+    const ari = (extra) => ({ ca: 'letsencrypt', certId: 'aaaa.AQ', start: null, end: null, explanationURL: null, checkedAt: '2026-09-28T12:00:00Z',
+      retryAfter: null, status: 200, error: null, ...extra });
+    const rev = (extra) => ({ status: 'good', reason: null, reasonCode: null, time: null, crl: 'http://crl.example.com/test-ca.crl',
+      checkedAt: '2026-09-28T12:00:00Z', thisUpdate: '2026-09-28T00:00:00Z', nextUpdate: '2026-10-05T00:00:00Z', signature: 'not-verified', error: null, ...extra });
+    doc.certificates[a].ari = ari({ start: '2026-09-27T00:00:00Z', end: '2026-09-29T00:00:00Z', explanationURL: 'https://ca.example.org/incident' });
+    doc.certificates[a].revocation = rev({ status: 'revoked', reason: 'keyCompromise', reasonCode: 1, time: '2026-09-21T10:15:00Z' });
+    doc.certificates[b].ari = ari({ start: '2026-10-08T06:00:00Z', end: '2026-10-10T06:00:00Z' });
+    doc.certificates[b].revocation = rev({});
+    doc.certificates[c].ari = ari({ status: 404, error: 'not-found' });
+    doc.certificates[c].revocation = rev({ status: 'unknown', crl: null, thisUpdate: null, nextUpdate: null, signature: null, error: 'no-crl' });
+    const estate = estateOf(doc);
+    const at = (sha) => estate.certificates.find((x) => x.sha256 === sha);
+    assert.deepEqual(at(a).ari, doc.certificates[a].ari);
+    assert.deepEqual(at(a).revocation, doc.certificates[a].revocation);
+    assert.deepEqual([at(a).ariWindow, at(b).ariWindow, at(c).ariWindow], [{ state: 'open', days: 0 }, { state: 'before', days: 10 }, null]);
+    const plain = estate.certificates.find((x) => ![a, b, c].includes(x.sha256));
+    assert.ok(!('ari' in plain) && !('revocation' in plain) && !('ariWindow' in plain), 'nothing added without the records');
+    // where a moment is in a window: the CLI's window_state
+    const w = { start: '2026-10-08T06:00:00Z', end: '2026-10-10T06:00:00Z' };
+    assert.deepEqual(estateAriWindow(w, Date.parse('2026-10-07T06:00:01Z')), { state: 'before', days: 1 });
+    assert.deepEqual(estateAriWindow(w, Date.parse('2026-10-08T06:00:00Z')), { state: 'open', days: 0 });
+    assert.deepEqual(estateAriWindow(w, Date.parse('2026-10-10T06:00:00Z')), { state: 'open', days: 0 });
+    assert.deepEqual(estateAriWindow(w, Date.parse('2026-10-10T06:00:01Z')), { state: 'past', days: 0 });
+    for (const bad of [null, [], { ...w, error: 'http' }, { start: 'soon', end: w.end }, { start: w.start }]) assert.equal(estateAriWindow(bad, 0), null);
+    // revoked, or the CA's window open or past: it needs a look
+    assert.equal(estateMatches(at(a), 'attention'), true);
+    assert.equal(estateMatches({ ...at(b), flags: [], expiry: 'later' }, 'attention'), false);
+    assert.equal(estateMatches({ ...at(b), flags: [], expiry: 'later', ariWindow: { state: 'past', days: 0 } }, 'attention'), true);
+    assert.equal(estateMatches({ ...at(b), flags: [], expiry: 'later', revocation: rev({ status: 'revoked' }) }, 'attention'), true);
+    // the overview's counts: the CLI's "Renewal windows and revocation" line
+    assert.deepEqual(estateStatusCounts(estate), { ari: { open: 1, past: 0, before: 1, error: 1 }, revocation: { revoked: 1, unknown: 1, good: 1 } });
+    assert.deepEqual(estateStatusCounts(estateOf(docA())), { ari: null, revocation: null });
+    assert.deepEqual([...ESTATE_ARI_STATES, ...ESTATE_REVOCATION_STATES], ['open', 'past', 'before', 'error', 'revoked', 'unknown', 'good']);
+    // the CSV: the CLI's ARI and revocation columns after its own, the report last
+    assert.deepEqual(estateStatusColumns(estate).map((x) => x.key), [...ESTATE_ARI_COLUMNS, ...ESTATE_REVOCATION_COLUMNS].map((x) => x.key));
+    const header = estateCsv(estate, { reportName: () => 'r.json' }).split('\r\n')[0].replace('﻿', '').split(',');
+    assert.deepEqual(header, [...ESTATE_CSV_COLUMNS, ...ESTATE_ARI_COLUMNS, ...ESTATE_REVOCATION_COLUMNS].map((x) => x.key).concat('report'));
+    const row = estateCsvRows(estate).find((r) => r.sha256 === a);
+    assert.deepEqual([row.ari_start, row.ari_end, row.ari_explanation, row.ari_error, row.revocation, row.revoked_at, row.revocation_reason, row.revocation_error],
+      ['2026-09-27T00:00:00Z', '2026-09-29T00:00:00Z', 'https://ca.example.org/incident', '', 'revoked', '2026-09-21T10:15:00Z', 'keyCompromise', '']);
+    const cRow = estateCsvRows(estate).find((r) => r.sha256 === c);
+    assert.deepEqual([cRow.ari_start, cRow.ari_error, cRow.revocation, cRow.revocation_error], ['', 'not-found', 'unknown', 'no-crl']);
+    assert.equal(estateCsvRows(estate).find((r) => r.sha256 === plain.sha256).revocation, '', 'empty cells without records');
+    // only --revocation: only its columns; neither: the CSV as before
+    delete doc.certificates[a].ari;
+    delete doc.certificates[b].ari;
+    delete doc.certificates[c].ari;
+    assert.deepEqual(estateStatusColumns(estateOf(doc)).map((x) => x.key), ESTATE_REVOCATION_COLUMNS.map((x) => x.key));
+    assert.deepEqual(estateStatusColumns(estateOf(docA())), []);
+    assert.deepEqual(estateStatusColumns(null), []);
+    // the same column names as the CLI's
+    const cli = readFileSync(new URL('../../cli/ssl_origin_scan.py', import.meta.url), 'utf8');
+    const tuple = (name) => cli.match(new RegExp(`^${name} = \\(([^)]*)\\)`, 'm'))[1].split(',').map((s) => s.trim().replace(/'/g, '')).filter(Boolean);
+    assert.deepEqual(tuple('ARI_CSV_COLUMNS'), ESTATE_ARI_COLUMNS.map((x) => x.key));
+    assert.deepEqual(tuple('REVOCATION_CSV_COLUMNS'), ESTATE_REVOCATION_COLUMNS.map((x) => x.key));
   });
 
   test('a certificate field that looks like a formula stays text', () => {

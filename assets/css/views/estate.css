@@ -183,6 +183,33 @@
   max-width: 9.5rem;
 }
 
+/* The CLI's --ari / --revocation (ui/revocation.js): the window or the CRL's word, then why. */
+.estate-table td.estate-col-ari,
+.estate-table td.estate-col-revocation {
+  white-space: normal;
+}
+
+.estate-table .rev-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 7.5rem;
+  max-width: 10rem;
+  overflow-wrap: break-word;
+}
+
+.estate-table .rev-cell .badge {
+  max-width: 100%;
+}
+
+.rev-d-parts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+}
+
 .estate-table .dt-row.estate-row-attention td:first-child {
   box-shadow: inset 3px 0 0 var(--warn-solid);
 }
@@ -316,7 +343,8 @@
   .estate-issuer,
   .estate-key,
   .estate-served,
-  .estate-flags {
+  .estate-flags,
+  .estate-table .rev-cell {
     max-width: none;
   }
 

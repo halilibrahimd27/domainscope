@@ -476,6 +476,8 @@ tests/live/              live smoke tests and the discovery benchmark (network; 
 docs/                    SPEC (module contracts), ROADMAP, RESEARCH; examples/: the nightly GitHub Actions template for the runner
 ```
 
+The tests need Node 22 or later, as `engines` in `package.json` says: on Node 20, `npm test` stops at `Could not find '…/tests/js/*.test.js'`, the E2E suites stop at once (their driver uses Node 22's global WebSocket), and the three CLI tests that run the web app's libraries skip themselves.
+
 ```bash
 npm test                 # JavaScript unit tests (node --test "tests/js/*.test.js"; `node --test tests/js/` is equivalent)
 npm run test:py          # CLI tests (python3; on Windows: python -m unittest discover -s tests/python -v)

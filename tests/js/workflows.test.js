@@ -74,6 +74,14 @@ describe('ci.yml', () => {
     assert.equal(pkg.scripts['test:py'], 'python3 -m unittest discover -s tests/python -v');
   });
 
+  test('both READMEs say in Development that the tests need the Node 22 of package.json engines', () => {
+    assert.equal(pkg.engines.node, '>=22');
+    for (const [file, heading, says] of [['README.md', 'Development', /The tests need Node 22 or later/], ['README.tr.md', 'Geliştirme', /Testler Node 22 veya üstünü ister/]]) {
+      const section = read(file).split(/^## /m).find((s) => s.startsWith(`${heading}\n`));
+      assert.ok(says.test(section), file);
+    }
+  });
+
   test('the offline E2E script runs exactly the suites that need no network', () => {
     const cmd = pkg.scripts['test:e2e:offline'];
     assert.match(cmd, /^node tests\/e2e\/run-all\.mjs --only shell,subdomains,zone,scan,verify,renewal,dane,pfx,chainfix,renew,estate,global,ptr,retire,carry,ip,lookup,health,workspaces,origins,domain,change,privacy,reports,portfolio --offline --no-shots$/);

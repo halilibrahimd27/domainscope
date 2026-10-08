@@ -24,6 +24,7 @@ import { cliServerName } from '../lib/export.js';
 import { isPrivateIP, ipVersion } from '../lib/netinfo.js';
 import { workspaceLabel } from '../ui/workspace-ui.js';
 import { OriginMapPanel } from '../ui/origin-map-panel.js';
+import { ExposurePanel } from '../ui/exposure-panel.js';
 
 /** Route id. */
 export const id = 'inventory';
@@ -32,8 +33,8 @@ export const titleKey = 'nav.inventory';
 /** Nav/page icon. */
 export const icon = 'server';
 
-/** The view's tabs (the route carries `tab=origins` for the second). */
-export const INVENTORY_TABS = Object.freeze(['inventory', 'origins']);
+/** The view's tabs (the route carries `tab=origins` / `tab=exposure` for the others). */
+export const INVENTORY_TABS = Object.freeze(['inventory', 'origins', 'exposure']);
 
 /** File types offered by the importer. */
 const ACCEPT = '.txt,.csv,.tsv,.ini,.cfg,.conf,.yml,.yaml,.json,.jsonl,.hosts,.list,.lst';
@@ -86,6 +87,7 @@ registerStrings('en', {
   'inv.tabs': 'Servers',
   'inv.tab.inventory': 'Inventory',
   'inv.tab.origins': 'Origin map',
+  'inv.tab.exposure': 'Exposure audit',
   'inv.privacyTitle': 'Stays in your browser',
   'inv.privacy': 'The inventory is parsed and stored only on this device, with the current workspace (this browser’s IndexedDB). It is never uploaded — the other tools use it locally to match DNS answers to your servers. Each workspace has its own inventory.',
   'inv.workspace': 'Workspace: {name}',
@@ -160,6 +162,7 @@ registerStrings('tr', {
   'inv.tabs': 'Sunucular',
   'inv.tab.inventory': 'Envanter',
   'inv.tab.origins': 'Origin haritası',
+  'inv.tab.exposure': 'Açığa çıkma denetimi',
   'inv.privacyTitle': 'Tarayıcınızda kalır',
   'inv.privacy': 'Envanter yalnızca bu cihazda, geçerli çalışma alanıyla birlikte ayrıştırılır ve saklanır (bu tarayıcının IndexedDB deposu). Hiçbir yere yüklenmez — diğer araçlar DNS yanıtlarını sunucularınızla yerel olarak eşleştirmek için kullanır. Her çalışma alanının kendi envanteri vardır.',
   'inv.workspace': 'Çalışma alanı: {name}',
@@ -437,8 +440,10 @@ export function mount(container, ctx) {
     topologySlot,
     Card({ title: t('inv.tableTitle'), subtitle: t('inv.tableSubtitle'), icon: 'server', children: table }));
 
-  // Two tabs: the inventory, and the workspace's origin map (built on its first show).
+  // Three tabs: the inventory, the workspace's origin map, and the origin exposure audit (each of
+  // the last two built on its first show).
   let originPanel = null;
+  let exposurePanel = null;
   const originCount = () => {
     const map = state.workspaceData('origins');
     return map && map.entries.length ? map.entries.length : null;
@@ -456,12 +461,19 @@ export function mount(container, ctx) {
         originPanel = OriginMapPanel({ ctx });
         return originPanel.el;
       }
+    },
+    {
+      id: 'exposure', label: t('inv.tab.exposure'), icon: 'shield',
+      content: () => {
+        exposurePanel = ExposurePanel({ ctx });
+        return exposurePanel.el;
+      }
     }
   ], {
     selected: INVENTORY_TABS.includes(ctx.params.tab) ? ctx.params.tab : 'inventory',
     label: t('inv.tabs'),
     className: 'inv-tabs',
-    onChange: (tab) => ctx.setParams({ tab: tab === 'origins' ? 'origins' : null })
+    onChange: (tab) => ctx.setParams({ tab: tab === 'inventory' ? null : tab })
   });
   container.append(tabs.el);
 
@@ -643,6 +655,7 @@ export function mount(container, ctx) {
   teardown = () => {
     unsubscribe();
     if (originPanel) originPanel.destroy();
+    if (exposurePanel) exposurePanel.destroy();
     clearInterval(timer);
     reparseSoon.cancel();
     // Keep an unsaved draft for this session so navigating away does not lose it.

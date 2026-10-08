@@ -402,6 +402,10 @@ describe('i18n coverage', () => {
     for (const e of omp.FORM_ERRORS) add(`omp.err.${e}`);
     for (const e of estate.REPORT_ERRORS) add(`omp.file.${e}`);
     for (const v of ['known']) { add(`scan.srv.via.${v}`); add(`scan.hint.${v}`); add(`sub.hint.${v}`); }
+    // The origin exposure audit (ui/exposure-panel.js over lib/exposure.js, Servers › Exposure):
+    // every finding kind, severity, reachability result, advice and skip reason it words from a code.
+    const exp = await imp('assets/js/ui/exposure-panel.js');
+    for (const k of exp.generatedKeys()) add(k);
     assert.deepEqual(missingIn(keys), []);
   });
 

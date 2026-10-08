@@ -10,6 +10,7 @@
  */
 
 import { parseArgs } from 'node:util';
+import { isIP } from 'node:net';
 import { resolve as resolvePath } from 'node:path';
 import { RESOLVERS, DEFAULT_CHAIN, getResolver } from '../../assets/js/lib/resolvers.js';
 import { normalizeHostname } from '../../assets/js/lib/domain.js';
@@ -37,11 +38,12 @@ export const DS_VERSION = '1.0.0';
 export const EXIT = Object.freeze({ OK: 0, FAILED: 1, USAGE: 2, WRITE: 3, CHANGED: 4, INTERRUPTED: 130 });
 
 /** The subcommands, in help order. */
-export const COMMANDS = Object.freeze(['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit']);
+export const COMMANDS = Object.freeze(['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit', 'tls']);
 
 /**
  * What each subcommand takes: `targets` 'domains' (host names, also from --list), 'names'
- * (renewal names, `*.` wildcards too) or 'file' (exactly one), and its own options.
+ * (renewal names, `*.` wildcards too), 'endpoints' (a host or address with an optional port,
+ * {@link parseTlsTarget}) or 'file' (exactly one), and its own options.
  */
 export const COMMAND_SPECS = Object.freeze({
   health: Object.freeze({ targets: 'domains', options: Object.freeze(['list']) }),
@@ -50,8 +52,74 @@ export const COMMAND_SPECS = Object.freeze({
   ct: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'days', 'sources', 'radar', 'expected-ca']) }),
   renew: Object.freeze({ targets: 'names', options: Object.freeze(['list', 'ca', 'challenge']) }),
   dane: Object.freeze({ targets: 'file', options: Object.freeze([]) }),
-  audit: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'policy', 'preset', 'no-dkim']) })
+  audit: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'policy', 'preset', 'no-dkim']) }),
+  tls: Object.freeze({ targets: 'endpoints', options: Object.freeze(['list', 'ari', 'revocation']) })
 });
+
+/** What a target of each kind is, for "not …" messages. */
+export const TARGET_WHAT = Object.freeze({
+  domains: 'a domain name',
+  names: 'a name a certificate can carry',
+  endpoints: 'a host name or address, with an optional port (example.com:8443, [2001:db8::1]:443)'
+});
+
+/** The port of a `tls` target written without one. */
+export const TLS_DEFAULT_PORT = 443;
+
+/**
+ * A `tls` target: `host`, `host:port`, `[v6]:port`, an address (no SNI: the server's default
+ * certificate), or an https URL's host and port.
+ * @param {string} token
+ * @returns {{ target: string, host: string|null, address: string|null, port: number }|null} `target`:
+ *   the label the report keys it by (the port only when it is not 443); `host` null for an address
+ */
+export function parseTlsTarget(token) {
+  let s = String(token ?? '').trim();
+  if (!s) return null;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+    let u;
+    try {
+      u = new URL(s);
+    } catch {
+      return null;
+    }
+    if (u.protocol !== 'https:') return null;
+    s = u.port ? `${u.hostname}:${u.port}` : u.hostname;
+  }
+  let host = s;
+  let port = TLS_DEFAULT_PORT;
+  const bracket = /^\[([^\]]+)\](?::(\d{1,5}))?$/.exec(s);
+  if (bracket) {
+    host = bracket[1];
+    if (bracket[2]) port = Number(bracket[2]);
+    if (isIP(host) !== 6) return null;
+  } else if (isIP(s) !== 6) {
+    const m = /^([^:]+):(\d{1,5})$/.exec(s);
+    if (m) {
+      host = m[1];
+      port = Number(m[2]);
+    } else if (s.includes(':')) {
+      return null;
+    }
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  const suffix = port === TLS_DEFAULT_PORT ? '' : `:${port}`;
+  if (isIP(host) === 6) {
+    let address;
+    try {
+      address = new URL(`https://[${host}]/`).hostname.slice(1, -1);
+    } catch {
+      return null; // a zone index (fe80::1%eth0) or another form the URL parser refuses
+    }
+    return { target: `[${address}]${suffix}`, host: null, address, port };
+  }
+  // node:net isIP takes dotted IPv4 only (no leading zeros, no short forms)
+  if (isIP(host) === 4) return { target: `${host}${suffix}`, host: null, address: host, port };
+  if (/^[\d.]+$/.test(host) || /^0x/i.test(host)) return null; // 010.0.0.1, 127.1, 0x7f.1: never a host name
+  const name = normalizeHostname(host);
+  if (!name) return null;
+  return { target: `${name}${suffix}`, host: name, address: null, port };
+}
 
 /**
  * An `audit` target that names a file of domains rather than a domain: a path (a separator in
@@ -121,7 +189,9 @@ const OPTION_SPEC = Object.freeze({
   challenge: { type: 'string' },
   policy: { type: 'string' },
   preset: { type: 'string' },
-  'no-dkim': { type: 'boolean' }
+  'no-dkim': { type: 'boolean' },
+  ari: { type: 'boolean' },
+  revocation: { type: 'boolean' }
 });
 
 /** Options every subcommand takes. */
@@ -154,6 +224,8 @@ const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'res
  * @property {string|null} policy audit: the policy file (lib/policy.js)
  * @property {string|null} preset audit: a lib/policy.js POLICY_PRESET_IDS preset instead of a file
  * @property {boolean} dkim audit: look for DKIM keys at the common selectors (off with --no-dkim)
+ * @property {boolean} ari tls: ask each certificate's CA for its ARI renewal window (--ari)
+ * @property {boolean} revocation tls: read each certificate's CRL (--revocation)
  */
 
 /**
@@ -285,6 +357,16 @@ export function parseTargets(command, tokens) {
   if (!spec) throw new UsageError(`unknown command "${command}"`);
   const list = (tokens || []).map((s) => String(s).trim()).filter(Boolean);
   if (spec.targets === 'file') return { targets: list, invalid: [] };
+  if (spec.targets === 'endpoints') {
+    const targets = [];
+    const invalid = [];
+    for (const token of list) {
+      const t = parseTlsTarget(token);
+      if (!t) invalid.push(token);
+      else if (!targets.includes(t.target)) targets.push(t.target);
+    }
+    return { targets, invalid };
+  }
   if (spec.targets === 'names') {
     const parsed = parseRenewalNames(list, { max: Number.MAX_SAFE_INTEGER });
     return { targets: parsed.names.map((n) => n.name), invalid: [...parsed.invalid, ...parsed.suffixWildcards] };
@@ -415,6 +497,11 @@ export function parseCommandLine(argv) {
     }
   }
 
+  if (command === 'tls') {
+    options.ari = v.ari === true;
+    options.revocation = v.revocation === true;
+  }
+
   if (command === 'audit') {
     if ((v.policy === undefined) === (v.preset === undefined)) throw new UsageError('audit needs the rules: --policy FILE or --preset NAME (one of them)');
     if (v.preset !== undefined) {
@@ -434,11 +521,11 @@ export function parseCommandLine(argv) {
   } else {
     const parsed = parseTargets(command, targets);
     if (parsed.invalid.length) {
-      const what = spec.targets === 'names' ? 'a name a certificate can carry' : 'a domain name';
-      throw new UsageError(`not ${what}: ${parsed.invalid.map((s) => `"${s}"`).join(', ')}`);
+      throw new UsageError(`not ${TARGET_WHAT[spec.targets]}: ${parsed.invalid.map((s) => `"${s}"`).join(', ')}`);
     }
     if (!parsed.targets.length && !options.lists.length) {
-      throw new UsageError(`${command} needs at least one ${spec.targets === 'names' ? 'name' : 'domain'} (or --list FILE)`);
+      const one = { names: 'name', endpoints: 'host' }[spec.targets] || 'domain';
+      throw new UsageError(`${command} needs at least one ${one} (or --list FILE)`);
     }
     targets = parsed.targets;
   }
@@ -464,7 +551,7 @@ function defaults() {
     concurrency: DEFAULT_SETTINGS.concurrency, lists: [], quiet: false, noColor: false, showAll: false,
     exact: null, level: DS_DEFAULT_LEVEL, sources: null, days: DS_DEFAULT_DAYS, radar: [...DS_DEFAULT_RADAR], expectedCas: [],
     origin: null, includeOrigins: false, maxQueries: DRIFT_DEFAULT_BUDGET, ca: null, challenge: 'unknown',
-    policy: null, preset: null, dkim: true
+    policy: null, preset: null, dkim: true, ari: false, revocation: false
   };
 }
 
@@ -506,8 +593,15 @@ commands:
       --policy FILE              the policy (JSON, as the app exports it), or
       --preset NAME              a built-in one: ${POLICY_PRESET_IDS.join(', ')}
       [--no-dkim]                skip the DKIM keys (${PORTFOLIO_DKIM_SELECTORS.length} common selectors per domain)
+  tls HOST[:PORT]...             the certificate every address of a host serves (SNI = the host; an
+                                 address alone: no SNI), its expiry, trust and name, each address on
+                                 its own (default port ${TLS_DEFAULT_PORT}; [2001:db8::1]:8443 for IPv6)
+      [--ari]                    ask the issuing CA for its ACME renewal window (RFC 9773): Let's
+                                 Encrypt, Google Trust Services, ZeroSSL, Sectigo, SSL.com
+      [--revocation]             read the CRL each certificate names (no OCSP): REVOKED, with the
+                                 reason and the time
 
-targets: DOMAIN / NAME on the command line, and --list FILE (repeatable) with one or more per
+targets: DOMAIN / NAME / HOST[:PORT] on the command line, and --list FILE (repeatable) with one or more per
   line (# comments). An invalid entry is an error on the command line and a warning in a file.
   audit takes a file of domains as a target too (a path, or a name ending .txt, .csv, .list,
   .lst), and audits each domain's registrable domain (www.example.com is example.com).
@@ -540,6 +634,17 @@ what is sent: names and record types to the DoH resolvers (renew also asks Cloud
   checks that need a probe (Verify, the MTA-STS policy, the HTTP-01 test) stay in the app,
   behind a click. audit asks the DoH resolvers and RDAP (the registry's server from the IANA
   bootstrap; rdap.org only as the fallback, one request a second), each name server domain once.
+  tls connects to every address of each target (a TLS handshake); --ari sends each certificate's
+  CertID (the issuer's key identifier and the serial number, both public) to the issuing CA's ARI
+  server, --revocation downloads the CRLs the certificates name from their CAs (at most 20 MB each).
+
+tls changes: another certificate on an address (CERT: counted when it drops a name, changes the
+  key type or the CA), a handshake that stops completing (FAILED), a worse status (WORSE), and with
+  --ari / --revocation: RENEW-NOW (the CA's renewal window has opened, or ended), MOVED-UP (it now
+  starts more than a day earlier: CAs do that before a mass revocation), CA-NOTICE (an explanation
+  URL the CA did not give before) and REVOKED (the CRL lists a served certificate). A CA is not
+  asked again before the Retry-After of its last answer. An IPv6 address this machine cannot reach
+  is SKIPPED (GitHub's hosted runners have no IPv6 route), never a change.
 
 ct watch: each domain's report keeps the ids of the certificates seen (the next run's baseline,
   as the app's workspace keeps them), so a run with --baseline marks what was logged since. A
@@ -569,4 +674,6 @@ examples:
   node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
   node tools/ds.mjs audit --preset parked example.org --baseline audit.json --json audit.json
   node tools/ds.mjs audit --preset corporate --list domains.txt --md audit.md
+  node tools/ds.mjs tls --list tls-hosts.txt --ari --revocation --baseline tls.json --json tls.json
+  node tools/ds.mjs tls www.example.com example.com:8443 --ari
 `;

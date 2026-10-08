@@ -1071,7 +1071,13 @@ async function runAudit(targets, options, env) {
   };
 }
 
-const RUNNERS = Object.freeze({ health: runHealth, subdomains: runSubdomains, drift: runDrift, ct: runCt, renew: runRenew, dane: runDane, audit: runAudit });
+/** tls: tools/ds/tls.mjs (node:tls), loaded with its command only. */
+async function runTlsCommand(targets, options, env) {
+  const { runTls } = await import('./tls.mjs');
+  return runTls(targets, options, env);
+}
+
+const RUNNERS = Object.freeze({ health: runHealth, subdomains: runSubdomains, drift: runDrift, ct: runCt, renew: runRenew, dane: runDane, audit: runAudit, tls: runTlsCommand });
 
 /**
  * Run one subcommand.

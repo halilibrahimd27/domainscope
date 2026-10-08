@@ -118,6 +118,10 @@ jobs:
           # The Domain portfolio's policy audit (policy.json as the app exports it): exit 4 while a rule
           # fails, so the issue stays open until every rule passes:
           # ds audit audit --list domains.txt --policy policy.json
+          # The certificates your hosts serve (tls-hosts.txt: a host or host:port per line), with each
+          # CA's renewal window (ARI) and revocation list: a window that opens or moves earlier (as CAs
+          # do before a mass revocation), a CA's notice and a revoked certificate count:
+          # ds tls tls --list tls-hosts.txt --ari --revocation
           echo "changed=${changed[*]}" >> "$GITHUB_OUTPUT"
           echo "failed=${failed[*]}" >> "$GITHUB_OUTPUT"
 

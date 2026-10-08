@@ -293,25 +293,20 @@ export function ariSupported(caId) {
 }
 
 const failure = (code, at, extra = {}) => ({ ok: false, code, error: extra.error || code, errorKind: extra.errorKind || code,
-  status: extra.status ?? null, retryAfterMs: extra.retryAfterMs ?? null, at: new Date(at) });
+  status: extra.status ?? null, retryAfterMs: extra.retryAfterMs ?? null, at: new Date(at), certId: extra.certId ?? null, url: extra.url ?? null });
 
 /**
- * Ask the CA for the certificate's renewal window (RFC 9773): its ACME directory for the
- * `renewalInfo` URL (it must stay on the directory's host), then `<renewalInfo>/<CertID>`. Sends
- * the CertID only: the issuer's key identifier and the serial number.
- * @param {{ authorityKeyId?: string|null, serialHex?: string|null }} cert
- * @param {{ ca?: string, fetchImpl?: typeof fetch, signal?: AbortSignal, timeoutMs?: number, now?: () => number }} [opts]
- * @returns {Promise<{ ok: true, start: Date, end: Date, explanationUrl: string|null, retryAfterMs: number|null, at: Date }
- *   | { ok: false, code: string, error: string, errorKind: string, status: number|null, retryAfterMs: number|null, at: Date }>}
- *   `code` is one of {@link ARI_FAILURES}; only an abort rejects
+ * The renewalInfo URL an ACME directory names, when it is https and on one of `hosts`; null when
+ * the directory names none (or one elsewhere). A failed directory read rejects. With `cache`
+ * (one per run of the headless runner) each directory is read once.
+ * @param {string} directoryUrl
+ * @param {string[]} hosts
+ * @param {object} opts fetchJson options
+ * @param {Map<string, Promise<URL|null>>|null} cache
+ * @returns {Promise<URL|null>}
  */
-export async function fetchRenewalInfo(cert, { ca = 'letsencrypt', fetchImpl = globalThis.fetch, signal, timeoutMs = ARI_TIMEOUT_MS, now = Date.now } = {}) {
-  if (!ariSupported(ca)) return failure('unsupported', now());
-  const certId = ariCertId(cert);
-  if (!certId) return failure('no-key-id', now());
-  const directoryUrl = ARI_DIRECTORIES[ca];
-  const opts = { fetchImpl, signal, timeoutMs };
-  try {
+function renewalInfoBase(directoryUrl, hosts, opts, cache) {
+  const read = async () => {
     const dir = await fetchJson(directoryUrl, opts);
     let base = null;
     try {
@@ -319,10 +314,50 @@ export async function fetchRenewalInfo(cert, { ca = 'letsencrypt', fetchImpl = g
     } catch {
       base = null;
     }
-    if (!base || base.protocol !== 'https:' || base.host !== new URL(directoryUrl).host) return failure('no-renewal-info', now());
-    const url = `${base.href.replace(/\/+$/, '')}/${certId}`;
+    return base && base.protocol === 'https:' && hosts.includes(base.host) ? base : null;
+  };
+  if (!cache) return read();
+  if (!cache.has(directoryUrl)) {
+    const pending = read();
+    // a failed read is not kept: an abort, or a directory down for a moment, is asked again
+    pending.catch(() => cache.delete(directoryUrl));
+    cache.set(directoryUrl, pending);
+  }
+  return cache.get(directoryUrl);
+}
+
+/**
+ * Ask the CA for the certificate's renewal window (RFC 9773): its ACME directory for the
+ * `renewalInfo` URL (it must stay on the directory's host, or on one of `directory.hosts`), then
+ * `<renewalInfo>/<CertID>`. Sends the CertID only: the issuer's key identifier and the serial
+ * number. The page asks the CAs of {@link ARI_DIRECTORIES} (`ca`); the headless runner passes the
+ * directory of another CA's server-side table (tools/ds/ari.mjs) and a `cache` of the directories
+ * read in its run.
+ * @param {{ authorityKeyId?: string|null, serialHex?: string|null }} cert
+ * @param {{ ca?: string, directory?: { url: string, hosts?: string[] }|null, cache?: Map<string, Promise<URL|null>>|null,
+ *   fetchImpl?: typeof fetch, signal?: AbortSignal, timeoutMs?: number, now?: () => number }} [opts]
+ * @returns {Promise<{ ok: true, start: Date, end: Date, explanationUrl: string|null, retryAfterMs: number|null, at: Date, certId: string, url: string }
+ *   | { ok: false, code: string, error: string, errorKind: string, status: number|null, retryAfterMs: number|null, at: Date,
+ *   certId: string|null, url: string|null }>}
+ *   `code` is one of {@link ARI_FAILURES}; only an abort rejects
+ */
+export async function fetchRenewalInfo(cert, {
+  ca = 'letsencrypt', directory = null, cache = null, fetchImpl = globalThis.fetch, signal, timeoutMs = ARI_TIMEOUT_MS, now = Date.now
+} = {}) {
+  const entry = directory && typeof directory.url === 'string' ? directory : ariSupported(ca) ? { url: ARI_DIRECTORIES[ca] } : null;
+  if (!entry) return failure('unsupported', now());
+  const certId = ariCertId(cert);
+  if (!certId) return failure('no-key-id', now());
+  const directoryUrl = entry.url;
+  const hosts = Array.isArray(entry.hosts) && entry.hosts.length ? entry.hosts : [new URL(directoryUrl).host];
+  const opts = { fetchImpl, signal, timeoutMs };
+  let url = null;
+  try {
+    const base = await renewalInfoBase(directoryUrl, hosts, opts, cache);
+    if (!base) return failure('no-renewal-info', now(), { certId });
+    url = `${base.href.replace(/\/+$/, '')}/${certId}`;
     const read = await fetchAndRead(url, opts, async (response) => {
-      const retryAfterMs = response.headers && typeof response.headers.get === 'function' ? parseRetryAfter(response.headers.get('retry-after')) : null;
+      const retryAfterMs = response.headers && typeof response.headers.get === 'function' ? parseRetryAfter(response.headers.get('retry-after'), now()) : null;
       if (!response.ok) {
         let body = '';
         try {
@@ -343,16 +378,20 @@ export async function fetchRenewalInfo(cert, { ca = 'letsencrypt', fetchImpl = g
     const start = w && typeof w.start === 'string' ? new Date(w.start) : null;
     const end = w && typeof w.end === 'string' ? new Date(w.end) : null;
     // RFC 9773 §4.2: the end must come after the start; a window that is not one is no answer.
-    if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return failure('bad-window', now());
+    if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+      return failure('bad-window', now(), { certId, url, status: 200, retryAfterMs: read.retryAfterMs });
+    }
     const explanation = read.body && typeof read.body.explanationURL === 'string' && /^https:\/\/[^\s]+$/.test(read.body.explanationURL)
       ? read.body.explanationURL : null;
-    return { ok: true, start, end, explanationUrl: explanation, retryAfterMs: read.retryAfterMs, at: new Date(now()) };
+    return { ok: true, start, end, explanationUrl: explanation, retryAfterMs: read.retryAfterMs, at: new Date(now()), certId, url };
   } catch (err) {
     const kind = errorKind(err);
     if (kind === 'abort') throw err;
     const status = err && Number.isInteger(err.status) ? err.status : null;
     const code = status === 404 ? 'not-found' : ARI_FAILURES.includes(kind) ? kind : 'unknown';
-    return failure(code, now(), { error: err && err.message ? err.message : String(err), errorKind: kind, status, retryAfterMs: err && err.retryAfterMs != null ? err.retryAfterMs : null });
+    return failure(code, now(), {
+      error: err && err.message ? err.message : String(err), errorKind: kind, status, retryAfterMs: err && err.retryAfterMs != null ? err.retryAfterMs : null, certId, url
+    });
   }
 }
 

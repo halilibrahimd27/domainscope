@@ -12,6 +12,7 @@
  *   node tools/ds.mjs renew example.com '*.example.com' --ca letsencrypt
  *   node tools/ds.mjs dane fullchain.pem
  *   node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
+ *   node tools/ds.mjs tls --list tls-hosts.txt --ari --revocation --json tls.json
  *
  * Commands, options and exit codes: tools/ds/args.mjs (USAGE, `--help`). The checks:
  * tools/ds/commands.mjs; "Changes since the baseline": tools/ds/diff.mjs; the summary and the
@@ -29,7 +30,7 @@ import { realpathSync } from 'node:fs';
 import { readFile, writeFile, rename, unlink, stat, open } from 'node:fs/promises';
 import { basename, dirname, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseCommandLine, parseListText, samePath, UsageError, USAGE, EXIT, DS_TOOL, DS_VERSION, COMMAND_SPECS } from './ds/args.mjs';
+import { parseCommandLine, parseListText, samePath, UsageError, USAGE, EXIT, DS_TOOL, DS_VERSION, COMMAND_SPECS, TARGET_WHAT } from './ds/args.mjs';
 import { setupStrings, renderRunText, renderRunMarkdown, changeText } from './ds/render.mjs';
 import { baselineProblem, baselineInfo, baselineNotes, diffReports, notableChanges } from './ds/diff.mjs';
 import { DohClient } from '../assets/js/lib/doh.js';
@@ -218,13 +219,14 @@ export function policyErrorText(e) {
  * @param {string[]} argv arguments after the script
  * @param {{ stdout?: { write: Function, isTTY?: boolean }, stderr?: { write: Function },
  *   fetchImpl?: typeof fetch, env?: Record<string, string|undefined>, now?: () => Date,
- *   signal?: AbortSignal }} [io] injected streams, fetch and clock (tests)
+ *   signal?: AbortSignal, tls?: object }} [io] injected streams, fetch and clock (tests); `tls`: the
+ *   `tls` command's hooks (tools/ds/tls.mjs runTls: a trust store, the issuer → CA mapping, ARI directories)
  * @returns {Promise<number>}
  */
 export async function main(argv, io = {}) {
   const {
     stdout = process.stdout, stderr = process.stderr, fetchImpl = globalThis.fetch,
-    env = process.env, now = () => new Date(), signal
+    env = process.env, now = () => new Date(), signal, tls: tlsHooks
   } = io;
   const say = (stream, text) => stream.write(text.endsWith('\n') ? text : `${text}\n`);
   const fail = (err) => {
@@ -265,7 +267,7 @@ export async function main(argv, io = {}) {
   try {
     for (const file of options.lists) {
       const { targets: listed, invalid } = parseListText(command, decodeText(await readInput(file, '--list')));
-      const what = COMMAND_SPECS[command].targets === 'names' ? 'a name a certificate can carry' : 'a domain name';
+      const what = TARGET_WHAT[COMMAND_SPECS[command].targets];
       for (const w of skippedWarnings(`--list ${file}`, invalid, what)) warn(w);
       for (const x of listed) if (!targets.includes(x)) targets = [...targets, x];
     }
@@ -299,7 +301,7 @@ export async function main(argv, io = {}) {
   };
   try {
     const { runCommand } = await import('./ds/commands.mjs');
-    result = await runCommand(command, targets, options, { dns, fetchImpl, signal, now, t, progress, baseline, inputs });
+    result = await runCommand(command, targets, options, { dns, fetchImpl, signal, now, t, progress, baseline, inputs, ...(tlsHooks ? { tls: tlsHooks } : {}) });
   } catch (err) {
     if (errorKind(err) === 'abort' || (signal && signal.aborted)) return interrupted();
     return fail(err);

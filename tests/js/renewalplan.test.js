@@ -160,6 +160,39 @@ test('ARI: the directory’s renewalInfo, then the window for the CertID, with R
   assert.deepEqual(fetchImpl.calls, [DIR, `${RI}/aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE`]);
 });
 
+test('ARI with a server-side directory: renewalInfo on a host the entry names, each directory read once per cache', async () => {
+  const dir = 'https://acme.example.com/v2/DV';
+  const info = 'https://ari.example.net/renewalInfo';
+  const id = 'aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE';
+  const other = { authorityKeyId: '69885b6b87464041e1b37b847ba0ae2cde01c8d4', serialHex: '0102' };
+  const otherId = ariCertId(other);
+  const routes = {
+    [dir]: [200, { renewalInfo: info }],
+    [`${info}/${id}`]: [200, { suggestedWindow: { start: '2026-11-16T23:59:59Z', end: '2026-11-18T23:59:59Z' } }, { 'retry-after': '21600' }],
+    [`${info}/${otherId}`]: [404, { type: 'urn:ietf:params:acme:error:malformed' }]
+  };
+  const fetchImpl = fakeFetch(routes);
+  const cache = new Map();
+  const entry = { url: dir, hosts: ['ari.example.net'] };
+  const r = await fetchRenewalInfo(LEAF, { directory: entry, cache, fetchImpl, now: NOW });
+  assert.deepEqual([r.ok, r.start.toISOString(), r.retryAfterMs, r.certId, r.url], [true, '2026-11-16T23:59:59.000Z', 21600000, id, `${info}/${id}`]);
+  const nf = await fetchRenewalInfo(other, { directory: entry, cache, fetchImpl, now: NOW });
+  assert.deepEqual([nf.ok, nf.code, nf.status, nf.certId, nf.url], [false, 'not-found', 404, otherId, `${info}/${otherId}`]);
+  assert.deepEqual(fetchImpl.calls, [dir, `${info}/${id}`, `${info}/${otherId}`], 'the directory read once for both');
+  // the directory's own host is not enough when the entry names others
+  const strict = fakeFetch(routes);
+  assert.equal((await fetchRenewalInfo(LEAF, { directory: { url: dir, hosts: ['ari.example.org'] }, fetchImpl: strict })).code, 'no-renewal-info');
+  assert.deepEqual(strict.calls, [dir], 'nothing sent to a host the entry does not name');
+  // `ca` does not matter with a directory; a directory read that failed is asked again next time
+  let down = true;
+  const flaky = fakeFetch({ ...routes, [dir]: () => (down ? new Response('busy', { status: 503 }) : new Response(JSON.stringify({ renewalInfo: info }), { status: 200 })) });
+  const flakyCache = new Map();
+  assert.equal((await fetchRenewalInfo(LEAF, { ca: 'digicert', directory: entry, cache: flakyCache, fetchImpl: flaky })).code, 'http');
+  down = false;
+  assert.equal((await fetchRenewalInfo(LEAF, { directory: entry, cache: flakyCache, fetchImpl: flaky })).ok, true);
+  assert.equal(flaky.calls.filter((u) => u === dir).length, 2);
+});
+
 test('ARI failures are results with a code; only an abort rejects', async () => {
   const win = { suggestedWindow: { start: '2026-11-02T00:00:00Z', end: '2026-11-04T00:00:00Z' } };
   const id = 'aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE';

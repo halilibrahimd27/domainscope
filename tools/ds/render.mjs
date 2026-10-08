@@ -104,13 +104,15 @@ const NOT_COUNTED = 'sources that could not be read, moves between failure state
   + 'certificates in the expiry radar while their automatic renewal is not overdue';
 /** The audit's (diff.mjs diffAudit): a rule not checked this run, what comes in meeting the policy, a rule taken out of it. */
 const NOT_COUNTED_AUDIT = 'rules that could not be checked this run, a domain or rule added that meets the policy, a rule taken out of it';
-const notCounted = (command) => (command === 'audit' ? NOT_COUNTED_AUDIT : NOT_COUNTED);
+/** tls's (tools/ds/tlsdiff.mjs): what DNS moves and a renewal are, and an outage that compared nothing. */
+const NOT_COUNTED_TLS = 'moves between failure states, a DNS lookup that failed, addresses a name gained or lost, renewed certificates';
+const notCounted = (command) => (command === 'audit' ? NOT_COUNTED_AUDIT : command === 'tls' ? NOT_COUNTED_TLS : NOT_COUNTED);
 
 /** Change lines in the summary without --show-all (the CLI's MAX_SUMMARY_CHANGES). */
 export const MAX_SUMMARY_CHANGES = 50;
 /** Every tag a change can carry, widest first for the column. */
 export const CHANGE_TAGS = Object.freeze(['NEW', 'GONE', 'WORSE', 'BETTER', 'CHANGED', 'FAILED', 'RECOVERED', 'FAILING', 'SCORE',
-  'ISSUER', 'NAME', 'CERT', 'CA', 'EXPIRING', 'REVOKED', 'EXPOSED', 'DANGLING']);
+  'ISSUER', 'NAME', 'CERT', 'CA', 'EXPIRING', 'REVOKED', 'EXPOSED', 'DANGLING', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE']);
 const TAG_WIDTH = Math.max(...CHANGE_TAGS.map((tag) => tag.length));
 
 const ANSI = { red: '31', green: '32', yellow: '33', cyan: '36', dim: '2', bold: '1' };

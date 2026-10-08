@@ -19,8 +19,8 @@ the checks ask keyless public services only. The checkout keeps no token while t
 2. Copy `nightly-domainscope.yml` to its `.github/workflows/`, and pin `ref:` to a DomainScope
    commit SHA (or to a release tag once there is one).
 3. Switch on the steps you want (health and the Certificate Transparency watch run by default;
-   subdomain discovery, an exact host list, zone drift, renewal readiness and the policy audit
-   are commented out).
+   subdomain discovery, an exact host list, zone drift, renewal readiness, the policy audit and
+   the served certificates with their renewal windows and revocation are commented out).
 4. Run it once by hand (Actions › DomainScope nightly › Run workflow): the first night has no
    baseline to compare with, so it only writes `results/`.
 
@@ -88,6 +88,19 @@ is overdue (`EXPIRING`: less than a quarter of its lifetime left; ACME clients r
 so a 90-day certificate crossing 30 days is listed only) and the certificate in use being revoked
 (`REVOKED`).
 
+**Served certificates, renewal windows and revocation.** `tls` (commented out: uncomment it and
+add a `tls-hosts.txt` with a host or `host:port` per line) connects to every address of each host,
+reads the certificate it serves and says whether it expired, is trusted and carries the name. With
+`--ari` it asks the issuing CA for its renewal window (ACME Renewal Information: Let's Encrypt,
+Google Trust Services, ZeroSSL, Sectigo, SSL.com), and with `--revocation` it reads the CRL the
+certificate names. A window that opens (`RENEW-NOW`), one that moves more than a day earlier
+(`MOVED-UP`: CAs do that before a mass revocation), a new explanation from the CA (`CA-NOTICE`)
+and a revoked certificate still served (`REVOKED`) count, and so do a handshake that stops
+completing and another certificate that drops a name or changes the key type or the CA. A CA is
+not asked again before the Retry-After of its last answer, and an IPv6 address the runner cannot
+reach (GitHub's hosted runners have no IPv6 route) is skipped, never a change. The CA receives
+each certificate's CertID (the issuer's key identifier and the serial number, both public).
+
 **Cert Spotter and more than about 10 domains.** Cert Spotter answers about 10 full-domain queries
 an hour per IP address. After its first "rate limited" of a night the runner does not ask it
 again until its wait is over (at most an hour), and once crt.sh is down (unavailable, or timed
@@ -108,6 +121,7 @@ node tools/ds.mjs ct --list domains.txt --expected-ca letsencrypt --radar 21,7 -
 node tools/ds.mjs renew example.com '*.example.com' --ca letsencrypt --challenge dns-01
 node tools/ds.mjs dane fullchain.pem
 node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
+node tools/ds.mjs tls www.example.com example.com:8443 --ari --revocation --json tls.json
 ```
 
 `node tools/ds.mjs --help` lists every option. Exit codes: 0 done, 1 the run failed (an

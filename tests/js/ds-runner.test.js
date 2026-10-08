@@ -57,7 +57,7 @@ describe('command line', () => {
   test('the default chain is the app\'s, without the resolvers Node\'s fetch cannot read', () => {
     assert.deepEqual([...NODE_CHAIN], DEFAULT_CHAIN.filter((id) => !NODE_UNREADABLE[id]));
     assert.ok(!NODE_CHAIN.includes('cznic') && NODE_CHAIN.includes('cloudflare'));
-    assert.deepEqual(COMMANDS, ['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit']);
+    assert.deepEqual(COMMANDS, ['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit', 'tls']);
     for (const c of COMMANDS) assert.match(USAGE, new RegExp(`\\n  ${c} `), c);
   });
 
@@ -94,7 +94,7 @@ describe('command line', () => {
   test('an option of another subcommand is refused, naming where it belongs', () => {
     assert.throws(() => parseCommandLine(['health', 'example.com', '--level', 'small']), /--level applies to subdomains only, not to health/);
     assert.throws(() => parseCommandLine(['renew', 'example.com', '--sources', 'crtsh']), /--sources applies to subdomains and ct only/);
-    assert.throws(() => parseCommandLine(['dane', 'cert.pem', '--list', 'x.txt']), /--list applies to health, subdomains, ct, renew and audit only, not to dane/);
+    assert.throws(() => parseCommandLine(['dane', 'cert.pem', '--list', 'x.txt']), /--list applies to health, subdomains, ct, renew, audit and tls only, not to dane/);
     assert.throws(() => parseCommandLine(['health', 'example.com', '--no-dkim']), /--no-dkim applies to audit only, not to health/);
     assert.throws(() => parseCommandLine(['ct', 'example.com', '--policy', 'p.json']), /--policy applies to audit only, not to ct/);
   });
@@ -1749,7 +1749,7 @@ describe('the documented commands', () => {
   test('every ds line of the nightly template, commented ones too, is a command line the runner takes', () => {
     const yml = readFileSync(join(ROOT, 'docs', 'examples', 'nightly-domainscope.yml'), 'utf8').replace(/\r\n/g, '\n');
     const lines = [...yml.matchAll(/^ *#? *ds ([a-z][\w-]*) ([a-z]+)((?: [^\s#]+)*) *$/gm)];
-    assert.equal(lines.length, 8, `${lines.length} ds lines`);
+    assert.equal(lines.length, 9, `${lines.length} ds lines`);
     for (const [, name, command, rest] of lines) {
       assert.ok(COMMANDS.includes(command), command);
       const argv = [command, ...rest.trim().split(/\s+/).filter(Boolean).map(unquote), '--baseline', `results/${name}.json`,

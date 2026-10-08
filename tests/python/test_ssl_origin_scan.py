@@ -687,6 +687,13 @@ INVENTORY_PARITY_CASES = {
     'Turkish device': 'Cihaz Adı,İP,Grup\nfw01,10.0.0.7,edge\n',
     'name columns': 'Display Name,Hostname,IP\nWeb One,web01,10.0.0.5\n',
     'header line': 'hostname   ip\nweb01 10.0.0.5\n',
+    # Excel in Turkish and other European locales: ';' cells, rows (and a header) with an
+    # empty first cell, blank ';;' rows, a leading sep=; line
+    'semicolon rows with an empty first cell': (
+        'Grup;Sunucu Adı;IP Adresi\n;web01;10.0.0.1\nprod;web02;10.0.0.2\n;;10.0.0.3\n;;\n'),
+    'Excel sep line': 'sep=;\nGrup;Sunucu Adı;IP Adresi\n;web01;10.0.0.1\nprod;web02;10.0.0.2\n',
+    'semicolon header with an empty first cell': ';Sunucu;IP\n1;web01;10.0.0.1\n;web02;10.0.0.2\n',
+    'semicolon comment before the header': '; exported\nGrup;Sunucu;IP\n;web01;10.0.0.1\n',
     # what the Reverse DNS view's "Add to Servers" writes into an Ansible INI list
     # (lib/ptrsweep.js inventoryDraft): one line a host, further addresses in ips=
     'reverse dns ini draft': (
@@ -755,6 +762,22 @@ class InventoryTests(unittest.TestCase):
                          ['10.0.0.1', '10.0.0.2', '10.0.0.3'])
         hostish = sos.parse_inventory('name,ansible_host\nweb01,web01.internal\n')
         self.assertEqual(servers_by_name(hostish)['web01'].hostnames, ['web01.internal'])
+
+    def test_semicolon_rows_with_an_empty_first_cell_are_rows_not_comments(self):
+        inv = sos.parse_inventory(INVENTORY_PARITY_CASES['semicolon rows with an empty first cell'])
+        self.assertEqual([(s.name, s.ips, s.groups) for s in inv.servers],
+                         [('web01', ['10.0.0.1'], []), ('web02', ['10.0.0.2'], ['prod']),
+                          ('10.0.0.3', ['10.0.0.3'], [])])
+        self.assertEqual(inv.warnings, [], 'a blank ;; row is no NO_IP row')
+        inv = sos.parse_inventory(INVENTORY_PARITY_CASES['Excel sep line'])
+        self.assertEqual([(s.name, s.ips) for s in inv.servers], [('web01', ['10.0.0.1']), ('web02', ['10.0.0.2'])])
+        inv = sos.parse_inventory(INVENTORY_PARITY_CASES['semicolon header with an empty first cell'])
+        self.assertEqual([(s.name, s.ips) for s in inv.servers], [('web01', ['10.0.0.1']), ('web02', ['10.0.0.2'])])
+        inv = sos.parse_inventory(INVENTORY_PARITY_CASES['semicolon comment before the header'])
+        self.assertEqual([(s.name, s.ips) for s in inv.servers], [('web01', ['10.0.0.1'])])
+        inv = sos.parse_inventory('Name,IP\n# web00,10.0.0.9\n;web01,10.0.0.1\n// x,10.0.0.8\nweb02,10.0.0.2\n')
+        self.assertEqual([s.name for s in inv.servers], ['web02'], 'a comment in a comma file still is one')
+        self.assertEqual(inv.servers[0].line, 5)
 
     def test_csv_management_columns_are_not_server_addresses(self):
         inv = sos.parse_inventory(INVENTORY_PARITY_CASES['management columns'])

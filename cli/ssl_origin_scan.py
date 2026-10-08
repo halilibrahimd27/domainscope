@@ -2320,10 +2320,10 @@ def parse_inventory(text: str, source: str = '', allow_large: bool = False,
         if data is not None:
             _parse_json(data, builder)
             return builder.result(len(lines), link)
-    first = next((line for line in lines if line.strip() and not _is_comment(line)), '')
-    delimiter = _detect_csv_delimiter(first)
+    start, delimiter = _find_csv_header(lines)
+    first = lines[start] if start < len(lines) else ''
     if delimiter:
-        _parse_csv(lines, delimiter, builder)
+        _parse_csv(lines, delimiter, builder, start)
     elif first.strip() == '---' or any(
             re.match(r'^\s*(?:(?:ansible_host|ansible_ssh_host)\s*:\s*\S|hosts\s*:\s*$)', line)
             for line in lines):
@@ -2333,8 +2333,30 @@ def parse_inventory(text: str, source: str = '', allow_large: bool = False,
     return builder.result(len(lines), link)
 
 
-def _detect_csv_delimiter(line: str) -> Optional[str]:
-    for delimiter in ('\t', ',', ';'):
+def _find_csv_header(lines: List[str]) -> Tuple[int, Optional[str]]:
+    """The first line that is not blank or a comment (its index) and, when it is a CSV header,
+    its delimiter. Excel's ``sep=;`` line before it names the delimiter; a line that starts with
+    ``;`` is a comment unless it is a ``;`` header with an empty first cell."""
+    forced = None  # type: Optional[str]
+    for index, line in enumerate(lines):
+        text = line.strip()
+        if not text:
+            continue
+        sep = re.match(r'^sep=(.)$', text, re.I)
+        if sep and forced is None:
+            forced = sep.group(1)
+            continue
+        if _is_comment(line):
+            if (text.startswith(';') and forced in (None, ';')
+                    and _detect_csv_delimiter(line, (';',)) == ';'):
+                return index, ';'
+            continue
+        return index, _detect_csv_delimiter(line, (forced,) if forced else ('\t', ',', ';'))
+    return len(lines), None
+
+
+def _detect_csv_delimiter(line: str, delimiters: Tuple[str, ...] = ('\t', ',', ';')) -> Optional[str]:
+    for delimiter in delimiters:
         if delimiter not in line:
             continue
         cells = [cell.strip().strip('"') for cell in line.split(delimiter)]
@@ -2348,13 +2370,22 @@ def _detect_csv_delimiter(line: str) -> Optional[str]:
     return None
 
 
-def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder) -> None:
-    content = [(number, line) for number, line in enumerate(lines, 1)
-               if line.strip() and not _is_comment(line)]
+def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder, start: int = 0) -> None:
+    """Rows after the header at ``lines[start]``. As in the web app, the first cell makes a
+    comment (``#``, ``;``, ``//``): in a ``;`` file, ``;web02;10.0.0.2`` is a row with an empty
+    first cell, and Excel's blank ``;;`` rows are skipped."""
+    content = []  # type: List[Tuple[int, List[str]]]
+    for number, line in enumerate(lines[start:], start + 1):
+        if not line.strip():
+            continue
+        cells = next(csv.reader([line], delimiter=delimiter), [])
+        if content and (not any(cell.strip() for cell in cells)
+                        or cells[0].strip().startswith(('#', ';', '//'))):
+            continue
+        content.append((number, cells))
     if not content:
         return
-    header = [_normalize_header(cell) for cell in
-              next(csv.reader([content[0][1]], delimiter=delimiter))]
+    header = [_normalize_header(cell) for cell in content[0][1]]
     name_idx = min((i for i, h in enumerate(header) if h in _NAME_RANK),
                    key=lambda i: _NAME_RANK[header[i]], default=None)
     topology_idx = [i for i, h in enumerate(header) if h in TOPOLOGY_KEYS and i != name_idx]
@@ -2365,8 +2396,7 @@ def _parse_csv(lines: List[str], delimiter: str, builder: _InventoryBuilder) -> 
         if h in _NEAR_MISS:
             builder.warn(content[0][0], 'TOPOLOGY', 'column %s is no topology key - did you mean '
                          '%s? It is not read' % (h, _NEAR_MISS[h]), 'nearMiss')
-    rows = csv.reader([line for _, line in content[1:]], delimiter=delimiter)
-    for (number, _line), row in zip(content[1:], rows):
+    for number, row in content[1:]:
         cells = [cell.strip() for cell in row]
         name = cells[name_idx] if name_idx is not None and name_idx < len(cells) else ''
         columns = ip_idx or [i for i in range(len(cells))

@@ -9,6 +9,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 - **Wave 3 — shipped 2026-09-28** ([what shipped and where](#wave-3--shipped-2026-09-28)): customer workspaces with a hand-over file and expected CAs, several certificates at once in SSL Targets (a renewal week) with the CLI's repeated `--cert`, Renewal readiness, Retire an IP, the Domain overview, and PFX / PKCS#12 import.
 - **Wave 4 — shipped 2026-10-01** ([what shipped and where](#wave-4--shipped-2026-10-01)): the headless runner with a nightly GitHub Actions template, the CLI's certificate estate and `bundle-check` with a Certificate estate view and a CSR check, the missing intermediate from a bundled CCADB list with root-store warnings, DNS change requests with an "is it live?" link and fix-as-code, DNS provider moves (new name servers, `dns_parity.py`, the old and the new server side by side), a ledger of what the page sent with related domains and key continuity, and DMARC & TLS reports.
 - **Wave 5 — shipping feature by feature (2026-10-03)** ([what shipped and where](#wave-5--shipping-feature-by-feature-2026-10-03)): a zone fetched from deSEC or DigitalOcean, Global DNS's mainland China locations, the Domain portfolio with a policy audit and the runner's `audit`, Zone File's Compare and Convert, load balancers, VIPs and NAT in the inventory, and a per-workspace origin map.
+- **Wave 6 — shipping feature by feature (2026-10-08)** ([what shipped and where](#wave-6--shipping-feature-by-feature-2026-10-08)): the Domain portfolio's Certificates (CT) tab — each domain's publicly-logged certificates watched for expiry, a configurable radar, new issuance since the last check, unexpected CAs, wildcards and precertificate-only entries, with a CSV and an expiry calendar.
 - **P0** — high value, verified feasible, next iteration
   - [P0.1 Verify the served certificate from the internet (Globalping SNI probe)](#p01-verify-the-served-certificate-from-the-internet-globalping-sni-probe)
   - [P0.2 Origin exposure audit for Cloudflare/CDN-proxied hosts](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts)
@@ -16,7 +17,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
   - [P0.4 Per-server deploy snippet + verify-command generator](#p04-per-server-deploy-snippet--verify-command-generator)
   - [P0.5 Old-vs-new certificate diff and pre-install lint](#p05-old-vs-new-certificate-diff-and-pre-install-lint) — **pre-install lint shipped (`bundle-check`)**
   - [P0.6 Cutover assistant: expected value, watch mode, cache countdown, TTL planner](#p06-cutover-assistant-expected-value-watch-mode-cache-countdown-ttl-planner) — **expected-value check shipped (DNS change request)**
-  - [P0.7 CT watchlist: expiry radar and new-issuance alerts](#p07-ct-watchlist-expiry-radar-and-new-issuance-alerts)
+  - [P0.7 CT watchlist: expiry radar and new-issuance alerts](#p07-ct-watchlist-expiry-radar-and-new-issuance-alerts) — **shipped (2026-10-08)**
   - [P0.8 IP Intel enrichment: open ports, RPKI, routing, abuse, exposure matrix](#p08-ip-intel-enrichment-open-ports-rpki-routing-abuse-exposure-matrix)
   - [P0.9 Zonemaster deep delegation test in Domain Health](#p09-zonemaster-deep-delegation-test-in-domain-health)
   - [P0.10 Dangling-reference registrability check (SubdoMailing)](#p010-dangling-reference-registrability-check-subdomailing)
@@ -118,6 +119,12 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 | A per-workspace origin map (opt-in): which server and port really serves a proxied name, remembered from a zone file, imported CLI reports, Verify's checks of exact origins and the old / new server comparison, with stale marks and merge rules that give the same map whatever order the reports arrive in; Subdomains and SSL Targets rank a remembered origin first as `known`, Behind CDN lists it, and the CLI sweep command and `targets.txt` carry it on its own port | Servers › Origin map, Subdomains, SSL Targets, Zone File, Retire an IP | follow-up of [P0.2](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts) and [P1.2](#p12-zone-import-exact-seeds-proxied-origin-map-lint-and-live-drift) |
 | Integration: one number per section for the three (SPEC §5.66–§5.70), the IP half of netinfo in lib/ip.js so the provider ranges stay off the start route (377,888 bytes of its 370 KB budget), a remembered origin counting like DNS and the zone file where TLS terminates | Shell, SSL Targets, Servers | — |
 
+## Wave 6 — shipping feature by feature (2026-10-08)
+
+| Feature | Where | Roadmap item |
+| --- | --- | --- |
+| A Certificates (CT) tab for the Domain portfolio: each domain's (and its subdomains') publicly-logged certificates from Cert Spotter's subdomain search — one request at a time, paced within its hourly quota and the quota shown, crt.sh as the fallback — the newest of each name set, flagged for expiry within a configurable radar (30 / 14 / 7 days by default), issuance since the last check (the workspace's `ctSeen` baseline, carried by the hand-over file), a CA the workspace does not expect, wildcard and precertificate-only entries; tiles, a filter, CSV and an expiry calendar (.ics) with reminders on the radar's days; said plainly to be publicly-trusted certificates only | Domain portfolio › Certificates (CT) (new tab), workspace, `lib/ics.js` | [P0.7](#p07-ct-watchlist-expiry-radar-and-new-issuance-alerts) |
+
 ## P0 — next iteration
 
 ### P0.1 Verify the served certificate from the internet (Globalping SNI probe)
@@ -194,6 +201,8 @@ DNS-side flagship. Behaviour in Global DNS: an 'Expected value' input (exact / c
 ### P0.7 CT watchlist: expiry radar and new-issuance alerts
 
 id `ct-watchlist` · where: **browser** · effort: **M**
+
+**Status (2026-10-08): shipped as the Domain portfolio's Certificates (CT) tab (wave 6).** For each portfolio domain (and its subdomains) `lib/ctwatch.js` lists the CT-logged certificates — Cert Spotter's subdomain search paced within its hourly quota (shown on the page), crt.sh as the fallback — and `ui/ctwatch-panel.js` flags the newest of each name set for expiry within a configurable radar (30 / 14 / 7 days), issuance since the last check (the workspace's `ctSeen` baseline, in the hand-over file), an unexpected CA (the workspace's expected CAs), wildcard and precertificate-only entries, with CSV and an .ics expiry calendar (reminders on the radar's days). A watchlist of arbitrary domains in localStorage and the CA problem-reporting links are deferred.
 
 **Status (2026-09-27): groundwork shipped in wave 1.** `lib/ctcert.js` loads the newest currently valid certificate of one host name (Cert Spotter's single-host quota, two requests per lookup; crt.sh download links as fallback) for the Certificate view and SSL Targets. The watchlist itself, issuance history and alerts are not started.
 

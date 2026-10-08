@@ -248,6 +248,12 @@ export function fixText(f) {
   return t(fixKey(f), { domain: fixDomain(f), target: f.target, service: f.service ? f.service.name : '', host: f.host });
 }
 
+/** Findings worst first, then by host and target (lib/takeover.js order). */
+function sortFindings(list) {
+  return list.sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity)
+    || a.host.localeCompare(b.host) || a.target.localeCompare(b.target));
+}
+
 /** State per scan run: survives a re-mount (a language switch) of the same results. */
 const states = new WeakMap();
 /** Runs with a check in flight (a workspace switch names it, ui/jobs.js). */
@@ -282,7 +288,7 @@ export function TakeoverPanel(ctx) {
   function stateOf(r) {
     let s = states.get(r);
     if (!s) {
-      s = { status: 'idle', result: null, findings: [], known: null, error: null, controller: null, done: 0, total: 0, http: null };
+      s = { status: 'idle', result: null, findings: [], known: null, outcomes: new Map(), error: null, controller: null, done: 0, total: 0, http: null };
       states.set(r, s);
     }
     return s;
@@ -296,7 +302,8 @@ export function TakeoverPanel(ctx) {
     const controller = new AbortController();
     const signal = mergeSignals(ctx.signal, controller.signal);
     Object.assign(s, { status: 'running', controller, error: null, done: 0, total: 0, http: retry ? s.http : null });
-    if (!retry) s.known = null;
+    // Check again starts afresh; a Retry keeps the registrations and the page checks it has.
+    if (!retry) Object.assign(s, { known: null, outcomes: new Map() });
     running.add(r);
     render();
     try {
@@ -314,7 +321,13 @@ export function TakeoverPanel(ctx) {
           if (state === s && progress) progress.set(done, Math.max(total, 1));
         }
       });
-      Object.assign(s, { status: 'done', result, findings: result.findings, known: result.registrations });
+      const findings = [];
+      for (const f of result.findings) {
+        const o = s.outcomes.get(f.id);
+        const after = o ? engine.applyHttpCheck(f, o) : f;
+        if (after) findings.push(after);
+      }
+      Object.assign(s, { status: 'done', result, findings: sortFindings(findings), known: result.registrations });
       const atRisk = result.findings.filter((f) => f.severity !== 'info').length;
       announce(atRisk ? t('tko.found', { count: atRisk, checked: t('tko.checked', { count: result.references }) })
         : t('tko.none', { count: result.references, domains: t('tko.domains', { count: result.checked }) }));
@@ -334,6 +347,7 @@ export function TakeoverPanel(ctx) {
     if (!s || !s.result || (s.http && s.http.status === 'running') || !ctx.requireOnline()) return;
     const controller = new AbortController();
     const signal = mergeSignals(ctx.signal, controller.signal);
+    const prev = s.http;
     s.http = { status: 'running', controller, counts: null, error: null, resetAt: null };
     running.add(run);
     const r = run;
@@ -344,12 +358,16 @@ export function TakeoverPanel(ctx) {
         throw err;
       });
       const list = candidates.filter((f) => gp.isProbeableHost(f.host));
+      if (!list.length) {
+        s.http = prev;
+        return;
+      }
       const hosts = list.map((f) => f.host);
       const g = await gate.gateProbes(ctx, {
         purpose: takeover.TAKEOVER_PURPOSE, probes: list.length, privacy: t('tko.http.privacy', { hosts: hosts.join(', ') }), signal, confirmAbove: 3
       });
       if (g.status === 'cancelled') {
-        s.http = null;
+        s.http = prev;
         return;
       }
       if (g.status === 'quota') {
@@ -379,15 +397,15 @@ export function TakeoverPanel(ctx) {
         if (o.outcome === 'claimable') counts.claimable += 1;
         else if (o.outcome === 'in-use') counts.inUse += 1;
         else counts.noAnswer += 1;
+        s.outcomes.set(f.id, o);
         const after = takeover.applyHttpCheck(f, o);
         if (after) next.push(after);
       }
-      next.sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) || a.host.localeCompare(b.host));
-      s.findings = next;
+      s.findings = sortFindings(next);
       s.http = { status: 'done', counts };
       announce(t('tko.http.done', counts));
     } catch (err) {
-      if (errorKind(err) === 'abort' || signal.aborted) s.http = null;
+      if (errorKind(err) === 'abort' || signal.aborted) s.http = prev;
       else if (err && (err.code === 'rate-limit' || err.code === 'insufficient-credits')) s.http = { status: 'quota', resetAt: err.resetAt || null, whenText: null };
       else s.http = { status: 'error', error: err };
     } finally {
@@ -491,7 +509,7 @@ export function TakeoverPanel(ctx) {
     }
     const runBtn = Button({
       label: t(s.status === 'idle' || s.status === 'stopped' ? 'tko.run' : 'tko.again'), icon: 'shield', size: 'sm',
-      variant: s.status === 'idle' ? 'primary' : 'secondary', disabled: scanRunning || nothing,
+      variant: s.status === 'idle' ? 'primary' : 'secondary', disabled: scanRunning || nothing || !!(s.http && s.http.status === 'running'),
       title: scanRunning ? t('tko.runBusy') : null, dataset: { action: 'tko-run' }, onClick: () => start()
     });
     actions.append(runBtn);

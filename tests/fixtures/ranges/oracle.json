@@ -1,0 +1,11 @@
+{
+  "last_updated_timestamp": "2026-08-25T08:00:00.000000",
+  "regions": [
+    {
+      "region": "eu-frankfurt-1",
+      "cidrs": [{ "cidr": "203.0.113.128/27", "tags": ["OCI"] }, { "cidr": "203.0.113.160/27", "tags": ["OSN", "OBJECT_STORAGE"] }],
+      "ipv6_cidrs": [{ "cidr": "2001:db8:c::/48", "tags": ["OCI"] }]
+    },
+    { "region": "us-ashburn-1", "cidrs": [{ "cidr": "203.0.113.208/28", "tags": ["OCI"] }] }
+  ]
+}

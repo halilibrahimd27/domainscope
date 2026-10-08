@@ -22,9 +22,12 @@ export const MANIFEST_FILES = Object.freeze({ en: 'manifest.webmanifest', tr: 'm
 export const UPDATE_CHECK_MS = 60 * 60 * 1000;
 /**
  * Files under assets/ the app never requests, left out of the precache: the wordlist manifest
- * (build-time data; lib/wordlist.js embeds its counts) and the data README.
+ * (build-time data; lib/wordlist.js embeds its counts), the data README, and the provider-range
+ * network tier (tools/build-ranges.mjs, about 130 KB of display-only operator space). The range
+ * manifest and the small edge tier stay precached; offline, lib/netinfo.js falls back to its
+ * built-in table when the whole dataset is not cached, so the network tier adds no offline weight.
  */
-export const PRECACHE_SKIP = Object.freeze(['data/README.md', 'data/wordlist-manifest.json']);
+export const PRECACHE_SKIP = Object.freeze(['data/README.md', 'data/ranges/networks.json', 'data/wordlist-manifest.json']);
 /**
  * Directories under assets/ left out of the precache: the intermediate certificate shards of
  * lib/chainfix.js (256 + 16 files, about 4.2 MB; a repair reads the few it needs, usually one or

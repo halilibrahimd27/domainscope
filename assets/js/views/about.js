@@ -189,6 +189,7 @@ registerStrings('en', {
   'about.version': 'Version {version}',
   'about.wordlistCredits': 'The bundled subdomain wordlists are built from SecLists, bitquark and dnsgen (MIT) and commonspeak2 and altdns (Apache-2.0).',
   'about.ccadbCredits': 'The intermediate certificates and root store data behind the Certificate view’s missing-intermediate repair come from the Common CA Database (CCADB), under the Community Data License Agreement – Permissive 2.0.',
+  'about.rangesCredits': 'The CDN and cloud IP ranges behind the answer classification are this site’s own weekly-refreshed copy of the ranges Cloudflare, Fastly, AWS, GitHub, Google, Oracle and DigitalOcean publish, with Cloudflare’s announced network from RIPEstat; offline the app falls back to a built-in table.',
   'about.wordlistLicenses': 'Wordlist and data licences'
 });
 
@@ -325,6 +326,7 @@ registerStrings('tr', {
   'about.version': 'Sürüm {version}',
   'about.wordlistCredits': 'Paketteki subdomain kelime listeleri SecLists, bitquark ve dnsgen (MIT) ile commonspeak2 ve altdns (Apache-2.0) listelerinden üretilir.',
   'about.ccadbCredits': 'Sertifika görünümünün eksik ara sertifika onarımının kullandığı ara sertifikalar ve kök deposu verileri, Community Data License Agreement – Permissive 2.0 ile Common CA Database’den (CCADB) gelir.',
+  'about.rangesCredits': 'Yanıt sınıflandırmasının arkasındaki CDN ve bulut IP blokları, Cloudflare, Fastly, AWS, GitHub, Google, Oracle ve DigitalOcean’ın yayımladığı blokların bu sitede haftalık yenilenen kopyasıdır; Cloudflare’in duyurduğu ağ RIPEstat’tandır. Çevrimdışıyken uygulama yerleşik bir tabloya döner.',
   'about.wordlistLicenses': 'Kelime listesi ve veri lisansları'
 });
 
@@ -611,7 +613,7 @@ export function mount(container, ctx) {
     children: h('div', { class: 'stack-sm' },
       h('p', null, t('about.licenseBody')),
       h('p', { class: 'muted' }, t('about.thanks')),
-      h('p', { class: 'muted' }, t('about.wordlistCredits'), ' ', t('about.ccadbCredits'), ' ',
+      h('p', { class: 'muted' }, t('about.wordlistCredits'), ' ', t('about.ccadbCredits'), ' ', t('about.rangesCredits'), ' ',
         h('a', { href: LICENSES_URL, target: '_blank', rel: 'noopener' }, t('about.wordlistLicenses'))),
       h('div', { class: 'cluster' },
         Badge('MIT', { variant: 'accent', icon: 'book' }),

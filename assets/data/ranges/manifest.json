@@ -1,0 +1,121 @@
+{
+  "format": 1,
+  "generated": "2026-10-08",
+  "digest": "925847e3397f7c7b5839fc81a619f51a8a6c5cfd3450032ed023065ee589fa88",
+  "sources": [
+    {
+      "id": "cloudflare-v4",
+      "name": "Cloudflare: IPv4 proxy ranges",
+      "url": "https://www.cloudflare.com/ips-v4",
+      "published": null,
+      "prefixes": 15,
+      "sha256": "87d4e49746b9c75077cfa8a50c51617614900c043804801ee17c8c034dc79ea5"
+    },
+    {
+      "id": "cloudflare-v6",
+      "name": "Cloudflare: IPv6 proxy ranges",
+      "url": "https://www.cloudflare.com/ips-v6",
+      "published": null,
+      "prefixes": 7,
+      "sha256": "2119ba7ec2c088bac16f3d19c1b9e9e964684995b3f1e70dfafb0eee40163e29"
+    },
+    {
+      "id": "fastly",
+      "name": "Fastly: public IP list",
+      "url": "https://api.fastly.com/public-ip-list",
+      "published": null,
+      "prefixes": 21,
+      "sha256": "915ca1d790a5f2a5f8c21d567740948320df77a0b93580ffc2601edaa265466b"
+    },
+    {
+      "id": "aws",
+      "name": "AWS: ip-ranges.json",
+      "url": "https://ip-ranges.amazonaws.com/ip-ranges.json",
+      "published": "2026-10-08-08-37-06",
+      "prefixes": 17533,
+      "sha256": "a213b3958ce4d666815fdc3c49f0c6868e7a6fb1863a6632fb5e93c50227d321"
+    },
+    {
+      "id": "github",
+      "name": "GitHub: meta API (Pages)",
+      "url": "https://api.github.com/meta",
+      "published": null,
+      "prefixes": 10,
+      "sha256": "dbcebdc1a02bcfaebac8b85f92d4ac0bd8173a45e0bb091832181130c031ccca"
+    },
+    {
+      "id": "google",
+      "name": "Google: goog.json (all Google ranges)",
+      "url": "https://www.gstatic.com/ipranges/goog.json",
+      "published": "2026-10-08T01:06:45.374347",
+      "prefixes": 145,
+      "sha256": "52af8d02d762c4a3ea7fe25318ebf16534f12f41b5dec5375df9409ce3c9cc2e"
+    },
+    {
+      "id": "google-cloud",
+      "name": "Google Cloud: cloud.json (customer ranges)",
+      "url": "https://www.gstatic.com/ipranges/cloud.json",
+      "published": "2026-10-08T01:06:45.374347",
+      "prefixes": 1107,
+      "sha256": "2dd52f90700cb30eba41eeb25eb002e7b72e423de0dc3a4d5267aa1046c82d90"
+    },
+    {
+      "id": "oracle",
+      "name": "Oracle Cloud: public_ip_ranges.json",
+      "url": "https://docs.oracle.com/en-us/iaas/tools/public_ip_ranges.json",
+      "published": "2026-08-25T08:06:24.590745",
+      "prefixes": 1327,
+      "sha256": "8e62e4e18974525da24980fbdf5b1f2d13277592cbf50b656f410434f8c8c93e"
+    },
+    {
+      "id": "digitalocean",
+      "name": "DigitalOcean: geo feed (RFC 8805)",
+      "url": "https://www.digitalocean.com/geo/google.csv",
+      "published": null,
+      "prefixes": 1230,
+      "sha256": "9f170acbd303dbc476141aa1bbeaa999bf3dd69007580b7ab2c48ab854d29fd1"
+    },
+    {
+      "id": "as13335",
+      "name": "RIPEstat: prefixes announced by AS13335 (Cloudflare)",
+      "url": "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS13335",
+      "published": "2026-10-08T00:00:00",
+      "prefixes": 5716,
+      "sha256": "1f59eabfbd4f08ff6ef1eec480899ab461f7473e7c1500e58d399232728b1a6f"
+    },
+    {
+      "id": "as209242",
+      "name": "RIPEstat: prefixes announced by AS209242 (Cloudflare)",
+      "url": "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS209242",
+      "published": "2026-10-08T00:00:00",
+      "prefixes": 302,
+      "sha256": "da069112889ca479e274fe3afceb7108bc7e2ba1a7cc3679abc09540deb54695"
+    }
+  ],
+  "files": {
+    "edges.json": {
+      "bytes": 5178,
+      "sha256": "6117bfb8f3ba048b0c7d6ba011bf94193e3c754d113a3820c42ed8f2a6d88904"
+    },
+    "networks.json": {
+      "bytes": 136270,
+      "sha256": "49a256b50f2e425336cd14efa217abc36171ec3dd2f1eb3b555c318ce01c6b87"
+    }
+  },
+  "counts": {
+    "edges": {
+      "cloudflare": 22,
+      "cloudfront": 211,
+      "fastly": 21,
+      "github-pages": 10
+    },
+    "networks": {
+      "aws": 4085,
+      "cloudflare": 855,
+      "digitalocean": 235,
+      "google": 145,
+      "google-cloud": 479,
+      "oracle": 932
+    }
+  }
+}

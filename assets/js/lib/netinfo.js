@@ -2,9 +2,16 @@
  * netinfo.js — CDN/WAF/platform detection by IP range or CNAME suffix, and the classification of
  * a name's DNS answer. The IP parsing, CIDR math, private-range checks and PTR names live in
  * lib/ip.js (all of it is re-exported here); DOM-free; runs in browsers and Node 22.
+ *
+ * The IP ranges come in two tiers. The edge tier (the providers' proxy / CDN / platform ranges)
+ * decides the classification; the network tier (an operator's whole published space) only names
+ * the network of a 'direct' answer. Both are refreshed weekly by tools/build-ranges.mjs into
+ * assets/data/ranges/, which {@link loadRanges} reads once; until it has (or when it cannot), the
+ * built-in edge table below is used and there is no network tier.
  */
 
-import { parseIP, normalizeIP, parseCidr, isPrivateIP, cidrContains } from './ip.js';
+import { parseIP, normalizeIP, parseCidr, isPrivateIP } from './ip.js';
+import { AbortError, ParseError, errorKind, fetchJson, throwIfAborted } from './util.js';
 
 export * from './ip.js';
 
@@ -12,7 +19,10 @@ export * from './ip.js';
 /* Providers                                                                */
 /* ------------------------------------------------------------------------ */
 
-/** Date the embedded IP ranges were fetched from their official sources. */
+/**
+ * Date the built-in IP ranges below were fetched from their official sources. The weekly dataset
+ * has its own date ({@link rangesInfo}).
+ */
 export const RANGES_UPDATED = '2026-09-23';
 
 // Official range sources (all fetched 2026-09-23). IP ranges are included
@@ -393,20 +403,260 @@ export function isSharedProvider(provider) {
   return SHARED_PROVIDER_CATEGORIES.includes(provider.category);
 }
 
-let compiledRanges = null; // lazily parsed [{ cidr, provider }]
+/* ------------------------------------------------------------------------ */
+/* The range dataset (tools/build-ranges.mjs → assets/data/ranges/)         */
+/* ------------------------------------------------------------------------ */
+
+/** Format of the range dataset this module reads (tools/build-ranges.mjs FORMAT); another one is refused. */
+export const RANGES_FORMAT = 1;
+/** The files of the range dataset, under assets/data/ranges/. */
+export const RANGES_FILES = Object.freeze(['manifest.json', 'edges.json', 'networks.json']);
+/** How long loading the dataset may take, bodies included. */
+export const RANGES_TIMEOUT_MS = 15000;
+/** Where the ranges in use come from: the weekly dataset, or the built-in table above. */
+export const RANGES_SOURCES = Object.freeze(['data', 'built-in']);
+
+/** The dataset's manifest; the other files sit next to it. */
+const RANGES_BASE = new URL('../../data/ranges/manifest.json', import.meta.url);
+/** Running in Node (file:// module, tests and tools) vs a browser (http(s):// module). */
+const IS_NODE = RANGES_BASE.protocol === 'file:';
+
+const defineNetwork = (id, name, category) => Object.freeze({ id, name, category, tier: 'network' });
+
+/**
+ * The operators of the dataset's network tier, in lookup order: their whole published (or, for
+ * Cloudflare, announced) address space. Display only — an answer there that no edge range holds
+ * is still 'direct' (the address is reached as such); {@link classifyResolution} only names the
+ * network. Cloudflare's entry is the second tier of ROADMAP P2.10: the prefixes AS13335 and
+ * AS209242 announce (Spectrum, WARP, BYOIP, 1.1.1.1 …), not necessarily proxied. Google Cloud's
+ * customer ranges come before the rest of Google's. Ids match lib/ipintel.js INFRA_NETWORKS.
+ * Empty until the dataset loads.
+ * @type {ReadonlyArray<{ id: string, name: string, category: 'cdn'|'cloud'|'hosting', tier: 'network' }>}
+ */
+export const NETWORKS = Object.freeze([
+  defineNetwork('cloudflare', 'Cloudflare', 'cdn'),
+  defineNetwork('aws', 'AWS', 'cloud'),
+  defineNetwork('google-cloud', 'Google Cloud', 'cloud'),
+  defineNetwork('google', 'Google', 'cloud'),
+  defineNetwork('oracle', 'Oracle Cloud', 'cloud'),
+  defineNetwork('digitalocean', 'DigitalOcean', 'hosting')
+]);
+
+/** The installed dataset, or null (the built-in table is in use). */
+let dataset = null;
+/** Why the last load did not install the dataset: { error, errorKind }, or null. */
+let loadFailure = null;
+/** The load in flight (or done), shared by every caller. */
+let loading = null;
+let edgeIndex = null; // [{ provider, table }] in PROVIDERS order
+let networkIndex = null; // [{ network, table }] in NETWORKS order
 let suffixIndex = null; // Map<suffix, provider>
 
-function ranges() {
-  if (!compiledRanges) {
-    compiledRanges = [];
-    for (const provider of PROVIDERS) {
-      for (const text of provider.cidrs) {
-        const cidr = parseCidr(text);
-        if (cidr) compiledRanges.push({ cidr, provider });
+const byStart = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+
+/** Prefix texts → per IP version, sorted non-overlapping [start, end] intervals (a binary search table). */
+function compileTable(prefixes) {
+  const raw = { 4: [], 6: [] };
+  for (const text of prefixes) {
+    const c = parseCidr(text);
+    if (c) raw[c.version].push([c.network, c.network + (1n << BigInt((c.version === 4 ? 32 : 128) - c.prefix)) - 1n]);
+  }
+  const table = {};
+  for (const v of [4, 6]) {
+    const starts = [];
+    const ends = [];
+    for (const [s, e] of raw[v].sort(byStart)) {
+      const last = ends.length - 1;
+      if (last >= 0 && s <= ends[last] + 1n) {
+        if (e > ends[last]) ends[last] = e;
+      } else {
+        starts.push(s);
+        ends.push(e);
       }
     }
+    table[v] = { starts, ends };
   }
-  return compiledRanges;
+  return table;
+}
+
+function tableHolds(table, version, value) {
+  const { starts, ends } = table[version];
+  let lo = 0;
+  let hi = starts.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (starts[mid] <= value) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return hi >= 0 && value <= ends[hi];
+}
+
+/** Does `table` hold the parsed address? An IPv4-mapped IPv6 address matches IPv4 ranges (as cidrContains). */
+function inTable(table, addr) {
+  if (tableHolds(table, addr.version, addr.value)) return true;
+  return addr.version === 6 && addr.value >> 32n === 0xffffn && tableHolds(table, 4, addr.value & 0xffffffffn);
+}
+
+/** The edge ranges in use: the dataset's list of a provider when it has one, else the built-in table. */
+function edgeTables() {
+  if (!edgeIndex) {
+    edgeIndex = [];
+    for (const provider of PROVIDERS) {
+      const list = (dataset && dataset.edges.get(provider.id)) || provider.cidrs;
+      if (list.length) edgeIndex.push({ provider, table: compileTable(list) });
+    }
+  }
+  return edgeIndex;
+}
+
+function networkTables() {
+  if (!networkIndex) {
+    networkIndex = [];
+    for (const network of NETWORKS) {
+      const list = dataset && dataset.networks.get(network.id);
+      if (list && list.length) networkIndex.push({ network, table: compileTable(list) });
+    }
+  }
+  return networkIndex;
+}
+
+/** A tier file's entries: id → non-empty list of prefix texts. Throws on any other shape. */
+function tierEntries(obj, what) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new TypeError(`${what}: not an object`);
+  const out = new Map();
+  for (const [id, list] of Object.entries(obj)) {
+    if (!Array.isArray(list) || !list.length) throw new TypeError(`${what}: ${id} is not a list of prefixes`);
+    for (const p of list) if (typeof p !== 'string' || !parseCidr(p)) throw new TypeError(`${what}: ${id} holds ${JSON.stringify(String(p).slice(0, 40))}`);
+    out.set(id, Object.freeze([...list]));
+  }
+  return out;
+}
+
+/**
+ * @typedef {object} RangesInfo
+ * @property {'data'|'built-in'} source where the ranges in use come from ({@link RANGES_SOURCES})
+ * @property {string} updated YYYY-MM-DD: the dataset's date, or {@link RANGES_UPDATED} for the built-in table
+ * @property {Record<string, number>} edges prefixes per provider in use for the classification
+ * @property {Record<string, number>} networks prefixes per network-tier operator (empty without the dataset)
+ * @property {string|null} error why the dataset is not in use, when a load failed (null otherwise)
+ * @property {string|null} errorKind lib/util.js errorKind of that failure ('parse' for a refused dataset)
+ */
+
+/**
+ * The ranges in use right now.
+ * @returns {RangesInfo}
+ */
+export function rangesInfo() {
+  const edges = {};
+  for (const { provider } of edgeTables()) edges[provider.id] = ((dataset && dataset.edges.get(provider.id)) || provider.cidrs).length;
+  const networks = {};
+  for (const { network } of networkTables()) networks[network.id] = dataset.networks.get(network.id).length;
+  return {
+    source: dataset ? 'data' : 'built-in',
+    updated: dataset ? dataset.generated : RANGES_UPDATED,
+    edges,
+    networks,
+    error: dataset || !loadFailure ? null : loadFailure.error,
+    errorKind: dataset || !loadFailure ? null : loadFailure.errorKind
+  };
+}
+
+/**
+ * Use a range dataset — the three parsed files of assets/data/ranges as tools/build-ranges.mjs
+ * writes them — for {@link matchProviderByIP}, {@link matchNetworkByIP} and
+ * {@link classifyResolution}. A provider the edge file does not list keeps its built-in ranges
+ * (Imperva, Sucuri, Netlify, Vercel). A dataset of another format or shape is refused whole and
+ * the ranges in use stay as they were. `null` goes back to the built-in table.
+ * @param {{ manifest: object, edges: object, networks: object }|null} data
+ * @returns {RangesInfo} with `error` / `errorKind: 'parse'` when the dataset was refused
+ */
+export function installRanges(data) {
+  if (data === null) {
+    dataset = null;
+    loadFailure = null;
+    loading = null; // a later loadRanges() reads the files again
+  } else {
+    try {
+      const manifest = data && data.manifest;
+      if (!manifest || manifest.format !== RANGES_FORMAT) throw new TypeError(`manifest: format ${manifest ? JSON.stringify(manifest.format) : 'missing'}, expected ${RANGES_FORMAT}`);
+      if (typeof manifest.generated !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(manifest.generated)) throw new TypeError('manifest: no date');
+      dataset = { generated: manifest.generated, edges: tierEntries(data.edges, 'edges'), networks: tierEntries(data.networks, 'networks') };
+      loadFailure = null;
+    } catch (err) {
+      loadFailure = { error: String(err && err.message ? err.message : err), errorKind: 'parse' };
+    }
+  }
+  edgeIndex = null;
+  networkIndex = null;
+  return rangesInfo();
+}
+
+/** One dataset file: `fs` in Node (unless a fetch is injected), else fetched next to this module. */
+async function readRangesFile(name, { fetchImpl, timeoutMs }) {
+  const url = new URL(name, RANGES_BASE);
+  if (IS_NODE && !fetchImpl) {
+    const { readFile } = await import('node:fs/promises');
+    try {
+      return JSON.parse(await readFile(url, 'utf8'));
+    } catch (err) {
+      throw err instanceof SyntaxError ? new ParseError(`${name}: ${err.message}`) : err;
+    }
+  }
+  return fetchJson(url.href, { fetchImpl: fetchImpl || globalThis.fetch, timeoutMs, headers: { accept: 'application/json' } });
+}
+
+/** Wait for `promise`, or reject with an AbortError as soon as `signal` aborts (the work itself goes on). */
+function abortable(promise, signal) {
+  if (!signal) return promise;
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(new AbortError('aborted', { cause: signal.reason }));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then((v) => { signal.removeEventListener('abort', onAbort); resolve(v); },
+      (e) => { signal.removeEventListener('abort', onAbort); reject(e); });
+  });
+}
+
+/**
+ * Load the range dataset (assets/data/ranges, next to this module) once and install it
+ * ({@link installRanges}). Every caller shares one load; a failed load is tried again by the next
+ * call. Until it succeeds — the files are missing, a request fails or times out, the dataset is
+ * refused — the built-in table stays in use and the result says why. In a browser the load starts
+ * when this module is first imported; a run that must not change its ranges halfway awaits it.
+ * Only an abort of `signal` rejects (it ends the wait, not the shared load).
+ * @param {{ fetchImpl?: typeof fetch, signal?: AbortSignal, timeoutMs?: number }} [opts]
+ *   fetchImpl: also in Node (tests), instead of reading the files with `fs`
+ * @returns {Promise<RangesInfo>}
+ */
+export function loadRanges({ fetchImpl, signal, timeoutMs = RANGES_TIMEOUT_MS } = {}) {
+  if (dataset) return Promise.resolve(rangesInfo());
+  if (!loading) {
+    loading = Promise.all(RANGES_FILES.map((name) => readRangesFile(name, { fetchImpl, timeoutMs })))
+      .then(([manifest, edges, networks]) => installRanges({ manifest, edges, networks }))
+      .catch((err) => {
+        loadFailure = { error: String(err && err.message ? err.message : err), errorKind: errorKind(err) };
+        return rangesInfo();
+      })
+      .then((info) => {
+        if (!dataset) loading = null; // the next call tries again
+        return info;
+      });
+  }
+  return abortable(loading, signal);
+}
+
+/**
+ * Operator network (the dataset's network tier) whose published space holds `ip`, first match in
+ * {@link NETWORKS} order; null for an address outside them, a bad input, or while the dataset is
+ * not loaded. Display only: the classification's kind does not depend on it.
+ * @param {string} ip
+ * @returns {{ id: string, name: string, category: string, tier: 'network' }|null}
+ */
+export function matchNetworkByIP(ip) {
+  const addr = parseIP(ip);
+  if (!addr) return null;
+  for (const { network, table } of networkTables()) if (inTable(table, addr)) return network;
+  return null;
 }
 
 function suffixes() {
@@ -423,15 +673,16 @@ function suffixes() {
 
 /**
  * Provider whose published IP ranges contain `ip` (first match in PROVIDERS
- * order), or null.
+ * order), or null. The ranges are the weekly dataset's once {@link loadRanges}
+ * installed it, else the built-in table ({@link rangesInfo}).
  * @param {string} ip
  * @returns {object|null}
  */
 export function matchProviderByIP(ip) {
   const addr = parseIP(ip);
   if (!addr) return null;
-  for (const { cidr, provider } of ranges()) {
-    if (cidrContains(cidr, addr)) return provider;
+  for (const { provider, table } of edgeTables()) {
+    if (inTable(table, addr)) return provider;
   }
   return null;
 }
@@ -496,10 +747,17 @@ function reasonOf(provider, via) {
  * class.loadbalancer.ip, class.loadbalancer.cname, class.hosting.ip,
  * class.hosting.cname, class.private, class.direct.
  *
+ * Two tiers (ROADMAP P2.10): only the edge ranges ({@link matchProviderByIP}) make an answer
+ * Cloudflare-proxied, CDN or platform. A 'direct' answer with an address in the network tier
+ * ({@link matchNetworkByIP}, once the dataset is loaded) also carries `network`, the first such
+ * address's operator — for Cloudflare, "Cloudflare network, not necessarily proxied". Its kind,
+ * reasonKey and flags stay those of a direct answer; without a match there is no `network` key.
+ *
  * @param {{ status?: string, ipv4?: string[], ipv6?: string[], cnames?: string[] }} res
  * @returns {{ kind: 'cloudflare'|'cdn'|'platform'|'direct'|'private'|'unresolved'|'nxdomain',
  *   provider: object|null, hidesOrigin: boolean, certManagedByProvider: boolean,
- *   dangling: boolean, reasonKey: string, via: 'ip'|'cname'|null }}
+ *   dangling: boolean, reasonKey: string, via: 'ip'|'cname'|null,
+ *   network?: { id: string, name: string, category: string, tier: 'network' } }}
  */
 export function classifyResolution({ status, ipv4 = [], ipv6 = [], cnames = [] } = {}) {
   const ips = [...new Set([...(ipv4 || []), ...(ipv6 || [])].map(normalizeIP).filter(Boolean))];
@@ -553,5 +811,16 @@ export function classifyResolution({ status, ipv4 = [], ipv6 = [], cnames = [] }
   // Only DNS-level steering (or nothing): the answer IPs are the real endpoints.
   const extra = best ? { provider: best.provider, via: best.via } : {};
   if (ips.every(isPrivateIP)) return result('private', 'class.private', extra);
+  for (const ip of ips) {
+    const network = matchNetworkByIP(ip);
+    if (network) {
+      extra.network = network;
+      break;
+    }
+  }
   return result('direct', 'class.direct', extra);
 }
+
+// In a browser, start loading the dataset as soon as a view imports this module (Node — tests,
+// tools — loads it only when asked). A failure leaves the built-in table in use.
+if (!IS_NODE && typeof globalThis.fetch === 'function') loadRanges();

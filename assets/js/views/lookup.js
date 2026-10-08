@@ -14,6 +14,12 @@
  * click): the chain of trust of the name and one of the looked-up types, validated in this browser
  * from the IANA root trust anchors down, zone by zone; a new lookup closes it.
  *
+ * "Explain" in the summary card (ui/explain-panel.js over lib/records.js and lib/spfexplain.js,
+ * loaded on its first click; not for a reverse name or the root): the name's SPF term by term with
+ * "Does an address pass?" and a flatten preview, the DMARC and CAA that apply tag by tag, and its
+ * HTTPS / SVCB parameters with the ECH configuration decoded; the lookup's answers are reused, a
+ * new lookup closes it.
+ *
  * Shareable: `#/lookup?name=example.com&type=MX` (type may repeat or be comma-separated;
  * optional `resolver=<id>`, `dnssec=1`, `cd=1`). An IP address as name becomes a PTR query.
  * With `run=0` (a name carried over from another tool, lib/session.js) the form is only filled
@@ -116,6 +122,8 @@ registerStrings('en', {
   'lkp.copyAll': 'Copy all (dig format)',
   'lkp.dnssecChain': 'DNSSEC chain',
   'lkp.dnssecChainTitle': 'Validate the chain of trust of this answer from the root trust anchors down, in this browser',
+  'lkp.explain': 'Explain',
+  'lkp.explainTitle': 'The SPF, DMARC, CAA and HTTPS records of this name in plain words, with an SPF check for any address',
   'lkp.links': 'More about this name:',
 
   'lkp.card.records': { zero: 'No records', one: '{count} record', other: '{count} records' },
@@ -271,6 +279,8 @@ registerStrings('tr', {
   'lkp.copyAll': 'Tümünü kopyala (dig biçimi)',
   'lkp.dnssecChain': 'DNSSEC zinciri',
   'lkp.dnssecChainTitle': 'Bu yanıtın güven zincirini kök güven çapalarından başlayarak tarayıcınızda doğrular',
+  'lkp.explain': 'Açıkla',
+  'lkp.explainTitle': 'Bu adın SPF, DMARC, CAA ve HTTPS kayıtlarını sade bir dille açıklar; SPF’i herhangi bir adres için kontrol eder',
   'lkp.links': 'Bu ad hakkında daha fazlası:',
 
   'lkp.card.records': { zero: 'Kayıt yok', other: '{count} kayıt' },
@@ -706,11 +716,12 @@ export function mount(container, ctx) {
   const summaryEl = h('div', { class: 'lkp-summary' });
   const noteEl = h('div', { class: 'lkp-note' });
   const cardsEl = h('div', { class: 'lkp-cards' });
-  // DNSSEC chain (ui/dnssec-panel.js, loaded on the first click of the summary's button).
+  // Explain (ui/explain-panel.js) and the DNSSEC chain (ui/dnssec-panel.js), each loaded on the first click of its summary button.
+  const explainEl = h('div', { class: 'lkp-explain' });
   const dnssecEl = h('div', { class: 'lkp-dnssec' });
   const emptyEl = h('div', { class: 'card lkp-empty' }, EmptyState({ icon: 'search', title: t('lkp.emptyTitle'), message: t('lkp.emptyBody') }));
   // No part of the form: Ctrl/Cmd+Enter in a field here starts no new lookup.
-  const results = h('div', { class: 'stack lkp-results', hidden: true, dataset: { shortcutScope: 'results' } }, summaryEl, noteEl, dnssecEl, cardsEl);
+  const results = h('div', { class: 'stack lkp-results', hidden: true, dataset: { shortcutScope: 'results' } }, summaryEl, noteEl, explainEl, dnssecEl, cardsEl);
   container.append(h('div', { class: 'stack-lg lkp-view' }, formCard, emptyEl, results));
 
   /*
@@ -1433,6 +1444,7 @@ export function mount(container, ctx) {
       const actions = h('div', { class: 'lkp-sum-actions cluster' },
         CopyButton(allText, { label: t('lkp.copyAll'), size: 'sm', variant: 'secondary' }),
         summary,
+        !q.ptrFor && q.name !== '.' ? Button({ label: t('lkp.explain'), icon: 'book', size: 'sm', variant: 'secondary', title: t('lkp.explainTitle'), dataset: { action: 'explain' }, onClick: () => openExplain(q) }) : null,
         Button({ label: t('lkp.dnssecChain'), icon: 'shield', size: 'sm', variant: 'secondary', title: t('lkp.dnssecChainTitle'), dataset: { action: 'dnssec-chain' }, onClick: () => openDnssec(q) }),
         q.ptrFor ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('ip', { ips: q.ptrFor }) }, Icon('network', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.ip'))) : null,
         !q.ptrFor && q.name !== '.' ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('global', { name: q.name, type: ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'CAA', 'HTTPS', 'SOA'].includes(q.types[0]) ? q.types[0] : 'A' }) }, Icon('globe', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.global'))) : null,
@@ -1493,6 +1505,39 @@ export function mount(container, ctx) {
     dnssec = null;
   }
 
+  /** The Explain panel of the lookup on screen: { q, panel } (ui/explain-panel.js). */
+  let explain = null;
+  const loadExplain = onceAsync(() => import('../ui/explain-panel.js'));
+
+  /**
+   * Explain the records of the lookup on screen. The lookup's answers in so far are handed over
+   * (the panel asks only what they lack); a second click brings the open panel into view.
+   */
+  async function openExplain(q) {
+    if (explain && explain.q === q) {
+      explain.panel.el.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    let mod;
+    try {
+      mod = await loadExplain();
+    } catch (err) {
+      ctx.checkOutdated();
+      ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+      return;
+    }
+    if (!current || current.q !== q || ctx.signal.aborted) return;
+    closeExplain();
+    explain = { q, panel: mod.ExplainPanel({ ctx, name: q.name, types: q.types, responses: current.responses.slice(), resolver: q.resolver }) };
+    explainEl.append(explain.panel.el);
+    explain.panel.run();
+  }
+
+  function closeExplain() {
+    if (explain) explain.panel.destroy();
+    explain = null;
+  }
+
   /** Ask one type of the current lookup (a run, or the Retry of a query that got no answer). */
   async function queryType(state, type, signal) {
     const dns = await ctx.getDns();
@@ -1508,6 +1553,7 @@ export function mount(container, ctx) {
     if (current && current.controller) current.controller.abort();
     if (current) current.life.abort();
     closeDnssec();
+    closeExplain();
     const controller = new AbortController();
     // `life` ends with this lookup (a new one, or the view going away): it cancels Retries too.
     const life = new AbortController();
@@ -1623,6 +1669,7 @@ export function mount(container, ctx) {
     teardown() {
       if (current && current.controller) current.controller.abort();
       if (current) current.life.abort();
+      closeExplain();
       unpinColumns();
       if (columnObserver) columnObserver.disconnect();
     },

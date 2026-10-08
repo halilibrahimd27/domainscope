@@ -688,3 +688,492 @@
     break-inside: avoid;
   }
 }
+
+/* ---- Explain (ui/explain-panel.js, .xpl-*) ---------------------------------------- */
+.lkp-explain:empty {
+  display: none;
+}
+
+.xpl-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 16px;
+}
+
+.xpl-head {
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.xpl-title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.xpl-name {
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+
+.xpl-controls {
+  margin-left: auto;
+  gap: 8px;
+}
+
+.xpl-intro {
+  margin: 0;
+}
+
+.xpl-running {
+  align-items: center;
+  gap: 8px;
+}
+
+.xpl-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.xpl-sec-title {
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.xpl-sub {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.xpl-sec p,
+.xpl-sec ul,
+.xpl-sec ol {
+  margin: 0;
+}
+
+.xpl-where,
+.xpl-state {
+  overflow-wrap: anywhere;
+}
+
+.xpl-record {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.xpl-record .xpl-record-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+.xpl-summary {
+  border-left: 4px solid var(--text-3);
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+
+.xpl-summary.xpl-pol-reject {
+  border-left-color: var(--ok-solid);
+}
+
+.xpl-summary.xpl-pol-quarantine {
+  border-left-color: var(--warn-solid);
+}
+
+.xpl-summary.xpl-pol-none {
+  border-left-color: var(--error-solid);
+}
+
+/* The lookup meter: a bar that turns amber at 9 of 10 and red past 10. */
+.xpl-meter-head {
+  align-items: baseline;
+  gap: 4px 14px;
+}
+
+.xpl-meter-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.xpl-meter-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.xpl-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: var(--ok-solid);
+}
+
+.xpl-meter-bar.xpl-warn .xpl-meter-fill {
+  background: var(--warn-solid);
+}
+
+.xpl-meter-bar.xpl-error .xpl-meter-fill {
+  background: var(--error-solid);
+}
+
+.xpl-warn-text {
+  color: var(--warn);
+}
+
+.xpl-branches {
+  overflow-wrap: anywhere;
+}
+
+.xpl-findings {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.xpl-finding {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.xpl-finding .sev {
+  flex: none;
+  margin-top: 1px;
+}
+
+.xpl-finding-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.xpl-finding-title {
+  font-weight: 600;
+}
+
+/* Steps: numbered terms, an include's policy nested one click away. */
+.xpl-steps {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.xpl-step {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  min-width: 0;
+}
+
+.xpl-step[data-state="no-record"],
+.xpl-step[data-state="multiple-records"],
+.xpl-step[data-state="loop"],
+.xpl-step[data-state="too-many-mx"] {
+  border-color: var(--error-border);
+}
+
+.xpl-step-head {
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.xpl-step-n {
+  min-width: 1.6em;
+  height: 1.6em;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.xpl-term {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.xpl-step-text,
+.xpl-step-extra,
+.xpl-step-state {
+  margin-top: 4px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.xpl-step-state {
+  color: var(--warn);
+}
+
+.xpl-step-state.xpl-state-no-record,
+.xpl-step-state.xpl-state-multiple-records,
+.xpl-step-state.xpl-state-loop,
+.xpl-step-state.xpl-state-too-many-mx {
+  color: var(--error);
+}
+
+.xpl-child {
+  margin-top: 6px;
+}
+
+.xpl-child > .disclosure-body {
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
+.xpl-child-summary {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.xpl-notes {
+  padding-left: 18px;
+}
+
+/* "Does an address pass?" */
+.xpl-check {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+
+.xpl-check-form {
+  display: grid;
+  grid-template-columns: minmax(0, 20rem) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.xpl-check-extra {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  padding-top: 6px;
+}
+
+.xpl-verdict {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--text-3);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.xpl-verdict.xpl-v-pass {
+  border-left-color: var(--ok-solid);
+}
+
+.xpl-verdict.xpl-v-fail,
+.xpl-verdict.xpl-v-permerror {
+  border-left-color: var(--error-solid);
+}
+
+.xpl-verdict.xpl-v-softfail,
+.xpl-verdict.xpl-v-temperror {
+  border-left-color: var(--warn-solid);
+}
+
+.xpl-verdict-head {
+  align-items: center;
+  gap: 8px;
+}
+
+.xpl-flat-summary {
+  overflow-wrap: anywhere;
+}
+
+.xpl-flat-refresh {
+  color: var(--warn);
+}
+
+/* Tag by tag (DMARC, CAA): what is written, then what it means; stacked on a phone. */
+.xpl-tags {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.xpl-tag-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 17rem) minmax(0, 1fr);
+  gap: 4px 14px;
+  padding: 7px 10px;
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+}
+
+.xpl-tag-row:first-child {
+  border-top: 0;
+}
+
+.xpl-tag-key {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.xpl-tag-row.xpl-default {
+  color: var(--text-3);
+}
+
+.xpl-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.xpl-wrap {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.xpl-reports {
+  list-style: none;
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+
+.xpl-issue {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 4px;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+/* HTTPS / SVCB records. */
+.xpl-svcb-rec {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.xpl-svcb-head {
+  font-weight: 600;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.xpl-kvs {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.xpl-kv {
+  display: grid;
+  grid-template-columns: minmax(8rem, 11rem) minmax(0, 1fr);
+  gap: 4px 12px;
+  align-items: start;
+}
+
+.xpl-kv-key {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.xpl-kv-value {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.xpl-ech {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.xpl-hint-stale {
+  color: var(--warn);
+}
+
+.xpl-hint-match {
+  color: var(--ok);
+}
+
+.xpl-foot {
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .xpl-panel {
+    padding: 10px 12px;
+  }
+
+  .xpl-controls {
+    margin-left: 0;
+  }
+
+  .xpl-check-form,
+  .xpl-check-extra,
+  .xpl-kv,
+  .xpl-tag-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .xpl-check-btn .btn {
+    width: 100%;
+  }
+}
+
+@media print {
+  .xpl-controls,
+  .xpl-check-form,
+  .xpl-check-more {
+    display: none;
+  }
+
+  .xpl-step,
+  .xpl-svcb-rec,
+  .xpl-tag-row {
+    break-inside: avoid;
+  }
+}

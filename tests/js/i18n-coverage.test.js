@@ -73,6 +73,8 @@ before(async () => {
   await imp('assets/js/ui/delegation-panel.js');
   // DNS Lookup › DNSSEC chain: loaded on the first click of its button.
   await imp('assets/js/ui/dnssec-panel.js');
+  // DNS Lookup › Explain: loaded on the first click of its button.
+  await imp('assets/js/ui/explain-panel.js');
   // Domain overview › Lookalike domains: loaded on the first click of Find lookalikes.
   await imp('assets/js/ui/lookalike-panel.js');
   // The customer report panel (Domain overview and Domain Health › Report): loaded on its first click.
@@ -458,6 +460,10 @@ describe('i18n coverage', () => {
     for (const k of (await imp('assets/js/ui/reverse-ip-panel.js')).generatedKeys()) add(k);
     // The DNSSEC chain (ui/dnssec-panel.js over lib/dnssec.js): every status, reason, fix and signature result.
     for (const k of (await imp('assets/js/ui/dnssec-panel.js')).generatedKeys()) add(k);
+    // Explain (ui/explain-panel.js over lib/records.js, lib/spfexplain.js and the SPF check of lib/health.js):
+    // every SPF result, step kind and state, permerror and unknown reason, flatten note, DMARC meaning and
+    // issue, CAA property, ECH error, HTTPS / SVCB note and hint status; the CAA problems it words.
+    for (const k of (await imp('assets/js/ui/explain-panel.js')).generatedKeys()) add(k);
     // Renewal readiness › Plan (ui/renewal-planner.js over lib/renewalplan.js): states, groupings, notes, environments, key types.
     for (const k of (await imp('assets/js/ui/renewal-planner.js')).generatedKeys()) add(k);
     // The Rollout tab (ui/rollout-panel.js): steps, stages, Verify verdicts, platforms, options, sections, notes, warnings.

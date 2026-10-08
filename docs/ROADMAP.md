@@ -1,6 +1,6 @@
 # DomainScope roadmap
 
-Prioritised from a survey of popular DNS / recon projects and web tools, an idea synthesis, and **live feasibility checks** (CORS, endpoints, licences) run on 2026-09-23. See [RESEARCH.md](RESEARCH.md) for the prior-art survey and the verification log.
+Prioritised from a survey of popular DNS / recon projects and web tools, an idea synthesis, and **live feasibility checks** (CORS, endpoints, licences) run on 2026-09-23. See [RESEARCH.md](RESEARCH.md) for the prior-art survey and the verification log, and [COMPETITORS.md](COMPETITORS.md) for what paid products sell that DomainScope lacks (the ten ranked gaps and where each stands).
 
 Constraints every item respects: runs in a browser from a static page (only CORS-enabled endpoints, no required API keys) **or** belongs in the stdlib-only Python CLI; vanilla JS, no dependencies, no build step, CSP-safe (no inline scripts/styles, never `innerHTML` with dynamic data), TR + EN, light/dark, mobile.
 
@@ -186,6 +186,17 @@ Five branches worked off the wave 6 pick-up list above.
 | Integration: one number per section for the three (SPEC §5.89–§5.91), the offline E2E suites `locales`, `explain` and `cutover` in `npm run test:e2e:offline` and CI, both READMEs in step, and every new panel loaded on first use (the start route at 342,523 bytes of its 370 KB budget) | Shell, README, CI | — |
 
 **Status (2026-10-08): the start route is at 342,523 bytes gzip of its 370 KB budget.**
+
+## Wave 7b — competitor gaps (2026-10-09)
+
+Two of the ten gaps ranked in [COMPETITORS.md](COMPETITORS.md) (what paid products sell that DomainScope lacks) shipped first; the other eight — alert channels for the runner, a served-certificate monitor, a registration and record change watch, a takeover watch, a monitoring view, renewal windows and revocation, DMARC history, and accepted risks — are in progress.
+
+| Feature | Where | Roadmap item |
+| --- | --- | --- |
+| Domain security score: how deep a domain's lock goes (none, the registrar's transfer or full lock, a partial or a full registry lock: only all three server prohibitions make a registry lock, and "transfer only" says it is also what a registry sets in a dispute or for 60 days after a transfer), the registrar's class by its IANA ID (the eleven corporate registrars, such as MarkMonitor, CSC and Com Laude; a country-code registry's own registrars have no ID and read as not known) and the DNS providers the name servers spread over (one platform's name servers count once whatever their endings). A **Domain security** tab in the Domain portfolio scores each domain 0–8 on CSC's eight measures (a corporate registrar, a registry lock, CAA, DNS redundancy, DNSSEC, SPF, DKIM, DMARC at quarantine or reject), each met, not met or not known with its evidence and never met when it could not be checked, with the portfolio's average, a bar per measure and a CSV. Four policy rules (`lock.level`, `registryLock`, `registrar.class`, `ns.providers`) and a **Corporate** preset; the runner's `audit` takes `--preset corporate` and writes the score table to stdout and `--md`, and `security` per domain to `--json`. Nothing new is sent | Domain portfolio, policy audit, runner `audit` | Competitor gap 5 ([COMPETITORS.md](COMPETITORS.md)), SPEC §5.92; the offline E2E suite `secscore` |
+| DMARC report sources named by service: each sending address gets the service behind it (Microsoft 365, Google Workspace, Amazon SES, SendGrid, Mailchimp, Zendesk and the rest of a table of 72) under the address, from a verified DKIM signature, the return-path or the SPF include that authorizes it, with no lookup; **By service** folds the sources per service with totals, and each service carries a guide (DKIM CNAMEs, a custom return-path, a forwarder that keeps DKIM) worded for the class of its sources, so there is none for your own servers and no spoofing warning for an authorized third party; **Identify senders** names the rest on a click: the reverse DNS of up to 200 addresses no report names (your own servers left out), each name checked to point back, matched against bundled lists built from parsedmarc's reverse DNS map (1,348 mail-relevant names and 950 ISP domains: an ISP or home network reads as spoofing, or a user forwarding mail), then the network of at most 25 still unnamed; the sources export to CSV with the service of each. `tools/build-senders.mjs` and a weekly workflow open a pull request when the lists change and write nothing on a bad download; the build is pinned to the last parsedmarc commit under Apache-2.0, since its map moved to CC BY-SA 4.0 on 2026-04-26, and refuses a share-alike one | DMARC & TLS reports, `tools/build-senders.mjs`, `.github/workflows/senders.yml` | Competitor gap 6 ([COMPETITORS.md](COMPETITORS.md)), SPEC §5.93; credited in About and `assets/data/README.md` |
+
+**Status (2026-10-09): the start route is at 342,650 bytes gzip of its 370 KB budget.**
 
 ## P0 — next iteration
 

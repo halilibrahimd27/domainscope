@@ -514,7 +514,8 @@ function diffDrift(before, after, { t }) {
         continue;
       }
       if (x.status === y.status) {
-        const vals = (r) => JSON.stringify([r.added || [], r.removed || [], [...(r.reasons || [])].sort()]);
+        // sets, not lists: `added` is in the resolver's answer order, and a rotating answer order is no change
+        const vals = (r) => JSON.stringify([r.added, r.removed, r.reasons].map((list) => [...(list || [])].sort()));
         if (needsLook(x.status) && x.status !== 'error' && vals(x) !== vals(y)) {
           out.push(change('CHANGED', origin, x.key, [...rowWhere(x), label(x.status), ', live values changed: ', ...((x.added || []).length ? ['now also ', ...x.added.slice(0, 3).flatMap((v, i) => (i ? [', ', code(v)] : [code(v)]))] : ['values moved'])],
             { before: y.added || [], after: x.added || [] }));

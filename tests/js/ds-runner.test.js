@@ -777,6 +777,15 @@ describe('diff: drift, renew, dane', () => {
     assert.match(changeText(changes[5]), /live values changed: now also 192\.0\.2\.8/);
   });
 
+  test('drift: a problem row\'s live values are a set, so a rotating answer order is no change', () => {
+    const dr = (added, removed, reasons = []) => report('drift', [{ target: 'example.com', rows: [row('www.example.com|A', 'differs', { added, removed, reasons })] }]);
+    const night1 = dr(['198.51.100.1', '198.51.100.2'], ['192.0.2.1', '192.0.2.2'], ['ttl', 'values']);
+    const night2 = dr(['198.51.100.2', '198.51.100.1'], ['192.0.2.2', '192.0.2.1'], ['values', 'ttl']);
+    assert.deepEqual(diffReports('drift', night1, night2, { t }), []);
+    const night3 = dr(['198.51.100.2', '198.51.100.3'], ['192.0.2.2', '192.0.2.1']);
+    assert.deepEqual(tags(diffReports('drift', night2, night3, { t })), ['CHANGED example.com www.example.com|A'], 'a value that really changed still counts');
+  });
+
   test('renew: verdicts worse, better, failed, recovered; findings within a verdict; unknown to unknown is listed only', () => {
     const f = (id, severity, extra = {}) => ({ id, severity, params: {}, ...extra });
     const b = report('renew', [

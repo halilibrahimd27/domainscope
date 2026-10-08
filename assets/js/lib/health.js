@@ -2245,6 +2245,18 @@ function analyzeHttps(httpsR) {
   return { checks, https: recs };
 }
 
+/**
+ * The id of an `_mta-sts` TXT record senders accept (RFC 8461 §3.1: "v=STSv1" first, then an
+ * "id=" of 1–32 letters and digits, both case-sensitive), else ''.
+ * @param {string} rec
+ * @returns {string}
+ */
+function stsTxtId(rec) {
+  const fields = String(rec || '').split(';').map((f) => f.trim());
+  const id = fields[0] === 'v=STSv1' ? fields.find((f) => f.startsWith('id=')) : null;
+  return id && /^id=[A-Za-z0-9]{1,32}$/.test(id) ? id.slice(3) : '';
+}
+
 function analyzeMailExtras(mtaR, tlsR, bimiR, { hasMail, dmarcPolicy }) {
   const checks = [];
   // A failed lookup is not a missing record: its null is "not known".
@@ -2258,7 +2270,7 @@ function analyzeMailExtras(mtaR, tlsR, bimiR, { hasMail, dmarcPolicy }) {
   };
   if (mta.length > 1) checks.push(makeCheck('mta-sts.invalid', 'warn', { count: mta.length }));
   else if (mta.length) {
-    const id = tag(mta[0], 'id');
+    const id = stsTxtId(mta[0]);
     checks.push(id ? makeCheck('mta-sts.present', 'ok', { id }) : makeCheck('mta-sts.invalid', 'warn', { count: 1 }));
   } else if (hasMail && !failed(mtaR)) checks.push(makeCheck('mta-sts.missing', 'info', {}));
   // RFC 8460 §3: senders report only to exactly one record, and its rua is required.
@@ -2846,7 +2858,8 @@ const STRINGS = [
     ['MTA-STS (RFC 8461) forces TLS for mail sent to your servers and prevents downgrade attacks.',
       'MTA-STS (RFC 8461), sunucularınıza gelen e-postada TLS’i zorunlu kılar ve düşürme (downgrade) saldırılarını önler.']],
   ['mta-sts.invalid', ['Invalid MTA-STS record', 'Geçersiz MTA-STS kaydı'],
-    ['There must be exactly one "v=STSv1; id=…" record ({count} found or id missing).', 'Tam olarak bir adet "v=STSv1; id=…" kaydı olmalıdır ({count} bulundu ya da id eksik).']],
+    ['There must be exactly one "v=STSv1; id=…" record, its id 1–32 letters and digits ({count} found, or the id is missing or malformed).',
+      'Tam olarak bir adet “v=STSv1; id=…” kaydı olmalı ve id’si 1–32 harf ve rakamdan oluşmalıdır ({count} bulundu ya da id eksik veya hatalı).']],
   ['tls-rpt.present', ['TLS reporting enabled', 'TLS raporlama etkin'],
     ['TLS-RPT reports go to {rua}.', 'TLS-RPT raporları {rua} adresine gider.']],
   ['tls-rpt.missing', ['No TLS reporting', 'TLS raporlama yok'],

@@ -2024,6 +2024,21 @@ test('mail extras: a failed _mta-sts / _smtp._tls lookup is "not known", never "
   assert.deepEqual(nx.failedLookups, [], 'NXDOMAIN reports carry the field too');
 });
 
+test('mail extras: an _mta-sts record off the RFC 8461 grammar (case, an id not 1–32 letters and digits) is invalid, never "enabled"', async () => {
+  const zone = goodZone();
+  for (const txt of ['v=STSv1; id=2026-10-08', 'v=STSv1; id=policy.v2', `v=STSv1; id=${'a'.repeat(33)}`, 'V=stsv1; ID=x', 'v=STSv1; ID=x']) {
+    zone['_mta-sts.example.com'].TXT = [txt];
+    const r = await run('example.com', fakeDns(zone));
+    assertRenderable(r);
+    lacks(r, 'mta-sts.present');
+    assert.equal(has(r, 'mta-sts.invalid', 'warn').params.count, 1, txt);
+  }
+  for (const [txt, id] of [['v=STSv1; id=20261008', '20261008'], [`v=STSv1;id=${'A1'.repeat(16)} ; ext=x`, 'A1'.repeat(16)]]) {
+    zone['_mta-sts.example.com'].TXT = [txt];
+    assert.equal(has(await run('example.com', fakeDns(zone)), 'mta-sts.present', 'ok').params.id, id, txt);
+  }
+});
+
 test('mail extras: two v=TLSRPTv1 records, or one without rua, mean no TLS reports (RFC 8460 §3)', async () => {
   const zone = goodZone();
   const fetch = {

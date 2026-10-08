@@ -2221,3 +2221,14 @@ export function csrMatchesCertificate(csr, cert) {
     added: has.filter((n) => !asked.includes(n))
   };
 }
+
+/**
+ * The strict DER reader of this module and its decoders, for the PKI's other signed structures:
+ * lib/crl.js reads a certificate revocation list with them (a CRL has the certificate's Name, Time,
+ * AlgorithmIdentifier and Extension encodings). They throw {@link CertificateParseError} on
+ * malformed input, as {@link parseCertificate} does. Not for the views: they take parsed results.
+ */
+export const DER = Object.freeze({
+  readNode, childrenOf, parseSingle, contents, tlv, expect, decodeOid, integerHex, integerValue, booleanValue,
+  bitString, decodeTime, parseAlgorithm, parseName, firstValues, formatDN, parseGeneralNames, toHex, fail, SIG_ALG_NAMES
+});

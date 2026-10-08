@@ -73,6 +73,19 @@ cross-signs expired), `cross_inter.pem` (the Issuing CA under the Cross Root) an
 (its first copy: the same name and key, expired on 2024-09-30) — and the leaf `cross_leaf.pem`
 (`www.example.com`, `example.com`) with its throwaway key `cross_leaf.key`.
 
+Revocation (lib/crl.js, `tests/js/crl.test.js`; the runner's `tls --revocation` in
+`tests/js/ds-tls.test.js`; the CLI's `--revocation` in `tests/python/test_ari_revocation.py`; the
+`revocation` E2E suite): `gen_crl_fixtures.sh` (OpenSSL 3.4+) made a throwaway PKI (EC P-256 unless
+noted, valid 2025-01-01 .. 2060-01-01, the CA keys never kept) — `crl_ca.pem` (Example Test CRL CA),
+`crl_leaf.pem` (`www.example.com`, `example.com`, serial 0c1001, CRL distribution point
+`http://crl.example.com/test-ca.crl`) with its throwaway key `crl_leaf.key`, `crl_leaf2.pem`
+(`api.example.net`, serial 0c1002), `crl_other_ca.pem` (Example Test Other CA, RSA 2048) — and three
+DER CRLs: `crl_revoked.der` (the CRL CA's: 0c1001 keyCompromise on 2026-09-01 12:00 UTC, 0c1002
+superseded on 2026-08-15 08:30; an issuing distribution point for user certificates only; CRL number
+0x10), `crl_empty.der` (the same CA, nothing revoked; 0x11) and `crl_other.der` (the Other CA's,
+listing 0c1001 too). All three were issued on 2026-10-01 with their next update on 2026-10-15: the
+tests pass their `now`.
+
 `estate/report-a.json` and `estate/report-b.json` are `--estate --json` reports of the CLI over a
 made-up network (two sites a week apart; documentation addresses only), written by
 `python tests/python/test_estate.py --write-fixtures`: `tests/python/test_estate.py` checks that they

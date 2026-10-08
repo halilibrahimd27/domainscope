@@ -23,8 +23,8 @@
 import { code, strong, isoDay, isoTime, summaryDoc, valueParts } from './render.mjs';
 import { targetOf, carryRisks, riskRank } from './carry.mjs';
 import { DS_TOOL, DS_VERSION, UsageError } from './args.mjs';
-import { isSubdomainOf, parseHostList } from '../../assets/js/lib/domain.js';
-import { textParts } from '../../assets/js/lib/summary.js';
+import { isSubdomainOf, normalizeHostname, parseHostList } from '../../assets/js/lib/domain.js';
+import { cleanText, textParts } from '../../assets/js/lib/summary.js';
 
 /** Risk lines a target's summary lists before "N more". */
 const MAX_RISK_LINES = 10;
@@ -42,34 +42,47 @@ export const countsAt = (severity) => riskRank(severity) <= riskRank(COUNTED_SEV
 /* Inputs                                                                   */
 /* ------------------------------------------------------------------------ */
 
+/** The host names of a list read from a file: each valid one in canonical form, the rest left out. */
+const hostNames = (list) => (Array.isArray(list) ? list.map((c) => (isStr(c) ? normalizeHostname(c) : null)).filter(Boolean) : []);
+
 /**
  * The hosts of a `subdomains` report of this runner whose CNAME chain is worth asking again: every
  * host with a CNAME (a dangling one too), or with one in the answer it carried while its lookup
- * failed (`lastGood`); wildcard look-alikes left out.
+ * failed (`lastGood`); wildcard look-alikes left out. A name that is no host name is never sent:
+ * it is listed in `invalid` (the caller warns, quoted without its control characters), and a CNAME
+ * target that is none is dropped.
  * @param {any} doc the parsed report
- * @returns {{ hosts: Array<{ name: string, wildcardSuspect: boolean, resolution: { cnames: string[] } }>, problem: string|null }}
+ * @returns {{ hosts: Array<{ name: string, wildcardSuspect: boolean, resolution: { cnames: string[] } }>, invalid: string[], problem: string|null }}
  */
 export function subdomainHosts(doc) {
-  if (!isObj(doc) || doc.tool !== DS_TOOL) return { hosts: [], problem: `it is not a --json report of ${DS_TOOL}` };
-  if (!isStr(doc.version) || doc.version.split('.')[0] !== DS_VERSION.split('.')[0]) return { hosts: [], problem: `it was written by version ${JSON.stringify(doc.version ?? null)}` };
-  if (doc.command !== 'subdomains') return { hosts: [], problem: `it is a report of "${doc.command}", not of "subdomains"` };
-  if (!Array.isArray(doc.targets)) return { hosts: [], problem: 'it has no "targets" list' };
+  const refused = (problem) => ({ hosts: [], invalid: [], problem });
+  if (!isObj(doc) || doc.tool !== DS_TOOL) return refused(`it is not a --json report of ${DS_TOOL}`);
+  if (!isStr(doc.version) || doc.version.split('.')[0] !== DS_VERSION.split('.')[0]) return refused(`it was written by version ${JSON.stringify(doc.version ?? null)}`);
+  if (doc.command !== 'subdomains') return refused(`it is a report of "${doc.command}", not of "subdomains"`);
+  if (!Array.isArray(doc.targets)) return refused('it has no "targets" list');
   const out = new Map();
+  const invalid = new Set();
   for (const x of doc.targets) {
     for (const h of (isObj(x) && Array.isArray(x.hosts) ? x.hosts : [])) {
-      if (!isObj(h) || !isStr(h.name) || h.wildcardSuspect === true || out.has(h.name)) continue;
-      const own = Array.isArray(h.cnames) ? h.cnames.filter(isStr) : [];
-      const last = isObj(h.lastGood) && Array.isArray(h.lastGood.cnames) ? h.lastGood.cnames.filter(isStr) : [];
-      const cnames = own.length ? own : last;
-      if (cnames.length) out.set(h.name, { name: h.name, wildcardSuspect: false, resolution: { cnames } });
+      if (!isObj(h) || !isStr(h.name) || h.wildcardSuspect === true) continue;
+      const name = normalizeHostname(h.name);
+      if (!name) {
+        invalid.add(h.name);
+        continue;
+      }
+      if (out.has(name)) continue;
+      const own = hostNames(h.cnames);
+      const cnames = own.length ? own : hostNames(isObj(h.lastGood) ? h.lastGood.cnames : null);
+      if (cnames.length) out.set(name, { name, wildcardSuspect: false, resolution: { cnames } });
     }
   }
-  return { hosts: [...out.values()], problem: null };
+  return { hosts: [...out.values()], invalid: [...invalid], problem: null };
 }
 
 /**
  * The hosts `--names FILE` or `--from-subdomains FILE` give, read and checked before anything is
- * sent (a usage error names what is wrong). The invalid entries of a names file are warnings.
+ * sent (a usage error names what is wrong). The invalid entries of a names file, and the host
+ * names of a report that are none, are warnings.
  * @param {import('./args.mjs').DsOptions} options
  * @param {{ read: (path: string, option: string) => Promise<string>, warn: (text: string) => void,
  *   skipped: (label: string, invalid: string[], what: string) => string[] }} io `read`: a file's text
@@ -91,8 +104,9 @@ export async function takeoverInputs(options, { read, warn, skipped }) {
     } catch (err) {
       throw new UsageError(`--from-subdomains: ${options.fromSubdomains} is not JSON (${err.message})`);
     }
-    const { hosts, problem } = subdomainHosts(doc);
+    const { hosts, invalid, problem } = subdomainHosts(doc);
     if (problem) throw new UsageError(`--from-subdomains: cannot read hosts from ${options.fromSubdomains}: ${problem} (give a report written by "subdomains --json")`);
+    for (const w of skipped(`--from-subdomains ${options.fromSubdomains}`, invalid, 'a host name')) warn(w);
     return { source: 'subdomains', file: base(options.fromSubdomains), hosts };
   }
   return { source: null, file: null, hosts: [] };
@@ -210,13 +224,15 @@ export function takeoverDoc(target, { t, now }) {
 
 /**
  * The warnings of one domain's audit: the lookups that gave no answer (and the risks carried).
+ * The names come from DNS answers and the files read, so they are printed without control or
+ * bidi characters (lib/summary.js cleanText).
  * @param {object} target {@link takeoverTarget}
  * @returns {string[]}
  */
 export function takeoverWarnings(target) {
   const failures = target.failures || [];
   if (!failures.length) return [];
-  const names = failures.map((f) => f.name);
+  const names = failures.map((f) => cleanText(f.name));
   const shown = names.slice(0, MAX_NAMES).join(', ') + (names.length > MAX_NAMES ? ` and ${names.length - MAX_NAMES} more` : '');
   const carried = (target.risks || []).filter((r) => r.carried).length;
   return [`${target.target}: no answer for ${shown}: what they feed could not be checked`
@@ -286,6 +302,11 @@ function change(tag, target, item, what, { tone = 'info', counts = true, kind = 
 
 /** The reasons that say a domain may be registered by anyone (or soon). */
 const LAPSED = new Set(['unregistered', 'unregistered-dns', 'pending-delete', 'expired']);
+/**
+ * The verdicts that say a domain is held now: its registry has it (registered, expiring), or it is
+ * in DNS again — a TLD without RDAP (no-rdap) or an RDAP 404 the DNS contradicts (rdap-404-dns).
+ */
+const HELD = new Set(['registered', 'expiring', 'no-rdap', 'rdap-404-dns']);
 
 /**
  * Is a baseline target's list of risks what {@link diffTakeover} walks? Null when it is, else why not.
@@ -307,10 +328,11 @@ export function takeoverTargetProblem(x) {
 /**
  * The takeover watch since the baseline: per domain and risk key, a risk new (RISK: bad and
  * counted at medium severity or above, listed only below), gone (GONE: good; counted when it was
- * at medium or above — "registered now" when its domain had lapsed and is registered now: make sure
- * it is yours), worse or better (WORSE / BETTER: counted when the worse of the two is at medium or
- * above); a domain new (counted when a risk is at medium or above) or no longer watched. A risk
- * whose lookup failed is carried in this run's report (carry.mjs), so it is compared, never gone.
+ * at medium or above — "registered now" when its domain had lapsed and is held now ({@link HELD}:
+ * registered, or in DNS again where RDAP cannot tell): make sure it is yours), worse or better
+ * (WORSE / BETTER: counted when the worse of the two is at medium or above); a domain new
+ * (counted when a risk is at medium or above) or no longer watched. A risk whose lookup failed is
+ * carried in this run's report (carry.mjs), so it is compared, never gone.
  * @param {object} before the baseline report
  * @param {object} after this run's report
  * @param {{ t: Function }} kit
@@ -334,7 +356,7 @@ export function diffTakeover(before, after, { t }) {
     const prev = new Map((b.risks || []).map((r) => [r.key, r]));
     // A domain that had lapsed is registered now while a record still names it: the owner's fix,
     // or someone else's registration — said, so a takeover does not read as good news.
-    const registered = new Set((a.domains || []).filter((d) => d.verdict === 'registered' || d.verdict === 'expiring').map((d) => d.domain));
+    const registered = new Set((a.domains || []).filter((d) => HELD.has(d.verdict)).map((d) => d.domain));
     const takenAgain = (y) => (LAPSED.has(first(y).code) && y.domain && registered.has(y.domain) ? [code(y.domain), ' is registered now — make sure it is yours'] : null);
     for (const x of risks) {
       const y = prev.get(x.key);

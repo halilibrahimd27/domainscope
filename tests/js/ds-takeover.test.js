@@ -18,7 +18,7 @@ import { parseCommandLine, UsageError, DS_TOOL, DS_VERSION, EXIT, USAGE, COMMAND
 import { baselineProblem, baselineNotes, diffReports, notableChanges } from '../../tools/ds/diff.mjs';
 import { setupStrings, renderChangesMarkdown, renderChangesText, painter, CHANGE_TAGS } from '../../tools/ds/render.mjs';
 import { carryRisks } from '../../tools/ds/carry.mjs';
-import { subdomainHosts, takeoverInputs, takeoverTarget, takeoverDoc, countsAt } from '../../tools/ds/takeover.mjs';
+import { subdomainHosts, takeoverInputs, takeoverTarget, takeoverDoc, takeoverWarnings, countsAt } from '../../tools/ds/takeover.mjs';
 import { main, skippedWarnings } from '../../tools/ds.mjs';
 import { renderMarkdown, renderPlainText } from '../../assets/js/lib/summary.js';
 import { fixKey } from '../../assets/js/ui/takeover-panel.js';
@@ -86,9 +86,18 @@ describe('takeover: command line', () => {
         'junk'
       ]
     };
-    const { hosts, problem } = subdomainHosts(doc);
+    const { hosts, invalid, problem } = subdomainHosts(doc);
     assert.equal(problem, null);
     assert.deepEqual(hosts.map((h) => [h.name, h.resolution.cnames]), [['old.example.com', ['old-app.azurewebsites.net']], ['flaky.example.com', ['shop.example.net']]]);
+    assert.deepEqual(invalid, []);
+    // A crafted report: terminal escapes and a bidi override in host names (never sent, never printed raw).
+    const crafted = subdomainHosts({ ...doc, targets: [{ target: 'example.com', hosts: [
+      { name: '\u001b]0;x\u0007\u001b[31mred.example.com', cnames: ['x.example.org'] },
+      { name: 'a\u202Emoc.example.com', cnames: ['y.example.org'] },
+      { name: 'Good.Example.com.', cnames: ['Old-App.azurewebsites.net.', 'bad\u001b[0m.example.org'] }
+    ] }] });
+    assert.deepEqual(crafted.hosts.map((h) => [h.name, h.resolution.cnames]), [['good.example.com', ['old-app.azurewebsites.net']]]);
+    assert.deepEqual(crafted.invalid, ['\u001b]0;x\u0007\u001b[31mred.example.com', 'a\u202Emoc.example.com']);
     assert.match(subdomainHosts({ ...doc, command: 'ct' }).problem, /a report of "ct", not of "subdomains"/);
     assert.match(subdomainHosts({ ...doc, tool: 'other' }).problem, /not a --json report of domainscope-ds/);
     assert.match(subdomainHosts({ ...doc, version: '2.0.0' }).problem, /written by version "2\.0\.0"/);
@@ -100,7 +109,10 @@ describe('takeover: command line', () => {
       'h.txt': 'old.example.com\nnot a host!\n# a comment\nwww.example.com',
       'empty.txt': '# nothing',
       'bad.json': '{ not json',
-      'ct.json': JSON.stringify({ tool: DS_TOOL, version: DS_VERSION, command: 'ct', targets: [] })
+      'ct.json': JSON.stringify({ tool: DS_TOOL, version: DS_VERSION, command: 'ct', targets: [] }),
+      's.json': JSON.stringify({ tool: DS_TOOL, version: DS_VERSION, command: 'subdomains', targets: [{ target: 'example.com', hosts: [
+        { name: '\u001b]0;x\u0007\u001b[31mred.example.com', cnames: ['x.example.org'] }, { name: 'old.example.com', cnames: ['old-app.azurewebsites.net'] }
+      ] }] })
     };
     const warnings = [];
     const io = { read: async (path) => files[path], warn: (w) => warnings.push(w), skipped: skippedWarnings };
@@ -110,6 +122,15 @@ describe('takeover: command line', () => {
     await assert.rejects(takeoverInputs({ fromSubdomains: 'bad.json' }, io), /--from-subdomains: bad\.json is not JSON/);
     await assert.rejects(takeoverInputs({ fromSubdomains: 'ct.json' }, io), /cannot read hosts from ct\.json: it is a report of "ct"/);
     assert.deepEqual(await takeoverInputs({}, io), { source: null, file: null, hosts: [] });
+    warnings.length = 0;
+    const fromReport = await takeoverInputs({ fromSubdomains: 's.json' }, io);
+    assert.deepEqual(fromReport.hosts.map((h) => h.name), ['old.example.com']);
+    assert.deepEqual(warnings, ['--from-subdomains s.json: skipped "]0;x [31mred.example.com": not a host name'], 'the name quoted without its control characters');
+  });
+
+  test('the warnings never print a name raw: control and bidi characters out', () => {
+    const [w] = takeoverWarnings({ target: 'example.com', risks: [], failures: [{ source: 'doh', name: 'mx\u001b[31m.example\u202Eorg' }, { source: 'rdap', name: 'example.net' }] });
+    assert.equal(w, 'example.com: no answer for mx [31m.example org, example.net: what they feed could not be checked');
   });
 });
 
@@ -209,6 +230,18 @@ describe('takeover: changes since the baseline', () => {
       'BETTER     example.com: DMARC _dmarc.example.com → reports.example.org: high → low — example.org is registered now — make sure it is yours; reports.example.org does not exist (NXDOMAIN).',
       'GONE       example.com: high CAA iodef example.com → iodef.example.net: example.net is registered now — make sure it is yours'
     ]);
+  });
+
+  test('so is one in a TLD without RDAP, or with an RDAP 404, that is in DNS now', () => {
+    // A .com.tr mail host whose domain had lapsed (no RDAP for the TLD, NXDOMAIN): someone registered it.
+    const before = at('example.com', [risk('mx', 'example.com', 'mx.mailhost.example-test.com.tr', 'high', 'unregistered-dns', { domain: 'example-test.com.tr' })]);
+    for (const verdict of ['no-rdap', 'rdap-404-dns']) {
+      const after = at('example.com', [], { domains: [{ domain: 'example-test.com.tr', verdict, expires: null }] });
+      const changes = diff([before], [after]);
+      assert.deepEqual(changes.map((c) => renderChangesText({ command: 'takeover', baseline: { file: 't.json', finishedAt: null }, changes: [c] }, { paint: painter(false) })[1].trim()), [
+        'GONE       example.com: high MX example.com → mx.mailhost.example-test.com.tr: example-test.com.tr is registered now — make sure it is yours'
+      ], verdict);
+    }
   });
 
   test('a carried risk compares as last read: a night whose lookup failed is no change', () => {

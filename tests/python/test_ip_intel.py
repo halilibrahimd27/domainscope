@@ -18,6 +18,7 @@ import io
 import json
 import os
 import re
+import shlex
 import socket
 import ssl
 import sys
@@ -703,6 +704,20 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn('warning: stdin line 2: not-an-ip is not an address', err)
         self.assertIn('192.0.2.1', out)
         self.assertIn('no names', out)
+
+    def test_documented_commands_parse(self):
+        """The README (both languages), About and --help examples are valid command lines."""
+        texts = [(ROOT / name).read_text(encoding='utf-8')
+                 for name in ('README.md', 'README.tr.md', 'assets/js/views/about.js')] + [ii.EPILOG]
+        commands = [c for text in texts for c in re.findall(r"python3 ip_intel\.py [^'`\n]+", text)]
+        self.assertGreaterEqual(len(commands), 14)
+        self.assertTrue(any('10.0.0.0/24' in c for c in commands))
+        parser = ii.build_parser()
+        for command in commands:
+            with self.subTest(command=command):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    parsed = parser.parse_args(shlex.split(command, comments=True)[2:])
+                self.assertIn(parsed.command, ('domains', 'sources'))
 
     def test_help_and_version(self):
         code, out, _ = run_main('--help')

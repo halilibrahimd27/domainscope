@@ -272,12 +272,16 @@ const PTR_ZONE = {
  * every other request): addresses in `window.__ipFake.limited` when the request is made get
  * HTTP 429 from RIPEstat, an address in `window.__ipFake.slow` (ip → ms) is answered that much
  * later (an abort still ends the wait), and ipwho.is always says its quota is used up. HackerTarget's
- * reverse IP names two domains, `window.__ipFake.htDelay` ms later. `calls` lists "<dataset> <ip>" per
- * request.
+ * reverse IP names two domains, `window.__ipFake.htDelay` ms later. The other sources a row's Find
+ * domains asks (Domains on this IP: ip.thc.org, OTX, Robtex, InternetDB) know nothing of an address,
+ * and the DNS check of HackerTarget's two names answers NXDOMAIN, so the panel sends nothing out.
+ * `calls` lists "<dataset> <ip>" per request.
  */
 const IP_FAKE_SCRIPT = `(() => {
   const inner = window.fetch;
   const fake = window.__ipFake = { limited: [], calls: [], slow: {}, htDelay: 0 };
+  const HT_NAMES = ['site-a.example.org', 'site-b.example.org'];
+  let wire = null;
   const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   const wait = (ms, signal) => new Promise((resolve, reject) => {
     if (signal && signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
@@ -310,7 +314,32 @@ const IP_FAKE_SCRIPT = `(() => {
     if (u.hostname === 'api.hackertarget.com') {
       fake.calls.push('hackertarget ' + u.searchParams.get('q'));
       if (fake.htDelay) await wait(fake.htDelay, (init && init.signal) || null);
-      return new Response('site-a.example.org\\nsite-b.example.org\\n', { status: 200, headers: { 'content-type': 'text/plain' } });
+      return new Response(HT_NAMES.join('\\n') + '\\n', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+    if (u.hostname === 'ip.thc.org') {
+      fake.calls.push('thc ' + JSON.parse((init && init.body) || '{}').ip_address);
+      return json({ matching_records: 0, domains: [], next_page_state: '' });
+    }
+    if (u.hostname === 'otx.alienvault.com') {
+      fake.calls.push('otx ' + u.pathname.split('/')[5]);
+      return json({ passive_dns: [], count: 0 });
+    }
+    if (u.hostname === 'freeapi.robtex.com') {
+      fake.calls.push('robtex ' + u.pathname.split('/')[3]);
+      return new Response('', { status: 200, headers: { 'content-type': 'application/x-ndjson' } });
+    }
+    if (u.hostname === 'internetdb.shodan.io') {
+      fake.calls.push('internetdb ' + u.pathname.slice(1));
+      return json({ detail: 'No information available' }, 404);
+    }
+    const m = /[?&]dns=([^&]+)/.exec(url);
+    if (m) {
+      wire = wire || await import(new URL('assets/js/lib/dnswire.js', document.baseURI).href);
+      const q = wire.decodeMessage(wire.base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
+      if (HT_NAMES.includes(String(q.name).toLowerCase().replace(/[.]$/, ''))) {
+        return new Response(wire.encodeMessage({ id: 0, flags: { qr: true, rd: true, ra: true }, rcode: 'NXDOMAIN',
+          questions: [{ name: q.name, type: q.type }], answers: [], authorities: [], edns: {} }), { headers: { 'content-type': 'application/dns-message' } });
+      }
     }
     return inner(input, init);
   };

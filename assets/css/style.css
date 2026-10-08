@@ -3939,6 +3939,48 @@ button.nav-status:hover {
   padding: 28px 16px;
 }
 
+/* Takeover risks and Dependencies (ui/takeover-panel.js): on a phone each risk is a card of
+   labelled lines (the headers come from data-label), never a table wider than the screen. */
+@media (max-width: 640px) {
+  .tko-table .dt-table,
+  .tko-table .dt-table tbody {
+    display: block;
+  }
+
+  .tko-table .dt-table thead {
+    display: none;
+  }
+
+  .tko-table .dt-table tbody tr.dt-row {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 6px 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tko-table .dt-table td {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    justify-items: start;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .tko-table .dt-table td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+  }
+}
+
 /* ------------------------------------------------------------------------ */
 /* 5. Utilities                                                             */
 /* ------------------------------------------------------------------------ */

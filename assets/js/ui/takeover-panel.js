@@ -1,22 +1,28 @@
 /**
- * ui/takeover-panel.js — Subdomains › Overview › "Takeover risks".
+ * ui/takeover-panel.js — Subdomains › Overview › "Takeover risks", and Domain Health ›
+ * Dependencies (the same audit for one domain).
  *
  * An on-demand audit of the scanned hosts and domains for names someone else could claim
- * (lib/takeover.js auditTakeover): CNAME chains that end at a released service resource, and
- * CNAME, NS, MX and SPF include/redirect targets in a registrable domain nobody holds (or one
- * pending deletion, expired or about to expire). Nothing is sent before the click: the card says
- * what goes where (DNS queries to the resolver, RDAP lookups to the registries of the domains
- * the records name). The results: one row per reference at risk with its severity, host, chain,
- * service, evidence and fix, a CSV export, a note when nothing is at risk, and "⚠ n/a" with a
- * Retry (only the failed lookups are asked again) for every lookup that gave no answer.
+ * (lib/takeover.js auditTakeover): CNAME chains that end at a released service resource, and the
+ * targets of the domains' CNAME, NS, MX, SPF (include, redirect, a, mx, exists, ptr), DMARC report
+ * address, DKIM CNAME, CAA iodef, MTA-STS, SRV, HTTPS and `_acme-challenge` records in a
+ * registrable domain nobody holds (or one pending deletion, expired or about to expire). Nothing
+ * is sent before the click: the card says what goes where (DNS queries to the resolver, RDAP
+ * lookups to the registries of the domains the records name). The results: one row per reference
+ * at risk with its severity, host, record, chain, service, evidence and fix, a CSV export, a note
+ * when nothing is at risk (and how many SPF terms built from a macro were not checked), and "⚠ n/a"
+ * with a Retry (only the failed lookups are asked again) for every lookup that gave no answer.
  *
  * For the hosts whose service's page decides (S3, GitHub Pages, Heroku …), an optional page check
  * asks Globalping (ui/globalping-gate.js, with its consent) for one HTTP GET per host and
  * compares the page with the service's "no such site" text (lib/takeover.js httpCheckOutcome).
  *
- * Loaded by views/subdomains.js with its results; lib/takeover.js and lib/rdap.js load on the
- * first click, ui/globalping-gate.js and lib/globalping.js on the first page check. The state is
- * kept per run, so a language switch (a re-mount) shows the same results.
+ * {@link TakeoverPanel}: loaded by views/subdomains.js with its results, its state kept per scan
+ * run. {@link DependencyPanel}: mounted by views/health.js on "Check dependencies (RDAP)", its
+ * state the holder the view keeps with the report on screen ({@link freshDependencies}). Either
+ * way lib/takeover.js and lib/rdap.js load on the first click, ui/globalping-gate.js and
+ * lib/globalping.js on the first page check, and a language switch (a re-mount) shows the same
+ * results; a check in flight draws into the panel mounted last.
  */
 
 import { h, clear } from './dom.js';
@@ -29,7 +35,7 @@ import { errorKind, mergeSignals, onceAsync } from '../lib/util.js';
 
 registerStrings('en', {
   'tko.title': 'Takeover risks',
-  'tko.hint': 'Looks for names someone else could claim: a CNAME whose service resource is gone, and CNAME, NS, MX or SPF targets in a domain nobody holds.',
+  'tko.hint': 'Looks for names someone else could claim: a CNAME whose service resource is gone, and the targets of CNAME, NS, MX, SPF, DMARC, DKIM, CAA iodef, MTA-STS, SRV, HTTPS and _acme-challenge records in a domain nobody holds.',
   'tko.sends': 'Runs only when you click: DNS queries go to your resolver, and RDAP lookups of the domains these records name go to their registries.',
   'tko.notSent': 'Nothing has been sent yet.',
   'tko.run': 'Check takeover risks',
@@ -45,6 +51,10 @@ registerStrings('en', {
   'tko.toCheck': { one: '{count} more points to a service whose page decides: see the page check below.', other: '{count} more point to services whose page decides: see the page check below.' },
   'tko.checked': { one: '{count} reference checked', other: '{count} references checked' },
   'tko.domains': { one: '{count} registrable domain looked up', other: '{count} registrable domains looked up' },
+  'tko.macros': {
+    one: '{count} SPF term builds its domain from a macro (%{…}), known only per message: it was not checked.',
+    other: '{count} SPF terms build their domain from a macro (%{…}), known only per message: they were not checked.'
+  },
   'tko.failures': 'These lookups gave no answer, so their names have no verdict yet:',
   'tko.sev.critical': 'Critical',
   'tko.sev.high': 'High',
@@ -55,6 +65,14 @@ registerStrings('en', {
   'tko.kind.ns': 'NS',
   'tko.kind.mx': 'MX',
   'tko.kind.spf': 'SPF include',
+  'tko.kind.spf-host': 'SPF host',
+  'tko.kind.dmarc': 'DMARC',
+  'tko.kind.dkim': 'DKIM CNAME',
+  'tko.kind.caa': 'CAA iodef',
+  'tko.kind.mta-sts': 'MTA-STS CNAME',
+  'tko.kind.srv': 'SRV',
+  'tko.kind.https': 'HTTPS record',
+  'tko.kind.acme': '_acme-challenge CNAME',
   'tko.col.severity': 'Severity',
   'tko.col.host': 'Host',
   'tko.col.kind': 'Record',
@@ -80,14 +98,29 @@ registerStrings('en', {
   'tko.fix.register.ns': 'Remove the name server {target} from the delegation (at the registrar and in the zone), or register {domain} yourself.',
   'tko.fix.register.mx': 'Remove the MX record for {target}, or register {domain} yourself.',
   'tko.fix.register.spf': 'Remove include:{target} from the SPF record, or register {domain} yourself.',
+  'tko.fix.register.spf-host': 'Remove {term} from the SPF record, or register {domain} yourself.',
+  'tko.fix.register.dmarc': 'Remove the report address at {target} from the DMARC record ({term}), or register {domain} yourself.',
+  'tko.fix.register.caa': 'Remove the iodef address at {target} from the CAA record, or register {domain} yourself.',
+  'tko.fix.register.srv': 'Remove the SRV record {host}, or register {domain} yourself.',
+  'tko.fix.register.https': 'Remove the HTTPS record of {host} that points to {target}, or register {domain} yourself.',
   'tko.fix.lapsing.cname': 'Renew {domain} if it is yours; otherwise remove the CNAME record before the domain is released.',
   'tko.fix.lapsing.ns': 'Renew {domain} if it is yours; otherwise remove the name server {target} from the delegation before the domain is released.',
   'tko.fix.lapsing.mx': 'Renew {domain} if it is yours; otherwise remove the MX record for {target} before the domain is released.',
   'tko.fix.lapsing.spf': 'Renew {domain} if it is yours; otherwise remove include:{target} from the SPF record before the domain is released.',
+  'tko.fix.lapsing.spf-host': 'Renew {domain} if it is yours; otherwise remove {term} from the SPF record before the domain is released.',
+  'tko.fix.lapsing.dmarc': 'Renew {domain} if it is yours; otherwise remove the report address at {target} from the DMARC record ({term}) before the domain is released.',
+  'tko.fix.lapsing.caa': 'Renew {domain} if it is yours; otherwise remove the iodef address at {target} from the CAA record before the domain is released.',
+  'tko.fix.lapsing.srv': 'Renew {domain} if it is yours; otherwise remove the SRV record {host} before the domain is released.',
+  'tko.fix.lapsing.https': 'Renew {domain} if it is yours; otherwise remove the HTTPS record of {host} that points to {target} before the domain is released.',
   'tko.fix.nxdomain.cname': 'Remove the record, or create the {service} resource it points to again under your account.',
   'tko.fix.nxdomain.unknown': 'Remove the record, or point it to a name that exists.',
   'tko.fix.nxdomain.ns': 'Remove the name server {target} from the delegation.',
   'tko.fix.nxdomain.mx': 'Remove the MX record for {target}.',
+  'tko.fix.nxdomain.spf-host': 'Remove {term} from the SPF record.',
+  'tko.fix.nxdomain.dmarc': 'Remove the report address at {target} from the DMARC record ({term}): reports sent there are lost.',
+  'tko.fix.nxdomain.caa': 'Remove the iodef address at {target} from the CAA record.',
+  'tko.fix.nxdomain.srv': 'Remove the SRV record {host}, or point it to a host that exists.',
+  'tko.fix.nxdomain.https': 'Remove the HTTPS record of {host}, or point it to a name that exists.',
   'tko.fix.fingerprint': 'Remove the record, or claim the {service} resource again under your own account.',
   'tko.fix.check-http': 'Run the page check below, or open http://{host}/ and compare it with the service’s “not found” page.',
   'tko.http.title': 'Page check (HTTP)',
@@ -107,7 +140,7 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'tko.title': 'Ele geçirme riskleri',
-  'tko.hint': 'Başkasının sahiplenebileceği adları arar: hizmetteki kaynağı silinmiş bir CNAME ile kimsenin elinde olmayan bir alan adındaki CNAME, NS, MX veya SPF hedefleri.',
+  'tko.hint': 'Başkasının sahiplenebileceği adları arar: hizmetteki kaynağı silinmiş bir CNAME ile CNAME, NS, MX, SPF, DMARC, DKIM, CAA iodef, MTA-STS, SRV, HTTPS ve _acme-challenge kayıtlarının kimsenin elinde olmayan bir alan adındaki hedefleri.',
   'tko.sends': 'Yalnızca tıkladığınızda çalışır: DNS sorguları çözümleyicinize, bu kayıtlarda geçen alan adlarının RDAP sorguları da kayıt kuruluşlarına gider.',
   'tko.notSent': 'Henüz hiçbir şey gönderilmedi.',
   'tko.run': 'Ele geçirme risklerini kontrol et',
@@ -123,6 +156,7 @@ registerStrings('tr', {
   'tko.toCheck': '{count} referans daha, sayfasına bakılması gereken bir hizmete gidiyor: aşağıdaki sayfa kontrolüne bakın.',
   'tko.checked': '{count} referans kontrol edildi',
   'tko.domains': '{count} alan adı sorgulandı',
+  'tko.macros': '{count} SPF terimi alan adını bir makrodan (%{…}) oluşturuyor; ad yalnızca ileti başına belli olduğu için kontrol edilmedi.',
   'tko.failures': 'Bu sorgular yanıt vermedi; bu adlar için henüz sonuç yok:',
   'tko.sev.critical': 'Kritik',
   'tko.sev.high': 'Yüksek',
@@ -133,6 +167,14 @@ registerStrings('tr', {
   'tko.kind.ns': 'NS',
   'tko.kind.mx': 'MX',
   'tko.kind.spf': 'SPF include',
+  'tko.kind.spf-host': 'SPF host',
+  'tko.kind.dmarc': 'DMARC',
+  'tko.kind.dkim': 'DKIM CNAME',
+  'tko.kind.caa': 'CAA iodef',
+  'tko.kind.mta-sts': 'MTA-STS CNAME',
+  'tko.kind.srv': 'SRV',
+  'tko.kind.https': 'HTTPS kaydı',
+  'tko.kind.acme': '_acme-challenge CNAME',
   'tko.col.severity': 'Önem',
   'tko.col.host': 'Host',
   'tko.col.kind': 'Kayıt',
@@ -158,14 +200,29 @@ registerStrings('tr', {
   'tko.fix.register.ns': '{target} ad sunucusunu yetkilendirmeden (kayıt firmasında ve zone’da) kaldırın ya da {domain} alan adını kendiniz kaydedin.',
   'tko.fix.register.mx': '{target} için MX kaydını kaldırın ya da {domain} alan adını kendiniz kaydedin.',
   'tko.fix.register.spf': 'SPF kaydından include:{target} ifadesini kaldırın ya da {domain} alan adını kendiniz kaydedin.',
+  'tko.fix.register.spf-host': 'SPF kaydından {term} ifadesini kaldırın ya da {domain} alan adını kendiniz kaydedin.',
+  'tko.fix.register.dmarc': 'DMARC kaydından ({term}) {target} üzerindeki rapor adresini kaldırın ya da {domain} alan adını kendiniz kaydedin.',
+  'tko.fix.register.caa': 'CAA kaydından {target} üzerindeki iodef adresini kaldırın ya da {domain} alan adını kendiniz kaydedin.',
+  'tko.fix.register.srv': '{host} SRV kaydını kaldırın ya da {domain} alan adını kendiniz kaydedin.',
+  'tko.fix.register.https': '{host} için {target} adına işaret eden HTTPS kaydını kaldırın ya da {domain} alan adını kendiniz kaydedin.',
   'tko.fix.lapsing.cname': '{domain} sizinse yenileyin; değilse alan adı serbest kalmadan önce CNAME kaydını kaldırın.',
   'tko.fix.lapsing.ns': '{domain} sizinse yenileyin; değilse alan adı serbest kalmadan önce {target} ad sunucusunu yetkilendirmeden kaldırın.',
   'tko.fix.lapsing.mx': '{domain} sizinse yenileyin; değilse alan adı serbest kalmadan önce {target} için MX kaydını kaldırın.',
   'tko.fix.lapsing.spf': '{domain} sizinse yenileyin; değilse alan adı serbest kalmadan önce SPF kaydından include:{target} ifadesini kaldırın.',
+  'tko.fix.lapsing.spf-host': '{domain} sizinse yenileyin; değilse alan adı serbest kalmadan önce SPF kaydından {term} ifadesini kaldırın.',
+  'tko.fix.lapsing.dmarc': '{domain} sizinse yenileyin; değilse alan adı serbest kalmadan önce DMARC kaydından ({term}) {target} üzerindeki rapor adresini kaldırın.',
+  'tko.fix.lapsing.caa': '{domain} sizinse yenileyin; değilse alan adı serbest kalmadan önce CAA kaydından {target} üzerindeki iodef adresini kaldırın.',
+  'tko.fix.lapsing.srv': '{domain} sizinse yenileyin; değilse alan adı serbest kalmadan önce {host} SRV kaydını kaldırın.',
+  'tko.fix.lapsing.https': '{domain} sizinse yenileyin; değilse alan adı serbest kalmadan önce {host} için {target} adına işaret eden HTTPS kaydını kaldırın.',
   'tko.fix.nxdomain.cname': 'Kaydı kaldırın ya da gösterdiği {service} kaynağını kendi hesabınızda yeniden oluşturun.',
   'tko.fix.nxdomain.unknown': 'Kaydı kaldırın ya da var olan bir ada yönlendirin.',
   'tko.fix.nxdomain.ns': '{target} ad sunucusunu yetkilendirmeden kaldırın.',
   'tko.fix.nxdomain.mx': '{target} için MX kaydını kaldırın.',
+  'tko.fix.nxdomain.spf-host': 'SPF kaydından {term} ifadesini kaldırın.',
+  'tko.fix.nxdomain.dmarc': 'DMARC kaydından ({term}) {target} üzerindeki rapor adresini kaldırın: oraya gönderilen raporlar kaybolur.',
+  'tko.fix.nxdomain.caa': 'CAA kaydından {target} üzerindeki iodef adresini kaldırın.',
+  'tko.fix.nxdomain.srv': '{host} SRV kaydını kaldırın ya da var olan bir host’a yönlendirin.',
+  'tko.fix.nxdomain.https': '{host} için HTTPS kaydını kaldırın ya da var olan bir ada yönlendirin.',
   'tko.fix.fingerprint': 'Kaydı kaldırın ya da {service} kaynağını kendi hesabınızda yeniden sahiplenin.',
   'tko.fix.check-http': 'Aşağıdaki sayfa kontrolünü çalıştırın ya da http://{host}/ adresini açıp hizmetin “bulunamadı” sayfasıyla karşılaştırın.',
   'tko.http.title': 'Sayfa kontrolü (HTTP)',
@@ -193,22 +250,31 @@ const loadGlobalping = onceAsync(() => Promise.all([import('./globalping-gate.js
 /** Severity → badge variant. */
 const SEVERITY_BADGE = Object.freeze({ critical: 'error', high: 'error', medium: 'warn', low: 'info', info: 'neutral' });
 const SEVERITY_ORDER = Object.freeze(['critical', 'high', 'medium', 'low', 'info']);
+/** Every reference kind (lib/takeover.js TAKEOVER_REF_KINDS; the panel loads before the engine). */
+const KINDS = Object.freeze(['cname', 'ns', 'mx', 'spf', 'spf-host', 'dmarc', 'dkim', 'caa', 'mta-sts', 'srv', 'https', 'acme']);
+/** Kinds whose fix is worded per kind; the CNAME chains (dkim, mta-sts, acme, a `_dmarc` delegation) are worded as a CNAME. */
+const FIX_KINDS = Object.freeze(['cname', 'ns', 'mx', 'spf', 'spf-host', 'dmarc', 'caa', 'srv', 'https']);
 
 /**
  * The i18n keys this module builds from codes (for tests/js/i18n-coverage.test.js).
  * @returns {string[]}
  */
 export function generatedKeys() {
-  const kinds = ['cname', 'ns', 'mx', 'spf'];
   return [
     ...SEVERITY_ORDER.map((s) => `tko.sev.${s}`),
-    ...kinds.map((k) => `tko.kind.${k}`),
+    ...KINDS.map((k) => `tko.kind.${k}`),
     ...['vulnerable', 'edge', 'safe'].map((s) => `tko.status.${s}`),
     ...['unregistered', 'unregistered-dns', 'pending-delete', 'expired', 'expiring', 'nxdomain', 'fingerprint', 'check-http'].map((r) => `tko.reason.${r}`),
-    ...['register', 'lapsing'].flatMap((g) => kinds.map((k) => `tko.fix.${g}.${k}`)),
-    'tko.fix.nxdomain.cname', 'tko.fix.nxdomain.unknown', 'tko.fix.nxdomain.ns', 'tko.fix.nxdomain.mx', 'tko.fix.fingerprint', 'tko.fix.check-http',
-    'tko.http.outcome.claimable', 'tko.http.outcome.no-answer'
+    ...['register', 'lapsing'].flatMap((g) => FIX_KINDS.map((k) => `tko.fix.${g}.${k}`)),
+    ...['cname', 'unknown', ...FIX_KINDS.filter((k) => k !== 'cname' && k !== 'spf')].map((k) => `tko.fix.nxdomain.${k}`),
+    'tko.fix.fingerprint', 'tko.fix.check-http', 'tko.http.outcome.claimable', 'tko.http.outcome.no-answer'
   ];
+}
+
+/** The kind a finding's fix is worded as: a CNAME chain of any kind as a CNAME. */
+function fixKind(f) {
+  if (f.kind === 'dmarc' && !f.term) return 'cname';
+  return FIX_KINDS.includes(f.kind) ? f.kind : 'cname';
 }
 
 /**
@@ -218,9 +284,10 @@ export function generatedKeys() {
  */
 export function fixKey(f) {
   const code = f.fix;
-  if (code === 'unregistered' || code === 'unregistered-dns') return `tko.fix.register.${f.kind}`;
-  if (code === 'pending-delete' || code === 'expired' || code === 'expiring') return `tko.fix.lapsing.${f.kind}`;
-  if (code === 'nxdomain') return f.kind === 'cname' ? (f.service ? 'tko.fix.nxdomain.cname' : 'tko.fix.nxdomain.unknown') : `tko.fix.nxdomain.${f.kind}`;
+  const kind = fixKind(f);
+  if (code === 'unregistered' || code === 'unregistered-dns') return `tko.fix.register.${kind}`;
+  if (code === 'pending-delete' || code === 'expired' || code === 'expiring') return `tko.fix.lapsing.${kind}`;
+  if (code === 'nxdomain') return kind === 'cname' ? (f.service ? 'tko.fix.nxdomain.cname' : 'tko.fix.nxdomain.unknown') : `tko.fix.nxdomain.${kind}`;
   return `tko.fix.${code}`;
 }
 
@@ -245,66 +312,73 @@ export function evidenceText(f) {
  * @returns {string}
  */
 export function fixText(f) {
-  return t(fixKey(f), { domain: fixDomain(f), target: f.target, service: f.service ? f.service.name : '', host: f.host });
+  return t(fixKey(f), { domain: fixDomain(f), target: f.target, service: f.service ? f.service.name : '', host: f.host, term: f.term || '' });
 }
 
 /** Findings worst first, then by host and target (lib/takeover.js order). */
 function sortFindings(list) {
   return list.sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity)
-    || a.host.localeCompare(b.host) || a.target.localeCompare(b.target));
-}
-
-/** State per scan run: survives a re-mount (a language switch) of the same results. */
-const states = new WeakMap();
-/** Runs with a check in flight (a workspace switch names it, ui/jobs.js). */
-const running = new Set();
-registerRunning('tko.switchRunning', () => running.size > 0);
-
-/** The run's hosts and scanned domains. */
-function runInput(run) {
-  const hosts = (run && run.result && run.result.hosts) || (run && run.hosts) || [];
-  const domains = (run && run.config && run.config.domains) || [];
-  return { hosts, domains };
+    || a.host.localeCompare(b.host) || a.target.localeCompare(b.target) || KINDS.indexOf(a.kind) - KINDS.indexOf(b.kind));
 }
 
 /**
- * The "Takeover risks" card.
- * @param {import('../app.js').ViewContext} ctx
- * @returns {{ el: HTMLElement, update: (run: object) => void }}
+ * A state nothing has been sent for. `view` is the panel that draws it (the one mounted last).
+ * @param {object} [extra]
+ * @returns {object}
  */
-export function TakeoverPanel(ctx) {
-  const body = h('div', { class: 'stack-sm' });
-  const el = Card({
-    title: t('tko.title'), icon: 'shield', className: 'tko', children: [
-      h('p', { class: 'muted text-sm' }, t('tko.hint')),
-      body
-    ]
-  });
-  el.dataset.part = 'takeover';
-  let run = null;
-  let state = null;
-  let table = null;
+function freshState(extra = {}) {
+  return { status: 'idle', result: null, findings: [], known: null, outcomes: new Map(), error: null, controller: null, done: 0, total: 0, http: null, view: null, ...extra };
+}
 
-  function stateOf(r) {
-    let s = states.get(r);
-    if (!s) {
-      s = { status: 'idle', result: null, findings: [], known: null, outcomes: new Map(), error: null, controller: null, done: 0, total: 0, http: null };
-      states.set(r, s);
-    }
-    return s;
-  }
+/**
+ * The state of Domain Health › Dependencies for one report (views/health.js keeps it with the
+ * report on screen, so a re-render mounts the panel on it again).
+ * @param {string} domain
+ * @param {string[]} [selectors] the extra DKIM selectors the report was checked with
+ * @returns {object}
+ */
+export function freshDependencies(domain, selectors = []) {
+  return freshState({ domain, selectors: [...selectors] });
+}
+
+/** States with a check in flight (a workspace switch names it, ui/jobs.js). */
+const running = new Set();
+registerRunning('tko.switchRunning', () => running.size > 0);
+
+/** Draw a state again in the panel mounted last, if that one still shows it (a check outlives a re-mount). */
+function paint(s) {
+  if (s.view && s.view.shows(s)) s.view.render();
+}
+
+/**
+ * The audit inside a card: what it sends, the run, its progress and its results.
+ * @param {object} ctx the view's context
+ * @param {{ input: () => { hosts: object[], domains: string[], extraDkimSelectors?: string[] }, blocked?: () => boolean, runKey?: string }} opts
+ *   `blocked`: the run waits (a scan still running); `runKey`: the run button's label before the first check
+ * @returns {{ el: HTMLElement, show: (state: object) => void, render: () => void, refresh: () => void, start: () => void }}
+ */
+function auditView(ctx, { input, blocked = () => false, runKey = 'tko.run' }) {
+  const body = h('div', { class: 'stack-sm' });
+  let state = null;
+  let progress = null;
+  let drawnBlocked = null;
+  const view = {
+    render: () => render(),
+    shows: (s) => s === state && body.isConnected,
+    progress: (done, total) => progress && progress.set(done, Math.max(total, 1))
+  };
 
   async function start({ retry = false } = {}) {
-    if (!run || state.status === 'running' || run.status === 'running') return;
-    if (!ctx.requireOnline()) return;
     const s = state;
-    const r = run;
+    if (!s || s.status === 'running' || blocked()) return;
+    if (!ctx.requireOnline()) return;
     const controller = new AbortController();
     const signal = mergeSignals(ctx.signal, controller.signal);
+    const job = input();
     Object.assign(s, { status: 'running', controller, error: null, done: 0, total: 0, http: retry ? s.http : null });
     // Check again starts afresh; a Retry keeps the registrations and the page checks it has.
     if (!retry) Object.assign(s, { known: null, outcomes: new Map() });
-    running.add(r);
+    running.add(s);
     render();
     try {
       const [{ auditTakeover }, { rdapDomain }] = await loadEngine().catch((err) => {
@@ -312,13 +386,13 @@ export function TakeoverPanel(ctx) {
         throw err;
       });
       const dns = await ctx.getDns();
-      const result = await auditTakeover(runInput(r), {
-        dns, signal, known: s.known,
+      const result = await auditTakeover({ hosts: job.hosts, domains: job.domains }, {
+        dns, signal, known: s.known, extraDkimSelectors: job.extraDkimSelectors || [],
         rdap: (domain, opts) => rdapDomain(domain, opts),
         onProgress: (done, total) => {
           s.done = done;
           s.total = total;
-          if (state === s && progress) progress.set(done, Math.max(total, 1));
+          if (s.view && s.view.shows(s)) s.view.progress(done, total);
         }
       });
       const findings = [];
@@ -337,8 +411,8 @@ export function TakeoverPanel(ctx) {
       else Object.assign(s, { status: 'error', error: err });
     } finally {
       s.controller = null;
-      running.delete(r);
-      if (state === s) render();
+      running.delete(s);
+      paint(s);
     }
   }
 
@@ -349,8 +423,7 @@ export function TakeoverPanel(ctx) {
     const signal = mergeSignals(ctx.signal, controller.signal);
     const prev = s.http;
     s.http = { status: 'running', controller, counts: null, error: null, resetAt: null };
-    running.add(run);
-    const r = run;
+    running.add(s);
     render();
     try {
       const [[gate, gp], [takeover]] = await Promise.all([loadGlobalping(), loadEngine()]).catch((err) => {
@@ -409,12 +482,10 @@ export function TakeoverPanel(ctx) {
       else if (err && (err.code === 'rate-limit' || err.code === 'insufficient-credits')) s.http = { status: 'quota', resetAt: err.resetAt || null, whenText: null };
       else s.http = { status: 'error', error: err };
     } finally {
-      running.delete(r);
-      if (state === s) render();
+      running.delete(s);
+      paint(s);
     }
   }
-
-  let progress = null;
 
   function renderFailures(s) {
     const failures = s.result ? s.result.failures : [];
@@ -435,7 +506,7 @@ export function TakeoverPanel(ctx) {
   }
 
   function renderTable(findings) {
-    table = DataTable({
+    return DataTable({
       columns: [
         {
           key: 'severity', label: t('tko.col.severity'), sortable: true, sortValue: (f) => SEVERITY_ORDER.indexOf(f.severity),
@@ -462,8 +533,7 @@ export function TakeoverPanel(ctx) {
       cellLabels: true,
       export: { filename: 'takeover-risks', formats: ['csv'] },
       className: 'tko-table'
-    });
-    return table.el;
+    }).el;
   }
 
   function renderHttp(s, candidates) {
@@ -487,17 +557,13 @@ export function TakeoverPanel(ctx) {
     return h('section', { class: 'stack-sm', dataset: { part: 'tko-http' } }, ...children);
   }
 
-  let renderedFor = null;
-
   function render() {
     clear(body);
     progress = null;
-    table = null;
     if (!state) return;
     const s = state;
-    renderedFor = run ? run.status : null;
-    const scanRunning = run && run.status === 'running';
-    const { hosts, domains } = runInput(run);
+    drawnBlocked = blocked();
+    const { hosts, domains } = input();
     const nothing = !hosts.length && !domains.length;
     const actions = h('div', { class: 'cluster' });
     if (s.status === 'running') {
@@ -508,9 +574,9 @@ export function TakeoverPanel(ctx) {
       return;
     }
     const runBtn = Button({
-      label: t(s.status === 'idle' || s.status === 'stopped' ? 'tko.run' : 'tko.again'), icon: 'shield', size: 'sm',
-      variant: s.status === 'idle' ? 'primary' : 'secondary', disabled: scanRunning || nothing || !!(s.http && s.http.status === 'running'),
-      title: scanRunning ? t('tko.runBusy') : null, dataset: { action: 'tko-run' }, onClick: () => start()
+      label: t(s.status === 'idle' || s.status === 'stopped' ? runKey : 'tko.again'), icon: 'shield', size: 'sm',
+      variant: s.status === 'idle' ? 'primary' : 'secondary', disabled: drawnBlocked || nothing || !!(s.http && s.http.status === 'running'),
+      title: drawnBlocked ? t('tko.runBusy') : null, dataset: { action: 'tko-run' }, onClick: () => start()
     });
     actions.append(runBtn);
     if (s.status === 'idle') {
@@ -537,6 +603,7 @@ export function TakeoverPanel(ctx) {
         t('tko.none', { count: result.references, domains: t('tko.domains', { count: result.checked }) }));
     body.append(summary);
     if (!atRisk.length && candidates.length) body.append(h('p', { class: 'muted text-sm' }, t('tko.toCheck', { count: candidates.length })));
+    if (result.spfMacros) body.append(h('p', { class: 'muted text-sm', dataset: { part: 'tko-macros' } }, t('tko.macros', { count: result.spfMacros })));
     const failures = renderFailures(s);
     if (failures) body.append(failures);
     if (s.findings.length) body.append(renderTable(s.findings));
@@ -546,18 +613,76 @@ export function TakeoverPanel(ctx) {
   }
 
   return {
+    el: body,
+    show(s) {
+      state = s;
+      s.view = view;
+      render();
+    },
+    render,
+    // Only the run's own state and the wait matter here: a source event of a running scan draws nothing.
+    refresh() {
+      if (state && state.status !== 'running' && blocked() !== drawnBlocked) render();
+    },
+    start: () => start()
+  };
+}
+
+/** State per scan run: survives a re-mount (a language switch) of the same results. */
+const states = new WeakMap();
+
+/** The run's hosts and scanned domains. */
+function runInput(run) {
+  const hosts = (run && run.result && run.result.hosts) || (run && run.hosts) || [];
+  const domains = (run && run.config && run.config.domains) || [];
+  return { hosts, domains };
+}
+
+/**
+ * The "Takeover risks" card of Subdomains › Overview.
+ * @param {import('../app.js').ViewContext} ctx
+ * @returns {{ el: HTMLElement, update: (run: object) => void }}
+ */
+export function TakeoverPanel(ctx) {
+  let run = null;
+  const audit = auditView(ctx, { input: () => runInput(run), blocked: () => !!run && run.status === 'running' });
+  const el = Card({
+    title: t('tko.title'), icon: 'shield', className: 'tko', children: [
+      h('p', { class: 'muted text-sm' }, t('tko.hint')),
+      audit.el
+    ]
+  });
+  el.dataset.part = 'takeover';
+  return {
     el,
     update(next) {
       if (!next) return;
       if (next !== run) {
         run = next;
-        state = stateOf(next);
-        render();
+        let s = states.get(next);
+        if (!s) {
+          s = freshState();
+          states.set(next, s);
+        }
+        audit.show(s);
         return;
       }
-      // Only the scan's state matters here (the button waits for its end): a source event of a
-      // running scan draws nothing.
-      if (run.status !== renderedFor && state.status !== 'running') render();
+      audit.refresh();
     }
   };
+}
+
+/**
+ * Domain Health › Dependencies: the same audit for the report's domain alone (its records, no
+ * hosts), the extra DKIM selectors it was checked with included.
+ * @param {{ ctx: object, holder: object, start?: boolean, runKey?: string }} opts `holder`: {@link freshDependencies};
+ *   `start`: run at once (the card's first click); `runKey`: the run button's label after a stopped check (the card's own)
+ * @returns {HTMLElement}
+ */
+export function DependencyPanel({ ctx, holder, start = false, runKey = 'tko.run' }) {
+  const audit = auditView(ctx, { input: () => ({ hosts: [], domains: [holder.domain], extraDkimSelectors: holder.selectors || [] }), runKey });
+  audit.el.dataset.part = 'dependencies';
+  audit.show(holder);
+  if (start && holder.status !== 'running') audit.start();
+  return audit.el;
 }

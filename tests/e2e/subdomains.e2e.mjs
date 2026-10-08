@@ -418,6 +418,8 @@ const TKO_ZONE = {
     A: ['203.0.113.10'], NS: ['ns1.example.net', 'ns.example-test.com.tr'], MX: [{ preference: 10, exchange: 'mx.example.net' }],
     TXT: [['v=spf1 include:spf.example.com -all']]
   },
+  // DMARC reports to a domain nobody holds (asked on the same click as the CNAME, NS, MX and SPF targets)
+  '_dmarc.example.net': { TXT: [['v=DMARC1; p=none; rua=mailto:dmarc@reports.example.org']] },
   'ns1.example.net': { A: ['203.0.113.53'] },
   'mx.example.net': { A: ['203.0.113.25'] },
   'www.example.net': { A: ['203.0.113.10'] },
@@ -2127,13 +2129,14 @@ async function main() {
           retry: !!document.querySelector('.tko [data-action="tko-retry"]'),
           page: !!document.querySelector('.tko [data-action="tko-http"]')
         }));
-        assertEqual(first, { risks: '3', failed: [['example.com', 'rdap']], retry: true, page: true }, 'three risks, the 503 as n/a with Retry, the page check offered');
+        assertEqual(first, { risks: '4', failed: [['example.com', 'rdap']], retry: true, page: true }, 'four risks, the 503 as n/a with Retry, the page check offered');
         assertEqual(await takeoverRows(tab), [
           'Critical | cdn.example.net | CNAME | cdn.example.org',
+          'High | _dmarc.example.net | DMARC | reports.example.org',
           'High | example.net | NS | ns.example-test.com.tr',
           'High | old.example.net | CNAME | old-app.azurewebsites.net',
           'To check | files.example.net | CNAME | files.example.net.s3.amazonaws.com'
-        ], 'the rows, most severe first');
+        ], 'the rows, most severe first (the DMARC report address asked on the same click)');
         const evidence = await tab.evaluate(() => document.querySelector('.tko .tko-table tbody tr.dt-row td[data-label="Evidence"]')?.textContent || '');
         assert(/example\.org looks unregistered/.test(evidence), `the evidence names the domain: ${evidence}`);
         const asked = await tab.evaluate(() => window.__rdap.slice());
@@ -2143,7 +2146,7 @@ async function main() {
         // Retry asks only the lookup that failed; it now answers, and the SPF include joins the risks.
         await tab.evaluate(() => { window.__rdapHeal = true; window.__rdapBefore = window.__rdap.length; });
         await tab.click('.tko [data-action="tko-retry"]');
-        await tab.waitFor(() => document.querySelector('.tko [data-part="tko-summary"]')?.dataset.risks === '4', { timeout: 30000, message: 'after Retry' });
+        await tab.waitFor(() => document.querySelector('.tko [data-part="tko-summary"]')?.dataset.risks === '5', { timeout: 30000, message: 'after Retry' });
         const again = await tab.evaluate(() => ({ asked: window.__rdap.slice(window.__rdapBefore), failed: document.querySelectorAll('.tko [data-failed]').length }));
         assertEqual(again, { asked: ['example.com'], failed: 0 }, 'only example.com asked again, no failure left');
         assert((await takeoverRows(tab)).includes('High | example.net | SPF include | spf.example.com'), 'the SPF include is at risk');
@@ -2155,9 +2158,10 @@ async function main() {
         const [csv] = await takeDownloads(tab);
         const lines = csv.text.replace(/^﻿/, '').trim().split(/\r\n/);
         assertEqual(lines[0], 'Severity,Host,Record,Points to,Service,Service status,Evidence,Fix,Reference', 'CSV header');
-        assertEqual(lines.length, 6, 'a header and five rows');
+        assertEqual(lines.length, 7, 'a header and six rows');
         assert(lines[1].startsWith('critical,cdn.example.net,cname,cdn.example.org,'), `first row: ${lines[1]}`);
         assert(lines.some((l) => l.startsWith('high,old.example.net,cname,old-app.azurewebsites.net,Azure App Service,vulnerable,')), 'the Azure row');
+        assert(lines.some((l) => l.startsWith('high,_dmarc.example.net,dmarc,reports.example.org,,,') && l.includes('from the DMARC record (rua)')), 'the DMARC row and its fix');
 
         // The page check: the consent names the host and the cost, one Globalping GET follows, and the
         // S3 "NoSuchBucket" page raises that row.
@@ -2174,7 +2178,7 @@ async function main() {
         await tab.waitFor(() => /Pages checked/.test(document.querySelector('.tko [data-part="tko-http"] [role="status"]')?.textContent || ''), { timeout: 20000, message: 'page check done' });
         assertEqual((await tab.evaluate(() => window.__gp.slice())).filter((c) => c.startsWith('POST')), ['POST /measurements http files.example.net'], 'one GET of the S3 host');
         assert((await takeoverRows(tab)).includes('High | files.example.net | CNAME | files.example.net.s3.amazonaws.com'), 'the fingerprint raised the S3 row');
-        assertEqual(await tab.evaluate(() => document.querySelector('.tko [data-part="tko-summary"]').dataset.risks), '5', 'five references at risk');
+        assertEqual(await tab.evaluate(() => document.querySelector('.tko [data-part="tko-summary"]').dataset.risks), '6', 'six references at risk');
         assertEqual(await tab.evaluate(() => !!document.querySelector('.tko [data-action="tko-http"]')), false, 'nothing left to check');
 
         // Phones, both languages and themes: the card keeps its results across the re-mount and fits.

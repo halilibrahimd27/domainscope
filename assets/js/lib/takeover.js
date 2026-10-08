@@ -1,6 +1,7 @@
 /**
  * takeover.js — subdomain takeover and dangling-reference audit (Subdomains › Overview ›
- * "Takeover risks", ui/takeover-panel.js).
+ * "Takeover risks" and Domain Health › Dependencies, ui/takeover-panel.js; the headless runner's
+ * `takeover`, tools/ds/takeover.mjs).
  *
  * Three questions about every name a scan found and every name its domains point to:
  *  1. Does a host's CNAME chain end at a service where somebody else can claim the name? The
@@ -9,12 +10,16 @@
  *     service still answers, with a "no such site" page whose text is the fingerprint) and its
  *     status: `vulnerable` (anybody can create a resource with that name), `edge` (possible in
  *     some set-ups only) or `safe` (the service verifies ownership: a stale record to clean up).
- *  2. Does a CNAME, NS, MX or SPF include/redirect target sit in a registrable domain that is not
- *     registered, about to be deleted, expired or about to expire? Then whoever registers it
- *     serves the host, answers for the zone, receives the mail or may send as the domain. Asked
- *     through RDAP (lib/rdap.js rdapDomain, injected: paced per registry there); an RDAP 404
- *     counts only when DNS agrees (NXDOMAIN for the domain's NS), and a TLD without RDAP is
- *     judged by DNS alone, worded as "possibly registrable".
+ *  2. Does a name the domain depends on sit in a registrable domain that is not registered, about
+ *     to be deleted, expired or about to expire? Then whoever registers it serves the host, answers
+ *     for the zone, receives the mail or the reports, may send or sign as the domain, or gets
+ *     certificates for it. The references ({@link TAKEOVER_REF_KINDS}): CNAME chains, the NS and MX
+ *     targets, the SPF include / redirect and a / mx / exists / ptr domains, the DMARC report
+ *     addresses, the DKIM selectors' CNAMEs, the CAA iodef addresses, the CNAME chain of
+ *     `mta-sts.<domain>`, the Autodiscover and SIP SRV targets, the HTTPS record's TargetName and
+ *     the `_acme-challenge` CNAME. Asked through RDAP (lib/rdap.js rdapDomain, injected: paced per
+ *     registry there); an RDAP 404 counts only when DNS agrees (NXDOMAIN for the domain's NS), and
+ *     a TLD without RDAP is judged by DNS alone, worded as "possibly registrable".
  *  3. For a service whose page decides: does a Globalping HTTP GET of the host return the
  *     service's "no such site" text? ({@link httpCheckOutcome}; the panel asks through
  *     ui/globalping-gate.js, with consent.)
@@ -44,8 +49,40 @@ export const TAKEOVER_SIGNALS = Object.freeze(['nxdomain', 'http']);
 /** Finding severities, most severe first. */
 export const TAKEOVER_SEVERITIES = Object.freeze(['critical', 'high', 'medium', 'low', 'info']);
 
-/** The kinds of reference a finding is about. */
-export const TAKEOVER_REF_KINDS = Object.freeze(['cname', 'ns', 'mx', 'spf']);
+/**
+ * The kinds of reference a finding is about: a scanned host's CNAME chain (cname); the domain's
+ * name servers (ns), mail servers (mx), SPF include: / redirect= domains (spf) and a: / mx: /
+ * exists: / ptr: domains (spf-host); its DMARC report addresses and a `_dmarc` CNAME delegation
+ * (dmarc); the CNAME chains of its DKIM selectors (dkim); its CAA iodef addresses (caa); the
+ * CNAME chain of `mta-sts.<domain>` (mta-sts); the targets of {@link TAKEOVER_SRV_NAMES} (srv);
+ * its HTTPS record's TargetName (https); the CNAME chain of `_acme-challenge.<domain>` (acme).
+ */
+export const TAKEOVER_REF_KINDS = Object.freeze(['cname', 'ns', 'mx', 'spf', 'spf-host', 'dmarc', 'dkim', 'caa', 'mta-sts', 'srv', 'https', 'acme']);
+
+/**
+ * The query a domain's reference of each kind comes from (a failure names it `<owner> <TYPE>`; a
+ * scanned host's own chain query is named by the host alone).
+ */
+export const REFERENCE_QUERIES = Object.freeze({
+  ns: 'NS', mx: 'MX', spf: 'TXT', 'spf-host': 'TXT', dmarc: 'TXT', dkim: 'TXT', caa: 'CAA', 'mta-sts': 'A', srv: 'SRV', https: 'HTTPS', acme: 'TXT'
+});
+
+/** Kinds whose chain is a host of the domain: a catalogue service at its end can be claimed (nxdomain and the page check by service). */
+const HOST_KINDS = new Set(['cname', 'mta-sts']);
+/** Kinds where whoever registers an unregistered target serves the domain's names, answers for its zone or gets certificates for it. */
+const CRITICAL_KINDS = new Set(['cname', 'ns', 'mta-sts', 'acme']);
+/** Kinds whose single target is asked for its own existence (A: NXDOMAIN says it does not exist, whatever the type). */
+const EXISTENCE_KINDS = new Set(['ns', 'mx', 'spf-host', 'dmarc', 'caa', 'srv', 'https']);
+
+/**
+ * The DKIM selectors whose CNAME is followed: the Domain portfolio's common ones (lib/portfolio.js
+ * PORTFOLIO_DKIM_SELECTORS, kept equal by tests/js/takeover.test.js; not imported, so the audit
+ * stays light), plus the selectors a caller gives (`extraDkimSelectors`).
+ */
+export const TAKEOVER_DKIM_SELECTORS = Object.freeze(['google', 'selector1', 'selector2', 'default', 'k1', 's1', 'dkim', 'mail']);
+
+/** The SRV names whose targets are references: Outlook's Autodiscover and SIP (Teams / Skype for Business federation). */
+export const TAKEOVER_SRV_NAMES = Object.freeze(['_autodiscover._tcp', '_sip._tls']);
 
 /**
  * Why a reference is at risk (`tko.reason.<code>` in the UI):
@@ -314,22 +351,145 @@ export function cnameChain(response, name) {
   return chain;
 }
 
+/** A domain named in a record, or null (lower case, no trailing dot, a valid host name). */
+const hostOf = (name) => normalizeHostname(canon(name));
+
+/**
+ * What an SPF record names (RFC 7208): the include: and redirect= domains (`includes`), the a:,
+ * mx:, exists: and ptr: domains with their term (`hosts`: `{ mechanism, target, term:
+ * 'a:mail.example.net' }`, a CIDR length dropped; a bare `a`, `mx` or `ptr` names the domain
+ * itself), each once, and how many of those terms build their name from a macro (`%{…}`: known
+ * only per message, so never checked; `macros`). `exp=` is not a reference.
+ * @param {string} txt
+ * @returns {{ includes: string[], hosts: Array<{ mechanism: string, target: string, term: string }>, macros: number }}
+ */
+export function spfReferences(txt) {
+  const out = { includes: [], hosts: [], macros: 0 };
+  if (typeof txt !== 'string' || !/^v=spf1(\s|$)/i.test(txt.trim())) return out;
+  for (const raw of txt.trim().split(/\s+/).slice(1)) {
+    // A domain-spec built from a macro (its delimiters may hold a `/` too): counted, never parsed.
+    if (raw.includes('%') && /^(?:[+\-~?]?(?:include|a|mx|exists|ptr):|redirect=)/i.test(raw)) {
+      out.macros += 1;
+      continue;
+    }
+    const redirect = /^redirect=(.*)$/i.exec(raw);
+    const m = redirect ? null : /^[+\-~?]?(include|a|mx|exists|ptr)(?::([^/]*))?((?:\/\d{1,3})?(?:\/\/\d{1,3})?)$/i.exec(raw);
+    if (!redirect && !m) continue;
+    const mechanism = redirect ? 'redirect' : m[1].toLowerCase();
+    const spec = redirect ? redirect[1] : m[2];
+    // a, mx and ptr without a domain name the domain itself; include and exists need one, and take no CIDR length.
+    if (spec === undefined || (m && m[3] && (mechanism === 'include' || mechanism === 'exists' || mechanism === 'ptr'))) continue;
+    const target = hostOf(spec);
+    if (!target) continue;
+    if (mechanism === 'include' || mechanism === 'redirect') {
+      if (!out.includes.includes(target)) out.includes.push(target);
+    } else if (!out.hosts.some((x) => x.target === target)) {
+      out.hosts.push({ mechanism, target, term: `${mechanism}:${target}` });
+    }
+  }
+  return out;
+}
+
 /**
  * The include: and redirect= domains of an SPF record (macros left out).
  * @param {string} txt
  * @returns {string[]}
  */
 export function spfTargets(txt) {
-  if (typeof txt !== 'string' || !/^v=spf1(\s|$)/i.test(txt.trim())) return [];
+  return spfReferences(txt).includes;
+}
+
+/**
+ * The hosts of a DMARC record's report addresses (RFC 7489 §6.2): the `mailto:` URIs of rua= and
+ * ruf= (a size limit `!10m` and a query dropped), each host once with the tags that name it. A
+ * repeated tag counts once, the first (as lib/health.js parseDmarc reads it).
+ * @param {string} txt
+ * @returns {Array<{ target: string, tags: string[] }>}
+ */
+export function dmarcTargets(txt) {
   const out = [];
-  for (const raw of txt.trim().split(/\s+/)) {
-    const m = /^[+\-~?]?include:(.+)$/i.exec(raw) || /^redirect=(.+)$/i.exec(raw);
-    if (!m || m[1].includes('%')) continue;
-    const name = canon(m[1]);
-    if (name && !out.includes(name)) out.push(name);
+  if (typeof txt !== 'string' || !/^[vV]\s*=\s*DMARC1\s*(?:;|$)/.test(txt.trim())) return out;
+  const tagsSeen = new Set();
+  for (const part of txt.split(';')) {
+    const m = /^\s*(rua|ruf)\s*=\s*(.*)$/i.exec(part);
+    if (!m) continue;
+    const tag = m[1].toLowerCase();
+    if (tagsSeen.has(tag)) continue;
+    tagsSeen.add(tag);
+    for (const uri of m[2].split(',')) {
+      const mail = /^\s*mailto:([^!?\s]+)/i.exec(uri);
+      if (!mail) continue;
+      let address = mail[1];
+      try {
+        address = decodeURIComponent(address);
+      } catch {
+        // a stray % stays as it was
+      }
+      const at = address.lastIndexOf('@');
+      const target = at > 0 ? hostOf(address.slice(at + 1)) : null;
+      if (!target) continue;
+      const hit = out.find((x) => x.target === target);
+      if (!hit) out.push({ target, tags: [tag] });
+      else if (!hit.tags.includes(tag)) hit.tags.push(tag);
+    }
   }
   return out;
 }
+
+/**
+ * The hosts of the CAA iodef addresses (RFC 8659 §4.4): a `mailto:` address's mail domain, an
+ * `https:` / `http:` URL's host; each once.
+ * @param {Array<{ tag?: string, value?: string }>} records CAA record data
+ * @returns {string[]}
+ */
+export function caaIodefTargets(records) {
+  const out = [];
+  for (const r of Array.isArray(records) ? records : []) {
+    if (!r || String(r.tag || '').toLowerCase() !== 'iodef' || typeof r.value !== 'string') continue;
+    const value = r.value.trim();
+    const mail = /^mailto:([^?\s]+)/i.exec(value);
+    let target = null;
+    if (mail) {
+      const at = mail[1].lastIndexOf('@');
+      target = at > 0 ? hostOf(mail[1].slice(at + 1)) : null;
+    } else if (/^https?:\/\/[^\s]/i.test(value)) {
+      target = normalizeHostname(value);
+    }
+    if (target && !out.includes(target)) out.push(target);
+  }
+  return out;
+}
+
+const SELECTOR_RE = /^[a-z0-9_](?:[a-z0-9_.-]*[a-z0-9_])?$/;
+
+/**
+ * Is this a DKIM selector a name can be built from (`<selector>._domainkey.<domain>`)? Letters,
+ * digits, `_` and `-`, dot-separated labels (as Domain Health's extra selectors).
+ * @param {string} selector
+ * @returns {boolean}
+ */
+export function isDkimSelector(selector) {
+  const s = String(selector ?? '').toLowerCase();
+  return s.length <= 63 && SELECTOR_RE.test(s) && !s.includes('..');
+}
+
+/**
+ * The selectors the audit follows: {@link TAKEOVER_DKIM_SELECTORS}, then the extra ones (lower
+ * case, invalid ones and repeats left out).
+ * @param {string[]} [extra]
+ * @returns {string[]}
+ */
+export function dkimSelectorList(extra = []) {
+  const out = [...TAKEOVER_DKIM_SELECTORS];
+  for (const raw of Array.isArray(extra) ? extra : []) {
+    const s = String(raw ?? '').trim().toLowerCase();
+    if (isDkimSelector(s) && !out.includes(s)) out.push(s);
+  }
+  return out;
+}
+
+/** A TXT record's text (its strings joined). */
+const txtText = (data) => (Array.isArray(data) ? data.join('') : typeof data === 'string' ? data : '');
 
 /* ------------------------------------------------------------------------ */
 /* Registration                                                             */
@@ -375,13 +535,15 @@ export function registrationVerdict(rdap, ns, { now = Date.now(), expiringDays =
  */
 export function reasonSeverity(reason, kind, service = null) {
   switch (reason) {
-    case 'unregistered': return kind === 'cname' || kind === 'ns' ? 'critical' : 'high';
+    // Whoever registers it serves the host (a CNAME, mta-sts), answers for the zone (NS) or passes
+    // DNS-01 for the domain and its wildcard (acme): critical. Mail, reports, keys, SRV and HTTPS: high.
+    case 'unregistered': return CRITICAL_KINDS.has(kind) ? 'critical' : 'high';
     case 'unregistered-dns':
     case 'pending-delete':
     case 'expired': return 'high';
     case 'expiring': return 'medium';
     case 'nxdomain':
-      if (kind !== 'cname') return 'low';
+      if (!HOST_KINDS.has(kind)) return 'low';
       if (!service) return 'medium';
       return service.status === 'vulnerable' ? 'high' : service.status === 'edge' ? 'medium' : 'low';
     case 'fingerprint': return service && service.status === 'vulnerable' ? 'high' : 'medium';
@@ -422,10 +584,14 @@ export function worstSeverity(list) {
  * @typedef {object} TakeoverFinding
  * @property {string} id kind + host + target, stable across runs
  * @property {string} severity the worst of its reasons
- * @property {string} kind cname | ns | mx | spf
- * @property {string} host the scanned host (cname) or the scanned domain (ns, mx, spf)
- * @property {string} target the CNAME chain's last name, or the NS / MX / SPF target
- * @property {string[]} chain the CNAME chain (cname), else [target]
+ * @property {string} kind a {@link TAKEOVER_REF_KINDS} code
+ * @property {string} host the scanned host (cname), else the name that holds the record: the scanned domain (ns, mx,
+ *   spf, spf-host, caa, https), `_dmarc.<domain>`, `<selector>._domainkey.<domain>`, `mta-sts.<domain>`, the SRV name
+ *   (`_sip._tls.<domain>`) or `_acme-challenge.<domain>`
+ * @property {string} target the CNAME chain's last name, else the name the record names
+ * @property {string[]} chain the CNAME chain (cname, dkim, mta-sts, acme, a `_dmarc` delegation), else [target]
+ * @property {string|null} term what in the record names it: the SPF term (`a:mail.example.net`), the DMARC tags
+ *   (`rua`, `rua, ruf`); null for the other kinds
  * @property {{ id: string, name: string, status: string, ref: string }|null} service
  * @property {TakeoverReason[]} reasons most severe first
  * @property {string} fix the code of the fix: the first reason's code
@@ -434,37 +600,74 @@ export function worstSeverity(list) {
 /**
  * @typedef {object} TakeoverFailure
  * @property {'doh'|'rdap'} source
- * @property {string} name what was asked (a host, a domain, `<domain> NS`)
+ * @property {string} name what was asked: a scanned host, `<name> <TYPE>` (a domain's record, `<domain> NS` after an
+ *   RDAP 404), a target (whether it exists), a registrable domain (RDAP)
  * @property {object} response the failed DnsResponse or rdapDomain() result (lib/sourcestatus.js)
  */
 
 /**
+ * The lookups a finding rests on, named as {@link auditTakeover} names its failures: the query its
+ * reference came from (`<owner> <TYPE>` by {@link REFERENCE_QUERIES}; a scanned host's chain: the
+ * host), its target (whether it exists), and every registrable domain its chain names (RDAP, and
+ * `<domain> NS` after a 404). While one of them failed, a finding is not known to be gone: the
+ * headless runner carries it (tools/ds/carry.mjs carryRisks).
+ * @param {{ kind: string, host: string, target?: string, chain?: string[] }} finding
+ * @returns {string[]}
+ */
+export function findingLookups({ kind, host, target, chain }) {
+  const out = new Set([kind === 'cname' ? canon(host) : `${canon(host)} ${REFERENCE_QUERIES[kind] || 'A'}`]);
+  if (target) out.add(canon(target));
+  for (const name of Array.isArray(chain) ? chain : []) {
+    const d = registryDomainOf(name);
+    if (d) {
+      out.add(d);
+      out.add(`${d} NS`);
+    }
+  }
+  return [...out];
+}
+
+/**
  * Audit the scanned hosts and domains. Only an abort rejects.
  *
- * Steps: the domains' NS, MX and TXT (SPF) records; every host with a CNAME chain asked again
- * (A, no cache: the chain and whether its end exists today) and every NS / MX target's A record;
- * then the registration of every registrable domain those references name, outside the scanned
- * domains and the catalogue's providers, through `rdap` (one lookup per domain; `known` carries
- * earlier verdicts, and only failed ones are asked again).
+ * Steps: each domain's records — NS, MX, TXT (SPF), `_dmarc` TXT, CAA, HTTPS, the
+ * {@link TAKEOVER_SRV_NAMES} SRV records, and the CNAME chains of `mta-sts.<domain>` (A),
+ * `_acme-challenge.<domain>` (TXT) and every DKIM selector (TXT; {@link TAKEOVER_DKIM_SELECTORS}
+ * and `extraDkimSelectors`), the chains asked without the cache; every host asked again (A, no
+ * cache: the chain and whether its end exists today); every single target outside the domains
+ * (NS, MX, SPF a / mx / exists / ptr, DMARC and iodef hosts, SRV and HTTPS targets) asked for its A
+ * record (NXDOMAIN: it does not exist); then the registration of every registrable domain those
+ * references name, outside the domains (`domains` and `ownDomains`) and the catalogue's providers,
+ * through `rdap` (one lookup per domain; `known` carries earlier verdicts, and only failed ones
+ * are asked again).
  *
- * @param {{ hosts?: object[], domains?: string[] }} input scan HostRecords (name, resolution.cnames,
- *   wildcardSuspect) and the scanned domains
+ * @param {{ hosts?: Array<object|string>, domains?: string[] }} input scan HostRecords (name,
+ *   resolution.cnames, wildcardSuspect: the ones with a CNAME chain are asked again) or host names
+ *   (each asked, whatever it had: a list of names to watch), and the domains
  * @param {{ dns: { query: Function }, rdap: (domain: string, opts: object) => Promise<object>, signal?: AbortSignal,
  *   now?: () => number, known?: Map<string, object>|null, onProgress?: (done: number, total: number) => void,
- *   concurrency?: number, rdapConcurrency?: number, expiringDays?: number, skipTlds?: ReadonlyArray<string> }} opts
- *   `skipTlds`: the suffixes never looked up ({@link UNREGISTRABLE_TLDS}; tests that stand in `.test` for public domains clear it)
+ *   concurrency?: number, rdapConcurrency?: number, expiringDays?: number, skipTlds?: ReadonlyArray<string>,
+ *   ownDomains?: string[], extraDkimSelectors?: string[] }} opts
+ *   `skipTlds`: the suffixes never looked up ({@link UNREGISTRABLE_TLDS}; tests that stand in `.test` for public domains clear it);
+ *   `ownDomains`: more domains that are the caller's own (never looked up, their names never asked for their
+ *   existence: the headless runner audits a list one domain at a time); `extraDkimSelectors`: DKIM selectors
+ *   followed besides the common ones
  * @returns {Promise<{ at: Date, domains: string[], references: number, findings: TakeoverFinding[],
- *   failures: TakeoverFailure[], registrations: Map<string, object>, checked: number }>}
+ *   failures: TakeoverFailure[], registrations: Map<string, object>, checked: number, hosts: number, spfMacros: number }>}
  *   `registrations`: domain → { verdict, expires, rdap, ns } (pass back as `known` to retry);
- *   `checked`: registrable domains with a verdict
+ *   `checked`: registrable domains with a verdict; `hosts`: hosts whose chain was asked;
+ *   `spfMacros`: SPF terms that build their domain from a macro (not checked)
  */
 export async function auditTakeover({ hosts = [], domains = [] } = {}, {
   dns, rdap, signal, now = Date.now, known = null, onProgress = null, concurrency = 6, rdapConcurrency = 4, expiringDays = EXPIRING_DAYS,
-  skipTlds = UNREGISTRABLE_TLDS
+  skipTlds = UNREGISTRABLE_TLDS, ownDomains = [], extraDkimSelectors = []
 } = {}) {
   throwIfAborted(signal);
   const unregistrable = (name) => skipTlds.some((s) => isSubdomainOf(name, s));
-  const apexes = [...new Set((Array.isArray(domains) ? domains : []).map((d) => normalizeHostname(canon(d))).filter(Boolean))];
+  const domainsOf = (list) => (Array.isArray(list) ? list : []).map((d) => normalizeHostname(canon(d))).filter(Boolean);
+  const apexes = [...new Set(domainsOf(domains))];
+  const own = [...new Set([...apexes, ...domainsOf(ownDomains)])];
+  const selectors = dkimSelectorList(extraDkimSelectors);
   const failures = [];
   const limiter = createLimiter(concurrency);
   const ask = (name, type, opts = {}) => limiter.run(() => dns.query(name, type, { signal, ...opts }), { signal });
@@ -476,55 +679,111 @@ export async function auditTakeover({ hosts = [], domains = [] } = {}, {
   };
   const failed = (source, name, response) => failures.push({ source, name, response });
 
-  /** @type {Array<{ kind: string, host: string, chain: string[], target: string, dangling: boolean }>} */
+  /** @type {Array<{ kind: string, host: string, chain: string[], target: string, dangling: boolean, check: boolean, term: string|null }>} */
   const refs = [];
-  const cnameHosts = (Array.isArray(hosts) ? hosts : [])
-    .filter((x) => x && typeof x.name === 'string' && !x.wildcardSuspect && x.resolution && Array.isArray(x.resolution.cnames) && x.resolution.cnames.length);
-  total = apexes.length * 3 + cnameHosts.length;
-  if (onProgress) onProgress(0, total);
+  // A target the record names: asked for its existence (EXISTENCE_KINDS) unless it is the domain's own.
+  const single = (kind, host, target, term = null) => refs.push({ kind, host, chain: [target], target, dangling: false, check: EXISTENCE_KINDS.has(kind), term });
+  // A CNAME chain from one of the domain's names: the chain query says whether its end exists.
+  const chained = (kind, host, response) => {
+    if (!response.ok) return;
+    const chain = cnameChain(response, host);
+    if (chain.length) refs.push({ kind, host, chain, target: chain[chain.length - 1], dangling: response.rcode === 'NXDOMAIN', check: false, term: null });
+  };
 
-  // 1. The domains' NS, MX and SPF targets.
+  const cnameHosts = [];
+  const hostNames = new Set();
+  for (const x of Array.isArray(hosts) ? hosts : []) {
+    const entry = typeof x === 'string' ? { name: x, listed: true } : x;
+    if (!entry || typeof entry.name !== 'string' || entry.wildcardSuspect) continue;
+    const name = canon(entry.name);
+    const cnames = entry.resolution && Array.isArray(entry.resolution.cnames) ? entry.resolution.cnames : [];
+    if (!name || hostNames.has(name) || !(entry.listed || cnames.length)) continue;
+    hostNames.add(name);
+    cnameHosts.push({ name, cnames });
+  }
+  // NS, MX, TXT, _dmarc, CAA, HTTPS, mta-sts, _acme-challenge, the SRV names and the DKIM selectors.
+  const perDomain = 8 + TAKEOVER_SRV_NAMES.length + selectors.length;
+  total = apexes.length * perDomain + cnameHosts.length;
+  if (onProgress) onProgress(0, total);
+  let spfMacros = 0;
+
+  // 1. The domains' own records and the references they make.
+  const record = (name, type, opts) => ask(name, type, opts).then((r) => {
+    tick();
+    if (!r.ok) failed('doh', `${name} ${type}`, r);
+    return r;
+  });
   await Promise.all(apexes.map(async (apex) => {
-    const [ns, mx, txt] = await Promise.all(['NS', 'MX', 'TXT'].map((type) => ask(apex, type).then((r) => {
-      tick();
-      if (!r.ok) failed('doh', `${apex} ${type}`, r);
-      return r;
-    })));
-    const answers = (r, type) => (r.ok && Array.isArray(r.answers) ? r.answers.filter((a) => a && a.type === type && canon(a.name) === apex) : []);
-    for (const a of answers(ns, 'NS')) if (typeof a.data === 'string') refs.push({ kind: 'ns', host: apex, chain: [canon(a.data)], target: canon(a.data), dangling: false });
+    const dmarcName = `_dmarc.${apex}`;
+    const [ns, mx, txt, dmarc, caa, https, mtaSts, acme, ...rest] = await Promise.all([
+      record(apex, 'NS'), record(apex, 'MX'), record(apex, 'TXT'), record(dmarcName, 'TXT'), record(apex, 'CAA'), record(apex, 'HTTPS'),
+      record(`mta-sts.${apex}`, 'A', { noCache: true }), record(`_acme-challenge.${apex}`, 'TXT', { noCache: true }),
+      ...TAKEOVER_SRV_NAMES.map((s) => record(`${s}.${apex}`, 'SRV')),
+      ...selectors.map((s) => record(`${s}._domainkey.${apex}`, 'TXT', { noCache: true }))
+    ]);
+    const answers = (r, type, owner = apex) => (r.ok && Array.isArray(r.answers) ? r.answers.filter((a) => a && a.type === type && canon(a.name) === owner) : []);
+    // The records at the end of the name's CNAME chain (a hosted DMARC record, a delegated SRV name).
+    const atEnd = (r, owner, type) => {
+      const chain = r.ok ? cnameChain(r, owner) : [];
+      return answers(r, type, chain.length ? chain[chain.length - 1] : owner);
+    };
+    for (const a of answers(ns, 'NS')) if (typeof a.data === 'string' && canon(a.data)) single('ns', apex, canon(a.data));
     for (const a of answers(mx, 'MX')) {
       const x = a.data && typeof a.data.exchange === 'string' ? canon(a.data.exchange) : '';
-      if (x && x !== '.') refs.push({ kind: 'mx', host: apex, chain: [x], target: x, dangling: false });
+      if (x && x !== '.') single('mx', apex, x);
     }
     for (const a of answers(txt, 'TXT')) {
-      const text = Array.isArray(a.data) ? a.data.join('') : typeof a.data === 'string' ? a.data : '';
-      for (const target of spfTargets(text)) refs.push({ kind: 'spf', host: apex, chain: [target], target, dangling: false });
+      const spf = spfReferences(txtText(a.data));
+      spfMacros += spf.macros;
+      for (const target of spf.includes) refs.push({ kind: 'spf', host: apex, chain: [target], target, dangling: false, check: false, term: null });
+      for (const x of spf.hosts) single('spf-host', apex, x.target, x.term);
     }
+    chained('dmarc', dmarcName, dmarc);
+    for (const a of atEnd(dmarc, dmarcName, 'TXT')) for (const x of dmarcTargets(txtText(a.data))) single('dmarc', dmarcName, x.target, x.tags.join(', '));
+    for (const target of caaIodefTargets(answers(caa, 'CAA').map((a) => a.data))) single('caa', apex, target);
+    for (const a of atEnd(https, apex, 'HTTPS')) {
+      const target = a.data && typeof a.data.target === 'string' ? canon(a.data.target) : '';
+      if (target) single('https', apex, target);
+    }
+    TAKEOVER_SRV_NAMES.forEach((s, i) => {
+      const owner = `${s}.${apex}`;
+      for (const a of atEnd(rest[i], owner, 'SRV')) {
+        const target = a.data && typeof a.data.target === 'string' ? canon(a.data.target) : '';
+        if (target) single('srv', owner, target);
+      }
+    });
+    chained('mta-sts', `mta-sts.${apex}`, mtaSts);
+    chained('acme', `_acme-challenge.${apex}`, acme);
+    selectors.forEach((s, i) => chained('dkim', `${s}._domainkey.${apex}`, rest[TAKEOVER_SRV_NAMES.length + i]));
   }));
 
-  // 2. Every CNAME chain again, and whether each NS / MX target exists.
-  const outside = (name) => !apexes.some((a) => isSubdomainOf(name, a));
-  const targets = refs.filter((r) => (r.kind === 'ns' || r.kind === 'mx') && outside(r.target) && !unregistrable(r.target));
-  total += targets.length;
+  // 2. Every host's chain again, and whether each single target outside the domains exists (each name once).
+  const outside = (name) => !own.some((a) => isSubdomainOf(name, a));
+  const existence = new Map();
+  for (const ref of refs) {
+    if (!ref.check || !outside(ref.target) || unregistrable(ref.target)) continue;
+    if (!existence.has(ref.target)) existence.set(ref.target, []);
+    existence.get(ref.target).push(ref);
+  }
+  total += existence.size;
   await Promise.all([
     ...cnameHosts.map(async (x) => {
-      const name = canon(x.name);
-      const r = await ask(name, 'A', { noCache: true });
+      const r = await ask(x.name, 'A', { noCache: true });
       tick();
-      let chain = x.resolution.cnames.map(canon).filter(Boolean);
+      let chain = x.cnames.map(canon).filter(Boolean);
       let dangling = false;
-      if (!r.ok) failed('doh', name, r);
+      if (!r.ok) failed('doh', x.name, r);
       else {
-        chain = cnameChain(r, name);
+        chain = cnameChain(r, x.name);
         dangling = chain.length > 0 && r.rcode === 'NXDOMAIN';
       }
-      if (chain.length) refs.push({ kind: 'cname', host: name, chain, target: chain[chain.length - 1], dangling });
+      if (chain.length) refs.push({ kind: 'cname', host: x.name, chain, target: chain[chain.length - 1], dangling, check: false, term: null });
     }),
-    ...targets.map(async (ref) => {
-      const r = await ask(ref.target, 'A');
+    ...[...existence].map(async ([target, list]) => {
+      const r = await ask(target, 'A');
       tick();
-      if (!r.ok) failed('doh', ref.target, r);
-      else ref.dangling = r.rcode === 'NXDOMAIN';
+      if (!r.ok) failed('doh', target, r);
+      else for (const ref of list) ref.dangling = r.rcode === 'NXDOMAIN';
     })
   ]);
 
@@ -567,7 +826,7 @@ export async function auditTakeover({ hosts = [], domains = [] } = {}, {
     const id = `${ref.kind}|${ref.host}|${ref.target}`;
     if (seen.has(id)) continue;
     seen.add(id);
-    const match = ref.kind === 'cname' ? chainService(ref.chain) : null;
+    const match = HOST_KINDS.has(ref.kind) ? chainService(ref.chain) : null;
     const service = match ? match.service : null;
     const reasons = [];
     const domainsSeen = new Set();
@@ -587,14 +846,17 @@ export async function auditTakeover({ hosts = [], domains = [] } = {}, {
     if (!reasons.length) continue;
     reasons.sort((a, b) => rank(a.severity) - rank(b.severity));
     findings.push({
-      id, severity: reasons[0].severity, kind: ref.kind, host: ref.host, target: ref.target, chain: ref.chain,
+      id, severity: reasons[0].severity, kind: ref.kind, host: ref.host, target: ref.target, chain: ref.chain, term: ref.term,
       service: service ? { id: service.id, name: service.name, status: service.status, ref: service.ref } : null,
       reasons, fix: reasons[0].code
     });
   }
-  findings.sort((a, b) => rank(a.severity) - rank(b.severity) || a.host.localeCompare(b.host) || a.target.localeCompare(b.target));
+  findings.sort((a, b) => rank(a.severity) - rank(b.severity) || a.host.localeCompare(b.host) || a.target.localeCompare(b.target)
+    || TAKEOVER_REF_KINDS.indexOf(a.kind) - TAKEOVER_REF_KINDS.indexOf(b.kind));
   const checked = [...registrations.values()].filter((r) => r.verdict !== 'failed').length;
-  return { at: new Date(now()), domains: apexes, references: refs.length, findings, failures, registrations, checked };
+  return {
+    at: new Date(now()), domains: apexes, references: refs.length, findings, failures, registrations, checked, hosts: cnameHosts.length, spfMacros
+  };
 }
 
 /* ------------------------------------------------------------------------ */

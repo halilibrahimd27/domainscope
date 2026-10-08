@@ -12,8 +12,10 @@ import {
   TAKEOVER_SERVICES, TAKEOVER_STATUSES, TAKEOVER_SIGNALS, TAKEOVER_SEVERITIES, TAKEOVER_REASONS, REGISTRATION_VERDICTS,
   HTTP_CHECK_OUTCOMES, HTTP_CHECK_MAX, UNREGISTRABLE_TLDS, matchesPattern, matchService, chainService, fingerprintMatches, registryDomainOf,
   cnameChain, spfTargets, registrationVerdict, reasonSeverity, worstSeverity, auditTakeover, httpCandidates,
-  httpCheckOutcome, applyHttpCheck
+  httpCheckOutcome, applyHttpCheck, TAKEOVER_REF_KINDS, TAKEOVER_DKIM_SELECTORS, TAKEOVER_SRV_NAMES, REFERENCE_QUERIES,
+  spfReferences, dmarcTargets, caaIodefTargets, isDkimSelector, dkimSelectorList, findingLookups
 } from '../../assets/js/lib/takeover.js';
+import { PORTFOLIO_DKIM_SELECTORS } from '../../assets/js/lib/portfolio.js';
 
 const NOW = Date.parse('2026-10-08T12:00:00Z');
 const DAY = 86400000;
@@ -364,5 +366,204 @@ describe('the HTTP check', () => {
     assert.equal(httpCandidates(many).length, HTTP_CHECK_MAX);
     assert.deepEqual(httpCandidates([{ ...finding, reasons: [{ code: 'nxdomain', severity: 'high' }] }]), []);
     assert.deepEqual(httpCandidates(null), []);
+  });
+});
+
+describe('every dependency kind: what each record names', () => {
+  test('SPF: include / redirect, the a / mx / exists / ptr domains with their term, CIDR lengths dropped, macros skipped and counted', () => {
+    const r = spfReferences('v=spf1 a mx/24 a:Mail.Example.NET/24//64 mx:mx.example.org ~exists:check.example.org ptr:example.org '
+      + 'include:_spf.example.net redirect=spf.example.org exists:%{i}._spf.example.com include:%{d}.example.net a:%{l1r/}.example.net -all');
+    assert.deepEqual(r.includes, ['_spf.example.net', 'spf.example.org']);
+    assert.deepEqual(r.hosts, [
+      { mechanism: 'a', target: 'mail.example.net', term: 'a:mail.example.net' },
+      { mechanism: 'mx', target: 'mx.example.org', term: 'mx:mx.example.org' },
+      { mechanism: 'exists', target: 'check.example.org', term: 'exists:check.example.org' },
+      { mechanism: 'ptr', target: 'example.org', term: 'ptr:example.org' }
+    ]);
+    assert.equal(r.macros, 3, 'exists:%{i}…, include:%{d}… and a:%{l1r/}… (a "/" delimiter inside the macro)');
+    assert.deepEqual(spfTargets('v=spf1 include:_spf.example.net a:mail.example.net -all'), ['_spf.example.net'], 'spfTargets: includes only');
+    // A name that cannot be one, a CIDR where none is allowed, a repeat, exp=: no reference.
+    const odd = spfReferences('v=spf1 a:mail.example.net a:mail.example.net mx:mail.example.net include:bad_name! ptr:example.org/24 exists:x.example.org/24 exp=explain.example.net -all');
+    assert.deepEqual([odd.includes, odd.hosts.map((x) => x.term), odd.macros], [[], ['a:mail.example.net'], 0]);
+    assert.deepEqual(spfReferences('google-site-verification=abc'), { includes: [], hosts: [], macros: 0 });
+    assert.deepEqual(spfReferences(null).hosts, []);
+  });
+
+  test('DMARC: the mailto hosts of rua and ruf, a size limit and a query dropped, each host once with its tags', () => {
+    assert.deepEqual(dmarcTargets('v=DMARC1; p=reject; rua=mailto:dmarc@example.net!10m, MAILTO:Reports@Example.ORG?subject=x; ruf=mailto:forensic@example.net'), [
+      { target: 'example.net', tags: ['rua', 'ruf'] }, { target: 'example.org', tags: ['rua'] }
+    ]);
+    assert.deepEqual(dmarcTargets('v=DMARC1;p=none;rua=mailto:agg%40reports.example.com,https://reports.example.org/dmarc'), [{ target: 'reports.example.com', tags: ['rua'] }],
+      'an encoded @; a non-mailto URI is no mail host');
+    assert.deepEqual(dmarcTargets('v=DMARC1; p=none; rua=mailto:a@example.net; rua=mailto:b@example.org'), [{ target: 'example.net', tags: ['rua'] }], 'a repeated tag: the first');
+    assert.deepEqual(dmarcTargets('v=DMARC1; p=none; rua=mailto:nobody, mailto:x@192.0.2.1, mailto:@example.net'), [], 'no host, an address, an empty local part');
+    assert.deepEqual(dmarcTargets('v=spf1 -all'), []);
+    assert.deepEqual(dmarcTargets(undefined), []);
+  });
+
+  test('CAA: the iodef mailto domains and URL hosts, every other tag ignored', () => {
+    assert.deepEqual(caaIodefTargets([
+      { flags: 0, tag: 'issue', value: 'letsencrypt.org' },
+      { flags: 0, tag: 'iodef', value: 'mailto:security@Example.NET' },
+      { flags: 0, tag: 'IODEF', value: 'https://report.example.org:8443/caa?x=1' },
+      { flags: 0, tag: 'iodef', value: 'http://report.example.org/other' },
+      { flags: 0, tag: 'iodef', value: 'https://192.0.2.7/caa' },
+      { flags: 0, tag: 'iodef', value: 'ftp://files.example.com/' },
+      null
+    ]), ['example.net', 'report.example.org']);
+    assert.deepEqual(caaIodefTargets(null), []);
+  });
+
+  test('DKIM: the Domain portfolio\'s common selectors, then valid extra ones once', () => {
+    assert.deepEqual([...TAKEOVER_DKIM_SELECTORS], [...PORTFOLIO_DKIM_SELECTORS], 'the same common selectors as lib/portfolio.js');
+    assert.deepEqual(dkimSelectorList(['S2048', 'google', 'mx.2026', 'bad selector', '-x', 'a..b', '']), [...TAKEOVER_DKIM_SELECTORS, 's2048', 'mx.2026']);
+    assert.ok(isDkimSelector('k2') && isDkimSelector('sel_1') && !isDkimSelector('a/b') && !isDkimSelector('x'.repeat(64)));
+    assert.deepEqual([...TAKEOVER_SRV_NAMES], ['_autodiscover._tcp', '_sip._tls']);
+  });
+
+  test('every kind has its query and severity; whoever registers a host, zone or ACME target gets it critical', () => {
+    for (const k of TAKEOVER_REF_KINDS.filter((x) => x !== 'cname')) assert.ok(REFERENCE_QUERIES[k], k);
+    const svc = (id) => TAKEOVER_SERVICES.find((s) => s.id === id);
+    assert.deepEqual(TAKEOVER_REF_KINDS.map((k) => reasonSeverity('unregistered', k)),
+      ['critical', 'critical', 'high', 'high', 'high', 'high', 'high', 'high', 'critical', 'high', 'high', 'critical']);
+    assert.equal(reasonSeverity('nxdomain', 'mta-sts', svc('azure-app-service')), 'high', 'mta-sts is a host: by its service');
+    assert.equal(reasonSeverity('nxdomain', 'mta-sts', null), 'medium');
+    for (const k of ['spf-host', 'dmarc', 'dkim', 'caa', 'srv', 'https', 'acme']) assert.equal(reasonSeverity('nxdomain', k), 'low', k);
+    assert.equal(reasonSeverity('expiring', 'dkim'), 'medium');
+    assert.equal(reasonSeverity('pending-delete', 'caa'), 'high');
+  });
+
+  test('the lookups a finding rests on, named as the audit names its failures', () => {
+    assert.deepEqual(findingLookups({ kind: 'dmarc', host: '_dmarc.example.com', target: 'example.org', chain: ['example.org'] }),
+      ['_dmarc.example.com TXT', 'example.org', 'example.org NS']);
+    assert.deepEqual(findingLookups({ kind: 'cname', host: 'cdn.example.com', target: 'cdn.example.net', chain: ['edge.example.org', 'cdn.example.net'] }),
+      ['cdn.example.com', 'cdn.example.net', 'example.org', 'example.org NS', 'example.net', 'example.net NS']);
+    assert.deepEqual(findingLookups({ kind: 'mta-sts', host: 'mta-sts.example.com', target: 'x.example.net', chain: ['x.example.net'] })[0], 'mta-sts.example.com A');
+  });
+});
+
+describe('auditTakeover: every dependency kind', () => {
+  const rr = (name, type, data) => ({ name, type, ttl: 300, data });
+  const DNS = {
+    'example.com|TXT': ok('example.com', 'TXT', [rr('example.com', 'TXT', ['v=spf1 a:relay.lapsed.example exists:%{i}._spf.example.com mx:mx.example.org -all'])]),
+    // DMARC reports to a domain nobody holds, through a DMARC host whose record is a CNAME to a vendor (hosted DMARC).
+    '_dmarc.example.com|TXT': ok('_dmarc.example.com', 'TXT', [
+      rr('_dmarc.example.com', 'CNAME', 'example.com._d.vendor.example'),
+      rr('example.com._d.vendor.example', 'TXT', ['v=DMARC1; p=reject; rua=mailto:agg@reports.gone.example!10m; ruf=mailto:ruf@example.com'])
+    ]),
+    'example.com|CAA': ok('example.com', 'CAA', [rr('example.com', 'CAA', { flags: 0, tag: 'iodef', value: 'mailto:caa@iodef.pending.example' })]),
+    'example.com|HTTPS': ok('example.com', 'HTTPS', [rr('example.com', 'HTTPS', { priority: 0, target: 'edge.lapsed.example', params: {} })]),
+    '_sip._tls.example.com|SRV': ok('_sip._tls.example.com', 'SRV', [rr('_sip._tls.example.com', 'SRV', { priority: 100, weight: 1, port: 443, target: 'sip.example.org' })]),
+    '_autodiscover._tcp.example.com|SRV': ok('_autodiscover._tcp.example.com', 'SRV', [rr('_autodiscover._tcp.example.com', 'SRV', { priority: 0, weight: 0, port: 443, target: '.' })]),
+    'mta-sts.example.com|A': ok('mta-sts.example.com', 'A', [rr('mta-sts.example.com', 'CNAME', 'policy-app.azurewebsites.net')], 'NXDOMAIN'),
+    '_acme-challenge.example.com|TXT': ok('_acme-challenge.example.com', 'TXT', [rr('_acme-challenge.example.com', 'CNAME', '_acme-challenge.gone.example')], 'NXDOMAIN'),
+    'selector1._domainkey.example.com|TXT': ok('selector1._domainkey.example.com', 'TXT', [
+      rr('selector1._domainkey.example.com', 'CNAME', 'selector1-example-com._domainkey.mail.expiring.example'),
+      rr('selector1-example-com._domainkey.mail.expiring.example', 'TXT', ['v=DKIM1; p=MIIB'])
+    ]),
+    // a CNAME loop: the chain is cut where it repeats
+    'k1._domainkey.example.com|TXT': ok('k1._domainkey.example.com', 'TXT', [
+      rr('k1._domainkey.example.com', 'CNAME', 'k1.loop.example.org'), rr('k1.loop.example.org', 'CNAME', 'k1._domainkey.example.com')
+    ], 'SERVFAIL'),
+    's2048._domainkey.example.com|TXT': ok('s2048._domainkey.example.com', 'TXT', [rr('s2048._domainkey.example.com', 'CNAME', 's2048.keys.example.org')]),
+    'mx.example.org|A': ok('mx.example.org', 'A', [], 'NXDOMAIN'),
+    'sip.example.org|A': ok('sip.example.org', 'A', [], 'NXDOMAIN'),
+    'relay.lapsed.example|A': ok('relay.lapsed.example', 'A', [], 'NXDOMAIN'),
+    'gone.example|NS': ok('gone.example', 'NS', [], 'NXDOMAIN'),
+    'lapsed.example|NS': ok('lapsed.example', 'NS', [], 'NXDOMAIN')
+  };
+  const RDAP = {
+    'gone.example': notFound('gone.example'),
+    'lapsed.example': notFound('lapsed.example'),
+    'pending.example': { ok: true, status: ['redemption period'], expires: new Date(NOW - 3 * DAY) },
+    'expiring.example': { ok: true, status: ['active'], expires: new Date(NOW + 12 * DAY) }
+  };
+  const run = (extra = {}) => {
+    const dns = fakeDns({ ...DNS, ...(extra.dns || {}) });
+    const rdap = fakeRdap({ ...RDAP, ...(extra.rdap || {}) });
+    const progress = [];
+    return auditTakeover({ hosts: extra.hosts || [], domains: ['example.com'] }, {
+      dns, rdap, now: () => NOW, skipTlds: [], extraDkimSelectors: ['s2048'], ownDomains: extra.ownDomains || [], onProgress: (d, t) => progress.push([d, t])
+    }).then((out) => ({ out, dns, rdap, progress }));
+  };
+  const row = (f) => `${f.severity} ${f.kind} ${f.host} → ${f.target}${f.term ? ` [${f.term}]` : ''}: ${f.reasons.map((r) => r.code).join(', ')}`;
+
+  test('one click asks every kind and finds what lapsed or dangles behind it', async () => {
+    const { out, dns, rdap, progress } = await run();
+    assert.deepEqual(out.findings.map(row), [
+      'critical acme _acme-challenge.example.com → _acme-challenge.gone.example: unregistered, nxdomain',
+      'high dmarc _dmarc.example.com → reports.gone.example [rua]: unregistered',
+      'high https example.com → edge.lapsed.example: unregistered',
+      'high caa example.com → iodef.pending.example: pending-delete',
+      'high spf-host example.com → relay.lapsed.example [a:relay.lapsed.example]: unregistered, nxdomain',
+      'high mta-sts mta-sts.example.com → policy-app.azurewebsites.net: nxdomain',
+      'medium dkim selector1._domainkey.example.com → selector1-example-com._domainkey.mail.expiring.example: expiring',
+      'low srv _sip._tls.example.com → sip.example.org: nxdomain',
+      'low spf-host example.com → mx.example.org [mx:mx.example.org]: nxdomain'
+    ], 'worst first, then by host and target');
+    const mtaSts = out.findings.find((f) => f.kind === 'mta-sts');
+    assert.equal(mtaSts.service.id, 'azure-app-service', 'mta-sts.<domain> is a host: the catalogue matches its chain');
+    assert.equal(out.findings.find((f) => f.kind === 'acme').fix, 'unregistered');
+    assert.equal(out.spfMacros, 1, 'exists:%{i}… skipped and counted');
+    // Every kind's question, the chains without the cache; the extra selector too; nothing about the own domain's registration.
+    const asked = new Set(dns.calls.map((c) => `${c.name}|${c.type}`));
+    for (const q of ['example.com|NS', 'example.com|MX', 'example.com|TXT', '_dmarc.example.com|TXT', 'example.com|CAA', 'example.com|HTTPS', 'mta-sts.example.com|A',
+      '_acme-challenge.example.com|TXT', '_autodiscover._tcp.example.com|SRV', '_sip._tls.example.com|SRV', ...TAKEOVER_DKIM_SELECTORS.map((s) => `${s}._domainkey.example.com|TXT`),
+      's2048._domainkey.example.com|TXT']) assert.ok(asked.has(q), q);
+    assert.ok(dns.calls.filter((c) => /^(mta-sts|_acme-challenge)\.|\._domainkey\./.test(c.name)).every((c) => c.noCache), 'chains asked without the cache');
+    assert.equal(dns.calls.filter((c) => c.name === 'sip.example.org').length, 1, 'each target asked once');
+    assert.ok(!dns.calls.some((c) => c.name === '.' || c.name === ''), 'an SRV target "." is no service');
+    assert.deepEqual([...rdap.calls].sort(), ['example.org', 'expiring.example', 'gone.example', 'lapsed.example', 'pending.example', 'vendor.example']);
+    assert.ok(!rdap.calls.includes('azurewebsites.net'), 'a catalogue provider is never looked up');
+    // 2 SPF hosts, 3 DMARC (the delegation, rua, ruf at the own domain), CAA, HTTPS, SRV, mta-sts, acme, 3 DKIM (the loop's one hop too)
+    assert.equal(out.references, 13);
+    assert.equal(progress.at(-1)[0], progress.at(-1)[1], 'progress ends complete');
+  });
+
+  test('a CNAME loop is cut where it repeats; a hosted DMARC record is read where the chain ends, and the delegation is a reference too', async () => {
+    const { out } = await run({ rdap: { 'vendor.example': notFound('vendor.example') }, dns: { 'vendor.example|NS': ok('vendor.example', 'NS', [], 'NXDOMAIN') } });
+    const dmarc = out.findings.filter((f) => f.kind === 'dmarc').map(row);
+    assert.deepEqual(dmarc, [
+      'high dmarc _dmarc.example.com → example.com._d.vendor.example: unregistered',
+      'high dmarc _dmarc.example.com → reports.gone.example [rua]: unregistered'
+    ], 'whoever registers the vendor\'s lapsed domain sets the DMARC policy');
+    // k1 loops back to itself: one hop, in a registered domain, no finding.
+    assert.ok(!out.findings.some((f) => f.host === 'k1._domainkey.example.com'));
+  });
+
+  test('the caller\'s other domains are its own: never looked up, their names never asked', async () => {
+    const { out, rdap, dns } = await run({ ownDomains: ['example.org'] });
+    assert.ok(!rdap.calls.includes('example.org'));
+    assert.ok(!dns.calls.some((c) => c.name.endsWith('.example.org')), 'mx.example.org and sip.example.org are the caller\'s own');
+    assert.ok(!out.findings.some((f) => f.target.endsWith('.example.org')));
+  });
+
+  test('host names given as text are asked whatever they had; a failed lookup is a failure named as findingLookups names it', async () => {
+    const { out } = await run({
+      hosts: ['shop.example.com', 'www.example.com', 'shop.example.com'],
+      dns: {
+        'shop.example.com|A': ok('shop.example.com', 'A', [rr('shop.example.com', 'CNAME', 'shop.gone.example')], 'NXDOMAIN'),
+        'www.example.com|A': fail('www.example.com', 'A'),
+        'example.com|CAA': fail('example.com', 'CAA')
+      }
+    });
+    assert.equal(out.hosts, 2, 'each name once');
+    assert.ok(out.findings.some((f) => f.kind === 'cname' && f.host === 'shop.example.com' && f.severity === 'critical'));
+    assert.deepEqual(out.failures.map((f) => f.name).sort(), ['example.com CAA', 'www.example.com']);
+    assert.ok(findingLookups({ kind: 'caa', host: 'example.com', target: 'iodef.pending.example', chain: ['iodef.pending.example'] }).includes('example.com CAA'));
+    assert.ok(!out.findings.some((f) => f.kind === 'caa'), 'the iodef address was not read');
+  });
+
+  test('the reserved-name guard holds for every new kind: nothing under .test or .internal is looked up or asked', async () => {
+    const dns = fakeDns({
+      'example.com|TXT': ok('example.com', 'TXT', [rr('example.com', 'TXT', ['v=spf1 a:relay.gone.test -all'])]),
+      '_dmarc.example.com|TXT': ok('_dmarc.example.com', 'TXT', [rr('_dmarc.example.com', 'TXT', ['v=DMARC1; p=none; rua=mailto:d@corp.internal'])]),
+      '_acme-challenge.example.com|TXT': ok('_acme-challenge.example.com', 'TXT', [rr('_acme-challenge.example.com', 'CNAME', 'acme.gone.test')], 'NXDOMAIN')
+    });
+    const rdap = fakeRdap({});
+    const out = await auditTakeover({ domains: ['example.com'] }, { dns, rdap, now: () => NOW });
+    assert.deepEqual(rdap.calls, []);
+    assert.ok(!dns.calls.some((c) => /\.(test|internal)$/.test(c.name)), dns.calls.map((c) => c.name).join(', '));
+    assert.deepEqual(out.findings.map(row), ['low acme _acme-challenge.example.com → acme.gone.test: nxdomain'], 'the dangling delegation still counts, from its own query');
   });
 });

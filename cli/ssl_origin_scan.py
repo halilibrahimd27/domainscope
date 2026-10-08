@@ -33,8 +33,8 @@ parse_inventory(), load_targets(), load_excludes(), apply_excludes(),
 is_numeric_host(), build_probe_names(), run_scan(), report_to_dict(), render_csv(),
 render_summary(), load_baseline(), compare_reports(), expiring_certificates(),
 build_monitor(), build_notification(), notify_request(), pagerduty_plan(),
-pagerduty_events(), send_notification(), fetch_side(), compare_sides(), render_compare() and
-main() are the public API.
+pagerduty_open_after(), pagerduty_events(), send_notification(), fetch_side(), compare_sides(),
+render_compare() and main() are the public API.
 """
 
 from __future__ import annotations
@@ -7612,13 +7612,9 @@ def _segment_forms(segment: str) -> List[str]:
     return forms
 
 
-def redact_url(text: str, url: str, extra: Sequence[str] = ()) -> str:
-    """``text`` (an error message, a response body) without the secret parts of ``url``:
-    the URL (also without its user info), its path, query and fragment, the query
-    values, the path segments that may be tokens (:func:`_secret_segment`, in the forms
-    of :func:`_segment_forms`), the user name and password, the Basic
-    authentication header made of them (:func:`split_credentials`) and ``extra`` (the ntfy
-    token, the signing secret). Webhook URLs are credentials - whoever has one can post."""
+def _redaction_secrets(url: str, extra: Sequence[str] = ()) -> List[str]:
+    """The texts :func:`redact_url` takes out of a text for ``url`` and ``extra``, longest
+    first."""
     unquote = urllib.parse.unquote
     parts = urllib.parse.urlsplit(url)
     target, auth = split_credentials(url)
@@ -7641,9 +7637,35 @@ def redact_url(text: str, url: str, extra: Sequence[str] = ()) -> str:
         always.update((auth, auth.split(' ', 1)[1]))
     always.update(secret for secret in extra if secret)
     found = {secret for secret in secrets if len(secret) >= 4} | {s for s in always if s}
-    for secret in sorted(found, key=len, reverse=True):
+    return sorted(found, key=len, reverse=True)
+
+
+def _redact_with(text: str, secrets: Sequence[str], cut: bool = False) -> str:
+    """``text`` without ``secrets`` (longest first). ``cut``: the text is the start of a
+    longer one, so it may end inside a secret - whatever it ends with that begins a secret
+    goes too."""
+    for secret in secrets:
         text = text.replace(secret, '***')
-    return text
+    if not cut:
+        return text
+    text = text.rstrip('\ufffd')  # a character cut in two
+    strip = 0
+    for secret in secrets:
+        for size in range(min(len(secret) - 1, len(text)), strip, -1):
+            if text.endswith(secret[:size]):
+                strip = size
+                break
+    return text[:len(text) - strip]
+
+
+def redact_url(text: str, url: str, extra: Sequence[str] = ()) -> str:
+    """``text`` (an error message, a response body) without the secret parts of ``url``:
+    the URL (also without its user info), its path, query and fragment, the query
+    values, the path segments that may be tokens (:func:`_secret_segment`, in the forms
+    of :func:`_segment_forms`), the user name and password, the Basic
+    authentication header made of them (:func:`split_credentials`) and ``extra`` (the ntfy
+    token, the signing secret). Webhook URLs are credentials - whoever has one can post."""
+    return _redact_with(text, _redaction_secrets(url, extra))
 
 
 def should_notify(monitor: Optional[MonitorResult], always: bool = False) -> bool:
@@ -7950,46 +7972,72 @@ def open_keys_of(doc: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def _problem_over(entry: Dict[str, Any], monitor: MonitorResult) -> bool:
-    """Is the problem of an open PagerDuty key over? An expiring certificate's when this run
-    lists it no longer (it was renewed or replaced; a run without --warn-days says nothing);
-    a change's when the same endpoint and name moved again - to a good state (RECOVERED,
-    UPDATED, HOSTED), back after GONE (NEW), or bad in another way (its own key now) -, when
-    its endpoint moved as a whole, or when its name is no longer probed."""
-    if entry['tag'] in ('EXPIRES', 'EXPIRED'):
+def _report_where(doc: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, Any]], Set[str]]:
+    """``({ip:port label: endpoint}, the names probed)`` of a report dict
+    (:func:`_index_report`), as PagerDuty keys name them."""
+    indexed, probed = _index_report(doc)
+    return ({_endpoint_label(ip, port): endpoint for (ip, port), endpoint in indexed.items()},
+            set(probed))
+
+
+def _problem_over(entry: Dict[str, Any], monitor: MonitorResult,
+                  where: Optional[Tuple[Dict[str, Dict[str, Any]], Set[str]]] = None) -> bool:
+    """Is the problem of an open PagerDuty key over, by what this run's report says (``where``:
+    :func:`_report_where`)? An expiring certificate's when this run lists it no longer (it was
+    renewed or replaced; a run without --warn-days says nothing). A row's or an endpoint's when
+    the report shows it better - FAILED once it answers again, REGRESSED once the name is
+    served with the new certificate (UPDATED), UNHOSTED once a certificate covering the name is
+    served again, GONE once it is back - or out of what the run checks: its name no longer
+    probed, its endpoint no longer scanned. Never because another change came by: a handshake
+    or a port that fails says nothing of the certificate a name is served with, and the key
+    stays open. Without the report nothing but an expiry is decided."""
+    tag, target, item = entry['tag'], entry['target'], entry['item']
+    if tag in ('EXPIRES', 'EXPIRED'):
         return monitor.expiring is not None
-    for change in notable_changes(monitor.changes):
-        target, item = _change_where(change)
-        tag = change_tag(change)
-        if change.get('scope') == 'name' and change.get('kind') == 'disappeared':
-            if entry['item'] == target or entry['target'] == target:
-                return True
-            continue
-        if target != entry['target']:
-            continue
-        if item is None and entry['item'] is not None and (tag in _BAD_TAGS
-                                                           or tag in _GOOD_TAGS):
-            return True
-        if item != entry['item']:
-            continue
-        if (tag in _GOOD_TAGS or (tag in _BAD_TAGS and tag != entry['tag'])
-                or (tag == 'NEW' and entry['tag'] == 'GONE')):
-            return True
+    if where is None:
+        return False
+    endpoints, names = where
+    endpoint = endpoints.get(target)
+    if item is None:
+        if tag == 'GONE':  # an endpoint no longer scanned, a name no longer probed: back again
+            return endpoint is not None or target in names
+        return endpoint is None or endpoint['status'] == OPEN
+    name = None if item == '(no SNI)' else item
+    if endpoint is None or (name is not None and name not in names):
+        return True
+    if endpoint['status'] != OPEN:  # nothing was read from it this run
+        return False
+    row = endpoint['rows'].get(name)
+    if row is None:
+        return False
+    status = row['view']['status']
+    if tag == 'GONE':
+        return True
+    if status in _FAILED_STATUSES:  # failing still, or nothing read
+        return False
+    if tag == 'FAILED':
+        return True
+    if tag == 'REGRESSED':
+        return status == UPDATED
+    if tag == 'UNHOSTED':
+        return _covers_name(status)
     return False
 
 
 def pagerduty_plan(monitor: MonitorResult, baseline: Optional[Dict[str, Any]] = None,
-                   since: Optional[str] = None,
-                   max_events: int = NOTIFY_MAX_EVENTS) -> Dict[str, Any]:
+                   since: Optional[str] = None, max_events: int = NOTIFY_MAX_EVENTS,
+                   doc: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """What a run sends to PagerDuty and the keys it leaves open, as the headless runner's
     plan: a trigger per change that counts with a red tag (FAILED, REGRESSED, UNHOSTED, GONE)
     and per expiring certificate (EXPIRED, severity critical, or EXPIRES), one per
     :func:`pagerduty_dedup_key`; a resolve per open key of the baseline whose problem is over
-    (:func:`_problem_over`) or whose resolve a run could not send yet (``over``). At most
-    ``max_events``: triggers first, the triggers left out are not sent (``cut``), the
-    resolves left out stay open with ``over``. ``open``: the baseline's keys still open (a
-    key triggered again keeps its ``since``), then the new ones, at most
-    :data:`PAGERDUTY_MAX_OPEN`. -> ``{triggers, resolves, cut, open}``."""
+    in this run's report ``doc`` (:func:`_problem_over`) or whose resolve a run could not send
+    yet (``over``). At most ``max_events``: triggers first, the triggers left out are not sent
+    (``cut``), the resolves left out stay open with ``over``. ``kept``, ``deferred`` and
+    ``added`` are the parts of ``open`` (:func:`pagerduty_open_after`): the baseline's keys
+    still open (a key triggered again keeps its ``since``), those whose resolve waits, the new
+    ones - ``open`` as if every event were delivered, at most :data:`PAGERDUTY_MAX_OPEN`.
+    -> ``{triggers, resolves, cut, open, kept, deferred, added}``."""
     triggered = {}  # type: Dict[str, Dict[str, Any]]
     for change in notable_changes(monitor.changes):
         tag = change_tag(change)
@@ -8014,23 +8062,48 @@ def pagerduty_plan(monitor: MonitorResult, baseline: Optional[Dict[str, Any]] = 
                         'after': {'notAfter': entry.get('notAfter'),
                                   'daysLeft': entry.get('daysLeft')}, 'run': None}})
     previous = open_keys_of(baseline)
-    keep, ending = [], []  # type: List[Dict[str, Any]], List[Dict[str, Any]]
+    where = _report_where(doc) if doc is not None and previous else None
+    kept, ending = [], []  # type: List[Dict[str, Any]], List[Dict[str, Any]]
     for entry in previous:
         if entry['key'] in triggered:
-            keep.append({k: v for k, v in entry.items() if k != 'over'})
-        elif entry.get('over') or _problem_over(entry, monitor):
+            kept.append({k: v for k, v in entry.items() if k != 'over'})
+        elif entry.get('over') or _problem_over(entry, monitor, where):
             ending.append(entry)
         else:
-            keep.append(entry)
+            kept.append(entry)
     triggers = list(triggered.values())[:max(0, max_events)]
     resolves = ending[:max(0, max_events - len(triggers))]
     deferred = [dict(entry, over=True) for entry in ending[len(resolves):]]
     known = {entry['key'] for entry in previous}
     added = [{'key': t['key'], 'target': t['target'], 'item': t['item'], 'tag': t['tag'],
               'since': since} for t in triggers if t['key'] not in known]
-    keys = keep + deferred + added
-    return {'triggers': triggers, 'resolves': resolves, 'cut': len(triggered) - len(triggers),
-            'open': keys[max(0, len(keys) - PAGERDUTY_MAX_OPEN):]}
+    plan = {'triggers': triggers, 'resolves': resolves, 'cut': len(triggered) - len(triggers),
+            'kept': kept, 'deferred': deferred, 'added': added}
+    plan['open'] = pagerduty_open_after(plan)
+    return plan
+
+
+def pagerduty_open_after(plan: Dict[str, Any], triggered: Optional[Set[str]] = None,
+                         resolved: Optional[Set[str]] = None) -> List[Dict[str, Any]]:
+    """The PagerDuty keys open after a run, by what was delivered (``triggered``,
+    ``resolved``: the keys of the events that went out; None: all of them): the baseline's keys
+    still open, those whose resolve was not delivered (as they were: the next run decides
+    again), those whose resolve waits for the event budget (``over``) and the new keys whose
+    trigger was delivered - at most :data:`PAGERDUTY_MAX_OPEN`, the oldest dropped."""
+    keys = (plan['kept'] + [entry for entry in plan['resolves']
+                            if resolved is not None and entry['key'] not in resolved]
+            + plan['deferred'] + [entry for entry in plan['added']
+                                  if triggered is None or entry['key'] in triggered])
+    return keys[max(0, len(keys) - PAGERDUTY_MAX_OPEN):]
+
+
+def _with_open_keys(doc: Dict[str, Any], open_keys: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """A report dict with ``notify.open`` replaced by ``open_keys`` (none: no ``notify``),
+    every other key as it was, in its place."""
+    out = {key: value for key, value in doc.items() if key != 'notify' or open_keys}
+    if open_keys:
+        out['notify'] = {'open': open_keys}
+    return out
 
 
 def pagerduty_events(url: str, plan: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
@@ -8072,9 +8145,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _response_detail(raw: bytes) -> str:
+def _response_detail(raw: bytes, redact: Optional[Callable[[str], str]] = None) -> str:
     """The reason in a webhook's error answer: Telegram's ``description``, Discord's
-    ``message``, Power Automate's ``error.message``, or the body itself (200 chars)."""
+    ``message``, Power Automate's ``error.message``, or the body itself - ``redact``-ed, then on
+    one line and cut at 200 characters (a secret echoed across the cut would leave its start,
+    which no redaction finds)."""
+    clean = redact or (lambda value: value)
     text = raw.decode('utf-8', 'replace')
     try:
         data = json.loads(text)
@@ -8087,7 +8163,8 @@ def _response_detail(raw: bytes) -> str:
             if isinstance(value, str) and value.strip():
                 text = value
                 break
-    return ' '.join(text.split())[:200]
+    # a secret with spaces may only show once they are one
+    return clean(' '.join(clean(text).split()))[:200]
 
 
 def _network_error_text(reason: Any) -> str:
@@ -8102,9 +8179,12 @@ def _network_error_text(reason: Any) -> str:
 
 def _post_once(opener: urllib.request.OpenerDirector, url: str, body: bytes,
                timeout: float, auth: Optional[str] = None,
-               extra: Optional[Dict[str, str]] = None
+               extra: Optional[Dict[str, str]] = None,
+               redact: Optional[Callable[[str, bool], str]] = None
                ) -> Tuple[Optional[str], bool, Optional[float]]:
-    """One POST -> ``(error or None, worth a retry, Retry-After seconds)``."""
+    """One POST -> ``(error or None, worth a retry, Retry-After seconds)``; what the answer
+    says is ``redact``-ed (``redact(text, cut)``) before it is cut."""
+    clean = redact or (lambda value, cut=False: value)
     headers = {'Content-Type': 'application/json; charset=utf-8', 'User-Agent': _USER_AGENT}
     headers.update(extra or {})
     if auth:
@@ -8116,15 +8196,17 @@ def _post_once(opener: urllib.request.OpenerDirector, url: str, body: bytes,
         return None, False, None
     except urllib.error.HTTPError as exc:
         try:
-            raw = exc.read(512) or b''
+            raw = exc.read(513) or b''
         except (OSError, http.client.HTTPException, ValueError):
             raw = b''
         finally:
             exc.close()
-        text = 'HTTP %d %s' % (exc.code, exc.reason or '')
+        cut = len(raw) > 512
+        raw = raw[:512]
+        text = 'HTTP %d %s' % (exc.code, clean(str(exc.reason or '')))
         if 300 <= exc.code < 400:
             text += ' (a redirect; not followed)'
-        detail = _response_detail(raw)
+        detail = _response_detail(raw, lambda value: clean(value, cut))
         if detail:
             text += ': ' + detail
         value = str(exc.headers.get('Retry-After') or '').strip() if exc.headers else ''
@@ -8160,15 +8242,21 @@ def send_notification(url: str, payload: Optional[Dict[str, Any]],
     opener = urllib.request.build_opener(
         urllib.request.HTTPSHandler(context=ssl.create_default_context()), _NoRedirect)
     target, auth = split_credentials(url)
+    hidden = _redaction_secrets(url, secrets)
+
+    def redact(text: str, cut: bool = False) -> str:
+        return _redact_with(text, hidden, cut)
+
     problem = None  # type: Optional[str]
     for attempt in range(1 + max(0, retries)):
-        problem, retry, retry_after = _post_once(opener, target, body, timeout, auth, headers)
+        problem, retry, retry_after = _post_once(opener, target, body, timeout, auth, headers,
+                                                 redact)
         if problem is None:
             return None
         if not retry or attempt >= retries:
             break
         sleep(min(10.0, max(retry_delay, retry_after or 0.0)))
-    return display_text(redact_url(problem or 'failed', url, secrets))
+    return display_text(redact(problem or 'failed'))
 
 
 # =====================================================================================
@@ -12190,7 +12278,8 @@ def _run(args: argparse.Namespace) -> int:
     pd_plan = None  # type: Optional[Dict[str, Any]]
     if monitor is not None:
         if notify_url and notify_format == 'pagerduty':
-            pd_plan = pagerduty_plan(monitor, baseline, iso_utc(report.finished_at))
+            pd_plan = pagerduty_plan(monitor, baseline, iso_utc(report.finished_at),
+                                     doc=report_to_dict(report))
             monitor.notify_open = pd_plan['open']
         else:  # carried while no PagerDuty URL is set
             monitor.notify_open = open_keys_of(baseline)
@@ -12212,14 +12301,6 @@ def _run(args: argparse.Namespace) -> int:
 
     estate = estate_from_report(report_to_dict(report), report.finished_at) \
         if args.estate else None
-    json_text = None  # type: Optional[str]
-    if args.json:
-        # Escape non-ASCII when stdout is not UTF-8 so any consumer parses it correctly.
-        json_text = render_json(
-            report, ensure_ascii=args.json == '-' and not _stream_is_utf8(sys.stdout),
-            monitor=monitor, estate=args.estate)
-        if not json_is_baseline:  # the baseline is replaced after the notification
-            write_report(args.json, json_text)
     if args.csv:
         # BOM so Excel opens UTF-8 (Turkish characters) correctly; none on stdout. --estate
         # writes its inventory instead of the result rows (those stay in the JSON).
@@ -12249,6 +12330,8 @@ def _run(args: argparse.Namespace) -> int:
         if pd_plan is not None:
             post_url, events = pagerduty_events(notify_url, pd_plan)
             posts = [(post_url, event, None, {}) for event in events]
+            # the URL posted to has no routing key: it is in each event
+            secrets = [_pagerduty_routing_key(urllib.parse.urlsplit(notify_url).query) or '']
             if pd_plan['cut'] and not quiet:
                 print('%s: warning: PagerDuty: %d more bad change(s) not sent (at most %d events '
                       'a run)' % (PROG, pd_plan['cut'], NOTIFY_MAX_EVENTS), file=err)
@@ -12289,17 +12372,39 @@ def _run(args: argparse.Namespace) -> int:
                     if notify_format == 'pagerduty' and pd_plan else ''), file=err)
         notify_failed = interrupted or bool(problem)
         pd_failed = notify_failed and notify_format == 'pagerduty'
+        if pd_plan is not None and monitor is not None:
+            # the keys open as PagerDuty got them: the events before the first that failed
+            delivered = [event for _, event, _, _ in posts[:sent]]
+            monitor.notify_open = pagerduty_open_after(
+                pd_plan, {e['dedup_key'] for e in delivered if e['event_action'] == 'trigger'},
+                {e['dedup_key'] for e in delivered if e['event_action'] == 'resolve'})
 
-    if json_text is not None and json_is_baseline:
+    if args.json:
+        # After the notification: the report keeps the PagerDuty keys as delivered. Escape
+        # non-ASCII when stdout is not UTF-8 so any consumer parses it correctly.
+        json_text = render_json(
+            report, ensure_ascii=args.json == '-' and not _stream_is_utf8(sys.stdout),
+            monitor=monitor, estate=args.estate)
         undelivered = len(notable_changes(monitor.changes)) if notify_failed and monitor else 0
-        if undelivered or pd_failed:
+        if not json_is_baseline:
+            write_report(args.json, json_text)
+        elif undelivered or pd_failed:
             # This run's report would be the next baseline: the next run would compare
-            # with it, find nothing and never send these changes. Keep the previous one.
+            # with it, find nothing and never send these changes. Keep the previous one -
+            # with the PagerDuty incidents this run opened or resolved noted in it.
             held_back.append(args.json)
-            print('%s: kept the previous baseline in %s (this report is not written there): %s'
-                  % (PROG, args.json, 'the %d change%s will be reported again on the next run'
+            noted = (pd_plan is not None and baseline is not None and monitor is not None
+                     and monitor.notify_open != open_keys_of(baseline))
+            print('%s: kept the previous baseline in %s (this report is not written there%s): %s'
+                  % (PROG, args.json,
+                     '; the PagerDuty incidents still open are noted in it' if noted else '',
+                     'the %d change%s will be reported again on the next run'
                      % (undelivered, '' if undelivered == 1 else 's') if undelivered else
                      'the next run sends again what was not delivered'), file=err)
+            if noted:
+                write_report(args.json, json.dumps(
+                    _with_open_keys(baseline, monitor.notify_open), indent=2,
+                    ensure_ascii=False) + '\n', atomic=True)
         else:
             # Replaced whole or not at all: a half-written baseline would stop every
             # later run with a usage error.

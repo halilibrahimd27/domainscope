@@ -4002,7 +4002,7 @@ class NotifyDeliveryTests(unittest.TestCase):
         # "Hunter2Secret@hooks.example.com" for a port and print it
         posted = []
 
-        def post_once(opener, url, body, timeout, auth=None, extra=None):
+        def post_once(opener, url, body, timeout, auth=None, extra=None, redact=None):
             posted.append((url, auth))
             return "nonnumeric port: '%s@hooks.example.com'" % password, False, None
 
@@ -4208,17 +4208,19 @@ class NotifyChannelTests(unittest.TestCase):
 
         baseline = dict(self.doc, notify={'open': plan['open']})
         # the next run, nothing moved: the expiring certificate is said again (the same key),
-        # every key stays open
+        # every key stays open (the report shows each problem as it was)
         same = sos.build_monitor(self.report, sos.report_to_dict(self.report), 'last.json',
                                  warn_days=30)
-        again = sos.pagerduty_plan(same, baseline, '2034-05-21T00:00:00.000Z')
+        again = sos.pagerduty_plan(same, baseline, '2034-05-21T00:00:00.000Z',
+                                   doc=sos.report_to_dict(self.report))
         self.assertEqual([t['tag'] for t in again['triggers']], ['EXPIRES'])
         self.assertEqual((again['resolves'], again['open']), ([], plan['open']))
         # the fleet back as it was: every problem is over, each key resolved
         back_report = fleet_before(now=NOW)
         back = sos.build_monitor(back_report, sos.report_to_dict(self.report), 'last.json',
                                  warn_days=30)
-        over = sos.pagerduty_plan(back, baseline, '2034-05-21T00:00:00.000Z')
+        over = sos.pagerduty_plan(back, baseline, '2034-05-21T00:00:00.000Z',
+                                  doc=sos.report_to_dict(back_report))
         self.assertEqual(sorted(entry['key'] for entry in over['resolves']),
                          sorted(entry['key'] for entry in plan['open']))
         _, events = sos.pagerduty_events(PAGERDUTY_URL, over)
@@ -4244,6 +4246,95 @@ class NotifyChannelTests(unittest.TestCase):
             dict(good, key='c' * 32, item=5), None, 'text']}}), [good])
         for doc in (None, {}, {'notify': None}, {'notify': {'open': 'x'}}):
             self.assertEqual(sos.open_keys_of(doc), [])
+
+    def test_a_failure_ends_no_other_key(self):
+        """A key's problem is over when this run's report shows its row or endpoint better - never
+        because another change came by: a handshake or a port that fails one night says nothing of
+        the certificate a name is served with."""
+        upd = [sos.Server('upd', ['10.0.0.2'])]
+        renewed, old = by_old_or_new(RENEWED_DER), by_old_or_new(EC_DER)
+
+        def timeout(sni):
+            return socket.timeout('timed out') if sni == WILD else old(sni)
+
+        def nights(*scans):
+            out, doc = [], None
+            for night, (tls, connect) in enumerate(scans):
+                report = scan_report(upd, {'10.0.0.2': tls} if tls else {}, connect=connect)
+                now = sos.report_to_dict(report)
+                if doc is not None:
+                    monitor = sos.build_monitor(report, doc, 'last.json')
+                    plan = sos.pagerduty_plan(monitor, doc, 'night %d' % night, doc=now)
+                    out.append(([t['tag'] for t in plan['triggers']],
+                                [entry['tag'] for entry in plan['resolves']],
+                                [entry['tag'] for entry in plan['open']]))
+                    now['notify'] = {'open': plan['open']}
+                doc = now
+            return out
+
+        closed = {'10.0.0.2': ConnectionRefusedError()}
+        want = [(['REGRESSED'], [], ['REGRESSED']),            # the old certificate is back
+                (['FAILED'], [], ['REGRESSED', 'FAILED']),      # one night nothing answers
+                ([], ['FAILED'], ['REGRESSED']),                # it answers, the old one still
+                ([], ['REGRESSED'], [])]                        # the new certificate: over
+        # the handshake of the name times out one night
+        self.assertEqual(nights((renewed, None), (old, None), (timeout, None), (old, None),
+                                (renewed, None)), want)
+        # the port is closed one night (the endpoint FAILED)
+        self.assertEqual(nights((renewed, None), (old, None), (None, closed), (old, None),
+                                (renewed, None)), want)
+        # without the report nothing but an expiry is decided
+        monitor = sos.MonitorResult(changes=[])
+        entry = {'key': 'a' * 32, 'target': '10.0.0.2:443', 'item': WILD, 'tag': 'FAILED',
+                 'since': None}
+        self.assertFalse(sos._problem_over(entry, monitor))
+        self.assertTrue(sos._problem_over(dict(entry, tag='EXPIRES'),
+                                          sos.MonitorResult(expiring=[])))
+
+    def test_open_keys_after_delivery(self):
+        """The keys a report keeps are what PagerDuty got: a trigger not delivered opens nothing,
+        a resolve not delivered leaves its key as it was."""
+        change = self.monitor.changes[2]  # REGRESSED on a row
+        monitor = sos.MonitorResult(changes=[dict(change, name='host-%d.example.com' % i)
+                                             for i in range(2)])
+        old = [{'key': '%032x' % i, 'target': '10.0.0.9:443', 'item': None, 'tag': 'GONE',
+                'since': None} for i in range(2)]
+        plan = sos.pagerduty_plan(monitor, {'notify': {'open': old}}, 'now',
+                                  doc={'results': [], 'names': []})
+        self.assertEqual(([entry['key'] for entry in plan['open']], plan['resolves']),
+                         ([entry['key'] for entry in old] + [t['key'] for t in plan['triggers']], []))
+        self.assertEqual(sos.pagerduty_open_after(plan), plan['open'])
+        triggered = {plan['triggers'][0]['key']}
+        self.assertEqual([entry['key'] for entry in sos.pagerduty_open_after(plan, triggered, set())],
+                         [entry['key'] for entry in old] + [plan['triggers'][0]['key']])
+        # a key whose problem is over: resolved, or kept as it was when the resolve failed
+        back = sos.pagerduty_plan(sos.MonitorResult(changes=[]), {'notify': {'open': old}}, 'now',
+                                  doc={'results': [{'probe': 'connect', 'ip': '10.0.0.9',
+                                                    'port': 443, 'status': 'OPEN'}],
+                                       'names': []})
+        self.assertEqual([entry['key'] for entry in back['resolves']], [old[0]['key'], old[1]['key']])
+        self.assertEqual(sos.pagerduty_open_after(back, set(), {old[0]['key']}), [old[1]])
+
+    def test_an_answer_is_redacted_before_it_is_cut(self):
+        token = self.TOKEN
+        bodies = [b'e' * pad + b' ' + token.encode('ascii') + b' tail'
+                  for pad in (150, 180, 190, 195, 199)]
+        bodies.append(json.dumps({'message': 'm' * 185 + ' ' + token}).encode('ascii'))
+        # the 512 bytes read end inside the token (at byte 500 + 12): the spaces collapse
+        bodies.append(b' ' * 498 + b'x ' + token.encode('ascii') + b'z' * 600)
+        bodies.append('\u00fc'.encode('utf-8') * 150 + b' ' * 198 + b'x ' + token.encode('ascii')
+                      + b'z' * 600)
+        for body in bodies:
+            with WebhookReceiver([(400, {}, body)]) as hook, no_proxy():
+                problem = sos.send_notification(hook.url('/hook/%s' % token), {'text': 'x'},
+                                                retries=0)
+            self.assertTrue(problem.startswith('HTTP 400'), problem)
+            for n in range(4, len(token) + 1):
+                self.assertNotIn(token[:n], problem, problem[-40:])
+        # the reason found, redacted before it is cut
+        self.assertEqual(sos._response_detail(b'e' * 195 + b' ' + ROUTING_KEY.encode('ascii'),
+                                              lambda text: text.replace(ROUTING_KEY, '***')),
+                         'e' * 195 + ' ***')
 
     def run_cli(self, *args, report, script=(), path='/hook', env=None):
         """run_main with a scan that returns ``report`` and a local webhook at ``path``
@@ -4296,6 +4387,35 @@ class NotifyChannelTests(unittest.TestCase):
             self.assertNotIn(opened[0]['key'],
                              [entry['key'] for entry in read_json(state)['notify']['open']])
             self.assertNotIn(ROUTING_KEY, Path(state).read_text(encoding='utf-8'))
+
+    def test_a_kept_baseline_notes_what_pagerduty_got(self):
+        before, after = fleet_before(now=NOW), fleet_after(now=NOW + timedelta(days=1))
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, 'state.json')
+            Path(state).write_text(sos.render_json(before), encoding='utf-8')
+            previous = read_json(state)
+            path = '/v2/enqueue?routing_key=%s' % ROUTING_KEY
+            args = ('--baseline', state, '--json', state, '--notify', 'URL', '--notify-format',
+                    'pagerduty', '--fail-on-notify-error')
+            # the first trigger goes out, then PagerDuty fails: the kept report notes its incident
+            echo = (503, {}, ('no %s here' % ROUTING_KEY).encode('ascii'))
+            code, out, err, hook = self.run_cli(*args, report=after, script=[202, echo, echo],
+                                                path=path)
+            self.assertEqual((code, len(hook.requests)), (sos.EXIT_NOTIFY_ERROR, 3), err)
+            self.assertIn('HTTP 503 Service Unavailable: no *** here (1 of 5 events sent)', err)
+            self.assertIn('kept the previous baseline in %s (this report is not written there; the '
+                          'PagerDuty incidents still open are noted in it)' % state, err)
+            first = hook.payloads()[0]['dedup_key']
+            kept = read_json(state)
+            self.assertEqual([entry['key'] for entry in kept.pop('notify')['open']], [first])
+            self.assertEqual(kept, previous)
+            self.assertEqual(os.listdir(tmp), ['state.json'])
+            # the fleet as it was: nothing changed since the kept report, the incident is resolved
+            code, out, err, hook = self.run_cli(*args, report=before, path=path)
+            self.assertEqual(code, 0, err)
+            self.assertEqual([(event['event_action'], event['dedup_key'])
+                              for event in hook.payloads()], [('resolve', first)])
+            self.assertNotIn('notify', read_json(state))
 
     def test_ntfy_and_signed_json_through_a_local_webhook(self):
         before, after = fleet_before(now=NOW), fleet_after(now=NOW + timedelta(days=1))

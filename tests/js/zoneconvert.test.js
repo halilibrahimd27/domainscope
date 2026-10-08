@@ -440,6 +440,30 @@ describe('pitfalls', () => {
     assert.deepEqual([pit(out.bind, 'r53-alias').severity, pit(out.octodns, 'r53-alias').severity], ['warn', 'warn']);
   });
 
+  test('alias variants a change batch cannot route (geoproximity): the first alias written, the others left out and listed', () => {
+    const alias = (id, region, target) => ({
+      Name: 'www.example.com.', Type: 'A', SetIdentifier: id, GeoProximityLocation: { AWSRegion: region },
+      AliasTarget: { HostedZoneId: 'Z35SXDOTRQ7X7K', DNSName: target, EvaluateTargetHealth: true }
+    });
+    const z = parseZone(JSON.stringify({ ResourceRecordSets: [
+      { Name: 'example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.10' }] },
+      alias('east', 'us-east-1', 'east-lb-1.us-east-1.elb.amazonaws.com.'),
+      alias('west', 'us-west-2', 'west-lb-2.us-west-2.elb.amazonaws.com.')
+    ] }), { format: 'route53', origin: 'example.com' });
+    const west = z.records.find((r) => r.alias && /^west/.test(r.alias.target));
+    assert.equal(west.routing.policy, 'geoproximity');
+    const r53 = convertZone(z, 'route53');
+    const www = JSON.parse(r53.text).Changes.filter((c) => c.ResourceRecordSet.Name === 'www.example.com.');
+    assert.deepEqual(www.map((c) => c.ResourceRecordSet.AliasTarget.DNSName), ['east-lb-1.us-east-1.elb.amazonaws.com.']);
+    assert.deepEqual(r53.omitted.filter((o) => o.code === 'routing').map((o) => o.id), [west.id]);
+    assert.equal(pit(r53, 'routing').severity, 'warn');
+    // DNSControl: one R53_ALIAS for the name, the other commented out with its reason.
+    const dc = convertZone(z, 'dnscontrol');
+    assert.equal((dc.text.match(/^ {4}R53_ALIAS\("www"/gm) || []).length, 1);
+    assert.match(dc.text, /^ {4}\/\/ not written \(another routing variant of a CNAME or an alias: one target per name\): www A west-lb-2/m);
+    assert.deepEqual(dc.omitted.filter((o) => o.code === 'routing').map((o) => o.id), [west.id]);
+  });
+
   test('Cloudflare proxy: cf_tags comments in BIND, lost in Route 53 (warn), octodns.cloudflare.proxied, CF_PROXY_ON', () => {
     const z = bind('www 300 A 192.0.2.10 ; cf_tags=cf-proxied:true\napi 300 A 192.0.2.14 ; cf_tags=cf-proxied:false');
     const out = Object.fromEntries(CONVERT_TARGETS.map((t) => [t, convertZone(z, t)]));

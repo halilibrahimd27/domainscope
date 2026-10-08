@@ -329,7 +329,7 @@ const COMMENT_REASON = Object.freeze({
   'out-of-zone': 'outside the zone',
   soa: 'SOA: the provider writes its own',
   'apex-ns': 'NS at the apex: the provider serves its own name servers',
-  routing: 'another routing variant of a CNAME: one CNAME per name'
+  routing: 'another routing variant of a CNAME or an alias: one target per name'
 });
 
 /** Pitfall params that collect a list of values (types, flags …) over the records flagged. */
@@ -640,20 +640,25 @@ function flagCnameAlone(sets, pits) {
   }
 }
 
-/** Routing variants a target has no place for: flagged, and a CNAME keeps its first value only. */
+/**
+ * Routing variants a target has no place for: flagged and merged into one set. One target per
+ * name: a CNAME keeps its first value only, and so does a set led by an alias (two alias targets
+ * never merge; any alias after plain values is left out). What goes is listed in `omitted`.
+ */
 function mergeRouting(sets, pits, target, omitted) {
   for (const set of sets) {
     const routed = set.steps.filter((s) => s.r.routing);
     if (!routed.length || set.routing) continue;
     for (const s of routed) pits.flag('routing', s.r);
-    if (set.type === 'CNAME' && set.steps.length > 1) {
-      for (const s of set.steps.slice(1)) {
-        omitted.push({ id: s.r.id, code: 'routing' });
-        s.action = target === 'bind' || target === 'dnscontrol' ? 'comment' : 'omit';
-        s.code = 'routing';
-      }
-      set.steps = set.steps.slice(0, 1);
+    if (set.steps.length < 2 || (set.type !== 'CNAME' && !set.steps.some((s) => s.action === 'alias'))) continue;
+    const keep = set.type === 'CNAME' || set.steps[0].action === 'alias' ? set.steps.slice(0, 1) : set.steps.filter((s) => s.action !== 'alias');
+    for (const s of set.steps) {
+      if (keep.includes(s)) continue;
+      omitted.push({ id: s.r.id, code: 'routing' });
+      s.action = target === 'bind' || target === 'dnscontrol' ? 'comment' : 'omit';
+      s.code = 'routing';
     }
+    set.steps = keep;
   }
 }
 

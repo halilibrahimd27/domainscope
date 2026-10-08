@@ -930,6 +930,15 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(servers['db01'].groups, ['db'])
         simple = servers_by_name(sos.parse_inventory('web01:\n  ansible_host: 10.9.9.9\n'))
         self.assertEqual(simple['web01'].ips, ['10.9.9.9'])
+        # a host's vars in flow style, as lib/inventory.js reads them
+        flow = sos.parse_inventory('all:\n  children:\n    web:\n      hosts:\n'
+                                   '        web01: {ansible_host: 10.0.0.1, ansible_user: deploy}\n'
+                                   '        web02:\n          ansible_host: 10.0.0.2\n'
+                                   '        web03: {ansible_user: "a, b"}\n')
+        self.assertEqual([(s.name, s.ips, s.hostnames, s.groups) for s in flow.servers],
+                         [('web01', ['10.0.0.1'], [], ['web']), ('web02', ['10.0.0.2'], [], ['web']),
+                          ('web03', [], ['web03'], ['web'])])
+        self.assertEqual(flow.warnings, [])
 
     def test_json_formats(self):
         array = sos.parse_inventory(json.dumps([

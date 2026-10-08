@@ -2450,6 +2450,33 @@ def _yaml_value(text: str) -> Any:
     return _unquote(text)
 
 
+def _yaml_flow_pairs(text: str) -> List[Tuple[str, str]]:
+    """The ``key: value`` pairs of a YAML flow mapping (``{ansible_host: 10.0.0.1, ports:
+    [443, 8443]}``): commas inside brackets or quotes split nothing."""
+    items, buf, depth, quote = [], [], 0, ''  # type: List[str], List[str], int, str
+    for char in text.strip()[1:-1]:
+        if quote:
+            quote = '' if char == quote else quote
+        elif char in '\'"':
+            quote = char
+        elif char in '[{':
+            depth += 1
+        elif char in ']}':
+            depth -= 1
+        elif char == ',' and depth == 0:
+            items.append(''.join(buf))
+            buf = []
+            continue
+        buf.append(char)
+    items.append(''.join(buf))
+    pairs = []  # type: List[Tuple[str, str]]
+    for item in items:
+        key, sep, value = item.partition(':')
+        if sep and key.strip():
+            pairs.append((key.strip().strip('\'"'), value.strip()))
+    return pairs
+
+
 def _parse_yaml(lines: List[str], builder: _InventoryBuilder) -> None:
     """Very small subset of YAML: nested ``key:`` mappings with ``ansible_host`` leaves, and the
     topology keys of a host (a scalar, a flow list or a block list of ``- item`` lines); in a
@@ -2510,6 +2537,18 @@ def _parse_yaml(lines: List[str], builder: _InventoryBuilder) -> None:
                 builder.add_token_values(parent, [value], number, groups_of(stack[:-1]))
             else:
                 builder.add_token_values(None, [value], number)
+            continue
+        if parent == 'hosts' and value.startswith('{') and value.endswith('}'):
+            # web01: {ansible_host: 10.0.0.1, ansible_user: deploy}: a host's vars in flow style
+            pairs = _yaml_flow_pairs(value)
+            hosts = [_unquote(v) for k, v in pairs if k in ('ansible_host', 'ansible_ssh_host')]
+            if hosts:
+                builder.add_token_values(key, hosts, number, groups_of(stack))
+            else:
+                pending[key] = (number, groups_of(stack))
+            for name, item in pairs:
+                if _topology_key(name, True) is not None:
+                    keep(key, _topology_key(name, True), _yaml_value(item), number)
             continue
         if value in ('', 'null', '~', '{}'):
             stack.append((indent, key))

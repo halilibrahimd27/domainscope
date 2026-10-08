@@ -286,7 +286,9 @@ export function RolloutPanel({ run, ctx, sets = null, plan = null, onChange = nu
 
   const statusHost = h('div', { class: 'stack-sm ro-status', attrs: { 'aria-live': 'polite' } });
   const progressHost = h('div', { class: 'stack-sm ro-progress' });
-  const actions = h('div', { class: 'cluster ro-actions' });
+  const resetBtn = Button({ size: 'sm', variant: 'ghost', icon: 'trash', label: t('ro.reset'), dataset: { action: 'ro-reset' }, onClick: () => reset() });
+  const actions = h('div', { class: 'cluster ro-actions' },
+    Button({ size: 'sm', icon: 'download', label: t('ro.export'), dataset: { action: 'ro-export' }, onClick: () => exportCsv() }), resetBtn);
   const tableHost = h('div', { class: 'ro-table' });
   const snipHost = h('div', { class: 'ro-snippets' });
 
@@ -401,6 +403,8 @@ export function RolloutPanel({ run, ctx, sets = null, plan = null, onChange = nu
   /* --- progress, status, actions --------------------------------------------------- */
   function renderProgress() {
     clear(progressHost);
+    // Clear the board: only when this certificate has a stored board.
+    resetBtn.disabled = !findBoard(current(), id);
     const p = rolloutProgress(view);
     const bar = ProgressBar({ label: t('ro.progressLabel'), value: p.verified, max: Math.max(1, p.total), showCount: false });
     progressHost.append(
@@ -551,10 +555,6 @@ export function RolloutPanel({ run, ctx, sets = null, plan = null, onChange = nu
       if (!(run.config.inventoryServers > 0)) el.append(h('p', { class: 'muted' }, t('ro.emptyHint')));
       return;
     }
-    clear(actions);
-    actions.append(
-      Button({ size: 'sm', icon: 'download', label: t('ro.export'), dataset: { action: 'ro-export' }, onClick: exportCsv }),
-      Button({ size: 'sm', variant: 'ghost', icon: 'trash', label: t('ro.reset'), dataset: { action: 'ro-reset' }, disabled: !findBoard(current(), id), onClick: reset }));
     renderProgress();
     renderStatus();
     table.setRows(view);

@@ -621,3 +621,24 @@ describe('the map is a workspace part', () => {
     assert.deepEqual(sealed.data.origins, MAP);
   });
 });
+
+describe('recording a run (ui/origin-map.js recordOrigins)', () => {
+  test('a run that only rules an address out is saved: an older report imported later cannot bring it back', async () => {
+    const { state } = await import('../../assets/js/state.js');
+    const { recordOrigins } = await import('../../assets/js/ui/origin-map.js');
+    await state.ready;
+    assert.equal(await state.setWorkspaceData('origins', setRemember(null, true)), true);
+    const daysAgo = (n) => new Date(Date.now() - n * 864e5).toISOString();
+    const www = { name: 'www.example.net', ip: '192.0.2.10', port: 443 };
+    const proxied = () => true;
+    const newer = recordOrigins([{ ...www, outcome: 'not-hosted' }], { source: 'cli-json', at: daysAgo(6), proxied });
+    assert.deepEqual([newer.added, newer.confirmed, newer.staled], [[], [], []], 'no entry changed');
+    assert.equal(await newer.done, true);
+    assert.deepEqual((state.workspaceData('origins').refuted || []).map(originKey), [originKey(www)], 'the refutation is kept');
+    const older = recordOrigins([{ ...www, outcome: 'hosted' }], { source: 'cli-json', at: daysAgo(37), proxied });
+    await older.done;
+    const map = state.workspaceData('origins');
+    assert.equal(map.entries.find((e) => e.name === www.name).stale.reason, 'cli-not-hosted', 'added stale, as in date order');
+    assert.deepEqual(knownForScan(map), []);
+  });
+});

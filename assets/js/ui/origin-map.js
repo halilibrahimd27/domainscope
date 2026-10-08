@@ -151,8 +151,11 @@ export function OriginMapOffNote(ctx) {
  * @returns {ReturnType<typeof applyObservations> & { done: Promise<boolean> }}
  */
 export function recordOrigins(observations, { source, at, proxied = null }) {
-  const res = applyObservations(originMap(), observations, { source, at, proxied, serverOf });
-  const changed = res.added.length || res.confirmed.length || res.staled.length;
+  const before = originMap();
+  const res = applyObservations(before, observations, { source, at, proxied, serverOf });
+  // What a run only ruled out (`refuted`) is kept too: an older report imported later cannot bring it back.
+  const refuted = (map) => JSON.stringify((map && map.refuted) || []);
+  const changed = res.added.length || res.confirmed.length || res.staled.length || refuted(res.map) !== refuted(before);
   const done = !res.off && changed ? saveOrigins(res.map) : Promise.resolve(true);
   return { ...res, done };
 }

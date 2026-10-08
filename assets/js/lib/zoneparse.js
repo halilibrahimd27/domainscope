@@ -760,8 +760,10 @@ function textChecks(text) {
   let bad = 0;
   for (let i = head.indexOf('�'); i >= 0; i = head.indexOf('�', i + 1)) bad++;
   // more than 1% replacement characters (and more than a handful: one mis-encoded "café" in a
-  // short file is ENCODING_REPLACED, not a binary file)
-  if (bad >= 8 && bad > head.length / 100) {
+  // short file is ENCODING_REPLACED, not a binary file), with control bytes among them or a
+  // quarter of it: a text in a legacy 8-bit code page (Windows-1254 comments) has neither, it is
+  // read with ENCODING_REPLACED
+  if (bad >= 8 && bad > head.length / 100 && (bad > head.length / 4 || /[\x01-\x08\x0e-\x1f\x7f]/.test(head))) {
     return { fatal: fatalIssue('NOT_TEXT', { hint: 'binary' }, 'too many undecodable bytes') };
   }
   let replaced = bad;

@@ -242,6 +242,22 @@ describe('input, encoding and line endings', () => {
     assert.deepEqual(codes(P(latin1)), ['ENCODING_REPLACED']);
   });
 
+  test('a zone file in a legacy 8-bit code page (Windows-1254 comments) is read, its bytes replaced; binary data is not', () => {
+    // '; iç ağ dışı' and '; yedek sunucu (İstanbul)' as Windows-1254 bytes: about 4% of the file is not UTF-8.
+    const w1254 = { 'ç': 0xe7, 'ğ': 0xf0, 'ı': 0xfd, 'ş': 0xfe, 'İ': 0xdd, 'ü': 0xfc, 'ö': 0xf6 };
+    const bytes = (s) => Uint8Array.from([...s].map((c) => w1254[c] ?? c.charCodeAt(0)));
+    const text = ['$ORIGIN example.com.', '$TTL 3600', '@ IN SOA ns1 hostmaster 1 7200 3600 1209600 300 ; birincil sunucu, değiştirmeyin',
+      '@ IN NS ns1 ; iç ağ dışı', 'ns1 IN A 192.0.2.53 ; yedek sunucu (İstanbul)', 'www IN A 192.0.2.10 ; ön yüz, güncellendi',
+      'mail IN A 192.0.2.25 ; posta sunucusu, şifreli bağlantı', 'ftp IN A 192.0.2.30 ; dosya aktarımı (iç kullanım)', ''].join('\n');
+    const z = P(bytes(text));
+    assert.equal(z.fatal, null);
+    assert.equal(z.records.length, 6);
+    assert.ok(codes(z).includes('ENCODING_REPLACED'));
+    // Data that is mostly undecodable, or undecodable with control bytes, stays NOT_TEXT.
+    assert.equal(P(Uint8Array.from({ length: 400 }, (_, i) => (i % 7 === 0 ? 0x01 : 0x80 + (i % 120)))).fatal.code, 'NOT_TEXT');
+    assert.equal(P(new Uint8Array(200).fill(0xff)).fatal.code, 'NOT_TEXT');
+  });
+
   test('TOO_LARGE is checked before any scanning (string and bytes)', () => {
     const z = P('x'.repeat(101), { limits: { maxChars: 100 } });
     assert.equal(z.fatal.code, 'TOO_LARGE');

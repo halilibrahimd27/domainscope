@@ -489,6 +489,38 @@ describe('openPkcs12: damaged and unsupported bundles', () => {
     assert.ok(Date.now() - t0 < 2000);
   });
 
+  test('a PBKDF2 key length is bounded and multiplies the work the cap counts: refused before any derivation', async () => {
+    // PBKDF2 runs its iterations once per hash-sized block of the key, and the key length comes from the file.
+    const real = globalThis.crypto.subtle;
+    const derived = [];
+    const subtle = {
+      importKey: (...a) => real.importKey(...a), sign: (...a) => real.sign(...a), digest: (...a) => real.digest(...a), decrypt: (...a) => real.decrypt(...a),
+      deriveBits: async (alg, key, bits) => {
+        derived.push({ iterations: alg.iterations, bits });
+        throw new Error('stopped by the test');
+      }
+    };
+    const NULL = Buffer.from([5, 0]);
+    const kdf = (iterations, keyLength, prf) => seq(oid(OIDS.pbkdf2), seq(octet(randomBytes(8)), int(iterations), int(keyLength), seq(oid(prf), NULL)));
+    const pbmac1 = (iterations, keyLength, prf = OIDS.hmacSha256) => seq(int(3), contentInfo('data', octet(seq(contentInfo('data', octet(seq()))))),
+      seq(seq(seq(oid('1.2.840.113549.1.5.14'), seq(kdf(iterations, keyLength, prf), seq(oid(OIDS.hmacSha256), NULL))), octet(randomBytes(32))), octet(randomBytes(8)), int(1)));
+    const rc2 = (iterations, keyLength) => pfx(seq(encryptedData(seq(oid(OIDS.pbes2), seq(kdf(iterations, keyLength, '1.2.840.113549.2.7'),
+      seq(oid('1.2.840.113549.3.2'), seq(int(58), octet(randomBytes(8)))))), randomBytes(16))));
+    for (const [what, input, code, detail] of [
+      ['a 157-byte PBMAC1 file asking for a 256 MiB key', pbmac1(10000000, 268435456), 'DAMAGED', null],
+      ['an HMAC key longer than any HMAC block', pbmac1(2048, 129), 'DAMAGED', null],
+      ['an RC2 key longer than RC2 takes', await rc2(10000, 4194304), 'DAMAGED', null],
+      ['a 128-byte RC2 key is 7 SHA-1 blocks of 2,000,000 iterations', await rc2(2000000, 128), 'UNSUPPORTED', 'iterations'],
+      ['a 64-byte PBMAC1 key is 2 SHA-256 blocks of 5,000,001 iterations', pbmac1(5000001, 64), 'UNSUPPORTED', 'iterations']
+    ]) {
+      const t0 = Date.now();
+      const err = await rejection(openPkcs12(input, 'x', { subtle }));
+      assert.deepEqual([err.code, err.detail], [code, detail], `${what}: ${err.message}`);
+      assert.ok(Date.now() - t0 < 2000, what);
+    }
+    assert.deepEqual(derived, [], 'no derivation was started');
+  });
+
   test('a long JS key derivation yields to the event loop (the page keeps painting)', async () => {
     let done = false;
     let firedWhileRunning = null;

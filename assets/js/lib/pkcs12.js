@@ -70,9 +70,17 @@ const MAX_BAGS = 1000;
 /**
  * Highest iteration counts accepted (real bundles use 2,000 to 100,000): PBKDF2 runs natively;
  * the PKCS#12 KDF hashes in JS (about 2 µs a round) or, for SHA-384 / SHA-512, one WebCrypto
- * digest a round (about 20 µs). A larger count is UNSUPPORTED ('iterations') at once.
+ * digest a round (about 20 µs). A larger count is UNSUPPORTED ('iterations') at once. PBKDF2
+ * runs its count once per hash-sized block of the key it derives, so its cap counts
+ * iterations × blocks.
  */
 const MAX_PBKDF2_ITERATIONS = 10000000;
+/**
+ * Longest PBKDF2 key a bundle may ask for, in bytes; a longer one is DAMAGED at once. RC2 takes
+ * at most 128 (RFC 2268), the other ciphers their own length, and HMAC hashes a key longer than
+ * its block (128 bytes for SHA-512) down first (RFC 2104). Real bundles ask for 16 to 64.
+ */
+const MAX_PBKDF2_KEY_LENGTH = 128;
 const MAX_KDF_ITERATIONS = 1000000;
 const MAX_ASYNC_KDF_ITERATIONS = 200000;
 /** Rounds of the JS KDF between two yields to the event loop (the page keeps painting). */
@@ -371,14 +379,21 @@ function algorithm(node) {
 }
 
 /**
- * An iteration count: DAMAGED below 1, UNSUPPORTED ('iterations') above `max` — refused at once,
- * never run. `encryption`: the EncryptionInfo the count belongs to, carried by the error.
+ * An iteration count: DAMAGED below 1, UNSUPPORTED ('iterations') when `blocks` runs of it are
+ * above `max` — refused at once, never run. `encryption`: the EncryptionInfo the count belongs
+ * to, carried by the error.
  */
-function checkIterations(n, max, what, encryption = null) {
+function checkIterations(n, max, what, encryption = null, blocks = 1) {
   if (!Number.isSafeInteger(n) || n < 1) damaged(`Bad ${what} iteration count`);
-  if (n > max) throw new Pkcs12Error('UNSUPPORTED', `${what}: ${n} iterations is more than this page runs`, { detail: 'iterations', encryption });
+  if (n * blocks > max) {
+    const runs = blocks > 1 ? ` × ${blocks} key blocks` : '';
+    throw new Pkcs12Error('UNSUPPORTED', `${what}: ${n} iterations${runs} is more than this page runs`, { detail: 'iterations', encryption });
+  }
   return n;
 }
+
+/** How many times PBKDF2 runs its iteration count for a key of `keyLength` bytes: once per block of `hash`. */
+const pbkdf2Blocks = (keyLength, hash) => Math.ceil(keyLength / HASHES[hash].size);
 
 // ---------------------------------------------------------------------------
 // Key derivation, MAC, decryption
@@ -495,7 +510,8 @@ async function hmac(subtle, hash, key, data) {
 
 /**
  * PBKDF2-params ::= SEQUENCE { salt OCTET STRING, iterationCount INTEGER, keyLength INTEGER
- * OPTIONAL, prf AlgorithmIdentifier DEFAULT hmacWithSHA1 }. The caller caps the iterations.
+ * OPTIONAL, prf AlgorithmIdentifier DEFAULT hmacWithSHA1 }. The caller caps the iterations
+ * ({@link pbkdf2Blocks}); a key length is 1 to {@link MAX_PBKDF2_KEY_LENGTH} bytes.
  */
 function pbkdf2Params(node) {
   const kids = children(expect(node, 0x30, 'PBKDF2 parameters'));
@@ -504,6 +520,7 @@ function pbkdf2Params(node) {
   const iterations = checkIterations(smallInt(kids[1], 'PBKDF2 iteration count'), Infinity, 'PBKDF2');
   let i = 2;
   const keyLength = kids[i] && kids[i].id === 0x02 ? smallInt(kids[i++], 'PBKDF2 key length') : null;
+  if (keyLength !== null && (keyLength < 1 || keyLength > MAX_PBKDF2_KEY_LENGTH)) damaged(`PBKDF2 key length of ${keyLength} bytes`);
   let hash = 'SHA-1';
   if (kids[i]) {
     const prf = algorithm(kids[i]);
@@ -571,7 +588,7 @@ function encryptionScheme(node) {
       iv = octetString(enc.params, 'IV');
     }
     if (iv.length !== cipher.ivLength) damaged(`Bad ${cipher.cipher} IV`);
-    // RC2 takes any key length; the others only their own.
+    // RC2 takes any key length up to the cap (pbkdf2Params); the others only their own.
     if (cipher.kind !== 'rc2' && params.keyLength !== null && params.keyLength !== cipher.keyLength) damaged(`PBKDF2 key length does not fit ${cipher.cipher}`);
     const keyLength = params.keyLength ?? cipher.keyLength;
     const name = cipher.kind === 'rc2' ? `RC2-${rc2Bits}-CBC` : cipher.cipher;
@@ -579,7 +596,7 @@ function encryptionScheme(node) {
       scheme: 'PBES2', cipher: name, kdf: `PBKDF2-HMAC-${params.hash.replace('-', '')}`, iterations: params.iterations,
       strength: cipher.kind === 'rc2' && rc2Bits <= 56 ? 'weak' : cipher.strength
     };
-    checkIterations(params.iterations, MAX_PBKDF2_ITERATIONS, 'PBKDF2', info);
+    checkIterations(params.iterations, MAX_PBKDF2_ITERATIONS, 'PBKDF2', info, pbkdf2Blocks(keyLength, params.hash));
     return {
       info,
       async decrypt(data, form, subtle) {
@@ -673,11 +690,11 @@ function readMac(node) {
     const kdf = algorithm(kdfNode);
     if (kdf.id !== OID.PBKDF2) throw new Pkcs12Error('UNSUPPORTED', `PBMAC1 with the key derivation ${kdf.id}`, { detail: kdf.id });
     const params = pbkdf2Params(kdf.params);
-    checkIterations(params.iterations, MAX_PBKDF2_ITERATIONS, 'PBMAC1');
     const scheme = algorithm(schemeNode);
     const hash = HMACS[scheme.id];
     if (!hash || !HASHES[hash]) throw new Pkcs12Error('UNSUPPORTED', `PBMAC1 with ${scheme.id}`, { detail: hash ? `HMAC-${hash}` : scheme.id });
     if (!params.keyLength) damaged('PBMAC1 without a key length');
+    checkIterations(params.iterations, MAX_PBKDF2_ITERATIONS, 'PBMAC1', null, pbkdf2Blocks(params.keyLength, params.hash));
     return { kind: 'pbmac1', hash, digest, iterations: params.iterations, kdf: params };
   }
   const hash = DIGESTS[alg.id];

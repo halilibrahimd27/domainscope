@@ -7,7 +7,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  expandSpfMacros, spfLookupCount, spfEvaluate, spfCheckHost, spfTreeChecks, findDmarc, parseSpf,
+  expandSpfMacros, spfLookupCount, spfEvaluate, spfCheckHost, spfTreeChecks, findDmarc, parseSpf, parseSpfSender, parseSpfHelo,
   SPF_MACRO_NEEDS, SPF_CHECK_MAX_MX_HOSTS
 } from '../../assets/js/lib/health.js';
 import { zoneDns } from './zone-dns.mjs';
@@ -174,6 +174,54 @@ describe('spfCheckHost', () => {
     assert.deepEqual([r.verdict.result, r.ip, dns.calls.length], ['pass', '192.0.2.1', 0]);
     await assert.rejects(spfCheckHost('example.net', '192.0.2', { dns }), TypeError);
     assert.ok(SPF_CHECK_MAX_MX_HOSTS >= 10);
+  });
+
+  test('an a or mx host whose question of the address\'s family got no answer is unknown, never a fail (a client with query() only)', async () => {
+    const zone = {
+      'example.com': { TXT: 'v=spf1 a:relay.example.com mx -all', MX: [{ preference: 10, exchange: 'mx1.example.com' }] },
+      'relay.example.com': { A: '192.0.2.10', AAAA: '2001:db8::10' },
+      'mx1.example.com': { A: '203.0.113.25', AAAA: '2001:db8::25' }
+    };
+    // The Explain panel's client has query() only: the host lookups are built from its A and AAAA questions.
+    const only = (fail) => ({ query: zoneDns(zone, { fail }).query });
+    const relay = await spfCheckHost('example.com', '192.0.2.10', { dns: only({ 'relay.example.com|A': 'timeout' }) });
+    assert.deepEqual([relay.verdict.result, relay.verdict.reason, relay.verdict.term], ['unknown', 'lookup-failed', 'a:relay.example.com']);
+    assert.deepEqual(relay.tree.terms[0].familyErrors.map((f) => [f.type, f.error]), [['A', 'timeout']]);
+    const mx = await spfCheckHost('example.com', '203.0.113.25', { dns: only({ 'mx1.example.com|A': 'timeout' }) });
+    assert.deepEqual([mx.verdict.result, mx.verdict.reason, mx.verdict.term], ['unknown', 'lookup-failed', 'mx']);
+    // The family that answered still decides.
+    const v6 = await spfCheckHost('example.com', '2001:db8::10', { dns: only({ 'relay.example.com|A': 'timeout' }) });
+    assert.deepEqual([v6.verdict.result, v6.verdict.via], ['pass', { host: 'relay.example.com', address: '2001:db8::10' }]);
+    const other = await spfCheckHost('example.com', '2001:db8::99', { dns: only({ 'relay.example.com|A': 'timeout', 'mx1.example.com|A': 'timeout' }) });
+    assert.deepEqual([other.verdict.result, other.verdict.term], ['fail', '-all']);
+    // No answer next to an empty other family is a failed lookup, not "no address" (a void lookup).
+    const v4only = { ...zone, 'relay.example.com': { A: '192.0.2.10' } };
+    const lost = await spfCheckHost('example.com', '192.0.2.10', { dns: { query: zoneDns(v4only, { fail: { 'relay.example.com|A': 'timeout' } }).query } });
+    assert.deepEqual([lost.verdict.result, lost.verdict.reason, lost.tree.terms[0].error, lost.voidCount], ['unknown', 'lookup-failed', 'dns-error', 0]);
+  });
+
+  test('a sender or HELO name that cannot be one is refused; a macro that expands to a name no one can ask here is named', async () => {
+    assert.deepEqual(parseSpfSender('Alice@Example.ORG.'), { local: 'Alice', domain: 'example.org', address: 'Alice@example.org' });
+    assert.deepEqual(parseSpfSender('example.org'), { local: 'postmaster', domain: 'example.org', address: 'postmaster@example.org' });
+    assert.equal(parseSpfSender('user+tag@example.org').local, 'user+tag');
+    assert.equal(parseSpfSender('çağrı@example.org').domain, 'example.org', 'a UTF-8 local part');
+    for (const bad of ['a b@example.org', '@example.org', 'a..b@example.org', '.a@example.org', 'a@b@example.org', '"a"@example.org',
+      'user@', 'user@exa mple.org', 'https://example.org/', 'user@example.org:25', 'user@[192.0.2.1]', '', null]) {
+      assert.equal(parseSpfSender(bad), null, String(bad));
+    }
+    assert.equal(parseSpfHelo('MTA.Example.NET.'), 'mta.example.net');
+    assert.equal(parseSpfHelo('localhost'), 'localhost', 'a single label is a HELO name too');
+    for (const bad of ['mta example.net', '[192.0.2.1]', 'mta.example.net:25', 'https://mta.example.net', '', null]) assert.equal(parseSpfHelo(bad), null, String(bad));
+
+    const zone = { 'example.org': { TXT: 'v=spf1 exists:%{l}._u.example.org -all' }, 'alice._u.example.org': { A: '127.0.0.2' } };
+    await assert.rejects(spfCheckHost('example.org', '192.0.2.99', { dns: zoneDns(zone), sender: 'a b@example.org' }), TypeError);
+    await assert.rejects(spfCheckHost('example.org', '192.0.2.99', { dns: zoneDns(zone), helo: 'mta example.net' }), TypeError);
+    // user+tag is a sender, but user+tag._u.example.org is no host name this page can ask: said, not "needs the sender".
+    const tag = await spfCheckHost('example.org', '192.0.2.99', { dns: zoneDns(zone), sender: 'user+tag@example.org' });
+    assert.deepEqual([tag.verdict.result, tag.verdict.reason, tag.missing], ['unknown', 'macro', []]);
+    assert.deepEqual(tag.unaskable, [{ term: 'exists:%{l}._u.example.org', holder: 'example.org', name: 'user+tag._u.example.org' }]);
+    const alice = await spfCheckHost('example.org', '192.0.2.99', { dns: zoneDns(zone), sender: 'alice@example.org' });
+    assert.deepEqual([alice.verdict.result, alice.unaskable], ['pass', []]);
   });
 });
 

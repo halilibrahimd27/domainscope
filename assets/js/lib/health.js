@@ -186,13 +186,25 @@ function adaptDns(dns, signal) {
       }
       const [a, aaaa] = await Promise.all([query(n, 'A'), query(n, 'AAAA')]);
       const ref = !failed(a) ? a : aaaa;
-      return normHost({
-        status: failed(a) && failed(aaaa) ? (a.ok ? a.rcode : 'ERROR') : ref.rcode,
+      const out = {
+        status: ref.rcode,
         cnames: cnameChain(ref.answers, n),
         ipv4: records(a, 'A').map((rr) => rr.data),
         ipv6: records(aaaa, 'AAAA').map((rr) => rr.data),
-        error: failed(a) && failed(aaaa) ? errText(a) : null
-      }, n);
+        error: null
+      };
+      // As lib/doh.js hostResolutionFrom: a family whose question got no answer is unknown, never "none".
+      // Next to the other family's addresses it is named (`familyErrors`); with no address at all it is the
+      // status (not NODATA); NXDOMAIN settles both.
+      const lost = [['A', a], ['AAAA', aaaa]].filter(([, r]) => failed(r));
+      if (lost.length === 2 || (lost.length && ref.rcode === 'NOERROR' && !out.ipv4.length && !out.ipv6.length)) {
+        const r = lost[0][1];
+        return normHost({ ...out, status: r.ok ? r.rcode : 'ERROR', error: errText(r) }, n);
+      }
+      if (lost.length && ref.rcode === 'NOERROR') {
+        out.familyErrors = lost.map(([type, r]) => ({ type, error: errText(r), errorKind: r.ok ? null : r.errorKind || null }));
+      }
+      return normHost(out, n);
     });
   }
 
@@ -300,6 +312,40 @@ function senderParts(sender, fallbackDomain) {
   const local = at > 0 ? s.slice(0, at) : 'postmaster';
   const domain = canonName(at >= 0 ? s.slice(at + 1) : s) || fallbackDomain;
   return { given: true, address: `${local}@${domain}`, local, domain };
+}
+
+/** A dot-atom local part (RFC 5321 §4.1.2; UTF-8 too, RFC 6531): no spaces, quotes, specials or empty atoms. */
+const SENDER_LOCAL_RE = /^[^\s"(),.:;<>@[\]\\\p{Cc}]+(?:\.[^\s"(),.:;<>@[\]\\\p{Cc}]+)*$/u;
+
+/** A host name as typed — letters, digits, dots, hyphens, underscores — normalized, or null (no URL, port or literal). */
+function typedHostname(value, allowSingleLabel) {
+  const s = String(value ?? '').trim();
+  return /^[\p{L}\p{N}\p{M}._-]+$/u.test(s) ? normalizeHostname(s, { allowSingleLabel }) : null;
+}
+
+/**
+ * A sender for {@link spfCheckHost} (the MAIL FROM, RFC 7208 §4.3): `local@domain`, or a domain alone,
+ * whose local part is then `postmaster`. The local part is a dot-atom, the domain a host name of two
+ * labels or more.
+ * @param {string|null} sender
+ * @returns {{ local: string, domain: string, address: string }|null} null when it cannot be a sender
+ */
+export function parseSpfSender(sender) {
+  const s = String(sender ?? '').trim();
+  const at = s.lastIndexOf('@');
+  const local = at >= 0 ? s.slice(0, at) : 'postmaster';
+  const domain = at >= 0 ? s.slice(at + 1) : s;
+  if (!s || !SENDER_LOCAL_RE.test(local) || !typedHostname(domain, false)) return null;
+  return { local, domain: canonName(domain), address: `${local}@${canonName(domain)}` };
+}
+
+/**
+ * A HELO / EHLO name for {@link spfCheckHost} (`%{h}`): a host name, one label allowed (`localhost`).
+ * @param {string|null} helo
+ * @returns {string|null} normalized, or null when it cannot be one (an address literal, a URL, a space)
+ */
+export function parseSpfHelo(helo) {
+  return typedHostname(helo, true);
 }
 
 /** Does a TXT string start an SPF record ("v=spf1" + SP or end, case-insensitive)? */
@@ -606,7 +652,11 @@ async function evalSpfTerm(term, node, ctx, depth, path) {
   });
   t.macro = expanded.macro;
   if (expanded.missing.length) t.missing = expanded.missing;
-  if (!expanded.name) return t; // needs what this check does not know (e.g. %{i} without an address); counted, not evaluated
+  if (!expanded.name) {
+    // Every letter known, but what they make is no host name this page can ask (`user+tag` from %{l}).
+    if (expanded.macro && !expanded.missing.length && expanded.text) t.unaskable = expanded.text;
+    return t; // needs what this check does not know (e.g. %{i} without an address); counted, not evaluated
+  }
   t.target = expanded.name;
   if (expanded.ipBound) t.forIp = ctx.ip;
   if (term.mechanism === 'ptr' && !ctx.ip) return t; // needs the client IP; counted only
@@ -805,7 +855,9 @@ const QUALIFIER_RESULT = Object.freeze({ '+': 'pass', '-': 'fail', '~': 'softfai
  * broken record lists.
  *
  * Honest about what a browser cannot see: a term that needs the sender (`%{i}`, `%{s}` …), `ptr`,
- * or a lookup that failed here (our resolver, not the receiver's) cannot be told. The evaluation
+ * or a lookup that failed here (our resolver, not the receiver's) cannot be told — an `a` / `mx` host
+ * whose question of the address's family got no answer (`familyErrors`, lib/doh.js HostResolution)
+ * too, whatever the other family holds. The evaluation
  * goes on past it, and its result stands when the undecided term could only have given the same
  * result had it matched (a `+ptr` in front of the `+ip4` that matches); otherwise it is `unknown`.
  * A tree expanded for this very address ({@link spfLookupCount} `ip`, as {@link spfCheckHost} does)
@@ -813,7 +865,8 @@ const QUALIFIER_RESULT = Object.freeze({ '+': 'pass', '-': 'fail', '~': 'softfai
  * another address those terms stay unknown. An IPv4-mapped IPv6 address is its IPv4 address.
  * @param {SpfNode|null} tree `spfLookupCount().tree`
  * @param {string} ip
- * @param {{ mxAddresses?: Map<string, { addresses?: string[], error?: string|null }>, strict?: boolean }} [opts]
+ * @param {{ mxAddresses?: Map<string, { addresses?: string[], error?: string|null, familyErrors?: Array<{ type: 'A'|'AAAA' }> }>,
+ *   strict?: boolean }} [opts]
  * @returns {SpfVerdict}
  */
 export function spfEvaluate(tree, ip, { mxAddresses = new Map(), strict = true } = {}) {
@@ -821,6 +874,8 @@ export function spfEvaluate(tree, ip, { mxAddresses = new Map(), strict = true }
   const verdict = (result, extra = {}) => ({ result, term: null, holder: null, path: [], via: null, reason: null, ...extra });
   if (!tree || !addr) return verdict('unknown', { reason: 'lookup-failed' });
   const family = ipVersion(addr);
+  /** The question of the address's family got no answer here (HostResolution.familyErrors): its addresses are unknown. */
+  const lostFamily = (list) => Array.isArray(list) && list.some((f) => f && f.type === (family === 6 ? 'AAAA' : 'A'));
   // RFC 7208 §4.6.4, counted over the whole evaluation: includes and redirects share them.
   let lookups = 0;
   let voids = 0;
@@ -897,6 +952,10 @@ export function spfEvaluate(tree, ip, { mxAddresses = new Map(), strict = true }
           if (t.mechanism === 'a') {
             const hit = (t.addresses || []).find((a) => inRange(a, t.cidr4, t.cidr6));
             if (hit) return decide(at(t, q, { via: { host: t.target, address: normalizeIP(hit) } }));
+            if (lostFamily(t.familyErrors)) {
+              undecided(t, 'lookup-failed');
+              break;
+            }
             // A receiver asks only the sender's family (A for IPv4, AAAA for IPv6): none of it is void.
             if (!(t.addresses || []).some((a) => ipVersion(a) === family) && overVoid()) return decide(at(t, 'permerror', { reason: 'void-limit' }));
             break;
@@ -909,7 +968,7 @@ export function spfEvaluate(tree, ip, { mxAddresses = new Map(), strict = true }
           let hitVia = null;
           for (const host of t.hosts || []) {
             const known = mxAddresses.get(host);
-            if (!known || known.error) {
+            if (!known || known.error || lostFamily(known.familyErrors)) {
               failed = true;
               continue;
             }
@@ -981,36 +1040,46 @@ export const SPF_CHECK_MAX_MX_HOSTS = 30;
  * `%{h}`), the hosts of its `mx` terms resolved, then {@link spfEvaluate} decides with the RFC
  * 7208 §4.6.4 limits. Every question goes through one memoised client, so a name is asked once.
  * What a page still cannot tell (a `%{p}` macro, a sender macro without a sender, a lookup that
- * failed here) is `unknown` with its reason, as in spfEvaluate.
+ * failed here, a macro that makes a name no one can ask here) is `unknown` with its reason, as in
+ * spfEvaluate. A sender or HELO name that cannot be one ({@link parseSpfSender}, {@link parseSpfHelo})
+ * throws, as an invalid address does.
  * @param {string} domain
  * @param {string} ip
  * @param {{ dns: object, signal?: AbortSignal, record?: string, sender?: string|null, helo?: string|null, maxDepth?: number }} opts
  *   `record`: the domain's SPF record when already known (skips its TXT query)
  * @returns {Promise<{ domain: string, ip: string, sender: string|null, helo: string|null, verdict: SpfVerdict,
- *   tree: SpfNode, mxAddresses: Map<string, { addresses: string[], error: string|null }>, count: number,
- *   voidCount: number, errors: object[], truncated: boolean, missing: string[] }>} `missing`: the macro
- *   letters no term could expand (`s`, `l`, `h`, `p` …)
+ *   tree: SpfNode, mxAddresses: Map<string, { addresses: string[], error: string|null, familyErrors: object[] }>,
+ *   count: number, voidCount: number, errors: object[], truncated: boolean, missing: string[],
+ *   unaskable: Array<{ term: string, holder: string, name: string }> }>} `missing`: the macro letters no term
+ *   could expand (`s`, `l`, `h`, `p` …); `unaskable`: terms whose letters were all known but expanded to
+ *   something that is no host name this page can ask (`user+tag._u.example.org` from `%{l}`), with the policy
+ *   holding each
  */
 export async function spfCheckHost(domain, ip, { dns, signal, record, sender = null, helo = null, maxDepth = 10 } = {}) {
   const addr = spfAddress(ip);
   if (!addr) throw new TypeError(`Invalid address: ${String(ip)}`);
+  if (String(sender ?? '').trim() && !parseSpfSender(sender)) throw new TypeError(`Invalid sender: ${String(sender)}`);
+  if (String(helo ?? '').trim() && !parseSpfHelo(helo)) throw new TypeError(`Invalid HELO name: ${String(helo)}`);
   const d = adaptDns(dns, signal);
   const r = await spfLookupCount(domain, { dns: d, signal, maxDepth, record, ip: addr, sender, helo });
-  const type = ipVersion(addr) === 6 ? 'AAAA' : 'A';
   const mxAddresses = new Map();
   for (const host of spfMxHosts(r.tree).slice(0, SPF_CHECK_MAX_MX_HOSTS)) {
     const h = await d.resolveHost(host);
-    const lost = h.familyErrors.some((f) => f.type === type);
-    mxAddresses.set(host, (h.status === 'NOERROR' || h.status === 'NXDOMAIN') && !lost
-      ? { addresses: [...h.ipv4, ...h.ipv6], error: null }
-      : { addresses: [], error: h.error || h.status || 'lookup failed' });
+    // A family whose question got no answer stays named: spfEvaluate cannot tell an address of it.
+    mxAddresses.set(host, h.status === 'NOERROR' || h.status === 'NXDOMAIN'
+      ? { addresses: [...h.ipv4, ...h.ipv6], error: null, familyErrors: h.familyErrors }
+      : { addresses: [], error: h.error || h.status || 'lookup failed', familyErrors: [] });
   }
   throwIfAborted(signal);
   const missing = [];
+  const unaskable = [];
   const walk = (node, depth) => {
     if (!node || depth > 12) return;
     for (const t of node.terms || []) {
       for (const l of t.missing || []) if (!missing.includes(l)) missing.push(l);
+      if (t.unaskable && !unaskable.some((u) => u.term === t.term && u.holder === node.domain)) {
+        unaskable.push({ term: t.term, holder: node.domain, name: t.unaskable });
+      }
       walk(t.child, depth + 1);
     }
   };
@@ -1019,7 +1088,7 @@ export async function spfCheckHost(domain, ip, { dns, signal, record, sender = n
   return {
     domain: r.tree.domain, ip: addr, sender: from.given ? from.address : null, helo: helo ? canonName(helo) || null : null,
     verdict: spfEvaluate(r.tree, addr, { mxAddresses }), tree: r.tree, mxAddresses,
-    count: r.count, voidCount: r.voidCount, errors: r.errors, truncated: r.truncated, missing
+    count: r.count, voidCount: r.voidCount, errors: r.errors, truncated: r.truncated, missing, unaskable
   };
 }
 

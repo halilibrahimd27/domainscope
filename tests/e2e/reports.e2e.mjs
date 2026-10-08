@@ -168,8 +168,17 @@ const counts = (page) => page.evaluate(() => ({ dns: window.__dnsLog.length, ip:
 /** The sources table as [ip, class] in its order (only the rows it shows). */
 const tableClasses = (page) => page.evaluate(() => [...document.querySelectorAll('.rpt-sources tbody tr.dt-row')]
   .map((tr) => [tr.querySelector('.rpt-ip')?.dataset.ip, tr.querySelector('.badge[data-cls]')?.dataset.cls]));
-const waitDmarc = (page, message = 'DMARC tab with its sources') => page.waitFor(() => document.querySelectorAll('.rpt-sources tbody tr.dt-row').length > 0
-  && document.querySelector('.rpt-spf')?.dataset.state !== 'loading', { timeout: 20000, message });
+/**
+ * Wait for the DataTable's next frame. An SPF answer redraws the SPF line, the tiles and the verdict at once, but the
+ * table's changed rows on its next animation frame (DataTable.updateRows): a read that follows the line alone can still
+ * see the classes the reports gave before the SPF (a third party as yours, or as unknown).
+ */
+const frames = (page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+const waitDmarc = async (page, message = 'DMARC tab with its sources') => {
+  await page.waitFor(() => document.querySelectorAll('.rpt-sources tbody tr.dt-row').length > 0
+    && document.querySelector('.rpt-spf')?.dataset.state !== 'loading', { timeout: 20000, message });
+  await frames(page);
+};
 
 /** In the page: save `text` as the active workspace's inventory ('' clears it). */
 function saveInventory(textValue) {
@@ -703,6 +712,7 @@ async function main() {
       await page.waitFor(() => navigator.onLine === true, { message: 'online' });
       await page.click('[data-action="rpt-spf-retry"]');
       await page.waitFor(() => document.querySelector('.rpt-spf')?.dataset.state === 'ok', { message: 'checked online' });
+      await frames(page);
       const cls = Object.fromEntries(await tableClasses(page));
       assertEqual([cls['198.51.100.10'], cls['203.0.113.25']], ['third-party', 'yours'], 'the SPF tells them apart');
       await page.click('[data-action="rpt-forget"]');

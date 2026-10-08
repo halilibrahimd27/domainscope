@@ -507,6 +507,14 @@ describe('checkFcrdns (DohClient over a mock DoH)', () => {
     assert.ok(!f.calls.some((c) => c.name === 'v6.example.com' && c.type === 'A'), 'never A for an IPv6 address');
   });
 
+  test('a PTR value that is no host name as written (web#x.example.org) is never asked for, confirmed or offered', async () => {
+    const { dns, f } = client({ ...zone, ...ptr('192.0.2.9', 'web#x.example.org'), ...a('web#x.example.org', '192.0.2.9') });
+    const r = await P.checkFcrdns('192.0.2.9', { dns });
+    assert.deepEqual([r.status, r.confirmed, r.forward.map((x) => x.state)], ['mismatch', [], ['nxdomain']]);
+    assert.ok(!f.calls.some((c) => c.type === 'A'), 'no forward lookup');
+    assert.deepEqual(P.sweepNames([{ ip: '192.0.2.9', names: ['web#x.example.org', 'web/x.example.org', 'www.example.org'], confirmed: [] }]), ['www.example.org']);
+  });
+
   test('stops at the first name that confirms; the rest are counted unchecked; maxNames caps the lookups', async () => {
     const { dns, f } = client(zone);
     const r = await P.checkFcrdns('192.0.2.4', { dns });

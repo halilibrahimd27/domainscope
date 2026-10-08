@@ -588,6 +588,18 @@ export function prefixSelection(prefixes, selected, { max = SWEEP_MAX_ADDRESSES 
 const canonName = (s) => String(s ?? '').trim().toLowerCase().replace(/\.$/, '');
 
 /**
+ * Whether a PTR value is a host name as written: normalizeHostname cuts a URL's path, query,
+ * fragment and port, so `web#x.example.org` or `web\032x.example.org` would pass as `web`.
+ * @param {string} name
+ * @param {{ allowSingleLabel?: boolean }} [opts]
+ * @returns {boolean}
+ */
+const isHostName = (name, opts) => {
+  const n = canonName(name);
+  return !!n && normalizeHostname(n, opts) === n;
+};
+
+/**
  * Read a PTR answer. RFC 2317 classless delegation answers with a CNAME to another reverse
  * name first; the PTR records at the end of that chain count (`delegated` names it).
  * @param {object|null} response DohClient DnsResponse
@@ -739,7 +751,7 @@ export async function checkFcrdns(ip, { dns, signal, balance = false, maxNames =
       continue;
     }
     // A PTR value that is no host name (an address, junk) is never asked for.
-    if (!normalizeHostname(name, { allowSingleLabel: true })) {
+    if (!isHostName(name, { allowSingleLabel: true })) {
       forward.push({ name, state: 'nxdomain', addresses: [], rcode: null, error: null });
       continue;
     }
@@ -1229,7 +1241,7 @@ export function sweepNames(results, { focus = null, templated = false, onlyFocus
   const names = [];
   for (const r of (Array.isArray(results) ? results : []).filter(Boolean)) {
     for (const name of confirmedOnly ? r.confirmed : r.names) {
-      if (!normalizeHostname(name)) continue;
+      if (!isHostName(name)) continue;
       if (!templated && ptrTemplate(name, r.ip) && !isFocusName(name, focus)) continue;
       if (onlyFocus && !isFocusName(name, focus)) continue;
       names.push(name);

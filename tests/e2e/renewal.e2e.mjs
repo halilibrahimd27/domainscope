@@ -627,7 +627,7 @@ async function main() {
         'db01,10.0.0.5,vpn.example.com,,A', 'web01,1.2.3.4,example.com www.example.com,,A', 'web02,1.2.3.5,api.example.com,,A',
         'web02,1.2.3.5,shop.example.com,,B', ',5.6.7.8,pay.example.com,,B'
       ], 'work list rows');
-      assert(lines[1].endsWith(',RSA 2048 + ECDSA P-256,2036-09-01T00:00:00.000Z,renew_a_rsa.pem; renew_a_ecdsa.pem'), `key types and files: ${lines[1]}`);
+      assert(lines[1].endsWith(',RSA 2048 + ECDSA P-256,2036-09-01T00:00:00.000Z,"renew_a_rsa.pem; renew_a_ecdsa.pem"'), `key types and files: ${lines[1]}`);
       await shotEl(page, opts, 'renewal-plan-en-light', '.scan-tab-plan');
     });
 

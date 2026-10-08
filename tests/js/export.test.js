@@ -73,6 +73,16 @@ describe('toCsv', () => {
     assert.equal(raw.split('\r\n')[1], '=1+1');
   });
 
+  test('a field with ; or TAB is quoted whatever the delimiter, so Excel with a ; list separator keeps the formula guard', () => {
+    // Turkish and most European Excel split a double-clicked .csv on ';': unquoted, the text after it is a cell of its own
+    const csv = toCsv([{ a: 'X509_V_ERR;=1+1;', b: 'a\t@SUM(A1)' }], cols.slice(0, 2), { bom: false });
+    assert.equal(csv.split('\r\n')[1], '"X509_V_ERR;=1+1;","a\t@SUM(A1)"');
+    for (const delim of [';', '\t']) {
+      for (const cell of parseCsv(csv, delim).flat()) assert.doesNotMatch(cell, /^[=+\-@]/, `${JSON.stringify(delim)}: ${cell}`);
+    }
+    assert.deepEqual(parseCsv(csv)[1], ['X509_V_ERR;=1+1;', 'a\t@SUM(A1)']);
+  });
+
   test('columns default to the union of row keys; a throwing getter yields an empty cell', () => {
     const csv = toCsv([{ x: 1 }, { y: 2 }], undefined, { bom: false });
     assert.equal(csv, 'x,y\r\n1,\r\n,2\r\n');

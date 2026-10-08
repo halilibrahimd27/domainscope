@@ -32,8 +32,12 @@ function cellText(value) {
 
 /**
  * Serialize rows as CSV (RFC 4180): CRLF line endings, fields containing the
- * delimiter, a double quote, CR or LF are quoted and quotes doubled. A UTF-8
- * BOM is prepended by default so Excel shows Turkish characters correctly.
+ * delimiter, a double quote, CR or LF are quoted and quotes doubled. A field
+ * with `;` or TAB is quoted too, whatever the delimiter: Excel splits a
+ * double-clicked .csv on the system list separator, `;` in Turkish and most
+ * European locales, and an unquoted `x;=1+1` would give a formula cell that the
+ * leading apostrophe does not reach. A UTF-8 BOM is prepended by default so
+ * Excel shows Turkish characters correctly.
  *
  * Values: null/undefined → empty, Date → ISO 8601, arrays → space-joined,
  * objects → JSON. Extension `safe` (default true): string cells starting with
@@ -57,8 +61,7 @@ export function toCsv(rows, columns, { bom = true, delimiter = ',', safe = true,
     }
     cols = keys.map((key) => ({ key }));
   }
-  const needsQuote = (s) => s.includes(delim) || s.includes('"') || s.includes('\r') || s.includes('\n')
-    || /^\s|\s$/.test(s);
+  const needsQuote = (s) => s.includes(delim) || /["\r\n;\t]/.test(s) || /^\s|\s$/.test(s);
   const field = (value, isHeader = false) => {
     let s = cellText(value);
     if (safe && !isHeader && typeof value !== 'number' && typeof value !== 'bigint' && FORMULA_START.test(s)) s = `'${s}`;

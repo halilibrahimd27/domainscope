@@ -924,7 +924,7 @@ The MX hosts receive mail, so the check stands in for the sending servers; the S
 
 ### 5.16 `lib/export.js`
 ```js
-export function toCsv(rows, columns /* [{ key, header, get?(row) }] */, { bom = true, delimiter = ',' } = {}) -> string   // RFC 4180 quoting; BOM for Excel (Turkish chars)
+export function toCsv(rows, columns /* [{ key, header, get?(row) }] */, { bom = true, delimiter = ',' } = {}) -> string   // RFC 4180 quoting, and a field with `;` or TAB is quoted whatever the delimiter (Excel splits a .csv on a `;` list separator in Turkish and most European locales); BOM for Excel (Turkish chars)
 export function toJson(value) -> string   // Dates ISO, Map→object, Set→array, Uint8Array→omitted, pretty 2 spaces
 export function scanHostRows(scan) -> object[] ; export function scanServerRows(scan) -> object[]   // a server's rows carry its group's `topology` (§5.69 TOPOLOGY_CSV_COLUMN)
 export function namesForCli(scan, { onlyCovered = false } = {}) -> string    // newline list

@@ -17,6 +17,13 @@
  * summary says how many lookups failed when every source failed (EN + TR); 1440 and 375 px,
  * light and dark, English and Turkish.
  *
+ * OFFLINE Blocklists group (always runs): blocklist answers, refusal codes and test points answered in
+ * the page. A row's Blocklists panel sends nothing before its button; documentation and private
+ * addresses are never sent; a listing shows its meaning and delist page; a refusal code or a test
+ * point that does not come back listed says "cannot check here" (never "not listed") and the address
+ * never goes to that list; a failed list has a Retry that asks only it again; Stop asks nothing
+ * more; the results survive a row redraw and a language re-mount; 1440, 375 and 320 px, EN + TR.
+ *
  * --no-quota-apis blocks ipwho.is and HackerTarget in the browser (their anonymous daily quotas
  * are small): the reverse-IP step then checks the error path instead of spending a unit.
  *
@@ -39,6 +46,7 @@ import { launchBrowser } from './cdp.mjs';
 import { zoneHandoffScript, stubClipboard, takeClipboard } from './scan.e2e.mjs';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { parseIpInput, classifyIp, MAX_IPS } from '../../assets/js/views/ip.js';
+import { DNSBL_IP_LISTS, DNSBL_DOMAIN_LISTS } from '../../assets/js/lib/dnsbl.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
@@ -215,6 +223,7 @@ async function main() {
 
   try {
     await offlineGroup(browser, server);
+    await blocklistGroup(browser, server);
     if (!OFFLINE) await liveGroups(browser, server);
   } finally {
     await browser.close();
@@ -687,6 +696,227 @@ async function offlineGroup(browser, server) {
       assertEqual(blocked, [], 'requests the zone script had to block');
       await checkI18n(page);
       await assertClean(page, 'offline');
+    });
+  } finally {
+    await page.setViewport({ width: 1440, height: 900 });
+    await page.close();
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Offline: a row's Blocklists panel (ui/dnsbl-panel.js over lib/dnsbl.js)   */
+/* ------------------------------------------------------------------------ */
+
+/** The zones the fake below answers: every list of lib/dnsbl.js. */
+const BL_ZONES = [...DNSBL_IP_LISTS.flatMap((l) => [l.zone, typeof l.v6 === 'string' ? l.v6 : null]), ...DNSBL_DOMAIN_LISTS.map((l) => l.zone)].filter(Boolean);
+
+/**
+ * Blocklists and one host name answered in the page (installed last, so it is the outermost
+ * fetch wrapper): `window.__bl.answers[name]` is `{ A: [...] }` or `{ RCODE: 'SERVFAIL' }`; any other
+ * test point (127.0.0.2 reversed, or a list's test domain) answers listed and every other name under
+ * a list's zone NXDOMAIN. `names` lists every blocklist name asked; `delay` ms slows each answer
+ * (an abort still ends the wait). Any other request goes on to the inner fakes.
+ */
+const BL_FAKE_SCRIPT = `(() => {
+  const ZONES = ${JSON.stringify(BL_ZONES)};
+  const inner = window.fetch;
+  const bl = window.__bl = { names: [], delay: 0, answers: {
+    'www.example.com': { A: ['8.8.8.8'] },
+    '2.0.0.127.zen.spamhaus.org': { A: ['127.255.255.254'] },
+    'dbltest.com.dbl.spamhaus.org': { A: ['127.255.255.254'] },
+    'dbltest.com.zrd.spamhaus.org': { RCODE: 'NXDOMAIN' },
+    'test.uribl.com.multi.uribl.com': { A: ['127.0.0.1'] },
+    '2.0.0.127.psbl.surriel.com': { RCODE: 'SERVFAIL' },
+    '8.8.8.8.bl.spamcop.net': { A: ['127.0.0.2'] },
+    '8.8.8.8.dnsbl-2.uceprotect.net': { A: ['127.0.0.2'] }
+  } };
+  let wire = null;
+  const isTest = (name) => /^2\\.0\\.0\\.127\\.|^2\\.0\\.0\\.0\\.0\\.0\\.f\\.7\\.f\\.f\\.f\\.f\\./.test(name) || /^(?:dbltest\\.com|test\\.surbl\\.org|test\\.uribl\\.com|test)\\./.test(name);
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    const m = /[?&]dns=([^&]+)/.exec(url);
+    if (!m) return inner(input, init);
+    wire = wire || await import(new URL('assets/js/lib/dnswire.js', document.baseURI).href);
+    const q = wire.decodeMessage(wire.base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
+    const name = String(q.name).toLowerCase().replace(/[.]$/, '');
+    const listed = ZONES.some((z) => name.endsWith('.' + z));
+    if (!listed && !bl.answers[name]) return inner(input, init);
+    if (listed) bl.names.push(name);
+    const signal = (init && init.signal) || null;
+    if (bl.delay) {
+      await new Promise((resolve, reject) => {
+        if (signal && signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+        const timer = setTimeout(resolve, bl.delay);
+        if (signal) signal.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+      });
+    }
+    const node = bl.answers[name] || (listed && isTest(name) ? { A: ['127.0.0.2'] } : null);
+    const rcode = node && node.RCODE ? node.RCODE : node ? 'NOERROR' : 'NXDOMAIN';
+    const answers = node && node[q.type] ? node[q.type].map((data) => ({ name, type: q.type, ttl: 60, data })) : [];
+    return new Response(wire.encodeMessage({
+      id: 0, flags: { qr: true, rd: true, ra: true }, rcode, questions: [{ name: q.name, type: q.type }], answers, authorities: [], edns: {}
+    }), { headers: { 'content-type': 'application/dns-message' } });
+  };
+})();`;
+
+/** The Blocklists panel of the row of `ip`: its state, summary, and per list status and text. */
+function blocklistInfo(ip) {
+  const panel = document.querySelector(`.ipi-bl[data-ip="${ip}"]`);
+  if (!panel) return null;
+  const status = panel.querySelector('.ipi-bl-status');
+  const lists = {};
+  for (const tr of panel.querySelectorAll('.ipi-bl-row')) {
+    const link = tr.querySelector('.ipi-bl-link');
+    lists[`${tr.closest('.ipi-bl-section').dataset.target} ${tr.dataset.list}`] = {
+      status: tr.dataset.status, text: tr.textContent.replace(/\s+/g, ' ').trim(), href: link ? link.getAttribute('href') : null,
+      dig: tr.querySelector('.ipi-bl-dig code')?.textContent || null
+    };
+  }
+  // The lists that said "not listed", and those not asked, are names on one line each.
+  for (const [sel, status] of [['.ipi-bl-clean .ipi-bl-item', 'not-listed'], ['.ipi-bl-skip .ipi-bl-item', 'skipped']]) {
+    for (const item of panel.querySelectorAll(sel)) {
+      lists[`${item.closest('.ipi-bl-section').dataset.target} ${item.dataset.list}`] = { status, text: item.textContent, href: null, dig: null };
+    }
+  }
+  const shown = (sel) => { const el = panel.querySelector(sel); return !!el && !el.hidden; };
+  return {
+    state: status ? status.dataset.state : null, status: status ? status.textContent : '', intro: panel.querySelector('.ipi-bl-intro')?.textContent || '',
+    sent: shown('.ipi-bl-sent'), check: shown('[data-action="dnsbl-check"]'), stop: shown('[data-action="dnsbl-stop"]'), retry: shown('[data-action="dnsbl-retry"]'),
+    never: panel.querySelector('.ipi-bl-never')?.textContent || null, lists
+  };
+}
+
+/** Open the details of the row of `ip` (no-op when open) and wait for its Blocklists slot to fill. */
+async function openBlocklists(page, ip) {
+  await page.evaluate((x) => {
+    const row = [...document.querySelectorAll('.ipi-row')].find((r) => r.querySelector('.ipi-ip')?.textContent === x);
+    const btn = row.querySelector('.dt-expand-btn');
+    if (btn.getAttribute('aria-expanded') !== 'true') btn.click();
+  }, ip);
+  await page.waitFor((x) => !!document.querySelector(`.ipi-bl[data-ip="${x}"]`), { args: [ip], timeout: 15000, message: `blocklists panel of ${ip}` });
+}
+
+async function blocklistGroup(browser, server) {
+  group('Offline: Blocklists (DNSBL answers, refusal codes and test points answered in the page)');
+  const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
+  const netHits = await networkGuard(page);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript('in-addr.arpa', PTR_ZONE) });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: IP_FAKE_SCRIPT });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: BL_FAKE_SCRIPT });
+  await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+  const info = (ip) => page.evaluate(blocklistInfo, ip);
+  const names = () => page.evaluate(() => window.__bl.names.slice());
+  const done = (ip) => page.waitFor((x) => {
+    const st = document.querySelector(`.ipi-bl[data-ip="${x}"] .ipi-bl-status`);
+    return !!st && ['done', 'stopped'].includes(st.dataset.state);
+  }, { args: [ip], timeout: 20000, message: `blocklist check of ${ip}` });
+  try {
+    await step('a row’s Blocklists panel sends nothing before its button; reserved and private addresses never', async () => {
+      await page.goto(`${server.url}#/about`);
+      await waitReady(page);
+      await setLangUi(page, 'en');
+      await page.evaluate(async () => { (await import('./assets/js/state.js')).state.clearInventory(); });
+      await gotoHash(page, '#/ip?ips=8.8.8.8,www.example.com,203.0.113.7,10.0.0.1', 'ip');
+      await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows looked up' });
+      await openBlocklists(page, '8.8.8.8');
+      const i = await info('8.8.8.8');
+      assertEqual([i.state, i.sent, i.check, i.stop, i.retry], ['idle', true, true, false, false], 'idle panel');
+      assert(i.intro.includes(`Asks ${DNSBL_IP_LISTS.length} IP blocklists through your DoH resolver whether 8.8.8.8 is listed.`), `intro: ${i.intro}`);
+      assert(i.intro.includes('Domain lists (Spamhaus DBL, Spamhaus ZRD, SURBL, URIBL, NordSpam DBL): example.com.'), `the host name's domain: ${i.intro}`);
+      assertEqual(await names(), [], 'blocklist names asked before the click');
+      await openBlocklists(page, '203.0.113.7');
+      assertEqual((await info('203.0.113.7')).never, 'Reserved and documentation addresses are never sent to a blocklist.', 'documentation address');
+      const keys = await page.evaluate(() => {
+        const row = [...document.querySelectorAll('.ipi-row')].find((r) => r.querySelector('.ipi-ip')?.textContent === '10.0.0.1');
+        row.querySelector('.dt-expand-btn').click();
+        return [...document.querySelectorAll('.dt-details .kv-key')].map((k) => k.textContent);
+      });
+      assertEqual(keys.filter((k) => k === 'Blocklists').length, 2, 'Blocklists in the public and documentation rows only, never the private one');
+    });
+
+    await step('Check blocklists: listed with the meaning and the delist page; refusals and failed test points never "not listed"', async () => {
+      await page.evaluate(() => document.querySelector('.ipi-bl[data-ip="8.8.8.8"] [data-action="dnsbl-check"]').click());
+      await done('8.8.8.8');
+      const i = await info('8.8.8.8');
+      const l = i.lists;
+      assertEqual([l['8.8.8.8 spamcop'].status, l['8.8.8.8 spamcop'].href], ['listed', 'https://www.spamcop.net/bl.shtml?8.8.8.8'], 'SpamCop listed, its page');
+      assert(/Delist/.test(l['8.8.8.8 spamcop'].text), `delist link: ${l['8.8.8.8 spamcop'].text}`);
+      assert(/network \(allocation\) is listed because of other addresses in it/.test(l['8.8.8.8 uceprotect-2'].text), `UCEPROTECT 2 meaning: ${l['8.8.8.8 uceprotect-2'].text}`);
+      assertEqual(l['8.8.8.8 spamhaus-zen'].status, 'refused', 'Spamhaus ZEN');
+      assert(/Cannot check here.*Refuses queries from public resolvers \(answer 127\.255\.255\.254\)/.test(l['8.8.8.8 spamhaus-zen'].text), `ZEN text: ${l['8.8.8.8 spamhaus-zen'].text}`);
+      assertEqual(l['8.8.8.8 spamhaus-zen'].dig, 'dig +short 8.8.8.8.zen.spamhaus.org A', 'a command for a resolver of one’s own');
+      assertEqual([l['8.8.8.8 psbl'].status, /SERVFAIL/.test(l['8.8.8.8 psbl'].text)], ['error', true], 'a test point that failed');
+      assertEqual(l['8.8.8.8 barracuda'].status, 'not-listed', 'Barracuda');
+      assertEqual(['spamhaus-dbl', 'spamhaus-zrd', 'surbl', 'uribl', 'nordspam-dbl'].map((id) => l[`example.com ${id}`].status), ['refused', 'refused', 'not-listed', 'refused', 'not-listed'], 'domain lists');
+      assert(/did not come back listed through this resolver/.test(l['example.com spamhaus-zrd'].text), `ZRD: ${l['example.com spamhaus-zrd'].text}`);
+      assert(/answer 127\.0\.0\.1/.test(l['example.com uribl'].text), `URIBL: ${l['example.com uribl'].text}`);
+      assert(i.status.startsWith('Listed on 2 lists · 13 not listed · 4 cannot be checked from a public resolver · 1 failed · checked '), `summary: ${i.status}`);
+      assertEqual([i.sent, i.retry], [false, true], 'no "nothing sent" note; Retry of the failed list');
+      const asked = await names();
+      for (const n of ['8.8.8.8.zen.spamhaus.org', '8.8.8.8.psbl.surriel.com', 'example.com.dbl.spamhaus.org', 'example.com.multi.uribl.com', 'example.com.zrd.spamhaus.org']) {
+        assert(!asked.includes(n), `${n} was sent to a list that cannot be checked here`);
+      }
+      assert(asked.includes('8.8.8.8.bl.spamcop.net') && asked.includes('example.com.multi.surbl.org'), 'the lists that answered their test point got the address and the domain');
+      await assertNoHorizontalScroll(page, 'blocklists');
+      await shot(page, 'ip-offline-desktop-light-en-blocklists');
+    });
+
+    await step('the panel keeps its results when the table redraws the row; Retry asks only the failed list again', async () => {
+      await page.evaluate(() => document.querySelector('[data-action="reverse"][data-ip="8.8.8.8"]').click());
+      await page.waitFor(() => {
+        const row = [...document.querySelectorAll('.ipi-row')].find((r) => r.querySelector('.ipi-ip')?.textContent === '8.8.8.8');
+        return !!row && !!row.querySelector('.ipi-rev');
+      }, { timeout: 15000, message: 'reverse IP answer redraws the row' });
+      assertEqual((await info('8.8.8.8')).lists['8.8.8.8 spamcop'].status, 'listed', 'results kept across the redraw');
+      await page.evaluate(() => { window.__bl.answers['2.0.0.127.psbl.surriel.com'] = { A: ['127.0.0.2'] }; window.__bl.names.length = 0; });
+      await page.evaluate(() => document.querySelector('.ipi-bl[data-ip="8.8.8.8"] [data-action="dnsbl-retry"]').click());
+      await done('8.8.8.8');
+      const i = await info('8.8.8.8');
+      assertEqual([i.lists['8.8.8.8 psbl'].status, i.retry], ['not-listed', false], 'PSBL after the Retry');
+      assertEqual((await names()).sort(), ['2.0.0.127.psbl.surriel.com', '8.8.8.8.psbl.surriel.com'], 'only the failed list was asked again');
+      assert(i.status.startsWith('Listed on 2 lists · 14 not listed · 4 cannot be checked from a public resolver · checked '), `summary: ${i.status}`);
+    });
+
+    await step('Stop cancels a check: nothing more is asked and the panel says so', async () => {
+      await page.evaluate(() => { window.__bl.delay = 400; window.__bl.names.length = 0; });
+      await page.evaluate(() => document.querySelector('.ipi-bl[data-ip="8.8.8.8"] [data-action="dnsbl-check"]').click());
+      await page.waitFor(() => window.__bl.names.length > 0, { timeout: 10000, message: 'the check started' });
+      const running = await info('8.8.8.8');
+      assertEqual([running.state, running.stop, running.check], ['running', true, false], 'running');
+      await page.evaluate(() => document.querySelector('.ipi-bl[data-ip="8.8.8.8"] [data-action="dnsbl-stop"]').click());
+      await done('8.8.8.8');
+      const asked = (await names()).length;
+      await page.evaluate(() => new Promise((r) => setTimeout(r, 900)));
+      assertEqual((await names()).length, asked, 'names asked after Stop');
+      const i = await info('8.8.8.8');
+      assertEqual([i.state, i.status, i.check], ['stopped', 'Stopped — lists without a result were not asked.', true], 'stopped');
+      await page.evaluate(() => { window.__bl.delay = 0; });
+    });
+
+    for (const [scheme, lang, width] of [['dark', 'tr', 1440], ['light', 'en', 375], ['dark', 'tr', 320]]) {
+      await step(`[${scheme}, ${lang.toUpperCase()}, ${width} px] the last finished check is kept over a language re-mount and fits`, async () => {
+        await page.setViewport(width < 600 ? { width, height: 812, mobile: true } : { width, height: 900 });
+        await page.emulateMedia({ 'prefers-color-scheme': scheme });
+        await setLangUi(page, lang);
+        await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows kept' });
+        await openBlocklists(page, '8.8.8.8');
+        const i = await info('8.8.8.8');
+        assertEqual(i.state, 'done', 'the kept check');
+        assertEqual(i.lists['8.8.8.8 spamcop'].status, 'listed', 'kept results');
+        if (lang === 'tr') {
+          assert(i.status.startsWith('2 listede yer alıyor · 14 listede yok · 4 liste genel bir çözümleyiciden kontrol edilemez · kontrol: '), `TR summary: ${i.status}`);
+          assert(/Buradan kontrol edilemez/.test(i.lists['8.8.8.8 spamhaus-zen'].text), `TR refused: ${i.lists['8.8.8.8 spamhaus-zen'].text}`);
+        }
+        await assertNoHorizontalScroll(page, `blocklists ${scheme} ${lang} ${width}`);
+        await shot(page, `ip-offline-${width < 600 ? 'mobile' : 'desktop'}-${scheme}-${lang}-blocklists`);
+      });
+    }
+
+    await step('blocklists: nothing left the page; i18n complete; no console errors', async () => {
+      assertEqual(netHits, [], 'https requests that reached the network');
+      assertEqual(await page.evaluate(() => window.__zoneBlocked.slice()), [], 'requests the zone script had to block');
+      await checkI18n(page);
+      await assertClean(page, 'blocklists');
     });
   } finally {
     await page.setViewport({ width: 1440, height: 900 });

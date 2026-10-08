@@ -20,8 +20,12 @@
 
 import { CAA_ISSUERS, caaIssuerInfo } from './health.js';
 
-/** Lowercase, whitespace collapsed; a trailing dot of a domain dropped. */
-const fold = (s) => String(s ?? '').normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase().replace(/\.$/, '');
+/**
+ * Lowercase, whitespace collapsed, a typographic apostrophe as the ASCII one ("Let’s Encrypt" from
+ * iOS Smart Punctuation or a pasted document); a trailing dot of a domain dropped.
+ */
+const fold = (s) => String(s ?? '').normalize('NFC').replace(/[\u2018\u2019\u201b\u02bc\uff07]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase()
+  .replace(/\.$/, '');
 
 /**
  * What an expected-CA entry stands for: a known CA, or a text to find in an issuer (a private CA).

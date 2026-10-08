@@ -88,3 +88,18 @@ describe('expectedCaaStatus (a CAA issuer domain)', () => {
     assert.equal(expectedCaaStatus('', ['x']), null);
   });
 });
+
+describe('typographic apostrophes', () => {
+  test('“Let’s Encrypt” as iOS Smart Punctuation or a pasted document writes it is Let\'s Encrypt', () => {
+    for (const entry of ['Let’s Encrypt', 'Let‘s Encrypt', 'Letʼs Encrypt', 'Let＇s Encrypt']) {
+      assert.equal(resolveExpectedCa(entry).ca?.id, 'letsencrypt', entry);
+      assert.deepEqual(expectedCaStatus(LE, [entry]), { expected: true, entry, ca: "Let's Encrypt" }, entry);
+      assert.deepEqual(expectedCaaStatus('letsencrypt.org', [entry]), { expected: true, entry }, entry);
+    }
+  });
+
+  test('a private CA\'s text matches either apostrophe', () => {
+    assert.equal(expectedCaStatus("CN=Example's Internal CA,O=Example", ['Example’s Internal']).expected, true);
+    assert.equal(expectedCaStatus('CN=Example’s Internal CA,O=Example', ["Example's Internal"]).expected, true);
+  });
+});

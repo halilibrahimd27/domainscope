@@ -323,11 +323,12 @@ async function main() {
       const info = await page.evaluate((s) => {
         const el = document.querySelector(s);
         const body = el.querySelector('.rev-report-text');
-        return { text: body.textContent, links: el.querySelectorAll('a').length, ws: getComputedStyle(body).whiteSpace, summary: el.querySelector('summary').textContent };
+        return { text: body.textContent, links: el.querySelectorAll('a').length, ws: getComputedStyle(body).whiteSpace, size: getComputedStyle(body).fontSize, summary: el.querySelector('summary').textContent };
       }, sel);
       assertEqual(info.text, CT_PROBLEM_REPORTING, 'the CA\'s text as it is');
       assertEqual(info.links, 0, 'no link made of it');
       assertEqual(info.ws, 'pre-wrap', 'line breaks kept');
+      assertEqual(info.size, '12.5px', 'the table\'s size');
       assertEqual(info.summary, 'Report a problem to the CA', 'summary');
       await shotEl(page, opts, 'revocation-ct-desktop-light-en', '.pf-ct-results');
       await page.press('Enter');
@@ -380,6 +381,8 @@ async function main() {
       assert(card.message.startsWith('Reason: key compromise. '), card.message);
       assert(card.report, 'the CA\'s contact');
       await page.evaluate(() => { document.querySelector('[data-role="rev-card"] [data-role="rev-report"]').open = true; });
+      const size = await page.evaluate(() => getComputedStyle(document.querySelector('[data-role="rev-card"] .rev-report-text')).fontSize);
+      assertEqual(size, '13px', 'the card\'s own size, the Domain portfolio\'s sheet loaded too');
       await shotEl(page, opts, 'revocation-cert-revoked-desktop-light-en', '[data-role="rev-card"]');
     });
 

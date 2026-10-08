@@ -612,13 +612,13 @@
   padding: 2px 8px 8px;
 }
 
-.rev-report-intro {
+.pf-ct-report .rev-report-intro {
   margin: 0 0 4px;
   color: var(--text-3);
   font-size: 12px;
 }
 
-.rev-report-text {
+.pf-ct-report .rev-report-text {
   font-size: 12.5px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

@@ -807,23 +807,24 @@
   min-width: 0;
 }
 
-/* the CA's problem-reporting contact: its own text, line breaks kept */
-.rev-report .disclosure-summary {
+/* the CA's problem-reporting contact: its own text, line breaks kept (the CT tab of the
+   Domain portfolio sizes its own in portfolio.css: both scoped, whichever sheet came first) */
+.rev-card .rev-report .disclosure-summary {
   padding: 6px 10px;
   font-size: 13px;
 }
 
-.rev-report .disclosure-body {
+.rev-card .rev-report .disclosure-body {
   padding: 2px 10px 10px;
 }
 
-.rev-report-intro {
+.rev-card .rev-report-intro {
   margin: 0 0 4px;
   color: var(--text-3);
   font-size: 12px;
 }
 
-.rev-report-text {
+.rev-card .rev-report-text {
   font-size: 13px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

@@ -9205,6 +9205,13 @@ examples:
   Every certificate your servers serve (no --cert needed), as a CSV inventory:
     python3 ssl_origin_scan.py -t hosts.ini -n names.txt --estate --csv estate.csv
 
+  Mail and database servers: SMTP on 25 and 587 with STARTTLS, IMAPS on 993, PostgreSQL
+  on 5432 and SMTP on 2525 too (the protocol follows the port; PORT/PROTOCOL names it):
+    python3 ssl_origin_scan.py -t mail.txt --cert new.pem -p 25,587,993,5432,2525/smtp
+
+  A TLS audit: TLS 1.0 / 1.1 still accepted, weak cipher suites, RSA + ECDSA pairs:
+    python3 ssl_origin_scan.py -t hosts.ini -n names.txt --tls-audit --json audit.json
+
   Before installing - the certificate, its chain, key and CSR checked together, and
   fullchain.pem / chain.pem written in the order servers send them:
     python3 ssl_origin_scan.py bundle-check cert.pem ca-bundle.crt private.key -o out/
@@ -9245,6 +9252,31 @@ targets (-t, repeatable):
   on the command line, skipped in files): the system resolver would read them as an
   IPv4 address. IPv4 parts with a leading zero (010.0.0.1, octal) are refused too.
   0.0.0.0/8, multicast and broadcast addresses are never scanned.
+
+starttls (the protocol follows the port): SMTP on 25 and 587 (EHLO, STARTTLS), IMAP 143
+  (STARTTLS), POP3 110 (STLS), FTP 21 (AUTH TLS), LDAP 389 (the StartTLS extended
+  operation), XMPP 5222 (a client stream to the name asked for, then <starttls/>) and
+  PostgreSQL 5432 (the SSLRequest); every other port - 443, and the implicit-TLS 465, 993,
+  995, 636, 990 and 5223 - speaks TLS from the first byte. PORT/PROTOCOL names it for
+  another number: -p 2525/smtp (port 2525 throughout the scan, an inventory's ports=2525
+  too), a target 10.0.0.5:2525/smtp (that endpoint only), 25/tls (TLS from the first byte
+  on 25). Protocols: tls, smtp, imap, pop3, ftp, ldap, xmpp, postgres. Inventory files keep
+  plain port numbers (the web app reads them too). The statuses apply unchanged: a mail
+  server serving the old certificate is NEEDS_UPDATE, one that offers no STARTTLS is a
+  TLS_ERROR that says so. The JSON names the protocol of such an endpoint
+  (endpoints[].protocol) and what -p named (options.portProtocols).
+
+tls audit (--tls-audit): after the scan, every endpoint where a handshake completed is
+  checked one handshake at a time (after STARTTLS where the port speaks it), asked for the
+  first name it hosts: the TLS versions it accepts (1.0, 1.1, 1.2, 1.3, each offered
+  alone), weak cipher suites (NULL, anonymous, export, RC4, DES, 3DES, family by family
+  with TLS 1.2 at most) and the key types it serves (RSA and ECDSA, by offering only the
+  suites one key type signs; a TLS 1.3-only server cannot be asked). What this Python's
+  OpenSSL / LibreSSL cannot offer is listed as not tested, never as refused. The summary
+  lists the endpoints still accepting TLS 1.0 / 1.1, accepting weak suites, and serving
+  half of an RSA + ECDSA pair (a name another endpoint serves with both, or that an RSA and
+  an ECDSA --cert cover); the JSON gets a "tlsAudit" section (tlsAudit.summary for the
+  fleet, tlsAudit.endpoints for every check).
 
 topology (keys on a server's line in an inventory file, or CSV columns, Ansible host
   variables, JSON keys; the web app's Servers view reads the same): where TLS terminates.
@@ -9466,6 +9498,14 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   Bir adı yeni sunucuya taşımadan önce eski ve yeni sunucuyu karşılaştırın (durum kodu,
   yönlendirme, başlık, gövde özeti, HSTS, sertifika yan yana):
   python3 ssl_origin_scan.py --compare 10.0.0.5 10.0.0.6 -n www.example.com
+  Posta, dizin ve veritabanı portlarında TLS, STARTTLS ile başlar; protokol porta göre
+  seçilir: SMTP 25 ve 587, IMAP 143, POP3 110, FTP 21, LDAP 389, XMPP 5222, PostgreSQL
+  5432. 465, 993, 995, 636, 990, 5223 ve diğer portlar doğrudan TLS'tir. Başka bir port
+  için PORT/PROTOKOL yazın: -p 2525/smtp ya da 10.0.0.5:2525/smtp.
+  --tls-audit her uç noktanın kabul ettiği TLS sürümlerini (1.0-1.3), zayıf şifre
+  takımlarını ve sunduğu anahtar türlerini (RSA, ECDSA) denetler; bu Python'un
+  sunamadığı sürüm ve takımlar "denenmedi" olarak yazılır:
+  python3 ssl_origin_scan.py -t sunucular.txt -n adlar.txt --tls-audit --json denetim.json
 """
 
 

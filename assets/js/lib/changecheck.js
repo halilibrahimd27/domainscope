@@ -341,14 +341,16 @@ export function checkState(check, latest, resolvers = CHECK_RESOLVERS) {
  * once its resolver's cached copy can have expired (its TTL after it answered, at most
  * `maxTtlWait`). Stops when every pair is settled (`done`; a pair that failed three rounds in a row
  * is given up), `stopAfter` after the start, when no pair can change before then (`cached`), or
- * (`failed`) when what was given up leaves a set with no answer from any resolver.
+ * (`failed`) when what was given up leaves a set with no answer from any resolver. With `lastAt`
+ * (the last round's end) the backoff counts from then rather than from `now`, never before `now`:
+ * a watch turned on long after a check stopped asks at once (lib/cutover.js nextWatch).
  * @param {{ latest: Map<string, PairResult>, check: ExpectedCheck, round: number, startedAt: number, now: number,
- *   resolvers?: string[], timing?: typeof CHECK_TIMING, errorRounds?: number }} state
+ *   resolvers?: string[], timing?: typeof CHECK_TIMING, errorRounds?: number, lastAt?: number|null }} state
  * @returns {{ stop: 'done'|'timeout'|'cached'|'failed'|null, at: number|null, pairs: string[], cachedUntil: number|null }}
  *   `at`: when to run the next round (ms epoch); `pairs`: the pairs it asks; `cachedUntil`: the
  *   latest time a resolver's copy of an old answer expires (for the 'cached' stop)
  */
-export function nextCheck({ latest, check, round, startedAt, now, resolvers = CHECK_RESOLVERS, timing = CHECK_TIMING, errorRounds = 0 }) {
+export function nextCheck({ latest, check, round, startedAt, now, resolvers = CHECK_RESOLVERS, timing = CHECK_TIMING, errorRounds = 0, lastAt = null }) {
   const get = (k) => (latest instanceof Map ? latest.get(k) : latest[k]) || null;
   const deadline = startedAt + timing.stopAfter;
   const open = [];
@@ -378,6 +380,7 @@ export function nextCheck({ latest, check, round, startedAt, now, resolvers = CH
   const soonest = Math.min(...open.map((p) => p.ready));
   if (soonest > deadline) return { stop: 'cached', at: null, pairs: [], cachedUntil };
   const backoff = Math.min(timing.base * timing.factor ** Math.max(0, round), timing.max);
-  const at = Math.min(Math.max(now + backoff, soonest), deadline);
+  const from = Number.isFinite(lastAt) ? Math.min(lastAt, now) : now;
+  const at = Math.min(Math.max(from + backoff, soonest, now), deadline);
   return { stop: null, at, pairs: open.filter((p) => p.ready <= at).map((p) => p.k), cachedUntil };
 }

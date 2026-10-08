@@ -27,7 +27,9 @@
  * at all (said so after the first round, stopped as failed after three); a language switch that
  * resumes the check without asking again; a check opened offline (it says so, schedules nothing and
  * asks once the connection is back); a link that cannot be read (nothing sent); Retry after the check
- * page crashed (the check page again, its link kept); a builder
+ * page crashed (the check page again, its link kept); the cutover assistant (a resolver's live
+ * cache countdown, Watch until live ending by itself once the answer flips on the lagging
+ * resolver, the TTL planner's four steps and its checklist copied in English and Turkish); a builder
  * link near the length limit opens; 320 / 375 px phones light / dark in
  * both languages without horizontal scroll; no console errors, CSP violations or missing i18n
  * keys; nothing sent outside the page.
@@ -475,6 +477,52 @@ async function main() {
       } finally {
         await tab.close();
       }
+    });
+
+    run.group('The cutover assistant');
+    await run.step('Watch until live: the cache countdown, the watch strip, done by itself once the answer flips on the lagging resolver', async () => {
+      // Google still serves the old value (its cached old answer); the three others serve the change.
+      await page.evaluate(() => { window.__dns.views = { google: { 'www.example.com': { A: ['198.51.100.5'] } } }; window.__dns.log.length = 0; });
+      await openCheck(page, wrongQuery);
+      await page.waitFor(() => !!document.querySelector('[data-action="check-watch"]'), { message: 'the cutover assistant loaded', timeout: 10000 });
+      assertEqual(await resolverRows(page), [['cloudflare:done', 'google:pending/old', 'dnssb:done', 'cznic:done']], 'verdicts: only Google not yet');
+      assert(/old answer may be cached until \d/.test(await text(page, '.chg-res[data-resolver="google"] .chg-cut-countdown')), 'Google\'s cache countdown');
+      // Start watching: the strip takes over from the Watch button, the progress reads 3 of 4.
+      await page.click('[data-action="check-watch"]');
+      await page.waitFor(() => { const s = document.querySelector('.chg-cut-strip'); return s && !s.hidden; }, { message: 'the watch strip' });
+      assert(await page.evaluate(() => document.querySelector('[data-action="check-watch"]').hidden), 'the Watch button is hidden while watching');
+      assert(/Watching/.test(await text(page, '.chg-cut-strip')) && /3 of 4/.test(await text(page, '.chg-cut-strip')), 'the strip says it is watching, 3 of 4 done');
+      await shot(page, opts, 'change-check-watching-desktop-light-en');
+      // The answer flips on Google; the watch's next round (driven here with Check now) finds it live and ends by itself.
+      await page.evaluate(() => { delete window.__dns.views.google; window.__dns.log.length = 0; });
+      await page.click('[data-action="check-now"]');
+      await page.waitFor(() => { const s = document.querySelector('.chg-cut-strip'); return !s || s.hidden; }, { message: 'the watch ended', timeout: 10000 });
+      assertEqual((await dnsLog(page)).map((q) => q.resolver).sort(), ['google'], 'only the resolver not done yet was asked again');
+      assertEqual(await resolverRows(page), [['cloudflare:done', 'google:done', 'dnssb:done', 'cznic:done']], 'every resolver serves the change');
+      assertEqual((await checkInfo(page)).headline, 'done', 'done everywhere');
+      assert(await page.evaluate(() => document.querySelector('[data-action="check-watch"]').hidden), 'the Watch button stays hidden on a done check');
+    });
+
+    await run.step('the TTL planner: the four steps of a lowered TTL and its checklist copied in English and Turkish', async () => {
+      await page.evaluate(() => { const d = document.querySelector('.chg-cut-plan'); if (d) d.open = true; });
+      // A zone TTL higher than the low one gives the full plan: lower, change, live, raise.
+      await fill(page, 'cut-ttl', '3600');
+      await page.waitFor(() => [...document.querySelectorAll('.chg-cut-step')].map((s) => s.dataset.step).join(',') === 'lower,change,live,raise',
+        { message: 'the four plan steps', timeout: 8000 });
+      assertEqual(await page.evaluate(() => document.querySelector('.chg-cut-plan-out').dataset.state), 'ok', 'the plan is valid (the change time is auto-filled ahead)');
+      await shot(page, opts, 'change-check-plan-desktop-light-en');
+      await stubClipboard(page);
+      await page.click('[data-action="cut-copy"]');
+      await page.waitFor(() => window.__clip.length === 1, { message: 'the English checklist copied' });
+      // Switch the checklist to Turkish and copy again.
+      await page.click('[data-control="cut-lang"] [data-value="tr"]');
+      await page.waitFor(() => !!document.querySelector('[data-action="cut-copy"]'), { message: 'the planner rebuilt in Turkish' });
+      await page.click('[data-action="cut-copy"]');
+      await page.waitFor(() => window.__clip.length === 2, { message: 'the Turkish checklist copied' });
+      const [en, tr] = await takeClipboard(page);
+      assert(en.startsWith('DNS cutover plan — zone example.com'), `EN title: ${en.slice(0, 60)}`);
+      assert(/Records: www\.example\.com A/.test(en) && (en.match(/^\[ \] \d\./gm) || []).length === 4 && /lower the TTL of these records from 3,?600 s to 300 s/.test(en), `EN body: ${en}`);
+      assert(tr.startsWith('DNS geçiş planı — zone example.com') && /Kayıtlar: www\.example\.com A/.test(tr) && (tr.match(/^\[ \] \d\./gm) || []).length === 4, `TR body: ${tr}`);
     });
 
     run.group('Phones 320 / 375 px, light / dark, English / Turkish');

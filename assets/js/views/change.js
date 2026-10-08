@@ -20,7 +20,10 @@
  * from any resolver three rounds in a row (and says so); offline it says so and asks once the
  * connection is back. Stop (Esc; a round already running still shows its answers, nothing more is
  * asked) / Check now / Check again (every record on every resolver, from scratch); the keyboard
- * focus moves to Stop while a round runs, and to Check again once the check stops.
+ * focus moves to Stop while a round runs, and to Check again once the check stops. The cutover
+ * assistant (ui/cutover.js, loaded with the page) adds Watch until live (the same schedule as a
+ * long job for up to 24 hours, with "Notify me when done"), a live cache countdown per resolver
+ * and the TTL planner with its checklist.
  *
  * Shareable: `#/change?t=caa&domain=example.com&cas=letsencrypt` opens a form (the "Edit in DNS
  * change request" of Domain Health and Zone File); a carried target fills the domain
@@ -43,9 +46,13 @@ import { CHECK_RESOLVERS, CHECK_LIMITS, decodeCheck, linkQuery, checkRound, chec
 import { normalizeHostname, registrableDomain } from '../lib/domain.js';
 import { getResolver } from '../lib/resolvers.js';
 import { isFillOnly } from '../lib/session.js';
+import { onceAsync } from '../lib/util.js';
 import { ChangeOutputs, ProblemList, builderParams, checkUrl } from '../ui/fix-panel.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import '../ui/view-summaries.js'; // the check page's Copy summary: lib/summary.js changeSummary and its texts
+
+/** The check page's cutover assistant: watch mode, the cache countdowns, the TTL planner (loaded with the page). */
+const loadCutover = onceAsync(() => import('../ui/cutover.js'));
 
 /** Route id (`#/change`). */
 export const id = 'change';
@@ -619,13 +626,17 @@ function mountCheck(container, ctx) {
   });
   const actionBtns = [nowBtn, stopBtn, againBtn];
   const setsEl = h('div', { class: 'stack chg-sets' });
+  const actionsEl = h('div', { class: 'cluster chg-hero-actions' }, nowBtn, stopBtn, againBtn, copyBtn, summary.el);
+  // Slots of the cutover assistant (ui/cutover.js): the watch line, the TTL planner.
+  const watchSlot = h('div', { class: 'chg-cut-slot' });
+  const planSlot = h('div', { class: 'chg-cut-slot' });
+  let cut = null;
   const hero = h('section', { class: 'card chg-hero' },
     h('div', { class: 'chg-hero-top' },
       h('h2', { class: 'chg-hero-title' }, t('chg.check.title')),
       Badge(t('chg.check.zone', { zone: check.zone }), { variant: 'neutral', mono: true, className: 'chg-zone' })),
-    headEl, metaEl,
-    h('div', { class: 'cluster chg-hero-actions' }, nowBtn, stopBtn, againBtn, copyBtn, summary.el));
-  view.append(hero, setsEl,
+    headEl, metaEl, watchSlot, actionsEl);
+  view.append(hero, setsEl, planSlot,
     h('p', { class: 'muted text-sm chg-check-privacy' }, Icon('lock', { size: 14 }), ' ', t('chg.check.privacy')),
     h('p', { class: 'text-sm' }, h('a', { href: ctx.href('change') }, Icon('edit', { size: 14 }), ' ', t('chg.check.own'))));
 
@@ -666,13 +677,16 @@ function mountCheck(container, ctx) {
       else label = t(`chg.check.v.${v}`);
       const [variant, iconName] = VERDICT_BADGE[v];
       const showSeen = r && (v === 'pending' || v === 'wrong') && r.reason !== 'missing' && r.reason !== 'ttl';
-      const cached = r && v === 'pending' && Number.isFinite(r.ttl) && r.ttl > 0 ? t('chg.check.cached', { time: clockTime(r.at + r.ttl * 1000) }) : null;
+      // The cutover assistant's live countdown once it is loaded, else the time alone.
+      const live = cut && r ? cut.countdown(r) : null;
+      const cached = !live && r && v === 'pending' && Number.isFinite(r.ttl) && r.ttl > 0 ? t('chg.check.cached', { time: clockTime(r.at + r.ttl * 1000) }) : null;
       list.append(h('li', { class: ['chg-res', `chg-res-${v}`], dataset: { resolver: rid, verdict: v, reason: r && r.reason ? r.reason : '' } },
         h('span', { class: 'chg-res-name' }, resolverName(rid)),
         Badge(label, { variant, icon: iconName, className: 'chg-res-verdict' }),
-        showSeen || cached ? h('div', { class: 'chg-res-detail text-sm' },
+        showSeen || cached || live ? h('div', { class: 'chg-res-detail text-sm' },
           showSeen ? [h('span', { class: 'muted' }, `${t('chg.check.seen')}: `), h('span', { class: 'mono chg-res-seen' }, r.seen.length ? r.seen.map((x) => valueText(exp.type, x)).join(', ') : t('chg.check.nothing'))] : null,
-          cached ? h('span', { class: 'muted chg-res-cached' }, `${showSeen ? ' · ' : ''}${cached}`) : null) : null));
+          cached ? h('span', { class: 'muted chg-res-cached' }, `${showSeen ? ' · ' : ''}${cached}`) : null,
+          live ? (showSeen ? [h('span', { class: 'muted' }, ' · '), live] : live) : null) : null));
     }
     const st = checkState({ sets: [exp] }, new Map(CHECK_RESOLVERS.map((rid) => [pairKey(0, rid), memo.latest.get(pairKey(i, rid))]).filter(([, x]) => x)));
     cards[i].dataset.state = st.sets[0].state;
@@ -708,6 +722,7 @@ function mountCheck(container, ctx) {
     // A button that goes (Check now while a round runs, Stop once it stops) hands the keyboard focus
     // to the one that takes its place, never to the page's body.
     if (focused && (focused.hidden || focused.disabled)) (stopped ? againBtn : memo.running ? stopBtn : nowBtn).focus();
+    if (cut) cut.sync();
   }
 
   function renderMeta() {
@@ -784,7 +799,8 @@ function mountCheck(container, ctx) {
 
   function schedule() {
     clearTimeout(memo.timer);
-    const n = nextCheck({ latest: memo.latest, check, round: memo.round, startedAt: memo.startedAt, now: Date.now(), errorRounds: memo.errorRounds });
+    // Watching (ui/cutover.js): the same backoff and cache waits, for up to 24 hours.
+    const n = (memo.watch ? memo.watch.next : nextCheck)({ latest: memo.latest, check, round: memo.round, startedAt: memo.startedAt, now: Date.now(), errorRounds: memo.errorRounds });
     memo.stop = n.stop;
     memo.cachedUntil = n.cachedUntil ? new Date(n.cachedUntil) : null;
     memo.nextAt = n.at;
@@ -848,6 +864,14 @@ function mountCheck(container, ctx) {
 
   ctx.runStarted(check.zone);
   renderAll();
+  loadCutover().then((m) => {
+    if (!view.isConnected) return;
+    cut = m.mountCutover({
+      ctx, check, memo, view, actions: actionsEl, before: copyBtn, strip: watchSlot, planner: planSlot, url: () => checkUrl(query),
+      headline: () => (headEl.firstChild ? headEl.firstChild.textContent : ''), resume: () => schedule()
+    });
+    renderAll();
+  }, () => ctx.checkOutdated());
   if (memo.stop) return;
   if (!memo.lastAt) runRound(null, { quiet: true });
   else schedule();

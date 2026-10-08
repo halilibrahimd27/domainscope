@@ -826,6 +826,10 @@ describe('fixes of Zone File findings', () => {
     assert.deepEqual([lh.mode, rrsetPlan(lh).remove], ['none', ['127.0.0.1']]);
     const caa = lintFix(findingOf(z, 'CAA_FLAGS'), z).request.rrsets[0];
     assert.deepEqual(caa.values, [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }]);
+    // A critical unknown tag: only its critical flag goes, as for the live CAA check.
+    const crit = zone('$ORIGIN example.com.\n@ 300 IN CAA 0 issue "letsencrypt.org"\n@ 300 IN CAA 128 isue "letsencrypt.org"\n');
+    assert.deepEqual(lintFix(findingOf(crit, 'CAA_CRITICAL_UNKNOWN_TAG'), crit).request.rrsets[0].values,
+      [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }, { flags: 0, tag: 'isue', value: 'letsencrypt.org' }]);
     const spf = lintFix(findingOf(z, 'MULTIPLE_SPF'), z).request.rrsets[0];
     assert.deepEqual([spf.values.map((v) => v.join('')), spf.others.map((v) => v.join(''))], [['v=spf1 a mx -all'], ['verify=1']]);
     assert.equal(lintFix({ code: 'SINGLE_NS', name: 'example.com', type: 'NS' }, z), null);

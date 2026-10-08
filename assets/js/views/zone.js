@@ -87,7 +87,7 @@ const loadZoneTools = onceAsync(() => import('../ui/zone-tools.js'));
  * Lint codes with a "Show the fix" (lib/fixes.js LINT_FIX_CODES; a unit test keeps the two equal):
  * the panel and lib/fixes.js load on the first click, so the list lives here.
  */
-export const FIXABLE_LINT = Object.freeze(['CAA_FLAGS', 'LOCALHOST_RECORD', 'MULTIPLE_SPF', 'TTL_TOO_LOW', 'TXT_STRING_TOO_LONG']);
+export const FIXABLE_LINT = Object.freeze(['CAA_CRITICAL_UNKNOWN_TAG', 'CAA_FLAGS', 'LOCALHOST_RECORD', 'MULTIPLE_SPF', 'TTL_TOO_LOW', 'TXT_STRING_TOO_LONG']);
 
 /** ui/fix-panel.js with lib/fixes.js, on the first "Show the fix". */
 const loadFixPanel = onceAsync(() => import('../ui/fix-panel.js'));

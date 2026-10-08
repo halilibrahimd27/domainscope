@@ -82,6 +82,7 @@ export const LINT_RULES = Object.freeze({
     severityByFormat: Object.freeze({ 'cloudflare-api': 'info', octodns: 'info', 'plesk-info': 'info' })
   }),
   CAA_UNKNOWN_TAG: rule('warn', ['all']),
+  CAA_CRITICAL_UNKNOWN_TAG: rule('error', ['all']),
   CAA_FLAGS: rule('warn', ['all']),
   TTL_OUTLIER: rule('info', ['all']),
   TTL_TOO_LOW: rule('info', ['all']),
@@ -161,6 +162,7 @@ const LINT_TEXT = {
   DMARC_INVALID: [['Invalid DMARC record', 'The DMARC record of {name} has an error ({error}).'], ['Geçersiz DMARC kaydı', '{name} DMARC kaydında hata var ({error}).']],
   TXT_STRING_TOO_LONG: [['TXT string too long', 'One string of {name} is {bytes} bytes; the maximum is 255. Split it into several quoted strings.'], ['TXT dizesi çok uzun', '{name} adının bir dizesi {bytes} bayt; en fazla 255 olabilir. Birkaç tırnaklı dizeye bölün.']],
   CAA_UNKNOWN_TAG: [['Unknown CAA tag', 'The CAA record of {name} uses the tag “{tag}”, which CAs ignore.'], ['Bilinmeyen CAA etiketi', '{name} CAA kaydı, CA’ların yok saydığı “{tag}” etiketini kullanıyor.']],
+  CAA_CRITICAL_UNKNOWN_TAG: [['Unknown critical CAA tag', 'The CAA record of {name} marks the tag “{tag}” critical (flags {flags}): every CA must refuse to issue for {name} and its subdomains without their own CAA. Correct the tag, or set the flags to 0.'], ['Bilinmeyen kritik CAA etiketi', '{name} CAA kaydı “{tag}” etiketini kritik olarak işaretliyor (işaretler {flags}): tüm CA’lar {name} ve kendi CAA kaydı olmayan alt alan adları için sertifika vermeyi reddetmek zorundadır. Etiketi düzeltin ya da işaretleri 0 yapın.']],
   CAA_FLAGS: [['Unusual CAA flags', 'The CAA record of {name} has flags {flags}; a critical flag on an unknown tag blocks every CA.'], ['Olağan dışı CAA işaretleri', '{name} CAA kaydının işaretleri {flags}; bilinmeyen bir etikette kritik işaret tüm CA’ları engeller.']],
   TTL_OUTLIER: [['Unusually long TTL', '{name} has a TTL of {ttl} s, while {median} s is typical in this zone: a change takes that long to reach everyone.'], ['Alışılmadık uzun TTL', '{name} için TTL {ttl} sn; bu zone’da tipik olan {median} sn: bir değişikliğin herkese ulaşması bu kadar sürer.']],
   TTL_TOO_LOW: [['Very short TTL', '{name} has a TTL of {ttl} s; resolvers query it constantly and some raise it anyway.'], ['Çok kısa TTL', '{name} için TTL {ttl} sn; çözümleyiciler onu sürekli sorgular, bazıları yine de yükseltir.']],
@@ -379,8 +381,10 @@ export function lintZone(zone) {
 
     if (r.type === 'CAA' && r.data && typeof r.data.tag === 'string') {
       const tag = r.data.tag.toLowerCase();
-      if (!CAA_TAGS.has(tag)) push('CAA_UNKNOWN_TAG', r, { name: r.name, tag }, `unknown CAA tag "${tag}"`);
       const flags = Number(r.data.flags);
+      // RFC 8659 §4.1: a CA must not issue where a critical property has a tag it does not know.
+      if (!CAA_TAGS.has(tag) && flags & 128) push('CAA_CRITICAL_UNKNOWN_TAG', r, { name: r.name, tag, flags }, `critical unknown CAA tag "${tag}": no CA may issue`);
+      else if (!CAA_TAGS.has(tag)) push('CAA_UNKNOWN_TAG', r, { name: r.name, tag }, `unknown CAA tag "${tag}"`);
       if (flags !== 0 && flags !== 128) push('CAA_FLAGS', r, { name: r.name, flags }, `CAA flags ${flags}`);
     }
 

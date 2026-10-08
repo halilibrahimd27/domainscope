@@ -332,6 +332,14 @@ describe('mail, CAA, TTL, SOA and NS rules', () => {
     assert.deepEqual(find(z, 'CAA_FLAGS').map((f) => f.params), [{ name: 'example.com', flags: 5 }]);
   });
 
+  test('a critical flag on an unknown CAA tag is an error (no CA issues, RFC 8659 §4.1), not a tag CAs ignore', () => {
+    const z = zone([['@', 'CAA', '0 issue "letsencrypt.org"'], ['@', 'CAA', '128 isue "letsencrypt.org"'], ['www', 'CAA', '128 issue "letsencrypt.org"']]);
+    const [f] = find(z, 'CAA_CRITICAL_UNKNOWN_TAG');
+    assert.deepEqual([f.severity, f.params], ['error', { name: 'example.com', tag: 'isue', flags: 128 }]);
+    assert.deepEqual(find(z, 'CAA_UNKNOWN_TAG'), [], 'not said to be ignored');
+    assert.deepEqual(find(z, 'CAA_FLAGS'), []);
+  });
+
   test('TTL_OUTLIER / TTL_TOO_LOW against the zone median; auto TTLs, aliases, SOA and NS are ignored', () => {
     const z = zone([SOA, ['@', 'NS', 'ns1.example.net.', { ttl: 172800 }], ['a', 'A', '192.0.2.1', { ttl: 3600 }], ['b', 'A', '192.0.2.2', { ttl: 3600 }],
       ['slow', 'A', '192.0.2.3', { ttl: 604800 }], ['fast', 'A', '192.0.2.4', { ttl: 10 }], ['auto', 'A', '192.0.2.5', { ttl: 1, ttlAuto: true }],

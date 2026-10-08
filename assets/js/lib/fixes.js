@@ -529,7 +529,8 @@ export function applyCurrent(req, current) {
 
 /** Zone File lint codes that apply to a change's records (the rest need the whole zone). */
 export const CHANGE_LINT_CODES = Object.freeze(['CNAME_AND_OTHER_DATA', 'CNAME_AT_APEX', 'MULTIPLE_CNAME', 'TARGET_IS_IP', 'PRIVATE_IP',
-  'LOCALHOST_RECORD', 'NON_GLOBAL_IPV6', 'MULTIPLE_SPF', 'SPF_INVALID', 'DMARC_INVALID', 'CAA_UNKNOWN_TAG', 'CAA_FLAGS', 'TTL_TOO_LOW']);
+  'LOCALHOST_RECORD', 'NON_GLOBAL_IPV6', 'MULTIPLE_SPF', 'SPF_INVALID', 'DMARC_INVALID', 'CAA_UNKNOWN_TAG', 'CAA_CRITICAL_UNKNOWN_TAG', 'CAA_FLAGS',
+  'TTL_TOO_LOW']);
 const SEV_RANK = { error: 0, warn: 1, info: 2 };
 
 /**
@@ -2004,6 +2005,8 @@ const LINT_FIXES = {
   TXT_STRING_TOO_LONG: (f, idx) => zoneSetFix(f, idx, (r) => ({ ...r, rewrite: true })),
   LOCALHOST_RECORD: (f, idx) => zoneSetFix(f, idx, (r) => ({ ...r, mode: 'none' })),
   CAA_FLAGS: (f, idx) => zoneSetFix(f, idx, (r) => ({ ...r, values: r.before.map((v) => (v.tag === String(f.params && f.params.tag || v.tag) && v.flags === Number(f.params.flags) ? { ...v, flags: 0 } : v)) })),
+  // Only the critical flag goes, as for the live CAA check: the tag stays, a CA that does not know it ignores it.
+  CAA_CRITICAL_UNKNOWN_TAG: (f, idx) => LINT_FIXES.CAA_FLAGS(f, idx),
   TTL_TOO_LOW: (f, idx) => zoneSetFix(f, idx, (r) => ({ ...r, ttl: 300 })),
   MULTIPLE_SPF: (f, idx) => {
     const recs = zoneValues(idx, f.name, 'TXT');

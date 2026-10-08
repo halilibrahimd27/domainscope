@@ -25,7 +25,8 @@
  *     and 2 × the signed TTL), a third-party MX is "another certificate", the apex name is safe;
  *     the certificate's own TLSA values; CSV export; Turkish, dark mode, 375 px phone; keyboard
  *     focus follows Check → Stop → Check again; Stop ends a check stuck on a silent resolver at
- *     once ("cancelled");
+ *     once ("cancelled"); the same certificate in another file (with a CA certificate) gets a
+ *     check of its own, and the first file loaded again shows its own;
  *   - SSL Targets: the DANE tab follows Verify, a summary line points to it when the scan mined
  *     mail servers, the check adds the covered hosts the scan found (one breaks, one is not
  *     DNSSEC-validated), the tab badge, the scan's full JSON carries `dane`, and a new scan
@@ -33,8 +34,9 @@
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations.
  */
 
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
@@ -254,6 +256,10 @@ async function main() {
   const NEW = await certOf('cli_renewed_wild.pem');
   const OLD = await certOf('ec_wildcard.pem');
   const NEW_SPKI = sha256(NEW.spkiDer).toUpperCase();
+  // The same certificate with a CA certificate in its file: another chain, so another check.
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'ds-dane-e2e-'));
+  const WITH_CA = path.join(tmp, 'renewed_with_ca.pem');
+  await writeFile(WITH_CA, `${await readFile(NEW_FILE, 'utf8')}${await readFile(path.join(FIXTURES, 'cli_private_ca.pem'), 'utf8')}`);
 
   run.group('Node: harness');
   await run.step('run-all orders the dane suite right after cert', () => {
@@ -365,6 +371,27 @@ async function main() {
       assertEqual(csvHeader(csv.text), ['tlsa_name', 'service', 'port', 'host', 'via', 'status', 'dnssec', 'records', 'add_records', 'wait_seconds'], 'CSV header');
       assert(/_25\._tcp\.mail\.wild\.example\.net,smtp,25,mail\.wild\.example\.net,example\.net,danger,true,/.test(csv.text), 'danger row in the CSV');
       await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
+    });
+
+    await run.step('the same certificate in a file with a CA certificate: no check yet, nothing sent; the first file again shows its own check', async () => {
+      const from = await dnsCount(page);
+      const load = async (file, count) => {
+        await page.evaluate(() => {
+          document.querySelectorAll('.toast').forEach((el) => el.remove());
+          document.querySelector('details.cert-reload').open = true;
+        });
+        await page.setFileInput('.cert-reload .filedrop-input', [file]);
+        await page.waitFor((n) => !!document.querySelector('.toast') && (n > 1) === !!document.querySelector('[data-role="cert-select"]'),
+          { args: [count], message: `${path.basename(file)} loaded` });
+        await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
+        return page.waitFor(() => {
+          const panel = document.querySelector('.cert-tabs .dane-panel');
+          return panel ? { state: panel.dataset.state, head: document.querySelector('.cert-tabs [data-dane-head]')?.dataset.daneHead || null } : false;
+        }, { message: 'DANE panel' });
+      };
+      assertEqual(await load(WITH_CA, 2), { state: 'idle', head: null }, 'another chain: not the check of the certificate alone');
+      assertEqual(await load(NEW_FILE, 1), { state: 'done', head: 'danger' }, 'the certificate alone again: its own check');
+      assertEqual(await dnsLog(page, from), [], 'nothing sent');
     });
 
     run.group('Languages, themes, phone (Certificate view)');
@@ -558,6 +585,7 @@ async function main() {
     if (page) await page.close().catch(() => {});
     await browser.close();
     await server.close();
+    await rm(tmp, { recursive: true, force: true });
   }
   run.finish(opts.shots ? ` — screenshots in ${path.relative(process.cwd(), opts.shotsDir)}` : '');
 }

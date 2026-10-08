@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   sClientHost, sClientCommand, SAMPLE_CERT_URL, loadSampleCert, ctCertLoad, dnDisplayName, analyzeChain, ctCrtshWhy, ctOutcomeMessage,
   ctCrtshIncomplete, focusLoadedCert, certTarget, loadCertificateData, loadCertificateFile, certSummaryFacts, issuerDisplayName,
-  fullchainCerts
+  fullchainCerts, daneHolderKey
 } from '../../assets/js/views/cert.js';
 import { isLockedPfx } from '../../assets/js/ui/pfx-import.js';
 import { CT_COOLDOWN_MS, createCtCooldown, lookupCtCertificate } from '../../assets/js/lib/ctcert.js';
@@ -124,6 +124,22 @@ describe('cert view: the openssl s_client command', () => {
       assert.match(sClientCommand(cert.hostnames), SAFE, JSON.stringify(cert.hostnames));
       assert.equal(sClientHost(cert.hostnames), 'example.com', JSON.stringify(cert.hostnames));
     }
+  });
+});
+
+describe('cert view: the DANE / TLSA check of a file (daneHolderKey)', () => {
+  const read = (...files) => parseCertificates(Buffer.concat(files.map((f) => readFileSync(join(FIX, f)))));
+
+  test('the same leaf with another chain, or as a precertificate, gets a check of its own; the same file again finds its own', () => {
+    const alone = read('bundle_leaf.pem');
+    const full = read('bundle_leaf.pem', 'bundle_inter.pem');
+    assert.equal(full.leaf.serialHex, alone.leaf.serialHex, 'the same leaf');
+    assert.equal(full.certificates.length, 2);
+    assert.notEqual(daneHolderKey(full), daneHolderKey(alone), 'DANE-TA records are matched against the file\'s CAs');
+    assert.equal(daneHolderKey(read('bundle_leaf.pem')), daneHolderKey(alone), 'the same file loaded again');
+    assert.equal(daneHolderKey(read('bundle_inter.pem', 'bundle_leaf.pem')), daneHolderKey(full), 'the same certificates in another order');
+    const pre = { ...alone.leaf, isPrecertificate: true };
+    assert.notEqual(daneHolderKey({ leaf: pre, certificates: [pre] }), daneHolderKey(alone), 'a precertificate: another DER, another 3 0 x value');
   });
 });
 

@@ -1993,7 +1993,7 @@ const caaCache = new Map();
 const ctCache = new Map();
 /** Key continuity lookups per certificate (ui/key-continuity.js). */
 const keyCache = new Map();
-/** DANE / TLSA job holders per leaf certificate (ui/dane-panel.js keeps its job on `holder.dane`). */
+/** DANE / TLSA job holders per leaf and chain ({@link daneHolderKey}; ui/dane-panel.js keeps its job on `holder.dane`). */
 const daneHolders = new Map();
 /** View state that survives navigation and language re-mounts. */
 const viewState = { key: null, selected: 0, tab: 'names' };
@@ -2076,6 +2076,20 @@ function startTask(cache, key, fn) {
 
 function certKey(cert) {
   return `${cert.serialHex}|${cert.issuerDN}`;
+}
+
+/**
+ * The key of a file's DANE / TLSA check: its leaf (a precertificate apart from its final
+ * certificate, whose DER and so its 3 0 x value differ) and the file's other certificates, the
+ * CAs DANE-TA / PKIX-TA records are matched against (lib/dane.js). Another file with the same leaf
+ * gets a check of its own; the same file loaded again finds its check.
+ * @param {{ leaf: object, certificates: object[] }} result
+ * @returns {string}
+ */
+export function daneHolderKey(result) {
+  const { leaf } = result;
+  const others = result.certificates.filter((c) => c !== leaf).map(certKey).sort();
+  return [certKey(leaf), leaf.isPrecertificate ? 'precertificate' : 'certificate', ...others].join('\n');
 }
 
 function sanTypeLabel(type) {
@@ -2806,7 +2820,7 @@ export function mount(container, ctx) {
     /* --- DANE / TLSA (sends nothing until its button is clicked) ----------------- */
     function danePanel(shown) {
       const leaf = result.leaf;
-      const key = certKey(leaf);
+      const key = daneHolderKey(result);
       if (!daneHolders.has(key)) daneHolders.set(key, {});
       disposeDane();
       const panel = DanePanel({

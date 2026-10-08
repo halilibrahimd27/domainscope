@@ -245,7 +245,7 @@ VT_API_KEY=... SECURITYTRAILS_API_KEY=... python3 ip_intel.py domains ips.txt --
 python3 ip_intel.py sources   # which sources run, and which keys are set
 ```
 
-Exit codes: 0 done, 1 a source failed for an address (only with `--fail-on-error`), 2 usage error, 3 a report not written, 130 interrupted.
+Exit codes: 0 done, 1 PTR or a source failed for an address (only with `--fail-on-error`; a TLS port that does not answer is a state of the address, not a failure), 2 usage error, 3 a report not written, 130 interrupted.
 
 ## DNS change requests and fixes
 

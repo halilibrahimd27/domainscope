@@ -91,7 +91,7 @@ PORT_STATES = (PORT_OK, PORT_CLOSED, PORT_TIMEOUT, PORT_TLS_ERROR, PORT_ERROR)
 
 # --- how the address's TLS shows a name ------------------------------------------------
 TLS_SNI = 'SNI'    # asked with the name as SNI, the address served a certificate that covers it
-TLS_CERT = 'CERT'  # the name is in a certificate the address serves
+TLS_CERT = 'CERT'  # a certificate the address serves covers the name (its own name, or a wildcard)
 
 EXIT_OK = 0
 EXIT_SOURCE_ERRORS = 1   # only with --fail-on-error
@@ -1225,7 +1225,9 @@ class AddressReport:
     sni_failed: Dict[str, int] = field(default_factory=dict)  # port state -> handshakes
 
     def failed(self) -> List[SourceResult]:
-        return [s for s in self.sources if s.status in FAILED]
+        """The lookups that failed: PTR and the third-party sources. A TLS port that does not
+        answer is a state of the address (down, filtered), shown as such, not a failed lookup."""
+        return [s for s in self.sources if s.status in FAILED and s.source != 'tls']
 
 
 @dataclass
@@ -1357,10 +1359,11 @@ def _merge(rep: AddressReport) -> None:
                 row.sources.append(result.source)
             row.first_seen = _earlier(row.first_seen, hit.first)
             row.last_seen = _later(row.last_seen, hit.last)
+    patterns = sorted({name for seen in rep.certificates for name in seen.facts.names()})
+    for row in rows.values():
+        if any(name_covers(pattern, row.name) for pattern in patterns):
+            row.tls = TLS_CERT
     for seen in rep.certificates:
-        for name in seen.facts.names():
-            if name in rows and rows[name].tls is None:
-                rows[name].tls = TLS_CERT
         for name in seen.covers:
             if name in rows:
                 rows[name].tls = TLS_SNI
@@ -1645,7 +1648,7 @@ def render_text(report: IntelReport) -> str:
             ', '.join('%s on %d address%s' % (s, n, '' if n == 1 else 'es') for s, n in sorted(by_source.items()))))
     lines.append('HERE: the name resolves to the address now. MOVED: elsewhere now (an old name, or a CDN '
                  'in front). NO_ADDRESS: it does not resolve. TLS SNI: the address serves a certificate '
-                 'for it; CERT: the name is in a certificate it serves.')
+                 'for it when asked by name; CERT: a certificate it serves covers the name.')
     return '\n'.join(lines) + '\n'
 
 
@@ -1774,15 +1777,16 @@ name statuses (the system resolver, now):
   WILDCARD      a certificate's *.name: it covers names, it is not one
   LOOKUP_ERROR  the resolver gave no answer
   UNCHECKED     --no-verify
-  TLS SNI: asked with the name, the address served a certificate for it. TLS CERT: the name
-  is in a certificate the address serves.
+  TLS SNI: asked with the name, the address served a certificate for it. TLS CERT: a
+  certificate the address serves covers the name.
 
 source statuses (per address): OK, SKIPPED (not asked: a private address, or IPv6 at an
   IPv4-only source), RATE_LIMITED, REFUSED (HTTP 401 / 403: the key, or this client),
   TIMEOUT, ERROR.
 
-exit codes: 0 done, 1 a source failed for an address (only with --fail-on-error), 2 usage
-  error, 3 a report file could not be written, 130 interrupted.
+exit codes: 0 done, 1 PTR or a source failed for an address (only with --fail-on-error; a TLS
+  port that does not answer is a state of the address, not a failure), 2 usage error, 3 a
+  report file could not be written, 130 interrupted.
 
 Türkçe: Bir IP adresinin bugün sunduğu ya da geçmişte sunduğu alan adlarını kendi
   ağınızdan bulur: adresin sunduğu sertifikalar (SNI'li ve SNI'siz), PTR, ücretsiz pasif DNS
@@ -1848,7 +1852,7 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument('--json', metavar='FILE', help='write a JSON report ("-" = stdout)')
     out.add_argument('--csv', metavar='FILE', help='write a CSV report ("-" = stdout)')
     out.add_argument('--fail-on-error', action='store_true',
-                     help='exit with code 1 when a source failed for an address')
+                     help='exit with code 1 when PTR or a source failed for an address')
     out.add_argument('-q', '--quiet', action='store_true', help='no progress and no warnings on stderr')
     commands.add_parser('sources', help='list the sources and which keys are set (never the keys)',
                         description='List the sources and which keys are set (never the keys).')

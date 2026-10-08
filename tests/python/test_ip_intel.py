@@ -559,6 +559,19 @@ class RunTests(unittest.TestCase):
         timed_out = run(['127.0.0.1'], tls=True, ports=[443],
                         handshake=lambda ip, port, sni, timeout: (ii.PORT_TIMEOUT, None, 'no answer in 5 s'))
         self.assertEqual(timed_out.addresses[0].sources[0].status, ii.TIMEOUT)
+        # a port that does not answer is a state of the address (a range has unused ones), not a failure
+        self.assertEqual(timed_out.failures(), [])
+        self.assertIn('tls TIMEOUT (443: timeout (no answer in 5 s))', ii.render_text(timed_out))
+
+    def test_a_wildcard_the_address_serves_covers_the_names_under_it(self):
+        der = der_of('cli_public_wild')
+        http = FakeHttp([('https://otx.alienvault.com/', (200, {'passive_dns': [
+            {'hostname': 'shop.wild.example.net'}, {'hostname': 'a.b.wild.example.net'}], 'count': 2}))])
+        report = run(['203.0.113.10'], tls=True, ports=[443], sources=[source('otx')], http=http, sni_max=0,
+                     handshake=lambda ip, port, sni, timeout: (ii.PORT_OK, der, ''))
+        rows = {r.name: r.tls for r in report.addresses[0].names}
+        self.assertEqual(rows, {'shop.wild.example.net': ii.TLS_CERT, 'a.b.wild.example.net': None,
+                                'wild.example.net': ii.TLS_CERT, '*.wild.example.net': ii.TLS_CERT})
 
 
 # ============================================================================ output

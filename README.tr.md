@@ -230,7 +230,7 @@ VT_API_KEY=... SECURITYTRAILS_API_KEY=... python3 ip_intel.py domains ips.txt --
 python3 ip_intel.py sources   # hangi kaynaklar çalışır, hangi anahtarlar tanımlı
 ```
 
-Çıkış kodları: 0 tamam, 1 bir adres için bir kaynak başarısız oldu (yalnızca `--fail-on-error` ile), 2 kullanım hatası, 3 rapor yazılamadı, 130 kesildi.
+Çıkış kodları: 0 tamam, 1 bir adres için PTR ya da bir kaynak başarısız oldu (yalnızca `--fail-on-error` ile; yanıt vermeyen bir TLS portu hata değil, adresin durumudur), 2 kullanım hatası, 3 rapor yazılamadı, 130 kesildi.
 
 ## DNS değişiklik talepleri ve düzeltmeler
 

@@ -8,7 +8,9 @@
  *
  * Sources (both verified live on 2026-10-08; see SPEC §3):
  *   - Cert Spotter `GET /v1/issuances?domain=<d>&include_subdomains=true&expand=dns_names
- *     &expand=issuer&expand=cert_der` (ACAO `*`): the unexpired issuances of the domain and every
+ *     &expand=issuer&expand=cert_der&expand=revocation&expand=problem_reporting` (ACAO `*`; the
+ *     last two re-checked on 2026-10-08: when and why a certificate was revoked, and the CA's
+ *     problem-reporting contact, lib/revocation.js): the unexpired issuances of the domain and every
  *     name under it, ascending id, `after=<last id>` pages on, an empty page ends the list (a
  *     short page does not: `Link: rel="next"` came with 34 rows). A subdomain search counts
  *     against Cert Spotter's hourly allowance of 10 requests per IP (`X-Ratelimit-Limit: 10`), so a
@@ -40,6 +42,7 @@ import { parseCertificate } from './x509.js';
 import { CERTSPOTTER_ISSUANCES, CRTSH_BASE, CT_TIMEOUT_MS } from './ctcert.js';
 import { caaIssuerInfo } from './health.js';
 import { expectedCaStatus } from './expectedca.js';
+import { spotterRevocation, problemReportingText } from './revocation.js';
 
 /** Cert Spotter's hourly allowance for a subdomain search, per IP (`X-Ratelimit-Limit: 10`). */
 export const CT_WATCH_SPOTTER_LIMIT = 10;
@@ -94,6 +97,10 @@ export const CT_WATCH_NOTES = Object.freeze(['spotter-quota', 'spotter-failed', 
  * @property {string|null} sha256 certificate SHA-256 (Cert Spotter)
  * @property {boolean|null} precert logged only as a precertificate; null: not known (crt.sh)
  * @property {boolean|null} revoked Cert Spotter's flag; null: not known (crt.sh)
+ * @property {{ time: Date|null, reasonCode: number|null, reason: string|null, checkedAt: Date|null }|null} revocation
+ *   when and why it was revoked and when Cert Spotter last read the CA's CRL (lib/revocation.js
+ *   spotterRevocation); null: not known (crt.sh)
+ * @property {string|null} problemReporting the CA's problem-reporting contact, as text (Cert Spotter)
  * @property {boolean} wildcard a name is a wildcard
  * @property {'certspotter'|'crtsh'} source
  * @property {string|null} url the certificate on crt.sh
@@ -342,7 +349,8 @@ export const spotterBudget = createSpotterBudget();
  */
 export function spotterWatchUrl(domain, { after = null } = {}) {
   const tail = after ? `&after=${encodeURIComponent(after)}` : '';
-  return `${CERTSPOTTER_ISSUANCES}?domain=${encodeURIComponent(domain)}&include_subdomains=true&expand=dns_names&expand=issuer&expand=cert_der${tail}`;
+  return `${CERTSPOTTER_ISSUANCES}?domain=${encodeURIComponent(domain)}&include_subdomains=true&expand=dns_names&expand=issuer&expand=cert_der`
+    + `&expand=revocation&expand=problem_reporting${tail}`;
 }
 
 const JSON_INIT = Object.freeze({ headers: { accept: 'application/json' }, credentials: 'omit', referrerPolicy: 'no-referrer' });
@@ -376,6 +384,7 @@ export function fromSpotterItems(items, domain, { now = Date.now() } = {}) {
     const serialHex = cert ? serialOf(cert.serialHex) : null;
     const sha256 = typeof item.cert_sha256 === 'string' && /^[0-9a-f]{64}$/i.test(item.cert_sha256) ? item.cert_sha256.toLowerCase() : null;
     const fallback = typeof item.tbs_sha256 === 'string' && item.tbs_sha256 ? `tbs:${item.tbs_sha256.toLowerCase()}` : `certspotter:${item.id}`;
+    const r = spotterRevocation(item);
     out.push({
       id: certId({ intermediate, serialHex, fallback }),
       domain,
@@ -389,6 +398,8 @@ export function fromSpotterItems(items, domain, { now = Date.now() } = {}) {
       sha256,
       precert: cert ? !!cert.isPrecertificate : null,
       revoked: typeof item.revoked === 'boolean' ? item.revoked : null,
+      revocation: r ? { time: r.time, reasonCode: r.reasonCode, reason: r.reason, checkedAt: r.checkedAt } : null,
+      problemReporting: problemReportingText(item.problem_reporting),
       wildcard: names.some((n) => n.startsWith('*.')),
       source: 'certspotter',
       url: sha256 ? `${CRTSH_BASE}?q=${sha256}` : null
@@ -431,6 +442,8 @@ export function fromCrtshCerts(certs, domain, { now = Date.now() } = {}) {
       sha256: typeof c.sha256 === 'string' && c.sha256 ? c.sha256 : null,
       precert: null,
       revoked: null,
+      revocation: null,
+      problemReporting: null,
       wildcard: names.some((n) => n.startsWith('*.')),
       source: 'crtsh',
       url: typeof c.url === 'string' && c.url.startsWith(CRTSH_BASE) ? c.url : null
@@ -448,7 +461,7 @@ function mergeById(...lists) {
       byId.set(c.id, { ...c });
       continue;
     }
-    for (const k of ['sha256', 'serialHex', 'url']) if (!prev[k] && c[k]) prev[k] = c[k];
+    for (const k of ['sha256', 'serialHex', 'url', 'revocation', 'problemReporting']) if (!prev[k] && c[k]) prev[k] = c[k];
     if (prev.precert === null && c.precert !== null) prev.precert = c.precert;
     if (prev.revoked === null && c.revoked !== null) prev.revoked = c.revoked;
   }
@@ -706,7 +719,7 @@ export function expiryEntries(rows) {
 
 /** The CSV columns of {@link exportCtRow}, in order. */
 export const CT_EXPORT_COLUMNS = Object.freeze(['domain', 'names', 'ca', 'intermediate', 'notBefore', 'notAfter', 'daysLeft', 'current', 'new',
-  'unexpectedCa', 'precertificateOnly', 'wildcard', 'revoked', 'superseded', 'serial', 'sha256', 'source', 'url']);
+  'unexpectedCa', 'precertificateOnly', 'wildcard', 'revoked', 'superseded', 'serial', 'sha256', 'source', 'url', 'revokedAt', 'revocationReason']);
 
 /**
  * One row as the CSV holds it: plain values, booleans as yes / no, unknown as an empty cell.
@@ -733,7 +746,9 @@ export function exportCtRow(r) {
     serial: r.serialHex || '',
     sha256: r.sha256 || '',
     source: r.source,
-    url: r.url || ''
+    url: r.url || '',
+    revokedAt: r.revoked && r.revocation && r.revocation.time ? r.revocation.time.toISOString() : '',
+    revocationReason: r.revoked && r.revocation && r.revocation.reason ? r.revocation.reason : ''
   };
 }
 

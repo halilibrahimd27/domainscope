@@ -527,7 +527,8 @@ async function main() {
       const log = await page.evaluate(() => window.__ctLog.map((x) => `${x.source} ${x.domain}${x.after ? ' (next page)' : ''}`));
       assertEqual(log, ['certspotter example.com', 'certspotter example.com (next page)', 'certspotter example.org', 'certspotter example.org (next page)',
         'certspotter example-test.com.tr', 'crtsh example-test.com.tr'], 'the requests, in turn');
-      assertEqual(await page.evaluate(() => `${window.__ctLog[0].subdomains} ${window.__ctLog[0].expand.join(',')}`), 'true dns_names,issuer,cert_der', 'the subdomain search, the DER expanded');
+      assertEqual(await page.evaluate(() => `${window.__ctLog[0].subdomains} ${window.__ctLog[0].expand.join(',')}`), 'true dns_names,issuer,cert_der,revocation,problem_reporting',
+        'the subdomain search, the DER, the revocation and the CA\'s contact expanded');
       assertEqual(await ctTiles(page), { current: '4', expiring: '1', new: '2', unexpected: '1', wildcard: '1', precert: '1' }, 'tiles');
       assertEqual(await ctRows(page), [
         { names: '*.example.com', flags: ['wildcard'], band: 'last' },

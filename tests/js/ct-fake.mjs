@@ -1,7 +1,8 @@
 /**
  * tests/js/ct-fake.mjs — Certificate Transparency answers for the tests of the portfolio's CT watch
- * (tests/js/ctwatch.test.js, tests/e2e/portfolio.e2e.mjs): Cert Spotter rows in the shape the live
- * API returned on 2026-10-08 (`expand=dns_names&expand=issuer&expand=cert_der`), with crafted DER
+ * (tests/js/ctwatch.test.js, tests/e2e/portfolio.e2e.mjs, tests/e2e/revocation.e2e.mjs): Cert Spotter
+ * rows in the shape the live API returned on 2026-10-08 (`expand=dns_names&expand=issuer
+ * &expand=cert_der&expand=revocation&expand=problem_reporting`), with crafted DER
  * (a serial of its own; a precertificate carries the critical CT poison extension), and crt.sh rows
  * in the shape lib/sources.js parses (`deduplicate=Y`). Documentation names only.
  */
@@ -68,13 +69,21 @@ export function certDer({ names, notBefore, notAfter, serial = 1, precert = fals
 
 let nextId = 17390000000;
 
+/** The CA's problem-reporting text of the fake rows (the shape of a real CA's, documentation names only). */
+export const CT_PROBLEM_REPORTING = 'To revoke a certificate issued by Example Trust for which you hold the private key, use:\n'
+  + '  · https://revoke.example.com/portal\n\nTo report abuse or a misissued certificate, e-mail:\n  · abuse[at]example[dot]com';
+
 /**
- * A Cert Spotter issuance as the live API returns it.
+ * A Cert Spotter issuance as the live API returns it. `revokedAt` / `reason` (an RFC 5280 code):
+ * the `expand=revocation` object of a revoked certificate (`revoked` true); `problemReporting`:
+ * `expand=problem_reporting` (the CA's text; null leaves both expansions out, as before 2026-10-08).
  * @returns {object}
  */
 export function spotterRow({ names, notBefore = '2026-08-01T00:00:00Z', notAfter = '2026-10-30T00:00:00Z', precert = false, revoked = false, serial = 1,
-  issuer = CT_ISSUER, friendly = 'Example Trust', der } = {}) {
+  issuer = CT_ISSUER, friendly = 'Example Trust', der, revokedAt = null, reason = null, checkedAt = '2026-10-08T06:00:00Z',
+  problemReporting = CT_PROBLEM_REPORTING } = {}) {
   nextId += 1;
+  const isRevoked = revoked || revokedAt !== null;
   return {
     id: String(nextId),
     tbs_sha256: 'ab'.repeat(32),
@@ -84,7 +93,11 @@ export function spotterRow({ names, notBefore = '2026-08-01T00:00:00Z', notAfter
     issuer: { friendly_name: friendly, pubkey_sha256: '12'.repeat(32), name: issuer },
     not_before: notBefore,
     not_after: notAfter,
-    revoked,
+    revoked: isRevoked,
+    ...(problemReporting === null ? {} : {
+      revocation: { time: isRevoked ? revokedAt : null, reason: isRevoked ? reason : null, checked_at: checkedAt },
+      problem_reporting: problemReporting
+    }),
     cert_der: Buffer.from(der || certDer({ names, notBefore, notAfter, precert, serial })).toString('base64')
   };
 }

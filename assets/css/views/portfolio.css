@@ -589,6 +589,41 @@
   gap: 2px;
 }
 
+/* A revoked certificate: when and why; the CA's problem-reporting contact (ui/revocation.js). */
+.pf-ct-revoked {
+  flex-basis: 100%;
+  white-space: normal;
+  color: var(--error);
+}
+
+.pf-ct-report {
+  flex-basis: 100%;
+  min-width: 0;
+  white-space: normal;
+  font-weight: 400;
+}
+
+.pf-ct-report .disclosure-summary {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.pf-ct-report .disclosure-body {
+  padding: 2px 8px 8px;
+}
+
+.rev-report-intro {
+  margin: 0 0 4px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.rev-report-text {
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .pf-ct-table tr.pf-ct-band-last td:first-child {
   box-shadow: inset 3px 0 0 var(--error-solid);
 }

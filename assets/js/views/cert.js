@@ -6,7 +6,9 @@
  * without uploading it), usages, AIA/CRL/SCT data, the chain order (with a correctly
  * ordered fullchain.pem download), a CAA check per name (lib/health.js), a Certificate
  * Transparency lookup of the serial number on crt.sh and, on a click, of its public key (key
- * continuity: reused across renewals or rotated, ui/key-continuity.js), the DANE / TLSA check of
+ * continuity: reused across renewals or rotated, ui/key-continuity.js) and of whether it is
+ * revoked (Cert Spotter asked for one of its names, the answer matched by the certificate's
+ * SHA-256 here; ui/revocation-card.js, loaded with the tab), the DANE / TLSA check of
  * the leaf (ui/dane-panel.js over lib/dane.js: do TLSA records at its mail servers and names pin
  * another certificate?). "Find servers for this certificate" hands the certificate to the SSL
  * Targets view (state.session.pendingCert). A PKCS#12 (.pfx / .p12) file asks for its password
@@ -2029,6 +2031,9 @@ const daneHolders = new Map();
 const viewState = { key: null, selected: 0, tab: 'names' };
 /** Compare (ui/cert-diff-panel.js over lib/certdiff.js), loaded on the tab's first use; it keeps its own memory. */
 const loadCertDiff = onceAsync(() => import('../ui/cert-diff-panel.js'));
+/** "Is it revoked?" lookups per certificate (ui/revocation-card.js, loaded with the CT logs tab). */
+const revocationCache = new Map();
+const loadRevocationCard = onceAsync(() => import('../ui/revocation-card.js'));
 let teardown = null;
 /** The mounted view's page-session hooks ({@link result}, {@link rerun}); null while another tool is shown. */
 let active = null;
@@ -2069,6 +2074,8 @@ stateSingleton.subscribe(({ key }) => {
   ctCache.clear();
   cancelKeyLookups(keyCache);
   keyCache.clear();
+  for (const entry of revocationCache.values()) if (entry.controller) entry.controller.abort();
+  revocationCache.clear();
   for (const holder of daneHolders.values()) cancelDane(holder);
   daneHolders.clear();
   Object.assign(viewState, { key: null, selected: 0, tab: 'names' });
@@ -2918,6 +2925,18 @@ export function mount(container, ctx) {
       return host;
     }
 
+    /* --- Is it revoked? (ui/revocation-card.js, loaded with the CT logs tab) --- */
+    function revocationPart(cert, key) {
+      const host = h('div', { class: 'cert-rev-host' });
+      loadRevocationCard().then(({ RevocationCard }) => {
+        host.append(RevocationCard({ cert, ctx, cache: revocationCache, cacheKey: key }));
+      }).catch((err) => {
+        ctx.checkOutdated();
+        host.append(ErrorBanner(err, { compact: true }));
+      });
+      return host;
+    }
+
     /* --- Certificate Transparency ----------------------------------------- */
     function ctPanel(cert) {
       const key = certKey(cert);
@@ -2945,7 +2964,9 @@ export function mount(container, ctx) {
           onOpenDane: () => {
             if (tabs) tabs.select('dane', { focus: true });
           }
-        }) : null);
+        }) : null,
+        // Is it revoked? Cert Spotter on a click, by one of its names; a CA certificate is not listed there.
+        cert.isCA ? null : revocationPart(cert, key));
       const refresh = (entry) => {
         if (!panel.isConnected) return;
         if (entry.status === 'aborted' && !ctx.signal.aborted) run(); // see caaPanel

@@ -126,12 +126,12 @@ describe('helpers', () => {
     assert.equal(b.resetAt().getTime(), now() + 600000);
   });
 
-  test('the subdomain search URL expands the names, the issuer and the DER', () => {
+  test('the subdomain search URL expands the names, the issuer, the DER, the revocation and the CA’s problem reporting', () => {
     const u = new URL(spotterWatchUrl('example.com', { after: '123' }));
     assert.equal(u.origin + u.pathname, CERTSPOTTER_ISSUANCES);
     assert.equal(u.searchParams.get('domain'), 'example.com');
     assert.equal(u.searchParams.get('include_subdomains'), 'true');
-    assert.deepEqual(u.searchParams.getAll('expand'), ['dns_names', 'issuer', 'cert_der']);
+    assert.deepEqual(u.searchParams.getAll('expand'), ['dns_names', 'issuer', 'cert_der', 'revocation', 'problem_reporting']);
     assert.equal(u.searchParams.get('after'), '123');
   });
 });
@@ -156,6 +156,36 @@ describe('the two sources read the same certificate the same way', () => {
     assert.equal(certs[1].precert, true);
     assert.equal(certs[1].wildcard, true);
     assert.equal(certs[2].revoked, true);
+  });
+
+  test('Cert Spotter rows: when and why a certificate was revoked, and the CA’s problem-reporting contact', () => {
+    const rows = [
+      issuance({ names: ['shop.example.com'], serial: 20, revokedAt: '2026-09-21T10:15:00Z', reason: 1, checkedAt: '2026-10-08T05:00:00Z' }),
+      issuance({ names: ['www.example.com'], serial: 21 }),
+      issuance({ names: ['api.example.com'], serial: 22, revokedAt: '2026-09-22T00:00:00Z', reason: null }),
+      issuance({ names: ['old.example.com'], serial: 23, problemReporting: null }),
+      { ...issuance({ names: ['odd.example.com'], serial: 24 }), problem_reporting: 'Report‮ it\r\n\r\n\r\n\r\nhere\u0007', revocation: 'no' }
+    ];
+    const certs = fromSpotterItems(rows, 'example.com', { now: NOW });
+    const by = (name) => certs.find((c) => c.names.includes(name));
+    const shop = by('shop.example.com');
+    assert.equal(shop.revoked, true);
+    assert.deepEqual(shop.revocation, { time: new Date('2026-09-21T10:15:00Z'), reasonCode: 1, reason: 'keyCompromise', checkedAt: new Date('2026-10-08T05:00:00Z') });
+    assert.match(shop.problemReporting, /^To revoke a certificate issued by Example Trust/);
+    assert.ok(shop.problemReporting.includes('\n  · https://revoke.example.com/portal\n'), 'its line breaks kept');
+    assert.deepEqual(by('www.example.com').revocation, { time: null, reasonCode: null, reason: null, checkedAt: new Date('2026-10-08T06:00:00Z') });
+    assert.deepEqual([by('api.example.com').revoked, by('api.example.com').revocation.reason], [true, null], 'revoked without a reason given');
+    assert.deepEqual([by('old.example.com').revocation, by('old.example.com').problemReporting], [null, null], 'no expansion: not known');
+    assert.equal(by('odd.example.com').problemReporting, 'Report it\n\nhere', 'controls and bidi overrides out, blank lines folded');
+    assert.equal(by('odd.example.com').revocation, null, 'a revocation that is no object is not read');
+    // the CSV says when and why
+    const analysis = analyzeCt([{ domain: 'example.com', at: NOW, state: 'ok', source: 'certspotter', certs, failures: [], notes: [], requests: { certspotter: 1, crtsh: 0 } }], { now: NOW });
+    const csv = (name) => exportCtRow(analysis.rows.find((r) => r.names.includes(name)));
+    assert.deepEqual([csv('shop.example.com').revokedAt, csv('shop.example.com').revocationReason], ['2026-09-21T10:15:00.000Z', 'keyCompromise']);
+    assert.deepEqual([csv('www.example.com').revokedAt, csv('www.example.com').revocationReason], ['', '']);
+    // crt.sh's twin of a certificate takes Cert Spotter's revocation when the two are merged (crt.sh read last)
+    const [twin] = fromCrtshCerts([{ key: 'crtsh:1:14', id: 9, serialHex: '14', issuer: ISSUER, notBefore: new Date('2026-08-01T00:00:00Z'), notAfter: new Date('2026-10-30T00:00:00Z'), names: ['shop.example.com'], url: 'https://crt.sh/?id=9' }], 'example.com', { now: NOW });
+    assert.deepEqual([twin.revocation, twin.problemReporting], [null, null]);
   });
 
   test('an unreadable DER: no serial, not known whether it is a precertificate, a stable fallback id', () => {

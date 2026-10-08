@@ -97,6 +97,8 @@ before(async () => {
   await imp('assets/js/ui/rollout-panel.js');
   // Certificate › Compare: loaded on the tab's first use.
   await imp('assets/js/ui/cert-diff-panel.js');
+  // Certificate › CT logs › Is it revoked?: loaded with the tab.
+  await imp('assets/js/ui/revocation-card.js');
   // The command palette: the shell loads it on the first Ctrl/Cmd+K.
   await imp('assets/js/ui/palette.js');
   views = {};

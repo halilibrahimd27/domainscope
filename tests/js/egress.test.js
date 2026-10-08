@@ -28,6 +28,8 @@ import {
 import { RESOLVERS, ECS_RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { certspotterUrl, crtshSearchUrls, CRTSH_BASE, CERTSPOTTER_ISSUANCES } from '../../assets/js/lib/ctcert.js';
 import { certspotterIssuersUrl, crtshIssuersUrl } from '../../assets/js/lib/passport.js';
+import { spotterWatchUrl } from '../../assets/js/lib/ctwatch.js';
+import { revocationUrl } from '../../assets/js/lib/revocation.js';
 import { announcedPrefixesUrl } from '../../assets/js/lib/ptrsweep.js';
 import { RIPESTAT_BASE, RIPESTAT_SOURCEAPP, IPWHOIS_BASE, HACKERTARGET_REVERSE_IP, THC_REVERSE_IP } from '../../assets/js/lib/ipintel.js';
 import { IANA_BOOTSTRAP, RDAP_ORG, rdapDomain } from '../../assets/js/lib/rdap.js';
@@ -278,6 +280,8 @@ describe('the registry', () => {
       [certspotterUrl('www.example.com'), 'certspotter', 'issuances', ['domains']],
       [certspotterIssuersUrl('example.com'), 'certspotter', 'issuances', ['domains']],
       ['https://api.certspotter.com/v1/issuances?domain=example.com&include_subdomains=true&expand=dns_names&after=123', 'certspotter', 'issuances', ['domains']],
+      [spotterWatchUrl('example.com'), 'certspotter', 'issuances', ['domains']],
+      [revocationUrl('www.example.com', { after: '123' }), 'certspotter', 'issuances', ['domains']],
       [crtshSearchUrls('www.example.com')[0], 'crtsh', 'search', ['domains']],
       [crtshIssuersUrl('example.com'), 'crtsh', 'search', ['domains']],
       ['https://crt.sh/?q=%25.example.com&output=json&exclude=expired&deduplicate=Y', 'crtsh', 'search', ['domains']],
@@ -573,6 +577,8 @@ const CALL_SITES = {
   'assets/js/lib/doh.js': ['doh'],
   'assets/js/lib/ctcert.js': ['certspotter', 'crtsh'],
   'assets/js/lib/ctwatch.js': ['certspotter', 'crtsh'],
+  // Certificate › CT logs › Is it revoked?: one of the certificate's names, after a click
+  'assets/js/lib/revocation.js': ['certspotter'],
   'assets/js/lib/sources.js': ['crtsh', 'certspotter', 'hackertarget', 'anubis', 'otx', 'thc'],
   'assets/js/lib/ipintel.js': ['ripestat', 'ipwhois', 'hackertarget', 'thc'],
   // IP Intel › Domains on this IP (HackerTarget and ip.thc.org through lib/ipintel.js)

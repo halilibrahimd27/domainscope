@@ -7,7 +7,9 @@
  *   the click. The line under it shows Cert Spotter's quota as this page used it.
  * - The result: tiles (current certificates, expiring, new since the last check, unexpected CA,
  *   wildcard, precertificate only), each a filter; one row per unexpired certificate with its
- *   names, CA, validity and flags; per domain how it was read, a domain that could not be read is
+ *   names, CA, validity and flags (a revoked one: when and why; a revoked one or one from an
+ *   unexpected CA: the CA's problem-reporting contact, ui/revocation.js, all from the same Cert
+ *   Spotter answers); per domain how it was read, a domain that could not be read is
  *   "⚠ n/a" with a Retry of that domain. Exports: CSV of the rows shown and an .ics calendar of
  *   the current certificates' expiries, with reminders at the radar's days.
  * - The baseline: after a check, the ids of the certificates read go into the workspace's
@@ -33,6 +35,7 @@ import { sourceStatus } from '../lib/sourcestatus.js';
 import { NaMark, RetryButton, setRetryBusy } from './source-status.js';
 import { downloadText, timestampedName } from './download.js';
 import { registerRunning } from './jobs.js';
+import { ProblemReporting, RevokedLine, generatedKeys as revocationKeys } from './revocation.js';
 import { state as stateSingleton } from '../state.js';
 
 /** The tiles above the table, each a filter of lib/ctwatch.js CT_WATCH_FILTERS. */
@@ -236,7 +239,8 @@ export function generatedKeys() {
     ...CT_WATCH_FILTERS.map((f) => `ctw.filter.${f}`),
     ...CT_WATCH_NOTES.map((n) => `ctw.note.${n}`),
     ...CT_TILES.map((k) => `ctw.tile.${k}`),
-    'ctw.src.certspotter', 'ctw.src.crtsh'
+    'ctw.src.certspotter', 'ctw.src.crtsh',
+    ...revocationKeys()
   ];
 }
 
@@ -381,6 +385,13 @@ export function mountCtWatch(host, { ctx, domains }) {
     const shown = r.names.slice(0, 3);
     return cellOf(...shown.map((n) => mono(n)), r.names.length > 3 ? h('span', { class: 'muted text-xs' }, t('ctw.moreNames', { count: r.names.length - 3 })) : null);
   };
+  // A revoked certificate: when and why (Cert Spotter); revoked or from an unexpected CA: the CA's
+  // problem-reporting contact, as the CA wrote it (text, never markup).
+  const flagsCell = (r) => cellOf(
+    ...r.flags.map(flagBadge),
+    r.revoked ? RevokedLine(r.revocation, { className: 'pf-ct-revoked text-xs' }) : null,
+    (r.revoked || r.unexpected) && r.problemReporting ? ProblemReporting(r.problemReporting, { className: 'pf-ct-report' }) : null
+  );
   const caCell = (r) => cellOf(
     h('span', null, r.ca),
     r.intermediate && r.intermediate !== r.ca ? h('span', { class: 'muted text-xs' }, r.intermediate) : null,
@@ -393,7 +404,7 @@ export function mountCtWatch(host, { ctx, domains }) {
       { key: 'ca', label: t('ctw.col.ca'), sortable: true, sortValue: (r) => r.ca, searchable: false, render: caCell },
       { key: 'from', label: t('ctw.col.from'), sortable: true, sortValue: (r) => r.notBefore.getTime(), searchable: false, render: (r) => h('span', { class: 'pf-nowrap', title: formatDateTime(r.notBefore) }, formatDate(r.notBefore)) },
       { key: 'expires', label: t('ctw.col.expires'), sortable: true, sortValue: (r) => r.notAfter.getTime(), searchable: false, render: (r) => cellOf(h('span', { class: 'pf-nowrap', title: formatDateTime(r.notAfter) }, formatDate(r.notAfter)), expiryBadge(r)) },
-      { key: 'flags', label: t('ctw.col.flags'), sortable: false, searchable: false, render: (r) => cellOf(...r.flags.map(flagBadge)), className: 'pf-flags' }
+      { key: 'flags', label: t('ctw.col.flags'), sortable: false, searchable: false, render: flagsCell, className: 'pf-flags' }
     ],
     rowKey: (r) => `${r.domain}|${r.id}`,
     search: { placeholder: t('ctw.search') },

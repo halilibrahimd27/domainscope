@@ -139,7 +139,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 
 **Status (2026-10-08): the start route is at 339,887 bytes gzip of its 370 KB budget (379,552 before the diet), and the sidebar keeps 24 tools in view at 1366 × 768.**
 
-**Status (2026-10-08): shipped on `feat/cli-ip-intel` (SPEC §7.2).** The free sources' answers were checked live against 1.1.1.1; the key services answered 401 / 403 without a key, which proves their paths, but no key was at hand to check a full answer (the parsers follow each service's documentation and accept a missing field). Censys says its Search v2 API shuts down on 2026-09-30 and still answered on 2026-10-08: the Platform API (a personal access token) is the follow-up. Still open: more than one page per source.
+**Status (2026-10-08): shipped in wave 6 (SPEC §7.2).** The free sources' answers were checked live against 1.1.1.1; the key services answered 401 / 403 without a key, which proves their paths, but no key was at hand to check a full answer (the parsers follow each service's documentation and accept a missing field). Censys says its Search v2 API shuts down on 2026-09-30 and still answered on 2026-10-08: the Platform API (a personal access token) is the follow-up. Still open: more than one page per source.
 
 ## P0 — next iteration
 

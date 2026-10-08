@@ -2710,6 +2710,50 @@ describe('topology notes and card (ui/topology.js)', () => {
     assert.match(i18n.t('topo.introScan'), /needs no certificate unless DNS points at it directly\.$/);
   });
 
+  test('a VIP pair passing TLS through: its rows neither say "install on both" nor call the inventory contradictory, and the card says it passes TLS through', async () => {
+    const { TopologyNotes, TopologyCard, noCertStatus } = await import('../../assets/js/ui/topology.js');
+    const { parseInventory } = await import('../../assets/js/lib/inventory.js');
+    const { applyTopology } = await import('../../assets/js/lib/topology.js');
+    // www answers with the VIP the two holders share; the scan's groups for them, through lib/topology
+    const groupsOf = (text) => {
+      const inv = parseInventory(text);
+      assert.deepEqual(inv.warnings, []);
+      const holders = inv.servers.filter((s) => (s.vips || []).length);
+      const groups = applyTopology(holders.map((server) => ({ server, hosts: [{ name: 'www.example.net', ip: '203.0.113.50', covered: true, via: 'dns', through: 'vip' }] })), inv.servers);
+      return { servers: inv.servers, by: Object.fromEntries(groups.map((g) => [g.server.name, g])) };
+    };
+    const notes = (g) => withFakeDocument(() => TopologyNotes(g.topology).childNodes.map((li) => [li.dataset.topo, li.textContent]));
+    const walk = (node, pred) => (pred(node) ? node : (node.childNodes || []).map((c) => walk(c, pred)).find(Boolean) || null);
+    const vipLine = (servers) => withFakeDocument(() => walk(TopologyCard(servers), (n) => n.dataset && n.dataset.vip === '203.0.113.50').textContent);
+
+    const pass = groupsOf(['lb01 10.0.0.1 vip=203.0.113.50 terminates_tls=no backends=web01,web02',
+      'lb02 10.0.0.2 vip=203.0.113.50 terminates_tls=no backends=web01,web02', 'web01 10.0.0.21', 'web02 10.0.0.22'].join('\n'));
+    assert.deepEqual([noCertStatus(pass.by.lb01), noCertStatus(pass.by.lb02)], ['passthrough', 'passthrough']);
+    for (const name of ['lb01', 'lb02']) {
+      assert.deepEqual(notes(pass.by[name]), [
+        ['passthrough', 'Passes TLS through to web01, web02: no certificate here'],
+        ['vip', 'VIP 203.0.113.50 — held by lb01, lb02']
+      ], name);
+    }
+    assert.equal(vipLine(pass.servers), '203.0.113.50lb01, lb02 pass TLS through (terminates_tls=no) — no certificate');
+
+    // where the certificate does go, the VIP note still says so, and a plain holder DNS reaches is still a contradiction
+    const tls = groupsOf('lb01 10.0.0.1 vip=203.0.113.50\nlb02 10.0.0.2 vip=203.0.113.50');
+    assert.deepEqual(notes(tls.by.lb01), [['vip', 'VIP 203.0.113.50 — install on both: lb01 and lb02']]);
+    const plain = groupsOf('web01 10.0.0.21 vip=203.0.113.50 terminates_tls=no\nweb02 10.0.0.22 vip=203.0.113.50 terminates_tls=no');
+    assert.deepEqual(notes(plain.by.web01).map(([kind]) => kind), ['suspect', 'vip', 'suspect']);
+    assert.match(notes(plain.by.web01)[2][1], /^VIP 203\.0\.113\.50: the inventory says terminates_tls=no for web01, web02 — check it$/);
+    assert.equal(vipLine(plain.servers), '203.0.113.50plain HTTP on web01, web02 (terminates_tls=no) — no certificate');
+
+    i18n.setLang('tr');
+    try {
+      assert.equal(notes(pass.by.lb01)[1][1], 'VIP 203.0.113.50 — tutan sunucular: lb01, lb02');
+      assert.equal(vipLine(pass.servers), '203.0.113.50lb01, lb02 TLS’i olduğu gibi iletiyor (terminates_tls=no) — sertifika gerekmez');
+    } finally {
+      i18n.setLang('en');
+    }
+  });
+
   test('TopologyWarnings: SSL Targets lists the inventory topology warnings in words, with their line and token', async () => {
     const { TopologyWarnings } = await import('../../assets/js/ui/topology.js');
     const warnings = [

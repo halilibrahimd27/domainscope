@@ -39,6 +39,7 @@ registerStrings('en', {
   'topo.vipHolder1': 'only {name} holds it',
   'topo.vipMixed': 'install on {tls}; {plain}: terminates_tls=no — check the inventory',
   'topo.vipPlainAll': 'plain HTTP on {names} (terminates_tls=no) — no certificate',
+  'topo.vipPassAll': { one: '{names} passes TLS through (terminates_tls=no) — no certificate', other: '{names} pass TLS through (terminates_tls=no) — no certificate' },
   'topo.noBackends': 'none of its backends is in the inventory',
   'topo.noTermination': 'TLS terminates nowhere behind it: every backend says terminates_tls=no too — check the inventory',
   'topo.introScan': 'Your inventory says where TLS terminates: the servers behind a load balancer (or a VIP pair) come right after it, and a server with terminates_tls=no needs no certificate unless DNS points at it directly.',
@@ -52,6 +53,7 @@ registerStrings('en', {
   'topo.note.vip1': 'VIP {ip}',
   'topo.note.vip2': 'VIP {ip} — install on both: {a} and {b}',
   'topo.note.vipN': 'VIP {ip} — install on all {count}: {names}',
+  'topo.note.vipHeld': 'VIP {ip} — held by {names}',
   'topo.note.vipPlain': 'VIP {ip}: the inventory says terminates_tls=no for {names} — check it',
   'topo.note.nat': 'Reached at {ip} (NAT) → {addresses}',
   'topo.note.ports': 'TLS ports {ports}',
@@ -114,6 +116,7 @@ registerStrings('tr', {
   'topo.vipHolder1': 'yalnızca {name} sunucusunda',
   'topo.vipMixed': 'kurulacak: {tls}; {plain} için terminates_tls=no yazılmış — envanteri kontrol edin',
   'topo.vipPlainAll': '{names} üzerinde düz HTTP (terminates_tls=no) — sertifika gerekmez',
+  'topo.vipPassAll': { one: '{names} TLS’i olduğu gibi iletiyor (terminates_tls=no) — sertifika gerekmez', other: '{names} TLS’i olduğu gibi iletiyor (terminates_tls=no) — sertifika gerekmez' },
   'topo.noBackends': 'arkasındaki sunucuların hiçbiri envanterde yok',
   'topo.noTermination': 'Arkasında TLS hiçbir yerde sonlanmıyor: her arka uç da terminates_tls=no diyor — envanteri kontrol edin',
   'topo.introScan': 'Envanteriniz TLS’in nerede sonlandığını söylüyor: bir yük dengeleyicinin (ya da VIP çiftinin) arkasındaki sunucular hemen altında listelenir; terminates_tls=no olan bir sunucuya, DNS doğrudan ona işaret etmiyorsa sertifika gerekmez.',
@@ -130,6 +133,7 @@ registerStrings('tr', {
   'topo.note.vip1': 'VIP {ip}',
   'topo.note.vip2': 'VIP {ip} — ikisine de kurun: {a} ve {b}',
   'topo.note.vipN': 'VIP {ip} — {count} sunucunun hepsine kurun: {names}',
+  'topo.note.vipHeld': 'VIP {ip} — tutan sunucular: {names}',
   'topo.note.vipPlain': 'VIP {ip}: envanter {names} için terminates_tls=no diyor — kontrol edin',
   'topo.note.nat': '{ip} adresinden erişiliyor (NAT) → {addresses}',
   'topo.note.ports': 'TLS portları: {ports}',
@@ -184,8 +188,13 @@ export function noCertStatus(group) {
   return topo.backends && topo.backends.length ? 'passthrough' : 'plain';
 }
 
-/** "install on both: a and b" / "install on all 3: a, b, c" for the holders of a VIP. */
-function vipText(ip, servers) {
+/**
+ * "install on both: a and b" / "install on all 3: a, b, c" for the holders of a VIP; on a server
+ * that gets no certificate (`noCert`, a load balancer passing TLS through) only who holds it.
+ */
+function vipText(ip, servers, noCert = false) {
+  if (noCert && servers.length > 1) return t('topo.note.vipHeld', { ip, names: servers.join(', ') });
+  if (noCert) return t('topo.note.vip1', { ip });
   if (servers.length === 2) return t('topo.note.vip2', { ip, a: servers[0], b: servers[1] });
   if (servers.length > 2) return t('topo.note.vipN', { ip, count: servers.length, names: servers.join(', ') });
   return t('topo.note.vip1', { ip });
@@ -218,10 +227,12 @@ export function TopologyNotes(topology) {
   } else if (!topology.terminatesTls && !behind && !suspect) {
     note('plain', 'unlock', t('topo.note.plain'));
   }
+  // No certificate here (a VIP pair passing TLS through, lib/topology.js): no "install on", no contradiction.
+  const noCert = !!noCertStatus({ topology });
   for (const v of topology.vips || []) {
-    note('vip', 'share', vipText(v.ip, v.servers || []));
+    note('vip', 'share', vipText(v.ip, v.servers || [], noCert));
     // DNS reaches every holder, so each needs it; the inventory saying no for some is a contradiction
-    if (v.plain && v.plain.length) note('suspect', 'alert', t('topo.note.vipPlain', { ip: v.ip, names: v.plain.join(', ') }));
+    if (!noCert && v.plain && v.plain.length) note('suspect', 'alert', t('topo.note.vipPlain', { ip: v.ip, names: v.plain.join(', ') }));
   }
   for (const n of topology.nats || []) note('nat', 'swap', t('topo.note.nat', { ip: n.ip, addresses: (n.addresses || []).join(', ') }));
   if (topology.tlsPorts && topology.tlsPorts.length) note('ports', 'hash', t('topo.note.ports', { ports: topology.tlsPorts.join(', ') }));
@@ -298,12 +309,15 @@ export function TopologyCard(servers) {
     })));
   }
   if (topo.vips.length) {
+    const lbOf = new Map(topo.lbs.map((lb) => [lb.server, lb.backends]));
     section('vips', t('topo.vips'), h('ul', { class: 'topo-list' }, topo.vips.map((v) => {
       // Without DNS the inventory is all there is: install on the holders that terminate TLS, say when they disagree.
       const names = v.servers.filter((s) => !v.plain.includes(s)).map((s) => s.name);
       const plain = v.plain.map((s) => s.name).join(', ');
       let action;
-      if (!names.length) action = t('topo.vipPlainAll', { names: plain });
+      // terminates_tls=no load balancers with backends pass TLS through: not plain HTTP
+      if (!names.length && v.plain.every((s) => (lbOf.get(s) || []).length)) action = t('topo.vipPassAll', { count: v.plain.length, names: plain });
+      else if (!names.length) action = t('topo.vipPlainAll', { names: plain });
       else if (plain) action = t('topo.vipMixed', { tls: names.join(', '), plain });
       else {
         action = names.length === 2 ? t('topo.vipHolders2', { a: names[0], b: names[1] })

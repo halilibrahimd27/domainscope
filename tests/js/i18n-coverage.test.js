@@ -58,6 +58,8 @@ before(async () => {
   await imp('assets/js/ui/related-domains.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
+  // DNS change request › the check page's cutover assistant: loaded with that page.
+  await imp('assets/js/ui/cutover.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -331,6 +333,14 @@ describe('i18n coverage', () => {
     for (const k of views.change.CHECK_ERROR_KINDS) add(`chg.check.err.${k}`);
     for (const m of ['is', 'has', 'none']) add(`chg.check.mode.${m}`);
     for (const e of ['too-long', 'too-many', 'version', 'zone', 'empty', 'set']) add(`chg.check.bad.${e}`);
+    // … and its cutover assistant (ui/cutover.js, lib/cutover.js): every countdown, plan step, note,
+    // error and checklist line.
+    const cut = await imp('assets/js/lib/cutover.js');
+    for (const k of cut.CACHE_KINDS) add(`chg.cut.cd.${k}`);
+    for (const st of cut.PLAN_STEPS) { add(`chg.cut.plan.step.${st}`); add(`chg.cut.plan.when.${st}`); }
+    for (const n of cut.PLAN_NOTES) add(`chg.cut.plan.note.${n}`);
+    for (const e of cut.PLAN_ERRORS) add(`chg.cut.plan.err.${e}`);
+    for (const k of Object.keys(cut.CUTOVER_I18N.en)) add(k);
     // Zone File › New name servers (ui/parity-panel.js, lib/nsparity.js) and Retire an IP › the old
     // and the new server (ui/origin-compare.js, lib/origincompare.js): every status, reason, server
     // state, runbook step, field, note and verdict the panels word from a library code.

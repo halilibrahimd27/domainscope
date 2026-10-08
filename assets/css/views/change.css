@@ -266,3 +266,93 @@
     grid-column: 1 / -1;
   }
 }
+
+/* --- Cutover assistant (ui/cutover.js): the watch line, the countdowns, the TTL planner --- */
+
+.chg-cut-slot {
+  display: contents;
+}
+
+.chg-cut-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--info-border);
+  border-radius: 8px;
+  background: var(--info-bg);
+}
+
+.chg-cut-strip[hidden] {
+  display: none;
+}
+
+.chg-cut-strip-text {
+  flex: 1 1 16rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chg-cut-countdown[data-expired="1"] {
+  font-style: italic;
+}
+
+.chg-cut-plan-card {
+  padding: 12px 18px;
+}
+
+.chg-cut-plan-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.chg-cut-steps {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 1.4rem;
+}
+
+.chg-cut-step::marker {
+  color: var(--text-3);
+}
+
+.chg-cut-when {
+  display: inline-block;
+  min-width: 9.5rem;
+  margin-right: 10px;
+  color: var(--text-3);
+}
+
+.chg-cut-list-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .chg-cut-plan-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chg-cut-plan-card {
+    padding: 10px 12px;
+  }
+
+  .chg-cut-when {
+    display: block;
+    min-width: 0;
+  }
+}
+
+@media print {
+  .chg-cut-strip,
+  .chg-cut-list-head,
+  [data-action="check-watch"] {
+    display: none;
+  }
+}

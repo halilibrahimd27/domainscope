@@ -869,6 +869,11 @@
   gap: 0.5rem 1.25rem;
 }
 
+.hlt-dlg .btn {
+  white-space: normal;
+  max-width: 100%;
+}
+
 .dlg-provider-list {
   margin: 0;
   padding-left: 1.1rem;

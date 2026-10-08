@@ -259,7 +259,8 @@ registerStrings('en', {
   'hlt.mtasts.title': 'MTA-STS policy',
   'hlt.dlg.title': 'Delegation',
   'hlt.dlg.intro': 'Asks every name server of {zone} directly, through Globalping: lame servers, SOA serial drift, NS sets, glue, open recursion and the Sitting Ducks risk. Nothing is sent before the click.',
-  'hlt.dlg.check': { one: 'Check the delegation (about {count} Globalping probe)', other: 'Check the delegation (about {count} Globalping probes)' },
+  'hlt.dlg.check': 'Check the delegation',
+  'hlt.dlg.cost': { one: 'About {count} Globalping probe.', other: 'About {count} Globalping probes.' },
   'hlt.dlg.loadFailed': 'The delegation check could not be loaded',
   'hlt.mtasts.txt': 'TXT record',
   'hlt.mtasts.txtInvalid': 'not valid: senders ignore it',
@@ -470,7 +471,8 @@ registerStrings('tr', {
   'hlt.mtasts.title': 'MTA-STS politikası',
   'hlt.dlg.title': 'Delegasyon',
   'hlt.dlg.intro': '{zone} zone’unun her ad sunucusunu Globalping üzerinden doğrudan sorar: bozuk sunucular, SOA seri numarası kayması, NS kümeleri, glue kayıtları, açık özyineleme ve Sitting Ducks riski. Tıklamadan önce hiçbir şey gönderilmez.',
-  'hlt.dlg.check': 'Delegasyonu kontrol et (yaklaşık {count} Globalping ölçümü)',
+  'hlt.dlg.check': 'Delegasyonu kontrol et',
+  'hlt.dlg.cost': 'Yaklaşık {count} Globalping ölçümü.',
   'hlt.dlg.loadFailed': 'Delegasyon kontrolü yüklenemedi',
   'hlt.mtasts.txt': 'TXT kaydı',
   'hlt.mtasts.txtInvalid': 'geçersiz: gönderenler yok sayar',
@@ -1435,8 +1437,8 @@ export function mount(container, ctx) {
     if (s.delegation?.zone === zone) mountPanel(false);
     else {
       const count = Math.min(8, report.records.ns.length || 2) * 3 + 1;
-      body.append(h('p', { class: 'muted text-sm' }, t('hlt.dlg.intro', { zone })), h('div', null, Button({
-        label: t('hlt.dlg.check', { count }), icon: 'globe', size: 'sm', variant: 'primary', dataset: { action: 'dlg-open' },
+      body.append(h('p', { class: 'muted text-sm' }, t('hlt.dlg.intro', { zone }), ' ', t('hlt.dlg.cost', { count })), h('div', null, Button({
+        label: t('hlt.dlg.check'), icon: 'globe', size: 'sm', variant: 'primary', dataset: { action: 'dlg-open' },
         onClick: (e) => { setButtonBusy(e.currentTarget, true); mountPanel(true); }
       })));
     }

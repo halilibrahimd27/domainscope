@@ -485,11 +485,14 @@ export class Page {
    */
   async press(key, { shift = false, ctrl = false, alt = false, meta = false } = {}) {
     const def = KEYS[key] || { key, code: key.length === 1 ? `Key${key.toUpperCase()}` : key, keyCode: key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0, text: key.length === 1 ? key : undefined };
+    // No nativeVirtualKeyCode (Puppeteer and Playwright send none either): the page gets the same
+    // keydown without it, but with it Chrome on macOS also acts on a key the page leaves alone.
+    // An Escape, arrow, Home, End or Backspace then opens chrome://settings/help in front of the
+    // page, which goes hidden: no more rAF, throttled timers, and every later wait times out.
     const params = {
       key: def.key || key,
       code: def.code,
       windowsVirtualKeyCode: def.keyCode,
-      nativeVirtualKeyCode: def.keyCode,
       // CDP modifier bits: Alt 1, Ctrl 2, Meta 4, Shift 8.
       modifiers: (alt ? 1 : 0) | (ctrl ? 2 : 0) | (meta ? 4 : 0) | (shift ? 8 : 0)
     };

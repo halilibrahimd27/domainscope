@@ -3,7 +3,7 @@
  *   tests/live/replay-cache.mjs   — passive-source record / replay cache of the benchmark
  *   tests/live/targets.mjs        — positional-argument parsing of the live scripts
  *   tests/e2e/run-all.mjs         — suite ordering, result counting, leftover-profile sweep
- *   tests/e2e/cdp.mjs             — launched-browser cleanup, resolver-failure tolerance
+ *   tests/e2e/cdp.mjs             — launched-browser cleanup, resolver-failure tolerance, key events
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { createReplayCache, isFinalAnswer } from '../live/replay-cache.mjs';
 import { positionalArgs, PUBLIC_FALLBACK_DOMAINS } from '../live/targets.mjs';
 import { parseArgs, orderSuites, countResults, profileDirsOf } from '../e2e/run-all.mjs';
-import { resolverProblemFilter, registerBrowserProcess, killLaunchedBrowsers } from '../e2e/cdp.mjs';
+import { resolverProblemFilter, registerBrowserProcess, killLaunchedBrowsers, Page } from '../e2e/cdp.mjs';
 import { RESOLVERS, DEFAULT_CHAIN } from '../../assets/js/lib/resolvers.js';
 
 /* ---- replay cache --------------------------------------------------------------- */
@@ -195,4 +195,26 @@ test('cdp: with the shipped resolver list, every DEFAULT_CHAIN host is strict an
     const strict = DEFAULT_CHAIN.includes(r.id) && r.browserReliable !== false;
     assert.equal(v.tolerated, !strict, `${r.id}: ${v.reason}`);
   }
+});
+
+test('cdp: press() sends no native key code, so Chrome on macOS does not also act on a key the page leaves alone', async () => {
+  // With nativeVirtualKeyCode set, an unhandled Escape, arrow, Home, End or Backspace made Chrome on macOS
+  // open chrome://settings/help in front of the page under test, which hid it (no rAF, throttled timers).
+  const sent = [];
+  const conn = { send: async (method, params, sessionId) => { sent.push({ method, params, sessionId }); return {}; } };
+  const page = new Page(conn, 'target-1', 'session-1', {});
+  const keys = ['Escape', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Backspace', 'Tab', 'Enter', 'Space', 'a'];
+  for (const key of keys) await page.press(key);
+  await page.press('Enter', { ctrl: true });
+  assert.equal(sent.length, 2 * (keys.length + 1));
+  for (const { method, params, sessionId } of sent) {
+    assert.equal(method, 'Input.dispatchKeyEvent');
+    assert.equal(sessionId, 'session-1');
+    assert.equal('nativeVirtualKeyCode' in params, false, `${params.type} ${params.key}`);
+  }
+  // the page still gets the same key, code and (Windows) key code
+  const brief = ({ params: p }) => [p.type, p.key, p.code, p.windowsVirtualKeyCode, p.text, p.modifiers];
+  assert.deepEqual(sent.slice(0, 2).map(brief), [['rawKeyDown', 'Escape', 'Escape', 27, undefined, 0], ['keyUp', 'Escape', 'Escape', 27, undefined, 0]]);
+  assert.deepEqual(brief(sent.at(-2)), ['keyDown', 'Enter', 'Enter', 13, '\r', 2]);
+  assert.deepEqual(brief(sent.at(-4)), ['keyDown', 'a', 'KeyA', 65, 'a', 0]);
 });

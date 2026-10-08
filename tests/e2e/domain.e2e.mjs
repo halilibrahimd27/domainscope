@@ -35,7 +35,7 @@ import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
 import { launchBrowser } from './cdp.mjs';
 import {
   BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  gotoRoute, setLangUi, shot, stubClipboard, takeClipboard, waitReady
+  gotoRoute, installDownloadCapture, setLangUi, shot, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const DAY = 86400000;
@@ -90,7 +90,12 @@ const ZONE = {
     // a critical tag no CA knows: nobody may issue, whatever issue names
     CAA: [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }, { flags: 128, tag: 'tbs', value: 'unknown' }]
   },
-  'mx.yaanimail.com': { A: ['203.0.113.90'] }
+  'mx.yaanimail.com': { A: ['203.0.113.90'] },
+  // Lookalikes of example.com (the Lookalike domains panel): rn for m with mail, registered last
+  // week; a Cyrillic а with mail; a 1 for l on example.com's own name servers and address.
+  'exarnple.com': { NS: ['ns1.example.org'], A: ['203.0.113.66'], MX: [{ preference: 10, exchange: 'mx.exarnple.com' }] },
+  'xn--exmple-4nf.com': { NS: ['ns1.example.org'], A: ['203.0.113.67'], MX: [{ preference: 10, exchange: 'mx.example.org' }] },
+  'examp1e.com': { NS: ['adam.ns.cloudflare.com', 'bella.ns.cloudflare.com'], A: ['104.16.1.1'] }
 };
 const SIGNED = ['example.com'];
 
@@ -105,6 +110,14 @@ const RDAP = {
   }
 };
 RDAP['example.net'] = { ...RDAP['example.com'], ldhName: 'EXAMPLE.NET', nameservers: RDAP['example.com'].nameservers, secureDNS: { delegationSigned: false } };
+const registered = (name, ms) => ({ ...RDAP['example.com'], ldhName: name.toUpperCase(), events: [{ eventAction: 'registration', eventDate: iso(ms) }] });
+RDAP['exarnple.com'] = registered('exarnple.com', NOW - 10 * DAY);
+RDAP['xn--exmple-4nf.com'] = registered('xn--exmple-4nf.com', NOW - 400 * DAY);
+RDAP['examp1e.com'] = registered('examp1e.com', Date.parse('2001-05-01T00:00:00Z'));
+/** crt.sh's current certificates of the lookalikes (any other search: none). */
+const CRTSH = {
+  'exarnple.com': [{ issuer_ca_id: 1, issuer_name: "C=US, O=Let's Encrypt, CN=R11", common_name: 'exarnple.com', name_value: 'exarnple.com', id: 1, serial_number: '0a', not_before: iso(NOW - 3 * DAY).replace('Z', ''), not_after: iso(NOW + 87 * DAY).replace('Z', '') }]
+};
 
 /** Cert Spotter's current issuances of example.com: Let's Encrypt (CAA allows it) and Sectigo (it does not). */
 const issuance = (id, dn, friendly, caa) => ({
@@ -124,6 +137,7 @@ const fakeScript = () => `(() => {
   const SIGNED = ${JSON.stringify(SIGNED)};
   const RDAP = ${JSON.stringify(RDAP)};
   const SPOTTER = ${JSON.stringify(SPOTTER)};
+  const CRTSH = ${JSON.stringify(CRTSH)};
   window.__dnsLog = [];
   window.__rdapLog = [];
   window.__ctLog = [];
@@ -151,7 +165,11 @@ const fakeScript = () => `(() => {
       return RDAP[name] ? json(RDAP[name]) : json({ errorCode: 404 }, 404);
     }
     if (url.startsWith('https://api.certspotter.com/')) { window.__ctLog.push(url); return json(SPOTTER); }
-    if (url.startsWith('https://crt.sh/')) { window.__ctLog.push(url); return json([]); }
+    if (url.startsWith('https://crt.sh/')) {
+      window.__ctLog.push(url);
+      const q = new URL(url).searchParams.get('q') || '';
+      return json(CRTSH[q] || []);
+    }
     const m = /[?&]dns=([^&]+)/.exec(url);
     if (!m) return realFetch(input, init);
     wire = wire || await import(new URL('assets/js/lib/dnswire.js', document.baseURI).href);
@@ -229,6 +247,7 @@ async function main() {
     await page.send('Network.enable');
     await page.send('Network.setBlockedURLs', { urls: ['https://*'] });
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeScript() });
+    await installDownloadCapture(page);
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
     run.group('Desktop 1440×900 (English)');
@@ -467,6 +486,130 @@ async function main() {
           window.__rdapGate = null;
         });
       }
+    });
+
+    run.group('Lookalike domains');
+    const lkRows = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.lk-table tr.dt-row')].map((tr) => [
+      tr.querySelector('.lk-name')?.dataset.name || '',
+      { level: tr.querySelector('.lk-risk')?.dataset.level || '', text: tr.textContent.replace(/\s+/g, ' ').trim() }
+    ])));
+    const lkIdle = (message) => page.waitFor(() => !!document.querySelector('.lk-panel') && document.querySelector('[data-action="lk-stop"]').hidden
+      && !document.querySelector('.lk-rdap:not([hidden])'), { timeout: 30000, message });
+    const asked = (name, type) => page.evaluate((n, ty) => window.__dnsLog.filter((q) => q.name === n && (!ty || q.type === ty)).length, name, type);
+    const setBudget = (value) => page.evaluate((v) => {
+      const s = document.querySelector('[data-role="lk-budget"]');
+      s.value = v;
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+    }, value);
+
+    await run.step('Find lookalikes loads the panel: the list is made in the page, nothing is sent, the workspace\'s own domain is marked', async () => {
+      // example.net and example.org are recent domains of the workspace (built above; recorded again here)
+      await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.recordRecent('example.org').then(() => state.recordRecent('example.net'))));
+      await page.type('[data-role="dov-name"]', 'example.com');
+      await page.click('[data-action="dov-run"]');
+      await waitBuilt(page, 'example.com for its lookalikes');
+      const before = await counts(page);
+      await page.click('[data-action="lk-open"]');
+      await page.waitFor(() => !!document.querySelector('.lk-panel [data-action="lk-check"]'), { message: 'lookalike panel' });
+      assertEqual(await counts(page), before, 'nothing sent by opening it');
+      const sent = await text(page, '.lk-sent');
+      assert(/^300 names to check \(300 made by 13 techniques\). 2 of them are domains of your workspace: they are never checked or flagged. Nothing has been sent yet\.$/.test(sent), sent);
+      assertEqual(await text(page, '[data-action="lk-check"]'), 'Check 298 names', 'check button');
+      assertEqual(await page.evaluate(() => document.activeElement?.dataset.action), 'lk-check', 'the focus on Check');
+      await page.type('.lk-table .dt-search input', 'example.net');
+      await page.waitFor(() => document.querySelectorAll('.lk-table tr.dt-row').length === 2
+        && !!document.querySelector('.lk-table .lk-name[data-name="example.net"]'), { message: 'search: example.net and example.net.tr' });
+      const own = (await lkRows())['example.net'];
+      assert(own && own.level === 'own' && /Yours/.test(own.text) && /in your workspace/.test(own.text), JSON.stringify(own));
+      await page.type('.lk-table .dt-search input', '');
+      await shot(page, opts, 'domain-lookalikes-list-desktop-light-en');
+    });
+
+    await run.step('Check: NS for each name, A / AAAA / MX and RDAP only for the ones in DNS; worst first; a SERVFAIL is n/a with a Retry', async () => {
+      await setBudget('100');
+      await page.waitFor(() => /Check 98 names/.test(document.querySelector('[data-action="lk-check"]')?.textContent || ''), { message: 'budget 100' });
+      await page.evaluate(() => { window.__rcodes['exampel.com|NS'] = 'SERVFAIL'; });
+      const before = await counts(page);
+      const ownAsked = await asked('example.net') + await asked('example.org');
+      await page.click('[data-action="lk-check"]');
+      await lkIdle('first check');
+      const rows = await lkRows();
+      const names = Object.keys(rows);
+      assertEqual(names.slice(0, 3), ['exarnple.com', 'examp1e.com', 'exampel.com'], 'worst first; the names not in DNS hidden');
+      assertEqual(rows['exarnple.com'].level, 'high', 'MX, web, registered 10 days ago');
+      assert(/MX/.test(rows['exarnple.com'].text) && /New/.test(rows['exarnple.com'].text) && /mx\.exarnple\.com/.test(rows['exarnple.com'].text), rows['exarnple.com'].text);
+      assertEqual(rows['examp1e.com'].level, 'low', 'on example.com\'s own name servers and address');
+      assert(/Same NS/.test(rows['examp1e.com'].text) && /Same IP/.test(rows['examp1e.com'].text), rows['examp1e.com'].text);
+      assertEqual(rows['exampel.com'].level, 'unknown', 'SERVFAIL');
+      assert(await page.evaluate(() => !!document.querySelector('.lk-table .lk-risk[data-level="unknown"] [data-na="doh"]')), 'n/a in the row');
+      assert(/1 lookup failed: DNS resolver: answered SERVFAIL/.test(await text(page, '.lk-failed')), await text(page, '.lk-failed'));
+      assertEqual(await page.evaluate(() => document.querySelector('.lk-counts')?.dataset.registered), '2', 'two names in DNS');
+      assertEqual(await asked('xample.com'), 1, 'a name not in DNS: one NS question');
+      assertEqual(await asked('xample.com', 'MX'), 0, 'no MX for it');
+      assertEqual(await asked('example.net') + await asked('example.org') - ownAsked, 0, 'nothing for the own domains');
+      assertEqual([await asked('exarnple.com', 'A'), await asked('exarnple.com', 'MX')], [1, 1], 'A and MX for a name in DNS');
+      const after = await counts(page);
+      assertEqual([after.rdap - before.rdap, after.ct - before.ct], [2, 0], 'RDAP for the two names in DNS, no crt.sh');
+      assert(/In DNS: 2 of 98 checked names — 1 high, 0 medium and 1 low risk\./.test(await text(page, '.lk-counts')), await text(page, '.lk-counts'));
+    });
+
+    await run.step('Retry asks only the failed lookup again; a larger list checks only the names added', async () => {
+      await page.evaluate(() => { delete window.__rcodes['exampel.com|NS']; });
+      const ns = await asked('exampel.com', 'NS');
+      const all = (await counts(page)).dns;
+      await page.click('[data-role="lk-retry"]');
+      await page.waitFor(() => !document.querySelector('[data-role="lk-retry"]') && !document.querySelector('.lk-name[data-name="exampel.com"]'), { message: 'retried: not in DNS' });
+      await lkIdle('retry ended');
+      assertEqual(await asked('exampel.com', 'NS') - ns, 1, 'its NS asked again');
+      assertEqual((await counts(page)).dns - all, 1, 'nothing else asked');
+      // more on demand: every name (300); the 99 checked ones are not asked again
+      await setBudget('300');
+      await page.waitFor(() => /Check 200 names/.test(document.querySelector('[data-action="lk-check"]')?.textContent || ''), { message: 'budget 300' });
+      await page.click('[data-action="lk-check"]');
+      await lkIdle('second check');
+      assertEqual(await asked('exarnple.com', 'NS'), 1, 'a checked name is not asked again');
+      const idn = (await lkRows())['xn--exmple-4nf.com'];
+      assert(idn && idn.level === 'high' && /exаmple\.com/.test(idn.text) && /IDN/.test(idn.text), JSON.stringify(idn));
+      assert(/Every name in the list has been checked/.test(await text(page, '.lk-sent')), await text(page, '.lk-sent'));
+      assert(await page.evaluate(() => document.querySelector('[data-action="lk-check"]').hidden), 'nothing left to check');
+    });
+
+    await run.step('certificates of the top names: one crt.sh search each, one at a time; CSV worst first with n/a', async () => {
+      const ct = (await counts(page)).ct;
+      await page.evaluate(() => { window.__ctLog = []; });
+      assertEqual(await text(page, '[data-action="lk-ct"]'), 'Look up the certificates of the top 3', 'three names in DNS');
+      await page.click('[data-action="lk-ct"]');
+      await lkIdle('certificates');
+      await page.waitFor(() => !document.querySelector('[data-action="lk-ct"]').disabled, { message: 'certificate round ended' });
+      const urls = await page.evaluate(() => window.__ctLog);
+      assertEqual(urls.map((u) => new URL(u).searchParams.get('q')), ['exarnple.com', 'xn--exmple-4nf.com', 'examp1e.com'], 'the worst first, one search each');
+      assert(urls.every((u) => u.startsWith('https://crt.sh/?q=') && /&exclude=expired/.test(u)), urls.join(' '));
+      assert(ct >= 0);
+      const top = (await lkRows())['exarnple.com'];
+      assert(/1 current certificate/.test(top.text) && /Certificate/.test(top.text), top.text);
+      assert(/none current/.test((await lkRows())['examp1e.com'].text), 'none for the others');
+      await page.click('[data-action="lk-csv"]');
+      const [csv] = await takeDownloads(page);
+      assert(csv && /^lookalikes-.*\.csv$/.test(csv.name) && csv.bom, csv && csv.name);
+      const lines = csv.text.replace(/^﻿/, '').trimEnd().split('\r\n');
+      assertEqual(lines[0], 'domain,unicode,technique,state,risk,score,reasons,registered,registrar,addresses,mx,ns,certificates,newestCertificate', 'header');
+      assert(lines[1].startsWith('exarnple.com,exarnple.com,homoglyph,registered,high,100,mx web new cert,'), lines[1]);
+      assertEqual(lines.length, 301, 'every name, the own one too');
+      assert(lines.some((l) => l.startsWith('example.net,example.net,tld-swap,own,own,')), 'own row');
+      await shot(page, opts, 'domain-lookalikes-checked-desktop-light-en');
+    });
+
+    await run.step('the list is kept across a language switch with no new request, in Turkish too', async () => {
+      const before = await counts(page);
+      await setLangUi(page, 'tr');
+      await page.waitFor(() => !!document.querySelector('.lk-panel .lk-name[data-name="exarnple.com"]'), { message: 'the panel again, in Turkish' });
+      assertEqual(await counts(page), before, 'nothing asked again');
+      const row = (await lkRows())['exarnple.com'];
+      assert(/Yüksek/.test(row.text) && /Yeni/.test(row.text) && /1 geçerli sertifika/.test(row.text), row.text);
+      assert(/DNS’te olan: kontrol edilen 298 addan 3 tanesi — 2 yüksek, 0 orta ve 1 düşük risk\./.test(await text(page, '.lk-counts')), await text(page, '.lk-counts'));
+      await shot(page, opts, 'domain-lookalikes-desktop-light-tr');
+      await setLangUi(page, 'en');
+      await page.waitFor(() => !!document.querySelector('.lk-panel .lk-name[data-name="exarnple.com"]'), { message: 'the panel again, in English' });
     });
 
     run.group('Phone 375 and 320 px, Turkish / English, light / dark');

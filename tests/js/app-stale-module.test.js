@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isStaleModuleError, confirmStaleModule, pageIsOutdated, getGlobalping } from '../../assets/js/app.js';
+import { isStaleModuleError, confirmStaleModule, pageIsOutdated, moduleReloadReason, getGlobalping } from '../../assets/js/app.js';
 import { wordlistFellShort } from '../../assets/js/views/subdomains.js';
 import { hasString, t, setLang } from '../../assets/js/i18n.js';
 
@@ -90,6 +90,42 @@ test('a link error needs no probe; an unrelated error is not probed either', asy
   assert.equal(probe.calls, 0);
 });
 
+test('a module whose download failed but that answers now is stuck in this page: only a reload loads it', async () => {
+  const VIEW = 'https://example.com/app/v/0123456789ab/assets/js/views/ip.js';
+  /** Answers the page's own module (no URL) with `own`, the failed module's URL with `failed`. */
+  const probeBy = (own, failed) => {
+    const probe = async (url) => {
+      probe.urls.push(url ?? 'own');
+      const status = url === undefined ? own : failed;
+      if (status instanceof Error) throw status;
+      return status;
+    };
+    probe.urls = [];
+    return probe;
+  };
+  // Chrome and Firefox name the module: it answers again, yet the browser keeps the failed fetch.
+  for (const message of [`Failed to fetch dynamically imported module: ${VIEW}`, `error loading dynamically imported module: ${VIEW}`]) {
+    const probe = probeBy(200, 200);
+    assert.equal(await moduleReloadReason(new TypeError(message), { online: true, probe }), 'stuck', message);
+    assert.deepEqual(probe.urls, ['own', VIEW]);
+  }
+  // Still unreachable, missing or failing: a network problem, Retry stays.
+  for (const failed of [new TypeError('Failed to fetch'), 404, 500, 304]) {
+    assert.equal(await moduleReloadReason(new TypeError(FETCH_FAILED), { online: true, probe: probeBy(200, failed) }), null, String(failed));
+  }
+  // Safari names no URL; offline nothing is probed; an earlier deploy is 'outdated', as before.
+  assert.equal(await moduleReloadReason(new TypeError('Importing a module script failed.'), { online: true, probe: probeBy(200, 200) }), null);
+  const offline = probeBy(200, 200);
+  assert.equal(await moduleReloadReason(new TypeError(FETCH_FAILED), { online: false, probe: offline }), null);
+  assert.deepEqual(offline.urls, []);
+  const gone = probeBy(404, 404);
+  assert.equal(await moduleReloadReason(new TypeError(FETCH_FAILED), { online: true, probe: gone }), 'outdated');
+  assert.deepEqual(gone.urls, ['own']);
+  const link = new SyntaxError("The requested module './netinfo.js' does not provide an export named 'isSharedProvider'");
+  assert.equal(await moduleReloadReason(link, { online: true, probe: probeBy(new Error('no probe'), 200) }), 'outdated');
+  assert.equal(await moduleReloadReason(new TypeError('Failed to fetch'), { online: true, probe: probeBy(200, 200) }), null, 'not an import');
+});
+
 test('a scan whose wordlist fell short asks the shell to check for a newer deploy', () => {
   assert.equal(wordlistFellShort({ warnings: [{ code: 'WORDLIST_DEGRADED', detail: 'large→smart' }] }), true);
   assert.equal(wordlistFellShort({ warnings: [{ code: 'TRUNCATED' }] }), false);
@@ -97,7 +133,7 @@ test('a scan whose wordlist fell short asks the shell to check for a newer deplo
 });
 
 test('the outdated-page hint exists in English and Turkish and differs', () => {
-  for (const key of ['shell.viewOutdated', 'shell.reload']) {
+  for (const key of ['shell.viewOutdated', 'shell.viewStuck', 'shell.reload']) {
     assert.ok(hasString(key, 'en') && hasString(key, 'tr'), key);
   }
   try {

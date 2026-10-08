@@ -304,7 +304,7 @@ export function isStaleModuleError(err) {
  * @param {{ online?: boolean, probe?: () => Promise<number> }} [env] tests inject both
  * @returns {Promise<boolean>}
  */
-export async function pageIsOutdated({ online = globalThis.navigator?.onLine, probe = probeOwnModule } = {}) {
+export async function pageIsOutdated({ online = globalThis.navigator?.onLine, probe = probeModule } = {}) {
   if (online === false) return false;
   try {
     return (await probe()) === 404;
@@ -313,9 +313,9 @@ export async function pageIsOutdated({ online = globalThis.navigator?.onLine, pr
   }
 }
 
-/** HTTP status of this module's URL, past every cache (rejects on a network error or timeout). */
-async function probeOwnModule() {
-  const res = await fetch(import.meta.url, { method: 'HEAD', cache: 'no-store', signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+/** HTTP status of a module's URL (this one's by default), past every cache (rejects on a network error or timeout). */
+async function probeModule(url = import.meta.url) {
+  const res = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
   return res.status;
 }
 
@@ -333,20 +333,36 @@ export async function confirmStaleModule(err, env) {
   return pageIsOutdated(env);
 }
 
+/**
+ * Why only a reload can load a module whose import failed: 'outdated' ({@link confirmStaleModule}),
+ * or 'stuck': its URL (in Chrome's and Firefox's message) answers now, but the browser keeps a
+ * failed module fetch for the rest of the document. null: a network problem (Retry stays).
+ * @param {unknown} err rejection of `import()`
+ * @param {{ online?: boolean, probe?: (url?: string) => Promise<number> }} [env] tests inject both
+ * @returns {Promise<'outdated'|'stuck'|null>}
+ */
+export async function moduleReloadReason(err, env = {}) {
+  if (await confirmStaleModule(err, env)) return 'outdated';
+  const url = isStaleModuleError(err) && /https?:\/\/\S+/.exec(err.message);
+  const { online = globalThis.navigator?.onLine, probe = probeModule } = env;
+  if (!url || online === false) return null;
+  return probe(url[0]).then((status) => (status < 300 ? 'stuck' : null), () => null);
+}
+
 let outdatedNoticeShown = false;
 
 /**
  * Something this page loads on demand failed: a shared lazy module (DoH, Globalping) or a data
- * file (a wordlist tier, a locale pack). If `isOutdated` confirms the page is from an earlier
- * deploy, say so once, with a reload button; otherwise stay quiet so a later failure can check again.
- * @param {() => Promise<boolean>} isOutdated confirmStaleModule for a module, pageIsOutdated for a data file
+ * file (a wordlist tier, a locale pack). If `isOutdated` says only a reload helps, say so once,
+ * with a reload button; otherwise stay quiet so a later failure can check again.
+ * @param {() => Promise<boolean|string|null>} isOutdated moduleReloadReason for a module, pageIsOutdated for a data file
  */
 function noticeIfOutdated(isOutdated) {
   if (outdatedNoticeShown) return;
   isOutdated().then((stale) => {
     if (!stale || outdatedNoticeShown) return;
     outdatedNoticeShown = true;
-    toast(t('shell.viewOutdated'), {
+    toast(t(stale === 'stuck' ? 'shell.viewStuck' : 'shell.viewOutdated'), {
       type: 'warn',
       timeout: 0,
       action: { label: t('shell.reload'), onClick: () => reloadPage() }
@@ -400,7 +416,7 @@ export function getDns() {
     // A failed import (offline, file missing) must not be cached forever.
     promise.catch((err) => {
       if (dnsPromise === promise) dnsPromise = null;
-      noticeIfOutdated(() => confirmStaleModule(err));
+      noticeIfOutdated(() => moduleReloadReason(err));
     });
   }
   return dnsPromise;
@@ -436,7 +452,7 @@ export function getGlobalping(load = () => import('./lib/globalping.js')) {
     gpPromise = promise;
     promise.catch((err) => {
       if (gpPromise === promise) gpPromise = null;
-      noticeIfOutdated(() => confirmStaleModule(err));
+      noticeIfOutdated(() => moduleReloadReason(err));
     });
   }
   return gpPromise;
@@ -836,26 +852,26 @@ function preloadWhenIdle(def) {
 
 /**
  * The page body of a view whose module failed to load: the error with a Retry, replaced by a
- * "reload page" alert once {@link confirmStaleModule} says the page belongs to an earlier deploy
- * (Retry cannot help then). A network failure keeps the Retry and never claims an update.
+ * "reload page" alert once {@link moduleReloadReason} says only a reload helps (Retry cannot then).
+ * A network failure keeps the Retry and never claims an update.
  */
 function viewLoadFailure(def, params, sp, err) {
   const maybeStale = isStaleModuleError(err);
   if (maybeStale && err.name === 'SyntaxError') return outdatedAlert(err);
   const banner = ErrorBanner(err, { title: t('shell.viewLoadFailed'), onRetry: () => showRoute(def.id, params, { force: true, searchParams: sp }) });
   if (maybeStale) {
-    confirmStaleModule(err).then((stale) => {
-      if (stale && banner.isConnected) banner.replaceWith(outdatedAlert(err));
+    moduleReloadReason(err).then((reason) => {
+      if (reason && banner.isConnected) banner.replaceWith(outdatedAlert(err, reason));
     });
   }
   return banner;
 }
 
 /**
- * "This page is older than the site": the error's details and a Reload page button (no Retry),
- * busy while the new version downloads (reloadPage may wait for it).
+ * "This page is older than the site" (or 'stuck': it cannot load the file again): the error's
+ * details and a Reload page button (no Retry), busy while the new version downloads (reloadPage may wait for it).
  */
-function outdatedAlert(err) {
+function outdatedAlert(err, reason = 'outdated') {
   const { detail } = describeError(err);
   const reload = Button({
     label: t('shell.reload'), icon: 'refresh', variant: 'primary', size: 'sm',
@@ -868,7 +884,7 @@ function outdatedAlert(err) {
   return Alert({
     variant: 'warn',
     title: t('shell.viewLoadFailed'),
-    message: t('shell.viewOutdated'),
+    message: t(reason === 'stuck' ? 'shell.viewStuck' : 'shell.viewOutdated'),
     children: detail ? h('details', { class: 'alert-details' }, h('summary', null, t('error.details')), h('code', { class: 'mono' }, detail)) : null,
     actions: [reload]
   });
@@ -1350,7 +1366,7 @@ async function openWorkspaces() {
     [mod] = await Promise.all([import('./ui/workspace-panel.js'), loadStylesheet('workspace.css')]);
   } catch (err) {
     workspacePanel = null;
-    noticeIfOutdated(pageIsOutdated);
+    noticeIfOutdated(() => moduleReloadReason(err));
     toast(t('ws.loadFailed', { message: errorText(err) }), { type: 'error' });
     return;
   }

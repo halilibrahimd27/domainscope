@@ -19,7 +19,8 @@
  *     i18n keys that are missing in either language.
  * Then it serves the GitHub Pages bundle (tools/assemble-site.mjs, assets under v/<version>/):
  * the app boots from it, About's links resolve, a view that fails to load offline (or blocked)
- * keeps the plain network error with Retry, and after a second "deploy" a view opened in the
+ * keeps the plain network error with Retry (back online, opening it again offers a page reload:
+ * Chrome keeps the failed download for the document), and after a second "deploy" a view opened in the
  * old tab offers a page reload that brings the new version (that tab has no service worker).
  * Finally the installable app, on a bundle and origin of its own: the service worker installs and
  * precaches the version; with the server dropping every request the app reloads from the cache,
@@ -2157,6 +2158,23 @@ async function main() {
         } finally {
           await conditions(false);
         }
+      });
+
+      // Chrome keeps a failed module fetch for the rest of the document: back online, opening that
+      // view again fails at once although its file answers, so only a reload can load it.
+      await step('back online, the view whose download failed offers a page reload, which loads it', async () => {
+        await tab.evaluate(() => { window.location.hash = '#/health'; });
+        await tab.waitFor(() => !!document.querySelector('#page-body [data-action="reload-page"]'), { message: 'reload offered' });
+        setNodeLang('en');
+        const text = await tab.evaluate(() => document.querySelector('#page-body .alert').textContent);
+        assert(text.includes(translate('shell.viewStuck')) && !text.includes(translate('shell.viewOutdated')), `banner: ${text}`);
+        await tab.resetProblems(); // the failed import is logged on purpose
+        await tab.click('#page-body [data-action="reload-page"]');
+        await tab.waitFor(() => document.documentElement.dataset.appReady === 'true'
+          && document.querySelector('#page-body')?.dataset.view === 'health'
+          && document.querySelector('#page-body').childElementCount > 0
+          && !document.querySelector('#page-body .page-loading, #page-body > .alert'), { timeout: 15000, message: 'Domain Health after the reload' });
+        await assertClean(tab, 'after the reload');
       });
 
       await step('online with only the view file unreachable (app.js still served), the same: no update claimed', async () => {

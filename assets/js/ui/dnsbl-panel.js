@@ -48,7 +48,8 @@ registerStrings('en', {
   'dnsbl.col.list': 'List',
   'dnsbl.col.result': 'Result',
   'dnsbl.col.details': 'Details',
-  'dnsbl.pending': 'Asking…',
+  'dnsbl.cleanLabel': 'Not listed:',
+  'dnsbl.skipLabel': 'Not asked (IPv4 addresses only):',
   'dnsbl.status.listed': 'Listed',
   'dnsbl.status.not-listed': 'Not listed',
   'dnsbl.status.refused': 'Cannot check here',
@@ -139,7 +140,8 @@ registerStrings('tr', {
   'dnsbl.col.list': 'Liste',
   'dnsbl.col.result': 'Sonuç',
   'dnsbl.col.details': 'Ayrıntılar',
-  'dnsbl.pending': 'Soruluyor…',
+  'dnsbl.cleanLabel': 'Listede değil:',
+  'dnsbl.skipLabel': 'Sorulmadı (yalnızca IPv4 adresleri):',
   'dnsbl.status.listed': 'Listede',
   'dnsbl.status.not-listed': 'Listede değil',
   'dnsbl.status.refused': 'Buradan kontrol edilemez',
@@ -288,14 +290,47 @@ function detailsOf(r) {
 }
 
 function resultRow(l, r) {
-  const status = r ? r.status : 'pending';
-  const badge = r
-    ? Badge(t(`dnsbl.status.${r.status}`), STATUS_BADGE[r.status])
-    : h('span', { class: 'ipi-pending' }, h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }), t('dnsbl.pending'));
-  return h('tr', { class: 'ipi-bl-row', dataset: { list: l.id, status } },
-    h('th', { attrs: { scope: 'row' } }, h('span', { class: 'ipi-bl-name' }, l.name), h('span', { class: 'mono muted text-xs ipi-bl-zone' }, r && r.zone ? r.zone : l.zone)),
-    h('td', { class: 'ipi-bl-result' }, badge),
-    h('td', null, r ? detailsOf(r) : null));
+  return h('tr', { class: 'ipi-bl-row', dataset: { list: l.id, status: r.status } },
+    h('th', { attrs: { scope: 'row' } }, h('span', { class: 'ipi-bl-name' }, l.name), h('span', { class: 'mono muted text-xs ipi-bl-zone' }, r.zone || l.zone)),
+    h('td', { class: 'ipi-bl-result' }, Badge(t(`dnsbl.status.${r.status}`), STATUS_BADGE[r.status])),
+    h('td', null, detailsOf(r)));
+}
+
+/** "Not listed: A, B, C" — the names of lists in one line (`cls` tells the kind). */
+function listLine(cls, label, lists) {
+  if (!lists.length) return null;
+  return h('p', { class: ['text-sm', cls] }, h('span', { class: 'muted' }, label), ' ',
+    lists.flatMap((l, i) => [i ? ', ' : null, h('span', { class: 'ipi-bl-item', dataset: { list: l.id }, title: l.zone }, l.name)]));
+}
+
+/**
+ * One target's answers: a table row per listing, refusal and failure (and a reputation-only answer),
+ * then the lists that said "not listed" and the lists not asked, one line each. Lists still being
+ * asked are not shown (the status line counts them).
+ */
+function sectionEl(s) {
+  const lists = listsFor(s.target.kind);
+  const rows = [];
+  const clean = [];
+  const skipped = [];
+  lists.forEach((l, i) => {
+    const r = s.results[i];
+    if (!r) return;
+    if (r.status === 'not-listed' && !r.codes.length) clean.push(l);
+    else if (r.status === 'skipped') skipped.push(l);
+    else rows.push(resultRow(l, r));
+  });
+  return h('div', { class: 'ipi-bl-section', dataset: { target: s.target.value, kind: s.target.kind } },
+    h('h4', { class: 'ipi-bl-target' }, t(`dnsbl.target.${s.target.kind}`, { value: s.target.value })),
+    rows.length ? h('div', { class: 'ipi-bl-scroll' },
+      h('table', { class: 'ipi-bl-table' },
+        h('thead', null, h('tr', null,
+          h('th', { attrs: { scope: 'col' } }, t('dnsbl.col.list')),
+          h('th', { attrs: { scope: 'col' } }, t('dnsbl.col.result')),
+          h('th', { attrs: { scope: 'col' } }, t('dnsbl.col.details')))),
+        h('tbody', null, rows))) : null,
+    listLine('ipi-bl-clean', t('dnsbl.cleanLabel'), clean),
+    listLine('ipi-bl-skip', t('dnsbl.skipLabel'), skipped));
 }
 
 /** One summary line over every target's results. */
@@ -348,19 +383,7 @@ function buildPanel(row, ctx) {
 
   function renderSections() {
     clear(sectionsEl);
-    if (!shown) return;
-    for (const s of shown.sections) {
-      const lists = listsFor(s.target.kind);
-      sectionsEl.append(h('div', { class: 'ipi-bl-section', dataset: { target: s.target.value, kind: s.target.kind } },
-        h('h4', { class: 'ipi-bl-target' }, t(`dnsbl.target.${s.target.kind}`, { value: s.target.value })),
-        h('div', { class: 'ipi-bl-scroll' },
-          h('table', { class: 'ipi-bl-table' },
-            h('thead', null, h('tr', null,
-              h('th', { attrs: { scope: 'col' } }, t('dnsbl.col.list')),
-              h('th', { attrs: { scope: 'col' } }, t('dnsbl.col.result')),
-              h('th', { attrs: { scope: 'col' } }, t('dnsbl.col.details')))),
-            h('tbody', null, lists.map((l, i) => resultRow(l, s.results[i])))))));
-    }
+    if (shown) for (const s of shown.sections) sectionsEl.appendChild(sectionEl(s));
   }
 
   function renderState({ done = 0, total = 0 } = {}) {
@@ -387,11 +410,12 @@ function buildPanel(row, ctx) {
     }
   }
 
-  /** Ask every list (or, `retry`, only the lists that failed) for every target. */
+  /** Ask every list (or, `retry`, only the lists that failed) for every target; a Retry or a second check asks afresh (no cache). */
   async function run({ retry = false } = {}) {
     if (controller) return;
     if (!ctx.requireOnline()) return;
     const prev = retry && shown && !shown.stopped ? shown : null;
+    const fresh = retry || !!shown || !!row.dnsbl;
     const sections = targets.map((target) => {
       const old = prev ? prev.sections.find((s) => s.target.value === target.value) : null;
       return { target, results: old ? old.results.map((r) => (r && r.status === 'error' ? null : r)) : listsFor(target.kind).map(() => null) };
@@ -413,14 +437,14 @@ function buildPanel(row, ctx) {
         const ids = lists.filter((l, i) => !s.results[i]).map((l) => l.id);
         if (!ids.length) return;
         await c.check(s.target, {
-          signal, lists: ids, noCache: retry,
+          signal, lists: ids, noCache: fresh,
           onResult: (r) => {
             if (signal.aborted) return;
             const i = lists.findIndex((l) => l.id === r.list);
             s.results[i] = r;
             done += 1;
-            const body = sectionsEl.querySelector(`.ipi-bl-section[data-target="${CSS.escape(s.target.value)}"] tbody`);
-            if (body && body.children[i]) body.children[i].replaceWith(resultRow(lists[i], r));
+            const old = sectionsEl.children[sections.indexOf(s)];
+            if (old) old.replaceWith(sectionEl(s));
             renderState({ done, total });
           }
         });

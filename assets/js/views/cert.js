@@ -66,7 +66,7 @@ import { DanePanel, cancelDane } from '../ui/dane-panel.js';
 // The PKCS#12 password dialog and the note about a bundle (shared with SSL Targets).
 import { PfxNote, askPfxPassword, isLockedPfx } from '../ui/pfx-import.js';
 // The missing intermediate from the bundled CCADB list, and the root-store warnings (shared with SSL Targets).
-import { ChainRepairNotes, ChainRepairChainPart, onChainRepairEnd, repairedFullchain } from '../ui/chain-repair.js';
+import { ChainRepairNotes, ChainRepairChainPart, onChainRepairEnd, repairedFullchain, startChainRepair } from '../ui/chain-repair.js';
 // CT logs › Key continuity: other certificates with this public key (lib/keycontinuity.js).
 import { KeyContinuityCard, cancelKeyLookups } from '../ui/key-continuity.js';
 import { backToLastRun, fillReplaces, FILL_PARAM, FILL_VALUE } from '../lib/session.js';
@@ -351,6 +351,9 @@ registerStrings('en', {
   'cert.chain.unrelated': { one: '{count} certificate in the file does not belong to this chain.', other: '{count} certificates in the file do not belong to this chain.' },
   'cert.chain.rootIncluded': 'The root certificate is included. Servers do not need to send it; it is harmless but adds bytes to every handshake.',
   'cert.chain.endsAt': 'The chain ends at {name}; clients complete it with a root from their trust store.',
+  'cert.chain.endsAtIntermediate': 'The file stops at {name}. Its issuer is an intermediate, not a root, so servers must send it too — “Download full chain” adds it from the CCADB list.',
+  'cert.chain.endsAtUnknown': 'The chain ends at {name}, whose issuer is neither in the file nor a root of the browsers’ root stores (perhaps a private CA). Clients that trust that issuer as a root complete the chain; if it is an intermediate, servers must send it too.',
+  'cert.chain.endsAtUnchecked': 'The chain ends at {name}, whose issuer is not in the file. The CCADB list could not be read, so whether that issuer is a root is not known: if it is an intermediate, servers must send it too.',
   'cert.chain.expired': '{name} in the chain has expired.',
   'cert.chain.selfSigned': 'This certificate is self-signed: clients only trust it if it is installed as a trusted root.',
   'cert.chain.issuedBy': 'issued by {name}',
@@ -674,6 +677,9 @@ registerStrings('tr', {
   'cert.chain.unrelated': { one: 'Dosyadaki {count} sertifika bu zincire ait değil.', other: 'Dosyadaki {count} sertifika bu zincire ait değil.' },
   'cert.chain.rootIncluded': 'Kök sertifika da dahil edilmiş. Sunucuların bunu göndermesi gerekmez; zararsızdır ama her el sıkışmaya bayt ekler.',
   'cert.chain.endsAt': 'Zincir {name} ile bitiyor; istemciler kök sertifikayı kendi güven depolarından ekler.',
+  'cert.chain.endsAtIntermediate': 'Dosya {name} ile bitiyor. Onu veren bir ara sertifika, kök değil; sunucular onu da göndermelidir — “Tam zinciri indir” onu CCADB listesinden ekler.',
+  'cert.chain.endsAtUnknown': 'Zincir {name} ile bitiyor; onu veren sertifika dosyada yok ve tarayıcıların kök depolarındaki köklerden biri de değil (özel bir CA olabilir). Onu kök olarak tanıyan istemciler zinciri tamamlar; bir ara sertifikaysa sunucular onu da göndermelidir.',
+  'cert.chain.endsAtUnchecked': 'Zincir {name} ile bitiyor; onu veren sertifika dosyada yok. CCADB listesi okunamadığından bu sertifikanın kök olup olmadığı bilinmiyor: bir ara sertifikaysa sunucular onu da göndermelidir.',
   'cert.chain.expired': 'Zincirdeki {name} sertifikasının süresi dolmuş.',
   'cert.chain.selfSigned': 'Bu sertifika kendinden imzalı: istemciler ancak güvenilen kök olarak kurulursa güvenir.',
   'cert.chain.issuedBy': 'veren: {name}',
@@ -1135,6 +1141,24 @@ export function analyzeChain(certs, leaf = null, now = Date.now()) {
     if (c.notAfter.getTime() < n) out.issues.push({ code: 'expired', cert: c });
   }
   return out;
+}
+
+/**
+ * Where the file's chain stops short of a root (analyzeChain 'ends-at'), what its last issuer is,
+ * from the chain lookup in the CCADB list (ui/chain-repair.js): 'root' (a root of the stores, so
+ * the chain is complete; also where the lookup does not apply: a CA, a precertificate),
+ * 'intermediate' (the list holds the intermediate the file lacks), 'unknown' (neither: a private
+ * CA, or an unlisted intermediate), 'unchecked' (the list could not be read) or 'pending'.
+ * @param {{ status: string, repair: { status: string, reason: string|null }|null }|null} job the
+ *   file's chain lookup (startChainRepair), null where it does not apply
+ * @returns {'root'|'intermediate'|'unknown'|'unchecked'|'pending'}
+ */
+export function chainEndVerdict(job) {
+  if (!job) return 'root';
+  if (job.status === 'running') return 'pending';
+  if (job.status !== 'done' || !job.repair) return 'unchecked';
+  if (job.repair.status === 'repaired' && job.repair.reason === 'missing') return 'intermediate';
+  return job.repair.status === 'not-found' ? 'unknown' : 'root';
 }
 
 /**
@@ -2550,32 +2574,49 @@ export function mount(container, ctx) {
 
     /* --- chain ---------------------------------------------------------- */
     function chainPanel(chain) {
-      const alerts = [];
-      const add = (variant, message, code) => {
-        const a = Alert({ variant, message, compact: true });
-        a.dataset.chainIssue = code;
-        alerts.push(a);
-      };
+      const alerts = h('div', { class: 'stack-sm' });
       // A CT log holds the leaf alone: there is no file to blame, and the served chain is unknown
       // (still no "complete" verdict).
       const fromCt = load.source === 'ct';
-      for (const is of chain.issues) {
-        switch (is.code) {
-          case 'self-signed': add('warn', t('cert.chain.selfSigned'), is.code); break;
-          case 'leaf-only':
-            if (fromCt) add('info', t('cert.chain.ctLeafOnly'), 'ct-leaf-only');
-            else add('warn', t('cert.chain.leafOnly'), is.code);
-            break;
-          case 'order': add('warn', t('cert.chain.order'), is.code); break;
-          case 'unrelated': add('warn', t('cert.chain.unrelated', { count: is.count }), is.code); break;
-          case 'root-included': add('info', t('cert.chain.rootIncluded'), is.code); break;
-          case 'ends-at': add('info', t('cert.chain.endsAt', { name: certDisplayName(is.cert) }), is.code); break;
-          case 'expired': add('error', t('cert.chain.expired', { name: certDisplayName(is.cert) }), is.code); break;
-          default: break;
+      // A chain that stops short of a root is complete only when its last issuer is a root: the
+      // file's chain lookup in the CCADB list tells (filled again when it ends).
+      const lookup = startChainRepair(load);
+      const fill = () => {
+        clear(alerts);
+        const add = (variant, message, code) => {
+          const a = Alert({ variant, message, compact: true });
+          a.dataset.chainIssue = code;
+          alerts.append(a);
+        };
+        const end = chainEndVerdict(lookup);
+        for (const is of chain.issues) {
+          switch (is.code) {
+            case 'self-signed': add('warn', t('cert.chain.selfSigned'), is.code); break;
+            case 'leaf-only':
+              if (fromCt) add('info', t('cert.chain.ctLeafOnly'), 'ct-leaf-only');
+              else add('warn', t('cert.chain.leafOnly'), is.code);
+              break;
+            case 'order': add('warn', t('cert.chain.order'), is.code); break;
+            case 'unrelated': add('warn', t('cert.chain.unrelated', { count: is.count }), is.code); break;
+            case 'root-included': add('info', t('cert.chain.rootIncluded'), is.code); break;
+            case 'ends-at': {
+              const name = certDisplayName(is.cert);
+              if (end === 'root') add('info', t('cert.chain.endsAt', { name }), is.code);
+              else if (end === 'intermediate') add('warn', t('cert.chain.endsAtIntermediate', { name }), 'missing-intermediate');
+              else if (end === 'unknown') add('info', t('cert.chain.endsAtUnknown', { name }), 'ends-at-unknown');
+              else if (end === 'unchecked') add('info', t('cert.chain.endsAtUnchecked', { name }), 'ends-at-unchecked');
+              break;
+            }
+            case 'expired': add('error', t('cert.chain.expired', { name: certDisplayName(is.cert) }), is.code); break;
+            default: break;
+          }
         }
-      }
-      const serious = chain.issues.some((i) => ['self-signed', 'leaf-only', 'order', 'unrelated', 'expired'].includes(i.code));
-      if (!serious) add('ok', t('cert.chain.ok'), 'ok');
+        const serious = chain.issues.some((i) => ['self-signed', 'leaf-only', 'order', 'unrelated', 'expired'].includes(i.code));
+        const open = chain.issues.some((i) => i.code === 'ends-at') && end !== 'root';
+        if (!serious && !open) add('ok', t('cert.chain.ok'), 'ok');
+      };
+      fill();
+      if (lookup && lookup.status === 'running') onChainRepairEnd(load, fill);
 
       const item = (c, idx) => {
         const role = chain.roles.get(c);
@@ -2604,7 +2645,7 @@ export function mount(container, ctx) {
       const full = fullchainCerts(chain);
       return h('div', { class: 'stack' },
         h('p', { class: 'muted text-sm' }, t('cert.chain.intro')),
-        h('div', { class: 'stack-sm' }, alerts),
+        alerts,
         list,
         unrelated,
         // What the CCADB list adds under the file's chain, and where the chain ends.

@@ -214,6 +214,12 @@ async function main() {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'ds-chainfix-e2e-'));
   const complete = path.join(tmp, 'complete-chain.pem');
   await writeFile(complete, `${await readFile(fixture('chainfix_inter.pem'), 'utf8')}${await readFile(fixture('chainfix_leaf.pem'), 'utf8')}`);
+  // The server certificate and its issuing CA, whose issuer (the Policy CA) is another intermediate;
+  // and the server certificate with the intermediate a root issued, in order.
+  const deepPartial = path.join(tmp, 'deep-partial.pem');
+  await writeFile(deepPartial, `${await readFile(fixture('chainfix_leaf_deep.pem'), 'utf8')}${await readFile(fixture('chainfix_deep_ca.pem'), 'utf8')}`);
+  const inOrder = path.join(tmp, 'leaf-inter.pem');
+  await writeFile(inOrder, `${await readFile(fixture('chainfix_leaf.pem'), 'utf8')}${await readFile(fixture('chainfix_inter.pem'), 'utf8')}`);
   const leafOnlyPfx = path.join(tmp, 'leaf-only.p12');
   await writeFile(leafOnlyPfx, certOnlyPfx(Buffer.from(LEAF, 'base64')));
 
@@ -350,6 +356,23 @@ async function main() {
       const other = p.logErrors.filter((e) => !String(e.url || e.text).includes('/assets/data/intermediates/'));
       assertEqual([other.length, p.exceptions.length, p.consoleErrors.length], [0, 0, 0], 'no other problem');
       await page.resetProblems();
+    });
+
+    await run.step('Chain tab: a file that stops at an intermediate issued by another intermediate is not "complete"; leaf + intermediate of a root is', async () => {
+      const issues = async (file) => {
+        await loadFile(page, CERT, file);
+        await page.click('.cert-tabs .tab[data-tab="chain"]');
+        return page.waitFor(() => {
+          const part = document.querySelector('.cert-tabs .chainfix-chain');
+          return part && part.dataset.chainfix === 'done'
+            ? [...document.querySelectorAll('.cert-tabs [data-chain-issue]')].map((a) => ({ code: a.dataset.chainIssue, text: a.textContent })) : false;
+        }, { message: `Chain tab of ${path.basename(file)}` });
+      };
+      const partial = await issues(deepPartial);
+      assertEqual(partial.map((i) => i.code), ['missing-intermediate'], 'a warning, and no "The chain is complete"');
+      assert(partial[0].text.includes('The file stops at DomainScope Test Deep CA. Its issuer is an intermediate, not a root, so servers must send it too'), partial[0].text);
+      assertEqual((await issues(inOrder)).map((i) => i.code), ['ends-at', 'ok'], 'the issuing CA\'s issuer is a root: complete');
+      await page.click('.cert-tabs .tab[data-tab="names"]');
     });
 
     await run.step('a PKCS#12 bundle with the server certificate only: both Download fullchain.pem buttons add the intermediate', async () => {

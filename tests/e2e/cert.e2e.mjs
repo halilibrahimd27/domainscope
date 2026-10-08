@@ -736,7 +736,9 @@ async function main() {
     await run.step('real_google_chain.pem: 3 certificates, ends at a cross-signed root, fullchain download', async () => {
       await uploadAndWait(page, 'real_google_chain.pem');
       await page.click(tabSel('chain'));
-      const issues = await page.evaluate(() => [...document.querySelectorAll('[data-chain-issue]')].map((a) => a.dataset.chainIssue));
+      // "Complete" waits for the chain lookup in the CCADB list: the cross-signed root's issuer is a root.
+      const issues = await page.waitFor(() => (document.querySelector('.cert-tabs .chainfix-chain')?.dataset.chainfix === 'done'
+        ? [...document.querySelectorAll('[data-chain-issue]')].map((a) => a.dataset.chainIssue) : false), { message: 'chain lookup' });
       assert(issues.includes('ends-at') && issues.includes('ok'), `issues ${issues}`);
       await takeDownloads(page);
       await page.click('[data-action="download-chain"]');

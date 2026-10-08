@@ -16,8 +16,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   sClientHost, sClientCommand, SAMPLE_CERT_URL, loadSampleCert, ctCertLoad, dnDisplayName, analyzeChain, ctCrtshWhy, ctOutcomeMessage,
   ctCrtshIncomplete, focusLoadedCert, certTarget, loadCertificateData, loadCertificateFile, certSummaryFacts, issuerDisplayName,
-  fullchainCerts, daneHolderKey
+  fullchainCerts, daneHolderKey, chainEndVerdict
 } from '../../assets/js/views/cert.js';
+import { createIntermediateStore, repairChain } from '../../assets/js/lib/chainfix.js';
 import { isLockedPfx } from '../../assets/js/ui/pfx-import.js';
 import { CT_COOLDOWN_MS, createCtCooldown, lookupCtCertificate } from '../../assets/js/lib/ctcert.js';
 import { formatDate, setLang } from '../../assets/js/i18n.js';
@@ -140,6 +141,32 @@ describe('cert view: the DANE / TLSA check of a file (daneHolderKey)', () => {
     assert.equal(daneHolderKey(read('bundle_inter.pem', 'bundle_leaf.pem')), daneHolderKey(full), 'the same certificates in another order');
     const pre = { ...alone.leaf, isPrecertificate: true };
     assert.notEqual(daneHolderKey({ leaf: pre, certificates: [pre] }), daneHolderKey(alone), 'a precertificate: another DER, another 3 0 x value');
+  });
+});
+
+describe('cert view: where the file\'s chain stops short of a root (chainEndVerdict)', () => {
+  const read = (...files) => parseCertificates(files.map((f) => readFileSync(join(FIX, f), 'utf8')).join('\n'));
+
+  test('a root completes it; an intermediate the CCADB list adds, an issuer it cannot place or a list not read does not', () => {
+    const done = (status, reason = null) => ({ status: 'done', repair: { status, reason } });
+    assert.equal(chainEndVerdict(done('complete')), 'root');
+    assert.equal(chainEndVerdict(done('repaired', 'missing')), 'intermediate');
+    assert.equal(chainEndVerdict(done('repaired', 'untrusted-root')), 'root', 'the issuer is a root (one no store trusts: the note above says so)');
+    assert.equal(chainEndVerdict(done('not-found')), 'unknown');
+    assert.equal(chainEndVerdict({ status: 'error', repair: null, error: new Error('offline') }), 'unchecked');
+    assert.equal(chainEndVerdict({ status: 'running', repair: null }), 'pending');
+    assert.equal(chainEndVerdict(null), 'root', 'no lookup (a CA, a precertificate): as before');
+  });
+
+  test('the test PKI: leaf + Deep CA stops at an intermediate (the Policy CA), leaf + Issuing CA at a root', async () => {
+    const store = createIntermediateStore({
+      url: new URL('../fixtures/intermediates/manifest.json', import.meta.url).href,
+      fetchImpl: async (url) => new Response(readFileSync(new URL(url)), { status: 200 })
+    });
+    const verdict = async (...files) => chainEndVerdict({ status: 'done', repair: await repairChain(read(...files), { store, now: new Date('2026-09-28T12:00:00Z') }) });
+    assert.deepEqual(analyzeChain(read('chainfix_leaf_deep.pem', 'chainfix_deep_ca.pem').certificates).issues.map((i) => i.code), ['ends-at']);
+    assert.equal(await verdict('chainfix_leaf_deep.pem', 'chainfix_deep_ca.pem'), 'intermediate');
+    assert.equal(await verdict('chainfix_leaf.pem', 'chainfix_inter.pem'), 'root');
   });
 });
 

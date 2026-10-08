@@ -7,9 +7,6 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import {
   fnv64, dnValue, caName, certId, parseRadarDays, radarBand, createSpotterBudget, spotterWatchUrl, fromSpotterItems, fromCrtshCerts,
@@ -17,82 +14,10 @@ import {
   updateSeen, seenText, CT_WATCH_FILTERS, CT_WATCH_FLAGS, CT_WATCH_NOTES, CT_WATCH_STATES, CT_WATCH_SPOTTER_MIN, CT_WATCH_MAX_DOMAINS
 } from '../../assets/js/lib/ctwatch.js';
 import { CERTSPOTTER_ISSUANCES } from '../../assets/js/lib/ctcert.js';
-import { parseCertificates } from '../../assets/js/lib/x509.js';
 import { sourceStatus } from '../../assets/js/lib/sourcestatus.js';
+import { CT_ISSUER as ISSUER, spotterRow as issuance, crtshRow as crtRow, lastSpotterId } from './ct-fake.mjs';
 
-const FIX = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
 const NOW = new Date('2026-10-08T12:00:00Z');
-const ISSUER = 'C=US, O=Example Trust, CN=Example CA R1';
-
-/* ---- crafted certificates (as tests/js/ctcert.test.js) -------------------------------- */
-
-const encLen = (n) => {
-  if (n < 0x80) return Buffer.from([n]);
-  const b = [];
-  for (let v = n; v > 0; v = Math.floor(v / 256)) b.unshift(v & 0xff);
-  return Buffer.from([0x80 | b.length, ...b]);
-};
-const tlv = (tag, ...parts) => {
-  const body = Buffer.concat(parts.map((p) => (Buffer.isBuffer(p) ? p : Buffer.from(p))));
-  return Buffer.concat([Buffer.from([tag]), encLen(body.length), body]);
-};
-const seq = (...p) => tlv(0x30, ...p);
-const set = (...p) => tlv(0x31, ...p);
-const ctx = (n, constructed, ...p) => tlv(0x80 | (constructed ? 0x20 : 0) | n, ...p);
-const oid = (s) => {
-  const arcs = s.split('.').map(Number);
-  const out = [arcs[0] * 40 + arcs[1]];
-  for (const a of arcs.slice(2)) {
-    const bytes = [a & 0x7f];
-    for (let x = a >> 7; x > 0; x >>= 7) bytes.unshift((x & 0x7f) | 0x80);
-    out.push(...bytes);
-  }
-  return tlv(0x06, Buffer.from(out));
-};
-const utf8 = (s) => tlv(0x0c, Buffer.from(s, 'utf8'));
-const cn = (value) => seq(set(seq(oid('2.5.4.3'), utf8(value))));
-const SHA256_RSA = seq(oid('1.2.840.113549.1.1.11'), Buffer.from([0x05, 0x00]));
-const SPKI = Buffer.from(parseCertificates(readFileSync(join(FIX, 'rsa_multi_san.der'))).leaf.spkiDer);
-const utcTime = (d) => d.toISOString().replace(/^\d\d(\d\d)-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d).*$/, '$1$2$3$4$5$6Z');
-
-function certDer({ names, notBefore, notAfter, serial = 1, precert = false }) {
-  const exts = [seq(oid('2.5.29.17'), tlv(0x04, seq(...names.map((n) => ctx(2, false, Buffer.from(n, 'latin1'))))))];
-  if (precert) exts.push(seq(oid('1.3.6.1.4.1.11129.2.4.3'), tlv(0x01, Buffer.from([0xff])), tlv(0x04, Buffer.from([0x05, 0x00]))));
-  const tbs = seq(
-    ctx(0, true, tlv(0x02, Buffer.from([2]))),
-    tlv(0x02, Buffer.from([serial])),
-    SHA256_RSA,
-    cn('Example CA R1'),
-    seq(tlv(0x17, Buffer.from(utcTime(new Date(notBefore)))), tlv(0x17, Buffer.from(utcTime(new Date(notAfter))))),
-    cn(names[0].replace(/^\*\./, 'wild.')),
-    SPKI,
-    ctx(3, true, seq(...exts))
-  );
-  return seq(tbs, SHA256_RSA, tlv(0x03, Buffer.concat([Buffer.from([0]), Buffer.alloc(16, 0xab)])));
-}
-
-let nextId = 17390000000;
-/** A Cert Spotter issuance as the live API returns it. */
-function issuance({ names, notBefore = '2026-08-01T00:00:00Z', notAfter = '2026-10-30T00:00:00Z', precert = false, revoked = false, serial = 1, issuer = ISSUER, friendly = 'Example Trust', der } = {}) {
-  nextId += 1;
-  return {
-    id: String(nextId),
-    tbs_sha256: 'ab'.repeat(32),
-    cert_sha256: (nextId % 256).toString(16).padStart(2, '0').repeat(32),
-    dns_names: names,
-    pubkey_sha256: 'ef'.repeat(32),
-    issuer: { friendly_name: friendly, pubkey_sha256: '12'.repeat(32), name: issuer },
-    not_before: notBefore,
-    not_after: notAfter,
-    revoked,
-    cert_der: Buffer.from(der || certDer({ names, notBefore, notAfter, precert, serial })).toString('base64')
-  };
-}
-
-/** A crt.sh row (`deduplicate=Y`). */
-function crtRow({ id, names, notBefore = '2026-08-01T00:00:00', notAfter = '2026-10-30T00:00:00', serial = '01', issuer = ISSUER }) {
-  return { issuer_ca_id: 7, issuer_name: issuer, common_name: names[0], name_value: names.join('\n'), id, entry_timestamp: notBefore, not_before: notBefore, not_after: notAfter, serial_number: serial, result_count: 2 };
-}
 
 /* ---- fakes ---------------------------------------------------------------------------- */
 
@@ -262,7 +187,7 @@ describe('reading a domain', () => {
     assert.equal(r.certs.length, 1);
     assert.deepEqual(r.requests, { certspotter: 2, crtsh: 0 });
     assert.equal(f.crtshCalls().length, 0);
-    assert.equal(new URL(f.spotterCalls()[1].url).searchParams.get('after'), String(nextId));
+    assert.equal(new URL(f.spotterCalls()[1].url).searchParams.get('after'), lastSpotterId());
     assert.equal(o.budget.used(), 2);
     assert.equal(f.calls[0].init.credentials, 'omit');
     assert.ok(f.calls[0].init.signal, 'every request has a signal (the timeout)');

@@ -58,6 +58,8 @@ before(async () => {
   await imp('assets/js/ui/related-domains.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
+  // Domain portfolio › Certificates (CT): loaded on the tab's first use.
+  await imp('assets/js/ui/ctwatch-panel.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -385,6 +387,9 @@ describe('i18n coverage', () => {
     for (const k of ['domains', ...pf.PORTFOLIO_TILES]) add(`pf.tile.${k}`);
     for (const r of pf.RISK_BADGES) add(`pf.risk.${r}`);
     for (const tab of pf.PORTFOLIO_TABS) add(`pf.tab.${tab}`);
+    // Its Certificates (CT) tab (ui/ctwatch-panel.js over lib/ctwatch.js): every flag, filter, note,
+    // tile and source a row or a domain's read words from a library code.
+    for (const k of (await imp('assets/js/ui/ctwatch-panel.js')).generatedKeys()) add(k);
     for (const d of ['validated', 'signed', 'failing', 'unsigned']) add(`pf.dnssec.${d}`);
     for (const c of ['none', 'unrestricted', 'deny-all', 'critical']) add(`pf.caa.${c}`);
     for (const s of ['none', 'many', 'invalid']) { add(`pf.spf.${s}`); add(`pf.dmarc.${s}`); }

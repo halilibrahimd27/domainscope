@@ -1,6 +1,7 @@
 /*
  * views/portfolio.css — "Domain portfolio" view (.pf-*): the list, the head with its exports, the
- * tiles, the table of domains (labelled cards on a phone), the policy editor and the matrix.
+ * tiles, the table of domains (labelled cards on a phone), the policy editor and the matrix, and the
+ * Certificates (CT) tab (.pf-ct-*, ui/ctwatch-panel.js).
  */
 
 .pf-view {
@@ -553,10 +554,64 @@
   }
 }
 
+/* ---- the Certificates (CT) tab (ui/ctwatch-panel.js) --------------------------------- */
+
+.pf-ct-loading {
+  padding: 16px 0;
+}
+
+.pf-ct-days {
+  max-width: 22rem;
+}
+
+.pf-ct-quota strong {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.pf-ct-reads {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.pf-ct-sources .pf-ct-reads {
+  margin-top: 6px;
+}
+
+.pf-ct-names .pf-cell {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.pf-ct-table tr.pf-ct-band-last td:first-child {
+  box-shadow: inset 3px 0 0 var(--error-solid);
+}
+
+.pf-ct-table tr.pf-ct-band-near td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn-solid);
+}
+
+@media (max-width: 640px) {
+  .pf-ct-days {
+    max-width: none;
+  }
+
+  .pf-ct-table td.pf-col-domain .pf-cell {
+    flex-direction: row;
+  }
+}
+
 /* ---- print -------------------------------------------------------------------------- */
 
 @media print {
   .pf-form-card,
+  .pf-ct-form,
+  .pf-ct-sources,
   .pf-exports,
   .pf-pol-card,
   .pf-tiles,

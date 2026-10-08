@@ -54,7 +54,7 @@ describe('Domain portfolio view helpers', () => {
   test('the view interface; nothing kept before a check; the tiles are filters, the risk badges risks', () => {
     assert.deepEqual([id, titleKey, icon], ['portfolio', 'nav.portfolio', 'box']);
     assert.equal(result(), null);
-    assert.deepEqual(PORTFOLIO_TABS, ['domains', 'policy']);
+    assert.deepEqual(PORTFOLIO_TABS, ['domains', 'policy', 'ct']);
     for (const tile of PORTFOLIO_TILES) assert.ok(PORTFOLIO_FILTERS.includes(tile), tile);
     // every risk lib/portfolio.js rowRisk names but 'ok', worst first
     assert.deepEqual([...RISK_BADGES], ['critical', 'ns-unregistered', 'pending-transfer', 'expired', 'expiring', 'ns-expiring', 'hijack', 'warn']);

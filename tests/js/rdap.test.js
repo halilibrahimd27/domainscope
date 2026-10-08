@@ -5,6 +5,7 @@ import {
   parseRdapDomain, parseRdapIp, rangeToCidrs, clearRdapCache, IANA_BOOTSTRAP, RDAP_ORG, RDAP_OVERRIDES, RDAP_ORG_INTERVAL_MS,
   RDAP_ORG_COOLDOWN_MS
 } from '../../assets/js/lib/rdap.js';
+import { fakeClock } from './fake-clock.mjs';
 
 /* -------------------------------------------------------------------- */
 /* Fixtures (trimmed from live responses, 2026-09-23)                   */
@@ -554,34 +555,43 @@ test('rdapDomain: a TLD the bootstrap does not list but RDAP_OVERRIDES does goes
   assert.equal((await rdapDomain('example.io', { fetchImpl: g, fallback: false })).ok, true);
 });
 
-test('rdap.org: one request a second at most, every lookup of the page together, in call order', async () => {
+test('rdap.org: one request a second at most, every lookup of the page together, in call order', async (t) => {
   assert.equal(RDAP_ORG_INTERVAL_MS, 1000);
+  // a fake clock: the slots are exact, and a timer that fires a few milliseconds early on a real clock cannot flip it
+  const clock = fakeClock(t);
   const at = [];
   const f = mockFetch({
     ...BOOT,
     'https://tld.registry.test/': () => new TypeError('Failed to fetch'),
-    [RDAP_ORG]: (u) => { at.push([u.split('/').pop(), Date.now()]); return GITHUB_COM; }
+    [RDAP_ORG]: (u) => { at.push([u.split('/').pop(), clock.elapsed()]); return GITHUB_COM; }
   });
-  const rs = await Promise.all(['a.test', 'b.test', 'c.test'].map((d) => rdapDomain(d, { fetchImpl: f, rdapOrgIntervalMs: 80 })));
+  const lookups = Promise.all(['a.test', 'b.test', 'c.test'].map((d) => rdapDomain(d, { fetchImpl: f, rdapOrgIntervalMs: 80 })));
+  await clock.advance(79);
+  assert.deepEqual(at, [['a.test', 0]], 'the first goes out at once; the others wait for their slots');
+  await clock.advance(1);
+  assert.deepEqual(at, [['a.test', 0], ['b.test', 80]], 'the second, 80 ms after it');
+  const rs = await clock.settle(lookups);
   assert.ok(rs.every((r) => r.ok));
-  assert.deepEqual(at.map((x) => x[0]), ['a.test', 'b.test', 'c.test']);
-  for (let i = 1; i < at.length; i += 1) assert.ok(at[i][1] - at[i - 1][1] >= 75, `spaced: ${at[i][1] - at[i - 1][1]} ms`);
+  assert.deepEqual(at, [['a.test', 0], ['b.test', 80], ['c.test', 160]], 'the third, 80 ms after the second: in call order');
 });
 
-test('rdap.org: an unreadable answer (a browser\'s view of its 429) pauses it; the registry\'s own error stands meanwhile', async () => {
+test('rdap.org: an unreadable answer (a browser\'s view of its 429) pauses it; the registry\'s own error stands meanwhile', async (t) => {
   assert.equal(RDAP_ORG_COOLDOWN_MS, 60000);
+  // a fake clock: a registry's 503 is asked again after a pause and the cooldown below ends at an exact instant
+  const clock = fakeClock(t);
+  const lookup = (domain, opts) => clock.settle(rdapDomain(domain, opts));
   let orgCalls = 0;
   const f = mockFetch({
     ...BOOT,
     'https://tld.registry.test/': () => jsonResponse('busy', 503),
     [RDAP_ORG]: () => { orgCalls += 1; return new TypeError('Failed to fetch'); }
   });
-  const first = await rdapDomain('a.test', { fetchImpl: f, rdapOrgIntervalMs: 0 });
+  const first = await lookup('a.test', { fetchImpl: f, rdapOrgIntervalMs: 0 });
   assert.equal(first.ok, false);
   assert.equal(first.errorKind, 'network');
   assert.match(first.error, /rdap\.org gave no readable answer/);
   assert.equal(orgCalls, 1, 'a TypeError is never retried');
-  const second = await rdapDomain('b.test', { fetchImpl: f, rdapOrgIntervalMs: 0 });
+  const second = await lookup('b.test', { fetchImpl: f, rdapOrgIntervalMs: 0 });
   assert.equal(orgCalls, 1, 'paused: not asked again');
   assert.equal(second.rdapOrgPaused, true);
   assert.equal(second.httpStatus, 503, 'the registry\'s answer is the one reported');
@@ -589,19 +599,24 @@ test('rdap.org: an unreadable answer (a browser\'s view of its 429) pauses it; t
   clearRdapCache();
   let n = 0;
   const g = mockFetch({ ...BOOT, 'https://tld.registry.test/': () => new TypeError('x'), [RDAP_ORG]: () => { n += 1; return jsonResponse('slow down', 429); } });
-  await rdapDomain('a.test', { fetchImpl: g, rdapOrgIntervalMs: 0 });
-  await rdapDomain('b.test', { fetchImpl: g, rdapOrgIntervalMs: 0 });
+  await lookup('a.test', { fetchImpl: g, rdapOrgIntervalMs: 0 });
+  await lookup('b.test', { fetchImpl: g, rdapOrgIntervalMs: 0 });
   assert.equal(n, 1);
   // after the pause it is asked again (the registry answered readably: the unreadable answer was rdap.org's)
   clearRdapCache();
   let m = 0;
   const h = mockFetch({ ...BOOT, 'https://tld.registry.test/': () => jsonResponse('bad request', 400), [RDAP_ORG]: () => { m += 1; return new TypeError('y'); } });
-  await rdapDomain('a.test', { fetchImpl: h, rdapOrgIntervalMs: 0, rdapOrgCooldownMs: 30 });
-  const paused = await rdapDomain('b.test', { fetchImpl: h, rdapOrgIntervalMs: 0, rdapOrgCooldownMs: 30 });
+  const opts = { fetchImpl: h, rdapOrgIntervalMs: 0, rdapOrgCooldownMs: 30 };
+  await lookup('a.test', opts);
+  const pausedAt = clock.elapsed();
+  const paused = await lookup('b.test', opts);
   assert.deepEqual([m, paused.rdapOrgPaused], [1, true], 'paused');
-  await new Promise((r) => setTimeout(r, 40));
-  await rdapDomain('c.test', { fetchImpl: h, rdapOrgIntervalMs: 0, rdapOrgCooldownMs: 30 });
-  assert.equal(m, 2);
+  await clock.advance(pausedAt + 30 - 1 - clock.elapsed());
+  assert.equal((await lookup('c.test', opts)).rdapOrgPaused, true, 'still paused a millisecond before the cooldown ends');
+  assert.equal(m, 1);
+  await clock.advance(1);
+  await lookup('d.test', opts);
+  assert.equal(m, 2, 'asked again when it has ended');
 });
 
 /** A Response as a redirect followed to `url` leaves it (fetch's `response.url`). */
@@ -611,21 +626,23 @@ function redirectedResponse(url, body, status) {
   return res;
 }
 
-test('rdap.org: a 429 pauses the lookups already waiting for their turn too; they are not sent and keep the registry\'s error', async () => {
+test('rdap.org: a 429 pauses the lookups already waiting for their turn too; they are not sent and keep the registry\'s error', async (t) => {
+  const clock = fakeClock(t);
   let orgCalls = 0;
   const f = mockFetch({
     ...BOOT,
     'https://tld.registry.test/': () => new TypeError('Failed to fetch'),
     [RDAP_ORG]: () => { orgCalls += 1; return jsonResponse('slow down', 429); }
   });
-  // a slot of 250 ms: the first answer lands long before the next turn, even on a busy test machine
-  const rs = await Promise.all(['a.test', 'b.test', 'c.test', 'd.test'].map((d) => rdapDomain(d, { fetchImpl: f, rdapOrgIntervalMs: 250 })));
+  // a slot of 250 ms: the first answer lands long before the next turn
+  const rs = await clock.settle(Promise.all(['a.test', 'b.test', 'c.test', 'd.test'].map((d) => rdapDomain(d, { fetchImpl: f, rdapOrgIntervalMs: 250 }))));
   assert.equal(orgCalls, 1, 'only the first one reaches rdap.org');
   assert.equal(rs.filter((r) => r.rdapOrgPaused).length, 3);
   assert.ok(rs.filter((r) => r.rdapOrgPaused).every((r) => !r.ok && r.errorKind === 'network'), 'the registry\'s own failure is the one reported');
 });
 
-test('registries: one request in flight per server; a 429 is waited out and asked again, never blamed on rdap.org', async () => {
+test('registries: one request in flight per server; a 429 is waited out and asked again, never blamed on rdap.org', async (t) => {
+  const clock = fakeClock(t);
   // A registry that answers one request per 60 ms and 429 (with CORS, no Retry-After) to the rest.
   let last = 0;
   let inFlight = 0;
@@ -643,20 +660,21 @@ test('registries: one request in flight per server; a 429 is waited out and aske
   };
   const f = mockFetch({ ...BOOT, 'https://tld.registry.test/': registry, [RDAP_ORG]: () => { orgCalls += 1; return new TypeError('x'); } });
   const domains = Array.from({ length: 6 }, (_, i) => `example${i}.test`);
-  const rs = await Promise.all(domains.map((d) => rdapDomain(d, { fetchImpl: f, registryRetryMs: 25 })));
+  const rs = await clock.settle(Promise.all(domains.map((d) => rdapDomain(d, { fetchImpl: f, registryRetryMs: 25 }))));
   assert.equal(rs.filter((r) => r.ok).length, 6, rs.map((r) => r.error).join(' | '));
   assert.equal(maxInFlight, 1, 'one request at a time to one registry server');
   assert.equal(orgCalls, 0, 'rdap.org would only forward to the same registry');
 });
 
-test('registries: a Retry-After is honoured before the server is asked again', async () => {
+test('registries: a Retry-After is honoured before the server is asked again', async (t) => {
+  const clock = fakeClock(t);
   let calls = 0;
   const at = [];
   const f = mockFetch({
     ...BOOT,
     'https://tld.registry.test/': () => {
       calls += 1;
-      at.push(Date.now());
+      at.push(clock.elapsed());
       if (calls === 1) {
         const res = jsonResponse({ errorCode: 429 }, 429);
         res.headers.set('retry-after', '1');
@@ -665,18 +683,20 @@ test('registries: a Retry-After is honoured before the server is asked again', a
       return GITHUB_COM;
     }
   });
-  const r = await rdapDomain('example.test', { fetchImpl: f, registryRetryMs: 10 });
+  const r = await clock.settle(rdapDomain('example.test', { fetchImpl: f, registryRetryMs: 10 }));
   assert.equal(r.ok, true);
-  assert.ok(at[1] - at[0] >= 950, `waited ${at[1] - at[0]} ms`);
+  assert.deepEqual(at, [0, 1000], 'asked again when the second it named has passed, not before');
 });
 
-test('registries: one that keeps answering 429 fails as rate limited after its retries, without rdap.org', async () => {
+test('registries: one that keeps answering 429 fails as rate limited after its retries, without rdap.org', async (t) => {
+  const clock = fakeClock(t);
   let orgCalls = 0;
   const f = mockFetch({ ...BOOT, 'https://tld.registry.test/': () => jsonResponse({ errorCode: 429 }, 429), [RDAP_ORG]: () => { orgCalls += 1; return GITHUB_COM; } });
-  const r = await rdapDomain('example.test', { fetchImpl: f, registryRetryMs: 5 });
+  const r = await clock.settle(rdapDomain('example.test', { fetchImpl: f, registryRetryMs: 5 }));
   assert.deepEqual([r.ok, r.errorKind, r.httpStatus], [false, 'rate-limit', 429]);
   assert.equal(orgCalls, 0);
   assert.equal(f.calls.filter((c) => c.url.startsWith('https://tld.registry.test/')).length, 4, 'asked once and again three times');
+  assert.equal(clock.elapsed(), 5 + 10 + 20, 'after waits of 5, 10 and 20 ms');
 });
 
 test('rdap.org pauses for its own 429 only: a registry\'s 429 behind its redirect, or a registry that gave no readable answer either, does not', async () => {
@@ -784,17 +804,20 @@ test('registries: rdap.org\'s redirect to a registry that asks for an hour block
   assert.ok(rest.every((r) => r.retryAfterMs > 3500e3), 'the time left');
 });
 
-test('registries: one that answers 429 to everything costs one lookup\'s retries; the lookups queued behind it fail at once until its wait ends, then it is asked again', async () => {
+test('registries: one that answers 429 to everything costs one lookup\'s retries; the lookups queued behind it fail at once until its wait ends, then it is asked again', async (t) => {
+  const clock = fakeClock(t);
   let calls = 0;
   const f = mockFetch({ ...BOOT, 'https://tld.registry.test/': () => { calls += 1; return tooMany(null); } });
-  const t0 = Date.now();
-  const signal = AbortSignal.timeout(3000);
-  const rs = await Promise.all(['a.test', 'b.test', 'c.test', 'd.test'].map((d) => rdapDomain(d, { fetchImpl: f, registryRetryMs: 20, signal })));
+  const signal = AbortSignal.timeout(3000); // a real-time net around the fake clock
+  const rs = await clock.settle(Promise.all(['a.test', 'b.test', 'c.test', 'd.test'].map((d) => rdapDomain(d, { fetchImpl: f, registryRetryMs: 20, signal }))));
   assert.equal(calls, 4, 'a.test: once and three retries (20, 40, 80 ms); the others are not sent');
   assert.ok(rs.every((r) => !r.ok && r.errorKind === 'rate-limit' && r.httpStatus === 429), rs.map((r) => r.error).join(' | '));
-  assert.ok(rs.every((r) => r.retryAfterMs > 0 && r.retryAfterMs <= 160), `the wait left, at most 160 ms: ${rs.map((r) => r.retryAfterMs)}`);
-  assert.ok(Date.now() - t0 < 1000, `the queue did not wait its turn (${Date.now() - t0} ms)`);
-  await new Promise((r) => setTimeout(r, 220));
-  await rdapDomain('e.test', { fetchImpl: f, registryRetryMs: 20 });
+  assert.equal(clock.elapsed(), 20 + 40 + 80, 'the queue did not wait its turn: only a.test waited');
+  assert.deepEqual(rs.map((r) => r.retryAfterMs), [160, 160, 160, 160], 'the wait left: the next one, 160 ms');
+  await clock.advance(160 - 1);
+  const early = await clock.settle(rdapDomain('e.test', { fetchImpl: f, registryRetryMs: 20 }));
+  assert.deepEqual([calls, early.errorKind, early.retryAfterMs], [4, 'rate-limit', 1], 'a millisecond before it ends: still not asked');
+  await clock.advance(1);
+  await clock.settle(rdapDomain('f.test', { fetchImpl: f, registryRetryMs: 20 }));
   assert.equal(calls, 8, 'after the wait the next lookup is sent again');
 });

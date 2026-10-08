@@ -19,6 +19,7 @@ import { clearRdapCache } from '../../assets/js/lib/rdap.js';
 import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
 import { throwIfAborted } from '../../assets/js/lib/util.js';
 import { PERF_FACTOR } from './perf.mjs';
+import { fakeClock } from './fake-clock.mjs';
 
 const NOW = new Date('2026-10-02T12:00:00Z');
 const DAY = 86400000;
@@ -443,8 +444,9 @@ describe('the calendar and the exports', () => {
     assert.equal(exportRow(portfolioFacts({ domain: 'example.com', dmarc: txt('v=DMARC1; p=none; rua=mailto:d@example.com') })).dmarc, 'p=none');
   });
 
-  test('20 domains of one registry that answers one request per window and 429 to the rest: every one is read, rdap.org never blamed', async () => {
+  test('20 domains of one registry that answers one request per window and 429 to the rest: every one is read, rdap.org never blamed', async (t) => {
     // rdap.sidn.nl answered three concurrent requests 200, 429, 429 on 2026-10-02.
+    const clock = fakeClock(t); // the registry's window and the retries run on a fake clock: no real time, no flaky edge
     let last = 0;
     let inFlight = 0;
     let maxInFlight = 0;
@@ -471,7 +473,7 @@ describe('the calendar and the exports', () => {
     const dns = { query: async (name, type) => ({ name, type, ok: true, rcode: 'NOERROR', answers: [], flags: {} }) };
     const domains = Array.from({ length: 20 }, (_, i) => `example${i}.test`);
     const run = createPortfolio({ domains, dns, fetchImpl, dkim: false, rdapOptions: { registryRetryMs: 20, rdapOrgIntervalMs: 0 } });
-    await run.start();
+    await clock.settle(run.start());
     const res = domains.map((d) => run.row(d).raw.rdap);
     assert.equal(res.filter((r) => r && r.ok).length, 20, JSON.stringify(log));
     assert.equal(maxInFlight, 1, 'one request at a time to the registry');
@@ -479,8 +481,8 @@ describe('the calendar and the exports', () => {
     assert.ok(res.every((r) => !r.rdapOrgPaused));
   });
 
-  test('8 domains on a registry that answers 429 to everything, 8 on a healthy one, interleaved: the healthy ones never wait on the storm, which costs one lookup\'s retries', async () => {
-    const t0 = Date.now();
+  test('8 domains on a registry that answers 429 to everything, 8 on a healthy one, interleaved: the healthy ones never wait on the storm, which costs one lookup\'s retries', async (t) => {
+    const clock = fakeClock(t); // the order of the answers and the time the storm costs are exact, not "fast enough"
     const calls = { a: 0, b: 0 };
     const reg = (name) => ({ objectClassName: 'domain', ldhName: name, status: ['client transfer prohibited'], events: [{ eventAction: 'expiration', eventDate: iso(300) }], entities: [] });
     const fetchImpl = async (url) => {
@@ -504,10 +506,10 @@ describe('the calendar and the exports', () => {
     // the defaults scaled down 20 times: retries after 100, 200 and 400 ms
     const run = createPortfolio({
       domains, dns, fetchImpl, dkim: false, rdapOptions: { registryRetryMs: 100, rdapOrgIntervalMs: 0 },
-      onEvent: (e) => { if (e.type === 'rdap') at[e.domain] = Date.now() - t0; }
+      onEvent: (e) => { if (e.type === 'rdap') at[e.domain] = clock.elapsed(); }
     });
-    const signal = AbortSignal.timeout(8000);
-    await run.start({ signal });
+    const signal = AbortSignal.timeout(8000); // a real-time net around the fake clock
+    await clock.settle(run.start({ signal }));
     const healthy = domains.filter((d) => d.endsWith('.b'));
     const storm = domains.filter((d) => d.endsWith('.a'));
     assert.ok(healthy.every((d) => run.row(d).raw.rdap.ok), 'every healthy one read');
@@ -515,7 +517,7 @@ describe('the calendar and the exports', () => {
     assert.ok(Math.max(...healthy.map((d) => at[d])) < 500, `fast: ${JSON.stringify(at)}`);
     assert.ok(storm.every((d) => run.row(d).raw.rdap.errorKind === 'rate-limit'), 'the storm: rate limited, each said so');
     assert.equal(calls.a, 4, 'one lookup\'s tries; the others fail at once until its wait ends');
-    assert.ok(Date.now() - t0 < 2000, `the run did not wait the storm out per domain (${Date.now() - t0} ms)`);
+    assert.ok(clock.elapsed() < 2000, `the run did not wait the storm out per domain (${clock.elapsed()} ms)`);
   });
 
   test('a name server domain the registry does not know (RDAP 404): the takeover is flagged — the row\'s risk, the summary, never "no data"', async () => {

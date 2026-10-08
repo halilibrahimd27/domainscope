@@ -6,6 +6,7 @@ import {
   defaultShouldRetry, errorKind, uniq, chunk, randomLabel, createCache,
   mergeSignals, splitList, parseRetryAfter, throwIfAborted, abortReasonToError, onceAsync, sharePercent
 } from '../../assets/js/lib/util.js';
+import { fakeClock } from './fake-clock.mjs';
 
 /** A Response-like object for the fetch mocks (no real network). */
 function mockResponse(body, { status = 200, statusText = '', headers = {}, url = 'https://x/' } = {}) {
@@ -43,10 +44,15 @@ test('error classes carry names and fields', () => {
 /* sleep                                                                */
 /* -------------------------------------------------------------------- */
 
-test('sleep resolves after the delay', async () => {
-  const t = Date.now();
-  await sleep(20);
-  assert.ok(Date.now() - t >= 15);
+test('sleep resolves after the delay, and not before', async (t) => {
+  const clock = fakeClock(t); // a real timer can fire a few milliseconds before Date.now() says it is due
+  let woke = false;
+  const slept = sleep(20).then(() => { woke = true; });
+  await clock.advance(19);
+  assert.equal(woke, false, 'not at 19 ms');
+  await clock.advance(1);
+  await slept;
+  assert.equal(clock.elapsed(), 20);
 });
 
 test('sleep rejects immediately when the signal is already aborted', async () => {
@@ -311,20 +317,23 @@ test('retry does not retry non-retryable errors', async () => {
   assert.equal(n, 1);
 });
 
-test('retry honours Retry-After exactly and bails when it exceeds the cap', async () => {
+test('retry honours Retry-After exactly and bails when it exceeds the cap', async (t) => {
+  const clock = fakeClock(t);
   let n = 0;
-  const t = Date.now();
-  await retry(async () => { n += 1; if (n < 2) throw new HttpError(429, 'u', '', { retryAfterMs: 30 }); },
-    { retries: 3, baseDelayMs: 1, maxDelayMs: 1000 });
-  assert.ok(Date.now() - t >= 25);
+  const attempts = [];
+  await clock.settle(retry(async () => { attempts.push(clock.elapsed()); n += 1; if (n < 2) throw new HttpError(429, 'u', '', { retryAfterMs: 30 }); },
+    { retries: 3, baseDelayMs: 1, maxDelayMs: 1000 }));
+  assert.deepEqual(attempts, [0, 30], 'asked again exactly when the server said');
 
   n = 0;
   await assert.rejects(
-    retry(async () => { n += 1; throw new HttpError(429, 'u', '', { retryAfterMs: 60000 }); },
-      { retries: 3, baseDelayMs: 1, maxDelayMs: 5000 }),
+    clock.settle(retry(async () => { n += 1; throw new HttpError(429, 'u', '', { retryAfterMs: 60000 }); },
+      { retries: 3, baseDelayMs: 1, maxDelayMs: 5000 })),
     (e) => e.status === 429
   );
   assert.equal(n, 1); // did not wait 60s; bailed at once
+  assert.equal(clock.elapsed(), 30, 'no time passed for it');
+  assert.equal(clock.pending(), 0, 'nothing is waiting');
 });
 
 test('retry stops once the signal aborts', async () => {

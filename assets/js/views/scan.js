@@ -97,6 +97,8 @@ import { summarizeVerify, verifyHeadline } from '../lib/verify.js';
 const loadRollout = onceAsync(() => import('../ui/rollout-panel.js'));
 import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
+// The market packs a scan's evidence added and why (shared with the Subdomains run header).
+import { LocaleEvidenceBanner } from '../ui/locale-evidence.js';
 // The DANE / TLSA tab (shared with the Certificate view); its job lives on the scan run too.
 import { DanePanel, daneTabBadge, daneExport, cancelDane } from '../ui/dane-panel.js';
 // Where TLS terminates (the inventory's topology keys): the notes of a server, the CSV column.
@@ -2706,9 +2708,12 @@ function buildRunUI(run, ctx, { onFinish }) {
     zoneBanner.classList.add('sub-zone-banner');
     zoneBanner.dataset.zoneMode = run.config.zoneMode;
   }
+  // The market packs the scan's evidence added for a domain whose TLD has no pack of its own (the
+  // plan line said it might): which and why, as soon as the wordlist stage starts, kept with the run.
+  const localeBanner = LocaleEvidenceBanner(run);
   const panel = h('section', { class: 'scan-run card', dataset: { status: run.status }, attrs: { 'aria-label': t('progress.label') } },
     h('div', { class: 'scan-run-head' }, h('div', { class: 'scan-run-titles' }, title, meta), NotifyButton(() => run.job || null)),
-    zoneBanner, stageList, progress, sourceWaitNote, chips, runNotice);
+    zoneBanner, localeBanner.el, stageList, progress, sourceWaitNote, chips, runNotice);
 
   const SOURCE_GRACE_SECONDS = 12;
   function renderSourceWait() {
@@ -4185,6 +4190,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     renderStages();
     renderChips();
     renderSourceWait();
+    localeBanner.render();
     clear(runNotice);
     if (run.status === 'done') {
       const n = run.result.hosts.length;
@@ -4250,6 +4256,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         renderProgress();
         renderSourceWait();
         if (payload.stage === 'sources') renderChips();
+        if (payload.stage === 'bruteforce') localeBanner.render();
         // Announce a stage that really runs; a skipped one (exact zone mode, no wordlist…) stays silent.
         if (SCAN_STAGES.includes(payload.stage) && payload.stage !== 'done'
           && run.stages[payload.stage] && run.stages[payload.stage].state === 'active') announce(t(`scan.progress.${payload.stage}`));
@@ -4296,6 +4303,7 @@ function buildRunUI(run, ctx, { onFinish }) {
   renderMeta();
   renderStages();
   renderChips();
+  localeBanner.render();
   if (run.sourceResults.length) sourcesTable.setRows(run.sourceResults);
   renderSourceHealth();
   renderSourceWait();

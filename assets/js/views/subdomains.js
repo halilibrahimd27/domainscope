@@ -220,15 +220,15 @@ registerStrings('en', {
 
   'sub.lang.legend': 'Languages / markets',
   'sub.lang.hint': 'Adds local-language names (e.g. Turkish destek, German kunden) to the global list for the domain’s market — from the Smart level up.',
-  'sub.lang.auto': 'Choose from the domain ending',
+  'sub.lang.auto': 'Choose from the domain ending or the scan’s evidence',
   'sub.lang.autoPick': 'Auto: {list}',
   'sub.lang.autoItem': '{language} ({suffix})',
   'sub.lang.autoEvidence': {
-    one: 'Auto: {suffix} names no market, so the scan picks packs from evidence — the words in the names it finds and the countries of the name and mail servers',
-    other: 'Auto: {suffix} name no market, so the scan picks packs from evidence — the words in the names it finds and the countries of the name and mail servers'
+    one: 'Auto: {suffix} has no market pack of its own, so the scan picks packs from evidence — the words in the names it finds and the countries of the name and mail servers',
+    other: 'Auto: {suffix} have no market pack of their own, so the scan picks packs from evidence — the words in the names it finds and the countries of the name and mail servers'
   },
   'sub.lang.autoEvidenceItem': 'from evidence for {suffix}',
-  'sub.lang.autoEmpty': 'Auto: picked from the domain ending (e.g. .de → German, .com.tr → Turkish)',
+  'sub.lang.autoEmpty': 'Auto: picked from the domain ending (e.g. .de → German, .com.tr → Turkish), or from the scan’s evidence for an ending without a pack',
   'sub.lang.manualNone': 'None: the global list only',
   'sub.lang.manual': 'Chosen: {list}',
   'sub.lang.option': '{language} · {count}',
@@ -466,12 +466,15 @@ registerStrings('tr', {
 
   'sub.lang.legend': 'Diller / pazarlar',
   'sub.lang.hint': 'Alan adının pazarına ait yerel dildeki adları (ör. Türkçe destek, Almanca kunden) küresel listeye ekler — Akıllı seviyeden itibaren.',
-  'sub.lang.auto': 'Alan adı uzantısına göre seç',
+  'sub.lang.auto': 'Alan adı uzantısına ya da taramadaki kanıta göre seç',
   'sub.lang.autoPick': 'Otomatik: {list}',
   'sub.lang.autoItem': '{language} ({suffix})',
-  'sub.lang.autoEvidence': 'Otomatik: {suffix} bir pazara işaret etmiyor; tarama paketleri kanıta göre seçer — bulduğu adlardaki kelimeler ile ad ve posta sunucularının ülkesi',
+  'sub.lang.autoEvidence': {
+    one: 'Otomatik: {suffix} uzantısına özel bir pazar paketi yok; tarama paketleri kanıta göre seçer — bulduğu adlardaki kelimeler ile ad ve posta sunucularının ülkesi',
+    other: 'Otomatik: {suffix} uzantılarına özel bir pazar paketi yok; tarama paketleri kanıta göre seçer — bulduğu adlardaki kelimeler ile ad ve posta sunucularının ülkesi'
+  },
   'sub.lang.autoEvidenceItem': '{suffix} için kanıta göre',
-  'sub.lang.autoEmpty': 'Otomatik: alan adı uzantısından seçilir (ör. .de → Almanca, .com.tr → Türkçe)',
+  'sub.lang.autoEmpty': 'Otomatik: alan adı uzantısından seçilir (ör. .de → Almanca, .com.tr → Türkçe); paketi olmayan uzantılarda taramadaki kanıta göre',
   'sub.lang.manualNone': 'Hiçbiri: yalnızca küresel liste',
   'sub.lang.manual': 'Seçilen: {list}',
   'sub.lang.option': '{language} · {count}',
@@ -858,7 +861,8 @@ export function effectiveLocales(choice, domain) {
 
 /**
  * One line describing the locale choice for the typed domains: "Auto: Turkish (.com.tr)",
- * "Auto: .com names no market, so the scan picks packs from evidence …" (lib/localeevidence.js),
+ * "Auto: .com has no market pack of its own, so the scan picks packs from evidence …"
+ * (lib/localeevidence.js; a country ending without a pack, such as .co.uk, reads the same),
  * "Auto: Turkish (.com.tr), from evidence for .com", "Chosen: German, French", "None: the global
  * list only".
  * @param {string[]|null} choice options.locales
@@ -879,7 +883,7 @@ export function localeSummary(choice, domains) {
       if (!items.includes(item)) items.push(item);
     }
   }
-  // The endings that name no market: their packs come from the scan's evidence.
+  // The endings without a pack of their own: their packs come from the scan's evidence.
   const open = [...new Set(picks.filter((p) => !p.codes.length).map((p) => p.suffix))].join(', ');
   if (!items.length) return t('sub.lang.autoEvidence', { suffix: open, count: open.split(', ').length });
   if (open) items.push(t('sub.lang.autoEvidenceItem', { suffix: open }));
@@ -892,8 +896,8 @@ export function localeSummary(choice, domains) {
  * ({@link BRUTEFORCE_CAPS} per domain, the custom and learned names on top, and
  * {@link BRUTEFORCE_TOTAL_CAP} in all). Custom and learned names that are already in the list
  * add nothing, so their share is an upper bound.
- * A domain whose TLD names no market, under the automatic choice, is marked `evidence`: the scan
- * picks its packs from what it finds (lib/localeevidence.js), so they are not counted here.
+ * A domain whose TLD has no pack of its own, under the automatic choice, is marked `evidence`: the
+ * scan picks its packs from what it finds (lib/localeevidence.js), so they are not counted here.
  * @param {{ level: string, domains: string[], locales?: string[]|null, custom?: number, learned?: number }} opts
  * @returns {{ level: string, perDomain: Array<{ domain: string, level: number, packs: Array<{ code: string, count: number }>,
  *   evidence: boolean, custom: number, learned: number, total: number, capped: boolean }>, total: number }}
@@ -3343,7 +3347,8 @@ export function mount(container, ctx) {
       sources: [...options.sources],
       includeExpired: options.includeExpired,
       // The wordlist config: level plus locales / custom / learned (loadWordlist assembles the
-      // per-apex list from them). locales undefined = auto per domain from its TLD.
+      // per-apex list from them). locales undefined = auto per domain: its TLD's packs, else those
+      // the scan's evidence picks (lib/localeevidence.js).
       ...wlConfig,
       // Permutations and the deeper (recursive) round go together behind one switch.
       permutationBudget,

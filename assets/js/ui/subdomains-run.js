@@ -29,6 +29,7 @@ import {
   CopyButton, toast, Button, CodeBlock, textInput, ButtonLink, Disclosure, EmptyState, Tabs, announce, ErrorBanner
 } from './components.js';
 import { SummaryButton } from './summary-button.js';
+import { LocaleEvidenceBanner } from './locale-evidence.js';
 import { permalinkParams } from '../lib/summarycore.js';
 import { NotifyButton } from './jobs.js';
 import { scanHostRows, toCsv, toJson } from '../lib/export.js';
@@ -256,55 +257,6 @@ function timeThrottle(fn, ms) {
  */
 const originExcludes = new WeakMap();
 
-/** Pack words named per language in the evidence sentence (the rest is counted). */
-const EVIDENCE_WORDS_SHOWN = 5;
-
-/**
- * How a run chose each scanned domain's locale packs: the finished result's
- * `options.wordlist.perDomain` (lib/scanner.js), or — while the wordlist stage runs — the
- * `locales` of its stage event. `[]` before the wordlist stage, or for a level without packs.
- * @param {object} run
- * @returns {Array<{ domain: string, locales: string[], source: string|null, evidence: object|null }>}
- */
-export function localeChoicesOf(run) {
-  const wl = run && run.result && run.result.options ? run.result.options.wordlist : null;
-  if (wl && Array.isArray(wl.perDomain)) {
-    return wl.perDomain.map((d) => ({ domain: d.domain, locales: d.locales || [], source: d.localeSource || null, evidence: d.localeEvidence || null }));
-  }
-  const st = run && run.stages ? run.stages.bruteforce : null;
-  const list = st && st.info && Array.isArray(st.info.locales) ? st.info.locales : [];
-  return list.map((d) => ({ domain: d.domain, locales: d.locales || [], source: d.source || null, evidence: d.evidence || null }));
-}
-
-/**
- * One sentence per pack the evidence added (lib/localeevidence.js): "Turkish pack added for
- * example.com. Evidence: words in the names found (bayi, destek, kampanya), the mail servers’
- * domain ending (.com.tr)." Only the packs that loaded, in the order they were picked.
- * @param {ReturnType<typeof localeChoicesOf>} choices
- * @returns {Array<{ domain: string, locale: string, text: string }>}
- */
-export function localeEvidenceTexts(choices) {
-  const out = [];
-  for (const c of Array.isArray(choices) ? choices : []) {
-    if (!c || c.source !== 'evidence' || !c.evidence || !Array.isArray(c.evidence.signals)) continue;
-    for (const cc of c.locales) {
-      const s = c.evidence.signals.find((x) => x.locale === cc);
-      if (!s) continue;
-      const reasons = [];
-      if (s.points && s.points.words > 0 && s.words.length) {
-        const shown = s.words.slice(0, EVIDENCE_WORDS_SHOWN);
-        const more = Math.max(0, (s.wordCount || shown.length) - shown.length);
-        reasons.push(t('sub.loc.words', { list: more ? `${shown.join(', ')} ${t('sub.loc.more', { count: more })}` : shown.join(', ') }));
-      }
-      if (s.points && s.points.letters > 0 && s.letters.length) reasons.push(t('sub.loc.letters', { list: s.letters.join(', ') }));
-      if (s.points && s.points.ns > 0 && s.ns.length) reasons.push(t('sub.loc.ns', { list: s.ns.join(', ') }));
-      if (s.points && s.points.mx > 0 && s.mx.length) reasons.push(t('sub.loc.mx', { list: s.mx.join(', ') }));
-      out.push({ domain: c.domain, locale: cc, text: t('sub.loc.added', { language: languageName(cc), domain: c.domain, reasons: reasons.join(', ') }) });
-    }
-  }
-  return out;
-}
-
 /**
  * The facts of "Copy summary" (lib/summary subdomainsSummary) for a finished or cancelled run,
  * null while it runs or after an error: the stat cards of the hosts listed, the dangling names,
@@ -393,27 +345,10 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
     handoffBanner.classList.add('sub-zone-banner');
     handoffBanner.dataset.handoffMode = handoffMode;
   }
-  // The locale packs this run added from evidence (a domain whose TLD names no market), said as
-  // soon as the wordlist stage starts and kept with the run.
-  const localeHost = h('div', { class: 'sub-locale-host', hidden: true });
-  let localeShown = '';
-  function renderLocales() {
-    const lines = localeEvidenceTexts(localeChoicesOf(run));
-    const key = lines.map((l) => l.text).join('\n');
-    if (key === localeShown) return;
-    localeShown = key;
-    clear(localeHost);
-    localeHost.hidden = !lines.length;
-    if (!lines.length) return;
-    const alert = Alert({
-      variant: 'info',
-      compact: true,
-      icon: 'globe',
-      message: lines.map((l) => h('p', { class: 'sub-locale-line', dataset: { locale: l.locale, domain: l.domain } }, l.text))
-    });
-    alert.classList.add('sub-locale-banner');
-    localeHost.append(alert);
-  }
+  // The locale packs this run added from evidence (a domain whose TLD has no pack of its own),
+  // said as soon as the wordlist stage starts and kept with the run (ui/locale-evidence.js,
+  // shared with SSL Targets).
+  const localeBanner = LocaleEvidenceBanner(run);
   // "Copy summary": what the stat cards, the summary alerts and the ORIGIN panel show (lib/summary.js).
   // It sits in the run's header, so every tab offers it.
   const summaryFacts = () => subdomainsSummaryFacts(run);
@@ -432,7 +367,7 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
       h('div', { class: 'sub-run-titles' }, title, meta),
       summary.el,
       NotifyButton(() => run.job || null)),
-    progress, zoneBanner, handoffBanner, localeHost, notice, sourceLive);
+    progress, zoneBanner, handoffBanner, localeBanner.el, notice, sourceLive);
 
   /** Source lines already spoken: a re-render (every source event redraws them) says nothing new. */
   const spoken = new Set();
@@ -1519,7 +1454,7 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
     renderStages();
     renderChips();
     renderSourceWait();
-    renderLocales();
+    localeBanner.render();
     clear(notice);
     progress.el.hidden = true;
     table.setLoading(false);
@@ -1570,7 +1505,7 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
         renderProgress();
         renderSourceWait();
         if (payload.stage === 'sources') renderChips();
-        if (payload.stage === 'bruteforce') renderLocales();
+        if (payload.stage === 'bruteforce') localeBanner.render();
         // Announce the stage promptly (not only on the progress bar's 25 % buckets) so a screen
         // reader hears each step change as it happens.
         // A skipped stage (exact zone mode, no wordlist…) is not announced: nothing runs there.
@@ -1620,7 +1555,7 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
   renderStages();
   renderChips();
   renderSourceWait();
-  renderLocales();
+  localeBanner.render();
   const replayHosts = listHosts();
   if (replayHosts.length && !run.result) table.setRows(replayHosts);
   applyFilter();
@@ -1669,12 +1604,6 @@ registerStrings('en', {
   'sub.wl.packs': 'with {list}',
   'sub.wl.packsEvidence': 'with {list} (picked from evidence)',
   'sub.wl.noEvidence': 'no market pack: the evidence points to no market',
-  'sub.loc.added': '{language} pack added for {domain}. Evidence: {reasons}.',
-  'sub.loc.words': 'words in the names found ({list})',
-  'sub.loc.more': 'and {count} more',
-  'sub.loc.letters': 'the letters of IDN names ({list})',
-  'sub.loc.ns': 'the name servers’ domain ending ({list})',
-  'sub.loc.mx': 'the mail servers’ domain ending ({list})',
   'sub.wl.custom': 'your list: {found} of {tried} found',
   'sub.wl.learned': 'learned names: {found} of {tried} found',
   'sub.wl.degraded': 'fell back to {level}',
@@ -1889,12 +1818,6 @@ registerStrings('tr', {
   'sub.wl.packs': '{list} ile',
   'sub.wl.packsEvidence': '{list} ile (kanıta göre seçildi)',
   'sub.wl.noEvidence': 'pazar paketi yok: kanıt bir pazara işaret etmiyor',
-  'sub.loc.added': '{domain} için {language} paket eklendi. Kanıt: {reasons}.',
-  'sub.loc.words': 'bulunan adlardaki kelimeler ({list})',
-  'sub.loc.more': 've {count} kelime daha',
-  'sub.loc.letters': 'IDN adlarındaki harfler ({list})',
-  'sub.loc.ns': 'ad sunucularının alan adı uzantısı ({list})',
-  'sub.loc.mx': 'posta sunucularının alan adı uzantısı ({list})',
   'sub.wl.custom': 'sizin listeniz: {tried} addan {found} tanesi bulundu',
   'sub.wl.learned': 'öğrenilen adlar: {tried} addan {found} tanesi bulundu',
   'sub.wl.degraded': '{level} listesine düşüldü',

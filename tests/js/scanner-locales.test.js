@@ -1,5 +1,5 @@
 // Unit tests for the adaptive locale packs in assets/js/lib/scanner.js: a scanned domain whose TLD
-// names no market gets the locale packs the evidence the scan has gathered by its wordlist stage
+// has no pack of its own gets the locale packs the evidence the scan has gathered by its wordlist stage
 // points to (lib/localeevidence.js) — the words of the names found, the countries of the zone's
 // NS / MX hosts — and the result says how each domain's packs were chosen. No network: an
 // emulated zone answers every DoH resolver and the passive source (Anubis) is mocked.
@@ -208,7 +208,7 @@ describe('the query estimate counts what the evidence may add', () => {
     assert.equal(evidencePackMax(), sizes[0] + sizes[1] + sizes[2]);
   });
 
-  test('only the ceiling grows, only for a domain whose TLD names no market under the automatic choice', () => {
+  test('only the ceiling grows, only for a domain whose TLD has no pack of its own under the automatic choice', () => {
     const generic = estimateQueries({ bruteforce: 'smart', domains: ['example.com'] });
     assert.equal(generic.breakdown.localeEvidence, evidencePackMax());
     const forced = estimateQueries({ bruteforce: 'smart', domains: ['example.com'], locales: [] });

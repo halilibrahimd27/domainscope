@@ -88,9 +88,11 @@ business / public-service / e-commerce / accounting / e-invoicing / e-government
 from general domain knowledge, never from any single company's zone**. Source of
 truth is `tools/locale-data.mjs`. Scans pass each scanned domain to `loadWordlist`, so packs are picked
 automatically from its TLD, the last label (e.g. `.com.tr`→`tr`, `.de`/`.at`→`de`,
-`.ch`→`de`+`fr`+`it`; a generic TLD such as `.com` gets none) unless the user
-chooses packs — or none — under Subdomains › Advanced options (the scanner's
-`locales` option). Packs apply from the Smart level up; the full mapping is in
+`.ch`→`de`+`fr`+`it`); a TLD without packs of its own — `.com`, or a country
+ending with no pack such as `.co.uk` — gets them from the scan's evidence instead
+(the words of the names found, the countries of its name and mail servers;
+adaptive locale packs, `docs/SPEC.md` §5.89), unless the user chooses packs — or
+none — under Subdomains › Advanced options (the scanner's `locales` option). Packs apply from the Smart level up; the full mapping is in
 `docs/SPEC.md` §5.6. (MIT, original DomainScope curation.)
 
 All plain-text files are UTF-8, one label per line, LF endings. `loadWordlist`

@@ -1,7 +1,8 @@
 /**
  * localeevidence.js — adaptive locale packs (ROADMAP P1.9): which market wordlist packs
- * (assets/data/locale/<cc>.txt) a domain gets when its TLD names no market (`.com`, `.net`,
- * `.io` …), read from what a scan already knows about it instead of none.
+ * (assets/data/locale/<cc>.txt) a domain gets when its TLD has no pack of its own (`.com`,
+ * `.net`, `.io` …, or a country ending without a pack such as `.co.uk`), read from what a scan
+ * already knows about it instead of none.
  *
  * The evidence, scored per pack:
  *  - words — the labels of the names found so far (passive sources, the zone's own records, the
@@ -17,8 +18,10 @@
  *  - letters — an IDN label (`xn--…`) written in a script or with letters only one pack's
  *    language uses ({@link SCRIPT_HINTS}: Turkish ı ş ğ, German ß ä, Spanish ñ, Portuguese ã õ,
  *    Polish ą ć ę ł ń ś ź ż, French œ, Italian ì ò; Cyrillic → ru, Arabic → ar, kana → ja, Han
- *    without kana → zh): 1 per label, at most {@link LOCALE_EVIDENCE_MAX_LETTERS}; its
- *    ASCII-folded form (`şube` → `sube`) is read as words too.
+ *    without kana → zh): 1 per label, at most {@link LOCALE_EVIDENCE_MAX_LETTERS}. A label is one
+ *    piece of evidence: one whose letters point nowhere (ç, ö, ü, é … are shared) is read as words
+ *    in its ASCII-folded forms instead (`prüfung` → `prufung`, `pruefung`). A label that decodes
+ *    to anything but letters, marks, digits and hyphens (a control, a bidi override) is skipped.
  *  - name servers, mail servers — the country-code TLD of the zone's NS and MX hosts: 2 when at
  *    least half of their registrable domains are in that market, 1 when some are. Providers that
  *    serve every market from one ccTLD ({@link GLOBAL_HOST_DOMAINS}) and a bare `.co` / `.ly`
@@ -66,10 +69,11 @@ export const NEUTRAL_WORDS = Object.freeze([
 /**
  * Registrable domains whose name or mail servers serve customers in every market from one
  * country-code TLD, so their ending says nothing about the domain's market: Proton Mail and Tuta
- * (mail), IONOS's and Hetzner's name servers (every customer gets a `.de` one among them).
+ * (mail), IONOS's and Hetzner's name servers (every customer gets a `.de` one among them) and
+ * Hetzner's webhosting (`your-server.de`: its name servers and mail hosts).
  */
 export const GLOBAL_HOST_DOMAINS = Object.freeze([
-  'protonmail.ch', 'proton.ch', 'tutanota.de', 'ui-dns.de', 'hetzner.de', 'first-ns.de', 'second-ns.de'
+  'protonmail.ch', 'proton.ch', 'tutanota.de', 'ui-dns.de', 'hetzner.de', 'first-ns.de', 'second-ns.de', 'your-server.de'
 ]);
 
 /** Country-code TLDs used worldwide as generic endings (a host directly under them says nothing). */
@@ -97,6 +101,8 @@ const KNOWN = new Set([...WORDLIST_MEDIUM, ...NEUTRAL_WORDS]);
 const GLOBAL_HOSTS = new Set(GLOBAL_HOST_DOMAINS);
 const GENERIC = new Set(GENERIC_CCTLDS);
 const ASCII_RE = /^[a-z0-9-]+$/;
+/** What a decoded IDN label may hold (lib/lookalike.js reads labels the same way). */
+const UNICODE_LABEL_RE = /^[\p{L}\p{M}\p{N}-]+$/u;
 const LETTER_RUN_RE = /[a-z]+/g;
 const HAN_RE = /\p{Script=Han}/u;
 const FOLD_SPECIAL = { ı: 'i', ł: 'l', ß: 'ss', ø: 'o', æ: 'ae', œ: 'oe', đ: 'd', ð: 'd', þ: 'th' };
@@ -139,7 +145,10 @@ export function localeVocabulary(packs) {
 
 /**
  * The Unicode form of one label: an `xn--` label decoded (NFC, lower case), any other as is;
- * null for a punycode label that does not decode.
+ * null for a punycode label that does not decode, or decodes to anything but letters, marks,
+ * digits and hyphens — a control (U+0085), a bidi override or isolate (U+202E, U+2066), a
+ * zero-width joiner: such a label from a passive source is never evidence, and never reaches the
+ * run's explanation as it is.
  * @param {string} label
  * @returns {string|null}
  */
@@ -147,7 +156,9 @@ export function unicodeLabel(label) {
   const s = String(label ?? '').toLowerCase();
   if (!s.startsWith('xn--')) return s;
   const u = punycodeDecode(s.slice(4));
-  return u ? u.normalize('NFC').toLowerCase() : null;
+  if (!u) return null;
+  const text = u.normalize('NFC').toLowerCase();
+  return UNICODE_LABEL_RE.test(text) ? text : null;
 }
 
 /**
@@ -371,12 +382,16 @@ export function localeEvidence({ domain, names = [], ns = [], mx = [], packs = n
       }
       const u = unicodeLabel(label);
       if (!u) continue;
-      for (const cc of labelLetters(u)) {
+      // One label, one piece of evidence: its letters when they point to a pack, else the words
+      // of its folded forms (`prüfung`: ü is shared) — never both, so a pack word written in
+      // Turkish letters (`müşteri`) is one point, not two.
+      const letters = labelLetters(u);
+      for (const cc of letters) {
         const s = signal(cc);
         if (s.letterPoints < LOCALE_EVIDENCE_MAX_LETTERS) s.letterPoints += 1;
         if (s.letters.length < LOCALE_EVIDENCE_EXAMPLES && !s.letters.includes(u)) s.letters.push(u);
       }
-      for (const form of foldLabel(u)) for (const w of labelWords(form, vocab)) take(w);
+      if (!letters.length) for (const form of foldLabel(u)) for (const w of labelWords(form, vocab)) take(w);
     }
   }
 

@@ -8,8 +8,8 @@
  *   node tests/e2e/locales.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
  * Covers:
- *   - Subdomains › Advanced, before a scan: a domain whose TLD names no market says its packs come
- *     from the scan's evidence (the languages line), the plan line adds "plus market packs if the
+ *   - Subdomains › Advanced, before a scan: a domain whose TLD has no pack of its own says its packs
+ *     come from the scan's evidence (the languages line), the plan line adds "plus market packs if the
  *     scan finds evidence" with a higher ceiling of queries, a .com.tr keeps its Turkish pack, both
  *     together read "Auto: Turkish (.com.tr), from evidence for .com";
  *   - a Smart scan of example.com whose Anubis names (destek, bayi, kampanya) and mail servers
@@ -20,6 +20,8 @@
  *   - an English zone (example.net) keeps the global list: no banner, "no market pack";
  *   - Turkish, dark mode, 375 px: the same scan in Turkish, the banner and the languages line
  *     inside the viewport, no horizontal page scroll; English light at 375 px too;
+ *   - SSL Targets (English, light, 375 px): the same scan's run header says the same sentence, as
+ *     soon as its wordlist stage starts and once it is done, inside the viewport;
  *   - zero console errors, exceptions and CSP violations; no missing i18n keys; nothing reached
  *     the network.
  *
@@ -99,12 +101,19 @@ const fakeScript = () => `(() => {
   };
 })();`;
 
-/** The Subdomains options for these scans: Anubis only, the Smart wordlist, automatic languages, no permutations or hints. */
+/**
+ * The Subdomains and SSL Targets options for these scans: Anubis only, the Smart wordlist, automatic
+ * languages (SSL Targets reads them from Subdomains), no permutations or hints.
+ */
 const OPTIONS_SCRIPT = `(() => {
   try {
     localStorage.setItem('ssds.subdomains.options', JSON.stringify({
       sources: ['anubis'], knownSources: ${JSON.stringify(SOURCES.map((s) => s.id))},
       bruteforce: 'smart', permutations: false, originHints: false, includeExpired: false, learned: false, locales: null
+    }));
+    localStorage.setItem('ssds.scan.options', JSON.stringify({
+      sources: ['anubis'], knownSources: ${JSON.stringify(SOURCES.map((s) => s.id))},
+      bruteforce: 'smart', permutations: false, originHints: false, includeExpired: false
     }));
   } catch (e) { /* storage blocked: the defaults run */ }
 })();`;
@@ -225,7 +234,7 @@ async function main() {
       await setLangUi(page, 'en');
       await gotoRoute(page, '#/subdomains');
       await typeDomain(page, 'example.com',
-        'Auto: .com names no market, so the scan picks packs from evidence — the words in the names it finds and the countries of the name and mail servers');
+        'Auto: .com has no market pack of its own, so the scan picks packs from evidence — the words in the names it finds and the countries of the name and mail servers');
       const plan = await page.evaluate(() => {
         const el = document.querySelector('.sub-wl-plan');
         return { text: el.textContent, min: Number(el.dataset.queriesMin), max: Number(el.dataset.queriesMax) };
@@ -310,7 +319,7 @@ async function main() {
     });
     await run.step('the languages and plan lines in Turkish, inside the viewport', async () => {
       await typeDomain(page, 'example.com',
-        'Otomatik: .com bir pazara işaret etmiyor; tarama paketleri kanıta göre seçer — bulduğu adlardaki kelimeler ile ad ve posta sunucularının ülkesi');
+        'Otomatik: .com uzantısına özel bir pazar paketi yok; tarama paketleri kanıta göre seçer — bulduğu adlardaki kelimeler ile ad ve posta sunucularının ülkesi');
       assert(/kanıt bulunursa pazar paketleri de/.test(await text(page, '.sub-wl-plan')), 'plan line');
       assertEqual(await outside(page), [], 'inside the viewport');
       await assertNoHorizontalScroll(page, 'tr 375 form');
@@ -330,6 +339,36 @@ async function main() {
       await shot(page, opts, 'locales-run-375-en-light');
       await shotEl(page, opts, 'locales-banner-375-en-light', '.sub-run-ui .sub-run');
       await assertClean(page, 'phone', origin);
+      await assertNoMissingKeys(page);
+    });
+
+    run.group('SSL Targets: the same evidence, the same sentence (English, light, 375 px)');
+    await run.step('its run header says the Turkish pack was added from evidence once the wordlist stage starts, and keeps it', async () => {
+      await gotoRoute(page, '#/scan');
+      const before = await page.evaluate(() => document.querySelector('.scan-run-ui')?.dataset.run || null);
+      await page.type('[data-role="scan-domains"]', 'example.com');
+      await page.evaluate(() => document.querySelector('[data-action="scan-run"]').click());
+      const lines = () => page.evaluate(() => {
+        const host = document.querySelector('.scan-run-ui .sub-locale-host');
+        return host && !host.hidden
+          ? [...host.querySelectorAll('.sub-locale-line')].map((p) => ({ text: p.textContent, locale: p.dataset.locale, domain: p.dataset.domain }))
+          : null;
+      });
+      // While the wordlist stage runs (the Smart sweep is thousands of names), or already done.
+      const live = await page.waitFor((prev) => {
+        const ui = document.querySelector('.scan-run-ui');
+        const host = ui && ui.dataset.run !== prev ? ui.querySelector('.sub-locale-host') : null;
+        return host && !host.hidden ? ui.querySelector('.scan-run').dataset.status : false;
+      }, { args: [before], timeout: 60000, interval: 50, message: 'the SSL Targets banner' });
+      assertEqual(await lines(), [{ text: EN_LINE, locale: 'tr', domain: 'example.com' }], `banner (${live})`);
+      await page.waitFor(() => document.querySelector('.scan-run-ui .scan-run')?.dataset.status === 'done',
+        { timeout: 180000, interval: 200, message: 'SSL Targets scan of example.com done' });
+      assertEqual(await lines(), [{ text: EN_LINE, locale: 'tr', domain: 'example.com' }], 'kept with the finished run');
+      await page.evaluate(() => window.scrollTo(0, 0));
+      assertEqual(await outside(page), [], 'inside the viewport');
+      await assertNoHorizontalScroll(page, 'ssl targets 375');
+      await shotEl(page, opts, 'locales-scan-banner-375-en-light', '.scan-run-ui .scan-run');
+      await assertClean(page, 'ssl targets', origin);
       await assertNoMissingKeys(page);
     });
     await run.step('nothing reached the network', async () => {

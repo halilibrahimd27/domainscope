@@ -15,7 +15,7 @@
  * exact licences): the global `smart` base (`wordlist-base.txt`, ~7k), the
  * gzipped `large` (~50k) and `huge` (~130k) tiers, and curated per-market locale
  * packs (`assets/data/locale/<cc>.txt`) selected from the domain's TLD — or, for a
- * TLD that names no market, from a scan's evidence (lib/localeevidence.js). The list
+ * TLD without a pack of its own, from a scan's evidence (lib/localeevidence.js). The list
  * is a global product: examples and defaults are generic (no single customer's
  * zone). {@link wordlistInfo} exposes build-time counts; {@link parseCustomWordlist}
  * validates user lists; a per-browser learned store lives in `learned.js`.
@@ -248,7 +248,7 @@ export const LOCALE_PACK_CODES = Object.freeze([
 
 /**
  * The most locale packs the evidence of a scan (lib/localeevidence.js) adds to one domain whose
- * TLD names no market; the query estimate (lib/scanplan.js) counts the largest ones.
+ * TLD has no pack of its own; the query estimate (lib/scanplan.js) counts the largest ones.
  */
 export const LOCALE_EVIDENCE_MAX_PACKS = 3;
 

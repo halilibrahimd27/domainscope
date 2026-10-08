@@ -1,5 +1,5 @@
 // Unit tests for assets/js/lib/localeevidence.js — the adaptive locale packs: which market
-// wordlist packs a domain whose TLD names no market gets, from the words of the names found, the
+// wordlist packs a domain whose TLD has no pack of its own gets, from the words of the names found, the
 // letters of IDN labels and the countries of its name and mail servers. No network: the real
 // packs are read from disk (lib/wordlist.js loadLocaleVocabulary), and small synthetic packs pin
 // the scoring.
@@ -76,6 +76,10 @@ describe('labels', () => {
     assert.equal(unicodeLabel(idn('şube')), 'şube');
     assert.equal(unicodeLabel('www'), 'www');
     assert.equal(unicodeLabel('xn--a!b'), null, 'not punycode');
+    // Only letters, marks, digits and hyphens: a control or a bidi character is no label at all.
+    assert.equal(unicodeLabel('xn--ube-rza8450b'), null, 'U+202E (a right-to-left override) + şube');
+    assert.equal(unicodeLabel(idn('ığdır\u0085\u2066x')), null, 'a C1 control (U+0085) and a bidi isolate (U+2066)');
+    assert.equal(unicodeLabel(idn('a\u200db')), null, 'a zero-width joiner');
     assert.deepEqual(foldLabel('şube'), ['sube']);
     assert.deepEqual(foldLabel('müşteri'), ['musteri', 'muesteri'], 'Turkish and German spellings of ü');
     assert.deepEqual(foldLabel('prüfung'), ['prufung', 'pruefung']);
@@ -99,6 +103,8 @@ describe('name and mail servers', () => {
     assert.deepEqual(hostLocales('ns1.example.com'), []);
     assert.deepEqual(hostLocales('mail.protonmail.ch'), [], 'Proton Mail serves every market from .ch');
     assert.deepEqual(hostLocales('helium.ns.hetzner.de'), []);
+    assert.deepEqual(hostLocales('ns1.your-server.de'), [], 'Hetzner\'s webhosting name servers');
+    assert.deepEqual(hostLocales('mail.your-server.de'), [], '… and its mail hosts');
     assert.deepEqual(hostLocales('ns1045.ui-dns.de'), []);
     assert.deepEqual(hostLocales(''), []);
     assert.deepEqual(hostLocales('not a host'), []);
@@ -180,18 +186,49 @@ describe('localeEvidence', () => {
     });
     assert.deepEqual(ev.locales, []);
     assert.deepEqual(ev.signals, []);
+    // Hetzner's webhosting set: your-server.de's own name servers, second-ns.com / .de, its mail hosts.
+    const webhosting = localeEvidence({
+      domain: 'example.com',
+      ns: ['ns1.your-server.de', 'ns.second-ns.com', 'ns3.second-ns.de'],
+      mx: ['mail.your-server.de'],
+      packs: PACKS
+    });
+    assert.deepEqual(webhosting.locales, []);
+    assert.deepEqual(webhosting.signals, []);
   });
 
-  test('IDN labels: their letters and folded words (two Turkish labels pick Turkish)', () => {
+  test('IDN labels: their letters, else their folded words — one label is one piece of evidence', () => {
     const ev = localeEvidence({ domain: 'example.com', names: under([idn('şube'), idn('müşteri'), 'www']), packs: PACKS });
-    assert.deepEqual(ev.locales, ['tr']);
+    assert.deepEqual(ev.locales, ['tr'], 'two Turkish labels pick Turkish');
     const tr = signalOf(ev, 'tr');
     assert.deepEqual(tr.letters, ['müşteri', 'şube'], 'in the order of the sorted names');
-    assert.equal(tr.points.letters, 2);
-    assert.deepEqual(tr.words, ['musteri', 'sube']);
+    assert.deepEqual(tr.points, { words: 0, letters: 2, ns: 0, mx: 0 }, 'their folded forms (musteri, sube) add nothing more');
+    assert.deepEqual(tr.words, []);
+    // One name is never enough, however it reads: a pack word in Turkish letters is one point.
+    const one = localeEvidence({ domain: 'example.com', names: under([idn('müşteri')]), packs: PACKS });
+    assert.deepEqual(one.locales, []);
+    assert.deepEqual(signalOf(one, 'tr').points, { words: 0, letters: 1, ns: 0, mx: 0 });
+    // Letters several languages share (ü, ö) point nowhere: the folded forms are read as words.
+    const de = localeEvidence({ domain: 'example.com', names: under([idn('prüfung'), idn('behörde')]), packs: PACKS });
+    assert.deepEqual(de.locales, ['de']);
+    assert.deepEqual(signalOf(de, 'de').points, { words: 2, letters: 0, ns: 0, mx: 0 });
+    assert.deepEqual(signalOf(de, 'de').words, ['behoerde', 'pruefung']);
     const cyr = localeEvidence({ domain: 'example.net', names: under(['магазин', 'заказ', 'корзина', 'поддержка'].map(idn), 'example.net'), packs: PACKS });
     assert.deepEqual(cyr.locales, ['ru']);
     assert.equal(signalOf(cyr, 'ru').points.letters, LOCALE_EVIDENCE_MAX_LETTERS, 'at most 2 from letters');
+  });
+
+  test('an IDN label with a control or bidi character is never evidence, nor named in the explanation', () => {
+    // From a passive source: U+202E + şube, and ığdır + U+0085 + U+2066 + x. Each would point to
+    // Turkish and, shown as it is, reverse the rest of the run's sentence.
+    const planted = ['xn--ube-rza8450b', 'xn--drx-wa18ecdc8205d'];
+    const ev = localeEvidence({ domain: 'example.com', names: under([...planted, 'www']), packs: PACKS });
+    assert.deepEqual(ev.locales, []);
+    assert.deepEqual(ev.signals, []);
+    const mixed = localeEvidence({ domain: 'example.com', names: under([...planted, idn('şube')]), packs: PACKS });
+    assert.deepEqual(signalOf(mixed, 'tr').letters, ['şube'], 'only the clean label is named');
+    assert.equal(signalOf(mixed, 'tr').score, 1);
+    assert.deepEqual(mixed.locales, []);
   });
 
   test('the relative bar: a pack well behind the strongest is left out', () => {

@@ -707,8 +707,8 @@ function assignOriginCandidates(proxiedHosts, originNetworks, originHintList, st
  *     certificate wildcard base.
  *  4. `bruteforce` — courteous A-only wordlist sweep (balance mode) under the
  *     apex and each certificate wildcard base; wildcard look-alikes dropped. A
- *     base whose TLD names no market gets the locale packs the evidence found so
- *     far points to (adaptive locale packs, lib/localeevidence.js).
+ *     base whose TLD has no pack of its own gets the locale packs the evidence
+ *     found so far points to (adaptive locale packs, lib/localeevidence.js).
  *  5. `permutations` — alterx/dnsgen-style variants of everything found so far
  *     (env / number / region / sibling; every level above a candidate is
  *     wildcard-checked first), then one recursive wordlist round under
@@ -1415,9 +1415,9 @@ export async function runScan(config = {}, hooks = {}) {
     return localesForBase(base).filter((cc) => !(missing && missing.has(cc)));
   };
 
-  /* ---- adaptive locale packs (a TLD without a market: from evidence) ----- */
-  // With the automatic choice (`locales` undefined) a base whose TLD names no market (.com, .io …)
-  // gets the packs the evidence points to (lib/localeevidence.js): the words of the names found so
+  /* ---- adaptive locale packs (a TLD without packs: from evidence) -------- */
+  // With the automatic choice (`locales` undefined) a base whose TLD has no pack of its own (.com,
+  // .io …, a country ending without a pack such as .co.uk) gets the packs the evidence points to (lib/localeevidence.js): the words of the names found so
   // far (input, certificate, zone, the zone's own records, the sources that answered within the
   // grace window), the letters of IDN labels and the countries of the zone's NS / MX hosts. Only
   // from Smart up (Small is language-neutral); never for a legacy override, 'medium' or exact mode.
@@ -2336,7 +2336,7 @@ export async function runScan(config = {}, hooks = {}) {
     // extension (adaptive locale packs): how the packs were chosen — 'tld', 'evidence', 'none'
     // (a TLD without packs and no evidence strong enough) or 'chosen' (the config's list); null
     // when the level uses no packs. `localeEvidence`: what the evidence read (lib/localeevidence.js),
-    // for a base whose TLD names no market under the automatic choice; null otherwise.
+    // for a base whose TLD has no pack of its own under the automatic choice; null otherwise.
     localeSource: localeSourceOf(base),
     localeEvidence: evidenceByBase.get(base) || null,
     words: (baseWords.get(base) || []).length,

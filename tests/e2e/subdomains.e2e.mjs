@@ -683,7 +683,7 @@ async function main() {
       const planRange = await page.evaluate(() => ({ min: Number(document.querySelector('.sub-wl-plan').dataset.queriesMin), max: Number(document.querySelector('.sub-wl-plan').dataset.queriesMax) }));
       assert(planRange.min > 5000 && planRange.max > planRange.min, `plan range brackets the run: ${JSON.stringify(planRange)}`);
       await page.type('[data-role="sub-domain"]', 'example.com');
-      // .com names no market: the scan picks its packs from evidence (lib/localeevidence.js).
+      // .com has no pack of its own: the scan picks its packs from evidence (lib/localeevidence.js).
       await page.waitFor(() => /picks packs from evidence/.test(document.querySelector('.sub-lang-line').textContent), { message: '.com: packs from evidence' });
       assert(/plus market packs if the scan finds evidence\)/.test(await page.evaluate(() => document.querySelector('.sub-wl-plan').textContent)), 'the plan line says so');
       await page.type('[data-role="sub-domain"]', 'example.com.tr');

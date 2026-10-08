@@ -218,7 +218,7 @@ export function evidencePackMax() {
  *   wildcard: number, permutation: number, recursive: number, resolveMin: number, resolveMax: number,
  *   hintsMin: number, hintsMax: number, bases: number, zones: number } }}
  *   `localeEvidence`: what the adaptive locale packs may add (in `max` only): with the automatic
- *   choice, each domain whose TLD names no market may get its packs from the evidence the scan
+ *   choice, each domain whose TLD has no pack of its own may get its packs from the evidence the scan
  *   finds, counted as the largest ones ({@link evidencePackMax}) within the caps.
  */
 export function estimateQueries({

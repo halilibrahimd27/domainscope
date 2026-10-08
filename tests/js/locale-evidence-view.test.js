@@ -1,11 +1,18 @@
-// The adaptive locale packs in the Subdomains view (and SSL Targets, which shares its plan line):
-// the plan line and the languages line before a scan, and the run's explanation of the packs the
-// evidence picked (ui/subdomains-run.js), in English and Turkish. Pure: no DOM, no network.
+// The adaptive locale packs in the Subdomains view and SSL Targets: the plan line and the languages
+// line before a scan, and a run's explanation of the packs the evidence picked
+// (ui/locale-evidence.js, in the run header of both views), in English and Turkish. Pure: no DOM,
+// no network.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import * as i18n from '../../assets/js/i18n.js';
 
-const S = { ...(await import('../../assets/js/views/subdomains.js')), ...(await import('../../assets/js/ui/subdomains-run.js')) };
+const S = {
+  ...(await import('../../assets/js/views/subdomains.js')),
+  ...(await import('../../assets/js/ui/subdomains-run.js')),
+  ...(await import('../../assets/js/ui/locale-evidence.js'))
+};
+const source = (rel) => readFile(new URL(`../../assets/js/${rel}`, import.meta.url), 'utf8');
 
 const inLang = (lang, fn) => {
   const prev = i18n.getLang();
@@ -32,7 +39,7 @@ const EVIDENCE = {
 };
 
 describe('before a scan: the plan line and the languages line', () => {
-  test('a domain whose TLD names no market is marked; its packs are not counted in the plan', () => {
+  test('a domain whose TLD has no pack of its own is marked; its packs are not counted in the plan', () => {
     const com = S.wordlistPlan({ level: 'smart', domains: ['example.com'] }).perDomain[0];
     assert.deepEqual([com.evidence, com.packs, com.total], [true, [], S.levelCount('smart')]);
     const tr = S.wordlistPlan({ level: 'smart', domains: ['example.com.tr'] }).perDomain[0];
@@ -66,12 +73,23 @@ describe('before a scan: the plan line and the languages line', () => {
   test('the languages line says where the packs of each domain come from', () => {
     inLang('en', () => {
       assert.equal(S.localeSummary(null, ['example.org', 'example.net']),
-        'Auto: .org, .net name no market, so the scan picks packs from evidence — the words in the names it finds and the countries of the name and mail servers');
+        'Auto: .org, .net have no market pack of their own, so the scan picks packs from evidence — the words in the names it finds and the countries of the name and mail servers');
+      // A country ending without a pack (the UK, Sweden …) names a market: it only has no pack.
+      assert.equal(S.localeSummary(null, ['example.co.uk']),
+        'Auto: .co.uk has no market pack of its own, so the scan picks packs from evidence — the words in the names it finds and the countries of the name and mail servers');
       assert.equal(S.localeSummary(null, ['example.ch', 'example.com']), 'Auto: German (.ch), French (.ch), Italian (.ch), from evidence for .com');
+      assert.equal(i18n.t('sub.lang.auto'), 'Choose from the domain ending or the scan’s evidence');
+      assert.equal(S.localeSummary(null, []),
+        'Auto: picked from the domain ending (e.g. .de → German, .com.tr → Turkish), or from the scan’s evidence for an ending without a pack');
     });
     inLang('tr', () => {
       assert.equal(S.localeSummary(null, ['example.com']),
-        'Otomatik: .com bir pazara işaret etmiyor; tarama paketleri kanıta göre seçer — bulduğu adlardaki kelimeler ile ad ve posta sunucularının ülkesi');
+        'Otomatik: .com uzantısına özel bir pazar paketi yok; tarama paketleri kanıta göre seçer — bulduğu adlardaki kelimeler ile ad ve posta sunucularının ülkesi');
+      assert.equal(S.localeSummary(null, ['example.co.uk', 'example.se']),
+        'Otomatik: .co.uk, .se uzantılarına özel bir pazar paketi yok; tarama paketleri kanıta göre seçer — bulduğu adlardaki kelimeler ile ad ve posta sunucularının ülkesi');
+      assert.equal(i18n.t('sub.lang.auto'), 'Alan adı uzantısına ya da taramadaki kanıta göre seç');
+      assert.equal(S.localeSummary(null, []),
+        'Otomatik: alan adı uzantısından seçilir (ör. .de → Almanca, .com.tr → Türkçe); paketi olmayan uzantılarda taramadaki kanıta göre');
     });
   });
 });
@@ -113,15 +131,32 @@ describe('a run: how each domain got its packs, and why', () => {
     inLang('en', () => {
       const [line] = S.localeEvidenceTexts([{ domain: 'example.com', locales: ['tr'], source: 'evidence', evidence: ev }]);
       assert.equal(line.text, 'Turkish pack added for example.com. Evidence: words in the names found (bayi, destek, kampanya, kargo, magaza and 6 more), '
-        + 'the letters of IDN names (şube), the name servers’ domain ending (.com.tr, .net.tr).');
+        + 'the letters of IDN names (şube), the name servers’ domain endings (.com.tr, .net.tr).');
     });
     inLang('tr', () => {
       assert.match(S.localeEvidenceTexts([{ domain: 'example.com', locales: ['tr'], source: 'evidence', evidence: ev }])[0].text,
-        /\(bayi, destek, kampanya, kargo, magaza ve 6 kelime daha\), IDN adlarındaki harfler \(şube\), ad sunucularının alan adı uzantısı \(\.com\.tr, \.net\.tr\)\.$/);
+        /\(bayi, destek, kampanya, kargo, magaza ve 6 kelime daha\), IDN adlarındaki harfler \(şube\), ad sunucularının alan adı uzantıları \(\.com\.tr, \.net\.tr\)\.$/);
     });
+    // One ending each: the singular.
+    const single = { ...ev, signals: [{ ...ev.signals[0], ns: ['.com.tr'], mx: ['.com.tr'], points: { ...ev.signals[0].points, mx: 2 } }] };
+    const one = [{ domain: 'example.com', locales: ['tr'], source: 'evidence', evidence: single }];
+    inLang('en', () => assert.match(S.localeEvidenceTexts(one)[0].text, /the name servers’ domain ending \(\.com\.tr\), the mail servers’ domain ending \(\.com\.tr\)\.$/));
+    inLang('tr', () => assert.match(S.localeEvidenceTexts(one)[0].text, /ad sunucularının alan adı uzantısı \(\.com\.tr\), posta sunucularının alan adı uzantısı \(\.com\.tr\)\.$/));
     for (const source of ['tld', 'chosen', 'none', null]) {
       assert.deepEqual(S.localeEvidenceTexts([{ domain: 'example.com', locales: ['tr'], source, evidence: EVIDENCE }]), [], String(source));
     }
     assert.deepEqual(S.localeEvidenceTexts([{ domain: 'example.com', locales: [], source: 'evidence', evidence: EVIDENCE }]), [], 'a pack that did not load is not claimed');
+  });
+
+  test('SSL Targets says it too: its run header has the same banner, drawn when the wordlist stage starts and at the end', async () => {
+    const scan = await source('views/scan.js');
+    assert.match(scan, /import \{ LocaleEvidenceBanner \} from '\.\.\/ui\/locale-evidence\.js';/);
+    assert.match(scan, /const localeBanner = LocaleEvidenceBanner\(run\);/);
+    assert.match(scan, /zoneBanner, localeBanner\.el, stageList,/, 'under the zone banner, above the stage pills');
+    assert.match(scan, /if \(payload\.stage === 'bruteforce'\) localeBanner\.render\(\);/, 'as soon as the wordlist stage starts');
+    // At the end, and when a kept run is drawn again (another view and back, a language switch).
+    assert.ok((scan.match(/localeBanner\.render\(\);/g) || []).length >= 3, 'stage, finish and replay');
+    // Subdomains draws the same banner.
+    assert.match(await source('ui/subdomains-run.js'), /const localeBanner = LocaleEvidenceBanner\(run\);/);
   });
 });

@@ -20,6 +20,9 @@
  * stopped build keeps what landed, and each unfinished card offers to look it up. The CT lookup
  * is one Cert Spotter request (crt.sh when Cert Spotter cannot answer), only on its button.
  *
+ * Lookalike domains (ui/lookalike-panel.js over lib/lookalike.js, loaded on the first click of
+ * "Find lookalikes"): the typosquats of the overview's domain, checked only on the panel's button.
+ *
  * "Copy summary" (lib/summary.js domainSummary) and the print stylesheet work on the finished
  * overview. It is kept for the page session (`result()` / `snapshot()`), so coming back shows it
  * again with no request.
@@ -40,7 +43,7 @@ import { NaMark, RetryButton, setRetryBusy, statusText } from '../ui/source-stat
 import { SummaryButton } from '../ui/summary-button.js';
 import { permalinkParams } from '../ui/view-summaries.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
-import { mergeSignals } from '../lib/util.js';
+import { mergeSignals, onceAsync } from '../lib/util.js';
 
 /** Route id (`#/domain`). */
 export const id = 'domain';
@@ -48,6 +51,9 @@ export const id = 'domain';
 export const titleKey = 'nav.domain';
 /** Icon name (ui/components.js Icon). */
 export const icon = 'id-card';
+
+/** The lookalike panel, loaded on the first click of Find lookalikes. */
+const loadLookalikes = onceAsync(() => import('../ui/lookalike-panel.js'));
 
 /** Card icons. */
 export const CARD_ICONS = Object.freeze({
@@ -226,7 +232,12 @@ registerStrings('en', {
   'dov.health.noProblems': 'No errors or warnings.',
   'dov.health.more': { one: '+{count} more in Domain Health', other: '+{count} more in Domain Health' },
   'dov.health.failed': 'The health checks could not run',
-  'dov.lookupFailed': 'lookup failed'
+  'dov.lookupFailed': 'lookup failed',
+
+  'dov.lk.title': 'Lookalike domains',
+  'dov.lk.body': 'Typosquats of {domain} — misspellings, keyboard slips, lookalike letters, other endings — and which of them exist, when they were registered and whether they can take mail. The names are made in your browser; nothing is sent until you check them.',
+  'dov.lk.open': 'Find lookalikes',
+  'dov.lk.failed': 'The lookalike panel could not be loaded.'
 });
 
 registerStrings('tr', {
@@ -385,7 +396,12 @@ registerStrings('tr', {
   'dov.health.noProblems': 'Hata ya da uyarı yok.',
   'dov.health.more': 'Alan Adı Sağlığı’nda {count} tane daha',
   'dov.health.failed': 'Sağlık kontrolleri çalışamadı',
-  'dov.lookupFailed': 'sorgu başarısız'
+  'dov.lookupFailed': 'sorgu başarısız',
+
+  'dov.lk.title': 'Benzer alan adları',
+  'dov.lk.body': '{domain} adının yazım hatası taklitleri — yanlış yazımlar, klavye kaymaları, benzer harfler, başka uzantılar — ve bunlardan hangilerinin var olduğu, ne zaman kaydedildiği, posta alıp alamayacağı. Adlar tarayıcınızda üretilir; siz kontrol edene kadar hiçbir şey gönderilmez.',
+  'dov.lk.open': 'Benzerleri bul',
+  'dov.lk.failed': 'Benzer alan adları paneli yüklenemedi.'
 });
 
 /* ------------------------------------------------------------------------ */
@@ -494,11 +510,13 @@ export function mount(container, ctx) {
   progress.el.hidden = true;
   const emptyEl = h('div', { class: 'card dov-empty' }, EmptyState({ icon: 'id-card', title: t('dov.emptyTitle'), message: t('dov.emptyBody') }));
   const headEl = h('div', { class: 'dov-head-wrap' });
+  const lookalikeSlot = h('div', { class: 'dov-lookalike' });
   const slots = Object.fromEntries(PASSPORT_CARDS.map((c) => [c, h('div', { class: 'dov-slot', dataset: { card: c } })]));
   // No part of the form: Ctrl/Cmd+Enter on a card's button starts no new build.
   const results = h('div', { class: 'stack-lg dov-results', hidden: true, dataset: { shortcutScope: 'results' } },
     headEl,
-    h('div', { class: 'dov-grid' }, PASSPORT_CARDS.map((c) => slots[c])));
+    h('div', { class: 'dov-grid' }, PASSPORT_CARDS.map((c) => slots[c])),
+    lookalikeSlot);
   container.append(h('div', { class: 'stack-lg dov-view' }, formCard, progress, emptyEl, results));
 
   /** The overview's summary button (disabled while a build runs). */
@@ -636,6 +654,46 @@ export function mount(container, ctx) {
     results.hidden = !has;
     renderHead();
     if (has) renderCards();
+    renderLookalike();
+  }
+
+  /* --- lookalike domains (ui/lookalike-panel.js, loaded on the first click) ---------------- */
+  /** The open panel ({ domain, panel }), and the domain whose panel a re-mount opens again. */
+  let lookalike = null;
+  let lookalikeWanted = restored && typeof restored.lookalike === 'string' ? restored.lookalike : null;
+
+  function renderLookalike() {
+    const domain = current ? current.domain : null;
+    if (lookalike && lookalike.domain === domain) return;
+    if (lookalike) lookalike.panel.destroy();
+    lookalike = null;
+    clear(lookalikeSlot);
+    if (!domain) return;
+    const open = Button({ label: t('dov.lk.open'), icon: 'eye', dataset: { action: 'lk-open' }, onClick: () => openLookalikes(domain, open) });
+    lookalikeSlot.append(Card({
+      title: t('dov.lk.title'), icon: 'eye', className: 'dov-lk-hook',
+      children: h('div', { class: 'stack-sm' }, h('p', { class: 'text-sm muted dov-lk-body' }, t('dov.lk.body', { domain })), h('div', null, open))
+    }));
+    if (lookalikeWanted === domain) openLookalikes(domain, open, { focus: false });
+  }
+
+  /** Load the panel (once) in place of its hook; the panel sends nothing before its own Check. */
+  function openLookalikes(domain, btn, { focus = true } = {}) {
+    btn.disabled = true;
+    loadLookalikes().then((m) => {
+      if (ctx.signal.aborted || !current || current.domain !== domain || (lookalike && lookalike.domain === domain)) return;
+      lookalike = { domain, panel: m.LookalikePanel({ ctx, domain }) };
+      lookalikeWanted = domain;
+      clear(lookalikeSlot);
+      lookalikeSlot.append(lookalike.panel.el);
+      const first = lookalike.panel.el.querySelector('[data-action="lk-check"]:not([hidden])') || lookalike.panel.el.querySelector('[data-role="lk-budget"]');
+      if (focus && first) first.focus();
+    }, () => {
+      ctx.checkOutdated();
+      if (ctx.signal.aborted) return;
+      btn.disabled = false;
+      ctx.toast(t('dov.lk.failed'), { type: 'error' });
+    });
   }
 
   /* --- card bodies ------------------------------------------------------------------------ */
@@ -1215,12 +1273,16 @@ export function mount(container, ctx) {
   renderPrompt();
 
   active = {
-    teardown: abortAll,
+    teardown() {
+      abortAll();
+      if (lookalike) lookalike.panel.destroy();
+    },
     snapshot() {
       const r = current && !current.controller && current.at ? current : null;
       return {
         name: nameField.value,
         carried,
+        lookalike: lookalike ? lookalike.domain : null,
         run: r ? { domain: r.domain, host: r.host, raw: r.raw, at: r.at, stopped: r.stopped } : null
       };
     },

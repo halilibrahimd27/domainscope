@@ -1875,7 +1875,8 @@ async function main() {
       await kb.waitFor(() => document.querySelector('dialog.keys-modal[open]'), { message: 'shortcut list open' });
       const rows = await kb.evaluate(() => [...document.querySelectorAll('.keys-table tr')].map((tr) => [tr.dataset.key,
         [...tr.querySelectorAll('kbd')].map((k) => k.textContent).join('+')]));
-      assertEqual(rows, [['submit', 'Ctrl+Enter'], ['cancel', 'Esc'], ['focus', '/'], ['help', '?']], 'shortcuts listed');
+      const mod = process.platform === 'darwin' ? '⌘' : 'Ctrl'; // the browser runs here, and Apple platforms show ⌘
+      assertEqual(rows, [['submit', `${mod}+Enter`], ['cancel', 'Esc'], ['focus', '/'], ['help', '?']], 'shortcuts listed');
       await shot(kb, 'desktop-light-en-shortcuts');
       await kb.press('Escape');
       await kb.waitFor(() => !document.querySelector('dialog.keys-modal'), { message: 'closed' });

@@ -218,6 +218,23 @@ describe('Cert Spotter', () => {
     assert.equal(c.revoked, false);
   });
 
+  test('certDer: each issuance\'s DER is asked for and kept as `der` (the headless runner\'s CT watch); not by default', async () => {
+    const pages = [[issuance(21, ['a.example.com'], { cert_der: 'MIIBAAAA' }), issuance(22, ['b.example.com'], { cert_der: '' })], []];
+    const { fetchImpl, calls } = router({ [CS]: (url, n) => pages[n - 1] });
+    const r = await fetchSource('certspotter', 'example.com', { fetchImpl, certDer: true });
+    assert.equal(calls[0].url, 'https://api.certspotter.com/v1/issuances?domain=example.com&include_subdomains=true&expand=dns_names&expand=issuer&expand=cert_der');
+    assert.ok(calls[1].url.endsWith('&expand=cert_der&after=22'));
+    assert.equal(r.certs.find((c) => c.id === '21').der, 'MIIBAAAA');
+    assert.equal('der' in r.certs.find((c) => c.id === '22'), false, 'an empty one is none');
+    const { fetchImpl: f2, calls: c2 } = router({ [CS]: (url, n) => [[issuance(21, ['a.example.com'], { cert_der: 'MIIBAAAA' })], []][n - 1] });
+    const plain = await fetchSource('certspotter', 'example.com', { fetchImpl: f2 });
+    assert.ok(!c2[0].url.includes('cert_der'));
+    assert.equal('der' in plain.certs[0], false);
+    const { fetchImpl: f3, calls: c3 } = router({ [CS]: (url, n) => [[], []][n - 1], [CRT]: () => [] });
+    await fetchAllSources('example.com', { sources: ['certspotter'], fetchImpl: f3, certDer: true });
+    assert.ok(c3[0].url.includes('&expand=cert_der'), 'fetchAllSources passes it on');
+  });
+
   test('stops at 5 pages; a readable Link header without rel=next ends pagination', async () => {
     let n = 0;
     const { fetchImpl, calls } = router({ [CS]: () => { n += 1; return [issuance(n, [`h${n}.example.com`])]; } });
@@ -488,5 +505,15 @@ describe('mergeCerts', () => {
     assert.equal(merged[1].sha256, 'ff');
     assert.deepEqual(merged[1].sources, ['crtsh', 'certspotter']);
     assert.equal(a.sha256, null, 'inputs are not mutated');
+  });
+
+  test('a cross-source twin also takes Cert Spotter\'s revocation flag and DER', () => {
+    const d = (s) => new Date(s);
+    const a = { key: 'crtsh:1:0a', source: 'crtsh', sources: ['crtsh'], serialHex: '0a', sha256: null, names: ['a.example'], notBefore: d('2026-01-01'), notAfter: d('2026-04-01') };
+    const b = { key: 'sha256:ff', source: 'certspotter', sources: ['certspotter'], serialHex: null, sha256: 'ff', names: ['a.example'], notBefore: d('2026-01-01'), notAfter: d('2026-04-01'), revoked: true, der: 'MIIB' };
+    const [merged] = mergeCerts([a, b]);
+    assert.deepEqual([merged.revoked, merged.der, merged.serialHex], [true, 'MIIB', '0a']);
+    const [other] = mergeCerts([b, a]);
+    assert.deepEqual([other.revoked, other.der, other.serialHex], [true, 'MIIB', '0a']);
   });
 });

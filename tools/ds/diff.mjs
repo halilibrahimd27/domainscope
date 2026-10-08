@@ -5,14 +5,17 @@
  *
  * A change is `{ tag, tone, counts, target, item, kind, before, after, parts }`:
  * - `tag`: render.mjs CHANGE_TAGS (NEW, GONE, WORSE, BETTER, CHANGED, FAILED, RECOVERED, FAILING,
- *   SCORE, ISSUER, NAME, CERT, EXPOSED, DANGLING); `tone`: 'bad' | 'good' | 'info' | 'quiet';
+ *   SCORE, ISSUER, NAME, CERT, CA, EXPIRING, REVOKED, EXPOSED, DANGLING); `tone`: 'bad' | 'good' |
+ *   'info' | 'quiet';
  * - `counts`: false for what is listed but never counted by --fail-on-change (nor opens the
  *   nightly issue): a move from one failure state to another (FAILING: nothing was read either
  *   way), CT sources that could not be read (FAILED / RECOVERED: the source's outage, not the
  *   domain's change), what a failed lookup may hide (a finding "gone" while its lookup failed, a
  *   finding "new" in an area no earlier run read, a score moved by a failed lookup), a CT issuer
- *   or name that may only have been missed before (see surelyNew), and a renewed certificate
- *   from a known issuer for known names (CERT). What a run could not read, its report carries
+ *   or name that may only have been missed before (see surelyNew), a renewed certificate from a
+ *   known issuer for known names (CERT), a certificate crossing a radar threshold while its
+ *   automatic renewal is not overdue yet (EXPIRING, tools/ds/ctwatch.mjs radarCrossing) and a
+ *   revoked certificate that was not the one in use. What a run could not read, its report carries
  *   from the last run that read it (tools/ds/carry.mjs): the run after is compared with that;
  * - `target` / `item`: the domain, name, zone or certificate, and what inside it moved (a
  *   finding id, a host, an RRset key, an issuer, an endpoint), null for the target itself;
@@ -23,6 +26,7 @@
 import { DS_TOOL, DS_VERSION } from './args.mjs';
 import { code, isoDay, localYesNo, sourceName, certCount } from './render.mjs';
 import { isLookupError, checkAreas, failedAreas, knownChecks, carriedFrom, lastFullTimes, lookupFailed } from './carry.mjs';
+import { seenOf, radarCrossing } from './ctwatch.mjs';
 import { textParts } from '../../assets/js/lib/summary.js';
 import { DRIFT_SEVERITY } from '../../assets/js/lib/zonedrift.js';
 import { DANE_SEVERITY } from '../../assets/js/lib/dane.js';
@@ -87,6 +91,7 @@ const TARGET_CHECKS = Object.freeze({
       const p = itemsProblem(x.sources, 'sources', (s) => (!isStr(s.source) ? 'has no "source"' : !isStrOrNull(s.lastFullAt) ? 'has a "lastFullAt" that is not text' : null));
       if (p) return p;
     }
+    if (x.seen !== undefined && !(isObj(x.seen) && isStr(x.seen.at) && isObj(x.seen.ids))) return 'has a "seen" that is not a store of certificate ids ({ at, ids })';
     const p = itemsProblem(x.issuers, 'issuers', (g) => (isStr(g.name) ? null : 'has no "name"'));
     if (p) return p;
     return itemsProblem(x.certificates, 'certificates', (c) => {
@@ -442,10 +447,13 @@ function diffCt(before, after) {
       if (oldIssuers.has(g.name)) continue;
       newIssuers.add(g.name);
       const sure = certs.some((c) => c.ca === g.name && isNew(c));
+      // Not one of the expected CAs (--expected-ca): it counts even when it may only have been
+      // missed before, since no earlier run said it.
+      const odd = certs.some((c) => c.ca === g.name && c.unexpected === true);
       out.push(change('ISSUER', domain, g.name, ['new issuer ', code(g.name),
         ...(g.intermediates && g.intermediates.length ? [' (', ...g.intermediates.slice(0, 3).flatMap((n, i) => (i ? [', ', code(n)] : [code(n)])), ')'] : []),
-        `: ${certCount(g.count)}, newest ${isoDay(g.newest)}`, ...(sure ? [] : unsure)],
-      { tone: sure ? 'bad' : 'quiet', counts: sure, kind: 'appeared', after: g.count }));
+        `: ${certCount(g.count)}, newest ${isoDay(g.newest)}`, ...(odd ? [', not one of the expected CAs'] : []), ...(sure ? [] : unsure)],
+      { tone: sure || odd ? 'bad' : 'quiet', counts: sure || odd, kind: 'appeared', after: g.count }));
     }
     const oldNames = new Set(b.names || []);
     const newNames = new Set((a.names || []).filter((n) => !oldNames.has(n)));
@@ -456,12 +464,47 @@ function diffCt(before, after) {
       out.push(change('NAME', domain, name, ['first certificate for ', code(name), ...(first ? [' (', code(first.ca), `, ${isoDay(first.notBefore)})`] : []), ...(sure ? [] : unsure)],
         { tone: sure ? 'info' : 'quiet', counts: sure, kind: 'appeared' }));
     }
-    const oldIds = new Set((b.certificates || []).map((c) => c.id));
+    // New since the baseline: not among the ids the last runs that read the domain saw (the store
+    // its report keeps, ctwatch.mjs; a baseline written before it: its certificates).
+    const seenIds = new Set([...Object.keys((seenOf(b, before.startedAt) || { ids: {} }).ids), ...(b.certificates || []).map((c) => c.id)]);
+    const names = (c) => [...c.names.slice(0, 3).flatMap((n, i) => (i ? [', ', code(n)] : [code(n)])), ...(c.names.length > 3 ? [` +${c.names.length - 3}`] : [])];
+    const intermediate = (c) => (c.intermediate ? [' (', code(c.intermediate), ')'] : []);
+    const also = (c) => [...(c.precert === true ? [' (precertificate only)'] : []), ...(c.revoked === true ? [' (revoked)'] : [])];
     for (const c of certs) {
-      if (oldIds.has(c.id) || newIssuers.has(c.ca) || c.names.every((n) => newNames.has(n))) continue;
-      out.push(change('CERT', domain, c.id, ['new certificate from ', code(c.ca), ...(c.intermediate ? [' (', code(c.intermediate), ')'] : []),
-        `, ${isoDay(c.notBefore)}: `, ...c.names.slice(0, 3).flatMap((n, i) => (i ? [', ', code(n)] : [code(n)])), ...(c.names.length > 3 ? [` +${c.names.length - 3}`] : [])],
-      { tone: 'quiet', counts: false, kind: 'appeared' }));
+      if (seenIds.has(c.id) || newIssuers.has(c.ca)) continue;
+      if (c.unexpected === true) {
+        // A certificate from a CA the run was told not to expect: the CT watch's "Unexpected CA".
+        out.push(change('CA', domain, c.id, ['certificate from ', code(c.ca), ...intermediate(c), ', not one of the expected CAs, issued ',
+          `${isoDay(c.notBefore)}: `, ...names(c), ...also(c)], { tone: 'bad', kind: 'appeared' }));
+        continue;
+      }
+      if (c.names.every((n) => newNames.has(n))) continue;
+      out.push(change('CERT', domain, c.id, ['new certificate from ', code(c.ca), ...intermediate(c), `, ${isoDay(c.notBefore)}: `, ...names(c), ...also(c)],
+        { tone: 'quiet', counts: false, kind: 'appeared' }));
+    }
+    // The expiry radar: a current certificate within a threshold it was outside at the last read
+    // of the domain (its time in the store), counted once its automatic renewal is overdue.
+    const store = seenOf(b, before.startedAt);
+    const lastRead = store ? Date.parse(store.at) : Date.parse(b.readAt || before.startedAt);
+    const radar = isObj(a.watch) && Array.isArray(a.watch.radar) ? a.watch.radar : [];
+    const prevById = new Map((b.certificates || []).map((c) => [c.id, c]));
+    for (const c of a.certificates || []) {
+      // known before: listed in the baseline, or in its store (a source missed it that night)
+      const known = prevById.get(c.id) || (store && store.ids[c.id] ? { id: c.id } : undefined);
+      const crossed = radarCrossing(c, known, { radar, lastRead });
+      if (!crossed) continue;
+      out.push(change('EXPIRING', domain, c.id, [...names(c), `: ${crossed.daysLeft} day${crossed.daysLeft === 1 ? '' : 's'} left (expires ${isoDay(c.notAfter)}), within the radar's ${crossed.threshold} days; `,
+        code(c.ca), ...intermediate(c), crossed.overdue ? ' — its automatic renewal is overdue' : ' (an automatic renewal is not overdue yet)'],
+      { tone: crossed.overdue ? 'bad' : 'quiet', counts: crossed.overdue, before: null, after: crossed.threshold }));
+    }
+    // Revoked since the baseline: counted when it was the certificate in use for its names.
+    for (const c of certs) {
+      const p = prevById.get(c.id);
+      if (c.revoked !== true || !p || p.revoked === true) continue;
+      const inUse = p.current === true && p.revoked === false;
+      out.push(change('REVOKED', domain, c.id, ['certificate from ', code(c.ca), ...intermediate(c), ' revoked by its CA: ', ...names(c),
+        inUse ? ' (it was the current certificate of these names)' : ' (a newer certificate covered these names, or the baseline did not know)'],
+      { tone: inUse ? 'bad' : 'quiet', counts: inUse }));
     }
     if (a.complete) {
       const nowIssuers = new Set((a.issuers || []).map((g) => g.name));
@@ -729,6 +772,10 @@ export function baselineNotes(command, before, after) {
     else if (differs('level') || differs('sources')) notes.push(`The wordlist level or the sources differ from the baseline's (${listText(o.level)} / ${listText(o.sources)} → ${listText(n.level)} / ${listText(n.sources)}): hosts can appear because of that rather than because of DNS.`);
   }
   if (command === 'ct' && differs('sources')) notes.push(`The sources differ from the baseline's (${listText(o.sources)} → ${listText(n.sources)}): issuers and names can appear because of that.`);
+  if (command === 'ct' && Array.isArray(o.expectedCas) && differs('expectedCas')) {
+    notes.push(`The expected CAs differ from the baseline's (${listText(o.expectedCas) || 'none'} → ${listText(n.expectedCas) || 'none'}): a certificate seen before is not said again, though the summary marks it.`);
+  }
+  if (command === 'ct' && Array.isArray(o.radar) && differs('radar')) notes.push(`The expiry radar differs from the baseline's (${listText(o.radar)} → ${listText(n.radar)} days).`);
   if (command === 'drift') {
     if (differs('maxQueries')) notes.push(`The query budget differs from the baseline's (${listText(o.maxQueries)} → ${listText(n.maxQueries)}).`);
     if (o.includeOrigins !== undefined && o.includeOrigins !== n.includeOrigins) notes.push('Origin addresses were hidden in one run and kept in the other (--include-origins): value changes can come from that.');

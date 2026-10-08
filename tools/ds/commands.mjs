@@ -15,14 +15,15 @@
  */
 
 import { createHash } from 'node:crypto';
-import { NODE_UNREADABLE, CT_SOURCES, DS_VERSION, UsageError } from './args.mjs';
+import { NODE_UNREADABLE, CT_SOURCES, DS_DEFAULT_RADAR, DS_VERSION, UsageError } from './args.mjs';
 import { code, strong, isoDay, isoTime, summaryDoc, valueParts, localYesNo, sourceName, certCount } from './render.mjs';
 import { targetOf, carryHealth, carryHosts, carryCt, ctIssuers, ctCertOrder, lookupFailed } from './carry.mjs';
 import { isSubdomainOf, sortHostnames } from '../../assets/js/lib/domain.js';
 import { chunk, throwIfAborted } from '../../assets/js/lib/util.js';
-import { textParts, renderParts } from '../../assets/js/lib/summary.js';
+import { textParts, renderParts, cleanText } from '../../assets/js/lib/summary.js';
 import { scoreHealth } from '../../assets/js/lib/healthscore.js';
 import { createCtCooldown, CT_COOLDOWN_MS } from '../../assets/js/lib/ctcert.js';
+import { watchTarget, renewalOverdue } from './ctwatch.mjs';
 
 const APP = 'DomainScope';
 const DAY_MS = 86400000;
@@ -368,21 +369,41 @@ export function ctCertId(cert) {
 }
 
 /**
+ * What a certificate's DER (Cert Spotter's `cert_der`, base64) says: its serial number and whether
+ * it is a precertificate (the CT poison extension). Null when there is none or it cannot be read.
+ * @param {string|undefined} b64
+ * @param {(der: Uint8Array) => { serialHex: string, isPrecertificate: boolean }} parseCertificate lib/x509.js
+ * @returns {{ serialHex: string|null, precert: boolean }|null}
+ */
+export function readCertDer(b64, parseCertificate) {
+  if (typeof b64 !== 'string' || !b64 || typeof parseCertificate !== 'function') return null;
+  try {
+    const cert = parseCertificate(new Uint8Array(Buffer.from(b64, 'base64')));
+    return { serialHex: cert.serialHex ? String(cert.serialHex).toLowerCase() : null, precert: !!cert.isPrecertificate };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The compared part of one domain's certificates in CT: when it was read, every current
- * certificate (id, CA, intermediate, validity, names, the sources that list it), the issuers with
- * their counts, the names, and how each source answered (`complete`: every source answered in
+ * certificate (id, CA, intermediate, validity, names, the serial number when a source says it, the
+ * sources that list it, revoked and precertificate only — null where no source says), the issuers
+ * with their counts, the names, and how each source answered (`complete`: every source answered in
  * full; `skipped`: not asked, {@link createSourceBreaker}). The CA is named from the issuer DN
  * alone (the known CA, else its O, else its CN), never from Cert Spotter's friendly name, so a
  * certificate reads the same whichever source answered: a night without crt.sh is no "new
- * issuer". What a source not read in full listed before is added by carry.mjs carryCt.
+ * issuer". What a source not read in full listed before is added by carry.mjs carryCt, the CT
+ * watch's fields by tools/ds/ctwatch.mjs watchTarget.
  * @param {string} domain
  * @param {{ certs: object[], health: object[] }} fetched lib/sources.js fetchAllSources() result
  *   (`health` may add the sources not asked)
- * @param {{ issuerName: Function, dnPart: Function, days: number, now: Date, sources: string[], readAt?: Date }} opts
- *   `readAt`: when the read began (default `now`)
+ * @param {{ issuerName: Function, dnPart: Function, days: number, now: Date, sources: string[], readAt?: Date,
+ *   parseCertificate?: Function }} opts `readAt`: when the read began (default `now`);
+ *   `parseCertificate`: lib/x509.js's, for the DER Cert Spotter sent ({@link readCertDer})
  * @returns {object}
  */
-export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sources, readAt = now }) {
+export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sources, readAt = now, parseCertificate = null }) {
   const certificates = [];
   const byId = new Map();
   // The names under the domain only: crt.sh rows carry the searched names, Cert Spotter every
@@ -393,6 +414,7 @@ export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sourc
   };
   for (const c of fetched.certs || []) {
     const intermediate = dnPart(c.issuer, 'CN');
+    const der = readCertDer(c.der, parseCertificate);
     const fields = {
       ca: issuerName(c.issuer),
       intermediate,
@@ -401,13 +423,19 @@ export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sourc
       notAfter: isoTime(c.notAfter),
       names: sortHostnames([...new Set((c.names || []).filter(own))]),
       sha256: c.sha256 || null,
-      sources: [...(c.sources || [c.source])].sort()
+      serialHex: (typeof c.serialHex === 'string' && c.serialHex) || (der && der.serialHex) || null,
+      sources: [...(c.sources || [c.source])].sort(),
+      revoked: typeof c.revoked === 'boolean' ? c.revoked : null,
+      precert: der ? der.precert : null
     };
     const cert = { id: ctCertId(fields), ...fields };
     const twin = byId.get(cert.id);
     if (twin) {
       twin.sources = [...new Set([...twin.sources, ...cert.sources])].sort();
       twin.sha256 = twin.sha256 || cert.sha256;
+      twin.serialHex = twin.serialHex || cert.serialHex;
+      if (twin.revoked === null) twin.revoked = cert.revoked;
+      if (twin.precert === null) twin.precert = cert.precert;
       continue;
     }
     byId.set(cert.id, cert);
@@ -444,13 +472,83 @@ function readWhen(times) {
   return days.length === 1 ? `on ${days[0]}` : `between ${days[0]} and ${days.at(-1)}`;
 }
 
+/** "12 days left", "1 day left", "less than a day left". */
+const daysLeftText = (n) => (n < 1 ? 'less than a day left' : `${n} day${n === 1 ? '' : 's'} left`);
+
+/** A certificate's CA and intermediate as parts: `Let's Encrypt` (`R11`). */
+const caParts = (c) => [code(c.ca), ...(c.intermediate ? [' (', code(c.intermediate), ')'] : [])];
+
+/** What a listed certificate also is, after its names. */
+function flagParts(c, { unexpected = true } = {}) {
+  const out = [];
+  if (unexpected && c.unexpected === true) out.push(' — not one of the expected CAs');
+  if (c.precert === true) out.push(' — precertificate only');
+  if (c.revoked === true) out.push(' — revoked');
+  return out;
+}
+
+/**
+ * The CT watch's lines of a domain's summary (tools/ds/ctwatch.mjs watchTarget), as the app's tab
+ * shows them: the expiry radar and the current certificates within it, soonest first (with a
+ * renewal that is overdue said); with --baseline what was logged since the last run that read the
+ * domain, or that this is the first; with --expected-ca the certificates from another CA; how many
+ * are wildcard, precertificate only or revoked.
+ * @param {object} target
+ * @param {{ t: Function, baselined: boolean }} opts
+ * @returns {Array[]} lines of parts
+ */
+export function ctWatchLines(target, { t, baselined }) {
+  const w = target.watch;
+  if (!w || !Array.isArray(w.radar) || !w.radar.length) return [];
+  const lines = [];
+  const certs = target.certificates || [];
+  const reach = w.radar[0];
+  const more = (n, what) => lines.push([`${n} more ${what} (see the JSON report)`]);
+  const within = certs.filter((c) => c.current && Number.isFinite(c.daysLeft) && c.daysLeft <= reach)
+    .sort((a, b) => a.daysLeft - b.daysLeft || a.id.localeCompare(b.id));
+  lines.push([`Expiry radar (${w.radar.join(', ')} days): `, within.length
+    ? `${within.length} current certificate${within.length === 1 ? '' : 's'} within ${reach} days`
+    : `no current certificate within ${reach} days`]);
+  for (const c of within.slice(0, MAX_LINES)) {
+    lines.push([`${daysLeftText(c.daysLeft)} (${isoDay(c.notAfter)}), `, ...caParts(c), ': ', ...valueParts(t, c.names),
+      ...(renewalOverdue(c) ? [' — its renewal is overdue'] : []), ...flagParts(c)]);
+  }
+  if (within.length > MAX_LINES) more(within.length - MAX_LINES, `within ${reach} days`);
+  if (baselined) {
+    if (!w.comparedWith) {
+      lines.push(['First run for this domain: nothing is marked new; the next run marks what is logged after this one']);
+    } else {
+      const fresh = certs.filter((c) => c.isNew === true);
+      lines.push([`New since the last run (${isoDay(w.comparedWith)}): ${fresh.length || 'none'}`]);
+      for (const c of fresh.slice(0, MAX_LINES)) lines.push([`${isoDay(c.notBefore)} `, ...caParts(c), ': ', ...valueParts(t, c.names), ...flagParts(c)]);
+      if (fresh.length > MAX_LINES) more(fresh.length - MAX_LINES, 'new since the last run');
+    }
+  }
+  if (Array.isArray(w.expected) && w.expected.length) {
+    const odd = certs.filter((c) => c.unexpected === true);
+    lines.push(['Unexpected CA (expected: ', ...valueParts(t, w.expected, 5), `): ${odd.length || 'none'}`]);
+    for (const c of odd.slice(0, MAX_LINES)) {
+      lines.push([`${isoDay(c.notBefore)} `, ...caParts(c), ': ', ...valueParts(t, c.names), ...flagParts(c, { unexpected: false })]);
+    }
+    if (odd.length > MAX_LINES) more(odd.length - MAX_LINES, 'from an unexpected CA');
+  }
+  const counts = w.counts || {};
+  const extra = [['wildcard', counts.wildcard], ['precertificate only', counts.precert], ['revoked', counts.revoked]].filter(([, n]) => n > 0);
+  if (extra.length) {
+    const text = extra.map(([label, n]) => `${label} ${n}`).join(' · ');
+    lines.push([text[0].toUpperCase() + text.slice(1)]);
+  }
+  return lines;
+}
+
 /**
  * The summary of one domain's CT result: this run's read (the certificates carried from an
- * earlier read are counted apart, as kept for the next comparison).
- * @param {object} target {@link ctTarget}, carried (carry.mjs carryCt)
- * @param {{ t: Function, now: Date }} opts
+ * earlier read are counted apart, as kept for the next comparison), then the CT watch's lines
+ * ({@link ctWatchLines}).
+ * @param {object} target {@link ctTarget}, carried (carry.mjs carryCt), watched (ctwatch.mjs watchTarget)
+ * @param {{ t: Function, now: Date, baselined?: boolean }} opts `baselined`: the run was given --baseline
  */
-export function ctDoc(target, { t, now }) {
+export function ctDoc(target, { t, now, baselined = false }) {
   const lines = [];
   const failed = target.sources.filter((s) => !s.ok);
   const why = (s) => `${sourceName(s.source)} (${String(s.state || 'error').replace('-', ' ')}${s.skipped ? ' earlier in this run: not asked' : ''})`;
@@ -481,6 +579,7 @@ export function ctDoc(target, { t, now }) {
       lines.push([`${isoDay(c.notBefore)} `, code(c.ca), ...(c.intermediate ? [' (', code(c.intermediate), ')'] : []), ': ', ...valueParts(t, c.names)]);
     }
     if (recent.length > MAX_LINES) lines.push([`${recent.length - MAX_LINES} more issued in the last ${target.days} days (see the JSON report)`]);
+    lines.push(...ctWatchLines(target, { t, baselined }));
     if (failed.length) lines.push([`Not read: ${failed.map(why).join(', ')}: the list may be incomplete`]);
     else if (!target.complete) lines.push(['A source returned only part of its list: the list may be incomplete']);
     if (kept.length) lines.push([`${keptText} (listed by a source not read in full this run)`]);
@@ -491,30 +590,48 @@ export function ctDoc(target, { t, now }) {
 async function runCt(targets, options, env) {
   const { fetchAllSources } = await import('../../assets/js/lib/sources.js');
   const { issuerName, dnPart } = await import('../../assets/js/lib/passport.js');
+  const { parseCertificate } = await import('../../assets/js/lib/x509.js');
+  const { resolveExpectedCa, expectedCaStatus } = await import('../../assets/js/lib/expectedca.js');
   const sources = options.sources || [...CT_SOURCES];
+  const radar = Array.isArray(options.radar) && options.radar.length ? [...options.radar] : [...DS_DEFAULT_RADAR];
+  const expected = [...(options.expectedCas || [])];
   const breaker = createSourceBreaker({ now: env.now, spotterHint: sources.includes('crtsh') ? '--sources crtsh leaves it out' : '' });
   const prevAt = env.baseline ? env.baseline.startedAt ?? null : null;
   const out = [];
   const docs = [];
   const warnings = [];
+  // A typo would make every issuer unexpected: an entry that names no CA the app knows (it is
+  // looked for as text in the issuer, as for a private CA) and matches no issuer read is said.
+  const textual = expected.filter((entry) => !resolveExpectedCa(entry).ca);
+  const matched = new Set();
   for (const [i, domain] of targets.entries()) {
     const ask = breaker.ask(sources);
     env.progress(`ct ${domain} (${i + 1}/${targets.length})${ask.length < sources.length ? `, not asking ${sources.filter((s) => !ask.includes(s)).map(sourceName).join(' or ')}` : ''}`);
     const readAt = env.now();
+    // Cert Spotter's DER of each issuance says which are precertificates only, and their serials.
     const fetched = ask.length
-      ? await fetchAllSources(domain, { sources: ask, fetchImpl: env.fetchImpl, signal: env.signal })
+      ? await fetchAllSources(domain, { sources: ask, fetchImpl: env.fetchImpl, signal: env.signal, certDer: true })
       : { results: [], certs: [], health: [] };
     warnings.push(...breaker.note(domain, fetched.results));
     const now = env.now();
     const health = [...(fetched.health || []), ...breaker.skipped(sources.filter((s) => !ask.includes(s)))];
     // What a source not read in full listed before is carried from the baseline (carry.mjs): the
-    // next run compares with the last read of each source, not with tonight's gap.
-    const target = carryCt(ctTarget(domain, { certs: fetched.certs, health }, { issuerName, dnPart, days: options.days, now, sources, readAt }),
-      targetOf(env.baseline, domain), { now, prevAt });
+    // next run compares with the last read of each source, not with tonight's gap. Then the app's
+    // CT watch over what is known (ctwatch.mjs), with the store of the ids seen for the next run.
+    const prev = targetOf(env.baseline, domain);
+    const read = ctTarget(domain, { certs: fetched.certs, health }, { issuerName, dnPart, days: options.days, now, sources, readAt, parseCertificate });
+    const target = watchTarget(carryCt(read, prev, { now, prevAt }), { prev, prevAt, now, radar, expected });
+    for (const entry of textual) {
+      if (target.certificates.some((c) => (expectedCaStatus(c.issuer, [entry]) || {}).expected)) matched.add(entry);
+    }
     out.push(target);
-    docs.push(ctDoc(target, { t: env.t, now }));
+    docs.push(ctDoc(target, { t: env.t, now, baselined: !!options.baseline }));
   }
-  return { options: { sources, days: options.days }, targets: out, docs, warnings };
+  for (const entry of textual.filter((e) => !matched.has(e))) {
+    warnings.push(`--expected-ca "${cleanText(entry).slice(0, 80)}" names no CA DomainScope knows and no issuer read contains it: `
+      + 'a typo there makes every issuer unexpected');
+  }
+  return { options: { sources, days: options.days, radar, expectedCas: expected }, targets: out, docs, warnings };
 }
 
 /* ------------------------------------------------------------------------ */

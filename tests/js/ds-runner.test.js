@@ -1664,7 +1664,7 @@ describe('the documented commands', () => {
   test('every ds line of the nightly template, commented ones too, is a command line the runner takes', () => {
     const yml = readFileSync(join(ROOT, 'docs', 'examples', 'nightly-domainscope.yml'), 'utf8').replace(/\r\n/g, '\n');
     const lines = [...yml.matchAll(/^ *#? *ds ([a-z][\w-]*) ([a-z]+)((?: [^\s#]+)*) *$/gm)];
-    assert.equal(lines.length, 7, `${lines.length} ds lines`);
+    assert.equal(lines.length, 8, `${lines.length} ds lines`);
     for (const [, name, command, rest] of lines) {
       assert.ok(COMMANDS.includes(command), command);
       const argv = [command, ...rest.trim().split(/\s+/).filter(Boolean).map(unquote), '--baseline', `results/${name}.json`,

@@ -103,6 +103,10 @@ jobs:
           ds health health --list domains.txt
           # More than about 10 domains: Cert Spotter's hourly quota runs out (see above); --sources crtsh leaves it out.
           ds ct ct --list domains.txt
+          # The same with the CAs you expect (repeat --expected-ca) and the expiry radar's days: a new
+          # certificate from another CA counts, and so does a certificate crossing a radar day once its
+          # automatic renewal is overdue (less than a quarter of its lifetime left):
+          # ds ct ct --list domains.txt --expected-ca letsencrypt --radar 30,14,7
           # Subdomain discovery (slower, and heavier on the passive sources' quotas):
           # ds subdomains subdomains --list domains.txt --level small
           # Only the names you list, no source and no guess (quota-free):

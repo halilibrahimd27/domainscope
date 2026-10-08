@@ -98,7 +98,8 @@ export function valueParts(tr, list, max = 3) {
 /* ------------------------------------------------------------------------ */
 
 /** What is listed but never counted (diff.mjs `counts: false`), for the note under the changes. */
-const NOT_COUNTED = 'sources that could not be read, moves between failure states, what a failed lookup or source may hide, renewed certificates';
+const NOT_COUNTED = 'sources that could not be read, moves between failure states, what a failed lookup or source may hide, renewed certificates, '
+  + 'certificates in the expiry radar while their automatic renewal is not overdue';
 /** The audit's (diff.mjs diffAudit): a rule not checked this run, what comes in meeting the policy, a rule taken out of it. */
 const NOT_COUNTED_AUDIT = 'rules that could not be checked this run, a domain or rule added that meets the policy, a rule taken out of it';
 const notCounted = (command) => (command === 'audit' ? NOT_COUNTED_AUDIT : NOT_COUNTED);
@@ -107,7 +108,7 @@ const notCounted = (command) => (command === 'audit' ? NOT_COUNTED_AUDIT : NOT_C
 export const MAX_SUMMARY_CHANGES = 50;
 /** Every tag a change can carry, widest first for the column. */
 export const CHANGE_TAGS = Object.freeze(['NEW', 'GONE', 'WORSE', 'BETTER', 'CHANGED', 'FAILED', 'RECOVERED', 'FAILING', 'SCORE',
-  'ISSUER', 'NAME', 'CERT', 'EXPOSED', 'DANGLING']);
+  'ISSUER', 'NAME', 'CERT', 'CA', 'EXPIRING', 'REVOKED', 'EXPOSED', 'DANGLING']);
 const TAG_WIDTH = Math.max(...CHANGE_TAGS.map((tag) => tag.length));
 
 const ANSI = { red: '31', green: '32', yellow: '33', cyan: '36', dim: '2', bold: '1' };

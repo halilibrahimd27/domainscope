@@ -45,8 +45,9 @@ the three together when you switch more checks on.
 
 What counts as a change mirrors the Python CLI's `--baseline`: a new or resolved health finding
 and the score, a host that appears, stops resolving, leaves its proxy or becomes a dangling CNAME,
-a new certificate issuer or a first certificate for a name, a zone record set whose live state
-moved, a renewal verdict. Moves between failure states, Certificate Transparency sources that
+a new certificate issuer or a first certificate for a name, a new certificate from a CA you did
+not name, a certificate whose renewal is overdue crossing a radar day, a zone record set whose live
+state moved, a renewal verdict. Moves between failure states, Certificate Transparency sources that
 could not be read, what a failed lookup or source may hide and renewed certificates from known
 issuers are listed but never counted. GitHub's hosted runners share their IP addresses and the
 anonymous quotas of the passive sources are per address, so a source may be rate limited on some
@@ -71,6 +72,19 @@ passes; a rule that could not be checked (a TLD without RDAP, a lookup that fail
 failure, unless it failed when last checked (--baseline): it still counts as failed. The night
 after compares with the last night that checked it.
 
+**The Certificate Transparency watch.** `ct` raises what the app's Domain portfolio ›
+Certificates (CT) tab shows. Each domain's report keeps the ids of the certificates seen (the
+next night's baseline, as the app's workspace keeps them), so the summary lists what was logged
+since the night before, next to the expiry radar (`--radar`, 30, 14 and 7 days left by default),
+the certificates from a CA you did not name with `--expected-ca` (repeat it for each CA you use:
+`letsencrypt`, `digicert`, a CAA domain such as `sectigo.com`, or part of a private CA's name),
+wildcards and the certificates logged only as a precertificate (Cert Spotter's answers say
+which; crt.sh's do not). A new certificate from a CA you did not name counts (`CA`), and so do a
+current certificate — the newest of its names — crossing a radar day once its automatic renewal
+is overdue (`EXPIRING`: less than a quarter of its lifetime left; ACME clients renew at a third,
+so a 90-day certificate crossing 30 days is listed only) and the certificate in use being revoked
+(`REVOKED`).
+
 **Cert Spotter and more than about 10 domains.** Cert Spotter answers about 10 full-domain queries
 an hour per IP address. After its first "rate limited" of a night the runner does not ask it
 again until its wait is over (at most an hour), and once crt.sh is down (unavailable, or timed
@@ -87,6 +101,7 @@ node tools/ds.mjs subdomains example.com --level small --baseline subs.json --js
 node tools/ds.mjs subdomains example.com --exact hosts.txt
 node tools/ds.mjs drift example.com.zone --origin example.com --md drift.md
 node tools/ds.mjs ct --list domains.txt --json ct.json
+node tools/ds.mjs ct --list domains.txt --expected-ca letsencrypt --radar 21,7 --baseline ct.json --json ct.json
 node tools/ds.mjs renew example.com '*.example.com' --ca letsencrypt --challenge dns-01
 node tools/ds.mjs dane fullchain.pem
 node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md

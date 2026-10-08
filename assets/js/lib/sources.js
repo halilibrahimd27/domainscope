@@ -56,6 +56,9 @@ export { SOURCES, sourceQuota, SOURCE_HEALTH_STATES, sourceHealthSummary } from 
  * @property {string|null} sha256 certificate SHA-256 (lowercase hex) when known
  * @property {string[]} sources extension: every source that reported it
  * @property {string|null} url extension: link to the certificate on the source site
+ * @property {boolean|null} [revoked] extension: Cert Spotter's revocation flag (null: not known)
+ * @property {string} [der] extension: the certificate's DER as Cert Spotter's base64 `cert_der` (the
+ *   precertificate while only that one is logged), only when asked with `certDer`
  */
 
 /**
@@ -554,10 +557,14 @@ function parseCrtsh(domain, data, form, failures, includeExpired) {
   return { rows: data.length, certs: list, hints: [], collector, partialError, queryForm: form };
 }
 
-/** Cert Spotter issuances API, paginated with `after=<last id>` (max 5 pages; a non-empty 5th page, more possibly left, → `truncated`). */
+/**
+ * Cert Spotter issuances API, paginated with `after=<last id>` (max 5 pages; a non-empty 5th page,
+ * more possibly left, → `truncated`). With `ctx.certDer` each issuance's DER is asked for too
+ * (`expand=cert_der`, kept as `der`): the serial number and whether only the precertificate is logged.
+ */
 async function fromCertspotter(domain, ctx) {
   const base = `https://api.certspotter.com/v1/issuances?domain=${encodeURIComponent(domain)}`
-    + '&include_subdomains=true&expand=dns_names&expand=issuer';
+    + `&include_subdomains=true&expand=dns_names&expand=issuer${ctx.certDer ? '&expand=cert_der' : ''}`;
   const collector = createCollector(domain);
   const certs = [];
   let rows = 0;
@@ -606,7 +613,8 @@ async function fromCertspotter(domain, ctx) {
         issuerFriendlyName: item.issuer && typeof item.issuer === 'object' ? item.issuer.friendly_name || null : null,
         tbsSha256: tbs,
         pubkeySha256: typeof item.pubkey_sha256 === 'string' ? item.pubkey_sha256.toLowerCase() : null,
-        revoked: typeof item.revoked === 'boolean' ? item.revoked : null
+        revoked: typeof item.revoked === 'boolean' ? item.revoked : null,
+        ...(ctx.certDer && typeof item.cert_der === 'string' && item.cert_der ? { der: item.cert_der } : {})
       });
     }
     if (!data.length) break;
@@ -845,6 +853,8 @@ const FETCHERS = {
  * @param {AbortSignal} [opts.signal]
  * @param {number} [opts.timeoutMs] per-request timeout (default: crt.sh 90 s, others 25 s)
  * @param {boolean} [opts.includeExpired=false] crt.sh: include expired certificates
+ * @param {boolean} [opts.certDer=false] extension: Cert Spotter: ask for each issuance's DER too
+ *   (`expand=cert_der`, the CtCert's `der`; the headless runner's CT watch reads it)
  * @param {number} [opts.retryDelayMs] extension: crt.sh retry backoff base (default 4000 ms:
  *   waits of ≈4, 8, 16 and 32 s ±25 % between its 5 attempts)
  * @param {(ms: number, signal?: AbortSignal) => Promise<void>} [opts.sleepImpl] extension: waiting
@@ -855,7 +865,7 @@ const FETCHERS = {
  * @returns {Promise<SourceResult>} never rejects except with AbortError
  */
 export async function fetchSource(id, domain, {
-  fetchImpl = globalThis.fetch, signal, timeoutMs, includeExpired = false, retryDelayMs, sleepImpl, onEvent
+  fetchImpl = globalThis.fetch, signal, timeoutMs, includeExpired = false, certDer = false, retryDelayMs, sleepImpl, onEvent
 } = {}) {
   checkAbort(signal);
   const started = clock();
@@ -902,6 +912,7 @@ export async function fetchSource(id, domain, {
     signal,
     timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : def.timeoutMs,
     includeExpired: !!includeExpired,
+    certDer: !!certDer,
     retryDelayMs,
     stats,
     sleep: typeof sleepImpl === 'function' ? sleepImpl : sleep,
@@ -979,6 +990,8 @@ export function mergeCerts(list) {
     if (twin && twin.source !== cert.source) {
       if (!twin.sha256 && cert.sha256) twin.sha256 = cert.sha256;
       if (!twin.serialHex && cert.serialHex) twin.serialHex = cert.serialHex;
+      if (typeof twin.revoked !== 'boolean' && typeof cert.revoked === 'boolean') twin.revoked = cert.revoked;
+      if (!twin.der && cert.der) twin.der = cert.der;
       for (const s of cert.sources || [cert.source]) if (!twin.sources.includes(s)) twin.sources.push(s);
       byKey.set(cert.key, twin);
       continue;
@@ -1000,6 +1013,7 @@ export function mergeCerts(list) {
  * @param {typeof fetch} [opts.fetchImpl]
  * @param {AbortSignal} [opts.signal]
  * @param {boolean} [opts.includeExpired=false]
+ * @param {boolean} [opts.certDer=false] extension: see fetchSource
  * @param {number} [opts.timeoutMs] extension: override every source's timeout
  * @param {number} [opts.retryDelayMs] extension: see fetchSource
  * @param {Function} [opts.sleepImpl] extension: see fetchSource
@@ -1011,13 +1025,13 @@ export function mergeCerts(list) {
  *   (latest day wins); `health` = sourceHealthSummary(results). Rejects only with AbortError.
  */
 export async function fetchAllSources(domain, {
-  sources, onResult, fetchImpl = globalThis.fetch, signal, includeExpired = false, timeoutMs, retryDelayMs,
+  sources, onResult, fetchImpl = globalThis.fetch, signal, includeExpired = false, certDer = false, timeoutMs, retryDelayMs,
   sleepImpl, onEvent
 } = {}) {
   checkAbort(signal);
   const ids = Array.isArray(sources) ? [...new Set(sources)] : SOURCES.filter((s) => s.defaultEnabled).map((s) => s.id);
   const results = await Promise.all(ids.map(async (id) => {
-    const r = await fetchSource(id, domain, { fetchImpl, signal, includeExpired, timeoutMs, retryDelayMs, sleepImpl, onEvent });
+    const r = await fetchSource(id, domain, { fetchImpl, signal, includeExpired, certDer, timeoutMs, retryDelayMs, sleepImpl, onEvent });
     if (typeof onResult === 'function') {
       try {
         onResult(r);

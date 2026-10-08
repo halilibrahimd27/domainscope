@@ -21,6 +21,8 @@ import { CONCURRENCY_RANGE, DEFAULT_SETTINGS } from '../../assets/js/state.js';
 import { POLICY_PRESET_IDS } from '../../assets/js/lib/policy.js';
 import { passportDomain } from '../../assets/js/lib/passport.js';
 import { PORTFOLIO_DKIM_SELECTORS } from '../../assets/js/lib/portfolio.js';
+import { CT_WATCH_DEFAULT_DAYS, CT_WATCH_MAX_DAYS, CT_WATCH_MAX_THRESHOLDS, parseRadarDays } from '../../assets/js/lib/ctwatch.js';
+import { WORKSPACE_LIMITS, sanitizeExpectedCas } from '../../assets/js/lib/workspace.js';
 
 /** The runner's name in reports and messages. */
 export const DS_TOOL = 'domainscope-ds';
@@ -45,7 +47,7 @@ export const COMMAND_SPECS = Object.freeze({
   health: Object.freeze({ targets: 'domains', options: Object.freeze(['list']) }),
   subdomains: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'exact', 'level', 'sources']) }),
   drift: Object.freeze({ targets: 'file', options: Object.freeze(['origin', 'include-origins', 'max-queries']) }),
-  ct: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'days', 'sources']) }),
+  ct: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'days', 'sources', 'radar', 'expected-ca']) }),
   renew: Object.freeze({ targets: 'names', options: Object.freeze(['list', 'ca', 'challenge']) }),
   dane: Object.freeze({ targets: 'file', options: Object.freeze([]) }),
   audit: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'policy', 'preset', 'no-dkim']) })
@@ -81,6 +83,8 @@ export const CT_SOURCES = Object.freeze(['crtsh', 'certspotter']);
 /** `ct --days`: the window of "recent" issuances in the summary. */
 export const DS_DEFAULT_DAYS = 30;
 export const DS_MAX_DAYS = 3650;
+/** `ct --radar`: the expiry radar's thresholds in days left, the app's (lib/ctwatch.js), largest first. */
+export const DS_DEFAULT_RADAR = CT_WATCH_DEFAULT_DAYS;
 
 /** A command line the runner refuses (exit 2), with the reason as the message. */
 export class UsageError extends Error {
@@ -108,6 +112,8 @@ const OPTION_SPEC = Object.freeze({
   level: { type: 'string' },
   sources: { type: 'string' },
   days: { type: 'string' },
+  radar: { type: 'string' },
+  'expected-ca': { type: 'string', multiple: true },
   origin: { type: 'string' },
   'include-origins': { type: 'boolean' },
   'max-queries': { type: 'string' },
@@ -138,6 +144,8 @@ const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'res
  * @property {'off'|'small'|'smart'} level subdomains: wordlist level
  * @property {string[]|null} sources subdomains / ct: passive sources (null = the default)
  * @property {number} days ct: "recent" window
+ * @property {number[]} radar ct: the expiry radar's thresholds, days left, largest first (lib/ctwatch.js parseRadarDays)
+ * @property {string[]} expectedCas ct: the CAs expected to issue (lib/expectedca.js entries; none: no issuer is unexpected)
  * @property {string|null} origin drift: the zone name
  * @property {boolean} includeOrigins drift: keep origin addresses in the reports
  * @property {number} maxQueries drift: query budget
@@ -213,6 +221,42 @@ export function resolverChain(value) {
     }
   }
   return ids;
+}
+
+/**
+ * `--radar 30,14,7`: the expiry radar's thresholds (lib/ctwatch.js parseRadarDays: whole days 1 …
+ * 398, at most 5, largest first, duplicates dropped); the app's 30, 14, 7 without it.
+ * @param {string|undefined} value
+ * @returns {number[]}
+ */
+export function radarOption(value) {
+  if (value === undefined) return [...DS_DEFAULT_RADAR];
+  const days = parseRadarDays(value);
+  if (!days) {
+    throw new UsageError(`--radar takes up to ${CT_WATCH_MAX_THRESHOLDS} whole numbers of days from 1 to ${CT_WATCH_MAX_DAYS}, separated by commas (for example 30,14,7), not "${value}"`);
+  }
+  return days;
+}
+
+/**
+ * `--expected-ca CA` (repeatable, one CA each: a CA's name, its id or CAA domain, or part of a private
+ * CA's name — lib/expectedca.js): trimmed, whitespace collapsed, duplicates dropped, as a workspace
+ * keeps its expected CAs (lib/workspace.js sanitizeExpectedCas). An empty one, one longer than a
+ * workspace takes or more than a workspace holds is refused: a list cut short would make issuers
+ * unexpected.
+ * @param {string[]|undefined} values
+ * @returns {string[]}
+ */
+export function expectedCaOption(values) {
+  const list = values || [];
+  for (const raw of list) {
+    const text = String(raw).trim();
+    if (!text) throw new UsageError('--expected-ca needs a CA: a name, id or CAA domain (letsencrypt.org), or part of a private CA\'s name');
+    if (text.length > WORKSPACE_LIMITS.expectedCa) throw new UsageError(`--expected-ca takes at most ${WORKSPACE_LIMITS.expectedCa} characters, not ${text.length}`);
+  }
+  const distinct = new Set(list.map((s) => String(s).normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase()));
+  if (distinct.size > WORKSPACE_LIMITS.expectedCas) throw new UsageError(`--expected-ca: at most ${WORKSPACE_LIMITS.expectedCas} CAs, not ${distinct.size}`);
+  return sanitizeExpectedCas(list.map(String));
 }
 
 /** A comma-separated list of source ids, each in `allowed`. */
@@ -346,6 +390,8 @@ export function parseCommandLine(argv) {
   if (command === 'ct') {
     options.days = intOption(v.days, 'days', 1, DS_MAX_DAYS, DS_DEFAULT_DAYS);
     options.sources = sourceList(v.sources, [...CT_SOURCES], 'sources');
+    options.radar = radarOption(v.radar);
+    options.expectedCas = expectedCaOption(v['expected-ca']);
   }
   if (command === 'drift') {
     if (v.origin !== undefined) {
@@ -416,7 +462,7 @@ function defaults() {
   return {
     json: null, md: null, baseline: null, failOnChange: false, chain: [...NODE_CHAIN], chainGiven: false,
     concurrency: DEFAULT_SETTINGS.concurrency, lists: [], quiet: false, noColor: false, showAll: false,
-    exact: null, level: DS_DEFAULT_LEVEL, sources: null, days: DS_DEFAULT_DAYS,
+    exact: null, level: DS_DEFAULT_LEVEL, sources: null, days: DS_DEFAULT_DAYS, radar: [...DS_DEFAULT_RADAR], expectedCas: [],
     origin: null, includeOrigins: false, maxQueries: DRIFT_DEFAULT_BUDGET, ca: null, challenge: 'unknown',
     policy: null, preset: null, dkim: true
   };
@@ -439,8 +485,16 @@ commands:
       [--origin ZONE]            the zone name, when the file does not say it for sure
       [--max-queries N]          query budget (default ${DRIFT_DEFAULT_BUDGET}, at most ${DRIFT_MAX_BUDGET})
       [--include-origins]        keep the origin addresses behind proxied names in the reports
-  ct DOMAIN...                   current certificates from Certificate Transparency, their issuers
+  ct DOMAIN...                   current certificates from Certificate Transparency, their issuers,
+                                 and the Domain portfolio's CT watch: the expiry radar, new since
+                                 the last run (--baseline), unexpected CA, wildcard, precertificate
+                                 only
       [--days N]                 "recent" issuances: the last N days (default ${DS_DEFAULT_DAYS})
+      [--radar D,D,...]          the expiry radar in days left (default ${DS_DEFAULT_RADAR.join(',')}; up to
+                                 ${CT_WATCH_MAX_THRESHOLDS}, each 1-${CT_WATCH_MAX_DAYS}): a current certificate crossing one is EXPIRING
+      [--expected-ca CA]...      a CA you expect: its name, id or CAA domain (letsencrypt.org), or
+                                 part of a private CA's name; repeatable. Any other issuer is an
+                                 unexpected CA
       [--sources crtsh,certspotter]
   renew NAME...                  Renewal readiness: will the next ACME renewal validate?
       [--ca ID] [--challenge http-01|dns-01|tls-alpn-01|unknown]
@@ -486,6 +540,15 @@ what is sent: names and record types to the DoH resolvers (renew also asks Cloud
   behind a click. audit asks the DoH resolvers and RDAP (the registry's server from the IANA
   bootstrap; rdap.org only as the fallback, one request a second), each name server domain once.
 
+ct watch: each domain's report keeps the ids of the certificates seen (the next run's baseline,
+  as the app's workspace keeps them), so a run with --baseline marks what was logged since. A
+  new certificate from an unexpected CA counts (CA), and so does a current certificate - the
+  newest of its names - crossing a radar threshold (EXPIRING) once an automatic renewal is
+  overdue: with less than a quarter of its lifetime left (ACME clients renew at a third; a
+  crossing before that is listed only), and the certificate in use being revoked (REVOKED).
+  Cert Spotter's answers say which certificates are logged only as a precertificate; crt.sh's
+  do not.
+
 exit codes: 0 done, 1 the run failed (an unexpected error, printed), 2 usage error (report
   files that cannot be written or that are one of the run's input files, and a baseline that
   cannot be compared, are refused before the run), 3 a report file could not be written
@@ -498,6 +561,7 @@ examples:
   node tools/ds.mjs health example.com example.org --json health.json --md health.md
   node tools/ds.mjs subdomains example.com --baseline subs.json --json subs.json --fail-on-change
   node tools/ds.mjs ct --list domains.txt --json ct.json --baseline ct.json
+  node tools/ds.mjs ct example.com --expected-ca letsencrypt --expected-ca digicert --radar 21,7
   node tools/ds.mjs drift example.com.zone --origin example.com --md drift.md
   node tools/ds.mjs renew example.com '*.example.com' --ca letsencrypt --challenge dns-01
   node tools/ds.mjs dane fullchain.pem

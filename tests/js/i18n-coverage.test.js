@@ -58,6 +58,8 @@ before(async () => {
   await imp('assets/js/ui/related-domains.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
+  // IP Intel › a row's details › Blocklists: loaded when a row's details first open.
+  await imp('assets/js/ui/dnsbl-panel.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -402,6 +404,8 @@ describe('i18n coverage', () => {
     for (const e of omp.FORM_ERRORS) add(`omp.err.${e}`);
     for (const e of estate.REPORT_ERRORS) add(`omp.file.${e}`);
     for (const v of ['known']) { add(`scan.srv.via.${v}`); add(`scan.hint.${v}`); add(`sub.hint.${v}`); }
+    // IP Intel › Blocklists (ui/dnsbl-panel.js over lib/dnsbl.js): every status, refusal, error, skip and meaning.
+    for (const k of (await imp('assets/js/ui/dnsbl-panel.js')).generatedKeys()) add(k);
     assert.deepEqual(missingIn(keys), []);
   });
 

@@ -1455,12 +1455,16 @@ def extra_row(asker: Asker, name: str, rtype: str) -> Optional[Row]:
 
 def run_parity(zone: Zone, nameservers: Sequence[NameServer], timeout: float = DEFAULT_TIMEOUT,
                workers: int = DEFAULT_WORKERS, tcp: bool = False, extras: bool = True,
-               source: str = '', query: Any = query_dns, progress: Any = None) -> ParityReport:
+               source: str = '', query: Any = query_dns, progress: Any = None,
+               given: Optional[Sequence[NameServer]] = None) -> ParityReport:
     """Compare every record set of ``zone`` with every name server (each asked for its SOA
-    first; a server that does not serve the zone is not asked anything else)."""
+    first; a server that does not serve the zone is not asked anything else). ``given``: the
+    servers as given, when host names that share one address were merged into one server: the
+    apex NS set should still hold each of those names."""
     asked, skipped = plan_rrsets(zone)
-    ns_names = [ns.host for ns in nameservers if ns.host]
-    if len(ns_names) != len(nameservers):
+    given = list(given or nameservers)
+    ns_names = [ns.host for ns in given if ns.host]
+    if len(ns_names) != len(given):
         ns_names = []   # a server given by address: which names the set should hold is not known
     rows = []  # type: List[Row]
     extra_q = extra_questions(zone) if extras else []
@@ -1830,9 +1834,10 @@ def _run(args: argparse.Namespace) -> int:
             print('warning: ... and %d more' % (len(zone.warnings) - 25), file=err)
     if not zone.records:
         raise UsageError('no records of %s in %s' % (zone.origin, args.zonefile))
-    nameservers = []  # type: List[NameServer]
+    nameservers, given = [], []  # type: List[NameServer], List[NameServer]
     for value in values:
         ns = parse_nameserver(value, args.port)
+        given.append(ns)
         if all((n.address or n.label, n.port) != (ns.address or ns.label, ns.port) for n in nameservers):
             nameservers.append(ns)
     unresolved = [ns for ns in nameservers if not ns.address]
@@ -1853,7 +1858,7 @@ def _run(args: argparse.Namespace) -> int:
             err.flush()
 
     report = run_parity(zone, nameservers, timeout=args.timeout, workers=args.workers, tcp=args.tcp,
-                        extras=not args.no_extras, source=args.zonefile, progress=progress)
+                        extras=not args.no_extras, source=args.zonefile, progress=progress, given=given)
     failed = False
     for path, text, encoding in ((args.json, json.dumps(report_to_dict(report), indent=2) + '\n', 'utf-8'),
                                  (args.csv, None, 'utf-8-sig')):

@@ -669,6 +669,19 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(code3, 0)
         self.assertEqual(json.loads(out3)['zone'], 'example.com', 'only the JSON on stdout')
 
+    def test_host_names_that_share_one_address_are_asked_once_and_both_expected_at_the_apex(self):
+        server = FakeAuthority('example.com', GOOD, cuts=DEV_CUT)
+        try:
+            code, out, _ = run_main(self.zone, '--ns', server.ns('ns1.example.net'), server.ns('ns2.example.net'),
+                                    '--json', '-', '-q', '--no-extras')
+        finally:
+            server.close()
+        doc = json.loads(out)
+        self.assertEqual([ns['name'] for ns in doc['nameservers']], ['ns1.example.net'], 'one server, asked once')
+        apex = [(r['status'], r['notes']) for r in doc['rows'] if (r['name'], r['type']) == ('example.com', 'NS')]
+        self.assertEqual(apex, [('SAME', ['ns-new'])])
+        self.assertEqual(code, 0)
+
     def test_unproxied_and_extra_are_check_as_in_the_web_app_and_still_fail_the_check(self):
         # A proxied record answered with its origin and a parking address at the apex: nothing
         # missing or different, so the verdict is 'check' (the web app's); --fail-on-diff fails.

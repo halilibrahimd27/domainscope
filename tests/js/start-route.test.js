@@ -81,6 +81,10 @@ const JS = join(ASSETS, 'js');
  * lib/palette.js and palette.css load on its first use: 401 bytes.
  * With every wave 6 feature merged (the workspace's Rollout part and the provider ranges' precache
  * skip in lib/pwa.js included): ≈ 333 KB (340,510 bytes), 38,370 bytes under the budget.
+ * With wave 7 merged: ≈ 334 KB (342,523 bytes), 36,357 bytes under the budget. The adaptive locale packs'
+ * hooks in lib/wordlist.js, lib/dnsmine.js, lib/scanplan.js and the Subdomains view added 2,013 bytes; their
+ * panel (ui/locale-evidence.js) loads with the run header of a scan, and DNS Lookup's Explain and Global DNS's
+ * name server probe load on first use too.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

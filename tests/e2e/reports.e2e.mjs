@@ -406,6 +406,35 @@ async function main() {
       await page.waitFor(() => /example\.com/.test(document.querySelector('.rpt-head .card-title')?.textContent || ''), { message: 'back to example.com' });
     });
 
+    await run.step('offline, the domain picker there and back: an SPF checked before stays checked, nothing is sent', async () => {
+      const offline = (on) => page.send('Network.emulateNetworkConditions', { offline: on, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+      const pick = async (domain) => {
+        await page.evaluate((d) => {
+          const sel = document.querySelector('.rpt-domain select');
+          sel.value = d;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }, domain);
+        await page.waitFor((d) => (document.querySelector('.rpt-head .card-title')?.textContent || '').includes(d), { args: [domain], message: domain });
+      };
+      await page.waitFor(() => document.querySelector('.rpt-spf')?.dataset.state === 'ok', { message: 'example.com checked' });
+      const before = await counts(page);
+      await offline(true);
+      try {
+        await page.waitFor(() => navigator.onLine === false, { message: 'offline' });
+        await pick('example.net');
+        await pick('example.com');
+        const line = await page.evaluate(() => ({
+          state: document.querySelector('.rpt-spf')?.dataset.state,
+          note: !!document.querySelector('.rpt-notes [data-note="spf-unknown"]')
+        }));
+        assertEqual(line, { state: 'ok', note: false }, 'the SPF line and the notes of example.com');
+        assertEqual(await counts(page), before, 'nothing sent');
+      } finally {
+        await offline(false);
+      }
+      await page.waitFor(() => navigator.onLine === true, { message: 'online' });
+    });
+
     await run.step('the reports are kept: back through the nav link they show again with no new query', async () => {
       const before = await counts(page);
       await gotoRoute(page, 'lookup');

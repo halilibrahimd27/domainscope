@@ -930,13 +930,23 @@ export function mount(container, ctx) {
     if (!agg) return;
     const domain = agg.domain;
     if (!force && S.spfState.get(domain) === 'loading') return;
-    if (!(loud ? ctx.requireOnline() : ctx.requireOnline({ quiet: true }))) {
-      S.spfState.set(domain, 'offline');
-      refreshDmarc();
+    const missing = spfDomainsFor(agg).filter((d) => !S.spf.has(d));
+    const wanted = force ? spfDomainsFor(agg) : missing;
+    // Every SPF record the classes need is in memory (checked before going offline): none is "not checked".
+    if (!wanted.length) {
+      if (S.spfState.get(domain) === 'offline') {
+        S.spfState.set(domain, 'done');
+        refreshDmarc();
+      }
       return;
     }
-    const wanted = spfDomainsFor(agg).filter((d) => force || !S.spf.has(d));
-    if (!wanted.length) return;
+    if (!(loud ? ctx.requireOnline() : ctx.requireOnline({ quiet: true }))) {
+      if (missing.length) {
+        S.spfState.set(domain, 'offline');
+        refreshDmarc();
+      }
+      return;
+    }
     const mine = S;
     mine.spfState.set(domain, 'loading');
     refreshDmarc();

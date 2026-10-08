@@ -976,9 +976,13 @@ function terraformCloudflareText(req) {
   return `${out.join('\n')}\n`;
 }
 
-/** An aws_route53_record value: TXT strings over 255 bytes joined with `""` (the provider's split). */
+/**
+ * An aws_route53_record value. The provider wraps a TXT value in quotes as it is, so each string
+ * is written as Route 53 reads it (the change batch's escapes, without the outer quotes), and
+ * strings over 255 bytes are joined with `""` (the provider's split).
+ */
 function awsValue(type, v) {
-  if (type === 'TXT') return arr(v).join('""');
+  if (type === 'TXT') return arr(v).map((s) => route53String(s).slice(1, -1)).join('""');
   if (type === 'CAA') return `${v.flags} ${v.tag} "${v.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   return route53Value(type, v);
 }

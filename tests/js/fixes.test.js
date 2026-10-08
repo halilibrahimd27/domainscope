@@ -350,6 +350,15 @@ describe('formats', () => {
     assert.match(renderFix(long, 'terraform-route53'), /records = \["b{255}\\"\\"b{45}"\]/);
   });
 
+  test('aws_route53_record writes a TXT string as Route 53 reads it, like the change batch: " and \\ escaped, non-ASCII in octal', () => {
+    const r = buildChange('record', { name: 'x.example.com', type: 'TXT', values: '"say \\"hi\\" path=C:\\\\tmp café"' });
+    const batch = JSON.parse(renderFix(r, 'route53')).Changes[0].ResourceRecordSet.ResourceRecords[0].Value;
+    assert.equal(batch, '"say \\"hi\\" path=C:\\\\tmp caf\\303\\251"');
+    // The provider wraps the HCL string in quotes as it is and sends that: the change batch's value.
+    const tf = renderFix(r, 'terraform-route53').match(/records = \[(".*")\]/)[1];
+    assert.equal(`"${JSON.parse(tf)}"`, batch);
+  });
+
   test('octoDNS escapes ; in TXT values and quotes YAML specials; the apex is \'\'', () => {
     const r = buildChange('record', { name: 'example.com', type: 'TXT', values: "v=DMARC1; p=none; it's" });
     const y = renderFix(r, 'octodns');

@@ -93,7 +93,7 @@ resource "aws_route53_record" "txt_quote" {
   name    = "quote.example.com"
   type    = "TXT"
   ttl     = 3600
-  records = ["a \"quoted\" \\ back|slash ^ caret; semi 'single' café"]
+  records = ["a \\\"quoted\\\" \\\\ back|slash ^ caret; semi 'single' caf\\303\\251"]
 }
 ## en
 DNS change request: example.com

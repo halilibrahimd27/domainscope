@@ -23,11 +23,18 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 from typing import Dict, List, Optional, Tuple
 
-from test_ssl_origin_scan import FIXTURES, _Listener, fixture_cert, read_json, run_main, sos
+from test_ssl_origin_scan import FIXTURES, _Listener, fixed_clock, fixture_cert, read_json, run_main, sos
 
 NAME = 'a.wild.example.net'
 PRIVATE_CA = str(FIXTURES / 'cli_private_ca.pem')
 PAGE = b'<!doctype html><html><head><title>Example &amp; Co</title></head><body>hello</body></html>'
+
+
+def setUpModule():
+    # the fixtures expire on 2050-01-01: the comparison reads the suite's fixed clock, never today's
+    patcher = fixed_clock()
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
 
 
 class HttpsServer(_Listener):

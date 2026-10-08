@@ -74,9 +74,25 @@ def read_json(path: str):
         return json.load(handle)
 
 
-def run_main(*args: str) -> Tuple[int, str, str]:
+def fixed_clock(now: datetime = NOW):
+    """Hold the CLI's clock (``_utcnow``) at ``now``: what code reads when a test gives it no ``now``.
+
+    The fixture certificates expire on fixed dates (2034 to 2052), so a test that reads the real
+    clock goes red one day without any change; ``run_main`` and ``sample_report`` run on this one.
+    """
+    return mock.patch.object(sos, '_utcnow', return_value=now)
+
+
+def run_main(*args: str, now: Optional[datetime] = NOW) -> Tuple[int, str, str]:
+    """``sos.main(args)`` with its output captured, on the suite's fixed clock.
+
+    ``now`` is the instant the CLI reads (the real clock with ``now=None``); a clock a test has
+    patched itself is left alone.
+    """
     out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    own_clock = isinstance(sos._utcnow, mock.NonCallableMock)
+    clock = fixed_clock(now) if now is not None and not own_clock else contextlib.nullcontext()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), clock:
         code = sos.main(list(args))
     return code, out.getvalue(), err.getvalue()
 
@@ -1949,9 +1965,10 @@ def sample_report():
                sos.Server('partial', ['10.0.0.7'])]               # old default cert
     probes = sos.build_probe_names(['a.wild.example.net', 'b.wild.example.net',
                                     'www.example-test.com.tr'])
-    report = sos.run_scan(servers, probes, [443], new_certs=[renewed], timeout=1, workers=4,
-                          connect_fn=network.connect_fn, tls_fn=network.tls_fn,
-                          warnings=['example warning'])
+    with fixed_clock():
+        report = sos.run_scan(servers, probes, [443], new_certs=[renewed], timeout=1, workers=4,
+                              connect_fn=network.connect_fn, tls_fn=network.tls_fn,
+                              warnings=['example warning'])
     return report
 
 

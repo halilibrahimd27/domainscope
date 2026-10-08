@@ -22,13 +22,20 @@ import unittest
 from datetime import datetime, timezone
 from typing import List
 
-from test_ssl_origin_scan import FIXTURES, NOW, fixture_bytes, fixture_cert, run_main, sos
+from test_ssl_origin_scan import FIXTURES, NOW, fixed_clock, fixture_bytes, fixture_cert, run_main, sos
 
 LEAF = fixture_cert('bundle_leaf.pem')
 INTER = fixture_cert('bundle_inter.pem')
 ROOT_CA = fixture_cert('bundle_root.pem')
 EC_LEAF = fixture_cert('bundle_ec_leaf.pem')
 SELF_CA = fixture_cert('bundle_selfsigned_ca.pem')
+
+
+def setUpModule():
+    # the fixtures expire on 2050-01-01: every check here reads the suite's fixed clock, never today's
+    patcher = fixed_clock()
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
 
 
 def items(*names: str) -> List:

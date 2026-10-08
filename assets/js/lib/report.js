@@ -174,9 +174,9 @@ export const REPORT_CSS = [
   '.rpt-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 20px}',
   '.rpt-head{display:flex;flex-direction:column;gap:10px}',
   '.rpt-kicker{color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}',
-  '.rpt-subject{font-size:26px;line-height:1.2;font-weight:700}',
+  '.rpt h1.rpt-subject{font-size:26px;line-height:1.2;font-weight:700}',
   '.rpt-sub{color:var(--text-2)}',
-  '.rpt-meta{border-collapse:collapse;font-size:13px}',
+  '.rpt-meta{align-self:flex-start;border-collapse:collapse;font-size:13px}',
   '.rpt-meta th{color:var(--muted);font-weight:500;text-align:left;padding:2px 16px 2px 0;vertical-align:top;white-space:nowrap}',
   '.rpt-meta td{padding:2px 0}',
   '.rpt-verdict{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;border:1px solid var(--border);border-left-width:4px;border-radius:8px;padding:12px 14px}',
@@ -547,7 +547,7 @@ export function domainReport(input, opts) {
       const s = card.saas;
       if (!s) return {};
       return {
-        rows: [row(t('dov.card.saas'), s.vendors.length ? s.vendors.map((v) => (v.count > 1 ? t('dov.saas.chip', { name: v.name, count: v.count }) : v.name)).join(', ') : t('dov.saas.none'))],
+        rows: [row(t('rpt.services'), s.vendors.length ? s.vendors.map((v) => (v.count > 1 ? t('dov.saas.chip', { name: v.name, count: v.count }) : v.name)).join(', ') : t('dov.saas.none'))],
         notes: [s.other ? note(null, t('dov.saas.other', { count: s.other })) : null, note(null, t('dov.saas.note'))].filter(Boolean)
       };
     },
@@ -829,6 +829,7 @@ export const REPORT_I18N = Object.freeze({
     'rpt.count.ok': { one: '{count} passed', other: '{count} passed' },
     'rpt.counts': 'Checks',
     'rpt.verdict': 'Verdict',
+    'rpt.services': 'Verified by TXT',
     'rpt.na': '⚠ n/a — {reason}',
     'rpt.lookupFailed': 'the lookup failed',
     'rpt.none': 'none',
@@ -895,6 +896,7 @@ export const REPORT_I18N = Object.freeze({
     'rpt.count.ok': '{count} geçti',
     'rpt.counts': 'Kontroller',
     'rpt.verdict': 'Sonuç',
+    'rpt.services': 'TXT ile doğrulayanlar',
     'rpt.na': '⚠ alınamadı — {reason}',
     'rpt.lookupFailed': 'sorgu başarısız oldu',
     'rpt.none': 'yok',

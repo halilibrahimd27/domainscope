@@ -231,6 +231,22 @@ The **Retire an IP** view (`#/retire`, under IP addresses) takes addresses or a 
 
 SPF follows the include path, and the first match of a policy decides: a carve-out such as `-ip4:` in front of a wider range is kept, a term an earlier one shadows is still to be removed, and an `a/24` or `mx/24` that reaches the address only through its CIDR length is to be narrowed; a macro such as `%{i}` reads "cannot tell". The change list is grouped by domain, worst first (breaks mail, breaks DNS, address record, proxy origin, CNAME chain, zone file only, stale), with what to change and the evidence; your server list says which server owns the address. A failed lookup, a stopped check or a domain that does not exist (a typo?) never reads as "nothing points here". **Find other names on the address** asks HackerTarget and ip.thc.org reverse IP, only on a click (the request count and the free quota are written next to the button, and a list cut off after one page is said); their names stay "unverified until checked" until **Check these too**. Export CSV or JSON, or Copy summary.
 
+### Reverse IP from inside your network: the CLI
+
+[`cli/ip_intel.py`](cli/ip_intel.py) finds the names an address serves or served, from your machine, for one address, a CIDR range (up to `--max`, a /22 by default) or a file of them. It reads the certificate each address serves on `--ports` (443) without SNI and again with the SNI of the names found, its PTR through the system resolver, the free passive sources (HackerTarget, AlienVault OTX, Robtex, Shodan InternetDB, and mnemonic, which sends no CORS headers, so no browser can ask it) and, when you set their keys in the environment, SecurityTrails, VirusTotal, Shodan, Censys, ViewDNS, WhoisXML API and Netlas. A private or reserved address gets TLS and PTR only: it goes to no third party. Each name comes with its sources, the first and last date a source saw it, whether the address serves a certificate for it, and where it points now (HERE, MOVED, NO_ADDRESS); a source that fails is written as its status (RATE_LIMITED, REFUSED, TIMEOUT, ERROR), and one that rate-limits or refuses is not asked again in the run. Python 3.8+, no packages, a file of its own.
+
+```bash
+curl -O https://halilibrahimd27.github.io/domainscope/cli/ip_intel.py
+python3 ip_intel.py domains 203.0.113.10
+# a range inside your network, TLS on two ports, nothing sent to a third party
+python3 ip_intel.py domains 10.0.0.0/24 -p 443,8443 --no-passive --no-keys
+# keys from the environment only (never on the command line, never printed); reports for scripts
+VT_API_KEY=... SECURITYTRAILS_API_KEY=... python3 ip_intel.py domains ips.txt --json names.json --csv names.csv
+python3 ip_intel.py sources   # which sources run, and which keys are set
+```
+
+Exit codes: 0 done, 1 a source failed for an address (only with `--fail-on-error`), 2 usage error, 3 a report not written, 130 interrupted.
+
 ## DNS change requests and fixes
 
 `#/change` (DNS tools) builds a change request from a template and a form: an ACME DNS-01 TXT record (paste the name your ACME client prints, `_acme-challenge.` included), a CNAME delegation of `_acme-challenge`, Microsoft 365 or Google Workspace mail records, CAA for your CAs (optionally only your ACME account, `accounturi`, and chosen `validationmethods`), an SPF include added or removed, a DMARC step-up, TTLs lowered before a migration, one plain A / AAAA / CNAME / TXT / MX / CAA set, or **Lock down a parked domain** (null MX, `v=spf1 -all`, DMARC `p=reject`, CAA `issue ";"`). Nothing is sent while you type, and the form and every output work offline. Mistakes are listed with the Zone File's wording before anything is written out: a CNAME next to other records, a second SPF record, an SPF record over 10 lookups, a CAA value no CA can satisfy, an ACME token of the wrong shape. The outputs: instructions for the DNS admin in English or Turkish (Add / Replace / Delete / Change the TTL, the name, the values, what goes), BIND, a Route 53 change batch, a Cloudflare API script (it reads `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ZONE_ID` from your shell and never contains a token), octoDNS YAML and Terraform (`cloudflare_record`, `aws_route53_record`). A TXT change is scoped to its kind of record: changing the SPF record never touches the site verifications next to it. The form is in the link (`#/change?t=caa&domain=example.com&cas=letsencrypt`).
@@ -467,6 +483,7 @@ tools/ds.mjs             the headless runner (Node 22+): health, subdomains, dri
 tools/ds/                its command line, the seven checks, "Changes since the baseline" and the summaries (not in the Pages bundle)
 cli/ssl_origin_scan.py   companion CLI (stdlib only): the scan, --estate, bundle-check and --compare
 cli/dns_parity.py        a DNS provider move: a zone file against the new name servers (stdlib only)
+cli/ip_intel.py          reverse IP from inside your network: TLS, PTR, passive DNS and your own keys (stdlib only)
 tests/js/                node:test unit tests (no network), incl. a repo-hygiene check for real IPs
 tests/python/            CLI tests, including local TLS servers with SNI and a local UDP / TCP DNS server
 tests/e2e/               headless Chrome E2E via the DevTools protocol (no dependencies)

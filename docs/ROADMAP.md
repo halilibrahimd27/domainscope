@@ -24,7 +24,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
   - [P0.11 World map + relationship graph + aggregate mini-bars (inline SVG, vendored)](#p011-world-map--relationship-graph--aggregate-mini-bars-inline-svg-vendored)
   - [P0.12 Universal search, command palette and keyboard shortcuts](#p012-universal-search-command-palette-and-keyboard-shortcuts) — **keyboard shortcuts shipped**
   - [P0.13 Health v2: score, problems-first, fix advice, Web category](#p013-health-v2-score-problems-first-fix-advice-web-category)
-  - [P0.14 Share snapshot link + customer report (print/PDF + self-contained HTML)](#p014-share-snapshot-link--customer-report-printpdf--self-contained-html) — **print stylesheet shipped**
+  - [P0.14 Share snapshot link + customer report (print/PDF + self-contained HTML)](#p014-share-snapshot-link--customer-report-printpdf--self-contained-html) — **shipped**
 - **Next up:** adaptive locale packs (see [P1.9](#p19-permutation-discovery-from-found-names-multi-level-wildcard-filtering): the library is ready but not wired in), then the P1.2 follow-ups listed under its status.
 - **P1** — next
   - [P1.1 Source status, quota meter and optional user keys](#p11-source-status-quota-meter-and-optional-user-keys) — **partly shipped**
@@ -301,6 +301,8 @@ Behaviour: rework Domain Health presentation — a percentage score bar + catego
 ### P0.14 Share snapshot link + customer report (print/PDF + self-contained HTML)
 
 id `share-and-report` · where: **browser** · effort: **M**
+
+**Status (2026-10-08): the self-contained HTML customer report and Print / save as PDF shipped (wave 6).** `lib/report.js` (DOM-free) builds the report from a Domain overview or Domain Health result — the problems with their advice first, then the cards (Domain Health’s notes, passed checks and records read), the result’s and the report’s UTC times, the tool version and what was checked, in the UI language; one file with its CSS inline, no script and a strict CSP, every DNS / RDAP / CT value through one unit-tested `escapeHtml`. `ui/report-button.js` adds **Report** to each view (one call, the panel and builder loaded on the first click); `ui/report.js` offers Download HTML (`ui/download.js`) and Print / save as PDF (a shadow-root print host with a constructed stylesheet, no inline `<style>` under the app’s CSP). The snapshot link became the view’s permalink — `reportLinkParams` carries only the inputs (the domain, Health’s DKIM selectors), never a result, a record or workspace data — so `lib/snapshot.js` and the compressed `#/snap/` blob below were not built: whoever opens it runs the check again with their own requests. SPEC §5.88.
 
 **Status (2026-09-28): the print stylesheet shipped in wave 2.** `@media print` gives paper the light palette in either theme, hides the navigation, forms and buttons, opens every disclosure on `beforeprint` and adds a header with the page title, the UTC time and the result's permalink. Copy summary (Markdown / plain text for Jira and Slack) shipped with it. The snapshot link and the self-contained HTML report are still open.
 

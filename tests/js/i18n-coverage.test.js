@@ -75,6 +75,8 @@ before(async () => {
   await imp('assets/js/ui/dnssec-panel.js');
   // Domain overview › Lookalike domains: loaded on the first click of Find lookalikes.
   await imp('assets/js/ui/lookalike-panel.js');
+  // The customer report panel (Domain overview and Domain Health › Report): loaded on its first click.
+  await imp('assets/js/ui/report.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));

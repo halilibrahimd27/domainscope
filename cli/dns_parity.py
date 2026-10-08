@@ -26,6 +26,7 @@ render_csv() and main() are the public API.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import io
 import ipaddress
@@ -88,12 +89,15 @@ TYPE_CODES = {
     'A': 1, 'NS': 2, 'CNAME': 5, 'SOA': 6, 'PTR': 12, 'MX': 15, 'TXT': 16, 'AAAA': 28, 'SRV': 33,
     'NAPTR': 35, 'DS': 43, 'SSHFP': 44, 'RRSIG': 46, 'NSEC': 47, 'DNSKEY': 48, 'NSEC3': 50,
     'NSEC3PARAM': 51, 'TLSA': 52, 'SMIMEA': 53, 'CDS': 59, 'CDNSKEY': 60, 'OPENPGPKEY': 61,
-    'SVCB': 64, 'HTTPS': 65, 'SPF': 99, 'CAA': 257, 'DNAME': 39, 'OPT': 41, 'LOC': 29,
+    'SVCB': 64, 'HTTPS': 65, 'SPF': 99, 'CAA': 257, 'DNAME': 39, 'OPT': 41, 'LOC': 29, 'URI': 256,
 }
 TYPE_NAMES = {code: name for name, code in TYPE_CODES.items()}
-# The types this script compares value by value; any other type is SKIPPED (not compared).
-COMPARED_TYPES = ('A', 'AAAA', 'CNAME', 'NS', 'PTR', 'DNAME', 'MX', 'TXT', 'SPF', 'SRV', 'CAA',
-                  'TLSA', 'SMIMEA', 'SSHFP', 'DS', 'CDS')
+# SvcParamKeys by number (RFC 9460, 9461, 9540 and tls-supported-groups, as lib/dnswire.js);
+# any other key is keyN.
+SVC_KEYS = ('mandatory', 'alpn', 'no-default-alpn', 'port', 'ipv4hint', 'ech', 'ipv6hint', 'dohpath',
+            'ohttp', 'tls-supported-groups')
+# LOC's size and precisions when the file leaves them out: 1m, 10000m, 10m (RFC 1876).
+LOC_DEFAULTS = (0x12, 0x16, 0x13)
 # Signed live by the provider: never compared with an export.
 DNSSEC_TYPES = ('RRSIG', 'NSEC', 'NSEC3', 'NSEC3PARAM', 'DNSKEY', 'CDNSKEY')
 # Asked at every name of the file that has none of them, to find EXTRA records.
@@ -443,9 +447,13 @@ def parse_zone(text: str, origin: Optional[str] = None, source: str = '') -> Zon
         if rtype == 'AWS' and toks and toks[0].text.upper() == 'ALIAS':
             alias = toks[1].text.upper() if len(toks) > 1 else 'A'
             rtype = 'ALIAS'
-        elif rtype not in TYPE_CODES and not re.match(r'^TYPE\d{1,5}$', rtype):
-            warnings.append('line %d: unknown record type %s' % (entry.line, rtype))
-            continue
+        elif rtype not in TYPE_CODES:
+            code = int(rtype[4:]) if re.match(r'^TYPE\d{1,5}$', rtype) else 0
+            if not 0 < code < 65536:
+                warnings.append('line %d: unknown record type %s' % (entry.line, rtype))
+                continue
+            # RFC 3597's TYPEnnn: a known type by its name, as the servers' answers say it.
+            rtype = TYPE_NAMES.get(code, 'TYPE%d' % code)
         if ttl is None:
             ttl = default_ttl if default_ttl is not None else last_ttl
         if rtype == 'SOA' and zone_origin is None:
@@ -516,6 +524,180 @@ def _hex(tokens: Sequence[Token]) -> str:
     return text
 
 
+def _generic(tokens: Sequence[Token]) -> bytes:
+    """RFC 3597's ``\\# length hex`` as the rdata bytes."""
+    data = bytes.fromhex(_hex(tokens[2:]))
+    if len(data) != int(tokens[1].text):
+        raise ValueError('\\# %s: not the length of the data' % tokens[1].text)
+    return data
+
+
+def _u16(text: str) -> int:
+    value = int(text)
+    if not 0 <= value < 65536:
+        raise ValueError('not a 16-bit number: %s' % text)
+    return value
+
+
+def _value_list(data: bytes) -> List[bytes]:
+    """An RFC 9460 value-list, its character-string escapes undone: the items between commas,
+    a backslash keeping the byte after it (``\\,`` a comma in an item)."""
+    items, item, i = [], bytearray(), 0  # type: List[bytes], bytearray, int
+    while i < len(data):
+        if data[i] == 0x5c and i + 1 < len(data):
+            item.append(data[i + 1])
+            i += 2
+            continue
+        if data[i] == 0x2c:
+            items.append(bytes(item))
+            item = bytearray()
+        else:
+            item.append(data[i])
+        i += 1
+    return items + [bytes(item)]
+
+
+def _svc_code(name: str) -> int:
+    if name in SVC_KEYS:
+        return SVC_KEYS.index(name)
+    match = re.match(r'^key(\d{1,5})$', name)
+    if not match or int(match.group(1)) > 65535:
+        raise ValueError('unknown SvcParamKey %s' % name)
+    return int(match.group(1))
+
+
+def _svc_name(code: int) -> str:
+    return SVC_KEYS[code] if code < len(SVC_KEYS) else 'key%d' % code
+
+
+def _svc_wire(code: int, value: Optional[bytes]) -> bytes:
+    """A SvcParam's presentation value (``None`` for a key written alone) as its wire bytes."""
+    if code in (2, 7, 8) or code >= len(SVC_KEYS):
+        if code in (2, 8) and value:
+            raise ValueError('%s takes no value' % SVC_KEYS[code])
+        return value or b''
+    if value is None:
+        raise ValueError('%s needs a value' % SVC_KEYS[code])
+    if code == 1:
+        alpn = _value_list(value)
+        if not all(0 < len(item) < 256 for item in alpn):
+            raise ValueError('an empty or too long alpn')
+        return b''.join(bytes([len(item)]) + item for item in alpn)
+    if code == 5:
+        return base64.b64decode(value, validate=True)
+    items = [item.decode('ascii') for item in _value_list(value)]
+    if code == 0:
+        return b''.join(struct.pack('!H', _svc_code(item)) for item in items)
+    if code == 4:
+        return b''.join(ipaddress.IPv4Address(item).packed for item in items)
+    if code == 6:
+        return b''.join(ipaddress.IPv6Address(item).packed for item in items)
+    if code == 3 and len(items) != 1:
+        raise ValueError('one port')
+    return b''.join(struct.pack('!H', _u16(item)) for item in items)
+
+
+def _svc_canon(code: int, data: bytes) -> bytes:
+    """A SvcParam value as both sides compare it: the IP hints and mandatory keys sorted."""
+    size = {0: 2, 4: 4, 6: 16}.get(code)
+    if not size or len(data) % size:
+        return data
+    return b''.join(sorted(data[i:i + size] for i in range(0, len(data), size)))
+
+
+def _svc_text(key: Tuple[Any, ...]) -> str:
+    """SVCB / HTTPS as dig prints it: priority, target, the SvcParams in key order."""
+    parts = ['%d %s.' % (key[0], key[1])]
+    for code, data in key[2]:
+        size = {0: 2, 3: 2, 4: 4, 6: 16, 9: 2}.get(code, 0)
+        chunks = [data[i:i + size] for i in range(0, len(data), size)] if size and not len(data) % size else []
+        if code == 1:
+            alpn, pos = [], 0  # type: List[bytes], int
+            while pos < len(data):
+                alpn.append(data[pos + 1:pos + 1 + data[pos]].replace(b'\\', b'\\\\').replace(b',', b'\\,'))
+                pos += 1 + data[pos]
+            value = '=' + _present_string(b','.join(alpn))
+        elif chunks and code in (4, 6):
+            version = ipaddress.IPv4Address if code == 4 else ipaddress.IPv6Address
+            value = '=' + ','.join(str(version(chunk)) for chunk in chunks)
+        elif chunks and (code != 3 or len(chunks) == 1):
+            numbers = [struct.unpack('!H', chunk)[0] for chunk in chunks]
+            value = '=' + ','.join(_svc_name(n) if code == 0 else '%d' % n for n in numbers)
+        elif code == 5:
+            value = '=' + base64.b64encode(data).decode('ascii')
+        else:
+            value = '=' + _present_string(data) if data else ''
+        parts.append(_svc_name(code) + value)
+    return ' '.join(parts)
+
+
+def _naptr_text(key: Tuple[Any, ...]) -> str:
+    return '%d %d %s %s %s %s.' % (key[0], key[1], _present_string(key[2]), _present_string(key[3]),
+                                  _present_string(key[4]), key[5])
+
+
+def _uri_text(key: Tuple[Any, ...]) -> str:
+    return '%d %d %s' % (key[0], key[1], _present_string(key[2]))
+
+
+def _precsize(cm: int) -> int:
+    """A LOC size or precision in centimetres as its byte (a digit and a power of ten, as BIND)."""
+    exponent = 0
+    while exponent < 9 and cm >= 10 ** (exponent + 1):
+        exponent += 1
+    return (min(cm // 10 ** exponent, 9) << 4) | exponent
+
+
+def _loc_key(t: List[str]) -> Tuple[int, ...]:
+    """A LOC value (``d [m [s]] N|S d [m [s]] E|W alt[m] [size[m] [hp[m] [vp[m]]]]``) as its wire
+    fields: version, size, both precisions, latitude, longitude, altitude."""
+    pos, fields = 0, [0]  # type: int, List[int]
+    coords = []  # type: List[int]
+    for hemispheres, limit in ((('N', 'S'), 90), (('E', 'W'), 180)):
+        start = pos
+        while t[pos].upper() not in hemispheres:
+            pos += 1
+        degrees, minutes, seconds = (t[start:pos] + ['0', '0'])[:3]
+        whole, _, fraction = seconds.partition('.')
+        if not (pos - start <= 3 and degrees.isdigit() and minutes.isdigit() and whole.isdigit()
+                and re.match(r'^\d{0,3}$', fraction) and int(minutes) < 60 and int(whole) < 60):
+            raise ValueError('LOC: not a coordinate')
+        value = ((int(degrees) * 60 + int(minutes)) * 60 + int(whole)) * 1000 + int(fraction.ljust(3, '0'))
+        if value > limit * 3600000:
+            raise ValueError('LOC: not a coordinate')
+        coords.append(2 ** 31 + (value if t[pos].upper() == hemispheres[0] else -value))
+        pos += 1
+    lengths = []  # type: List[int]
+    for text in t[pos:]:
+        match = re.match(r'^(-?)(\d+)(?:\.(\d{1,2}))?m?$', text, re.I)
+        if not match or (match.group(1) and lengths):
+            raise ValueError('LOC: not a length: %s' % text)
+        cm = int(match.group(2)) * 100 + int((match.group(3) or '').ljust(2, '0'))
+        lengths.append(-cm if match.group(1) else cm)
+    if not 1 <= len(lengths) <= 4:
+        raise ValueError('LOC: an altitude and at most three sizes')
+    fields += [_precsize(cm) for cm in lengths[1:]] + list(LOC_DEFAULTS[len(lengths) - 1:])
+    return tuple(fields + coords + [lengths[0] + 10000000])
+
+
+def _loc_text(key: Tuple[int, ...]) -> str:
+    """LOC as dig prints it: latitude and longitude in degrees, minutes and seconds, then the
+    altitude, the size and both precisions in metres."""
+    parts = []  # type: List[str]
+    for value, hemispheres in ((key[4], 'NS'), (key[5], 'EW')):
+        value -= 2 ** 31
+        hemisphere = hemispheres[value < 0]
+        value = abs(value)
+        parts.append('%d %d %d.%03d %s' % (value // 3600000, value // 60000 % 60, value // 1000 % 60,
+                                           value % 1000, hemisphere))
+    altitude = key[6] - 10000000
+    parts.append('%s%d.%02dm' % ('-' if altitude < 0 else '', abs(altitude) // 100, abs(altitude) % 100))
+    for byte in key[1:4]:
+        cm = (byte >> 4) * 10 ** (byte & 0xf)
+        parts.append('%d%sm' % (cm // 100, '.%02d' % (cm % 100) if cm % 100 else ''))
+    return ' '.join(parts)
+
+
 def file_value(record: Record, origin: str) -> Tuple[Any, str]:
     """``(key, text)`` of a file record: the comparison key and the value as printed. A relative
     name in the data is completed with the $ORIGIN in force at the record (``origin`` when the
@@ -523,6 +705,13 @@ def file_value(record: Record, origin: str) -> Tuple[Any, str]:
     rtype = record.rtype
     t = [tok.text for tok in record.tokens]
     origin = record_origin(record, origin)
+    if t and t[0] == '\\#':
+        # Any type in RFC 3597's form: its bytes, read as an answer's rdata.
+        data = _generic(record.tokens)
+        try:
+            return _rdata(data, rtype, 0, len(data))
+        except (DnsError, struct.error) as exc:
+            raise ValueError('%s: %s' % (rtype, exc))
     if rtype == 'A':
         ip = str(ipaddress.IPv4Address(t[0]))
         return ip, ip
@@ -555,9 +744,39 @@ def file_value(record: Record, origin: str) -> Tuple[Any, str]:
     if rtype in ('DS', 'CDS'):
         key = (int(t[0]), int(t[1]), int(t[2]), _hex(record.tokens[3:]))
         return key, '%d %d %d %s' % key
+    if rtype == 'NAPTR':
+        name = absolute_name(t[5], origin) if t[5] != '.' else ''
+        key = (int(t[0]), int(t[1])) + tuple(_unescape(tok.text) for tok in record.tokens[2:5]) + (name,)
+        return key, _naptr_text(key)
+    if rtype in ('SVCB', 'HTTPS'):
+        target = absolute_name(t[1], origin) if t[1] != '.' else ''
+        params = {}  # type: Dict[int, bytes]
+        tokens = record.tokens[2:]
+        while tokens:
+            token = tokens.pop(0)
+            if token.quoted:
+                raise ValueError('a quoted SvcParam without its key')
+            name, eq, value = token.text.partition('=')
+            if eq and not value and tokens and tokens[0].quoted:
+                value = tokens.pop(0).text  # key="value": the quote ends the token
+            code = _svc_code(name.lower())
+            if code in params:
+                raise ValueError('%s twice' % name)
+            params[code] = _svc_canon(code, _svc_wire(code, _unescape(value) if eq else None))
+        key = (int(t[0]), target, tuple(sorted(params.items())))
+        return key, _svc_text(key)
+    if rtype == 'LOC':
+        key = _loc_key(t)
+        return key, _loc_text(key)
+    if rtype == 'OPENPGPKEY':
+        data = base64.b64decode(''.join(t), validate=True)
+        return data, base64.b64encode(data).decode('ascii')
+    if rtype == 'URI':
+        key = (int(t[0]), int(t[1]), _unescape(t[2]))
+        return key, _uri_text(key)
     if rtype == 'SOA':
         return (int(t[2]),), ' '.join(t)
-    raise ValueError('%s values are not compared' % rtype)
+    raise ValueError('a %s value is read only as \\# length hex' % rtype)
 
 
 # ---------------------------------------------------------------------------------------
@@ -674,6 +893,36 @@ def _rdata(msg: bytes, rtype: str, start: int, length: int) -> Tuple[Any, str]:
     if rtype in ('DS', 'CDS') and length >= 4:
         key = (struct.unpack('!H', data[:2])[0], data[2], data[3], data[4:].hex())
         return key, '%d %d %d %s' % key
+    if rtype == 'NAPTR' and length >= 7:
+        pos, strings = 4, []  # type: int, List[bytes]
+        for _ in range(3):
+            end = pos + 1 + data[pos]
+            if end > length:
+                raise DnsError('format', 'truncated NAPTR')
+            strings.append(bytes(data[pos + 1:end]))
+            pos = end
+        name, _ = _read_name(msg, start + pos)
+        key = struct.unpack('!HH', data[:4]) + tuple(strings) + (name,)
+        return key, _naptr_text(key)
+    if rtype in ('SVCB', 'HTTPS') and length >= 3:
+        target, pos = _read_name(msg, start + 2)
+        params = []  # type: List[Tuple[int, bytes]]
+        while pos < start + length:
+            code, size = struct.unpack('!HH', msg[pos:pos + 4])
+            if pos + 4 + size > start + length:
+                raise DnsError('format', 'truncated SvcParam')
+            params.append((code, _svc_canon(code, bytes(msg[pos + 4:pos + 4 + size]))))
+            pos += 4 + size
+        key = (struct.unpack('!H', data[:2])[0], target, tuple(sorted(params)))
+        return key, _svc_text(key)
+    if rtype == 'LOC' and length == 16 and data[0] == 0:
+        key = struct.unpack('!BBBBIII', data)
+        return key, _loc_text(key)
+    if rtype == 'OPENPGPKEY':
+        return bytes(data), base64.b64encode(data).decode('ascii')
+    if rtype == 'URI' and length >= 4:
+        key = struct.unpack('!HH', data[:4]) + (bytes(data[4:]),)
+        return key, _uri_text(key)
     if rtype == 'SOA':
         mname, pos = _read_name(msg, start)
         rname, pos = _read_name(msg, pos)
@@ -1061,9 +1310,6 @@ def compare_rrset(asker: Asker, rrset: RRset, zone: Zone, ns_names: Sequence[str
     file_ttl = None if auto or not ttls else min(ttls)
     proxied = any(r.proxied for r in rrset.records)
     row = Row(ns, rrset.name, rrset.rtype, SAME, [], file_texts, file_ttl=file_ttl)
-    if rrset.rtype not in COMPARED_TYPES:
-        row.status, row.notes = SKIPPED, ['type']
-        return row
     qname = rrset.name
     reply = asker.ask(qname, rrset.rtype)
     if isinstance(reply, DnsError) or reply.rcode not in ('NOERROR', 'NXDOMAIN'):
@@ -1275,7 +1521,6 @@ NOTE_TEXT = {
     'dnssec': 'DNSSEC: signed by the provider, not compared',
     'alias': 'an alias record: resolved by the provider, not compared',
     'delegated': 'below a delegation: the child zone\'s servers answer it',
-    'type': 'this type is not compared',
     'unreadable': 'the file\'s value could not be read',
     'extra': 'not in the file',
     'timeout': 'no answer in time',

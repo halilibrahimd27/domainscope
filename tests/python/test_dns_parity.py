@@ -41,7 +41,8 @@ def _load_cli():
 
 dp = _load_cli()
 
-CODES = {'A': 1, 'NS': 2, 'CNAME': 5, 'SOA': 6, 'MX': 15, 'TXT': 16, 'AAAA': 28, 'SRV': 33, 'CAA': 257}
+CODES = {'A': 1, 'NS': 2, 'CNAME': 5, 'SOA': 6, 'MX': 15, 'TXT': 16, 'AAAA': 28, 'SRV': 33, 'CAA': 257,
+         'LOC': 29, 'NAPTR': 35, 'OPENPGPKEY': 61, 'SVCB': 64, 'HTTPS': 65, 'URI': 256, 'TYPE65534': 65534}
 
 
 # ============================================================================ a test server
@@ -54,7 +55,9 @@ def enc_name(name: str) -> bytes:
 
 
 def rdata(rtype: str, value) -> bytes:
-    """Wire rdata from a test value (its own encoder: never the CLI's)."""
+    """Wire rdata from a test value (its own encoder: never the CLI's); bytes are the rdata."""
+    if isinstance(value, bytes):
+        return value
     if rtype == 'A':
         return socket.inet_aton(value)
     if rtype == 'AAAA':
@@ -354,6 +357,29 @@ class ZoneFileTests(unittest.TestCase):
         self.assertIn(('ns1.dev.example.com', 'A'), {(r.name, r.rtype) for r in asked}, 'glue named relative to its own $ORIGIN')
         self.assertEqual([(r.name, reason) for r, reason in skipped], [('x.dev.example.com', 'delegated')])
 
+    def test_rfc3597_types_and_svcparams_read_as_the_wire_says(self):
+        zone = dp.parse_zone('$ORIGIN example.com.\n@ IN SOA ns1.example.org. h. 1 2 3 4 5\n'
+                             'mx IN TYPE15 \\# 20 000a 046d61696c 076578616d706c65 03636f6d 00\n'
+                             'big IN TYPE65536 \\# 1 00\n'
+                             'a IN HTTPS 1 . mandatory=port,alpn alpn=h2 port=8443 no-default-alpn '
+                             'ech="AQID" key65000="x\\,y"\n'
+                             'b IN HTTPS 1 . alpn="f\\\\\\\\oo\\\\,bar,h2"\n'
+                             'c IN HTTPS 1 . alpn\n')
+        by = {r.name: r for r in zone.records}
+        self.assertEqual(dp.file_value(by['mx.example.com'], zone.origin), ((10, 'mail.example.com'), '10 mail.example.com.'))
+        self.assertEqual(by['mx.example.com'].rtype, 'MX', 'a known type by its name, as answers say it')
+        self.assertNotIn('big.example.com', by)
+        self.assertIn('line 4: unknown record type TYPE65536', zone.warnings)
+        wire = (b'\x00\x01\x00' + b'\x00\x00\x00\x04\x00\x01\x00\x03' + b'\x00\x01\x00\x03\x02h2' + b'\x00\x02\x00\x00'
+                + b'\x00\x03\x00\x02\x20\xfb' + b'\x00\x05\x00\x03\x01\x02\x03' + b'\xfd\xe8\x00\x03x,y')
+        self.assertEqual(dp.file_value(by['a.example.com'], zone.origin), dp._rdata(wire, 'HTTPS', 0, len(wire)))
+        self.assertEqual(dp.file_value(by['a.example.com'], zone.origin)[1],
+                         '1 . mandatory=alpn,port alpn="h2" no-default-alpn port=8443 ech=AQID key65000="x,y"')
+        self.assertEqual(dp.file_value(by['b.example.com'], zone.origin)[0][2], ((1, b'\x08f\\oo,bar\x02h2'),),
+                         'RFC 9460 A.1: "f\\oo,bar" and "h2"')
+        with self.assertRaises(ValueError):
+            dp.file_value(by['c.example.com'], zone.origin)
+
     def test_names(self):
         self.assertEqual(dp.canonical_name('A\\046b.Example.COM.'), 'a\\046b.example.com')
         self.assertEqual(dp.text_to_labels('*.example.com'), [b'*', b'example', b'com'])
@@ -533,6 +559,61 @@ class ParityRunTests(unittest.TestCase):
         self.assertEqual(s('dev.example.com', 'NS'), ('SAME', ['referral']))
         self.assertEqual(s('ns1.dev.example.com', 'A'), ('SAME', ['referral']))
         self.assertEqual(report.verdict(), 'ready')
+
+    def test_every_type_of_the_file_is_asked_and_its_values_compared(self):
+        text = ('$ORIGIN example.com.\n$TTL 3600\n@ IN SOA ns1.example.org. h. 1 2 3 4 5\n'
+                '@ IN NS ns1.example.net.\n'
+                '@ IN HTTPS 1 . alpn="h3,h2" ipv4hint=192.0.2.2,192.0.2.1 port=443\n'
+                'svc IN SVCB 0 svc.example.net.\n'
+                'sip IN NAPTR 10 100 "S" "SIP+D2U" "" _sip._udp\n'
+                'key IN OPENPGPKEY AQID\n'
+                'geo IN LOC 52 22 23.000 N 4 53 32.000 E -2.00m\n'
+                '_ftp._tcp IN URI 10 1 "ftp://ftp.example.com/public"\n'
+                'gen IN TYPE65534 \\# 3 0a0b0c\n'
+                'raw IN A \\# 4 c0000221\n')
+        # the wire forms, encoded here: SvcParams in key order, LOC per RFC 1876 (1m, 10000m, 10m)
+        https = (b'\x00\x01\x00' + b'\x00\x01\x00\x06\x02h3\x02h2' + b'\x00\x03\x00\x02\x01\xbb'
+                 + b'\x00\x04\x00\x08' + socket.inet_aton('192.0.2.1') + socket.inet_aton('192.0.2.2'))
+        loc = struct.pack('!BBBBIII', 0, 0x12, 0x16, 0x13, 2 ** 31 + 188543000, 2 ** 31 + 17612000,
+                          10000000 - 200)
+        served = {
+            ('example.com', 'NS'): [(3600, 'ns1.example.net')],
+            ('example.com', 'HTTPS'): [(3600, https)],
+            ('svc.example.com', 'SVCB'): [(3600, b'\x00\x00' + enc_name('svc.example.net'))],
+            ('sip.example.com', 'NAPTR'): [(3600, struct.pack('!HH', 10, 100) + b'\x01S\x07SIP+D2U\x00'
+                                            + enc_name('_sip._udp.example.com'))],
+            ('key.example.com', 'OPENPGPKEY'): [(3600, b'\x01\x02\x03')],
+            ('geo.example.com', 'LOC'): [(3600, loc)],
+            ('_ftp._tcp.example.com', 'URI'): [(3600, struct.pack('!HH', 10, 1) + b'ftp://ftp.example.com/public')],
+            ('gen.example.com', 'TYPE65534'): [(3600, b'\x0a\x0b\x0c')],
+            ('raw.example.com', 'A'): [(3600, '192.0.2.33')],
+        }
+        same = FakeAuthority('example.com', served)
+        lacking = dict(served)
+        del lacking[('sip.example.com', 'NAPTR')], lacking[('example.com', 'HTTPS')]
+        lacking[('geo.example.com', 'LOC')] = [(3600, loc[:-4] + struct.pack('!I', 10000000 + 500))]
+        other = FakeAuthority('example.com', lacking)
+        try:
+            report, rows = self.run_zone(same, text=text, names=['ns1.example.net'])
+            other_report, other_rows = self.run_zone(other, text=text, names=['ns1.example.net'])
+        finally:
+            same.close()
+            other.close()
+        kinds = [('example.com', 'HTTPS'), ('svc.example.com', 'SVCB'), ('sip.example.com', 'NAPTR'),
+                 ('key.example.com', 'OPENPGPKEY'), ('geo.example.com', 'LOC'),
+                 ('_ftp._tcp.example.com', 'URI'), ('gen.example.com', 'TYPE65534'), ('raw.example.com', 'A')]
+        for name, rtype in kinds:
+            self.assertEqual(self.status(rows, name, rtype), ('SAME', []), (name, rtype))
+        self.assertEqual(report.verdict(), 'ready')
+        self.assertEqual(self.status(other_rows, 'sip.example.com', 'NAPTR'), ('MISSING', ['nxdomain']))
+        self.assertEqual(self.status(other_rows, 'example.com', 'HTTPS'), ('MISSING', ['nodata']))
+        self.assertEqual(self.status(other_rows, 'geo.example.com', 'LOC'), ('DIFFERENT', ['values']))
+        geo = other_rows[('ns1.example.net', 'geo.example.com', 'LOC', False)]
+        self.assertEqual((geo.removed, geo.added), (['52 22 23.000 N 4 53 32.000 E -2.00m 1m 10000m 10m'],
+                                                    ['52 22 23.000 N 4 53 32.000 E 5.00m 1m 10000m 10m']))
+        self.assertEqual(other_report.verdict(), 'fix')
+        https_row = rows[('ns1.example.net', 'example.com', 'HTTPS', False)]
+        self.assertEqual(https_row.file, ['1 . alpn="h3,h2" port=443 ipv4hint=192.0.2.1,192.0.2.2'])
 
     def test_servers_that_do_not_serve_the_zone(self):
         refusing = FakeAuthority('example.com', GOOD, refuse=True)

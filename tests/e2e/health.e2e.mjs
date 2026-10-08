@@ -33,6 +33,12 @@
  * plain text of what the hero and the checks show with the permalink, Turkish, and the dialog a
  * refused clipboard gets; then a second check that is stopped: the button is off while it runs,
  * and the report left on screen is copied (and printed) with its own link, not the new route's.
+ * A second offline group covers the Web category (ui/health-v2.js over lib/healthweb.js): the Web
+ * card (the HTTPS record, www against the bare domain, the HSTS preload link), the problems-first
+ * panel scoring the Web category, and the HTTP security grade from a fake Mozilla HTTP Observatory
+ * answered in the page — nothing sent on arrival, one POST on the click (the grade with its
+ * failing-test count and the MDN report link), and a failure shown as a status with Retry, never a
+ * grade; a network guard proves no Observatory request ever left the page.
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -256,6 +262,40 @@ const RDAP_FAKE_SCRIPT = `(() => {
   };
 })();`;
 
+/**
+ * Fake Mozilla HTTP Observatory (window.__obs) answered in the page, so no real request ever
+ * leaves: one `POST https://observatory-api.mdn.mozilla.net/api/v2/scan?host=…` returns the next
+ * scenario of window.__obs.next (default 'ok'): a grade with its counts, a 429 with Retry-After,
+ * an HTTP error carrying the API's reason, or a 200 with no grade. window.__obs.delayMs delays the
+ * answer and honours the request's abort signal. Every call is recorded in window.__obs.calls.
+ */
+const fakeObservatoryScript = `(() => {
+  const inner = window.fetch;
+  const obs = window.__obs = { calls: [], next: [], delayMs: 0 };
+  const json = (status, body, headers) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*', ...(headers || {}) } });
+  const SCENARIOS = {
+    ok: () => json(200, { grade: 'B+', score: 75, tests_failed: 3, tests_passed: 9, tests_quantity: 12, status_code: 200, scanned_at: new Date(Date.now() - 120000).toISOString(), algorithm_version: 4 }),
+    rate: () => json(429, { error: 'rate limited' }, { 'retry-after': '30' }),
+    httperror: () => json(422, { error: 'invalid-hostname-lookup', message: 'could not resolve the host name' }),
+    nograde: () => json(200, { error: 'scan failed' })
+  };
+  window.fetch = async (input, init) => {
+    init = init || {};
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (!url.startsWith('https://observatory-api.mdn.mozilla.net/')) return inner(input, init);
+    const method = String(init.method || (input && input.method) || 'GET').toUpperCase();
+    obs.calls.push({ method, url });
+    const signal = init.signal || (typeof input === 'object' && input && input.signal) || null;
+    if (signal && signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+    if (obs.delayMs) await new Promise((resolve, reject) => {
+      const to = setTimeout(resolve, obs.delayMs);
+      if (signal) signal.addEventListener('abort', () => { clearTimeout(to); reject(new DOMException('The operation was aborted.', 'AbortError')); }, { once: true });
+    });
+    const scenario = obs.next.shift() || 'ok';
+    return (SCENARIOS[scenario] || SCENARIOS.ok)();
+  };
+})();`;
+
 /** What the RDAP card shows. */
 function rdapInfo() {
   const card = document.querySelector('.hlt-rdap');
@@ -409,6 +449,7 @@ async function mtaStsGroup(browser, server) {
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(MAIL_APEX, MAIL_ZONE) });
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeGlobalpingScript(results, live.probe) });
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: RDAP_FAKE_SCRIPT });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeObservatoryScript });
   await installDownloadCapture(page);
   await page.emulateMedia({ 'prefers-color-scheme': 'light' });
   const gpCalls = () => page.evaluate(() => window.__gp.calls.map((c) => ({ method: c.method, path: c.path, body: c.body })));
@@ -533,6 +574,7 @@ async function mtaStsGroup(browser, server) {
       await stubClipboard(page);
       const shown = await page.evaluate(() => ({
         score: document.querySelector('.hlt-hero').dataset.score,
+        grade: document.querySelector('.hlt-hero').dataset.grade,
         verdict: document.querySelector('.hlt-hero-verdict').textContent,
         problems: [...document.querySelectorAll('.hlt-check')].filter((c) => c.dataset.severity === 'error' || c.dataset.severity === 'warn')
           .map((c) => c.querySelector('.hlt-check-title').textContent),
@@ -545,7 +587,7 @@ async function mtaStsGroup(browser, server) {
       const [md, text] = await takeClipboard(page);
       const lines = md.trim().split(NL);
       assertEqual(lines[0], `**Domain Health · \`${MAIL_APEX}\`**`, 'title (the domain as a code span)');
-      assertEqual(lines[1], `- ${shown.verdict} · score ${shown.score}/100`, 'verdict and score as on the hero');
+      assertEqual(lines[1], `- ${shown.verdict} · grade ${shown.grade} · score ${shown.score}/100`, 'verdict, grade and score as on the hero');
       // Lines with text (the Markdown footer is its own paragraph, after an empty line).
       assert(lines.length - 1 >= 5 && lines.length - 1 <= 12, `5–12 lines: ${lines.length - 1}`);
       for (const title of shown.problems.slice(0, 5)) assert(md.includes(title), `problem "${title}" in: ${md}`);
@@ -897,6 +939,75 @@ async function mtaStsGroup(browser, server) {
       await page.click(toggle);
     });
 
+    group('Offline: the Web card and the HTTP security grade (fake Mozilla Observatory, emulated example.com)');
+
+    const obsCalls = () => page.evaluate(() => window.__obs.calls.map((c) => `${c.method} ${c.url}`));
+    const webInfo = () => page.evaluate(() => {
+      const card = document.querySelector('.hv2-web');
+      const obs = document.querySelector('.hv2-obs');
+      const problems = document.querySelector('.hv2-problems');
+      return {
+        webText: card ? card.textContent.replace(/\s+/g, ' ') : null,
+        hsts: card?.querySelector('.hv2-hsts-link')?.getAttribute('href') || '',
+        obsState: obs?.dataset.obs || null,
+        obsWhat: obs?.querySelector('.hv2-obs-what')?.textContent || '',
+        button: obs?.querySelector('[data-action="observatory-check"]')?.textContent.trim() || null,
+        grade: obs?.querySelector('.hv2-obs-result')?.dataset.grade || null,
+        result: obs?.querySelector('.hv2-obs-result')?.textContent.replace(/\s+/g, ' ').trim() || '',
+        report: obs?.querySelector('.hv2-obs-report')?.getAttribute('href') || '',
+        status: obs?.querySelector('.hv2-obs-status')?.textContent.replace(/\s+/g, ' ').trim() || '',
+        reason: obs?.querySelector('.hv2-obs-status')?.dataset.reason || null,
+        webChip: problems?.querySelector('.hv2-chip[data-group="web"]')?.dataset.score || null,
+        wwwMissing: !!problems?.querySelector('.hv2-problem[data-id="www.missing"]')
+      };
+    });
+
+    await step('the Web card: HTTPS record, www against the bare domain, the HSTS link; the problems-first panel scores the Web category; nothing sent to the Observatory', async () => {
+      await gotoHash(page, `#/health?domain=${MAIL_APEX}`, 'health');
+      await page.waitFor((d) => document.querySelector('.hlt-hero-domain')?.textContent === d && !document.querySelector('[data-action="run"]').hidden,
+        { args: [MAIL_APEX], timeout: 30000, message: 'example.com report' });
+      await page.waitFor(() => document.querySelector('.hv2-web') && document.querySelector('.hv2-obs'), { timeout: 10000, message: 'the Web card (lazy ui/health-v2.js)' });
+      const w = await webInfo();
+      assert(/192\.0\.2\.80/.test(w.webText), `the bare domain's address: ${w.webText}`);
+      assert(w.webText.includes('www.example.com') && w.webText.includes('No address'), `www row with no address: ${w.webText}`);
+      assert(/None \(optional\)/.test(w.webText), `the HTTPS record is none/optional: ${w.webText}`);
+      assertEqual(w.hsts, 'https://hstspreload.org/?domain=example.com', 'the HSTS preload link opens the status page');
+      assert(w.wwwMissing, 'the www.missing warning is in the problems-first panel');
+      assertEqual(w.webChip, '85', 'the Web category scores 85 (one warning) in the breakdown');
+      assertEqual(w.obsState, 'idle', 'the Observatory has not been sent to yet');
+      assert(/Content-Security-Policy/.test(w.obsWhat), `the "what it measures" text: ${w.obsWhat.slice(0, 80)}`);
+      assertEqual(w.button, 'Check HTTP security', 'the check button');
+      assertEqual(await obsCalls(), [], 'nothing sent to the Observatory on arrival');
+      await assertNoHorizontalScroll(page, 'web card');
+    });
+
+    await step('the Observatory grade: one POST on the click, the grade with its failing-test count, the MDN link; nothing leaves the page', async () => {
+      await page.click('.hv2-obs [data-action="observatory-check"]');
+      await page.waitFor(() => document.querySelector('.hv2-obs')?.dataset.obs === 'done', { timeout: 15000, message: 'the grade came back' });
+      const w = await webInfo();
+      assertEqual(w.grade, 'B+', 'the grade badge');
+      assert(/75\/100/.test(w.result) && /3 of 12 tests failed/.test(w.result), `the score and failing count: ${w.result}`);
+      assertEqual(w.report, 'https://developer.mozilla.org/en-US/observatory/analyze?host=example.com', 'the MDN report link');
+      assertEqual(w.button, 'Check again', 'the button becomes Check again');
+      assertEqual(await obsCalls(), ['POST https://observatory-api.mdn.mozilla.net/api/v2/scan?host=example.com'], 'exactly one POST to the Observatory');
+      assertEqual(netHits, [], 'no request reached the network');
+      if (SHOTS_ON) await page.screenshot(path.join(SHOTS, 'health-observatory-desktop-light-en.png'));
+    });
+
+    await step('a failed Observatory check is a status with Retry, never a grade; Retry asks again and the grade returns', async () => {
+      await page.evaluate(() => { window.__obs.next.push('rate'); });
+      await page.click('.hv2-obs [data-action="observatory-check"]');
+      await page.waitFor(() => document.querySelector('.hv2-obs')?.dataset.obs === 'failed', { timeout: 15000, message: 'the failure status' });
+      const w = await webInfo();
+      assertEqual([w.obsState, w.grade], ['failed', null], 'a status, never a grade');
+      assert(/^rate-limit/.test(w.reason) && /rate limited/.test(w.status), `the reason is written out: ${w.reason} / ${w.status}`);
+      await page.evaluate(() => { window.__obs.next.push('ok'); });
+      await page.click('.hv2-obs [data-action="observatory-check"]');
+      await page.waitFor(() => document.querySelector('.hv2-obs')?.dataset.obs === 'done', { timeout: 15000, message: 'the grade after Retry' });
+      assertEqual((await webInfo()).grade, 'B+', 'the grade after Retry');
+      assertEqual(netHits, [], 'still nothing reached the network');
+    });
+
     await step('nothing left the page: no real Globalping request; i18n complete; no console errors', async () => {
       const blocked = await page.evaluate(() => window.__zoneBlocked.slice());
       assertEqual(netHits, [], 'https requests that reached the network');
@@ -1080,7 +1191,7 @@ async function main() {
     ];
     assertEqual(groupChecks(checks, 'dns').map((c) => c.id), ['b', 'e', 'd', 'a'], 'dns group');
     assertEqual(groupChecks(checks, 'email').map((c) => c.id), ['c'], 'email group');
-    assertEqual(HEALTH_GROUPS, ['dns', 'email', 'security', 'registration'], 'group order');
+    assertEqual(HEALTH_GROUPS, ['dns', 'email', 'security', 'registration', 'web'], 'group order');
     assertEqual(parseSelectors('Mailgun, s1024._domainkey.example.com google bad!sel mailgun'), ['mailgun', 's1024'], 'selectors');
   });
   await step('every check id has EN + TR title/detail strings', () => {

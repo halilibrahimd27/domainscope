@@ -58,6 +58,8 @@ before(async () => {
   await imp('assets/js/ui/related-domains.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
+  // Domain Health v2 (problems first, the Web card): loaded with the first report.
+  await imp('assets/js/ui/health-v2.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -402,6 +404,10 @@ describe('i18n coverage', () => {
     for (const e of omp.FORM_ERRORS) add(`omp.err.${e}`);
     for (const e of estate.REPORT_ERRORS) add(`omp.file.${e}`);
     for (const v of ['known']) { add(`scan.srv.via.${v}`); add(`scan.hint.${v}`); add(`sub.hint.${v}`); }
+    // Domain Health v2 (ui/health-v2.js over lib/healthweb.js and lib/healthadvice.js): skip reasons, caps, every Web check and advice.
+    const hv2 = await imp('assets/js/ui/health-v2.js');
+    const [hweb, hadv] = await Promise.all([imp('assets/js/lib/healthweb.js'), imp('assets/js/lib/healthadvice.js')]);
+    for (const k of [...hv2.generatedKeys(), ...Object.keys(hweb.HEALTH_WEB_I18N.en), ...Object.keys(hadv.HEALTH_ADVICE_I18N.en)]) add(k);
     assert.deepEqual(missingIn(keys), []);
   });
 

@@ -60,6 +60,7 @@ import { ExpectedCaaBadge, expectedCasChanged } from '../ui/expected-ca.js';
 import { healthScore, trafficLight, permalinkParams } from '../ui/view-summaries.js';
 import { errorKind, mergeSignals, onceAsync, splitList } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
+import { scoreHealth } from '../lib/healthscore.js';
 
 /** Route id (`#/health`). */
 export const id = 'health';
@@ -69,7 +70,7 @@ export const titleKey = 'nav.health';
 export const icon = 'activity';
 
 /** Check groups in display order (lib/health HEALTH_CATEGORIES values). */
-export const HEALTH_GROUPS = Object.freeze(['dns', 'email', 'security', 'registration']);
+export const HEALTH_GROUPS = Object.freeze(['dns', 'email', 'security', 'registration', 'web']);
 /** Severity order, worst first. */
 export const SEVERITY_ORDER = Object.freeze(['error', 'warn', 'info', 'ok']);
 
@@ -84,6 +85,8 @@ export const FIXABLE_CHECKS = Object.freeze(['caa.cert-denied', 'caa.critical-un
 
 /** ui/fix-panel.js with lib/fixes.js (the zone parser and linter come along), on the first "Show the fix". */
 const loadFixPanel = onceAsync(() => import('../ui/fix-panel.js'));
+/** ui/health-v2.js (SPEC §5.78): the Web step, problems first and the Web card, with the first report. */
+const loadV2 = onceAsync(() => import('../ui/health-v2.js'));
 
 // Every health.<id>.title / .detail string (EN + TR) ships with lib/health.js, every
 // mtasts.<finding>.title / .detail and mtasts.head.<key> with lib/mtasts.js.
@@ -123,7 +126,9 @@ registerStrings('en', {
   'hlt.light.warnBody': 'Nothing is broken, but some settings are weak or risky.',
   'hlt.light.okBody': 'No problems found in {count} checks.',
   'hlt.score': 'Score',
-  'hlt.scoreTitle': '100 − 20 per error − 6 per warning. Info items do not count.',
+  'hlt.scoreTitle': 'Each category loses 40 per error and 15 per warning; the score is their weighted mean, at most 79 with an error and 89 with a warning. Info items do not count.',
+  'hlt.grade': 'Grade {grade}',
+  'hlt.step.web': 'www and the HTTPS record',
   'hlt.checkedAt': 'Checked {time}',
   'hlt.zone': 'Zone: {zone}',
   'hlt.checkZone': 'Check {zone}',
@@ -330,7 +335,9 @@ registerStrings('tr', {
   'hlt.light.warnBody': 'Bozuk bir şey yok ama bazı ayarlar zayıf ya da riskli.',
   'hlt.light.okBody': '{count} kontrolde sorun bulunmadı.',
   'hlt.score': 'Puan',
-  'hlt.scoreTitle': '100 − hata başına 20 − uyarı başına 6. Bilgi maddeleri sayılmaz.',
+  'hlt.scoreTitle': 'Her kategori hata başına 40, uyarı başına 15 puan kaybeder; puan kategorilerin ağırlıklı ortalamasıdır, hatayla en fazla 79, uyarıyla en fazla 89 olur. Bilgi maddeleri sayılmaz.',
+  'hlt.grade': 'Not {grade}',
+  'hlt.step.web': 'www ve HTTPS kaydı',
   'hlt.checkedAt': '{time} kontrol edildi',
   'hlt.zone': 'Bölge: {zone}',
   'hlt.checkZone': '{zone} alan adını kontrol et',
@@ -672,6 +679,8 @@ export function mount(container, ctx) {
   progress.el.hidden = true;
   const errorEl = h('div');
   const heroEl = h('div', { class: 'hlt-hero-wrap' });
+  /** Problems first and the Web card (ui/health-v2.js). */
+  const v2El = h('div', { class: 'stack-lg hv2' });
   const checksEl = h('div', { class: 'hlt-groups' });
   const detailsEl = h('div', { class: 'hlt-details' });
   let filter = restored?.filter === 'problems' ? 'problems' : 'all';
@@ -692,6 +701,7 @@ export function mount(container, ctx) {
   let heroSummary = null;
   const results = h('div', { class: 'stack-lg hlt-results', hidden: true, dataset: { shortcutScope: 'results' } },
     heroEl,
+    v2El,
     h('section', { class: 'stack hlt-checks-section' },
       h('div', { class: 'hlt-section-head' }, h('h2', { class: 'section-title' }, t('hlt.checksTitle')), filterCtl.el),
       checksEl),
@@ -707,7 +717,7 @@ export function mount(container, ctx) {
     clear(heroEl);
     const s = report.summary;
     const light = trafficLight(s);
-    const score = healthScore(s);
+    const { score, grade } = scoreHealth(report.checks);
     const total = s.ok + s.info + s.warn + s.error;
     const lightEl = h('div', { class: ['hlt-light', `hlt-light-${light}`], attrs: { role: 'img', 'aria-label': t(`hlt.light.${light}`) } },
       ['error', 'warn', 'ok'].map((k) => h('span', { class: ['hlt-lamp', `hlt-lamp-${k}`, { 'is-on': k === light }] })));
@@ -722,7 +732,7 @@ export function mount(container, ctx) {
     const zoneLink = report.zone && report.zone !== report.domain
       ? h('a', { class: 'btn btn-secondary btn-sm', href: ctx.href('health', { domain: report.zone }) }, Icon('arrow-right', { size: 14 }), h('span', { class: 'btn-label' }, t('hlt.checkZone', { zone: report.zone })))
       : null;
-    heroEl.append(h('div', { class: ['card', 'hlt-hero', `hlt-hero-${light}`], dataset: { light, score } },
+    heroEl.append(h('div', { class: ['card', 'hlt-hero', `hlt-hero-${light}`], dataset: { light, score, grade } },
       lightEl,
       h('div', { class: 'hlt-hero-main' },
         h('div', { class: 'hlt-hero-domain mono' }, report.domain),
@@ -734,6 +744,7 @@ export function mount(container, ctx) {
           report.zone ? h('span', null, t('hlt.zone', { zone: report.zone })) : null)),
       h('div', { class: 'hlt-hero-side' },
         h('div', { class: 'hlt-score', title: t('hlt.scoreTitle') },
+          h('span', { class: ['hlt-grade', `hlt-grade-${grade}`], attrs: { role: 'img', 'aria-label': t('hlt.grade', { grade }) } }, grade),
           h('span', { class: 'hlt-score-value num' }, String(score)),
           h('span', { class: 'hlt-score-max' }, '/100'),
           h('span', { class: 'hlt-score-label' }, t('hlt.score'))),
@@ -802,7 +813,7 @@ export function mount(container, ctx) {
       const worst = all[0].severity;
       checksEl.append(Card({
         title: t(`health.group.${group}`),
-        icon: { dns: 'globe', email: 'mail', security: 'shield', registration: 'calendar' }[group],
+        icon: { dns: 'globe', email: 'mail', security: 'shield', registration: 'calendar', web: 'lock' }[group],
         className: ['hlt-group', `hlt-group-${worst}`].join(' '),
         actions: counts.length ? h('div', { class: 'cluster' }, counts) : Badge(t('severity.ok'), { variant: 'ok', icon: 'check' }),
         padded: false,
@@ -1405,10 +1416,37 @@ export function mount(container, ctx) {
     detailsEl.append(...[rdapCard, dnssecCard, mailCard, mtaStsCard, caaCard, dnsCard].map((card) => card(report)).filter(Boolean));
   }
 
+  /**
+   * Problems first and the Web card, once ui/health-v2.js is loaded (the latest call wins). The
+   * Web card's Observatory grade comes back as a new report, which is drawn again.
+   */
+  let v2Token = 0;
+  function renderV2(report, selectors) {
+    const token = ++v2Token;
+    loadV2().then((v2) => {
+      if (token !== v2Token) return;
+      clear(v2El);
+      const onReport = (next) => {
+        if (!current || current.report !== report || current.controller) return;
+        current.report = next;
+        renderReport(next, selectors);
+      };
+      v2El.append(
+        v2.ProblemsPanel(report, { checkTitle, checkDetail, fixToggle, fixable: (c) => c.severity !== 'ok' && FIXABLE_CHECKS.includes(c.id) }),
+        v2.WebPanel(report, { ctx, state: current, onReport }));
+    }).catch((err) => {
+      if (token !== v2Token) return;
+      ctx.checkOutdated();
+      clear(v2El);
+      v2El.append(ErrorBanner(err, { compact: true }));
+    });
+  }
+
   function renderReport(report, selectors) {
     emptyEl.hidden = true;
     results.hidden = false;
     renderHero(report, selectors);
+    renderV2(report, selectors);
     renderChecks(report);
     renderDetails(report);
   }
@@ -1504,6 +1542,7 @@ export function mount(container, ctx) {
     if (current && current.controller) current.controller.abort();
     if (current && current.policy && current.policy.controller) current.policy.controller.abort();
     if (current && current.rdapRetry) current.rdapRetry.abort();
+    if (current && current.observatory && current.observatory.controller) current.observatory.controller.abort();
     const controller = new AbortController();
     const state = {
       domain, selectors: extraSelectors.slice(), controller, report: null, finishedAt: null,
@@ -1519,9 +1558,10 @@ export function mount(container, ctx) {
     const startedAt = performance.now();
     try {
       const dns = await ctx.getDns();
-      const report = await domainHealth(domain, {
+      const signal = mergeSignals(ctx.signal, controller.signal);
+      let report = await domainHealth(domain, {
         dns,
-        signal: mergeSignals(ctx.signal, controller.signal),
+        signal,
         dkimSelectors: [...DEFAULT_DKIM_SELECTORS, ...extraSelectors],
         onProgress: ({ step, done, total }) => {
           if (current !== state) return;
@@ -1529,6 +1569,15 @@ export function mount(container, ctx) {
           progress.setLabel(`${t('hlt.progress', { domain })} · ${t(`hlt.step.${step}`)}`);
         }
       });
+      if (current !== state) return;
+      // The Web step (SPEC §5.78): www and the bare domain, the HTTPS record; same DNS client.
+      try {
+        progress.setLabel(`${t('hlt.progress', { domain })} · ${t('hlt.step.web')}`);
+        report = await (await loadV2()).addWeb(report, { dns, signal });
+      } catch (err) {
+        if (err && err.name === 'AbortError') throw err;
+        ctx.checkOutdated();
+      }
       if (current !== state) return;
       state.report = report;
       state.finishedAt = new Date();
@@ -1585,6 +1634,7 @@ export function mount(container, ctx) {
       if (current && current.controller) current.controller.abort();
       if (current && current.policy && current.policy.controller) current.policy.controller.abort();
       if (current && current.rdapRetry) current.rdapRetry.abort();
+      if (current && current.observatory && current.observatory.controller) current.observatory.controller.abort();
     },
     snapshot() {
       const report = current && !current.controller ? current.report : null;

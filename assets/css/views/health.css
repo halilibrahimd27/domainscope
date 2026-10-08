@@ -194,7 +194,7 @@
 
 .hlt-score {
   display: grid;
-  grid-template-columns: auto auto;
+  grid-template-columns: auto auto auto;
   align-items: baseline;
   column-gap: 2px;
   text-align: right;
@@ -840,5 +840,204 @@
   .hlt-light {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
+  }
+}
+
+/* --- Domain Health v2 (SPEC §5.78): the grade, problems first, the Web card (.hv2-*) --- */
+.hlt-grade {
+  align-self: center;
+  margin-right: 10px;
+  min-width: 44px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-align: center;
+  color: var(--ok);
+  background: var(--ok-bg);
+  border: 1px solid var(--ok-border);
+}
+
+.hlt-grade-B,
+.hlt-grade-C {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+
+.hlt-grade-D,
+.hlt-grade-E,
+.hlt-grade-F {
+  color: var(--error);
+  background: var(--error-bg);
+  border-color: var(--error-border);
+}
+
+.hv2-chips {
+  gap: 6px;
+}
+
+.hv2-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--ok-border);
+  background: var(--ok-bg);
+  color: var(--ok);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hv2-chip-warn {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.hv2-chip-error {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.hv2-cap,
+.hv2-how {
+  margin: 4px 0 0;
+}
+
+.hv2-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 15px;
+}
+
+.hv2-group-title {
+  margin: 8px 0 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.hv2-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.hv2-problem {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.hv2-problem.hlt-sev-error {
+  border-left: 3px solid var(--error-solid);
+}
+
+.hv2-problem.hlt-sev-warn {
+  border-left: 3px solid var(--warn-solid);
+}
+
+.hv2-problem-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.hv2-problem-detail {
+  overflow-wrap: anywhere;
+}
+
+.hv2-advice {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.hv2-advice-label {
+  font-weight: 600;
+}
+
+.hv2-none {
+  margin: 0;
+  color: var(--ok);
+}
+
+.hv2-sub {
+  margin: 0;
+  font-size: 14px;
+}
+
+.hv2-hsts p,
+.hv2-obs p {
+  margin: 0;
+}
+
+.hv2-obs-result {
+  align-items: center;
+  gap: 10px;
+}
+
+.hv2-grade {
+  min-width: 38px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 20px;
+  font-weight: 800;
+  text-align: center;
+  color: var(--ok);
+  background: var(--ok-bg);
+  border: 1px solid var(--ok-border);
+}
+
+.hv2-grade-info {
+  color: var(--info);
+  background: var(--info-bg);
+  border-color: var(--info-border);
+}
+
+.hv2-grade-warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+
+.hv2-failed {
+  color: var(--warn);
+}
+
+.hv2-ips {
+  gap: 6px;
+}
+
+.hv2-kv .mono {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .hlt-grade {
+    font-size: 24px;
+    min-width: 36px;
+  }
+
+  .hv2-problem {
+    padding: 8px;
+  }
+}
+
+@media print {
+  .hv2-obs .btn,
+  .hv2 .fix-toggle {
+    display: none;
+  }
+
+  .hv2-problem {
+    break-inside: avoid;
   }
 }

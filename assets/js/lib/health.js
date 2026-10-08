@@ -18,7 +18,7 @@
 
 import { errorKind, throwIfAborted, randomLabel, uniq } from './util.js';
 import { normalizeHostname, registrableDomain, isSubdomainOf } from './domain.js';
-import { normalizeIP, ipVersion, isPrivateIP, parseIP, ipInCidr } from './netinfo.js';
+import { normalizeIP, ipVersion, isPrivateIP, parseIP, ipInCidr, reversePtrName } from './netinfo.js';
 import { DNSSEC_ALGORITHMS, DS_DIGEST_TYPES, EDE_CODES, base64Decode, rcodeToName } from './dnswire.js';
 import { rdapDomain, registryDomain } from './rdap.js';
 import { checkFcrdns, ptrTemplate } from './ptrsweep.js';
@@ -243,8 +243,64 @@ function adaptDns(dns, signal) {
 
 const SPF_MECHANISMS = new Set(['all', 'include', 'a', 'mx', 'ptr', 'ip4', 'ip6', 'exists']);
 const SPF_LOOKUP_MECHANISMS = new Set(['include', 'a', 'mx', 'ptr', 'exists']);
-// RFC 7208 §7.1 macro letters (c, r, t are only meaningful in exp= but are syntactically valid).
-const MACRO_RE = /%(?:\{([slodiphcrtvSLODIPHCRTV])(\d*)(r?)([.\-+,/_=]*)\}|(%)|(_)|(-))/g;
+// RFC 7208 §7.1 macro letters (c, r, t are only meaningful in exp= but are syntactically valid);
+// the reversal transformer is "r" in either case (ABNF strings are case-insensitive).
+const MACRO_RE = /%(?:\{([slodiphcrtvSLODIPHCRTV])(\d*)([rR]?)([.\-+,/_=]*)\}|(%)|(_)|(-))/g;
+
+/**
+ * What each SPF macro letter (RFC 7208 §7.2) needs before it can be expanded: `domain` (the
+ * current domain `d`, and `o`, the sender's domain — the checked domain unless a sender is given),
+ * `ip` (the address being checked: `i`, `v`), `sender` (the MAIL FROM address: `s`, `l`), `helo`
+ * (the HELO / EHLO name: `h`), `ptr` (`p`, the address's validated reverse name: RFC 7208 §7.3
+ * says not to use it, and it is never expanded here) and `exp` (`c`, `r`, `t`: explanation text only).
+ * @type {Readonly<Record<string, 'domain'|'ip'|'sender'|'helo'|'ptr'|'exp'>>}
+ */
+export const SPF_MACRO_NEEDS = Object.freeze({
+  d: 'domain', o: 'domain', i: 'ip', v: 'ip', s: 'sender', l: 'sender', h: 'helo', p: 'ptr', c: 'exp', r: 'exp', t: 'exp'
+});
+
+/**
+ * The address an SPF check is about: canonical, and an IPv4-mapped IPv6 address
+ * (`::ffff:192.0.2.1`) as the IPv4 address it stands for (RFC 7208 §5). Null when not an address.
+ * @param {string} ip
+ * @returns {string|null}
+ */
+function spfAddress(ip) {
+  const a = normalizeIP(String(ip ?? '').trim());
+  if (!a) return null;
+  const m = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(a);
+  return m ? m[1] : a;
+}
+
+/** `%{i}` (RFC 7208 §7.3): an IPv4 address dotted, an IPv6 address as 32 dot-separated nibbles. */
+function macroAddress(ip) {
+  const p = parseIP(ip);
+  if (!p) return null;
+  return p.version === 4 ? ip : p.value.toString(16).padStart(32, '0').split('').join('.');
+}
+
+/** RFC 3986 percent-encoding of everything outside the unreserved set (an upper-case macro letter). */
+function urlEscape(text) {
+  let out = '';
+  for (const byte of new TextEncoder().encode(text)) {
+    const c = String.fromCharCode(byte);
+    out += /[A-Za-z0-9\-._~]/.test(c) ? c : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+  }
+  return out;
+}
+
+/**
+ * The sender of a check: `local@domain` (RFC 7208 §4.3: no local part is "postmaster"), or the
+ * assumed sender domain when none is given (then `s` and `l` cannot be expanded).
+ */
+function senderParts(sender, fallbackDomain) {
+  const s = String(sender ?? '').trim();
+  if (!s) return { given: false, address: null, local: null, domain: fallbackDomain };
+  const at = s.lastIndexOf('@');
+  const local = at > 0 ? s.slice(0, at) : 'postmaster';
+  const domain = canonName(at >= 0 ? s.slice(at + 1) : s) || fallbackDomain;
+  return { given: true, address: `${local}@${domain}`, local, domain };
+}
 
 /** Does a TXT string start an SPF record ("v=spf1" + SP or end, case-insensitive)? */
 function isSpfRecord(s) {
@@ -262,36 +318,65 @@ function validDomainSpec(spec) {
 }
 
 /**
- * Expand an SPF domain-spec. Only macros that need no sender context
- * (%{d}, %{o}, and the escapes %% %_ %-) can be expanded; anything else
- * (%{i}, %{s}, %{l} …) yields `{ name: null, macro: true }`.
- * %{d} is the current domain (it changes inside include / redirect), %{o}
- * the sender domain (RFC 7208 §7.3), taken to be the checked domain.
+ * Expand an SPF domain-spec (RFC 7208 §7) with what is known about the check. `%{d}` is the
+ * current domain (it changes inside include / redirect); `%{o}` the sender's domain — the given
+ * sender's, else `senderDomain` (the checked domain: who else would send as it); `%{i}` and `%{v}`
+ * need `ip`, `%{s}` and `%{l}` a `sender`, `%{h}` a `helo` name; `%{p}` and the exp-only letters
+ * are never expanded. Transformers (a digit count of right-hand parts, `r` to reverse) and
+ * delimiters apply; an upper-case letter URL-escapes its value; a name longer than 253 characters
+ * loses labels on the left; the escapes `%%`, `%_` and `%-` give `%`, a space and `%20`.
+ *
+ * @param {string} spec the domain-spec as written (`%{ir}.%{v}._spf.example.com`)
+ * @param {{ domain: string, senderDomain?: string, sender?: string|null, ip?: string|null, helo?: string|null }} ctx
+ * @returns {{ name: string|null, text: string|null, macro: boolean, missing: string[], ipBound: boolean }}
+ *   `text`: the expansion as it reads (null when a letter could not be expanded); `name`: the host
+ *   name it is (null when not one); `missing`: the letters that could not be expanded (see
+ *   {@link SPF_MACRO_NEEDS}); `ipBound`: it depends on the address (`%{i}`, `%{v}`), so it holds for
+ *   that address only
  */
-function expandDomainSpec(spec, domain, senderDomain = domain) {
-  const s = String(spec);
-  if (!s.includes('%')) return { name: normalizeHostname(s.replace(/\.$/, '')), macro: false };
-  let unresolved = false;
-  const out = s.replace(MACRO_RE, (m, letter, digits, rev, delims, pct, us, dash) => {
+export function expandSpfMacros(spec, { domain, senderDomain = domain, sender = null, ip = null, helo = null } = {}) {
+  const s = String(spec ?? '');
+  if (!s.includes('%')) return { name: normalizeHostname(s.replace(/\.$/, '')), text: s.replace(/\.$/, ''), macro: false, missing: [], ipBound: false };
+  const cur = canonName(domain);
+  const addr = ip ? spfAddress(ip) : null;
+  const from = senderParts(sender, canonName(senderDomain) || cur);
+  const values = {
+    d: cur,
+    o: from.domain,
+    i: addr ? macroAddress(addr) : null,
+    v: addr ? (ipVersion(addr) === 6 ? 'ip6' : 'in-addr') : null,
+    s: from.given ? from.address : null,
+    l: from.given ? from.local : null,
+    h: helo ? canonName(helo) || null : null
+  };
+  const missing = [];
+  let ipBound = false;
+  let out = s.replace(MACRO_RE, (m, letter, digits, rev, delims, pct, us, dash) => {
     if (pct) return '%';
     if (us) return ' ';
     if (dash) return '%20';
     const l = letter.toLowerCase();
-    if (l !== 'd' && l !== 'o') {
-      unresolved = true;
+    if (l === 'i' || l === 'v') ipBound = true;
+    const value = values[l];
+    if (value === null || value === undefined) {
+      if (!missing.includes(l)) missing.push(l);
       return m;
     }
     const splitter = delims ? new RegExp(`[${delims.replace(/[-\\\]^]/g, '\\$&')}]`) : /\./;
-    let parts = (l === 'o' ? senderDomain : domain).split(splitter);
+    let parts = String(value).split(splitter);
     if (rev) parts = parts.reverse();
     if (digits) {
       const n = Number(digits);
       if (n > 0) parts = parts.slice(-n);
     }
-    return parts.join('.');
+    const joined = parts.join('.');
+    return letter === l ? joined : urlEscape(joined);
   });
-  if (unresolved) return { name: null, macro: true };
-  return { name: normalizeHostname(out.replace(/\.$/, '')), macro: true };
+  if (missing.length) return { name: null, text: null, macro: true, missing, ipBound };
+  out = out.replace(/\.$/, '');
+  // RFC 7208 §7.3: a name over 253 characters is cut from the left, a whole label at a time.
+  while (out.length > 253 && out.includes('.')) out = out.slice(out.indexOf('.') + 1);
+  return { name: normalizeHostname(out), text: out, macro: true, missing: [], ipBound };
 }
 
 /**
@@ -445,7 +530,11 @@ function parseSpfTerm(term, rest) {
  *   parseSpf gives them (an ip4 / ip6 term's canonical address and prefix length; the domain-spec and dual CIDR
  *   length of an a / mx term); `addresses` of an `a` term whose lookup answered (IPv4, then IPv6; [] when void);
  *   `hosts` of an `mx` term whose lookup answered (the exchanges in preference order, the null MX left out);
- *   `skipped` when the query cap stopped the term before its lookup.
+ *   `skipped` when the query cap stopped the term before its lookup. Expanded for an address
+ *   ({@link spfLookupCount} `ip`): `forIp` on a term whose target depends on it (`%{i}`, `%{v}`) and on a
+ *   `ptr` term, which then also carries `ptrNames` (the address's reverse names that resolve back to it,
+ *   at most 10 asked) and `ptrFailed` (the names whose forward lookup failed here); `missing` lists the
+ *   macro letters a term could not expand (`s`, `l`, `h`, `p`, `i`, `v` …, {@link SPF_MACRO_NEEDS}).
  * @property {Array<{ code: string, domain: string, target: string|null, detail: string }>} errors
  */
 
@@ -512,16 +601,21 @@ async function evalSpfTerm(term, node, ctx, depth, path) {
   const recursive = term.mechanism === 'include' || term.mechanism === 'redirect';
   if (!recursive && !SPF_LOOKUP_MECHANISMS.has(term.mechanism)) return t;
   t.lookup = true;
-  const expanded = expandDomainSpec(term.value ?? node.domain, node.domain, ctx.sender);
+  const expanded = expandSpfMacros(term.value ?? node.domain, {
+    domain: node.domain, senderDomain: ctx.sender, sender: ctx.senderAddress, ip: ctx.ip, helo: ctx.helo
+  });
   t.macro = expanded.macro;
-  if (!expanded.name) return t; // needs sender context (e.g. %{i}); counted, not evaluated
+  if (expanded.missing.length) t.missing = expanded.missing;
+  if (!expanded.name) return t; // needs what this check does not know (e.g. %{i} without an address); counted, not evaluated
   t.target = expanded.name;
-  if (term.mechanism === 'ptr') return t; // needs the client IP; counted only
+  if (expanded.ipBound) t.forIp = ctx.ip;
+  if (term.mechanism === 'ptr' && !ctx.ip) return t; // needs the client IP; counted only
   if (ctx.queries >= SPF_MAX_QUERIES) {
     ctx.truncated = true;
     t.skipped = true;
     return t;
   }
+  if (term.mechanism === 'ptr') return evalSpfPtr(t, node, ctx);
   if (recursive) {
     if (path.includes(t.target)) {
       t.error = spfError(ctx, node, 'loop', t.target, [...path, t.target].join(' → '));
@@ -569,6 +663,34 @@ async function evalSpfTerm(term, node, ctx, depth, path) {
 }
 
 /**
+ * `ptr` for the address of the check (RFC 7208 §5.5): its reverse names (PTR), each asked for the
+ * address's family — at most 10 (§4.6.4) — and kept when it resolves back to the address
+ * (`ptrNames`). A forward lookup that failed here is noted (`ptrFailed`): a receiver skips the name,
+ * but whether it would have resolved back cannot be told.
+ */
+async function evalSpfPtr(t, node, ctx) {
+  t.forIp = ctx.ip;
+  const reverse = reversePtrName(ctx.ip);
+  ctx.queries += 1;
+  const res = await ctx.d.query(reverse, 'PTR');
+  if (failed(res)) {
+    t.error = spfError(ctx, node, 'dns-error', reverse, errText(res));
+    return t;
+  }
+  const names = uniq(records(res, 'PTR').map((rr) => canonName(rr.data)).filter(Boolean)).slice(0, SPF_LOOKUP_LIMIT);
+  const type = ipVersion(ctx.ip) === 6 ? 'AAAA' : 'A';
+  ctx.queries += names.length;
+  const checked = await Promise.all(names.map(async (name) => {
+    const r = await ctx.d.query(name, type);
+    if (failed(r)) return { name, back: null };
+    return { name, back: records(r, type).some((rr) => spfAddress(rr.data) === ctx.ip) };
+  }));
+  t.ptrNames = checked.filter((c) => c.back === true).map((c) => c.name);
+  t.ptrFailed = checked.filter((c) => c.back === null).map((c) => c.name);
+  return t;
+}
+
+/**
  * Expand an SPF policy and count its DNS-querying terms (RFC 7208 §4.6.4):
  * include, a, mx, ptr, exists and redirect each cost one lookup, recursively
  * through include / redirect targets. Terms after `all` are not evaluated
@@ -579,19 +701,31 @@ async function evalSpfTerm(term, node, ctx, depth, path) {
  * Counting continues past the limit (to report the real total) but at most
  * ~80 DNS queries are made per tree.
  *
+ * Expanded for one address (`ip`, extension 2026-10-08: what {@link spfCheckHost} does), the
+ * address-bound macros (`%{i}`, `%{v}`) are expanded and asked, and `ptr` is evaluated; a `sender`
+ * (`local@domain`) gives `%{s}`, `%{l}` and `%{o}`, a `helo` name `%{h}`. Such a tree holds for that
+ * address only: {@link spfEvaluate} treats its address-bound terms as unknown for any other one.
+ *
  * @param {string} domain
- * @param {{ dns: object, signal?: AbortSignal, maxDepth?: number, record?: string }} opts
+ * @param {{ dns: object, signal?: AbortSignal, maxDepth?: number, record?: string, ip?: string|null,
+ *   sender?: string|null, helo?: string|null }} opts
  *   `record` (extension) = the domain's SPF record when already known (skips one TXT query).
  * @returns {Promise<{ count: number, voidCount: number, tree: SpfNode,
  *   errors: Array<{ code: string, domain: string, target: string|null, detail: string }>,
  *   limit: number, exceeded: boolean, truncated: boolean }>}
  *   error codes: dns-error, no-record, multiple-records, syntax, loop, depth, too-many-mx.
  */
-export async function spfLookupCount(domain, { dns, signal, maxDepth = 10, record } = {}) {
+export async function spfLookupCount(domain, { dns, signal, maxDepth = 10, record, ip = null, sender = null, helo = null } = {}) {
   const name = normalizeHostname(String(domain ?? ''));
   if (!name) throw new TypeError(`Invalid domain: ${String(domain)}`);
+  const addr = ip === null || ip === undefined || ip === '' ? null : spfAddress(ip);
+  if ((ip ?? '') !== '' && !addr) throw new TypeError(`Invalid address: ${String(ip)}`);
   throwIfAborted(signal);
-  const ctx = { d: adaptDns(dns, signal), sender: name, queries: 0, errors: [], maxDepth, truncated: false };
+  const from = senderParts(sender, name);
+  const ctx = {
+    d: adaptDns(dns, signal), sender: from.domain, senderAddress: from.given ? from.address : null, ip: addr,
+    helo: helo ? canonName(helo) || null : null, queries: 0, errors: [], maxDepth, truncated: false
+  };
   const tree = await evalSpfNode(name, ctx, 0, [name], record);
   throwIfAborted(signal);
   return {
@@ -674,13 +808,16 @@ const QUALIFIER_RESULT = Object.freeze({ '+': 'pass', '-': 'fail', '~': 'softfai
  * or a lookup that failed here (our resolver, not the receiver's) cannot be told. The evaluation
  * goes on past it, and its result stands when the undecided term could only have given the same
  * result had it matched (a `+ptr` in front of the `+ip4` that matches); otherwise it is `unknown`.
+ * A tree expanded for this very address ({@link spfLookupCount} `ip`, as {@link spfCheckHost} does)
+ * tells its `%{i}` / `%{v}` terms and `ptr` too (a ptr match: `via` holds the reverse name); for
+ * another address those terms stay unknown. An IPv4-mapped IPv6 address is its IPv4 address.
  * @param {SpfNode|null} tree `spfLookupCount().tree`
  * @param {string} ip
  * @param {{ mxAddresses?: Map<string, { addresses?: string[], error?: string|null }>, strict?: boolean }} [opts]
  * @returns {SpfVerdict}
  */
 export function spfEvaluate(tree, ip, { mxAddresses = new Map(), strict = true } = {}) {
-  const addr = normalizeIP(ip);
+  const addr = spfAddress(ip);
   const verdict = (result, extra = {}) => ({ result, term: null, holder: null, path: [], via: null, reason: null, ...extra });
   if (!tree || !addr) return verdict('unknown', { reason: 'lookup-failed' });
   const family = ipVersion(addr);
@@ -719,7 +856,11 @@ export function spfEvaluate(tree, ip, { mxAddresses = new Map(), strict = true }
     };
     /** Count a void lookup of a term that did not match; true for the one past the limit. */
     const overVoid = () => strict && ++voids > SPF_VOID_LIMIT;
-    for (const t of node.terms || []) {
+    for (const raw of node.terms || []) {
+      // A term expanded for another address (%{i}, %{v}, ptr) tells nothing about this one.
+      const t = raw.forIp && raw.forIp !== addr
+        ? { ...raw, target: raw.mechanism === 'ptr' ? raw.target : null, child: null, macro: raw.mechanism !== 'ptr', ptrNames: undefined, ptrFailed: undefined, error: null }
+        : raw;
       const q = QUALIFIER_RESULT[t.qualifier] || 'pass';
       // The 11th DNS-querying term is a permerror before its query is made.
       if (strict && (SPF_LOOKUP_MECHANISMS.has(t.mechanism) || t.mechanism === 'redirect') && ++lookups > SPF_LOOKUP_LIMIT) {
@@ -782,9 +923,15 @@ export function spfEvaluate(tree, ip, { mxAddresses = new Map(), strict = true }
           if (failed) undecided(t, 'lookup-failed');
           break;
         }
-        case 'ptr':
-          undecided(t, 'ptr');
+        case 'ptr': {
+          // Evaluated for this address: a reverse name that resolves back to it, at or below the target, matches.
+          const name = Array.isArray(t.ptrNames) && t.target ? t.ptrNames.find((n) => isSubdomainOf(n, t.target)) : null;
+          if (name) return decide(at(t, q, { via: { host: name, address: addr } }));
+          if (t.skipped) undecided(t, 'skipped');
+          else if (t.error || (t.ptrFailed && t.ptrFailed.length)) undecided(t, 'lookup-failed');
+          else if (!Array.isArray(t.ptrNames)) undecided(t, 'ptr');
           break;
+        }
         case 'include':
         case 'redirect': {
           const redirect = t.mechanism === 'redirect';
@@ -822,6 +969,58 @@ export function spfEvaluate(tree, ip, { mxAddresses = new Map(), strict = true }
     return decide(verdict('neutral', { holder: node.domain, path }));
   };
   return evalNode(tree, [tree.domain], 0);
+}
+
+/** The most `mx` hosts {@link spfCheckHost} resolves (RFC 7208 §4.6.4: 10 per mx term; a few terms). */
+export const SPF_CHECK_MAX_MX_HOSTS = 30;
+
+/**
+ * RFC 7208 `check_host(<ip>, <domain>, <sender>)`: does the domain's SPF policy let this address
+ * send? The policy is expanded for the address ({@link spfLookupCount} with `ip`: its `%{i}` /
+ * `%{v}` macros asked, `ptr` evaluated, a given `sender` / `helo` expanding `%{s}`, `%{l}`, `%{o}`,
+ * `%{h}`), the hosts of its `mx` terms resolved, then {@link spfEvaluate} decides with the RFC
+ * 7208 §4.6.4 limits. Every question goes through one memoised client, so a name is asked once.
+ * What a page still cannot tell (a `%{p}` macro, a sender macro without a sender, a lookup that
+ * failed here) is `unknown` with its reason, as in spfEvaluate.
+ * @param {string} domain
+ * @param {string} ip
+ * @param {{ dns: object, signal?: AbortSignal, record?: string, sender?: string|null, helo?: string|null, maxDepth?: number }} opts
+ *   `record`: the domain's SPF record when already known (skips its TXT query)
+ * @returns {Promise<{ domain: string, ip: string, sender: string|null, helo: string|null, verdict: SpfVerdict,
+ *   tree: SpfNode, mxAddresses: Map<string, { addresses: string[], error: string|null }>, count: number,
+ *   voidCount: number, errors: object[], truncated: boolean, missing: string[] }>} `missing`: the macro
+ *   letters no term could expand (`s`, `l`, `h`, `p` …)
+ */
+export async function spfCheckHost(domain, ip, { dns, signal, record, sender = null, helo = null, maxDepth = 10 } = {}) {
+  const addr = spfAddress(ip);
+  if (!addr) throw new TypeError(`Invalid address: ${String(ip)}`);
+  const d = adaptDns(dns, signal);
+  const r = await spfLookupCount(domain, { dns: d, signal, maxDepth, record, ip: addr, sender, helo });
+  const type = ipVersion(addr) === 6 ? 'AAAA' : 'A';
+  const mxAddresses = new Map();
+  for (const host of spfMxHosts(r.tree).slice(0, SPF_CHECK_MAX_MX_HOSTS)) {
+    const h = await d.resolveHost(host);
+    const lost = h.familyErrors.some((f) => f.type === type);
+    mxAddresses.set(host, (h.status === 'NOERROR' || h.status === 'NXDOMAIN') && !lost
+      ? { addresses: [...h.ipv4, ...h.ipv6], error: null }
+      : { addresses: [], error: h.error || h.status || 'lookup failed' });
+  }
+  throwIfAborted(signal);
+  const missing = [];
+  const walk = (node, depth) => {
+    if (!node || depth > 12) return;
+    for (const t of node.terms || []) {
+      for (const l of t.missing || []) if (!missing.includes(l)) missing.push(l);
+      walk(t.child, depth + 1);
+    }
+  };
+  walk(r.tree, 0);
+  const from = senderParts(sender, r.tree.domain);
+  return {
+    domain: r.tree.domain, ip: addr, sender: from.given ? from.address : null, helo: helo ? canonName(helo) || null : null,
+    verdict: spfEvaluate(r.tree, addr, { mxAddresses }), tree: r.tree, mxAddresses,
+    count: r.count, voidCount: r.voidCount, errors: r.errors, truncated: r.truncated, missing
+  };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1838,9 +2037,27 @@ async function analyzeSpf(name, txtR, d, mxInfo) {
   out.record = record;
   out.parsed = parsed;
   checks.push(makeCheck('spf.present', 'ok', { record }));
-  if (!parsed.valid) checks.push(makeCheck('spf.syntax', 'error', { errors: parsed.errors.map((e) => e.token) }));
   const lookups = await spfLookupCount(name, { dns: d, record });
   out.lookups = lookups;
+  checks.push(...spfTreeChecks(name, parsed, lookups, { nullMx: mxInfo.nullMx }));
+  return out;
+}
+
+/**
+ * Domain Health's findings about an SPF policy whose record is read and whose tree is expanded:
+ * a syntax error, what a sender no term lists gets (its own `all`, or what an include or redirect
+ * hands over), ptr, terms after `all`, an ignored redirect, the length, huge ranges, a null MX
+ * without `-all`, the lookup and void-lookup limits, broken includes and lookups that failed.
+ * Pure; DNS Lookup › Explain shows the same findings (`health.<id>.title` / `.detail`).
+ * @param {string} name the domain
+ * @param {object} parsed {@link parseSpf} of its record
+ * @param {object} lookups {@link spfLookupCount} of it
+ * @param {{ nullMx?: boolean }} [opts] the domain publishes a null MX
+ * @returns {Array<object>} Checks
+ */
+export function spfTreeChecks(name, parsed, lookups, { nullMx = false } = {}) {
+  const checks = [];
+  if (!parsed.valid) checks.push(makeCheck('spf.syntax', 'error', { errors: parsed.errors.map((e) => e.token) }));
   const allCode = { '-': 'spf.all-fail', '~': 'spf.all-softfail', '?': 'spf.all-neutral', '+': 'spf.all-pass' };
   const allSeverity = { '-': 'ok', '~': 'info', '?': 'warn', '+': 'error' };
   const own = parsed.all ? parsed.terms[parsed.allIndex].raw : null;
@@ -1865,7 +2082,7 @@ async function analyzeSpf(name, txtR, d, mxInfo) {
     const open = nestedOpen.length > 0 || parsed.terms.some((t) => t.qualifier === '+' && (t.cidr4 === 0 || t.cidr6 === 0)); // ip4/ip6/a/mx with /0
     checks.push(makeCheck('spf.broad', open ? 'error' : 'warn', { terms: [...broad, ...nestedOpen] }));
   }
-  if (mxInfo.nullMx && parsed.all !== '-') checks.push(makeCheck('spf.null-mx', 'info', {}));
+  if (nullMx && parsed.all !== '-') checks.push(makeCheck('spf.null-mx', 'info', {}));
 
   if (lookups.count > SPF_LOOKUP_LIMIT) {
     checks.push(makeCheck('spf.lookups-exceeded', 'error', { count: lookups.count, limit: SPF_LOOKUP_LIMIT }));
@@ -1884,36 +2101,57 @@ async function analyzeSpf(name, txtR, d, mxInfo) {
   }
   const temp = nested.filter((e) => e.code === 'dns-error');
   if (temp.length) checks.push(makeCheck('spf.dns-error', 'warn', { details: temp.map((e) => `${e.target || e.domain}: ${e.detail}`) }));
-  return out;
+  return checks;
+}
+
+/**
+ * The DMARC record that applies to a domain (RFC 7489 §6.6.3): the TXT records of `_dmarc.<domain>`
+ * that start with `v=DMARC1`, else the organizational domain's (a subdomain then gets its `sp`).
+ * A lookup that got no answer is an `error` — never "no DMARC record": whether a policy is
+ * inherited cannot be told then.
+ * @param {string} domain
+ * @param {{ dns: object, signal?: AbortSignal, first?: object }} opts `first`: the answer for
+ *   `_dmarc.<domain>` TXT when it was already asked
+ * @returns {Promise<{ domain: string, records: string[], foundAt: string|null, inherited: boolean,
+ *   error: string|null, failure: object|null }>} `records`: the DMARC records where found (more than
+ *   one: receivers ignore DMARC); `failure`: the response of the question that failed
+ */
+export async function findDmarc(domain, { dns, signal, first } = {}) {
+  const name = normalizeHostname(String(domain ?? ''));
+  if (!name) throw new TypeError(`Invalid domain: ${String(domain)}`);
+  const d = adaptDns(dns, signal);
+  const out = { domain: name, records: [], foundAt: null, inherited: false, error: null, failure: null };
+  const res = first ? normResponse(first) : await d.query(`_dmarc.${name}`, 'TXT');
+  if (failed(res)) return { ...out, error: errText(res), failure: res };
+  let recs = txtStrings(res).filter(isDmarcRecord);
+  let at = name;
+  const org = registrableDomain(name);
+  if (!recs.length && org && org !== name) {
+    // RFC 7489 §6.6.3: fall back to the organizational domain's policy.
+    const orgRes = await d.query(`_dmarc.${org}`, 'TXT');
+    // Unknown whether a policy is inherited: not the same as "no DMARC record".
+    if (failed(orgRes)) return { ...out, error: `_dmarc.${org}: ${errText(orgRes)}`, failure: orgRes };
+    const orgRecs = txtStrings(orgRes).filter(isDmarcRecord);
+    if (orgRecs.length) {
+      recs = orgRecs;
+      at = org;
+      out.inherited = true;
+    }
+  }
+  return { ...out, records: recs, foundAt: recs.length ? at : null };
 }
 
 async function analyzeDmarc(name, dmarcR, d) {
   const checks = [];
   const out = { checks, record: null, parsed: null, foundAt: null, inherited: false };
-  let res = dmarcR;
-  let at = name;
-  if (failed(res)) {
-    checks.push(makeCheck('dmarc.error', 'warn', { error: errText(res) }));
+  const found = await findDmarc(name, { dns: d, first: dmarcR });
+  if (found.error) {
+    checks.push(makeCheck('dmarc.error', 'warn', { error: found.error }));
     return out;
   }
-  let recs = txtStrings(res).filter(isDmarcRecord);
-  const org = registrableDomain(name);
-  if (!recs.length && org && org !== name) {
-    // RFC 7489 §6.6.3: fall back to the organizational domain's policy.
-    const orgRes = await d.query(`_dmarc.${org}`, 'TXT');
-    if (failed(orgRes)) {
-      // Unknown whether a policy is inherited: not the same as "no DMARC record".
-      checks.push(makeCheck('dmarc.error', 'warn', { error: `_dmarc.${org}: ${errText(orgRes)}` }));
-      return out;
-    }
-    const orgRecs = txtStrings(orgRes).filter(isDmarcRecord);
-    if (orgRecs.length) {
-      recs = orgRecs;
-      res = orgRes;
-      at = org;
-      out.inherited = true;
-    }
-  }
+  const recs = found.records;
+  const at = found.foundAt || name;
+  out.inherited = found.inherited;
   if (!recs.length) {
     checks.push(makeCheck('dmarc.missing', 'warn', { domain: name }));
     return out;

@@ -627,6 +627,8 @@ const LINK_HOSTS = {
   ],
   // Domain Health › Delegation: the public write-ups of the Sitting Ducks attack and the provider list
   'assets/js/lib/delegation.js': ['blogs.infoblox.com', 'eclypsium.com', 'github.com'],
+  // the page each takeover catalogue entry rests on (Subdomains › Takeover risks links it)
+  'assets/js/lib/takeover.js': ['github.com', 'learn.microsoft.com', 'docs.github.com', 'cloud.google.com', 'hackerone.com'],
   // where a DNS provider's read-only token is made, and how (deSEC's token page is on its API host,
   // desec.io/tokens: a desec URL the registry gives no endpoint)
   'assets/js/lib/zonefetch.js': ['desec.readthedocs.io', 'cloud.digitalocean.com', 'docs.digitalocean.com'],

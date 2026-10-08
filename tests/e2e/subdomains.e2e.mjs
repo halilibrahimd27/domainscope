@@ -401,6 +401,124 @@ const overflowingIn = (page, selector) => page.evaluate((sel) => {
   return out.slice(0, 8);
 }, selector);
 
+/**
+ * Subdomains › Takeover risks, answered in the page. A resolver for example.net and every name
+ * its records point to (CNAME chains followed as a recursive resolver does; a name in no table is
+ * NXDOMAIN), the IANA RDAP bootstrap naming one registry for .org, .tr and .com, and that
+ * registry, which plays a world where the documentation domains are other people's: example.org
+ * is not registered (404), example-test.com.tr is pending deletion, example.com answers 503 until
+ * `window.__rdapHeal` is set (rdap.org, the fallback, answers the same). Every RDAP request is
+ * logged in `window.__rdap`, every Globalping call in `window.__gp`; anything else goes to the
+ * real fetch, which the offline run blocks.
+ */
+const TKO_APEX = 'example.net';
+const TKO_WORDS = ['www', 'old', 'cdn', 'files'].join('\n');
+const TKO_ZONE = {
+  'example.net': {
+    A: ['203.0.113.10'], NS: ['ns1.example.net', 'ns.example-test.com.tr'], MX: [{ preference: 10, exchange: 'mx.example.net' }],
+    TXT: [['v=spf1 include:spf.example.com -all']]
+  },
+  'ns1.example.net': { A: ['203.0.113.53'] },
+  'mx.example.net': { A: ['203.0.113.25'] },
+  'www.example.net': { A: ['203.0.113.10'] },
+  // a deleted Azure App Service app: the name no longer exists
+  'old.example.net': { CNAME: 'old-app.azurewebsites.net' },
+  // a CDN domain nobody holds any more
+  'cdn.example.net': { CNAME: 'cdn.example.org' },
+  // an S3 bucket endpoint: it resolves whatever the bucket's state, only the page tells
+  'files.example.net': { CNAME: 'files.example.net.s3.amazonaws.com' },
+  'files.example.net.s3.amazonaws.com': { A: ['198.51.100.7'] },
+  'ns.example-test.com.tr': { A: ['198.51.100.53'] }
+};
+const takeoverScript = (zone) => `(() => {
+  const ZONE = ${JSON.stringify(zone)};
+  const SOA = { mname: 'ns.dns-infra.invalid', rname: 'hostmaster.dns-infra.invalid', serial: 1, refresh: 900, retry: 900, expire: 1800, minimum: 60 };
+  const answer = (name, type) => {
+    const answers = [];
+    let cur = name;
+    for (let i = 0; i < 8; i += 1) {
+      const node = ZONE[cur];
+      if (!node) {
+        const exists = Object.keys(ZONE).some((k) => k.endsWith('.' + cur));
+        return { rcode: exists ? 'NOERROR' : 'NXDOMAIN', answers };
+      }
+      if (node.CNAME && type !== 'CNAME') {
+        answers.push({ name: cur, type: 'CNAME', ttl: 300, data: node.CNAME });
+        cur = node.CNAME;
+        continue;
+      }
+      for (const data of node[type] || []) answers.push({ name: cur, type, ttl: 300, data });
+      return { rcode: 'NOERROR', answers };
+    }
+    return { rcode: 'SERVFAIL', answers };
+  };
+  const json = (status, body, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/rdap+json', ...headers } });
+  const realFetch = window.fetch.bind(window);
+  let wire = null;
+  window.__rdap = [];
+  window.__rdapHeal = false;
+  // Globalping: the quota, one measurement per POST, and a released S3 bucket's page for every GET.
+  window.__gp = [];
+  window.__gpm = {};
+  const S3_PAGE = '<?xml version="1.0" encoding="UTF-8"?><Error><Code>NoSuchBucket</Code><Message>The specified bucket does not exist</Message></Error>';
+  const globalping = (url, init) => {
+    const p = url.slice('https://api.globalping.io/v1'.length);
+    const method = String((init && init.method) || 'GET').toUpperCase();
+    let body = null;
+    try { body = init && typeof init.body === 'string' ? JSON.parse(init.body) : null; } catch { body = null; }
+    window.__gp.push(method + ' ' + p + (body ? ' ' + body.type + ' ' + body.target : ''));
+    if (p === '/limits') return json(200, { rateLimit: { measurements: { create: { type: 'ip', limit: 250, remaining: 240, reset: 1800 } } } });
+    if (p === '/measurements' && method === 'POST') {
+      const id = 'fakeTko' + String(window.__gp.length).padStart(6, '0');
+      window.__gpm[id] = body.target;
+      return json(202, { id, probesCount: 1 }, { 'x-ratelimit-limit': '250', 'x-ratelimit-consumed': '11', 'x-ratelimit-remaining': '239', 'x-ratelimit-reset': '1800', 'x-request-cost': '1' });
+    }
+    const mm = /^[/]measurements[/]([A-Za-z0-9]+)$/.exec(p);
+    if (mm && window.__gpm[mm[1]]) {
+      const at = new Date().toISOString();
+      return json(200, { id: mm[1], type: 'http', status: 'finished', createdAt: at, updatedAt: at, target: window.__gpm[mm[1]], probesCount: 1,
+        results: [{ probe: { continent: 'EU', region: 'Western Europe', country: 'DE', state: null, city: 'Frankfurt', asn: 64500, network: 'Example Net', tags: [], resolvers: [] },
+          result: { status: 'finished', resolvedAddress: '198.51.100.7', headers: { 'content-type': 'application/xml' }, rawHeaders: 'Content-Type: application/xml',
+            rawBody: S3_PAGE, rawOutput: '', truncated: false, statusCode: 404, statusCodeName: 'Not Found', timings: { total: 120 }, tls: null } }] });
+    }
+    return json(404, { error: { type: 'not_found', message: 'Not Found.' } });
+  };
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (url.startsWith('https://api.globalping.io/v1/')) return globalping(url, init);
+    if (url === 'https://data.iana.org/rdap/dns.json') {
+      return json(200, { version: '1.0', publication: '2026-10-01T00:00:00Z', services: [[['org', 'tr', 'com'], ['https://rdap.registry.invalid/']]] });
+    }
+    const rd = /^https:[/][/](?:rdap[.]registry[.]invalid|rdap[.]org)[/]domain[/]([^/?#]+)$/.exec(url);
+    if (rd) {
+      const d = rd[1].toLowerCase();
+      window.__rdap.push(d);
+      if (d === 'example.com' && !window.__rdapHeal) return json(503, { errorCode: 503, title: 'Service Unavailable' });
+      if (d === 'example-test.com.tr') {
+        return json(200, { objectClassName: 'domain', ldhName: 'example-test.com.tr', status: ['pending delete'],
+          events: [{ eventAction: 'expiration', eventDate: '2026-09-01T00:00:00Z' }] });
+      }
+      return json(404, { errorCode: 404, title: 'Not Found' });
+    }
+    const m = /[?&]dns=([^&]+)/.exec(url);
+    if (!m) return realFetch(input, init);
+    wire = wire || await import(new URL('assets/js/lib/dnswire.js', document.baseURI).href);
+    const q = wire.decodeMessage(wire.base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
+    const name = String(q.name).toLowerCase().replace(/[.]$/, '');
+    const out = answer(name, q.type);
+    return new Response(wire.encodeMessage({
+      id: 0, flags: { qr: true, rd: true, ra: true }, rcode: out.rcode, questions: [{ name: q.name, type: q.type }], answers: out.answers,
+      authorities: out.answers.length && out.rcode === 'NOERROR' ? [] : [{ name: 'example.net', type: 'SOA', ttl: 300, data: SOA }], edns: {}
+    }), { headers: { 'content-type': 'application/dns-message' } });
+  };
+})();`;
+
+/** The Takeover risks rows: severity code, host, record kind, target (from the row's cells). */
+const takeoverRows = (page) => page.evaluate(() => [...document.querySelectorAll('.tko .tko-table tbody tr.dt-row')].map((tr) => {
+  const cells = [...tr.querySelectorAll('td')].map((td) => td.textContent.trim());
+  return cells.slice(0, 4).join(' | ');
+}));
+
 /* ------------------------------------------------------------------------ */
 /* Main                                                                     */
 /* ------------------------------------------------------------------------ */
@@ -1957,6 +2075,128 @@ async function main() {
         await sleep(800);
         assertEqual((await snapshot()).run, third, 'nothing started without the zone');
         await assertClean(tab, 'zone scan while busy', origin);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    run.group('Takeover risks (emulated DNS and RDAP, nothing leaves the page)');
+    await run.step(`${TKO_APEX}: nothing sent before the click; dangling, unregistered and pending-delete references; n/a and Retry; CSV; the Globalping page check; TR/EN × light/dark at 375 and 320 px`, async () => {
+      const tab = await browser.newPage('about:blank', { width: 1440, height: 900 });
+      await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+      const external = [];
+      tab.conn.on('Network.requestWillBeSent', (p) => {
+        const u = p.request && p.request.url;
+        if (u && /^https?:/.test(u) && new URL(u).origin !== origin) external.push(u);
+      }, tab.sessionId);
+      try {
+        await tab.send('Network.enable');
+        await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: takeoverScript(TKO_ZONE) });
+        await installDownloadCapture(tab);
+        await tab.goto(`${server.url}#/about`);
+        await waitReady(tab);
+        await setLangUi(tab, 'en');
+        await tab.evaluate(async (words) => {
+          localStorage.setItem('ssds.subdomains.options', JSON.stringify({ sources: [], bruteforce: 'small', permutations: false, originHints: false }));
+          (await import('./assets/js/state.js')).state.setWorkspaceData('wordlist', words);
+        }, TKO_WORDS);
+        await tab.evaluate((d) => { location.hash = `#/subdomains?domain=${d}&run=1`; }, TKO_APEX);
+        await tab.waitFor(() => document.querySelector('[data-action="sub-link-start"]'), { timeout: 15000, message: 'link prompt' });
+        await tab.click('[data-action="sub-link-start"]');
+        await tab.waitFor(() => document.querySelector('.sub-run-ui'), { timeout: 15000, message: 'started' });
+        const id = await currentRunId(tab);
+        assertEqual(await tab.waitFor(DONE(id), { timeout: 60000, message: 'emulated scan done' }), 'done', 'status');
+        await openTab(tab, 'overview');
+        await tab.waitFor(() => document.querySelector('.tko [data-action="tko-run"]'), { timeout: 15000, message: 'the takeover card' });
+        const before = await tab.evaluate(() => ({
+          title: document.querySelector('.tko .card-title')?.textContent,
+          notSent: !!document.querySelector('.tko [data-part="tko-not-sent"]'),
+          disabled: document.querySelector('.tko [data-action="tko-run"]').disabled,
+          rdap: window.__rdap.length,
+          beforeCta: document.querySelector('.tko').nextElementSibling === document.querySelector('.sub-cta')
+        }));
+        assertEqual(before, { title: 'Takeover risks', notSent: true, disabled: false, rdap: 0, beforeCta: true }, 'the card before the click');
+
+        await tab.click('.tko [data-action="tko-run"]');
+        await tab.waitFor(() => document.querySelector('.tko [data-part="tko-summary"]'), { timeout: 30000, message: 'the takeover results' });
+        const first = await tab.evaluate(() => ({
+          risks: document.querySelector('.tko [data-part="tko-summary"]').dataset.risks,
+          failed: [...document.querySelectorAll('.tko [data-failed]')].map((li) => [li.dataset.failed, li.querySelector('.na-mark')?.dataset.na || null]),
+          retry: !!document.querySelector('.tko [data-action="tko-retry"]'),
+          page: !!document.querySelector('.tko [data-action="tko-http"]')
+        }));
+        assertEqual(first, { risks: '3', failed: [['example.com', 'rdap']], retry: true, page: true }, 'three risks, the 503 as n/a with Retry, the page check offered');
+        assertEqual(await takeoverRows(tab), [
+          'Critical | cdn.example.net | CNAME | cdn.example.org',
+          'High | example.net | NS | ns.example-test.com.tr',
+          'High | old.example.net | CNAME | old-app.azurewebsites.net',
+          'To check | files.example.net | CNAME | files.example.net.s3.amazonaws.com'
+        ], 'the rows, most severe first');
+        const evidence = await tab.evaluate(() => document.querySelector('.tko .tko-table tbody tr.dt-row td[data-label="Evidence"]')?.textContent || '');
+        assert(/example\.org looks unregistered/.test(evidence), `the evidence names the domain: ${evidence}`);
+        const asked = await tab.evaluate(() => window.__rdap.slice());
+        assert(asked.includes('example.org') && asked.includes('example-test.com.tr') && !asked.some((d) => /example\.net|amazonaws|azurewebsites/.test(d)),
+          `RDAP asked only the outside domains: ${asked.join(', ')}`);
+
+        // Retry asks only the lookup that failed; it now answers, and the SPF include joins the risks.
+        await tab.evaluate(() => { window.__rdapHeal = true; window.__rdapBefore = window.__rdap.length; });
+        await tab.click('.tko [data-action="tko-retry"]');
+        await tab.waitFor(() => document.querySelector('.tko [data-part="tko-summary"]')?.dataset.risks === '4', { timeout: 30000, message: 'after Retry' });
+        const again = await tab.evaluate(() => ({ asked: window.__rdap.slice(window.__rdapBefore), failed: document.querySelectorAll('.tko [data-failed]').length }));
+        assertEqual(again, { asked: ['example.com'], failed: 0 }, 'only example.com asked again, no failure left');
+        assert((await takeoverRows(tab)).includes('High | example.net | SPF include | spf.example.com'), 'the SPF include is at risk');
+
+        // CSV: severity codes (the same in every language) and the chain.
+        await takeDownloads(tab);
+        await tab.click('.tko [data-export="csv"]');
+        await tab.waitFor(() => (window.__downloads || []).length === 1, { message: 'CSV export' });
+        const [csv] = await takeDownloads(tab);
+        const lines = csv.text.replace(/^﻿/, '').trim().split(/\r\n/);
+        assertEqual(lines[0], 'Severity,Host,Record,Points to,Service,Service status,Evidence,Fix,Reference', 'CSV header');
+        assertEqual(lines.length, 6, 'a header and five rows');
+        assert(lines[1].startsWith('critical,cdn.example.net,cname,cdn.example.org,'), `first row: ${lines[1]}`);
+        assert(lines.some((l) => l.startsWith('high,old.example.net,cname,old-app.azurewebsites.net,Azure App Service,vulnerable,')), 'the Azure row');
+
+        // The page check: the consent names the host and the cost, one Globalping GET follows, and the
+        // S3 "NoSuchBucket" page raises that row.
+        await tab.click('.tko [data-action="tko-http"]');
+        await tab.waitFor(() => document.querySelector('dialog.gp-confirm[open]'), { message: 'consent dialog' });
+        const consent = await tab.evaluate(() => ({
+          privacy: document.querySelector('dialog.gp-confirm[open] [data-gp="confirm-privacy"]')?.textContent || '',
+          probes: document.querySelector('dialog.gp-confirm[open] [data-gp="confirm-cost"]')?.dataset.probes,
+          calls: window.__gp.slice()
+        }));
+        assert(consent.privacy.includes('files.example.net'), `the consent names the host: ${consent.privacy}`);
+        assertEqual([consent.probes, consent.calls], ['1', ['GET /limits']], 'one probe; only the free quota read before the consent');
+        await tab.click('dialog.gp-confirm[open] .modal-foot .btn-primary');
+        await tab.waitFor(() => /Pages checked/.test(document.querySelector('.tko [data-part="tko-http"] [role="status"]')?.textContent || ''), { timeout: 20000, message: 'page check done' });
+        assertEqual((await tab.evaluate(() => window.__gp.slice())).filter((c) => c.startsWith('POST')), ['POST /measurements http files.example.net'], 'one GET of the S3 host');
+        assert((await takeoverRows(tab)).includes('High | files.example.net | CNAME | files.example.net.s3.amazonaws.com'), 'the fingerprint raised the S3 row');
+        assertEqual(await tab.evaluate(() => document.querySelector('.tko [data-part="tko-summary"]').dataset.risks), '5', 'five references at risk');
+        assertEqual(await tab.evaluate(() => !!document.querySelector('.tko [data-action="tko-http"]')), false, 'nothing left to check');
+
+        // Phones, both languages and themes: the card keeps its results across the re-mount and fits.
+        for (const width of [375, 320]) {
+          await tab.setViewport({ width, height: 800, mobile: true });
+          for (const lang of ['tr', 'en']) {
+            for (const scheme of ['dark', 'light']) {
+              await setLangUi(tab, lang);
+              await tab.emulateMedia({ 'prefers-color-scheme': scheme });
+              await tab.waitFor(() => document.querySelector('.tko [data-part="tko-summary"]'), { timeout: 15000, message: 'results after re-mount' });
+              await sleep(150);
+              await assertNoHorizontalScroll(tab, `takeover ${width} ${lang} ${scheme}`);
+              assertEqual(await overflowingIn(tab, '.tko'), [], `the card inside ${width} px (${lang} ${scheme})`);
+            }
+          }
+        }
+        await setLangUi(tab, 'tr');
+        assertEqual(await tab.evaluate(() => document.querySelector('.tko .card-title')?.textContent), 'Ele geçirme riskleri', 'Turkish title');
+        assert((await takeoverRows(tab))[0].startsWith('Kritik | cdn.example.net'), 'Turkish severity');
+        await shotEl(tab, opts, 'subdomains-takeover-tr', '.tko');
+        await setLangUi(tab, 'en');
+        assertEqual(external, [], 'nothing left the page');
+        await assertNoMissingKeys(tab);
+        await assertClean(tab, 'takeover risks', origin);
       } finally {
         await tab.close();
       }

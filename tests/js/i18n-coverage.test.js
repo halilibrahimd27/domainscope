@@ -59,6 +59,8 @@ before(async () => {
   await imp('assets/js/ui/related-domains.js');
   // Subdomains: a scan's progress and results, loaded with the first scan.
   subRun = await imp('assets/js/ui/subdomains-run.js');
+  // Subdomains › Overview › Takeover risks: loaded with the results.
+  await imp('assets/js/ui/takeover-panel.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
   // IP Intel › a row's routing, RPKI and abuse contact panel: loaded when a row's details first open.
@@ -426,6 +428,14 @@ describe('i18n coverage', () => {
     for (const v of ['known']) { add(`scan.srv.via.${v}`); add(`scan.hint.${v}`); add(`sub.hint.${v}`); }
     // IP Intel › Blocklists (ui/dnsbl-panel.js over lib/dnsbl.js): every status, refusal, error, skip and meaning.
     for (const k of (await imp('assets/js/ui/dnsbl-panel.js')).generatedKeys()) add(k);
+    // Subdomains › Takeover risks (ui/takeover-panel.js over lib/takeover.js): every code it words.
+    const [tko, tkp] = await Promise.all([imp('assets/js/lib/takeover.js'), imp('assets/js/ui/takeover-panel.js')]);
+    for (const k of tkp.generatedKeys()) add(k);
+    for (const s of tko.TAKEOVER_SEVERITIES) add(`tko.sev.${s}`);
+    for (const k of tko.TAKEOVER_REF_KINDS) add(`tko.kind.${k}`);
+    for (const s of tko.TAKEOVER_STATUSES) add(`tko.status.${s}`);
+    for (const r of tko.TAKEOVER_REASONS) add(`tko.reason.${r}`);
+    for (const o of tko.HTTP_CHECK_OUTCOMES.filter((x) => x !== 'in-use')) add(`tko.http.outcome.${o}`);
     assert.deepEqual(missingIn(keys), []);
   });
 

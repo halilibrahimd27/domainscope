@@ -1286,9 +1286,17 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
   // from the CT results this run already has, loaded only for a run that asks crt.sh or Cert Spotter.
   const relatedHost = h('div', { class: 'sub-rel-host' });
   let related = null;
+  let takeover = null;
   const renderRelated = () => {
     if (related) related.update(run, { busy: run.status === 'running' });
+    if (takeover) takeover.update(run);
   };
+  loadOnFirstUse(() => import('../ui/takeover-panel.js'), ctx.checkOutdated).then((m) => {
+    if (ctx.signal.aborted) return;
+    takeover = m.TakeoverPanel(ctx);
+    cta.before(takeover.el);
+    renderRelated();
+  }, () => {});
   if ((run.config.sources || []).some((s) => s === 'crtsh' || s === 'certspotter')) {
     loadOnFirstUse(() => import('../ui/related-domains.js'), ctx.checkOutdated).then((m) => {
       if (ctx.signal.aborted) return;

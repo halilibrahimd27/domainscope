@@ -72,6 +72,8 @@ const JS = join(ASSETS, 'js');
  * only they use, lib/export.js and lib/subtabs.js — off the start route: they load with the first
  * scan, together with the DoH client, and the shell modulepreloads them once the page is idle; the
  * sidebar's denser groups for 24 tools added a few bytes to style.css: ≈ 332 KB (339,887 bytes).
+ * The Takeover risks card's hook (ui/takeover-panel.js, with its engine) sits in ui/subdomains-run.js
+ * with the rest of a scan's results, so it adds nothing to the route.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

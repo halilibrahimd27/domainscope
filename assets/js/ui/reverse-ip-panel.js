@@ -404,7 +404,8 @@ export function ReverseIpPanel({ ctx, getIntel, workspaceFor, onNames = null }) 
     if (busy) state = 'pending';
     else if (failedIps.length) state = 'failed';
     else if (results.some((r) => r.state === 'ok')) state = 'ok';
-    const skip = results.length && results.every((r) => r.state === 'skipped') ? results[0].skip : null;
+    // Not asked anywhere (no key, a private address, InternetDB's lockout): why.
+    const skip = results.length && results.every((r) => r.skip) ? results[0].skip : null;
     const total = results.reduce((n, r) => (Number.isFinite(r.total) ? n + r.total : n), 0);
     const truncated = results.some((r) => r.truncated);
     return { source, state, names: names.size, failedIps, status: failures.length ? sourceStatus(failures[0].failure) : null, skip, total, truncated };
@@ -482,7 +483,8 @@ export function ReverseIpPanel({ ctx, getIntel, workspaceFor, onNames = null }) 
     clear(handoffEl);
     const { domains } = reverseCounts(rows);
     const ips = [...lookups.keys()];
-    const publicDomains = domains.filter((d) => !rows.find((r) => r.domain === d && (r.status === 'internal' || r.status === 'workspace')));
+    // A domain only the workspace knows (or that looks internal) is never handed to a tool that sends it.
+    const publicDomains = domains.filter((d) => rows.some((r) => r.domain === d && r.status !== 'internal' && r.status !== 'workspace'));
     handoffEl.hidden = !rows.length;
     if (!rows.length) return;
     const links = publicDomains.slice(0, MAX_HANDOFF_DOMAINS).map((d) => h('a', {

@@ -44,6 +44,14 @@ import {
 } from './scan.e2e.mjs';
 import { RESOLVERS, ECS_RESOLVERS, GEO_VANTAGES } from '../../assets/js/lib/resolvers.js';
 import { FLUSH_LINKS } from '../../assets/js/lib/expected.js';
+import { pinnedClockScript } from './clock.mjs';
+
+/**
+ * The instant the expectations were written for: 10:00 local time on a fixed day, where the page's clock starts. The
+ * cards say "expires by 11:43 AM" for an expiry today and put the date before the time for any other day, so a run in
+ * the last hour before midnight would read "Oct 9, 2026, 12:43 AM".
+ */
+const CUTOVER_NOW = new Date(2026, 9, 8, 10, 0, 0).getTime();
 
 const RESOLVER_URLS = RESOLVERS.map((r) => [r.url, r.id]);
 const JSON_URLS = ECS_RESOLVERS.map((r) => [r.url, r.id]);
@@ -249,6 +257,7 @@ async function main() {
     }, page.sessionId);
     await page.send('Network.enable');
     await page.send('Network.setBlockedURLs', { urls: ['https://*'] });
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: pinnedClockScript(CUTOVER_NOW) });
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeDnsScript() });
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeGpScript() });
     await installDownloadCapture(page);

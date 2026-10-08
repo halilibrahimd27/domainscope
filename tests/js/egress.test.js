@@ -614,7 +614,7 @@ const LINK_HOSTS = {
   'assets/js/ui/chain-repair.js': ['www.ccadb.org'],
   // an example CAA accounturi in the field's placeholder, never requested
   'assets/js/views/change.js': ['acme-v02.api.letsencrypt.org'],
-  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'sslmate.com'],
+  'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'globalping.io', 'hackertarget.com', 'sslmate.com', 'www.robtex.com', 'www.shodan.io', 'www.whoisxmlapi.com'],
   'assets/js/views/ip.js': ['bgp.he.net']
 };
 /**

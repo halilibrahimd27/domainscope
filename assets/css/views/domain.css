@@ -396,3 +396,146 @@
     print-color-adjust: exact;
   }
 }
+
+/* ---- lookalike domains (ui/lookalike-panel.js, .lk-*) ------------------------ */
+
+.dov-lk-body,
+.lk-hint,
+.lk-sends,
+.lk-sent,
+.lk-counts,
+.lk-rdap,
+.lk-ct-hint {
+  margin: 0;
+}
+
+.lk-controls,
+.lk-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: end;
+  justify-content: space-between;
+}
+
+.lk-tools {
+  align-items: center;
+}
+
+.lk-budget {
+  min-width: 10rem;
+}
+
+.lk-buttons,
+.lk-ct {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  align-items: center;
+}
+
+.lk-status:empty {
+  display: none;
+}
+
+.lk-failed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0;
+}
+
+.lk-risk {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lk-name {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.lk-unicode,
+.lk-ascii,
+.lk-item {
+  overflow-wrap: anywhere;
+}
+
+.lk-list,
+.lk-reasons {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+
+.lk-reasons {
+  gap: 4px;
+}
+
+/* A phone: each lookalike is a card of labelled lines (the headers come from data-label). */
+@media (max-width: 640px) {
+  .lk-controls .field,
+  .lk-budget {
+    flex: 1 1 100%;
+  }
+
+  .lk-table .dt-table,
+  .lk-table .dt-table tbody {
+    display: block;
+  }
+
+  .lk-table .dt-table thead {
+    display: none;
+  }
+
+  .lk-table .dt-table tbody tr.dt-row {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 6px 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .lk-table .dt-table td {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    justify-items: start;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .lk-table .dt-table td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .lk-table .dt-table td:empty {
+    display: none;
+  }
+}
+
+@media print {
+  .dov-lk-hook,
+  .lk-controls,
+  .lk-tools,
+  .lk-actions,
+  .lk-status {
+    display: none;
+  }
+
+  .lk-panel {
+    break-before: page;
+  }
+}

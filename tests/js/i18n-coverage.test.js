@@ -58,6 +58,8 @@ before(async () => {
   await imp('assets/js/ui/related-domains.js');
   // Zone File › Compare and Convert: loaded on the first of those tabs.
   await imp('assets/js/ui/zone-tools.js');
+  // Domain overview › Lookalike domains: loaded on the first click of Find lookalikes.
+  await imp('assets/js/ui/lookalike-panel.js');
   views = {};
   for (const id of VIEW_IDS) views[id] = await imp(`assets/js/views/${id}.js`);
   en = new Set(i18n.listKeys('en'));
@@ -401,6 +403,8 @@ describe('i18n coverage', () => {
     for (const k of om.generatedKeys()) add(k);
     for (const e of omp.FORM_ERRORS) add(`omp.err.${e}`);
     for (const e of estate.REPORT_ERRORS) add(`omp.file.${e}`);
+    // Domain overview › Lookalike domains (ui/lookalike-panel.js): every technique, level and reason.
+    for (const k of (await imp('assets/js/ui/lookalike-panel.js')).generatedKeys()) add(k);
     for (const v of ['known']) { add(`scan.srv.via.${v}`); add(`scan.hint.${v}`); add(`sub.hint.${v}`); }
     assert.deepEqual(missingIn(keys), []);
   });

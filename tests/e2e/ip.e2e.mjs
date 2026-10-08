@@ -630,6 +630,29 @@ async function offlineGroup(browser, server) {
       }
     });
 
+    await step('the header’s Copy link leaves out private and inventory addresses, as Copy summary’s link does', async () => {
+      await page.evaluate(async () => {
+        (await import('./assets/js/state.js')).state.setInventory('origin-web 198.51.100.20\n');
+        window.__ipFake.limited = [];
+      });
+      try {
+        await gotoHash(page, '#/about', 'about');
+        await gotoHash(page, `#/ip?ips=${IPS}`, 'ip');
+        await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows shown' });
+        await page.evaluate(() => document.querySelector('[data-action="run"]').click());
+        await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows looked up' });
+        await stubClipboard(page);
+        await page.evaluate(() => document.querySelector('.page-actions .copy-btn').click());
+        await page.waitFor(() => window.__clip.length === 1, { message: 'link copied' });
+        const [link] = await takeClipboard(page);
+        assertEqual(new URL(link).hash, '#/ip?ips=203.0.113.7', 'the header’s Copy link');
+        const summary = await page.evaluate(async () => (await import('./assets/js/ui/summary-button.js')).resultPermalink(document.querySelector('#page-body')));
+        assertEqual(new URL(summary).hash, '#/ip?ips=203.0.113.7', 'Copy summary’s link');
+      } finally {
+        await page.evaluate(async () => { (await import('./assets/js/state.js')).state.clearInventory(); });
+      }
+    });
+
     for (const [n, scheme, lang, width] of [[30, 'dark', 'tr', 1440], [31, 'light', 'en', 375], [32, 'dark', 'tr', 375]]) {
       await step(`[${scheme}, ${lang.toUpperCase()}, ${width} px] the failed state reads well and fits`, async () => {
         const ip = `203.0.113.${n}`;

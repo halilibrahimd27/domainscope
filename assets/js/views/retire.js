@@ -1357,7 +1357,10 @@ export function mount(container, ctx) {
       ctx.setActions();
       return;
     }
-    ctx.setActions(CopyButton(() => ctx.shareUrl(params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+    // Like Copy summary's link, it leaves out private and inventory addresses (the address bar
+    // keeps them: a reload fills in the same check).
+    ctx.setActions(CopyButton(() => ctx.shareUrl(permalinkParams('retire', params, { exclude: [...ctx.getInventoryIndex().keys()] })),
+      { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
   }
 
   /** Fill an empty domain box from what the page session knows (the last scan, the imported zone). */

@@ -469,6 +469,11 @@ async function main() {
       assert(md.includes('- Owned by 1 server in your list'), 'a count of servers');
       assert(!md.includes('web01'), 'never a server name');
       assert(/#\/retire\?domains=example\.com$/m.test(md), `the link leaves out the inventory address: ${md}`);
+      // The page header's Copy link follows the same rule.
+      await stubClipboard(page);
+      await jsClick(page, '.page-actions .copy-btn');
+      const [link] = await takeClipboard(page);
+      assertEqual(new URL(link).hash, '#/retire?domains=example.com', 'the header’s Copy link leaves out the inventory address too');
       await jsClick(page, '[data-export="csv"]');
       await jsClick(page, '[data-export="json"]');
       const [csv, json] = await takeDownloads(page);

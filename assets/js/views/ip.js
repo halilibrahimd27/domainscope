@@ -519,16 +519,18 @@ export function mount(container, ctx) {
   const sourcesEl = h('div', { class: 'src-chips ipi-sources', hidden: true, attrs: { role: 'group', 'aria-label': t('ipi.det.sources'), tabindex: -1 } });
   const emptyEl = h('div', { class: 'card ipi-empty' }, EmptyState({ icon: 'network', title: t('ipi.emptyTitle'), message: t('ipi.emptyBody', { max: formatNumber(MAX_IPS) }) }));
   // No part of the form: Ctrl/Cmd+Enter in the table's filter starts no new run.
-  // "Copy summary": one line (lib/summary.js); the link leaves out private and inventory addresses.
-  // The link is the run's own (never the route, which a carried address may have changed).
+  /** The link a share button copies for a run's params: private and inventory addresses left out. */
+  const permalink = (params) => ctx.shareUrl(permalinkParams('ip', params, {
+    exclude: [...ctx.getInventoryIndex().keys(), ...(current ? current.rows.filter((r) => r.servers.length).map((r) => r.ip) : [])]
+  }));
+  // "Copy summary": one line (lib/summary.js); the link is the run's own (never the route, which a
+  // carried address may have changed).
   const summary = SummaryButton({
     kind: 'ip',
     disabled: true,
     inventory: 'count',
     facts: () => (current && !current.controller && current.rows.length ? { rows: current.rows, at: current.finishedAt, stopped: current.stopped } : null),
-    url: () => (current ? ctx.shareUrl(permalinkParams('ip', lookupParams(current.text), {
-      exclude: [...ctx.getInventoryIndex().keys(), ...current.rows.filter((r) => r.servers.length).map((r) => r.ip)]
-    })) : null)
+    url: () => (current ? permalink(lookupParams(current.text)) : null)
   });
   const results = h('div', { class: 'stack ipi-results', hidden: true, dataset: { shortcutScope: 'results' } },
     progress, notesEl, h('div', { class: 'ipi-results-bar' }, summary.el), statsGrid, zeroNote, quotaNote, sourcesEl, table);
@@ -812,10 +814,11 @@ export function mount(container, ctx) {
   /**
    * "Copy link" in the page header when a link can carry the run's addresses (at most 40 of
    * them), after a run and again for a run restored by a re-mount: the run on screen, not the box,
-   * which may hold a carried address.
+   * which may hold a carried address. Like Copy summary's link, it leaves out private and
+   * inventory addresses (the address bar keeps them: a reload runs the same lookup).
    */
   function setShareAction(params) {
-    if (params.ips) ctx.setActions(CopyButton(() => ctx.shareUrl(params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+    if (params.ips) ctx.setActions(CopyButton(() => permalink(params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
     else ctx.setActions();
   }
 

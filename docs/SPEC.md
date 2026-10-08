@@ -1657,7 +1657,8 @@ export function renderMarkdown(doc) / renderPlainText(doc) / renderSummary(doc, 
                                                    // Markdown puts an empty line before the footer (CommonMark would continue the last item with it); plain text does not;
                                                    // the URL's \ ` * [ ] < > ~ | after the host are percent-encoded (a crafted query or check link cannot add a link or an image)
 export function permalinkParams(view, params, { exclude = [] } = {}) -> Record<string, string>   // PERMALINK_PARAMS keys only, never an empty value; zone / cert / reports: none; ip: host names and
-                                                                                                   // public addresses not in `exclude` (inventory addresses)
+                                                                                                   // public addresses not in `exclude` (inventory addresses); the page header's Copy link of
+                                                                                                   // IP Intel and Retire an IP uses it too (the address bar keeps every address: a reload repeats the run)
 export function healthScore(summary) / trafficLight(summary)   // 100 − 20 per error − 6 per warning (0…100); 'error' | 'warn' | 'ok' (views/health re-exports both)
 export function cleanText(v) / mdEscape(v) / mdCode(v) / utcStamp(date)   // control + bidi characters out; \ ` * [ ] < > ~ | escaped, `_` unless between letters / digits; code span ≤ 96 chars, ` → '; 'YYYY-MM-DD HH:MM UTC'
 export function textParts(t, key, params) -> Part[]   // a translated text with its string params (not plain numbers) as code parts: what problem lines use

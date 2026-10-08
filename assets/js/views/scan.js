@@ -20,7 +20,9 @@
  *
  * Run starts lib/scanner.runScan(); stages, per-source status and hosts stream into the
  * page. Results: stat cards, then tabs Hosts / Servers / Behind CDN / Verify (only with a
- * certificate: ui/verify-panel.js checks it from the internet) / DANE (only with a certificate:
+ * certificate: ui/verify-panel.js checks it from the internet) / Rollout (only with a certificate:
+ * ui/rollout-panel.js, loaded on its first show, a checklist of the servers that need it kept in the
+ * workspace, and deploy snippets per server and platform) / DANE (only with a certificate:
  * ui/dane-panel.js, on a click, compares the TLSA records of its mail servers, names and covered
  * hosts with it) / Sources / CT certificates,
  * plus exports (hosts CSV, servers CSV, full JSON, names.txt, targets.txt) and the ready-to-run command for the companion CLI (cli/ssl_origin_scan.py), which
@@ -62,7 +64,7 @@ import {
 } from '../lib/export.js';
 import { getResolver } from '../lib/resolvers.js';
 import { pemEncode } from '../lib/x509.js';
-import { errorKind, splitList } from '../lib/util.js';
+import { errorKind, onceAsync, splitList } from '../lib/util.js';
 import { backToLastRun, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { scanFraction } from '../lib/jobprogress.js';
@@ -91,6 +93,8 @@ import {
 // The Verify tab (Globalping check from the internet); the job it runs lives on the scan run.
 import { VerifyPanel, verifyTabBadge, cancelVerify, verifyExport } from '../ui/verify-panel.js';
 import { summarizeVerify, verifyHeadline } from '../lib/verify.js';
+// The Rollout tab (the servers' checklist, deploy snippets): its module is loaded on the tab's first show.
+const loadRollout = onceAsync(() => import('../ui/rollout-panel.js'));
 import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
 // The DANE / TLSA tab (shared with the Certificate view); its job lives on the scan run too.
@@ -357,6 +361,7 @@ registerStrings('en', {
   'scan.tab.cdn': 'Behind CDN',
   'scan.tab.sources': 'Sources',
   'scan.tab.ct': 'CT certificates',
+  'scan.tab.rollout': 'Rollout',
   'scan.pending': 'Available when the scan finishes.',
   'scan.notAvailable': 'Not available: the scan did not complete.',
 
@@ -758,6 +763,7 @@ registerStrings('tr', {
   'scan.tab.cdn': 'CDN arkası',
   'scan.tab.sources': 'Kaynaklar',
   'scan.tab.ct': 'CT sertifikaları',
+  'scan.tab.rollout': 'Dağıtım',
   'scan.pending': 'Tarama bitince görüntülenecek.',
   'scan.notAvailable': 'Görüntülenemiyor: tarama tamamlanmadı.',
 
@@ -3079,6 +3085,10 @@ function buildRunUI(run, ctx, { onFinish }) {
   // DANE (only with a certificate): TLSA records of its mail servers and names, on a click.
   const danePanel = cert ? h('div', { class: 'stack scan-tab-dane' }) : null;
   let daneUi = null;
+  // Rollout (only with a certificate): the servers' checklist and deploy snippets, built on the tab's first show.
+  const rolloutPanel = cert ? h('div', { class: 'stack scan-tab-rollout' }) : null;
+  let rolloutUi = null;
+  let rolloutShown = false;
 
   const tabs = Tabs([
     { id: 'hosts', label: t('scan.tab.hosts'), icon: 'list', content: hostsPanel },
@@ -3086,6 +3096,11 @@ function buildRunUI(run, ctx, { onFinish }) {
     sets ? { id: 'plan', label: t('rw.tab'), icon: 'layers', content: planPanel } : null,
     { id: 'cdn', label: t('scan.tab.cdn'), icon: 'cloud', content: cdnPanel },
     cert ? { id: 'verify', label: t('vfy.tab'), icon: 'check-circle', content: verifyPanel } : null,
+    cert ? { id: 'rollout', label: t('scan.tab.rollout'), icon: 'upload', content: () => {
+      rolloutShown = true;
+      Promise.resolve().then(renderRolloutTab);
+      return rolloutPanel;
+    } } : null,
     cert ? { id: 'dane', label: t('dane.tabShort'), icon: 'key', content: danePanel } : null,
     { id: 'sources', label: t('scan.tab.sources'), icon: 'database', content: sourcesPanel },
     { id: 'ct', label: t('scan.tab.ct'), icon: 'certificate', content: ctPanel }
@@ -3166,7 +3181,7 @@ function buildRunUI(run, ctx, { onFinish }) {
 
   const pendingState = () => EmptyState({ compact: true, icon: 'clock', message: t('scan.pending') });
   const unavailableState = () => EmptyState({ compact: true, icon: 'minus-circle', message: t('scan.notAvailable') });
-  for (const p of [serversPanel, planPanel, cdnPanel, ctPanel, verifyPanel]) if (p) p.append(pendingState());
+  for (const p of [serversPanel, planPanel, cdnPanel, ctPanel, verifyPanel, rolloutPanel]) if (p) p.append(pendingState());
 
   const results = h('section', { class: 'scan-results stack', attrs: { 'aria-labelledby': `scan-results-${run.id}` } },
     h('div', { class: 'scan-results-head' },
@@ -3935,6 +3950,28 @@ function buildRunUI(run, ctx, { onFinish }) {
     verifyPanel.append(verifyUi.el);
   }
 
+  /** The Rollout tab, once shown: ui/rollout-panel.js for a finished run (the Verify tab's checks mark its rows). */
+  function renderRolloutTab() {
+    if (!rolloutPanel || !rolloutShown) return;
+    if (rolloutUi) rolloutUi.dispose();
+    const mine = { dispose() {} };
+    rolloutUi = mine;
+    clear(rolloutPanel);
+    if (!run.result) {
+      rolloutPanel.append(run.status === 'running' ? pendingState() : unavailableState());
+      return;
+    }
+    loadRollout().then(({ RolloutPanel }) => {
+      if (rolloutUi !== mine) return;
+      rolloutUi = RolloutPanel({ run, ctx, sets, plan, onChange: renderBadgesSoon });
+      rolloutPanel.append(rolloutUi.el);
+    }, (err) => {
+      if (rolloutUi !== mine) return;
+      ctx.checkOutdated();
+      rolloutPanel.append(ErrorBanner(err, { onRetry: renderRolloutTab }));
+    });
+  }
+
   /** The concrete hosts of the scan the certificate covers and that resolve (wildcard look-alikes left out). */
   function daneHosts(r) {
     return r.hosts.filter((x) => x.cert && x.cert.covered && !x.wildcardSuspect && x.resolution
@@ -4129,6 +4166,11 @@ function buildRunUI(run, ctx, { onFinish }) {
       const b = sets ? daneBadgeOfAll() : daneTabBadge(run);
       tabs.setBadge('dane', b ? b.value : null, b ? b.variant : null);
     }
+    if (rolloutUi && rolloutUi.badge) {
+      rolloutUi.refresh();
+      const b = rolloutUi.badge();
+      tabs.setBadge('rollout', b ? b.value : null, b ? b.variant : null);
+    }
     if (planPanel && plan) {
       const need = plan.rows.filter((row) => row.needsCert).length;
       tabs.setBadge('plan', plan.rows.length || null, need ? 'warn' : null);
@@ -4178,6 +4220,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     renderPlanTab();
     renderCdnTab();
     renderVerifyTab();
+    renderRolloutTab();
     renderDaneTab();
     renderCtTab();
     renderWildcards();
@@ -4291,6 +4334,7 @@ function buildRunUI(run, ctx, { onFinish }) {
       // Detaches the panels only: a running verification or DANE check keeps going on the run.
       if (verifyUi) verifyUi.dispose();
       if (daneUi) daneUi.dispose();
+      if (rolloutUi) rolloutUi.dispose();
     }
   };
 }

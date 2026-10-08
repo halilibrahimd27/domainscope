@@ -627,6 +627,7 @@ const LINK_HOSTS = {
  * requests it. A call site may have none: the registry could not name the host it sends to.
  */
 const BUILT_HOSTS = {
+  'assets/js/lib/deploysnippets.js': 'the curl --resolve check of a deploy snippet, text the user copies (never fetched)',
   'assets/js/lib/domain.js': 'a typed host name read through the URL parser',
   'assets/js/lib/x509.js': 'a certificate name read through the URL parser',
   'assets/js/lib/mtasts.js': 'the policy URL a Globalping probe fetches, shown',

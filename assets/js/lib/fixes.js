@@ -934,15 +934,25 @@ function hcl(s) {
     .replace(/\$\{/g, '$$$${').replace(/%\{/g, '%%{')}"`;
 }
 
-/** Terraform resource names: `<type>_<name>` in [a-z0-9_], unique. */
+/**
+ * Terraform resource names: `<type>_<name>` in [a-z0-9_], unique: a repeat takes `_<n>`, past any
+ * name already given (the second value at `x` and the first at `x-2` would both be `…_x_2`).
+ */
 function resourceNamer(zone) {
   const used = new Map();
+  const given = new Set();
   return (type, name) => {
     const rel = relativeName(name, zone);
     const base = `${type}_${rel === '@' ? 'apex' : rel}`.toLowerCase().replace(/\*/g, 'wildcard').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-    const n = (used.get(base) || 0) + 1;
+    let n = used.get(base) || 0;
+    let out;
+    do {
+      n += 1;
+      out = n === 1 ? base : `${base}_${n}`;
+    } while (given.has(out));
     used.set(base, n);
-    return n === 1 ? base : `${base}_${n}`;
+    given.add(out);
+    return out;
   };
 }
 

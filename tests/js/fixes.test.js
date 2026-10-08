@@ -350,6 +350,17 @@ describe('formats', () => {
     assert.match(renderFix(long, 'terraform-route53'), /records = \["b{255}\\"\\"b{45}"\]/);
   });
 
+  test('Terraform resource names never repeat: a second value at x and the first at x-2 do not both take txt_x_2', () => {
+    const req = changeRequest({ zone: 'example.com', rrsets: [
+      { name: '_acme-challenge.x.example.com', type: 'TXT', ttl: 300, mode: 'has', values: ['a'.repeat(43), 'b'.repeat(43)] },
+      { name: '_acme-challenge.x-2.example.com', type: 'TXT', ttl: 300, mode: 'has', values: ['c'.repeat(43)] }
+    ] });
+    for (const format of ['terraform-cloudflare', 'terraform-route53']) {
+      const ids = [...renderFix(req, format).matchAll(/^resource "\w+" "([^"]+)"/gm)].map((m) => m[1]);
+      assert.equal(new Set(ids).size, ids.length, `${format}: ${ids.join(', ')}`);
+    }
+  });
+
   test('aws_route53_record writes a TXT string as Route 53 reads it, like the change batch: " and \\ escaped, non-ASCII in octal', () => {
     const r = buildChange('record', { name: 'x.example.com', type: 'TXT', values: '"say \\"hi\\" path=C:\\\\tmp café"' });
     const batch = JSON.parse(renderFix(r, 'route53')).Changes[0].ResourceRecordSet.ResourceRecords[0].Value;

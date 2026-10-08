@@ -1,7 +1,7 @@
 /**
- * soaprobe.js — one authoritative SOA question for Global DNS's worst-case ETA (ROADMAP P0.6, the
- * part wave 6 left for Global DNS). The recursive resolvers say what they cache; this asks the
- * source:
+ * soaprobe.js — one authoritative question for Global DNS's worst-case ETA (ROADMAP P0.6, the part
+ * wave 6 left for Global DNS). The recursive resolvers say what they cache, with TTLs that count
+ * down; this asks the source:
  *
  * 1. {@link findZone} (DoH, free): the zone the name belongs to — the SOA of the name itself, else
  *    the SOA in the authority section of its answer, climbing one label at a time past a CNAME
@@ -9,20 +9,23 @@
  * 2. {@link pickNameserver}: the name server to ask — the SOA's primary (MNAME) when it is one of
  *    them, else the first by name; a host Globalping cannot ask is skipped.
  * 3. One Globalping DNS measurement ({@link planSoaProbe}: one probe, one credit) asks that server
- *    for the SOA of the name itself, through `dig @<server>` on the probe.
+ *    the check's own question, through `dig @<server>` on the probe: the name and its record type
+ *    (lib/expected.js probeQuestion) — or the SOA of the name, for a new name or a type Globalping
+ *    cannot ask (CAA).
  * 4. {@link readSoaProbe}: from the source — whether the name exists there (NOERROR / NXDOMAIN) or
- *    is an alias, whether the server answered with authority, the zone's serial and primary, and
- *    its negative-cache time min(SOA TTL, SOA minimum) (RFC 2308 §5): how long a resolver that
- *    asked before a name existed may go on saying it does not.
+ *    is an alias, whether the server answered with authority, the record set's TTL there (`ttl`:
+ *    the old answer's TTL unless it changed with the value), and from the SOA an empty answer
+ *    carries, the zone's serial and primary and its negative-cache time min(SOA TTL, SOA minimum)
+ *    (RFC 2308 §5): how long a resolver that asked before a name existed may go on saying it does not.
  *
  * What is sent: to the DohClient, the SOA and NS questions of the name and its parents; to
- * Globalping (public by measurement id), the name and the name server's host name. Never an
- * internal name (lib/ispdns.js isInternalName), an IP literal or a public suffix's zone.
+ * Globalping (public by measurement id), the name, the record type and the name server's host
+ * name. Never an internal name (lib/ispdns.js isInternalName), an IP literal or a public suffix's zone.
  *
  * DOM-free; the DohClient and the Globalping client are injected. Runs in browsers and Node 22.
  */
 
-import { dnsQueryRequest, isProbeableDnsName, isProbeableHost } from './globalping.js';
+import { GP_DNS_TYPES, dnsQueryRequest, isProbeableDnsName, isProbeableHost } from './globalping.js';
 import { readDnsTest } from './delegation.js';
 import { isPublicSuffix } from './domain.js';
 import { isInternalName } from './ispdns.js';
@@ -146,11 +149,13 @@ export function pickNameserver(nameservers, mname = null) {
  * servers over DoH; the server to ask; the measurement body (one probe). Nothing is sent to
  * Globalping here.
  * @param {string} name
- * @param {{ dns: { query: Function }, signal?: AbortSignal }} opts
- * @returns {Promise<{ ok: true, name: string, zone: string, ns: string, nameservers: string[], soa: object|null, body: object, probes: number }
+ * @param {{ dns: { query: Function }, signal?: AbortSignal, type?: string }} opts `type`: the
+ *   question — the check's record type (lib/expected.js probeQuestion); one Globalping cannot ask
+ *   (CAA), or none, asks the SOA of the name
+ * @returns {Promise<{ ok: true, name: string, type: string, zone: string, ns: string, nameservers: string[], soa: object|null, body: object, probes: number }
  *   |{ ok: false, error: string, zone?: string, detail?: string|null }>}
  */
-export async function planSoaProbe(name, { dns, signal } = {}) {
+export async function planSoaProbe(name, { dns, signal, type = 'SOA' } = {}) {
   const qname = canon(name);
   if (!isProbeableDnsName(qname) || ipVersion(qname)) return { ok: false, error: 'name' };
   if (isInternalName(qname)) return { ok: false, error: 'internal' };
@@ -159,13 +164,16 @@ export async function planSoaProbe(name, { dns, signal } = {}) {
   if (isInternalName(found.zone)) return { ok: false, error: 'internal' };
   const ns = pickNameserver(found.nameservers, found.soa && found.soa.mname);
   if (!ns) return { ok: false, error: 'not-probeable', zone: found.zone };
-  const body = dnsQueryRequest({ name: qname, type: 'SOA', resolver: ns });
-  return { ok: true, name: qname, zone: found.zone, ns, nameservers: found.nameservers, soa: found.soa, body, probes: SOA_PROBE_COST };
+  const asked = String(type || '').toUpperCase();
+  const qtype = GP_DNS_TYPES.includes(asked) ? asked : 'SOA';
+  const body = dnsQueryRequest({ name: qname, type: qtype, resolver: ns });
+  return { ok: true, name: qname, type: qtype, zone: found.zone, ns, nameservers: found.nameservers, soa: found.soa, body, probes: SOA_PROBE_COST };
 }
 
 /**
  * @typedef {object} SoaProbe
  * @property {string} name
+ * @property {string} type the record type asked (SOA, or the check's own)
  * @property {string} zone
  * @property {string} ns the name server asked
  * @property {string} state one of {@link SOA_PROBE_STATES}
@@ -173,6 +181,8 @@ export async function planSoaProbe(name, { dns, signal } = {}) {
  * @property {boolean|null} aa the authoritative-answer flag
  * @property {boolean|null} exists NOERROR → true, NXDOMAIN → false (null: no usable answer)
  * @property {string|null} alias the CNAME target at the name, when it is an alias there
+ * @property {number|null} ttl the record set's TTL there: the longest TTL of an answer that holds
+ *   records of the type asked (null: none there, or an alias that leads out of the server's answer)
  * @property {{ mname: string, rname: string, serial: number, refresh: number, retry: number, expire: number, minimum: number, ttl: number|null }|null} soa
  * @property {number|null} negativeTtl min(SOA TTL, SOA minimum)
  * @property {object|null} probe lib/globalping.js probeSummary
@@ -183,18 +193,20 @@ export async function planSoaProbe(name, { dns, signal } = {}) {
  */
 
 /**
- * The name server's answer to the SOA question of a name, read from a finished measurement.
+ * The name server's answer to the question of a name (`type`, SOA by default), read from a
+ * finished measurement.
  * @param {object} measurement a Globalping DNS measurement (one probe)
- * @param {{ name: string, zone: string, ns: string, id?: string|null }} plan
+ * @param {{ name: string, zone: string, ns: string, type?: string, id?: string|null }} plan
  * @returns {SoaProbe}
  */
-export function readSoaProbe(measurement, { name, zone, ns, id = null }) {
+export function readSoaProbe(measurement, { name, zone, ns, type = 'SOA', id = null }) {
   const test = readDnsTest(measurement);
   const qname = canon(name);
   const z = canon(zone);
+  const asked = String(type || 'SOA').toUpperCase();
   const base = {
-    name: qname, zone: z, ns: canon(ns), state: 'failed', rcode: test.rcode, aa: test.aa ?? null, exists: null, alias: null, soa: null,
-    negativeTtl: null, probe: test.probe || null, nsid: test.nsid || null, rttMs: test.rttMs ?? null, error: test.error || null,
+    name: qname, type: asked, zone: z, ns: canon(ns), state: 'failed', rcode: test.rcode, aa: test.aa ?? null, exists: null, alias: null,
+    ttl: null, soa: null, negativeTtl: null, probe: test.probe || null, nsid: test.nsid || null, rttMs: test.rttMs ?? null, error: test.error || null,
     measurementId: id || (measurement && typeof measurement.id === 'string' ? measurement.id : null)
   };
   if (!test.ok) return { ...base, state: test.failure === 'timeout' || test.failure === 'unreachable' ? test.failure : 'failed' };
@@ -208,11 +220,14 @@ export function readSoaProbe(measurement, { name, zone, ns, id = null }) {
   const soa = fields ? { ...fields, ttl: soaRr.ttl } : null;
   const cname = test.answers.find((rr) => rr.type === 'CNAME' && rr.name === qname);
   const negativeTtl = soa && isTtl(soa.ttl) ? Math.min(soa.ttl, soa.minimum) : (soa ? soa.minimum : null);
+  // No part of the answer outlives its longest TTL (a CNAME at the name counts with the records it leads to).
+  const ttls = test.answers.some((rr) => rr.type === asked) ? test.answers.map((rr) => rr.ttl).filter(isTtl) : [];
   return {
     ...base,
     state: test.aa === false ? 'not-authoritative' : 'ok',
     exists: test.rcode === 'NOERROR',
     alias: cname ? canon(cname.value) : null,
+    ttl: ttls.length ? Math.max(...ttls) : null,
     soa,
     negativeTtl
   };
@@ -222,7 +237,7 @@ export function readSoaProbe(measurement, { name, zone, ns, id = null }) {
  * Send a planned probe through `client` (lib/globalping.js createGlobalping, after the consent
  * gate) and read its answer. Globalping errors are thrown as they come (the caller words them;
  * one after the measurement was created carries its id and cost).
- * @param {{ name: string, zone: string, ns: string, body: object }} plan a successful {@link planSoaProbe}
+ * @param {{ name: string, type?: string, zone: string, ns: string, body: object }} plan a successful {@link planSoaProbe}
  * @param {{ client: { measure: Function }, signal?: AbortSignal, onUpdate?: Function }} opts
  * @returns {Promise<{ result: SoaProbe, id: string|null, cost: number, quota: object|null }>}
  */
@@ -230,5 +245,6 @@ export async function runSoaProbe(plan, { client, signal, onUpdate } = {}) {
   if (!client || typeof client.measure !== 'function') throw new TypeError('runSoaProbe: a Globalping client is required');
   if (!plan || !plan.body) throw new TypeError('runSoaProbe: a planned probe is required');
   const { measurement, id, cost, quota } = await client.measure(plan.body, { signal, onUpdate });
-  return { result: readSoaProbe(measurement, { name: plan.name, zone: plan.zone, ns: plan.ns, id }), id: id || null, cost: Number.isFinite(cost) ? cost : SOA_PROBE_COST, quota: quota || null };
+  const result = readSoaProbe(measurement, { name: plan.name, zone: plan.zone, ns: plan.ns, type: plan.type || 'SOA', id });
+  return { result, id: id || null, cost: Number.isFinite(cost) ? cost : SOA_PROBE_COST, quota: quota || null };
 }

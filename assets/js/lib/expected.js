@@ -4,9 +4,11 @@
  * left for Global DNS).
  *
  * - {@link parseExpected}: the typed value and its mode, or why it cannot be used. `exact`: the
- *   records of the queried type, as a set (order, case, quotes and trailing dots aside; `NXDOMAIN`
- *   and `NODATA` stand for "no such name" and "no record of the type"); `contains`: text found in
- *   any answer, the CNAME chain included; `regex`: a pattern any answer matches (case-insensitive).
+ *   records of the queried type, as a set (order, case, quotes and trailing dots aside; an A or
+ *   AAAA value is an address of that family; `NXDOMAIN` and `NODATA` stand for "no such name" and
+ *   "no record of the type"); `contains`: text found in any answer, the CNAME chain included;
+ *   `regex`: a pattern any answer matches (case-insensitive). The statuses NXDOMAIN / NODATA are
+ *   no text: contains and regex take one only as the whole word.
  * - {@link expectedVerdict} / {@link expectedTally}: one source's answer against it ('match',
  *   'mismatch', 'failed', or null when there is nothing to judge: still asking, not asked, not
  *   readable, blocked by a filtering resolver) and the counts.
@@ -16,7 +18,9 @@
  * - {@link worstCaseEta} / {@link expectedEta}: how long after a change every resolver serves it at
  *   the latest — the longest TTL the old answer has (the highest over the zone's name servers when
  *   several are known), and where the old answer is "no such record", the zone's negative-cache
- *   time. Never the remaining TTLs one by one: anycast caches count down out of step.
+ *   time. A TTL read from cached answers counts down (anycast caches out of step), so without the
+ *   zone's name server the figure is an estimate with a lower bound, never a worst case;
+ *   {@link probeQuestion} is what to ask that server.
  * - {@link COMMON_TTLS} / {@link likelyTtl}: a counted-down TTL read as the zone TTL it most likely
  *   started from (lib/cutover.js's planner re-exports them).
  * - {@link FLUSH_LINKS}: the public resolvers' own cache-flush pages — links the user opens, never
@@ -25,12 +29,15 @@
  * DOM-free, no network, no clock of its own (every time is passed in); runs in browsers and Node 22.
  */
 
-import { normalizeIP } from './ip.js';
+import { ipVersion, normalizeIP } from './ip.js';
 
 /** How the expected value is compared with an answer. */
 export const EXPECT_MODES = Object.freeze(['exact', 'contains', 'regex']);
-/** Why an expected value cannot be used: nothing typed, a pattern that does not compile, too long. */
-export const EXPECT_ERRORS = Object.freeze(['empty', 'regex', 'long']);
+/**
+ * Why an expected value cannot be used: nothing typed, a pattern that does not compile, too long,
+ * an exact A / AAAA value that is no address of that family (`detail`: the value as typed).
+ */
+export const EXPECT_ERRORS = Object.freeze(['empty', 'regex', 'long', 'address']);
 /** What one source's answer is against the expected value (null: nothing to judge). */
 export const EXPECT_VERDICTS = Object.freeze(['match', 'mismatch', 'failed']);
 /** The longest value (or pattern) taken. */
@@ -54,8 +61,12 @@ const TTL_MAX = 2147483647;
 const LIST_TYPES = new Set(['A', 'AAAA', 'CNAME', 'NS', 'PTR']);
 /** Types whose leading number (MX preference, CAA flags) may be left out of an expected value. */
 const LEADING_NUMBER_TYPES = new Set(['MX', 'CAA']);
+/** The address family of an exact value of these types: a host name never equals their records. */
+const ADDRESS_FAMILY = Object.freeze({ A: 4, AAAA: 6 });
 
 const isFiniteTtl = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+/** An empty answer: "no such name" or "no record of the type" (answerValues gives it alone). */
+const isEmptyAnswer = (values) => Array.isArray(values) && values.length === 1 && EXPECT_SPECIALS.includes(values[0]);
 
 /**
  * The zone's TTL a counted-down TTL most likely started from: the smallest of {@link COMMON_TTLS}
@@ -107,7 +118,6 @@ export function canonValue(type, text) {
 function displayValue(type, value) {
   const v = String(value ?? '');
   if (v.startsWith('CNAME ')) return canonToken(v.slice(6));
-  if (EXPECT_SPECIALS.includes(v)) return v;
   return canonValue(type, v);
 }
 
@@ -120,14 +130,17 @@ function displayValue(type, value) {
  * @property {string[]} values exact: the canonical values (empty for a special)
  * @property {'NXDOMAIN'|'NODATA'|null} special exact: the name should not exist / have no record of the type
  * @property {RegExp|null} re regex: the compiled pattern (case-insensitive)
+ * @property {RegExp|null} whole regex: the pattern over a whole value — what NXDOMAIN / NODATA are tested with
  */
 
 /**
  * The expected value of a check, or why it cannot be used. Exact values of an address or name type
  * (A, AAAA, CNAME, NS, PTR) are separated by commas or spaces, MX values by commas; any other type
- * takes the whole text as one value (a TXT record may hold both).
+ * takes the whole text as one value (a TXT record may hold both). An exact A / AAAA value is an
+ * address of that family: a host name the name points to is no record of the type (Contains, or
+ * the CNAME type, checks that).
  * @param {{ mode?: string, pattern?: string, type?: string }} input
- * @returns {ExpectedValue|{ ok: false, error: 'empty'|'regex'|'long', mode: string, pattern: string, detail?: string }}
+ * @returns {ExpectedValue|{ ok: false, error: 'empty'|'regex'|'long'|'address', mode: string, pattern: string, detail?: string }}
  */
 export function parseExpected({ mode = 'exact', pattern = '', type = 'A' } = {}) {
   const m = EXPECT_MODES.includes(mode) ? mode : 'exact';
@@ -136,10 +149,10 @@ export function parseExpected({ mode = 'exact', pattern = '', type = 'A' } = {})
   const fail = (error, detail) => ({ ok: false, error, mode: m, pattern: text, ...(detail ? { detail } : {}) });
   if (!text) return fail('empty');
   if (text.length > EXPECT_MAX_LENGTH) return fail('long');
-  const base = { ok: true, mode: m, type: t, pattern: text, values: [], special: null, re: null };
+  const base = { ok: true, mode: m, type: t, pattern: text, values: [], special: null, re: null, whole: null };
   if (m === 'regex') {
     try {
-      return { ...base, re: new RegExp(text, 'i') };
+      return { ...base, re: new RegExp(text, 'i'), whole: new RegExp(`^(?:${text})$`, 'i') };
     } catch (err) {
       return fail('regex', String((err && err.message) || err).slice(0, 160));
     }
@@ -148,7 +161,11 @@ export function parseExpected({ mode = 'exact', pattern = '', type = 'A' } = {})
   const special = EXPECT_SPECIALS.find((s) => s === text.toUpperCase()) || null;
   if (special) return { ...base, special };
   const raw = LIST_TYPES.has(t) ? text.split(/[\s,]+/) : t === 'MX' ? text.split(',') : [text];
-  const values = [...new Set(raw.map((v) => v.trim()).filter(Boolean).map((v) => canonValue(t, v)))];
+  const typed = raw.map((v) => v.trim()).filter(Boolean);
+  const family = ADDRESS_FAMILY[t];
+  const notAddress = family ? typed.find((v) => ipVersion(v) !== family) : undefined;
+  if (notAddress !== undefined) return fail('address', notAddress);
+  const values = [...new Set(typed.map((v) => canonValue(t, v)))];
   return values.length ? { ...base, values } : fail('empty');
 }
 
@@ -174,7 +191,10 @@ function exactMatch(records, expected) {
  * Does an answer carry the expected value? `values` as lib/propagation.js answerValues gives them:
  * the records of the type (presentation text), then the CNAME chain as 'CNAME <target>' entries;
  * ['NXDOMAIN'] / ['NODATA'] for the empty answers. Exact compares the records only; contains and
- * regex read the chain too (a target name), every value as {@link canonValue} words it.
+ * regex read the chain too (a target name), every value as {@link canonValue} words it. NXDOMAIN
+ * and NODATA are statuses, not text: contains matches one only when the text is that word, and a
+ * regex only when it matches the whole word (Contains "main" never says a name that does not exist
+ * serves main-lb.example.net).
  * @param {string[]} values
  * @param {ExpectedValue} expected
  * @returns {boolean}
@@ -182,9 +202,13 @@ function exactMatch(records, expected) {
 export function matchExpected(values, expected) {
   if (!expected || !expected.ok || !Array.isArray(values) || !values.length || isFailure(values)) return false;
   if (expected.mode === 'exact') return exactMatch(values.filter((v) => !String(v).startsWith('CNAME ')), expected);
-  const shown = values.map((v) => displayValue(expected.type, v));
-  if (expected.mode === 'contains') return shown.some((v) => v.toLowerCase().includes(expected.values[0]));
-  return shown.some((v) => expected.re.test(v));
+  const status = (v) => EXPECT_SPECIALS.includes(v);
+  if (expected.mode === 'contains') {
+    const want = expected.values[0];
+    return values.some((v) => (status(v) ? v.toLowerCase() === want : displayValue(expected.type, v).toLowerCase().includes(want)));
+  }
+  const whole = () => expected.whole || new RegExp(`^(?:${expected.re.source})$`, expected.re.flags);
+  return values.some((v) => (status(v) ? whole().test(v) : expected.re.test(displayValue(expected.type, v))));
 }
 
 /**
@@ -252,8 +276,7 @@ export function cachedTtl(row) {
   if (isFiniteTtl(row.ttl)) return row.ttl;
   const res = row.response;
   if (!res || !res.ok) return null;
-  const values = Array.isArray(row.values) ? row.values : [];
-  if (values.length === 1 && EXPECT_SPECIALS.includes(values[0])) return negativeTtl(res);
+  if (isEmptyAnswer(row.values)) return negativeTtl(res);
   const ttls = (Array.isArray(res.answers) ? res.answers : []).map((rr) => rr && rr.ttl).filter(isFiniteTtl);
   return ttls.length ? Math.max(...ttls) : null;
 }
@@ -291,9 +314,10 @@ export function worstCaseEta({ ttls = [], negativeTtl: neg = null, negative = fa
 
 /**
  * The negative-cache time the empty answers say: their SOA minimum is exact, the SOA's own TTL is
- * counted down (read as the zone TTL it most likely started from). Null without an SOA.
+ * counted down (read as the zone TTL it most likely started from) — `ttl`, an estimate — and at
+ * least what is left of it (`least`). Null without an SOA.
  * @param {object[]} rows
- * @returns {number|null}
+ * @returns {{ ttl: number, least: number|null }|null}
  */
 function negativeFromAnswers(rows) {
   let minimum = null;
@@ -305,34 +329,71 @@ function negativeFromAnswers(rows) {
     if (isFiniteTtl(min)) minimum = minimum === null ? min : Math.max(minimum, min);
     if (isFiniteTtl(soa.ttl)) soaTtl = soaTtl === null ? soa.ttl : Math.max(soaTtl, soa.ttl);
   }
-  const ttl = likelyTtl(soaTtl);
-  const both = [minimum, ttl].filter((v) => v !== null);
-  return both.length ? Math.min(...both) : null;
+  const both = [minimum, likelyTtl(soaTtl)].filter((v) => v !== null);
+  if (!both.length) return null;
+  return { ttl: Math.min(...both), least: soaTtl === null ? null : Math.min(soaTtl, minimum ?? soaTtl) };
 }
 
 /**
- * The worst case of a check against its expected value, from the sources that do not serve it yet:
- * the highest TTL their records carried (`observedTtl`) read as the zone TTL it most likely counts
- * down from (`recordTtl`), and when some of them say the name or the record does not exist
- * (`negative`), the negative-cache time — the authoritative one when an SOA probe read it
- * (`authoritative.negativeTtl`), else what their own SOA says. `last`: when the latest cached copy
- * among these sources ends (ms epoch).
+ * The question to ask the zone's name server for a check (lib/soaprobe.js planSoaProbe `type`):
+ * the check's own record type, whose answer there carries the record set's TTL — or the SOA when
+ * every source that does not serve the expected value yet says the name or the record does not
+ * exist (a new name or record: only the zone's negative-cache time counts, and the answer to an
+ * SOA question always carries the zone's SOA).
  * @param {object[]} rows the check's rows
  * @param {ExpectedValue|null} expected
- * @param {{ authoritative?: { negativeTtl?: number|null }|null }} [opts]
+ * @param {string} type the check's record type
+ * @returns {string}
+ */
+export function probeQuestion(rows, expected, type) {
+  const old = (Array.isArray(rows) ? rows : []).filter((r) => expectedVerdict(r, expected) === 'mismatch');
+  return old.length && old.every((r) => isEmptyAnswer(r.values)) ? 'SOA' : String(type || 'A').toUpperCase();
+}
+
+/**
+ * The worst case of a check against its expected value, from the sources that do not serve it yet
+ * (`mismatched`: `positive` with an old record, `negative` saying the name or record did not exist).
+ * - The old record's TTL (`recordTtl`): the record set's TTL at the zone's name server
+ *   (`serverTtl`, `authoritative.ttl` when it was asked the check's own type), else the highest TTL
+ *   the old copies here carried (`observedTtl`) read as the zone TTL it most likely counts down
+ *   from — also when the name server now serves a lower TTL than that (lowered with the change).
+ *   `recordFrom` says which ('name-server' | 'answers').
+ * - The negative-cache time (`negativeTtl`): the name server's (`authoritative.negativeTtl`), else
+ *   what the empty answers' own SOA says (`negativeFrom`).
+ * - `seconds`: the larger of what counts; `exact` when all of it comes from the name server — else
+ *   it is an estimate whose lower bound is `least` (what the old copies had left: a cached TTL counts
+ *   down, so a copy near its end would read as a short TTL; never a worst case then).
+ * - `last`: when the latest cached copy among these sources ends (ms epoch).
+ * @param {object[]} rows the check's rows
+ * @param {ExpectedValue|null} expected
+ * @param {{ authoritative?: { type?: string, ttl?: number|null, negativeTtl?: number|null }|null }} [opts]
+ *   the zone's name server's answer (lib/soaprobe.js SoaProbe, state 'ok')
  * @returns {{ mismatched: number, positive: number, negative: number, observedTtl: number|null, recordTtl: number|null,
- *   negativeTtl: number|null, negativeFrom: 'name-server'|'answers'|null, seconds: number|null, last: number|null }}
+ *   recordFrom: 'name-server'|'answers'|null, serverTtl: number|null, negativeTtl: number|null,
+ *   negativeFrom: 'name-server'|'answers'|null, seconds: number|null, least: number|null, exact: boolean, last: number|null }}
  */
 export function expectedEta(rows, expected, { authoritative = null } = {}) {
   const old = (Array.isArray(rows) ? rows : []).filter((r) => expectedVerdict(r, expected) === 'mismatch');
-  const empty = old.filter((r) => r.values.length === 1 && EXPECT_SPECIALS.includes(r.values[0]));
+  const empty = old.filter((r) => isEmptyAnswer(r.values));
   const records = old.filter((r) => !empty.includes(r));
   const ttls = records.map(cachedTtl).filter((v) => v !== null);
   const observedTtl = ttls.length ? Math.max(...ttls) : null;
-  const recordTtl = likelyTtl(observedTtl);
+  const likely = likelyTtl(observedTtl);
+  const serverTtl = authoritative && expected && authoritative.type === expected.type && isFiniteTtl(authoritative.ttl) ? authoritative.ttl : null;
+  let recordFrom = null;
+  if (records.length && serverTtl !== null && (likely === null || serverTtl >= likely)) recordFrom = 'name-server';
+  else if (records.length && likely !== null) recordFrom = 'answers';
+  const recordTtl = recordFrom === 'name-server' ? serverTtl : recordFrom ? likely : null;
   const probed = authoritative && isFiniteTtl(authoritative.negativeTtl) ? authoritative.negativeTtl : null;
   const fromAnswers = empty.length ? negativeFromAnswers(empty) : null;
-  const neg = probed ?? fromAnswers;
+  const neg = probed ?? (fromAnswers ? fromAnswers.ttl : null);
+  const negativeFrom = probed !== null ? 'name-server' : (empty.length && fromAnswers ? 'answers' : null);
+  const seconds = old.length ? worstCaseEta({ ttls: recordTtl === null ? [] : [recordTtl], negativeTtl: neg, negative: empty.length > 0 }) : null;
+  // The lower bound: the name server's figures are exact; what a cached copy had left is a floor.
+  const lows = [
+    records.length ? (recordFrom === 'name-server' ? recordTtl : observedTtl) : null,
+    empty.length ? (negativeFrom === 'name-server' ? neg : fromAnswers && fromAnswers.least) : null
+  ].filter(isFiniteTtl);
   const ends = old.map(cacheEnd).filter((v) => v !== null);
   return {
     mismatched: old.length,
@@ -340,9 +401,13 @@ export function expectedEta(rows, expected, { authoritative = null } = {}) {
     negative: empty.length,
     observedTtl,
     recordTtl,
+    recordFrom,
+    serverTtl,
     negativeTtl: empty.length ? neg : probed,
-    negativeFrom: probed !== null ? 'name-server' : (empty.length && fromAnswers !== null ? 'answers' : null),
-    seconds: old.length ? worstCaseEta({ ttls: recordTtl === null ? [] : [recordTtl], negativeTtl: neg, negative: empty.length > 0 }) : null,
+    negativeFrom,
+    seconds,
+    least: seconds === null || !lows.length ? null : Math.max(...lows),
+    exact: seconds !== null && (!records.length || recordFrom === 'name-server') && (!empty.length || negativeFrom === 'name-server'),
     last: ends.length ? Math.max(...ends) : null
   };
 }

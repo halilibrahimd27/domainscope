@@ -9,19 +9,23 @@
  * Covers:
  *   - Global DNS › Expected value (lib/expected.js): a shared link with `expect=` judges every
  *     answer ("Matches" / "Not yet" with until when the old answer may stay cached), the card
- *     counts them, says when the last cached old copy expires and gives the worst case anywhere
- *     (the old answer's TTL read up to the zone TTL: 3412 → 3600 s), with the public resolvers'
- *     cache-flush pages; "Show only the sources not there yet" filters the tables; contains and
- *     regex; an invalid regex at the field (no card); editing the value asks nothing again and keeps
- *     it in the link; Copy summary's line; the CSV's export-only "Expected value" column;
+ *     counts them, says when the last cached old copy expires and estimates the worst case anywhere
+ *     (at least the 3412 s a copy had left, most likely the zone TTL 3600 s it counts down from),
+ *     with the public resolvers' cache-flush pages; "Show only the sources not there yet" filters
+ *     the tables; contains and regex; an invalid regex and an exact A value that is a host name at
+ *     the field (no card); editing the value asks nothing again and keeps it in the link; Copy
+ *     summary's line; the CSV's export-only "Expected value" column; a link's regex is held until
+ *     Enter in the field;
  *   - the zone's name server (ui/soa-probe.js, lib/soaprobe.js): a brand-new name still NXDOMAIN at
- *     some resolvers — the worst case first from the SOA in their answers (min(minimum 1800,
- *     SOA TTL 650 counted down → 900) = 900 s), then one Globalping probe asks ns1.example.com (the SOA's
- *     primary, from the zone's NS set over DoH) for the SOA of the name: the consent dialog names the
- *     name, the server and the cost; the body is one SOA query with that resolver; the answer says
- *     the server answers with authority, the name exists there and the negative-cache time is
- *     700 s, which the worst case takes; Ask again needs no second dialog; a used-up quota sends
- *     nothing; an internal name is never sent; a Turkish re-mount keeps the answer (no new probe);
+ *     some resolvers — the worst case first estimated from the SOA in their answers (min(minimum
+ *     1800, SOA TTL 650 counted down → 900) = 900 s, at least 650 s), then one Globalping probe asks
+ *     ns1.example.com (the SOA's primary, from the zone's NS set over DoH) for the SOA of the name:
+ *     the consent dialog names the name, the server and the cost; the body is one SOA query with
+ *     that resolver; the answer says the server answers with authority, the name exists there and
+ *     the negative-cache time is 700 s, which the worst case takes; Ask again needs no second
+ *     dialog; a used-up quota sends nothing; an internal name is never sent; a Turkish re-mount
+ *     keeps the answer (no new probe); a changed record: the probe asks the A record itself, whose
+ *     TTL there (3600 s) makes the worst case exact; redrawing the card inserts no alert again;
  *   - DNS change request › the TTL planner as a calendar: the .ics of the four steps (UTC times,
  *     reminders, the flush pages in the change's event) in English and Turkish, and the flush links;
  *   - 375 / 320 px, light / dark, English / Turkish without horizontal scroll; no console errors,
@@ -136,23 +140,27 @@ export const fakeDnsScript = () => `(() => {
 /**
  * The fake Globalping v1 API (the outermost window.fetch wrapper, installed after the fake DoH):
  * /limits (the quota in the body), POST /measurements (202 with the quota headers; one probe) and
- * GET /measurements/:id (finished at once): ns1.example.com answers the SOA question of the name
- * with authority — NOERROR, no answer, the zone's SOA in the authority section (TTL 700, minimum
- * 1800). Knobs and records on window.__gp: remaining (what /limits reports), calls.
+ * GET /measurements/:id (finished at once): ns1.example.com answers with authority — the A record
+ * of cut.example.com (198.51.100.20, the zone's TTL 3600: the change is live there), else NOERROR
+ * with no answer and the zone's SOA in the authority section (TTL 700, minimum 1800). Knobs and
+ * records on window.__gp: remaining (what /limits reports), calls.
  */
 export const fakeGpScript = () => `(() => {
   const API = 'https://api.globalping.io/v1';
   const gp = window.__gp = { calls: [], n: 0, remaining: 250, measurements: {} };
   const json = (status, body, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
   const PROBE = { continent: 'EU', region: 'Western Europe', country: 'DE', state: null, city: 'Frankfurt', asn: 64500, network: 'Example Networks', latitude: 0, longitude: 0, tags: ['datacenter-network'], resolvers: ['private'] };
-  const raw = (target) => [
-    '; <<>> DiG 9.18.28 <<>> @ns1.example.com ' + target + ' SOA +nsid',
+  const records = (target, type) => (target === 'cut.example.com' && type === 'A' ? [{ name: 'cut.example.com', ttl: 3600, type: 'A', value: '198.51.100.20' }] : []);
+  const raw = (target, type, answers) => [
+    '; <<>> DiG 9.18.28 <<>> @ns1.example.com ' + target + ' ' + type + ' +nsid',
     ';; global options: +cmd', ';; Got answer:',
     ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 4242',
-    ';; flags: qr aa rd; QUERY: 1, ANSWER: 0, AUTHORITY: 1, ADDITIONAL: 1', '',
+    ';; flags: qr aa rd; QUERY: 1, ANSWER: ' + answers.length + ', AUTHORITY: ' + (answers.length ? 0 : 1) + ', ADDITIONAL: 1', '',
     ';; OPT PSEUDOSECTION:', '; EDNS: version: 0, flags:; udp: 1232', '; NSID: 6e 73 31 ("ns1-fra")',
-    ';; QUESTION SECTION:', ';' + target + '.\\t\\tIN\\tSOA', '',
-    ';; AUTHORITY SECTION:', 'example.com.\\t\\t700\\tIN\\tSOA\\tns1.example.com. hostmaster.example.com. 2026100801 7200 900 1209600 1800', '',
+    ';; QUESTION SECTION:', ';' + target + '.\\t\\tIN\\t' + type, '',
+    ...(answers.length
+      ? [';; ANSWER SECTION:', ...answers.map((a) => a.name + '.\\t\\t' + a.ttl + '\\tIN\\t' + a.type + '\\t' + a.value), '']
+      : [';; AUTHORITY SECTION:', 'example.com.\\t\\t700\\tIN\\tSOA\\tns1.example.com. hostmaster.example.com. 2026100801 7200 900 1209600 1800', '']),
     ';; Query time: 12 msec', ';; SERVER: 192.0.2.53#53(ns1.example.com) (UDP)'
   ].join('\\n');
   const inner = window.fetch;
@@ -171,16 +179,21 @@ export const fakeGpScript = () => `(() => {
       gp.remaining = Math.max(0, gp.remaining - 1);
       gp.n += 1;
       const id = 'fakeSoa' + String(gp.n).padStart(8, '0');
-      gp.measurements[id] = { id, target: body.target, createdAt: new Date().toISOString() };
+      const type = (body.measurementOptions && body.measurementOptions.query && body.measurementOptions.query.type) || 'A';
+      gp.measurements[id] = { id, target: body.target, type, createdAt: new Date().toISOString() };
       return json(202, { id, probesCount: 1 }, { ...quota(), 'x-request-cost': '1' });
     }
     const m = /^\\/measurements\\/([A-Za-z0-9]+)$/.exec(p);
     if (m && method === 'GET') {
       const meas = gp.measurements[m[1]];
       if (!meas) return json(404, { error: { type: 'not_found', message: 'Not Found.' } });
+      const answers = records(meas.target, meas.type);
       return json(200, {
         id: meas.id, type: 'dns', status: 'finished', createdAt: meas.createdAt, updatedAt: new Date().toISOString(), target: meas.target, probesCount: 1,
-        results: [{ probe: PROBE, result: { status: 'finished', rawOutput: raw(meas.target), statusCodeName: 'NOERROR', statusCode: 0, answers: [], timings: { total: 12 }, resolver: 'ns1.example.com' } }]
+        results: [{ probe: PROBE, result: {
+          status: 'finished', rawOutput: raw(meas.target, meas.type, answers), statusCodeName: 'NOERROR', statusCode: 0, timings: { total: 12 }, resolver: 'ns1.example.com',
+          answers: answers.map((a) => ({ name: a.name + '.', type: a.type, ttl: a.ttl, class: 'IN', value: a.value }))
+        } }]
       });
     }
     return json(404, { error: { type: 'not_found', message: 'Not Found.' } });
@@ -205,7 +218,7 @@ function expInfo() {
     value: card ? card.querySelector('.glb-exp-value')?.textContent || '' : '',
     count: count ? { match: Number(count.dataset.match), mismatch: Number(count.dataset.mismatch), judged: Number(count.dataset.judged), text: count.textContent } : null,
     last: (() => { const el = document.querySelector('[data-role="exp-last"]'); return el && !el.hidden ? el.textContent : null; })(),
-    worst: (() => { const el = document.querySelector('[data-role="exp-worst"]'); return el && !el.hidden ? { text: el.textContent, seconds: el.dataset.seconds } : null; })(),
+    worst: (() => { const el = document.querySelector('[data-role="exp-worst"]'); return el && !el.hidden ? { text: el.textContent, seconds: el.dataset.seconds, exact: el.dataset.exact } : null; })(),
     flush: [...document.querySelectorAll('[data-role="exp-flush"]:not([hidden]) a')].map((x) => x.getAttribute('href')),
     toggle: (() => { const b = document.querySelector('[data-action="exp-missing"]'); return b && !b.hidden ? { text: b.textContent, pressed: b.getAttribute('aria-pressed') } : null; })(),
     resolverMarks: { match: marks('.glb-resolvers', 'match'), mismatch: marks('.glb-resolvers', 'mismatch') },
@@ -215,6 +228,7 @@ function expInfo() {
     soaStatus: document.querySelector('[data-soa-status]')?.dataset.soaStatus || null,
     soaResult: (() => { const r = document.querySelector('[data-soa-state]'); return r ? { state: r.dataset.soaState, exists: r.dataset.soaExists, text: r.textContent } : null; })(),
     fieldError: document.querySelector('.glb-expect-value .field-error')?.textContent || '',
+    fieldHint: document.querySelector('.glb-expect-value .field-hint')?.textContent || '',
     hash: location.hash
   };
 }
@@ -256,8 +270,9 @@ async function main() {
       assert(/198\.51\.100\.20/.test(i.value) && /Exact/.test(i.value), `value: ${i.value}`);
       assert(/^Served by \d+ of \d+ sources/.test(i.count.text), `count: ${i.count.text}`);
       assert(/^4 sources still give another answer; the last of their cached copies expires by \d{1,2}:\d{2}/.test(i.last), `last: ${i.last}`);
-      assertEqual(i.worst.seconds, '3600', 'the old TTL 3412 read as 3600');
-      assert(/Worst case for any resolver in the world: 1 hour after the change was published\./.test(i.worst.text) && /most likely 3,600 s/.test(i.worst.text) && /was 3,412 s/.test(i.worst.text), `worst: ${i.worst.text}`);
+      assertEqual([i.worst.seconds, i.worst.exact], ['3600', 'false'], 'the old TTL 3412 read as 3600: an estimate, the copies count down');
+      assert(/Worst case for any resolver in the world: at least 57 minutes after the change was published, most likely 1 hour\./.test(i.worst.text)
+        && /most likely 3,600 s/.test(i.worst.text) && /was 3,412 s/.test(i.worst.text) && /Cached TTLs count down, so this is an estimate/.test(i.worst.text), `worst: ${i.worst.text}`);
       assertEqual(i.flush, FLUSH_LINKS.map((l) => l.url), 'the cache-flush pages');
       assert(i.soaSlot, 'the name server probe is offered');
       const title = await page.evaluate(() => document.querySelector('.glb-resolvers .glb-exp-mark[data-exp="mismatch"]').title);
@@ -303,6 +318,12 @@ async function main() {
       assert(!bad.hash.includes('expect='), `an unusable value leaves the link: ${bad.hash}`);
       assertEqual(await page.evaluate(() => document.querySelectorAll('.glb-exp-mark').length), 0, 'no marks');
       await setField(page, 'global-match', 'exact');
+      await setField(page, 'global-expect', 'new-lb.example.net');
+      await page.waitFor(() => /new-lb\.example\.net/.test(document.querySelector('.glb-expect-value .field-error')?.textContent || ''), { message: 'host name at the field' });
+      const host = await info();
+      assert(/^An exact A value is an IPv4 address — new-lb\.example\.net is not one\. To check the host name the name points to, choose Contains or the CNAME type\.$/.test(host.fieldError),
+        `field error: ${host.fieldError}`);
+      assert(!host.shown, 'no card: a host name never equals an A record');
       await setField(page, 'global-expect', '198.51.100.20');
       await page.waitFor(() => document.querySelector('.glb-exp-pattern')?.textContent === '198.51.100.20'
         && document.querySelector('[data-role="expected"]')?.dataset.state === 'pending', { message: 'exact again' });
@@ -323,6 +344,23 @@ async function main() {
       assert(csv.text.split(/\r?\n/).some((l) => /DNS\.SB/.test(l) && /mismatch/.test(l)), 'DNS.SB is a mismatch in the CSV');
     });
 
+    await run.step('a link’s regex is held — shown, kept in the link, applied only on Enter in the field (it would run against answers the link’s author may write)', async () => {
+      await gotoRoute(page, '#/global?name=cut.example.com&type=A&match=regex&expect=%5E198%5C.51');
+      await page.waitFor(DONE, { timeout: 20000, message: 'check done' });
+      const held = await info();
+      assert(!held.shown, 'no card: the pattern is not applied');
+      assertEqual(await page.evaluate(() => document.querySelectorAll('.glb-exp-mark').length), 0, 'no marks');
+      const field = await page.evaluate(() => [document.querySelector('[data-role="global-expect"]').value, document.querySelector('[data-role="global-match"]').value]);
+      assertEqual(field, ['^198\\.51', 'regex'], 'the fields show it');
+      assert(/^A regular expression from a link is applied only once you press Enter in the field or edit it/.test(held.fieldHint), `hint: ${held.fieldHint}`);
+      assert(held.hash.includes('match=regex') && held.hash.includes('expect=%5E198'), `the link keeps it: ${held.hash}`);
+      await page.evaluate(() => document.querySelector('[data-role="global-expect"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+      await page.waitFor(() => /Regex/.test(document.querySelector('.glb-exp-value')?.textContent || '') && document.querySelector('[data-role="expected"]')?.dataset.state === 'pending', { message: 'applied on Enter' });
+      const applied = await info();
+      assertEqual([applied.count.match, applied.count.mismatch], [SOURCES - 4, 4], 'judged once applied');
+      assert(!/press Enter/.test(applied.fieldHint), `the usual hint again: ${applied.fieldHint}`);
+    });
+
     run.group('Global DNS › the zone’s name server (one Globalping SOA probe, a fake API)');
     await run.step('a brand-new name: the worst case from the SOA in the NXDOMAIN answers, before any probe', async () => {
       await gotoRoute(page, '#/global?name=new.example.com&type=A&expect=198.51.100.20');
@@ -330,8 +368,9 @@ async function main() {
       await page.waitFor(() => document.querySelector('[data-role="expected"]')?.dataset.state === 'pending', { message: 'expected card' });
       const i = await info();
       assertEqual(i.count.mismatch, 4, 'four sources still say NXDOMAIN');
-      assertEqual(i.worst.seconds, '900', 'min(SOA minimum 1800, SOA TTL 650 counted down → 900)');
-      assert(/15 minutes after the change was published/.test(i.worst.text) && /negative-cache time: 900 s, read from the SOA in their answers/.test(i.worst.text), `worst: ${i.worst.text}`);
+      assertEqual([i.worst.seconds, i.worst.exact], ['900', 'false'], 'min(SOA minimum 1800, SOA TTL 650 counted down → 900): an estimate');
+      assert(/at least 11 minutes after the change was published, most likely 15 minutes\./.test(i.worst.text)
+        && /negative-cache time: most likely 900 s, read from the SOA in their answers/.test(i.worst.text), `worst: ${i.worst.text}`);
       assert(/expires by \d{1,2}:\d{2}.*\(in 11 minutes\)/.test(i.last), `last: ${i.last}`);
       assertEqual(await page.evaluate(() => window.__gp.calls.length), 0, 'nothing sent yet');
     });
@@ -340,7 +379,7 @@ async function main() {
       await page.click('[data-action="soa-open"]');
       await page.waitFor(() => !!document.querySelector('.gp-confirm'), { message: 'consent dialog', timeout: 15000 });
       const dialog = await page.evaluate(() => document.querySelector('.gp-confirm').textContent);
-      assert(/new\.example\.com/.test(dialog) && /ns1\.example\.com/.test(dialog) && /1 probe of the 250/.test(dialog), `dialog: ${dialog}`);
+      assert(/new\.example\.com/.test(dialog) && /ns1\.example\.com/.test(dialog) && /1 probe of the 250/.test(dialog) && /the record type SOA/.test(dialog), `dialog: ${dialog}`);
       await page.click('.gp-confirm .btn-primary');
       await page.waitFor(() => !!document.querySelector('[data-soa-state]'), { message: 'the name server’s answer', timeout: 15000 });
       const calls = await page.evaluate(() => window.__gp.calls);
@@ -354,24 +393,18 @@ async function main() {
       assertEqual([i.soaResult.state, i.soaResult.exists], ['ok', 'true'], 'an authoritative answer: the name exists there');
       assert(/ns1\.example\.com answers for the zone example\.com with authority\./.test(i.soaResult.text) && /SOA serial 2026100801, primary ns1\.example\.com\./.test(i.soaResult.text)
         && /new\.example\.com exists there\./.test(i.soaResult.text) && /Negative-cache time: 700 s/.test(i.soaResult.text) && /Frankfurt/.test(i.soaResult.text), `result: ${i.soaResult.text}`);
-      assertEqual(i.worst.seconds, '700', 'the worst case takes the name server’s negative-cache time');
-      assert(/12 minutes after the change/.test(i.worst.text) && /700 s, as the zone’s name server ns1\.example\.com serves it/.test(i.worst.text), `worst: ${i.worst.text}`);
+      assertEqual([i.worst.seconds, i.worst.exact], ['700', 'true'], 'the worst case takes the name server’s negative-cache time');
+      assert(/Worst case for any resolver in the world: 12 minutes after the change was published\./.test(i.worst.text)
+        && /700 s, as the zone’s name server ns1\.example\.com serves it/.test(i.worst.text) && !/estimate/.test(i.worst.text), `worst: ${i.worst.text}`);
       assert(await page.evaluate(() => !!document.querySelector('[data-role="soa-measurement"]')), 'the measurement link');
       await shot(page, opts, 'cutover-global-soa-desktop-light-en');
     });
 
-    await run.step('Ask again: no second dialog in the page session; a used-up quota sends nothing', async () => {
+    await run.step('Ask again: no second dialog in the page session', async () => {
       await page.click('[data-action="soa-run"]');
       await page.waitFor(() => window.__gp.calls.filter((c) => c.method === 'POST').length === 2, { message: 'second measurement', timeout: 15000 });
       await page.waitFor(() => !document.querySelector('[data-soa-status="running"]') && !!document.querySelector('[data-soa-state]'), { message: 'answered again', timeout: 15000 });
       assert(!(await page.evaluate(() => !!document.querySelector('.gp-confirm'))), 'no dialog');
-      await page.evaluate(() => { window.__gp.remaining = 0; });
-      await page.click('[data-action="soa-run"]');
-      await page.waitFor(() => document.querySelector('[data-soa-status]')?.dataset.soaStatus === 'quota', { message: 'quota status', timeout: 15000 });
-      const quota = await page.evaluate(() => document.querySelector('[data-soa-status]').textContent);
-      assert(/quota for this hour is used up/.test(quota) && /Nothing was sent/.test(quota), `quota text: ${quota}`);
-      assertEqual(await page.evaluate(() => window.__gp.calls.filter((c) => c.method === 'POST').length), 2, 'no POST');
-      await page.evaluate(() => { window.__gp.remaining = 250; });
     });
 
     await run.step('[TR, dark] a language re-mount keeps the expected value and the name server’s answer (no new probe)', async () => {
@@ -398,6 +431,63 @@ async function main() {
       await page.waitFor(() => document.querySelector('[data-soa-status]')?.dataset.soaStatus === 'plan-internal', { message: 'refused', timeout: 10000 });
       assert(/An internal name \(printer\.local\) is never sent to Globalping\./.test(await page.evaluate(() => document.querySelector('[data-soa-status]').textContent)), 'internal text');
       assertEqual(await page.evaluate(() => window.__gp.calls.length), before, 'nothing sent, not even /limits');
+    });
+
+    await run.step('a changed record: the probe asks ns1.example.com for the A record itself; its TTL there (3600 s) makes the worst case exact', async () => {
+      await gotoRoute(page, '#/global?name=cut.example.com&type=A&expect=198.51.100.20');
+      await page.waitFor(DONE, { timeout: 20000, message: 'check done' });
+      await page.waitFor(() => { const s = document.querySelector('[data-role="soa-slot"]'); return s && !s.hidden; }, { message: 'probe offered' });
+      const posts = () => page.evaluate(() => window.__gp.calls.filter((c) => c.method === 'POST'));
+      const before = (await posts()).length;
+      await page.evaluate(() => (document.querySelector('[data-action="soa-open"]:not([hidden])') || document.querySelector('[data-action="soa-run"]')).click());
+      await page.waitFor(() => !!document.querySelector('[data-soa-state]') && !document.querySelector('[data-soa-status="running"]'), { message: 'the name server’s answer', timeout: 15000 });
+      const sent = (await posts()).slice(before);
+      assertEqual(sent.length, 1, 'one measurement, no second dialog');
+      assertEqual(sent[0].body.measurementOptions.query, { type: 'A' }, 'the check’s own question: the old answers are records');
+      const i = await info();
+      assert(/cut\.example\.com exists there\./.test(i.soaResult.text) && /TTL of the A answer there: 3,600 s\./.test(i.soaResult.text), `result: ${i.soaResult.text}`);
+      assertEqual([i.worst.seconds, i.worst.exact], ['3600', 'true'], 'the record’s own TTL');
+      assert(/Worst case for any resolver in the world: 1 hour after the change was published\./.test(i.worst.text)
+        && /The record’s TTL at the zone’s name server ns1\.example\.com: 3,600 s\./.test(i.worst.text) && !/estimate/.test(i.worst.text), `worst: ${i.worst.text}`);
+    });
+
+    await run.step('a11y: redrawing the card (an edit of the value, as the 30 s ticker does) inserts no alert into the probe panel again', async () => {
+      await page.evaluate(() => {
+        window.__inserted = [];
+        window.__obs = new MutationObserver((list) => {
+          for (const m of list) {
+            for (const n of m.addedNodes) {
+              if (n.nodeType === 1 && (n.matches('[role="alert"],[role="status"]') || n.querySelector('[role="alert"],[role="status"]'))) window.__inserted.push(n.textContent.slice(0, 60));
+            }
+          }
+        });
+        window.__obs.observe(document.querySelector('[data-role="soa-panel"]'), { childList: true, subtree: true });
+        window.__noteNode = document.querySelector('[data-soa-state]');
+      });
+      for (const value of ['198.51.100.20,198.51.100.20', '198.51.100.20']) {
+        await setField(page, 'global-expect', value);
+        await page.waitFor((v) => document.querySelector('.glb-exp-pattern')?.textContent === v, { args: [value], message: `card redrawn for ${value}` });
+      }
+      const out = await page.evaluate(() => {
+        window.__obs.disconnect();
+        return { inserted: window.__inserted, same: window.__noteNode === document.querySelector('[data-soa-state]') };
+      });
+      assertEqual(out.inserted, [], 'no alert or status node inserted again');
+      assert(out.same, 'the answer’s alert is the same node');
+    });
+
+    // Last of the probes: once the quota reads 0, the client keeps it for the rest of the hour's window.
+    await run.step('a used-up quota sends nothing; the answer on screen stays', async () => {
+      const posts = () => page.evaluate(() => window.__gp.calls.filter((c) => c.method === 'POST').length);
+      const before = await posts();
+      await page.evaluate(() => { window.__gp.remaining = 0; });
+      await page.click('[data-action="soa-run"]');
+      await page.waitFor(() => document.querySelector('[data-soa-status]')?.dataset.soaStatus === 'quota', { message: 'quota status', timeout: 15000 });
+      const quota = await page.evaluate(() => document.querySelector('[data-soa-status]').textContent);
+      assert(/quota for this hour is used up/.test(quota) && /Nothing was sent/.test(quota), `quota text: ${quota}`);
+      assertEqual(await posts(), before, 'no POST');
+      assert(await page.evaluate(() => !!document.querySelector('[data-soa-state]')), 'the last answer stays');
+      await page.evaluate(() => { window.__gp.remaining = 250; });
     });
 
     run.group('DNS change request › the TTL planner as a calendar (.ics)');

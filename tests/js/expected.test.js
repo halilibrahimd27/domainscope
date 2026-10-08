@@ -5,7 +5,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   EXPECT_MODES, EXPECT_ERRORS, EXPECT_VERDICTS, EXPECT_MAX_LENGTH, EXPECT_SPECIALS, COMMON_TTLS, FLUSH_LINKS, canonValue, likelyTtl,
-  parseExpected, matchExpected, expectedVerdict, expectedTally, negativeTtl, cachedTtl, cacheEnd, worstCaseEta, expectedEta
+  parseExpected, matchExpected, expectedVerdict, expectedTally, negativeTtl, cachedTtl, cacheEnd, worstCaseEta, expectedEta, probeQuestion
 } from '../../assets/js/lib/expected.js';
 import * as cutover from '../../assets/js/lib/cutover.js';
 import { answerValues } from '../../assets/js/lib/propagation.js';
@@ -54,7 +54,18 @@ describe('parseExpected', () => {
     assert.equal(parseExpected({ pattern: 'x'.repeat(EXPECT_MAX_LENGTH + 1), mode: 'contains' }).error, 'long');
     assert.equal(parseExpected({ pattern: '192.0.2.10', mode: 'nope' }).mode, 'exact');
     assert.deepEqual([...EXPECT_MODES], ['exact', 'contains', 'regex']);
-    assert.deepEqual([...EXPECT_ERRORS], ['empty', 'regex', 'long']);
+    assert.deepEqual([...EXPECT_ERRORS], ['empty', 'regex', 'long', 'address']);
+  });
+
+  test('an exact A / AAAA value is an address of that family: a host name is refused at the field, not a "Not yet" forever', () => {
+    const host = parseExpected({ pattern: 'new-lb.example.net', type: 'A' });
+    assert.deepEqual([host.ok, host.error, host.detail], [false, 'address', 'new-lb.example.net']);
+    assert.equal(parseExpected({ pattern: '198.51.100.20, New-LB.example.net.', type: 'A' }).detail, 'New-LB.example.net.', 'one name among addresses, as typed');
+    assert.equal(parseExpected({ pattern: '192.0.2.10', type: 'AAAA' }).error, 'address', 'an IPv4 address for AAAA');
+    assert.equal(parseExpected({ pattern: '2001:db8::1', type: 'A' }).error, 'address', 'an IPv6 address for A');
+    assert.deepEqual(exp('new-lb.example.net', 'exact', 'CNAME').values, ['new-lb.example.net'], 'a CNAME takes a name');
+    assert.deepEqual(exp('new-lb.example.net', 'contains').values, ['new-lb.example.net'], 'contains reads the chain');
+    assert.equal(exp('nxdomain', 'exact', 'AAAA').special, 'NXDOMAIN');
   });
 
   test('canonValue: addresses canonical, TXT strings joined and unescaped, names without the trailing dot', () => {
@@ -105,6 +116,24 @@ describe('matchExpected', () => {
     assert.equal(matchExpected(values, exp('EDGE.example.net', 'contains')), true);
     assert.equal(matchExpected(values, exp('198.51.100', 'contains')), false);
     assert.equal(matchExpected(['NXDOMAIN'], exp('nxdomain', 'contains')), true);
+  });
+
+  test('contains and regex take NXDOMAIN / NODATA only as the whole word: they are statuses, not text', () => {
+    for (const p of ['main', 'domain', 'nx', 'DOMAIN']) assert.equal(matchExpected(['NXDOMAIN'], exp(p, 'contains')), false, `contains ${p}`);
+    for (const p of ['data', 'no', 'nod']) assert.equal(matchExpected(['NODATA'], exp(p, 'contains')), false, `contains ${p}`);
+    assert.equal(matchExpected(['NXDOMAIN'], exp('NXDomain', 'contains')), true);
+    assert.equal(matchExpected(['NODATA'], exp('nodata', 'contains')), true);
+    for (const p of ['main', '^nx', 'domain$', 'no', 'a']) {
+      assert.equal(matchExpected(['NXDOMAIN'], exp(p, 'regex')), false, `regex ${p} vs NXDOMAIN`);
+      assert.equal(matchExpected(['NODATA'], exp(p, 'regex')), false, `regex ${p} vs NODATA`);
+    }
+    assert.equal(matchExpected(['NXDOMAIN'], exp('nxdomain|nodata', 'regex')), true);
+    assert.equal(matchExpected(['NODATA'], exp('^no.*$', 'regex')), true);
+    assert.equal(matchExpected(['198.51.100.20', 'CNAME main-lb.example.net'], exp('main', 'contains')), true, 'a name keeps substring matching');
+    assert.equal(matchExpected(['"no-reply=example"'], exp('no', 'regex', 'TXT')), true, 'a text keeps it too');
+    // a cutover to main-lb.example.net checked with Contains "main": a source still saying NXDOMAIN is not there yet
+    const rows = [row(['198.51.100.20', 'CNAME main-lb.example.net']), row(['NXDOMAIN'])];
+    assert.deepEqual(expectedTally(rows, exp('main', 'contains')), { match: 1, mismatch: 1, failed: 0, judged: 2, done: false });
   });
 
   test('regex: case-insensitive, any answer value, the chain targets without trailing dots', () => {
@@ -208,8 +237,30 @@ describe('the worst-case wait', () => {
     ];
     const eta = expectedEta(rows, e);
     assert.deepEqual(eta, {
-      mismatched: 2, positive: 2, negative: 0, observedTtl: 3412, recordTtl: 3600, negativeTtl: null, negativeFrom: null, seconds: 3600, last: T0 + 3412000
+      mismatched: 2, positive: 2, negative: 0, observedTtl: 3412, recordTtl: 3600, recordFrom: 'answers', serverTtl: null,
+      negativeTtl: null, negativeFrom: null, seconds: 3600, least: 3412, exact: false, last: T0 + 3412000
     });
+  });
+
+  test('a stale copy with little TTL left: an estimate, at least what it had left, until the name server gives the record’s own TTL', () => {
+    const e = exp('198.51.100.20');
+    const stale = (left) => [row(['198.51.100.20'], { ttl: 3600 }), row(['192.0.2.10'], { ttl: left })];
+    // zone TTL 3600: the copies count down, so the figure read from them shrinks — never a "worst case"
+    for (const [left, likely] of [[3412, 3600], [1700, 1800], [400, 600], [100, 120]]) {
+      const eta = expectedEta(stale(left), e);
+      assert.deepEqual([eta.seconds, eta.least, eta.exact, eta.recordFrom], [likely, left, false, 'answers'], `${left} s left`);
+    }
+    // the name server asked the check's own question: its TTL is the record's, whatever the copies have left
+    const ns = { type: 'A', ttl: 3600, negativeTtl: null };
+    for (const left of [3412, 1700, 400, 100]) {
+      const eta = expectedEta(stale(left), e, { authoritative: ns });
+      assert.deepEqual([eta.seconds, eta.least, eta.exact, eta.recordFrom, eta.serverTtl], [3600, 3600, true, 'name-server', 3600], `${left} s left, asked`);
+    }
+    const soaAsked = expectedEta(stale(400), e, { authoritative: { ...ns, type: 'SOA' } });
+    assert.deepEqual([soaAsked.seconds, soaAsked.exact, soaAsked.serverTtl], [600, false, null], 'an SOA question: its TTL is not the record’s');
+    const lowered = expectedEta(stale(3412), e, { authoritative: { ...ns, ttl: 300 } });
+    assert.deepEqual([lowered.seconds, lowered.least, lowered.exact, lowered.recordFrom, lowered.serverTtl], [3600, 3412, false, 'answers', 300],
+      'the name server now serves a lower TTL than the old copies carry: lowered with the change, so the old one counts');
   });
 
   test('a new name: the old answers are NXDOMAIN; the negative-cache time from their SOA, or the name server’s', () => {
@@ -220,10 +271,27 @@ describe('the worst-case wait', () => {
     assert.equal(fromAnswers.negativeTtl, 300, 'the SOA minimum (exact) caps the counted-down SOA TTL read up');
     assert.equal(fromAnswers.negativeFrom, 'answers');
     assert.equal(fromAnswers.seconds, 300);
+    assert.equal(fromAnswers.exact, false, 'the SOA TTL in cached answers counts down too');
     const probed = expectedEta(rows, e, { authoritative: { negativeTtl: 900 } });
     assert.equal(probed.negativeTtl, 900);
     assert.equal(probed.negativeFrom, 'name-server');
     assert.equal(probed.seconds, 900, 'the name server’s own value wins');
+    assert.deepEqual([probed.exact, probed.least], [true, 900]);
+  });
+
+  test('a new name whose old answers count their SOA down: at least what is left, most likely the zone TTL it started from', () => {
+    const r = row(['NXDOMAIN']);
+    r.response.authorities = [{ name: 'example.com', type: 'SOA', ttl: 650, data: { ...SOA, minimum: 1800 } }];
+    const eta = expectedEta([row(['198.51.100.20']), r], exp('198.51.100.20'));
+    assert.deepEqual([eta.negativeTtl, eta.seconds, eta.least, eta.exact], [900, 900, 650, false], 'min(minimum 1800, 650 read up to 900)');
+  });
+
+  test('probeQuestion: the check’s own type — or the SOA when every source not there yet says no such name or record', () => {
+    const e = exp('198.51.100.20');
+    assert.equal(probeQuestion([row(['198.51.100.20']), row(['NXDOMAIN']), row(['NODATA'])], e, 'A'), 'SOA', 'a new name: only the negative-cache time counts');
+    assert.equal(probeQuestion([row(['192.0.2.10']), row(['NXDOMAIN'])], e, 'A'), 'A', 'an old record: its TTL counts');
+    assert.equal(probeQuestion([row(['198.51.100.20'])], e, 'aaaa'), 'AAAA', 'nothing stale: the check’s type');
+    assert.equal(probeQuestion([row(['192.0.2.10'])], null, 'TXT'), 'TXT', 'no expected value');
   });
 
   test('a Route 53 style SOA: TTL 900, minimum 86400 — the negative time is the TTL, not a day', () => {

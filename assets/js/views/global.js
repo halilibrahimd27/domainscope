@@ -25,11 +25,14 @@
  * - "Expected value" (lib/expected.js): exact, contains or regex against every answer — each row
  *   says whether it serves the value yet (and until when it may keep the old one), a card counts
  *   them and gives the worst-case wait after a change (the old answer's TTL; for a name that did
- *   not exist, the zone's negative-cache time), with the public resolvers' cache-flush pages and,
- *   on a click, one Globalping SOA question to the zone's own name server (ui/soa-probe.js,
- *   loaded on first use). Editing it asks nothing again: the answers on screen are judged anew.
+ *   not exist, the zone's negative-cache time) — an estimate from cached TTLs, which count down,
+ *   until one Globalping question to the zone's own name server (the record's own type, or the SOA
+ *   for a new name; ui/soa-probe.js, loaded on first use, on a click) makes it exact — with the
+ *   public resolvers' cache-flush pages. Editing it asks nothing again: the answers on screen are
+ *   judged anew.
  * - Shareable: `#/global?name=www.example.com&type=A` (optional `geo=0`, `expect=` and
- *   `match=contains|regex`) runs on open; with `run=0` (a name carried over from another tool,
+ *   `match=contains|regex`) runs on open — a link's regex is only filled in until the user presses
+ *   Enter in the field or edits it; with `run=0` (a name carried over from another tool,
  *   lib/session.js) it is only filled in. The finished check is kept for the page session
  *   (`result()` / `snapshot()`).
  */
@@ -40,7 +43,9 @@ import {
   Section, StatCard, TruncatedList, checkbox, ipSortValue, select, setButtonBusy, textInput
 } from '../ui/components.js';
 import { registerStrings, hasString, formatNumber, formatDuration, formatRegion, formatDateTime, formatRelative, localeTag } from '../i18n.js';
-import { EXPECT_MAX_LENGTH, EXPECT_MODES, FLUSH_LINKS, cacheEnd, expectedEta, expectedTally, expectedVerdict, parseExpected } from '../lib/expected.js';
+import {
+  EXPECT_MAX_LENGTH, EXPECT_MODES, FLUSH_LINKS, cacheEnd, expectedEta, expectedTally, expectedVerdict, parseExpected, probeQuestion
+} from '../lib/expected.js';
 import { RESOLVERS, GEO_VANTAGES, getAnyResolver } from '../lib/resolvers.js';
 import { Flag } from '../ui/flag.js';
 import { checkPropagation, propagationVerdict, splitChain } from '../lib/propagation.js';
@@ -231,14 +236,16 @@ registerStrings('en', {
   'glb.ttlTitle': 'Cached for {human}',
 
   'glb.exp.label': 'Expected value (optional)',
-  'glb.exp.placeholder': '198.51.100.20 — or NXDOMAIN, a host name, a text',
+  'glb.exp.placeholder': '198.51.100.20 — or NXDOMAIN, or text with Contains',
   'glb.exp.hint': 'After a DNS change: each answer is marked as serving it or not yet, with the worst-case wait. Exact compares the records (several separated by commas; NXDOMAIN or NODATA for none); contains and regex read the whole answer, the CNAME chain too.',
+  'glb.exp.held': 'A regular expression from a link is applied only once you press Enter in the field or edit it: a pattern written by someone else could stall this page.',
   'glb.exp.mode': 'Match',
   'glb.exp.mode.exact': 'Exact',
   'glb.exp.mode.contains': 'Contains',
   'glb.exp.mode.regex': 'Regex',
   'glb.exp.err.regex': 'Not a valid regular expression: {detail}',
   'glb.exp.err.long': 'At most {max} characters.',
+  'glb.exp.err.address': 'An exact {type} value is an {family} address — {value} is not one. To check the host name the name points to, choose Contains or the CNAME type.',
   'glb.exp.match': 'Matches',
   'glb.exp.mismatch': 'Not yet',
   'glb.exp.mismatchTitle': 'Another answer than the expected value: this source may keep it cached until {time}.',
@@ -256,8 +263,13 @@ registerStrings('en', {
   },
   'glb.exp.notYetNoTtl': { one: '{count} source still gives another answer.', other: '{count} sources still give another answer.' },
   'glb.exp.worst': 'Worst case for any resolver in the world: {duration} after the change was published.',
+  'glb.exp.estimate': 'Worst case for any resolver in the world: at least {least} after the change was published, most likely {duration}.',
+  'glb.exp.estimateLikely': 'Worst case for any resolver in the world: most likely {duration} after the change was published.',
+  'glb.exp.estimateHint': 'Cached TTLs count down, so this is an estimate: the zone’s name server can give the exact figure.',
   'glb.exp.worstRecord': 'The old answer’s TTL is most likely {ttl} s (the highest an answer here still carried was {seen} s).',
-  'glb.exp.negAnswers': 'Where the name or record did not exist before, a resolver that asked then keeps that “no such record” answer for the zone’s negative-cache time: {ttl} s, read from the SOA in their answers.',
+  'glb.exp.recordNs': 'The record’s TTL at the zone’s name server {ns}: {ttl} s.',
+  'glb.exp.recordLower': 'The zone’s name server {ns} now serves a TTL of {ttl} s, lower than the old answer’s: it was most likely lowered with the change.',
+  'glb.exp.negAnswers': 'Where the name or record did not exist before, a resolver that asked then keeps that “no such record” answer for the zone’s negative-cache time: most likely {ttl} s, read from the SOA in their answers.',
   'glb.exp.negNs': 'Where the name or record did not exist before, a resolver that asked then keeps that “no such record” answer for the zone’s negative-cache time: {ttl} s, as the zone’s name server {ns} serves it.',
   'glb.exp.worstUnknown': 'The old answer carried no TTL, so there is no worst case to give.',
   'glb.exp.flush': 'Speed it up: ask the public resolvers to drop their cached copy —',
@@ -268,7 +280,7 @@ registerStrings('en', {
     other: '{count} sources gave another answer; their cached copies have expired since — check again to see them now.'
   },
   'glb.exp.probe': 'Ask the zone’s name server (1 Globalping probe)',
-  'glb.exp.probeHint': 'One Globalping probe asks the zone’s own name server for the SOA of this name: whether the name exists there, and the zone’s negative-cache time. Nothing is sent before you press it.',
+  'glb.exp.probeHint': 'One Globalping probe asks the zone’s own name server this check’s question: the record’s TTL there (for a name that did not exist, the zone’s negative-cache time) and whether the name exists there. Nothing is sent before you press it.',
   'glb.exp.probeLoadFailed': 'The name server check could not be loaded.'
 });
 
@@ -427,14 +439,16 @@ registerStrings('tr', {
   'glb.ttlTitle': '{human} boyunca önbellekte tutulur',
 
   'glb.exp.label': 'Beklenen değer (isteğe bağlı)',
-  'glb.exp.placeholder': '198.51.100.20 — ya da NXDOMAIN, bir host adı, bir metin',
+  'glb.exp.placeholder': '198.51.100.20 — ya da NXDOMAIN, ya da İçerir ile bir metin',
   'glb.exp.hint': 'Bir DNS değişikliğinden sonra: her yanıt, beklenen değeri döndürüyor ya da henüz döndürmüyor olarak işaretlenir; en kötü durumda ne kadar bekleneceği de gösterilir. Tam eşleşme kayıtları karşılaştırır (birden fazlasını virgülle ayırın; hiç kayıt yoksa NXDOMAIN ya da NODATA); içerir ve regex, CNAME zinciri dahil yanıtın tamamını okur.',
+  'glb.exp.held': 'Bağlantıyla gelen bir düzenli ifade, ancak alanda Enter’a bastığınızda ya da onu düzenlediğinizde uygulanır: başkasının yazdığı bir ifade bu sayfayı kilitleyebilir.',
   'glb.exp.mode': 'Eşleşme',
   'glb.exp.mode.exact': 'Tam',
   'glb.exp.mode.contains': 'İçerir',
   'glb.exp.mode.regex': 'Regex',
   'glb.exp.err.regex': 'Geçerli bir düzenli ifade değil: {detail}',
   'glb.exp.err.long': 'En fazla {max} karakter.',
+  'glb.exp.err.address': 'Tam eşleşmede bir {type} değeri {family} adresi olmalı; {value} bir {family} adresi değil. Adın işaret ettiği host adını denetlemek için İçerir’i ya da CNAME türünü seçin.',
   'glb.exp.match': 'Eşleşiyor',
   'glb.exp.mismatch': 'Henüz değil',
   'glb.exp.mismatchTitle': 'Beklenen değerden farklı bir yanıt: bu kaynak onu {time} saatine kadar önbellekte tutabilir.',
@@ -449,8 +463,13 @@ registerStrings('tr', {
   'glb.exp.notYet': '{count} kaynak hâlâ başka bir yanıt veriyor; önbellekteki kopyalarının sonuncusunun süresi en geç {time} saatinde ({left}) doluyor.',
   'glb.exp.notYetNoTtl': '{count} kaynak hâlâ başka bir yanıt veriyor.',
   'glb.exp.worst': 'Dünyadaki herhangi bir çözümleyici için en kötü durum: değişiklik yayımlandıktan {duration} sonra.',
+  'glb.exp.estimate': 'Dünyadaki herhangi bir çözümleyici için en kötü durum: değişiklik yayımlandıktan en az {least}, büyük olasılıkla {duration} sonra.',
+  'glb.exp.estimateLikely': 'Dünyadaki herhangi bir çözümleyici için en kötü durum: değişiklik yayımlandıktan büyük olasılıkla {duration} sonra.',
+  'glb.exp.estimateHint': 'Önbellekteki TTL değerleri geri sayar; bu yüzden bu bir tahmin. Kesin değeri bölgenin ad sunucusu verebilir.',
   'glb.exp.worstRecord': 'Eski yanıtın TTL değeri büyük olasılıkla {ttl} sn (buradaki bir yanıtın hâlâ taşıdığı en yüksek değer {seen} sn).',
-  'glb.exp.negAnswers': 'Ad ya da kayıt daha önce yoksa, o zaman soran bir çözümleyici bu “kayıt yok” yanıtını bölgenin negatif önbellek süresi boyunca tutar: {ttl} sn (yanıtlarındaki SOA kaydından okundu).',
+  'glb.exp.recordNs': 'Kaydın, bölgenin ad sunucusu {ns} üzerindeki TTL değeri: {ttl} sn.',
+  'glb.exp.recordLower': 'Bölgenin ad sunucusu {ns} artık {ttl} sn’lik bir TTL veriyor; bu eski yanıtınkinden düşük, yani TTL büyük olasılıkla değişiklikle birlikte düşürüldü.',
+  'glb.exp.negAnswers': 'Ad ya da kayıt daha önce yoksa, o zaman soran bir çözümleyici bu “kayıt yok” yanıtını bölgenin negatif önbellek süresi boyunca tutar: büyük olasılıkla {ttl} sn (yanıtlarındaki SOA kaydından okundu).',
   'glb.exp.negNs': 'Ad ya da kayıt daha önce yoksa, o zaman soran bir çözümleyici bu “kayıt yok” yanıtını bölgenin negatif önbellek süresi boyunca tutar: {ttl} sn (bölgenin ad sunucusu {ns} böyle bildiriyor).',
   'glb.exp.worstUnknown': 'Eski yanıtta TTL değeri yoktu; bu yüzden bir en kötü durum verilemiyor.',
   'glb.exp.flush': 'Hızlandırmak için genel çözümleyicilerden önbellekteki kopyayı silmelerini isteyin —',
@@ -458,7 +477,7 @@ registerStrings('tr', {
   'glb.exp.filterOn': 'Yalnızca beklenen değeri henüz döndürmeyen kaynaklar gösteriliyor',
   'glb.exp.expired': '{count} kaynak başka bir yanıt vermişti; önbellekteki kopyalarının süresi o zamandan beri doldu — güncel hâlini görmek için yeniden kontrol edin.',
   'glb.exp.probe': 'Bölgenin ad sunucusuna sor (1 Globalping ölçümü)',
-  'glb.exp.probeHint': 'Tek bir Globalping ölçüm noktası, bölgenin kendi ad sunucusuna bu adın SOA kaydını sorar: ad orada var mı ve bölgenin negatif önbellek süresi ne. Düğmeye basana kadar hiçbir şey gönderilmez.',
+  'glb.exp.probeHint': 'Tek bir Globalping ölçüm noktası, bölgenin kendi ad sunucusuna bu kontrolün sorusunu sorar: kaydın oradaki TTL değeri (daha önce olmayan bir ad için bölgenin negatif önbellek süresi) ve adın orada olup olmadığı. Düğmeye basana kadar hiçbir şey gönderilmez.',
   'glb.exp.probeLoadFailed': 'Ad sunucusu kontrolü yüklenemedi.'
 });
 
@@ -674,17 +693,26 @@ export function mount(container, ctx) {
   geoField.input.dataset.role = 'global-geo';
   // The expected value (lib/expected.js): judged against the answers on screen, never a new question.
   const initialMatch = EXPECT_MODES.includes(restored?.match ?? ctx.params.match) ? (restored?.match ?? ctx.params.match) : 'exact';
+  const initialExpect = restored?.expect ?? ctx.params.expect ?? '';
+  /**
+   * A regular expression that came with a link is shown but held — applied once the user edits it
+   * or presses Enter in the field (or picks a mode): it would run against answers the link's author
+   * may write (a TXT record), and a pattern that backtracks without end stalls the page.
+   */
+  let expectHeld = restored ? restored.expectHeld === true : initialMatch === 'regex' && !!String(initialExpect).trim();
   const expectField = textInput({
     label: t('glb.exp.label'),
-    value: restored?.expect ?? ctx.params.expect ?? '',
+    value: initialExpect,
     placeholder: t('glb.exp.placeholder'),
-    hint: t('glb.exp.hint'),
+    hint: t(expectHeld ? 'glb.exp.held' : 'glb.exp.hint'),
     mono: true,
     className: 'glb-expect-value',
     attrs: { 'data-role': 'global-expect', maxlength: String(EXPECT_MAX_LENGTH), enterkeyhint: 'done' },
     onInput: () => expectSoon(),
     onEnter: () => applyExpected()
   });
+  /** Whether the field's hint says how to apply a held regex now. */
+  let heldHintShown = expectHeld;
   const matchField = select({
     label: t('glb.exp.mode'),
     options: EXPECT_MODES.map((m) => ({ value: m, label: t(`glb.exp.mode.${m}`) })),
@@ -697,7 +725,7 @@ export function mount(container, ctx) {
   let expectedNow = null;
   /** Show only the rows that do not serve the expected value yet (the card's toggle). */
   let missingOnly = false;
-  /** The zone's own name server's answer to the SOA question (ui/soa-probe.js) for the check on screen, or null. */
+  /** The zone's own name server's answer (ui/soa-probe.js) for the check on screen, or null. */
   let soaResult = null;
   /** Whether the tables carry the export-only "Expected value" column now. */
   let columnsWithExpected = false;
@@ -1256,10 +1284,16 @@ export function mount(container, ctx) {
   const loadSoa = onceAsync(() => import('../ui/soa-probe.js'));
   /** The mounted probe panel (null until first use): run / reset / refresh / busy / snapshot / teardown. */
   let soaPanel = null;
-  /** What the panel may read of the check on screen, and where its answer goes (the card's worst case). */
+  /**
+   * What the panel may read of the check on screen — `ask`: the question for the name server
+   * (lib/expected.js probeQuestion: the check's type, or the SOA for a new name) — and where its
+   * answer goes (the card's worst case).
+   */
   const soaHost = {
     ctx,
-    check: () => (current ? { name: current.name, type: current.type, busy: !!current.controller } : null),
+    check: () => (current ? {
+      name: current.name, type: current.type, ask: probeQuestion(current.rows, expectedNow, current.type), busy: !!current.controller
+    } : null),
     expected: () => expectedNow,
     onResult(result) {
       soaResult = result || null;
@@ -1428,15 +1462,33 @@ export function mount(container, ctx) {
 
   /** The expected value as the fields hold it, for a record type (the check's); why not, at the field. */
   function readExpected(type = current ? current.type : (GLOBAL_TYPES.includes(typeField.value) ? typeField.value : 'A')) {
+    // A link's regex waits for the user (see expectHeld): the field says how to apply it.
+    if (heldHintShown !== expectHeld) {
+      heldHintShown = expectHeld;
+      expectField.setHint(t(expectHeld ? 'glb.exp.held' : 'glb.exp.hint'));
+    }
+    if (expectHeld) {
+      expectField.setError(null);
+      return null;
+    }
     const parsed = parseExpected({ mode: matchField.value, pattern: expectField.value, type });
-    expectField.setError(parsed.ok || parsed.error === 'empty' ? null
-      : parsed.error === 'regex' ? t('glb.exp.err.regex', { detail: parsed.detail || '' })
-        : t('glb.exp.err.long', { max: formatNumber(EXPECT_MAX_LENGTH) }));
+    let error = null;
+    if (parsed.error === 'regex') error = t('glb.exp.err.regex', { detail: parsed.detail || '' });
+    else if (parsed.error === 'long') error = t('glb.exp.err.long', { max: formatNumber(EXPECT_MAX_LENGTH) });
+    else if (parsed.error === 'address') error = t('glb.exp.err.address', { type, family: type === 'AAAA' ? 'IPv6' : 'IPv4', value: parsed.detail || '' });
+    expectField.setError(error);
     return parsed.ok ? parsed : null;
   }
 
-  /** The route params of the expected value (none without one; `match` only when it is not exact). */
-  const expectParams = () => (expectedNow ? { expect: expectedNow.pattern, match: expectedNow.mode === 'exact' ? null : expectedNow.mode } : {});
+  /**
+   * The route params of the expected value (none without one; `match` only when it is not exact);
+   * a held regex from a link stays in it.
+   */
+  const expectParams = () => {
+    const held = expectHeld ? String(expectField.value || '').trim() : '';
+    if (held) return { expect: held, match: 'regex' };
+    return expectedNow ? { expect: expectedNow.pattern, match: expectedNow.mode === 'exact' ? null : expectedNow.mode } : {};
+  };
 
   /** The export-only "Expected value" column, while there is one (the tables are redrawn only when that changes). */
   function syncExpectedColumns() {
@@ -1448,8 +1500,12 @@ export function mount(container, ctx) {
     chinaTable.setColumns([...geoColumns({ withResolver: true }), ...extra]);
   }
 
-  /** The fields changed: judge the answers on screen again (nothing is asked) and keep the value in the link. */
+  /**
+   * The fields changed (an edit, Enter, a mode picked — the user's own action, which also applies a
+   * held regex): judge the answers on screen again (nothing is asked) and keep the value in the link.
+   */
   function applyExpected() {
+    expectHeld = false;
     expectedNow = readExpected();
     syncExpectedColumns();
     if (!expectedNow && missingOnly) setMissingOnly(false);
@@ -1466,6 +1522,33 @@ export function mount(container, ctx) {
     if (missingOnly) filterKey = null;
     applyFilters();
     if (current) renderExpected();
+  }
+
+  /**
+   * The worst case anywhere in words (lib/expected.js expectedEta): a worst case only when it rests
+   * on the zone's name server, else an estimate with its lower bound (cached TTLs count down); then
+   * what it rests on — the record's TTL (the name server's, or read from the copies here), the
+   * negative-cache time — and, before the name server was asked, that it can make it exact.
+   */
+  function worstLines(eta) {
+    let head = t('glb.exp.worstUnknown');
+    if (eta.seconds !== null && eta.exact) head = t('glb.exp.worst', { duration: waitText(eta.seconds) });
+    else if (eta.seconds !== null && eta.least > 0 && eta.least < eta.seconds) {
+      head = t('glb.exp.estimate', { least: waitText(eta.least), duration: waitText(eta.seconds) });
+    } else if (eta.seconds !== null) head = t('glb.exp.estimateLikely', { duration: waitText(eta.seconds) });
+    const lines = [head];
+    const ns = soaResult ? soaResult.ns : '';
+    if (eta.positive && eta.recordFrom === 'name-server') lines.push(t('glb.exp.recordNs', { ns, ttl: formatNumber(eta.recordTtl) }));
+    else if (eta.positive && eta.recordTtl !== null) {
+      lines.push(t('glb.exp.worstRecord', { ttl: formatNumber(eta.recordTtl), seen: formatNumber(eta.observedTtl) }));
+      if (eta.serverTtl !== null) lines.push(t('glb.exp.recordLower', { ns, ttl: formatNumber(eta.serverTtl) }));
+    }
+    if (eta.negative && eta.negativeTtl !== null) {
+      lines.push(eta.negativeFrom === 'name-server' ? t('glb.exp.negNs', { ttl: formatNumber(eta.negativeTtl), ns })
+        : t('glb.exp.negAnswers', { ttl: formatNumber(eta.negativeTtl) }));
+    }
+    if (eta.seconds !== null && !eta.exact && !soaResult) lines.push(t('glb.exp.estimateHint'));
+    return lines;
   }
 
   /**
@@ -1496,8 +1579,12 @@ export function mount(container, ctx) {
     } else {
       expCountEl.append(h('span', { class: 'muted text-sm' }, running ? t('glb.sum.running') : t('glb.exp.none')));
     }
-    clear(expNoteEl);
-    if (tally.done && !running) expNoteEl.append(Alert({ variant: 'ok', compact: true, message: t('glb.exp.done') }));
+    // The "every source serves it" note (a status) is kept while it holds, not inserted again on every redraw.
+    const doneNote = tally.done && !running;
+    if (doneNote !== !!expNoteEl.firstChild) {
+      clear(expNoteEl);
+      if (doneNote) expNoteEl.append(Alert({ variant: 'ok', compact: true, message: t('glb.exp.done') }));
+    }
     const pending = eta.mismatched > 0;
     const now = Date.now();
     expLastEl.hidden = !pending;
@@ -1507,14 +1594,9 @@ export function mount(container, ctx) {
       expLastEl.textContent = !eta.last ? t('glb.exp.notYetNoTtl', { count: eta.mismatched })
         : eta.last <= now ? t('glb.exp.expired', { count: eta.mismatched })
           : t('glb.exp.notYet', { count: eta.mismatched, time: clockTime(eta.last, now), left: formatRelative(eta.last, now) });
-      const worst = [eta.seconds !== null ? t('glb.exp.worst', { duration: waitText(eta.seconds) }) : t('glb.exp.worstUnknown')];
-      if (eta.positive && eta.recordTtl !== null) worst.push(t('glb.exp.worstRecord', { ttl: formatNumber(eta.recordTtl), seen: formatNumber(eta.observedTtl) }));
-      if (eta.negative && eta.negativeTtl !== null) {
-        worst.push(eta.negativeFrom === 'name-server' ? t('glb.exp.negNs', { ttl: formatNumber(eta.negativeTtl), ns: soaResult.ns })
-          : t('glb.exp.negAnswers', { ttl: formatNumber(eta.negativeTtl) }));
-      }
-      expWorstEl.textContent = worst.join(' ');
+      expWorstEl.textContent = worstLines(eta).join(' ');
       expWorstEl.dataset.seconds = eta.seconds === null ? '' : String(eta.seconds);
+      expWorstEl.dataset.exact = String(eta.exact);
     }
     expToggle.hidden = !pending && !missingOnly;
     expToggle.querySelector('.btn-label').textContent = missingOnly ? t('glb.group.showAll') : t('glb.exp.onlyMissing', { count: eta.mismatched });
@@ -2100,7 +2182,7 @@ export function mount(container, ctx) {
       if (soaPanel) soaPanel.teardown();
     },
     snapshot() {
-      const expect = { expect: expectField.value, match: matchField.value };
+      const expect = { expect: expectField.value, match: matchField.value, expectHeld };
       if (!current) return { name: nameField.value, type: typeField.value, geo: geoField.checked, carried, ...expect };
       const items = current.rows.filter((r) => !r.pending).map((r) => ({
         key: r.key, response: r.response, values: r.values, filtered: r.filtered, addresses: r.addresses, scopePrefix: r.scopePrefix, notAsked: !!r.notAsked,
@@ -2131,9 +2213,10 @@ export function mount(container, ctx) {
       const type = String(params.type || 'A').toUpperCase();
       typeField.value = GLOBAL_TYPES.includes(type) ? type : 'A';
       geoField.checked = params.geo !== '0';
-      // A link's expected value replaces the fields' (a link without one clears them).
+      // A link's expected value replaces the fields' (a link without one clears them); its regex is held.
       expectField.value = params.expect || '';
       matchField.value = EXPECT_MODES.includes(params.match) ? params.match : 'exact';
+      expectHeld = matchField.value === 'regex' && !!String(expectField.value).trim();
       start();
       return true;
     }

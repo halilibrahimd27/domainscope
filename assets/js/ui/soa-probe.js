@@ -1,21 +1,25 @@
 /**
  * ui/soa-probe.js — Global DNS › Expected value › "Ask the zone's name server": one Globalping DNS
- * measurement (lib/soaprobe.js) that asks the zone's own name server for the SOA of the name, for
- * the worst-case wait the card gives. Loaded on its first click (views/global.js), which also sends
- * it: the zone and its name servers over DoH (free), then the consent and quota gate
- * (ui/globalping-gate.js, purpose `soa-probe`; its privacy text names the name and the server),
- * then one probe.
+ * measurement (lib/soaprobe.js) that asks the zone's own name server the check's question — the
+ * name's record of its type, or for a new name its SOA (`host.check().ask`, lib/expected.js
+ * probeQuestion) — for the worst-case wait the card gives. Loaded on its first click
+ * (views/global.js), which also sends it: the zone and its name servers over DoH (free), then the
+ * consent and quota gate (ui/globalping-gate.js, purpose `soa-probe`; its privacy text names the
+ * name, the record type and the server), then one probe.
  *
  * The answer, from the source: whether the server answers for the zone with authority (else a lame
- * delegation), the zone's serial and primary, whether the name exists there (a record the change
- * should add that the name server does not have has not reached the zone), and the negative-cache
- * time — which the card's worst case then takes instead of the one read from cached answers.
+ * delegation), the record set's TTL there, the zone's serial and primary (from the SOA of an empty
+ * answer), whether the name exists there (a record the change should add that the name server does
+ * not have has not reached the zone), and the negative-cache time — which the card's worst case
+ * then takes instead of what it estimates from cached answers.
  *
  * Statuses, never blanks: looking up the name servers, reading the quota, asking the server, done,
  * nothing sent (an internal name, no zone of its own, no name server Globalping can ask), the quota
  * used up (when it resets), Globalping unreachable, no probe available, a failed measurement (with
  * its link). A new check resets it, leaving the view aborts it; a language re-mount keeps its answer
- * (`snapshot()`), with nothing sent again.
+ * (`snapshot()`), with nothing sent again. The card redraws often (every answer, every edit of the
+ * expected value, a 30 s ticker): `refresh()` rebuilds an alert only when what it says changed, so
+ * a screen reader announces each status and answer once.
  *
  * Every string is rendered through h() / text nodes.
  */
@@ -34,7 +38,7 @@ registerStrings('en', {
   'soa.again': 'Ask again (1 Globalping probe)',
   'soa.status.plan': 'Looking up the zone and its name servers…',
   'soa.status.gate': 'Reading the Globalping quota…',
-  'soa.status.running': 'Asking {ns} for the SOA of {name}…',
+  'soa.status.running': 'Asking {ns} for the {type} record of {name}…',
   'soa.status.quota': 'The Globalping quota for this hour is used up (resets {when}). Nothing was sent.',
   'soa.status.unreachable': 'Globalping could not be reached. Nothing was sent.',
   'soa.status.noProbes': 'Globalping has no probe free right now. Nothing was sent: try again in a minute.',
@@ -45,7 +49,7 @@ registerStrings('en', {
   'soa.err.no-zone': '{name} belongs to no zone of its own — only a public suffix answers for it, so it is most likely not registered. Nothing was sent.',
   'soa.err.no-ns': 'The zone {zone} has no name servers in DNS. Nothing was sent.',
   'soa.err.not-probeable': 'Globalping cannot ask any of the name servers of {zone}. Nothing was sent.',
-  'soa.privacy': 'Globalping (jsDelivr) receives the name {name} and the zone’s name server {ns}; one probe asks that server for the SOA of the name. The result is public by its measurement ID. Nothing else is sent.',
+  'soa.privacy': 'Globalping (jsDelivr) receives the name {name}, the record type {type} and the zone’s name server {ns}; one probe asks that server for the name’s {type} record. The result is public by its measurement ID. Nothing else is sent.',
   'soa.measurement': 'Measurement {id}',
   'soa.from': 'Asked from {place}.',
   'soa.res.ok': '{ns} answers for the zone {zone} with authority.',
@@ -54,6 +58,7 @@ registerStrings('en', {
   'soa.res.missing': '{name} does not exist there.',
   'soa.res.missingExpected': 'The change has not reached the zone yet — or it went to another zone or DNS provider: no resolver can serve what the name server does not have.',
   'soa.res.alias': '{name} is an alias of {target} there.',
+  'soa.res.ttl': 'TTL of the {type} answer there: {ttl} s.',
   'soa.res.negative': 'Negative-cache time: {ttl} s — the lower of the SOA’s TTL ({soaTtl} s) and its minimum ({minimum} s).',
   'soa.state.not-authoritative': '{ns} answered without authority for {zone}: a lame delegation — that server does not serve the zone.',
   'soa.state.refused': '{ns} refused the question: it does not serve the zone {zone} (a lame delegation).',
@@ -69,7 +74,7 @@ registerStrings('tr', {
   'soa.again': 'Yeniden sor (1 Globalping ölçümü)',
   'soa.status.plan': 'Bölge ve ad sunucuları aranıyor…',
   'soa.status.gate': 'Globalping kotası okunuyor…',
-  'soa.status.running': '{ns} sunucusuna {name} adının SOA kaydı soruluyor…',
+  'soa.status.running': '{ns} sunucusuna {name} adının {type} kaydı soruluyor…',
   'soa.status.quota': 'Bu saatin Globalping kotası doldu ({when} sıfırlanır). Hiçbir şey gönderilmedi.',
   'soa.status.unreachable': 'Globalping’e ulaşılamadı. Hiçbir şey gönderilmedi.',
   'soa.status.noProbes': 'Globalping’in şu anda boşta ölçüm noktası yok. Hiçbir şey gönderilmedi: bir dakika sonra yeniden deneyin.',
@@ -80,7 +85,7 @@ registerStrings('tr', {
   'soa.err.no-zone': '{name} kendine ait bir bölgeye bağlı değil — onun için yalnızca bir genel sonek (public suffix) yanıt veriyor; büyük olasılıkla kayıtlı değil. Hiçbir şey gönderilmedi.',
   'soa.err.no-ns': '{zone} bölgesinin DNS’te ad sunucusu yok. Hiçbir şey gönderilmedi.',
   'soa.err.not-probeable': 'Globalping, {zone} bölgesinin ad sunucularının hiçbirine soramaz. Hiçbir şey gönderilmedi.',
-  'soa.privacy': 'Globalping (jsDelivr) {name} adını ve bölgenin ad sunucusu {ns} bilgisini alır; tek bir ölçüm noktası bu sunucuya adın SOA kaydını sorar. Sonuç, ölçüm kimliğini bilen herkese açıktır. Başka hiçbir şey gönderilmez.',
+  'soa.privacy': 'Globalping (jsDelivr) {name} adını, {type} kayıt türünü ve bölgenin ad sunucusu {ns} bilgisini alır; tek bir ölçüm noktası bu sunucuya adın {type} kaydını sorar. Sonuç, ölçüm kimliğini bilen herkese açıktır. Başka hiçbir şey gönderilmez.',
   'soa.measurement': 'Ölçüm {id}',
   'soa.from': 'Sorulduğu yer: {place}.',
   'soa.res.ok': '{ns}, {zone} bölgesi için yetkili olarak yanıt veriyor.',
@@ -89,6 +94,7 @@ registerStrings('tr', {
   'soa.res.missing': '{name} orada yok.',
   'soa.res.missingExpected': 'Değişiklik henüz bölgeye ulaşmamış — ya da başka bir bölgeye veya DNS sağlayıcısına yapılmış: ad sunucusunda olmayanı hiçbir çözümleyici döndüremez.',
   'soa.res.alias': '{name} orada {target} adının takma adı (CNAME).',
+  'soa.res.ttl': 'Oradaki {type} yanıtının TTL değeri: {ttl} sn.',
   'soa.res.negative': 'Negatif önbellek süresi: {ttl} sn — SOA kaydının TTL değeri ({soaTtl} sn) ile minimum değerinden ({minimum} sn) küçük olanı.',
   'soa.state.not-authoritative': '{ns}, {zone} için yetkisiz yanıt verdi: hatalı yetkilendirme (lame delegation) — bu sunucu bölgeyi sunmuyor.',
   'soa.state.refused': '{ns} soruyu reddetti: {zone} bölgesini sunmuyor (hatalı yetkilendirme).',
@@ -112,10 +118,11 @@ function placeOf(probe) {
 /**
  * Mount the probe panel.
  * @param {HTMLElement} el
- * @param {{ ctx: object, check: () => ({ name: string, type: string, busy: boolean }|null),
+ * @param {{ ctx: object, check: () => ({ name: string, type: string, ask?: string, busy: boolean }|null),
  *   expected: () => (object|null), onResult: (result: object|null) => void }} host
- *   `check`: the check on screen; `expected`: its parsed expected value (lib/expected.js); `onResult`:
- *   the name server's answer (lib/soaprobe.js SoaProbe), for the card's worst case
+ *   `check`: the check on screen (`ask`: the record type to ask the name server, SOA when absent);
+ *   `expected`: its parsed expected value (lib/expected.js); `onResult`: the name server's answer
+ *   (lib/soaprobe.js SoaProbe), for the card's worst case
  * @param {{ restored?: { result: object|null, id: string|null }|null }} [opts]
  * @returns {{ run: () => Promise<void>, reset: () => void, refresh: () => void, busy: () => boolean,
  *   snapshot: () => object|null, teardown: () => void }}
@@ -130,13 +137,22 @@ export function mountSoaProbe(el, host, { restored = null } = {}) {
   const resultEl = h('div', { class: 'glb-soa-result', dataset: { role: 'soa-result' } });
   const runBtn = Button({ label: t('soa.run'), icon: 'server', size: 'sm', variant: 'secondary', dataset: { action: 'soa-run' }, onClick: () => run() });
   el.append(h('div', { class: 'stack-sm glb-soa', dataset: { role: 'soa-panel' } }, statusEl, resultEl, h('div', { class: 'cluster' }, runBtn)));
+  /** What the status and the answer on screen say (render() rebuilds an alert only when that changes). */
+  const shown = { status: null, result: null, warn: null };
 
   const errorText = (err) => (err && typeof err.message === 'string' && err.message ? err.message : t(`error.kind.${errorKind(err) || 'unknown'}`));
   const link = (id) => (id && measurementUrl(id)
     ? h('a', { href: measurementUrl(id), target: '_blank', rel: 'noopener noreferrer', class: 'text-sm', dataset: { role: 'soa-measurement' } }, t('soa.measurement', { id }))
     : null);
 
-  /** The name server's answer, as one alert: authority, the serial, the name there, the negative-cache time. */
+  /** A record is expected where the name server says the name does not exist: the change has not reached the zone. */
+  const missingWarn = (r) => {
+    if (!r || r.state !== 'ok' || r.alias || r.exists !== false) return false;
+    const exp = host.expected();
+    return !!exp && exp.special !== 'NXDOMAIN';
+  };
+
+  /** The name server's answer, as one alert: authority, the serial, the name there, the record's TTL, the negative-cache time. */
   function resultAlert(r) {
     const lines = [];
     let variant = 'info';
@@ -147,12 +163,12 @@ export function mountSoaProbe(el, host, { restored = null } = {}) {
       else if (r.exists === true) lines.push(t('soa.res.exists', { name: r.name }));
       else if (r.exists === false) {
         lines.push(t('soa.res.missing', { name: r.name }));
-        const exp = host.expected();
-        if (exp && exp.special !== 'NXDOMAIN') {
+        if (missingWarn(r)) {
           lines.push(t('soa.res.missingExpected'));
           variant = 'warn';
         }
       }
+      if (r.ttl !== null && r.ttl !== undefined) lines.push(t('soa.res.ttl', { type: r.type || 'SOA', ttl: formatNumber(r.ttl) }));
       if (r.soa && r.negativeTtl !== null) {
         lines.push(t('soa.res.negative', { ttl: formatNumber(r.negativeTtl), soaTtl: formatNumber(r.soa.ttl ?? r.soa.minimum), minimum: formatNumber(r.soa.minimum) }));
       }
@@ -169,9 +185,29 @@ export function mountSoaProbe(el, host, { restored = null } = {}) {
     return node;
   }
 
+  /** The status alert of the panel's state, or null (idle, done). */
+  function statusAlert(name) {
+    if (P.status === 'plan') return Alert({ variant: 'info', compact: true, message: t('soa.status.plan') });
+    if (P.status === 'gate') return Alert({ variant: 'info', compact: true, message: t('soa.status.gate') });
+    if (P.status === 'running') {
+      return Alert({ variant: 'info', icon: 'activity', compact: true, message: t('soa.status.running', { ns: P.plan.ns, name, type: P.plan.type || 'SOA' }) });
+    }
+    if (P.status.startsWith('plan-')) {
+      return Alert({ variant: 'warn', compact: true, message: t(`soa.err.${P.status.slice(5)}`, { name, zone: (P.plan && P.plan.zone) || '' }) });
+    }
+    if (P.status === 'quota') return Alert({ variant: 'warn', compact: true, message: t('soa.status.quota', { when: whenText(P.resetAt) }) });
+    if (P.status === 'unreachable') return Alert({ variant: 'error', compact: true, message: t('soa.status.unreachable') });
+    if (P.status === 'no-probes') return Alert({ variant: 'warn', compact: true, message: t('soa.status.noProbes') });
+    if (P.status === 'failed') return Alert({ variant: 'error', compact: true, message: t('soa.status.failed', { error: errorText(P.error) }), children: link(P.id) });
+    return null;
+  }
+
+  /**
+   * Draw the panel. The button follows the check; the status and the answer are rebuilt only when
+   * what they say changed — a warning or an error is a role="alert" (and a status sits in a live
+   * region), so a node inserted again on every redraw of the card would be announced again.
+   */
   function render() {
-    clear(statusEl);
-    clear(resultEl);
     const chk = host.check();
     const running = !!P.controller;
     runBtn.hidden = running;
@@ -179,24 +215,27 @@ export function mountSoaProbe(el, host, { restored = null } = {}) {
     runBtn.querySelector('.btn-label').textContent = P.result ? t('soa.again') : t('soa.run');
     setButtonBusy(runBtn, false);
     const name = (P.plan && P.plan.name) || P.name || (chk && chk.name) || '';
-    let node = null;
-    if (P.status === 'plan') node = Alert({ variant: 'info', compact: true, message: t('soa.status.plan') });
-    else if (P.status === 'gate') node = Alert({ variant: 'info', compact: true, message: t('soa.status.gate') });
-    else if (P.status === 'running') node = Alert({ variant: 'info', icon: 'activity', compact: true, message: t('soa.status.running', { ns: P.plan.ns, name }) });
-    else if (P.status.startsWith('plan-')) {
-      node = Alert({ variant: 'warn', compact: true, message: t(`soa.err.${P.status.slice(5)}`, { name, zone: (P.plan && P.plan.zone) || '' }) });
-    } else if (P.status === 'quota') node = Alert({ variant: 'warn', compact: true, message: t('soa.status.quota', { when: whenText(P.resetAt) }) });
-    else if (P.status === 'unreachable') node = Alert({ variant: 'error', compact: true, message: t('soa.status.unreachable') });
-    else if (P.status === 'no-probes') node = Alert({ variant: 'warn', compact: true, message: t('soa.status.noProbes') });
-    else if (P.status === 'failed') node = Alert({ variant: 'error', compact: true, message: t('soa.status.failed', { error: errorText(P.error) }), children: link(P.id) });
-    if (node) {
-      node.dataset.soaStatus = P.status;
-      statusEl.append(node);
+    const plan = P.plan || {};
+    const statusKey = [P.status, name, plan.ns, plan.zone, plan.type, P.resetAt, P.id, P.status === 'failed' ? errorText(P.error) : ''].join('\n');
+    if (statusKey !== shown.status) {
+      shown.status = statusKey;
+      clear(statusEl);
+      const node = statusAlert(name);
+      if (node) {
+        node.dataset.soaStatus = P.status;
+        statusEl.append(node);
+      }
     }
-    if (P.result) resultEl.append(resultAlert(P.result));
+    const warn = missingWarn(P.result);
+    if (P.result !== shown.result || warn !== shown.warn) {
+      shown.result = P.result;
+      shown.warn = warn;
+      clear(resultEl);
+      if (P.result) resultEl.append(resultAlert(P.result));
+    }
   }
 
-  /** Plan, gate and send the probe for the check on screen; its answer goes to the card. */
+  /** Plan, gate and send the probe for the check on screen (its question: `check().ask`); its answer goes to the card. */
   async function run() {
     const chk = host.check();
     if (!chk || chk.busy || P.controller || !ctx.requireOnline()) return;
@@ -207,7 +246,7 @@ export function mountSoaProbe(el, host, { restored = null } = {}) {
     render();
     const before = P.result ? 'done' : 'idle';
     try {
-      const plan = await planSoaProbe(chk.name, { dns: await ctx.getDns(), signal });
+      const plan = await planSoaProbe(chk.name, { dns: await ctx.getDns(), signal, type: chk.ask || 'SOA' });
       if (P.controller !== ac) return;
       if (!plan.ok) {
         P.plan = plan.zone ? { zone: plan.zone, name: chk.name } : null;
@@ -220,7 +259,7 @@ export function mountSoaProbe(el, host, { restored = null } = {}) {
       render();
       const gate = await gateProbes(ctx, {
         purpose: SOA_PROBE_PURPOSE, probes: SOA_PROBE_COST, signal, className: 'soa-confirm',
-        privacy: t('soa.privacy', { name: plan.name, ns: plan.ns })
+        privacy: t('soa.privacy', { name: plan.name, ns: plan.ns, type: plan.type })
       });
       if (P.controller !== ac) return;
       if (gate.status === 'cancelled') {

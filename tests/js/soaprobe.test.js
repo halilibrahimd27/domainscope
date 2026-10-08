@@ -129,6 +129,15 @@ describe('the plan: one probe, one SOA question of the name', () => {
     });
   });
 
+  test('the check’s own question: its record type (the record set’s TTL there); CAA, which Globalping cannot ask, and no type ask the SOA', async () => {
+    const plan = await planSoaProbe('api.example.com', { dns: fakeDns(ZONES), type: 'a' });
+    assert.equal(plan.type, 'A');
+    assert.deepEqual(plan.body.measurementOptions, { query: { type: 'A' }, resolver: 'ns1.example.com', protocol: 'UDP', port: 53 });
+    const caa = await planSoaProbe('api.example.com', { dns: fakeDns(ZONES), type: 'CAA' });
+    assert.deepEqual([caa.type, caa.body.measurementOptions.query.type], ['SOA', 'SOA']);
+    assert.equal((await planSoaProbe('api.example.com', { dns: fakeDns(ZONES) })).type, 'SOA');
+  });
+
   test('nothing is sent for an internal name, an address, a name Globalping cannot ask, or no name server it can ask', async () => {
     const dns = fakeDns(ZONES);
     assert.deepEqual(await planSoaProbe('printer.local', { dns }), { ok: false, error: 'internal' });
@@ -186,6 +195,19 @@ describe('the name server’s answer', () => {
     assert.deepEqual([r.state, r.exists, r.alias, r.soa], ['ok', true, 'lb.example.net', null]);
   });
 
+  test('the record type asked: the record set’s TTL there, the longest of the answer; none without a record of that type', () => {
+    const chain = [{ name: 'www.example.com', ttl: 300, type: 'CNAME', value: 'lb.example.com.' }, { name: 'lb.example.com', ttl: 3600, type: 'A', value: '198.51.100.20' }];
+    const a = readSoaProbe(measurement({ answers: chain }), { ...plan, type: 'A' });
+    assert.deepEqual([a.state, a.type, a.ttl, a.alias, a.soa, a.negativeTtl], ['ok', 'A', 3600, 'lb.example.com', null, null]);
+    const away = readSoaProbe(measurement({ answers: chain.slice(0, 1) }), { ...plan, type: 'A' });
+    assert.equal(away.ttl, null, 'an alias that leaves the zone: the record’s own TTL is not in this answer');
+    const nodata = readSoaProbe(measurement({ authority: [{ name: 'example.com', ttl: 3600, type: 'SOA', value: SOA_TEXT }] }), { ...plan, type: 'AAAA' });
+    assert.deepEqual([nodata.ttl, nodata.negativeTtl, nodata.exists], [null, 300, true], 'no record of the type: the SOA and the negative-cache time');
+    const apex = readSoaProbe(measurement({ answers: [{ name: 'example.com', ttl: 3600, type: 'SOA', value: SOA_TEXT }] }), { ...plan, name: 'example.com' });
+    assert.deepEqual([apex.type, apex.ttl], ['SOA', 3600], 'no type: the SOA question; at the apex, the SOA record’s TTL');
+    assert.equal(readSoaProbe(measurement({ rcode: 'SERVFAIL' }), { ...plan, type: 'A' }).ttl, null);
+  });
+
   test('a lame server: no authoritative flag, NOTAUTH, REFUSED, SERVFAIL', () => {
     const noAa = readSoaProbe(measurement({ flags: 'qr rd ra', authority: [{ name: 'example.com', ttl: 3600, type: 'SOA', value: SOA_TEXT }] }), plan);
     assert.deepEqual([noAa.state, noAa.aa], ['not-authoritative', false]);
@@ -221,6 +243,10 @@ describe('runSoaProbe', () => {
     assert.equal(sent[0].body, plan.body);
     assert.equal(sent[0].signal, ac.signal);
     assert.deepEqual([out.id, out.cost, out.quota.remaining, out.result.state, out.result.negativeTtl], ['soaFake0001', 1, 249, 'ok', 300]);
+    const asked = await planSoaProbe('api.example.com', { dns: fakeDns(ZONES), type: 'A' });
+    const answered = { async measure() { return { measurement: measurement({ answers: [{ name: 'api.example.com', ttl: 3600, type: 'A', value: '192.0.2.10' }] }), id: 'soaFake0002', cost: 1 }; } };
+    const a = (await runSoaProbe(asked, { client: answered })).result;
+    assert.deepEqual([a.type, a.ttl], ['A', 3600], 'the type the plan asked');
   });
 
   test('a Globalping error is thrown as it came; no client or plan is a TypeError', async () => {

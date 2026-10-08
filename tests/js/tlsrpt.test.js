@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import {
   TLS_RESULT_TYPES, TLS_POLICY_TYPES, TLS_REPORT_ERRORS, TLS_CSV_COLUMNS, TLS_ADVICE_AREAS, parseTlsReport, summarizeTls, tlsAdvice, tlsCsvRows
 } from '../../assets/js/lib/tlsrpt.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'mailreports', 'src');
 const src = (name) => readFileSync(join(SRC, name), 'utf8');
@@ -129,7 +130,7 @@ describe('summarizeTls — a policy domain\'s reports together', () => {
     const ms = performance.now() - t0;
     assert.deepEqual([ty.sessions, ty.mx.length, ty.receivingIps.length, ty.reasons.length, ty.orgs.length], [n + 1, n, n, n, 1]);
     // The linear scans of every list gathered so far took seconds here; the margin is for shared CI runners.
-    assert.ok(ms < 1500, `${Math.round(ms)} ms`);
+    assert.ok(ms < 1500 * PERF_FACTOR, `${Math.round(ms)} ms`);
   });
 });
 

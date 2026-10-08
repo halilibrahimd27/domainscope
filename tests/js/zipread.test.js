@@ -16,6 +16,7 @@ import { deflateRawSync, gzipSync } from 'node:zlib';
 import {
   ZIP_ERRORS, ZIP_LIMITS, ZipError, crc32, containerOf, toBytes, readZipDirectory, extractZipEntry, inflate, gunzip, unpackFile
 } from '../../assets/js/lib/zipread.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 const DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'mailreports');
 const fixture = (name) => new Uint8Array(readFileSync(join(DIR, name)));
@@ -339,7 +340,7 @@ describe('unpackFile — a dropped file into its plain files', () => {
     const entry = readZipDirectory(lying).entries[0];
     const t0 = Date.now();
     await assert.rejects(extractZipEntry(lying, entry), (err) => err.code === 'corrupt' && err.inflated < 1024 * 1024);
-    assert.ok(Date.now() - t0 < 500, `${Date.now() - t0} ms`);
+    assert.ok(Date.now() - t0 < 500 * PERF_FACTOR, `${Date.now() - t0} ms`);
     // The true size and a wrong CRC: 8 MB inflated, then refused, and charged to the file.
     const entries = Array.from({ length: 6 }, (_, i) => ({ name: `r${i}.xml`, data: big, crc: 1 }));
     const r = await unpackFile({ name: 'x.zip', bytes: buildZip(entries) }, { maxTotalBytes: 20 * 1024 * 1024 });

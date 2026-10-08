@@ -14,6 +14,7 @@ import {
 import { VIEWS, buildRoute, parseRoute, navHref, pageSession } from '../../assets/js/app.js';
 import { keptTimeText, chipParts } from '../../assets/js/ui/session-ui.js';
 import { setLang } from '../../assets/js/i18n.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 /** A clock that moves one second per call. */
 function clock(start = Date.UTC(2026, 8, 27, 12, 0, 0)) {
@@ -351,7 +352,7 @@ describe('estimateSize', () => {
     const long = Array.from({ length: 200000 }, (_, i) => ({ name: `host${i}.example.com`, ips: ['192.0.2.1'] }));
     const t0 = performance.now();
     assert.ok(estimateSize(long, 10000) > 10000, 'over the limit');
-    assert.ok(performance.now() - t0 < 100, 'without walking the rows');
+    assert.ok(performance.now() - t0 < 100 * PERF_FACTOR, 'without walking the rows');
     assert.ok(estimateSize(long) > 10 * 1024 * 1024);
   });
 });

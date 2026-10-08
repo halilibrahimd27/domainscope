@@ -5,6 +5,7 @@ import {
   reversePtrName, formatIP, RANGES_UPDATED, PROVIDERS, getProvider,
   matchProviderByIP, matchProviderByCname, classifyResolution, isSharedProvider, SHARED_PROVIDER_CATEGORIES
 } from '../../assets/js/lib/netinfo.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 /* -------------------------------------------------------------------- */
 /* ipVersion / parseIP / normalizeIP                                    */
@@ -278,7 +279,7 @@ test('matchProviderByCname: a hostile near-miss name (a hyphen run in a label) i
     const t0 = performance.now();
     assert.equal(matchProviderByCname(name), null, name);
     classifyResolution({ status: 'NOERROR', ipv4: ['192.0.2.10'], cnames: [name] });
-    assert.ok(performance.now() - t0 < 250, `${name.length} characters took ${Math.round(performance.now() - t0)} ms`);
+    assert.ok(performance.now() - t0 < 250 * PERF_FACTOR, `${name.length} characters took ${Math.round(performance.now() - t0)} ms`);
   }
   // The names it is for still match.
   for (const name of ['s3.amazonaws.com', 'bucket.s3.dualstack.us-east-1.amazonaws.com', 'b.s3-website.eu-west-1.amazonaws.com', 'b.s3.cn-north-1.amazonaws.com.cn']) {

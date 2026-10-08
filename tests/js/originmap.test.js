@@ -21,6 +21,7 @@ import { applyObservations, addManualOrigin, removeOrigins, setRemember } from '
 import { createWorkspaceStore, createMemoryBackend, WORKSPACE_PARTS, sanitizePart } from '../../assets/js/lib/workspace.js';
 import { exportWorkspaceFile, openWorkspaceFile } from '../../assets/js/lib/handover.js';
 import { MIN_ITERATIONS } from '../../assets/js/lib/cryptobox.js';
+import { PERF_FACTOR } from './perf.mjs';
 
 const DAY1 = '2026-09-20T08:00:00.000Z';
 const DAY2 = '2026-09-25T08:00:00.000Z';
@@ -571,7 +572,7 @@ describe('reading a full map, once per render', () => {
     for (let i = 0; i < 1000; i += 1) originsFor(index, `host${i % 700}.example.com`);
     knownForScan(index);
     const took = performance.now() - started;
-    assert.ok(took < 750, `${took.toFixed(0)} ms for one index, 1,000 lookups and the scan's list`);
+    assert.ok(took < 750 * PERF_FACTOR, `${took.toFixed(0)} ms for one index, 1,000 lookups and the scan's list`);
     assert.equal(originIndex(index), index, 'an index is its own index');
     assert.deepEqual(originsFor(index, 'host1.example.com'), originsFor(map, 'host1.example.com'), 'the same answer as from the map');
     assert.deepEqual(knownForScan(index), knownForScan(map));

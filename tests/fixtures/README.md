@@ -12,6 +12,16 @@ crafted `renew_a_rsa.pem` and `renew_a_ecdsa.pem` (an RSA 2048 + ECDSA P-256 pai
 and `*.example.com`) and `renew_b_rsa.pem` (`shop.example.com`, `pay.example.com`), all issued by a
 made-up "DomainScope Test Renewal CA" whose key, like the leaves' keys, is never written.
 
+An old and a new certificate (lib/certdiff.js, `tests/js/certdiff.test.js`, the Compare tab in the `cert`
+E2E suite): `gen_certdiff_fixtures.mjs` (no OpenSSL) made a throwaway PKI whose keys are never written —
+`certdiff_old.pem` (RSA 2048 for `example.com`, `*.example.com`, `legacy.example.net`, `mail.example.org`
+and `192.0.2.10`, serverAuth + clientAuth, 3 SCTs, issued by "DomainScope Test Diff CA 1"),
+`certdiff_new.pem` (EC P-256 without the wildcard, the `.net` name and the address, plus `www`, `api` and
+`shop.example.org`; serverAuth only, 2 SCTs, must-staple, another OCSP host and a CRL, issued by
+"DomainScope Test Diff CA 2" under another root) and `certdiff_renewed.pem` (the old one renewed with the
+same key, names and issuer, the leaf alone). The old and the new file hold the leaf and its intermediate,
+as a server sends them.
+
 Certificate kinds (the CLI's `ORIGIN_CERT` / `PRIVATE_CERT`, lib/verify.js): `gen_cli_kind_fixtures.sh`
 made `cli_public_wild` (issued by a CA nobody lists, like a public one), `cli_origin_wild` (the
 Cloudflare Origin CA's issuer DN on a **test key**, not Cloudflare's), `cli_private_wild` issued by

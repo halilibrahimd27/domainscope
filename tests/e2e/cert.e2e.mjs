@@ -16,6 +16,11 @@
  *     with_key.pem (private key ignored and never displayed), test.pfx (the password dialog:
  *     Cancel loads nothing, "test" reads the leaf and its CA; tests/e2e/pfx.e2e.mjs has the rest),
  *     test.csr (CSR), a pasted PEM (ec_wildcard.pem)
+ *   - Compare (offline): certdiff_old.pem against certdiff_new.pem dropped in the tab (loaded on
+ *     first use): the blocked verdict, every difference in the library's impact order, both side
+ *     by side with the SPKI SHA-256 of each key, Swap old and new, Copy as text; the renewal with
+ *     the same key is safe; a host name's newest certificate from CT (a refused name sends
+ *     nothing, nothing current, Retry finds it), kept across tabs; Turkish, 320 / 375 px phones
  *   - "No file?" (offline: Cert Spotter and crt.sh are answered inside the page): Try a sample
  *     (same-origin file only), a host name refused before any request, nothing logged, a lookup
  *     still running when the sample loads (aborted at once: busy flag, language switch), a
@@ -259,6 +264,159 @@ async function main() {
       assert(info.accept.includes('.pem') && info.accept.includes('.p7b') && info.accept.includes('.pfx'), `accept: ${info.accept}`);
       await assertNoHorizontalScroll(page, 'empty');
       await shot(page, opts, 'cert-desktop-light-en-empty');
+    });
+
+    run.group('Compare with another certificate (offline)');
+    const cdiff = await import('../../assets/js/lib/certdiff.js');
+    const sideOf = async (name) => {
+      const r = x509.parseCertificates(await readFile(fixture(name)));
+      return { cert: r.leaf, chain: r.certificates };
+    };
+    const [diffOld, diffNew] = [await sideOf('certdiff_old.pem'), await sideOf('certdiff_new.pem')];
+    const sha = (s) => createHash('sha256').update(s.cert.spkiDer).digest('hex');
+    const verdictOf = (want) => page.waitFor((v) => document.querySelector('.cdiff-verdict')?.dataset.verdict === v,
+      { args: [want], message: `compare verdict ${want}` });
+    const diffInfo = () => page.evaluate(() => ({
+      verdict: document.querySelector('.cdiff-verdict')?.dataset.verdict,
+      title: document.querySelector('.cdiff-verdict .alert-title')?.textContent,
+      codes: [...document.querySelectorAll('.cdiff-item')].map((li) => li.dataset.code),
+      groups: [...document.querySelectorAll('.cdiff-group')].map((g) => g.dataset.severity),
+      removed: [...document.querySelectorAll('.cdiff-item[data-code="name-removed"] code')].map((c) => c.textContent),
+      kept: [...document.querySelectorAll('.cdiff-item[data-code="wildcard-removed"] code')].map((c) => c.textContent),
+      spki: [...document.querySelectorAll('.cdiff-table tr[data-row="spki"] td')].map((td) => td.textContent),
+      who: [...document.querySelectorAll('.cdiff-table tr[data-row="cert"] td .cdiff-who')].map((d) => d.textContent),
+      overlap: document.querySelector('.cdiff-overlap')?.textContent || '',
+      unchanged: document.querySelector('.cdiff-unchanged')?.textContent || '',
+      bar: document.querySelector('.cdiff-bar')?.textContent || ''
+    }));
+
+    await run.step('Compare: the tab loads on first use and asks for the other certificate; nothing is sent', async () => {
+      await uploadAndWait(page, 'certdiff_old.pem');
+      await page.click(tabSel('compare'));
+      await page.waitForSelector('.cdiff .cdiff-box .filedrop');
+      const info = await page.evaluate(() => ({
+        tab: document.querySelector('.cert-tabs [data-tab="compare"]').textContent,
+        title: document.querySelector('.cdiff-title')?.textContent,
+        box: document.querySelector('.cdiff-box-title')?.textContent,
+        host: document.querySelector('.cdiff [data-role="cdiff-host"]')?.value,
+        lazy: performance.getEntriesByType('resource').filter((e) => /\/ui\/cert-diff-panel\.js$/.test(e.name)).length
+      }));
+      assertEqual(info.tab, 'Compare', 'tab label');
+      assertEqual(info.title, 'Compare with another certificate', 'panel title');
+      assertEqual(info.box, 'The other certificate', 'loader');
+      assertEqual(info.host, 'example.com', 'the host name field holds a name of this certificate');
+      assertEqual(info.lazy, 1, 'the panel module loaded on the tab\'s first use');
+      assertEqual(await page.evaluate(() => window.__ctFake.calls.length), 0, 'no CT request');
+    });
+
+    await run.step('Compare: the new certificate from a file — blocked, every difference in impact order, both side by side', async () => {
+      await page.setFileInput('.cdiff .cdiff-box .filedrop-input', [fixture('certdiff_new.pem')]);
+      await verdictOf('blocked');
+      const info = await diffInfo();
+      const expected = cdiff.compareCertificates(diffOld, diffNew, { now: Date.now() });
+      assertEqual(info.codes, expected.changes.map((c) => c.code), 'the library\'s changes, in its order');
+      assertEqual(info.title, 'Not a drop-in replacement: 3 blockers', 'verdict');
+      assertEqual(info.groups, ['blocker', 'action', 'check', 'info'], 'groups by severity');
+      assertEqual(info.removed, ['legacy.example.net', '192.0.2.10'], 'names it no longer covers');
+      assertEqual(info.kept, ['api.example.com', 'www.example.com'], 'still covered by name');
+      assertEqual(info.spki, [sha(diffOld), sha(diffNew)], 'SPKI SHA-256 of each key');
+      assertEqual(info.who, ['this certificate', 'certdiff_new.pem'], 'which is which');
+      assert(/^Both are valid from .+ to .+: [\d,]+ days to switch over in\.$/.test(info.overlap), `overlap: ${info.overlap}`);
+      assert(/The one issued first is the old one/.test(info.bar), `order: ${info.bar}`);
+      assertEqual(info.unchanged, 'Unchanged: subject.', 'unchanged');
+      assertEqual(await page.evaluate(() => window.__ctFake.calls.length), 0, 'a file sends nothing');
+      await assertNoHorizontalScroll(page, 'compare');
+      await shot(page, opts, 'cert-desktop-light-en-compare');
+    });
+
+    await run.step('Compare: Swap old and new (a rollback) and Copy as text', async () => {
+      await page.click('[data-action="cdiff-swap"]');
+      await page.waitFor(() => /Swapped/.test(document.querySelector('.cdiff-bar')?.textContent || '') && !!document.querySelector('.cdiff-item'),
+        { message: 'swapped' });
+      const info = await diffInfo();
+      assertEqual(info.removed, ['shop.example.org'], 'the old one never named shop.example.org');
+      assert(info.codes.includes('name-covered') && info.codes.includes('staple-removed'), `codes ${info.codes}`);
+      assertEqual(info.who, ['certdiff_new.pem', 'this certificate'], 'swapped sides');
+      await stubClipboard(page);
+      await page.click('.cdiff-copy');
+      const clip = await page.waitFor(() => (window.__clip || [])[0], { message: 'copied' });
+      assert(/^Certificate comparison: example\.com → example\.com\n/.test(clip) && /\n- 1 name no longer covered: shop\.example\.org — /.test(clip), `text: ${clip}`);
+      await takeClipboard(page);
+      await page.click('[data-action="cdiff-swap"]');
+      await page.waitFor(() => /issued first/.test(document.querySelector('.cdiff-bar')?.textContent || ''), { message: 'swapped back' });
+    });
+
+    await run.step('Compare: the renewal with the same key, names and issuer is safe to deploy everywhere', async () => {
+      await page.evaluate(() => { document.querySelector('.cdiff-reload').open = true; });
+      await page.setFileInput('.cdiff-reload .filedrop-input', [fixture('certdiff_renewed.pem')]);
+      await verdictOf('safe');
+      const info = await diffInfo();
+      assertEqual(info.title, 'Safe to deploy everywhere the old one is', 'verdict');
+      assertEqual(info.codes, ['key-reused'], 'the same key, nothing else');
+      assertEqual(info.spki, [sha(diffOld), sha(diffOld)], 'one key');
+      assertEqual(info.unchanged, 'Unchanged: names, issuer and chain, signature, key usage, SCTs, OCSP and CRL, subject.', 'unchanged');
+    });
+
+    await run.step('Compare: a host name\'s newest certificate from CT — a refused name sends nothing, nothing current, Retry finds it', async () => {
+      await page.evaluate(() => { document.querySelector('.cdiff-reload').open = true; window.__ctFake.calls = []; window.__ctFake.mode = 'none'; });
+      await page.type('.cdiff-reload [data-role="cdiff-host"]', '192.0.2.10');
+      await page.click('.cdiff-reload [data-action="cdiff-ct"]');
+      const err = await page.waitFor(() => document.querySelector('.cdiff-reload .cdiff-ct .field-error')?.textContent, { message: 'field error' });
+      assertEqual(err, 'Enter a host name, such as www.example.com.', 'refused');
+      assertEqual(await page.evaluate(() => window.__ctFake.calls.length), 0, 'no request');
+      await page.type('.cdiff-reload [data-role="cdiff-host"]', 'WWW.Example.NET');
+      await page.press('Enter');
+      await page.waitFor(() => document.querySelector('.cdiff-reload [data-cdiff-ct]')?.dataset.cdiffCt === 'not-found', { message: 'not found' });
+      const calls = await page.evaluate(() => window.__ctFake.calls);
+      assertEqual(calls.length, 1, 'one Cert Spotter request');
+      assertEqual(new URL(calls[0].url).searchParams.get('domain'), 'www.example.net', 'only the normalized name');
+      assertEqual(calls[0].credentials, 'omit', 'no credentials');
+      await page.evaluate(() => { window.__ctFake.mode = 'found'; });
+      await page.click('.cdiff-reload [data-action="cdiff-ct-retry"]');
+      await page.waitFor(() => [...document.querySelectorAll('.cdiff-table .cdiff-who')].some((d) => d.textContent === 'www.example.net'), { message: 'found in CT' });
+      assert(await page.evaluate(() => !!document.querySelector('.cdiff-verdict')), 'compared');
+      // Another tab and back: the comparison is kept (this tab's memory), nothing asked again.
+      await page.click(tabSel('names'));
+      await page.click(tabSel('compare'));
+      await page.waitFor(() => [...document.querySelectorAll('.cdiff-table .cdiff-who')].some((d) => d.textContent === 'www.example.net'), { message: 'kept' });
+      assertEqual(await page.evaluate(() => window.__ctFake.calls.filter((c) => c.url.includes('certspotter')).length), 3, 'not found (1), then found (2 pages)');
+    });
+
+    await run.step('Compare: Turkish, phones at 320 and 375 px in light and dark', async () => {
+      await page.evaluate(() => { document.querySelector('.cdiff-reload').open = true; });
+      await page.setFileInput('.cdiff-reload .filedrop-input', [fixture('certdiff_new.pem')]);
+      await verdictOf('blocked');
+      await setLangUi(page, 'tr');
+      await verdictOf('blocked');
+      const tr = await diffInfo();
+      assertEqual(tr.title, 'Doğrudan yerine konamaz: 3 engel', 'Turkish verdict');
+      assertEqual(await page.evaluate(() => document.querySelector('.cert-tabs [data-tab="compare"]').textContent), 'Karşılaştır', 'Turkish tab');
+      for (const width of [320, 375]) {
+        await page.setViewport({ width, height: 800, mobile: true });
+        for (const scheme of ['light', 'dark']) {
+          await page.emulateMedia({ 'prefers-color-scheme': scheme });
+          await sleep(100);
+          await assertNoHorizontalScroll(page, `compare ${width}px ${scheme}`);
+          if (width === 375) await shot(page, opts, `cert-mobile-${scheme}-tr-compare`);
+        }
+      }
+      await page.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await page.setViewport({ width: 1440, height: 900 });
+      await setLangUi(page, 'en');
+    });
+
+    await run.step('Compare: Remove asks for another certificate; the view goes back to empty', async () => {
+      await verdictOf('blocked');
+      await page.click('[data-action="cdiff-remove"]');
+      await page.waitForSelector('.cdiff .cdiff-box');
+      assert(await page.evaluate(() => !document.querySelector('.cdiff-verdict')), 'no comparison');
+      await page.click('[data-action="cert-remove"]');
+      await page.waitFor(() => !!document.querySelector('.cert-loader-card'), { message: 'empty view' });
+      await page.evaluate(() => {
+        document.querySelectorAll('.toast').forEach((x) => x.remove());
+        window.__ctFake.calls = [];
+        window.__ctFake.mode = 'found';
+      });
     });
 
     run.group('No file? A host name\'s certificate from CT, or the sample (offline)');

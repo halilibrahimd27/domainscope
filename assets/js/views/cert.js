@@ -19,7 +19,9 @@
  * removed or lets expire first gets the root-store warnings with the announcement. "Does this CSR
  * match?" (PEM & OpenSSL tab) compares a pasted CSR's public key with the certificate's (lib/x509.js parseCertificateRequest,
  * csrMatchesCertificate); a private key pasted there is recognised the moment it lands (looksLikePrivateKey),
- * never read or kept, and the box emptied.
+ * never read or kept, and the box emptied. Compare (ui/cert-diff-panel.js over lib/certdiff.js, loaded
+ * on the tab's first use) sets the leaf against another certificate — a file, pasted text or a host
+ * name's newest one in CT — and lists every difference with what it means for the rollout.
  *
  * "Copy summary" in the overview's actions (ui/summary-button.js, certSummaryFacts): names, validity,
  * issuer and warnings for Jira / Slack; the file is never in its link.
@@ -60,7 +62,7 @@ import {
 import { findCaa, checkCaaAllows, caaIssuerInfo, caaRestrictionNotes, caaRestrictionText, HEALTH_I18N } from '../lib/health.js';
 import { validateNames } from '../lib/cmdline.js';
 import { lookupCtCertificate, normalizeCtHost } from '../lib/ctcert.js';
-import { fetchJson, fetchText, mergeSignals, retry, errorKind } from '../lib/util.js';
+import { fetchJson, fetchText, mergeSignals, retry, errorKind, onceAsync } from '../lib/util.js';
 // The DANE / TLSA tab (shared with SSL Targets).
 import { DanePanel, cancelDane } from '../ui/dane-panel.js';
 // The PKCS#12 password dialog and the note about a bundle (shared with SSL Targets).
@@ -242,6 +244,7 @@ registerStrings('en', {
   'cert.tab.caa': 'CAA',
   'cert.tab.ct': 'CT logs',
   'cert.tab.pem': 'PEM & OpenSSL',
+  'cert.tab.compare': 'Compare',
   'cert.dane.leaf': 'The DANE check uses the leaf certificate of the file ({name}) and its chain.',
 
   'cert.names.domains': 'Registrable domains',
@@ -568,6 +571,7 @@ registerStrings('tr', {
   'cert.tab.caa': 'CAA',
   'cert.tab.ct': 'CT kayıtları',
   'cert.tab.pem': 'PEM ve OpenSSL',
+  'cert.tab.compare': 'Karşılaştır',
   'cert.dane.leaf': 'DANE kontrolü dosyadaki uç sertifikayı ({name}) ve zincirini kullanır.',
 
   'cert.names.domains': 'Kayıtlı alan adları',
@@ -2023,6 +2027,8 @@ const keyCache = new Map();
 const daneHolders = new Map();
 /** View state that survives navigation and language re-mounts. */
 const viewState = { key: null, selected: 0, tab: 'names' };
+/** Compare (ui/cert-diff-panel.js over lib/certdiff.js), loaded on the tab's first use; it keeps its own memory. */
+const loadCertDiff = onceAsync(() => import('../ui/cert-diff-panel.js'));
 let teardown = null;
 /** The mounted view's page-session hooks ({@link result}, {@link rerun}); null while another tool is shown. */
 let active = null;
@@ -2306,7 +2312,8 @@ export function mount(container, ctx) {
         { id: 'caa', label: t('cert.tab.caa'), icon: 'shield', content: () => caaPanel(cert) },
         { id: 'dane', label: t('dane.tab'), icon: 'key', content: () => danePanel(cert) },
         { id: 'ct', label: t('cert.tab.ct'), icon: 'eye', content: () => ctPanel(cert) },
-        { id: 'pem', label: t('cert.tab.pem'), icon: 'terminal', content: () => pemPanel(cert, analysis) }
+        { id: 'pem', label: t('cert.tab.pem'), icon: 'terminal', content: () => pemPanel(cert, analysis) },
+        { id: 'compare', label: t('cert.tab.compare'), icon: 'swap', content: () => comparePanel() }
       ], {
         selected: viewState.tab,
         label: t('nav.cert'),
@@ -2888,6 +2895,27 @@ export function mount(container, ctx) {
       if (shown === leaf) return panel.el;
       return h('div', { class: 'stack' },
         Alert({ variant: 'info', compact: true, message: t('cert.dane.leaf', { name: certDisplayName(leaf) }) }), panel.el);
+    }
+
+    /* --- Compare with another certificate (the leaf; ui/cert-diff-panel.js, loaded on first use) --- */
+    function comparePanel() {
+      const host = h('div', { class: 'stack cdiff-host' }, Spinner({ showLabel: true }));
+      loadCertDiff().then(({ CertDiffPanel }) => {
+        clear(host);
+        host.append(CertDiffPanel({
+          ctx,
+          load,
+          kit: { CertLoader, ctCertLoad, ctOutcomeMessage, certName: certDisplayName, issuerName: issuerDisplayName },
+          onOpenTab: (tabId) => {
+            if (tabs) tabs.select(tabId, { focus: true });
+          }
+        }));
+      }).catch((err) => {
+        ctx.checkOutdated();
+        clear(host);
+        host.append(ErrorBanner(err, { compact: true }));
+      });
+      return host;
     }
 
     /* --- Certificate Transparency ----------------------------------------- */

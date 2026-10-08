@@ -330,6 +330,24 @@ describe('one domain over DoH', () => {
     await assert.rejects(checkDomain('example.net', { dns, blocks, signal: AbortSignal.abort() }), { name: 'AbortError' });
   });
 
+  test('a stop while every lookup is in flight rejects with AbortError and leaves no rejection without a handler', async () => {
+    const dns = fakeDns({ 'example.com': { A: ['192.0.2.1'] }, 'www.example.com': { A: ['192.0.2.2'] } }, { delayMs: 200 });
+    const unhandled = [];
+    const onUnhandled = (err) => { unhandled.push(err); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 50);
+      await assert.rejects(checkDomain('example.com', {
+        dns, blocks: blocksOf('192.0.2.10'), hosts: ['www.example.com', 'api.example.com'], signal: controller.signal
+      }), { name: 'AbortError' });
+      await new Promise((resolve) => { setTimeout(resolve, 20); });
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    assert.equal(unhandled.length, 0, `unhandled: ${unhandled.map((e) => e && e.name).join(', ')}`);
+  });
+
   test('an SPF record that could not be read is a "cannot tell" row, never "no SPF"', async () => {
     const dns = fakeDns({ 'example.org': { A: ['198.51.100.1'], TXT: ['v=spf1 ip4:192.0.2.10 -all'] } }, { rcodes: { 'example.org|TXT': 'SERVFAIL' } });
     const blocks = blocksOf('192.0.2.10');

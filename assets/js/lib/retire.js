@@ -589,6 +589,9 @@ export async function checkDomain(domain, { dns, blocks, hosts = [], signal, onL
         tick();
         return entry.check;
       })();
+      // An abort rejects every lookup at once and the caller hears it from the jobs awaited first:
+      // a name awaited only after them never leaves a rejection without a handler.
+      entry.promise.catch(() => {});
     }
     if (role && !entry.check.roles.includes(role)) entry.check.roles.push(role);
     if (source && !entry.check.sources.includes(source)) entry.check.sources.push(source);

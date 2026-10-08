@@ -22,7 +22,9 @@
  * state the holder the view keeps with the report on screen ({@link freshDependencies}). Either
  * way lib/takeover.js and lib/rdap.js load on the first click, ui/globalping-gate.js and
  * lib/globalping.js on the first page check, and a language switch (a re-mount) shows the same
- * results; a check in flight draws into the panel mounted last.
+ * results; a check in flight draws into the panel mounted last. Styles: shared classes, and the
+ * table's phone layout (.tko-table) in style.css — Subdomains is the start route, which loads
+ * style.css and its own sheet only, so a sheet of this panel's own would add a request there.
  */
 
 import { h, clear } from './dom.js';

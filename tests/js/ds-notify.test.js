@@ -27,6 +27,8 @@ import { parseCommandLine, UsageError, EXIT, USAGE, DS_TOOL, DS_VERSION } from '
 import { diffReports } from '../../tools/ds/diff.mjs';
 import { setupStrings, changeText } from '../../tools/ds/render.mjs';
 import { carryHealth, carryHosts } from '../../tools/ds/carry.mjs';
+import { TAKEOVER_COUNTED } from '../../tools/ds/states.mjs';
+import { COUNTED_SEVERITY } from '../../tools/ds/takeover.mjs';
 import { main } from '../../tools/ds.mjs';
 import { zoneTable, createFakeFetch, CF_EXPORT } from './ds-fake-doh.mjs';
 
@@ -597,6 +599,87 @@ describe('PagerDuty', () => {
     assert.equal(problemOver(issuer, ct([])), true);
     assert.equal(problemOver(issuer, ct([], { issuers: [{ name: 'Odd CA' }] })), false);
     assert.equal(problemOver(issuer, ct([], { complete: false })), false, 'a partial read proves nothing');
+  });
+
+  test('tls and takeover: a certificate\'s problem lasts while it is served, a risk while it is listed at its severity; a revoked or expired served certificate is critical', () => {
+    // severity: a revoked certificate still served (as ct's), an endpoint that turned expired or untrusted
+    assert.equal(eventSeverity({ tag: 'REVOKED', after: { state: 'revoked' } }, 'tls'), 'critical');
+    for (const after of ['EXPIRED', 'UNTRUSTED']) assert.equal(eventSeverity({ tag: 'WORSE', after }, 'tls'), 'critical', after);
+    for (const c of [{ tag: 'WORSE', after: 'NAME_MISMATCH' }, { tag: 'RENEW-NOW', after: { state: 'open' } }, { tag: 'MOVED-UP' }, { tag: 'CA-NOTICE' }, { tag: 'FAILED', after: 'TLS_ERROR' }]) {
+      assert.equal(eventSeverity(c, 'tls'), 'error', c.tag);
+    }
+    assert.equal(eventSeverity({ tag: 'WORSE', after: 'EXPIRED' }, 'drift'), 'error', 'only tls\'s statuses');
+    assert.equal(eventSeverity({ tag: 'RISK', after: 'critical' }, 'takeover'), 'critical');
+    assert.equal(eventSeverity({ tag: 'RISK', after: 'high' }, 'takeover'), 'error');
+    // the footer names what a target is
+    const footer = (command, target) => notificationMessage({ ...reportOf([CHANGES[0]]), command, targets: [{ target }] }, { bad: false }).footer[0];
+    assert.match(footer('tls', 'www.example.com'), /: 1 host \(www\.example\.com\)\.$/);
+    assert.match(footer('takeover', 'example.com'), /: 1 domain \(example\.com\)\.$/);
+
+    const run = (command, targets) => ({ ...reportOf([]), command, targets });
+    const open = (command, target, item, tag, state) => ({ key: dedupKey(command, target, item, tag), target, item, tag, since: null, ...(state === undefined ? {} : { state }) });
+    // tls: a certificate's problems (the item is its SHA-256) end once no endpoint serves it
+    const SHA = 'a'.repeat(64);
+    const OTHER = 'b'.repeat(64);
+    const ep = (address, status, sha, extra = {}) => ({ address, port: 443, status, ...(sha ? { cert: { sha256: sha } } : {}), ...extra });
+    const t = (endpoints, extra = {}) => run('tls', [{ target: 'www.example.com', dns: { status: 'NOERROR' }, endpoints, ...extra }]);
+    for (const tag of ['RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'REVOKED']) {
+      const cert = open('tls', 'www.example.com', SHA, tag);
+      assert.equal(problemOver(cert, t([ep('192.0.2.10', 'OK', SHA)])), false, `${tag}: still served`);
+      assert.equal(problemOver(cert, t([ep('192.0.2.10', 'OK', OTHER), ep('192.0.2.11', 'OK', SHA)])), false, `${tag}: still served by one address`);
+      assert.equal(problemOver(cert, t([ep('192.0.2.10', 'OK', OTHER), ep('192.0.2.11', 'NAME_MISMATCH', OTHER)])), true, `${tag}: renewed on every address`);
+      assert.equal(problemOver(cert, t([ep('192.0.2.10', 'OK', OTHER), ep('192.0.2.11', 'TLS_ERROR', null, { lastGood: { cert: { sha256: SHA } } })])), false, `${tag}: an address that served it could not be read`);
+      assert.equal(problemOver(cert, t([ep('192.0.2.10', 'OK', OTHER), ep('2001:db8::1', 'SKIPPED', null, { lastGood: { cert: { sha256: SHA } } })])), true, `${tag}: an IPv6 address this machine cannot reach says nothing`);
+      assert.equal(problemOver(cert, t([ep('192.0.2.10', 'CLOSED', null)])), false, `${tag}: nothing read`);
+      assert.equal(problemOver(cert, t([ep('192.0.2.10', 'OK', OTHER)], { carried: { from: null } })), false, `${tag}: a DNS lookup failed (last night's endpoints)`);
+    }
+    assert.equal(problemOver(open('tls', 'www.example.com', SHA, 'REVOKED'), run('tls', [])), true, 'the host is no longer checked');
+    // an endpoint's (address|port): FAILED ends when a handshake completes, WORSE and RECOVERED when it is OK; CERT never
+    const at = '192.0.2.10|443';
+    assert.deepEqual(['TLS_ERROR', 'TIMEOUT', 'CLOSED', 'OK', 'UNTRUSTED', 'SKIPPED'].map((s) => problemOver(open('tls', 'www.example.com', at, 'FAILED'), t([ep('192.0.2.10', s, ['OK', 'UNTRUSTED'].includes(s) ? SHA : null)]))),
+      [false, false, false, true, true, false]);
+    assert.deepEqual(['OK', 'NAME_MISMATCH', 'EXPIRED', 'TIMEOUT'].map((s) => problemOver(open('tls', 'www.example.com', at, 'WORSE', 'EXPIRED'), t([ep('192.0.2.10', s, s === 'TIMEOUT' ? null : SHA)]))),
+      [true, false, false, false]);
+    assert.equal(problemOver(open('tls', 'www.example.com', at, 'RECOVERED', 'UNTRUSTED'), t([ep('192.0.2.10', 'OK', SHA)])), true);
+    assert.equal(problemOver(open('tls', 'www.example.com', at, 'CERT'), t([ep('192.0.2.10', 'OK', SHA)])), false, 'another certificate: nothing says it is fixed');
+    assert.equal(problemOver(open('tls', 'www.example.com', at, 'FAILED'), t([ep('192.0.2.11', 'OK', SHA)])), true, 'the address is no longer asked');
+    assert.equal(problemOver(open('tls', 'www.example.com', at, 'FAILED'), t([ep('192.0.2.10', 'OK', SHA)], { carried: { from: null } })), false, 'carried');
+    // the name that no longer resolves
+    const gone = open('tls', 'www.example.com', null, 'GONE');
+    assert.deepEqual([{ status: 'NXDOMAIN' }, { status: 'NOERROR' }, { status: 'SERVFAIL' }, null].map((dns) => problemOver(gone, t([ep('192.0.2.10', 'OK', SHA)], { dns }))), [false, true, false, false]);
+    assert.equal(problemOver(gone, t([], { dns: { status: 'NOERROR' } })), false, 'no address to ask');
+
+    // three nights of a revoked certificate: paged once, still open while it is served, resolved when it is replaced
+    const revoked = change('REVOKED', 'bad', 'www.example.com', SHA, 'revoked by its CA, still served', { kind: 'changed', after: { state: 'revoked' } });
+    const night = (endpoints, changes) => ({ ...t(endpoints), changes });
+    const plan1 = pagerDutyPlan(night([ep('192.0.2.10', 'OK', SHA)], [revoked]), null);
+    assert.deepEqual([plan1.triggers.length, plan1.resolves.length, plan1.open.map((e) => [e.tag, e.item])], [1, 0, [['REVOKED', SHA]]]);
+    const plan2 = pagerDutyPlan(night([ep('192.0.2.10', 'OK', SHA)], []), { notify: { open: plan1.open } });
+    assert.deepEqual([plan2.triggers.length, plan2.resolves.length, plan2.open.length], [0, 0, 1], 'still served: the incident stays open');
+    const plan3 = pagerDutyPlan(night([ep('192.0.2.10', 'OK', OTHER)], []), { notify: { open: plan2.open } });
+    assert.deepEqual([plan3.resolves.map((e) => e.key), plan3.open], [[plan1.triggers[0].key], []], 'replaced: resolved');
+    const [request] = pagerDutyRequests({ url: PAGERDUTY_URL }, night([], [revoked]), plan1, { tool: DS_TOOL, version: DS_VERSION });
+    assert.equal(JSON.parse(request.body).payload.severity, 'critical');
+
+    // takeover: a risk is over once the report no longer lists it or lists it below the severity it was paged at
+    assert.equal(TAKEOVER_COUNTED, COUNTED_SEVERITY, 'the severity a takeover change counts at (states.mjs cannot import takeover.mjs)');
+    const tk = (risks) => run('takeover', [{ target: 'example.com', risks }]);
+    const KEY = 'ns|example.com|ns.example.net';
+    const risk = open('takeover', 'example.com', KEY, 'RISK', 'critical');
+    assert.deepEqual(['critical', 'high', 'medium', 'low', 'info'].map((severity) => problemOver(risk, tk([{ key: KEY, severity }]))), [false, true, true, true, true]);
+    assert.equal(problemOver(risk, tk([])), true, 'gone');
+    assert.equal(problemOver(risk, tk([{ key: KEY, severity: 'info', carried: { from: null } }])), false, 'carried over a lookup that failed: not known gone');
+    assert.equal(problemOver({ ...risk, state: undefined }, tk([{ key: KEY, severity: 'low' }])), false, 'without its state: over once gone');
+    assert.equal(problemOver(open('takeover', 'example.com', KEY, 'WORSE', 'high'), tk([{ key: KEY, severity: 'high' }])), false);
+    const added = open('takeover', 'example.com', null, 'NEW');
+    assert.deepEqual([[{ key: 'a', severity: 'medium' }], [{ key: 'a', severity: 'low' }, { key: 'b', severity: 'info' }], [], [{ key: 'a', severity: 'low', carried: { from: null } }]].map((risks) => problemOver(added, tk(risks))),
+      [false, true, true, false]);
+    // paged at the severity, resolved when the risk is gone
+    const found = change('RISK', 'bad', 'example.com', KEY, 'critical NS example.com → ns.example.net', { kind: 'appeared', after: 'critical' });
+    const p1 = pagerDutyPlan({ ...tk([{ key: KEY, severity: 'critical' }]), changes: [found] }, null);
+    assert.deepEqual(p1.open.map((e) => [e.tag, e.item, e.state]), [['RISK', KEY, 'critical']]);
+    const p2 = pagerDutyPlan({ ...tk([]), changes: [change('GONE', 'good', 'example.com', KEY, 'gone', { kind: 'disappeared', before: 'critical' })] }, { notify: { open: p1.open } });
+    assert.deepEqual([p2.resolves.length, p2.open], [1, []]);
   });
 
   test('at most 50 events a run, triggers first; resolves left out stay open (over) and go with the next run; the open keys are capped', () => {

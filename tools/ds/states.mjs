@@ -14,8 +14,10 @@
  */
 
 import { isLookupError, checkAreas, failedAreas, knownChecks, lookupFailed } from './carry.mjs';
+import { TLS_FAILED } from './tlsdiff.mjs';
 import { DRIFT_SEVERITY } from '../../assets/js/lib/zonedrift.js';
 import { DANE_SEVERITY } from '../../assets/js/lib/dane.js';
+import { TAKEOVER_SEVERITIES } from '../../assets/js/lib/takeover.js';
 
 /** Severity ranks (lib/health, lib/renewal, lib/zonedrift DRIFT_SEVERITY, lib/dane DANE_SEVERITY). */
 export const SEVERITY_RANK = Object.freeze({ neutral: 0, ok: 0, info: 1, unknown: 1, warn: 2, error: 3 });
@@ -63,6 +65,15 @@ const below = (rank, paged) => (rank < (Number.isFinite(paged) ? paged : 1) ? 'o
 const driftRank = (status) => SEVERITY_RANK[driftSev(status)];
 /** A DANE status's rank (a status of a later version: NaN). */
 const daneRank = (status) => (has(DANE_SEVERITY, status) ? SEVERITY_RANK[DANE_SEVERITY[status]] ?? 0 : NaN);
+
+/** The tls changes about one certificate (their item is its SHA-256): the CA's renewal window, its notice, its revocation. */
+const TLS_CERTIFICATE_TAGS = new Set(['RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'REVOKED']);
+/** The least takeover severity a change counts at (tools/ds/takeover.mjs COUNTED_SEVERITY). */
+export const TAKEOVER_COUNTED = 'medium';
+const takeoverRank = (severity) => {
+  const i = TAKEOVER_SEVERITIES.indexOf(severity);
+  return i === -1 ? TAKEOVER_SEVERITIES.length : i;
+};
 
 /** Per command: where the problem of an open key stands in this run's target `x`. */
 const STANDINGS = Object.freeze({
@@ -153,6 +164,57 @@ const STANDINGS = Object.freeze({
     if (!rule) return 'over';
     const s = status(rule);
     return s === 'pass' ? 'over' : s === 'fail' ? 'bad' : 'unknown';
+  },
+
+  /**
+   * A certificate's problem (RENEW-NOW, MOVED-UP, CA-NOTICE, REVOKED: the item is its SHA-256) is over
+   * once no endpoint serves that certificate any more (renewed or replaced) — never while one does, and
+   * not known while an endpoint that served it last time could not be read. An endpoint's (item
+   * `address|port`): FAILED is over once a handshake completes there, WORSE and RECOVERED once its
+   * status is OK, an endpoint no longer asked is over; a CERT (another certificate) is never known fixed.
+   * The name no longer resolving (GONE) is over once it resolves again. A DNS lookup that failed
+   * (`carried`: last night's endpoints) says nothing.
+   */
+  tls(x, e) {
+    if (x.carried) return 'unknown';
+    const endpoints = (Array.isArray(x.endpoints) ? x.endpoints : []).filter((p) => p && typeof p === 'object');
+    if (e.item === null) {
+      if (e.tag !== 'GONE') return 'unknown';
+      const status = x.dns && x.dns.status;
+      if (status === 'NXDOMAIN') return 'bad';
+      return status === 'NOERROR' && endpoints.length ? 'over' : 'unknown';
+    }
+    if (TLS_CERTIFICATE_TAGS.has(e.tag)) {
+      if (endpoints.some((p) => p.cert && p.cert.sha256 === e.item)) return 'bad';
+      // an endpoint that served it last time and could not be read now may serve it still (an IPv6 address this machine cannot reach never counts)
+      if (endpoints.some((p) => !p.cert && p.status !== 'SKIPPED' && p.lastGood && p.lastGood.cert && p.lastGood.cert.sha256 === e.item)) return 'unknown';
+      return endpoints.some((p) => p.cert) ? 'over' : 'unknown';
+    }
+    const p = endpoints.find((y) => `${y.address}|${y.port}` === e.item);
+    if (!p) return 'over';
+    if (p.status === 'SKIPPED') return 'unknown';
+    if (e.tag === 'FAILED') return TLS_FAILED.includes(p.status) ? 'bad' : 'over';
+    if (e.tag === 'WORSE' || e.tag === 'RECOVERED') return TLS_FAILED.includes(p.status) ? 'unknown' : p.status === 'OK' ? 'over' : 'bad';
+    return 'unknown';
+  },
+
+  /**
+   * A risk (RISK, WORSE: the item is its key `kind|host|target`) is over once this run's report no
+   * longer lists it (a risk whose lookup failed stays in it, `carried`: not known) or lists it at a
+   * lesser severity than it was paged at. A domain watched for the first time with risks at medium
+   * severity or above (NEW) is over once none is left.
+   */
+  takeover(x, e) {
+    const risks = (Array.isArray(x.risks) ? x.risks : []).filter((r) => r && typeof r === 'object');
+    if (e.item === null) {
+      if (e.tag !== 'NEW' || risks.some((r) => r.carried)) return 'unknown';
+      return risks.some((r) => takeoverRank(r.severity) <= takeoverRank(TAKEOVER_COUNTED)) ? 'bad' : 'over';
+    }
+    const risk = risks.find((r) => r.key === e.item);
+    if (!risk) return 'over';
+    if (risk.carried) return 'unknown';
+    const paged = TAKEOVER_SEVERITIES.indexOf(e.state);
+    return paged !== -1 && takeoverRank(risk.severity) > paged ? 'over' : 'bad';
   }
 });
 
@@ -173,13 +235,13 @@ export function problemStanding(command, x, e) {
 }
 
 /** The commands whose problems are a level that can go back down: a key keeps the level it was paged at. */
-const LEVELLED = new Set(['health', 'drift', 'renew', 'dane']);
+const LEVELLED = new Set(['health', 'drift', 'renew', 'dane', 'takeover']);
 
 /**
  * The state a counted bad change pages its item at, kept with its key (`state`): the change's
  * `after` — a finding's severity or the health score, a record set's status or the name servers'
- * match, a verdict, an endpoint's status — for the commands whose problems are levels; null for
- * the others (a host, a certificate, a rule: bad or not).
+ * match, a verdict, an endpoint's status, a takeover risk's severity — for the commands whose
+ * problems are levels; null for the others (a host, a certificate, a rule: bad or not).
  * @param {string} command
  * @param {{ after?: any }} change
  * @returns {string|number|null}

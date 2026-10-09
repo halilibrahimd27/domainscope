@@ -393,6 +393,55 @@ test('takeover over four nights: a lapsed DMARC domain and an expiring one, regi
   }
 });
 
+test('with --notify-bad to PagerDuty: a risk that got worse pages once with its severity, stays open through a registry outage and is resolved when the risk is gone', async () => {
+  const dir = tmp();
+  try {
+    const zone = takeoverZone({ now: NOW.getTime() });
+    const rdapStatus = {};
+    const base = createTakeoverFetch(zone, { log: [], rdapLog: [], rdapStatus });
+    const sent = [];
+    // a credential: built in parts, never written whole
+    const url = 'https://events.pagerduty.com/v2/enqueue?routing_key=' + 'R0UT1NGKEY' + 'x'.repeat(22);
+    const fetchImpl = (target, init) => {
+      if (!String(target).startsWith('https://events.pagerduty.com/')) return base(target, init);
+      sent.push(JSON.parse(init.body));
+      return Promise.resolve(new Response('{"status":"success"}', { status: 202 }));
+    };
+    const json = join(dir, 'takeover.json');
+    const argv = ['takeover', 'example.com', 'example.net', '--baseline', json, '--json', json, '--notify-bad', url, '--fail-on-notify-error', '--no-color'];
+    const night = (n) => runMain(argv, { fetchImpl, now: new Date(NOW.getTime() + n * DAY) });
+    const kinds = () => sent.splice(0).map((e) => [e.event_action, e.payload ? e.payload.custom_details.tag : null]);
+
+    assert.equal((await night(0)).code, EXIT.OK);
+    assert.deepEqual(kinds(), [], 'the first run has nothing to compare with');
+    // night 2: example-test.com.tr is pending deletion: two risks get worse (medium to high)
+    zone.registry['example-test.com.tr'] = zone.rdapJson('example-test.com.tr', ['pending delete'], -5);
+    const second = await night(1);
+    assert.equal(second.code, EXIT.OK, second.err);
+    assert.deepEqual(kinds(), [['trigger', 'WORSE'], ['trigger', 'WORSE']]);
+    const open2 = JSON.parse(readFileSync(json, 'utf8')).notify.open;
+    assert.deepEqual(open2.map((e) => [e.tag, e.target, e.state]), [['WORSE', 'example.com', 'high'], ['WORSE', 'example.net', 'high']]);
+    // night 3: its registry does not answer: the risks are carried, the incidents stay open
+    rdapStatus['example-test.com.tr'] = 503;
+    assert.equal((await night(2)).code, EXIT.OK);
+    assert.deepEqual(kinds(), []);
+    assert.deepEqual(JSON.parse(readFileSync(json, 'utf8')).notify.open.map((e) => e.key), open2.map((e) => e.key));
+    // night 4: it answers again, still pending deletion: nothing to resolve
+    delete rdapStatus['example-test.com.tr'];
+    assert.equal((await night(3)).code, EXIT.OK);
+    assert.deepEqual(kinds(), []);
+    // night 5: the domain is renewed, no record is at risk any more: both incidents are resolved
+    zone.registry['example-test.com.tr'] = zone.rdapJson('example-test.com.tr', ['active'], 300);
+    const fifth = await night(4);
+    assert.equal(fifth.code, EXIT.OK, fifth.err);
+    assert.deepEqual(sent.map((e) => [e.event_action, e.dedup_key]), open2.map((e) => ['resolve', e.key]));
+    assert.equal(JSON.parse(readFileSync(json, 'utf8')).notify, undefined, 'nothing left open');
+    assert.ok(!(second.out + second.err + fifth.out + fifth.err).includes('R0UT1NGKEY'), 'the routing key is never printed');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('the program itself: a spawned takeover whose fetch is the fake DoH and RDAP (node --import, DS_FAKE_DOH=takeover)', () => {
   const dir = tmp();
   try {

@@ -59,7 +59,8 @@ export const CRITICAL_TAGS = Object.freeze(['REGISTRAR', 'NS', 'DS', 'LOCK', 'EX
  * The same problems as today's commands report them, by item: health's registration expired,
  * held or being deleted and DNSSEC broken; drift's name servers; the audit's registrar, transfer
  * lock, registry status, DNSSEC and expiry rules (also a domain added that fails one). And ct's
- * certificate in use revoked (REVOKED).
+ * certificate in use revoked (REVOKED), tls's too (a revoked certificate still served) and a
+ * served certificate that turned expired or untrusted.
  */
 export const CRITICAL_ITEMS = Object.freeze({
   health: Object.freeze(['rdap.expired', 'rdap.hold', 'rdap.pending-delete', 'dnssec.broken']),
@@ -71,7 +72,9 @@ export const NOTIFY_ENV = Object.freeze({
   url: 'DOMAINSCOPE_NOTIFY_URL', bad: 'DOMAINSCOPE_NOTIFY_BAD_URL', secret: 'DOMAINSCOPE_NOTIFY_SECRET', ntfyToken: 'DOMAINSCOPE_NTFY_TOKEN'
 });
 /** What a target of each command is, for the message's footer. */
-const TARGET_NOUNS = Object.freeze({ health: 'domain', subdomains: 'domain', drift: 'zone', ct: 'domain', renew: 'name', dane: 'certificate', audit: 'domain' });
+const TARGET_NOUNS = Object.freeze({
+  health: 'domain', subdomains: 'domain', drift: 'zone', ct: 'domain', renew: 'name', dane: 'certificate', audit: 'domain', tls: 'host', takeover: 'domain'
+});
 
 const DISCORD_HOSTS = new Set(['discord.com', 'discordapp.com', 'ptb.discord.com', 'canary.discord.com']);
 const TEAMS_HOSTS = new Set(['outlook.office.com', 'outlook.office365.com']);
@@ -609,8 +612,8 @@ export function dedupKey(command, target, item, tag) {
  * A bad change's PagerDuty severity: `critical` for {@link CRITICAL_TAGS} (registrar, name
  * servers, DS, a lock removed, expired, untrusted), for the items of `command` that are the same
  * problems ({@link CRITICAL_ITEMS}; an audit domain added: one of them among the rules it fails),
- * for ct's REVOKED and for a change whose `after` says critical (a critical takeover risk), `error`
- * for every other.
+ * for ct's and tls's REVOKED, for tls's endpoint that turned EXPIRED or UNTRUSTED and for a change
+ * whose `after` says critical (a critical takeover risk), `error` for every other.
  * @param {{ tag: string, item?: string|null, after?: any }} change
  * @param {string|null} [command]
  * @returns {'critical'|'error'}
@@ -621,7 +624,8 @@ export function eventSeverity(change, command = null) {
   const a = change.after;
   if (typeof change.item === 'string' && items.includes(change.item)) return 'critical';
   if (command === 'audit' && (change.item ?? null) === null && Array.isArray(a) && a.some((id) => items.includes(id))) return 'critical';
-  if (command === 'ct' && change.tag === 'REVOKED') return 'critical';
+  if ((command === 'ct' || command === 'tls') && change.tag === 'REVOKED') return 'critical';
+  if (command === 'tls' && (a === 'EXPIRED' || a === 'UNTRUSTED')) return 'critical';
   if (a === 'critical' || (a && typeof a === 'object' && (a.severity === 'critical' || a.risk === 'critical'))) return 'critical';
   return 'error';
 }

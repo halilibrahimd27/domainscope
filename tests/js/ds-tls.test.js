@@ -527,14 +527,15 @@ describe('three nights of `tls --ari --revocation` over a local server', () => {
   });
 
   /** The fakes of one night: DoH (www.example.com → 127.0.0.1), the ARI server and the CRL. */
-  function night({ window, retryAfter = '86400', crl, log = [] }) {
+  function night({ window, retryAfter = '86400', crl, log = [], hook = null }) {
     const table = { 'www.example.com': { A: ['127.0.0.1'] } };
     const routes = routesFetch({
       [DIR]: [200, { renewalInfo: RI }],
       [`${RI}/${LEAF_ID}`]: [200, window, { 'retry-after': retryAfter }],
       [DP]: [200, read(crl), { 'content-type': 'application/pkix-crl' }]
     }, log);
-    return createFakeFetch(table, { apex: 'example.com', other: (url) => routes(url) });
+    // `hook`: the alert channel (--notify-bad), answered by the test
+    return createFakeFetch(table, { apex: 'example.com', other: (url, init) => (hook && String(url).startsWith('https://events.pagerduty.com/') ? hook(init) : routes(url)) });
   }
 
   async function run(argv, fetchImpl, now) {
@@ -587,6 +588,37 @@ describe('three nights of `tls --ari --revocation` over a local server', () => {
     const e3 = JSON.parse(readFileSync(json, 'utf8')).targets[0].endpoints[0];
     assert.deepEqual([e3.ari.start, e3.ari.carried], ['2026-10-09T12:00:00.000Z', { from: '2026-10-10T03:00:00.000Z' }]);
     assert.match(n3.out, /\(as of 2026-10-10 03:00 UTC; not asked again before 2026-10-11 03:00 UTC, as the CA asked\)/);
+  });
+
+  test('with --notify-bad to PagerDuty: the four changes of night 2 page (a revoked certificate critical), and night 3 resolves none of them while the certificate is still served', async () => {
+    const json = join(dir, 'tls-pagerduty.json');
+    // a credential: built in parts, never written whole
+    const url = 'https://events.pagerduty.com/v2/enqueue?routing_key=' + 'R0UT1NGKEY' + 'x'.repeat(22);
+    const argv = ['tls', `www.example.com:${server.port}`, '--ari', '--revocation', '--baseline', json, '--json', json, '--notify-bad', url, '--fail-on-notify-error', '--no-color'];
+    const sent = [];
+    const hook = (init) => {
+      sent.push(JSON.parse(init.body));
+      return new Response('{"status":"success"}', { status: 202 });
+    };
+    const n1 = await run(argv, night({ window: windowOf('2026-11-01T00:00:00Z', '2026-11-03T00:00:00Z'), crl: 'crl_empty.der', hook }), NOW);
+    assert.equal(n1.code, EXIT.OK, n1.err);
+    assert.deepEqual(sent, [], 'the first run has nothing to compare with');
+    // night 2: the window moved into today with a notice, and the CRL lists the certificate
+    const n2 = await run(argv, night({ window: windowOf('2026-10-09T12:00:00Z', '2026-10-11T00:00:00Z', { explanationURL: 'https://status.example.org/incident' }), crl: 'crl_revoked.der', hook }), AT('2026-10-10T03:00:00Z'));
+    assert.equal(n2.code, EXIT.OK, n2.err);
+    assert.deepEqual(sent.map((e) => [e.event_action, e.payload.custom_details.tag, e.payload.severity]),
+      [['trigger', 'RENEW-NOW', 'error'], ['trigger', 'MOVED-UP', 'error'], ['trigger', 'CA-NOTICE', 'error'], ['trigger', 'REVOKED', 'critical']]);
+    const sha = Buffer.from(await crypto.subtle.digest('SHA-256', LEAF.der)).toString('hex');
+    assert.ok(sent.every((e) => e.payload.custom_details.item === sha && e.payload.source === 'domainscope:tls'), 'each is about the certificate');
+    const open2 = JSON.parse(readFileSync(json, 'utf8')).notify.open;
+    assert.deepEqual(open2.map((e) => [e.tag, e.item]), ['RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'REVOKED'].map((tag) => [tag, sha]));
+    // night 3: nothing changed and the certificate is still served: no resolve, every key stays open
+    sent.length = 0;
+    const n3 = await run(argv, night({ window: windowOf('2026-12-01T00:00:00Z', '2026-12-03T00:00:00Z'), crl: 'crl_revoked.der', hook }), AT('2026-10-10T12:00:00Z'));
+    assert.equal(n3.code, EXIT.OK, n3.err);
+    assert.deepEqual(sent, [], 'a revoked certificate still served is no reason to close its incident');
+    assert.deepEqual(JSON.parse(readFileSync(json, 'utf8')).notify.open, open2);
+    assert.ok(!(n2.out + n2.err + n3.out + n3.err).includes('R0UT1NGKEY'), 'the routing key is never printed');
   });
 
   test('an endpoint that stops answering keeps its last certificate; the doc and the report say so', async () => {

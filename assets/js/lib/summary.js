@@ -4,8 +4,8 @@
  *
  * - Each builder takes the facts a view already shows ({@link healthSummary}, {@link globalSummary},
  *   {@link subdomainsSummary}, {@link scanSummary}, {@link zoneSummary}, {@link certSummary},
- *   {@link renewSummary}, {@link lookupSummary}, {@link ipSummary}, {@link retireSummary},
- *   {@link domainSummary}; {@link buildSummary} dispatches by view id) and returns a
+ *   {@link renewSummary}, {@link lookupSummary}, {@link ipSummary}, {@link bulkSummary}, {@link ptrSummary},
+ *   {@link retireSummary}, {@link domainSummary}; {@link buildSummary} dispatches by view id) and returns a
  *   {@link SummaryDoc}: a title, 3–10 content lines (one line for DNS Lookup and IP Intel) and a
  *   footer with the view's permalink and a UTC timestamp. DMARC & TLS reports keeps its builder
  *   and texts in lib/reportsummary.js, which loads with its view ({@link registerSummaryBuilder}).
@@ -22,8 +22,8 @@
  * - {@link permalinkParams} keeps only a view's own shareable route params (never inventory data
  *   or zone contents; IP Intel and Retire an IP drop private and inventory addresses), for `ctx.shareUrl()`.
  * - A summary holds only what the result on screen shows. Inventory data in it: SSL Targets names
- *   the servers that need the certificate, as its Servers tab lists them; IP Intel says whether
- *   (or how many of) its addresses are in the server list, never a server's name.
+ *   the servers that need the certificate, as its Servers tab lists them; IP Intel and Bulk Resolve
+ *   say whether (or how many of) their addresses are in the server list, never a server's name.
  * - The footer's time is when the result was made where the view knows it ("checked" /
  *   "scanned"); Zone File and Certificate say "as of" the copy time.
  *
@@ -481,6 +481,83 @@ export function ipSummary({ rows = [], at = null, stopped = false }, opts) {
   return doc('ip', k.title('ip', subject), [parts], { inline: true, when: whenText(t, 'sum.at.checked', at, opts.now || new Date()), url: opts.url });
 }
 
+/** Host names a Bulk Resolve or Reverse DNS summary lists on one line (then "+N more"). */
+const NET_MAX_NAMES = 3;
+
+/**
+ * Bulk Resolve: how many host names resolve, how many do not and how many lookups failed (a
+ * resolver's error is never "does not resolve"), the classes they resolve to (Cloudflare, another
+ * CDN or platform, direct addresses and how many of them private), the unique addresses and how
+ * many of them are in the server list — a count, never a server's name —, the names that do not
+ * resolve and those whose lookup failed (three of each, then "+N more"), and how far a cancelled
+ * job got. One host name is the title's subject; more are counted.
+ * @param {{ names: number, one?: string|null, status: string, done?: number, resolved: number, cloudflare?: number, cdn?: number,
+ *   direct?: number, private?: number, notFound?: string[], failed?: string[], ips: number, mine?: number|null, at?: Date|null }} facts
+ *   lib/netresults.js bulkSummaryFacts; `mine`: addresses in the server list (null: no list loaded)
+ * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
+ * @returns {SummaryDoc}
+ */
+export function bulkSummary(facts, opts) {
+  const k = kit(opts);
+  const { t } = k;
+  const f = facts || {};
+  const notFound = Array.isArray(f.notFound) ? f.notFound : [];
+  const failed = Array.isArray(f.failed) ? f.failed : [];
+  const counts = [t('sum.sub.resolving', { count: Number(f.resolved) || 0 })];
+  if (notFound.length) counts.push(t('sum.class.unresolved', { count: notFound.length }));
+  if (failed.length) counts.push(t('sum.bulk.failed', { count: failed.length }));
+  const direct = f.direct > 0 ? `${t('sum.class.direct', { count: f.direct })}${f.private > 0 ? ` ${t('sum.class.private', { count: f.private })}` : ''}` : '';
+  const classes = [k.counts([['sum.class.cloudflare', f.cloudflare], ['sum.class.cdn', f.cdn]]), direct].filter(Boolean);
+  const ips = [t('sum.bulk.ips', { count: Number(f.ips) || 0 })];
+  if (Number(f.mine) > 0) ips.push(t('sum.ip.mine', { count: Number(f.mine) }));
+  const subject = f.one ? [code(f.one)] : t('sum.bulk.names', { count: Number(f.names) || 0 });
+  return doc('bulk', k.title('bulk', subject), [
+    [counts.join(' · ')],
+    classes.length ? [classes.join(' · ')] : null,
+    [ips.join(' · ')],
+    notFound.length ? [`${t('sum.bulk.notFound')} `, ...k.values(notFound, NET_MAX_NAMES)] : null,
+    failed.length ? [`${t('sum.bulk.failedNames')} `, ...k.values(failed, NET_MAX_NAMES)] : null,
+    f.status === 'cancelled' ? [t('sum.bulk.cancelled', { done: Number(f.done) || 0, total: Number(f.names) || 0 })] : null
+  ], { when: whenText(t, 'sum.at.checked', f.at, opts.now || new Date()), url: opts.url });
+}
+
+/**
+ * Reverse DNS: the addresses swept and how many have a PTR name, none or a failed lookup; of the
+ * names, how many resolve back to their address (forward-confirmed), how many do not (three, as
+ * "address → name", then "+N more") and how many a provider generated; the names under the focus
+ * domain; how far a stopped sweep got. The swept target (a network, a range, an AS's prefixes) is
+ * the title's subject. Nothing from the server list.
+ * @param {{ label: string, planned: number, status: string, done: number, withPtr: number, templated?: number, noReverse?: number,
+ *   failed?: number, confirmed?: number, mismatch?: number, mismatches?: Array<{ ip: string, name: string }>, focus?: string|null,
+ *   focusNames?: string[], at?: Date|null }} facts lib/netresults.js ptrSummaryFacts
+ * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
+ * @returns {SummaryDoc}
+ */
+export function ptrSummary(facts, opts) {
+  const k = kit(opts);
+  const { t } = k;
+  const f = facts || {};
+  const swept = [t('sum.ptr.swept', { count: Number(f.done) || 0 })];
+  if (f.withPtr > 0) swept.push(t('sum.ptr.named', { count: f.withPtr }));
+  if (f.noReverse > 0) swept.push(t('sum.ptr.none', { count: f.noReverse }));
+  if (f.failed > 0) swept.push(t('sum.ptr.failed', { count: f.failed }));
+  const forward = [];
+  if (f.withPtr > 0) {
+    forward.push(t('sum.ptr.confirmed', { count: Number(f.confirmed) || 0 }));
+    if (f.mismatch > 0) forward.push(t('sum.ptr.mismatch', { count: f.mismatch }));
+    if (f.templated > 0) forward.push(t('sum.ptr.templated', { count: f.templated }));
+  }
+  const mismatches = (Array.isArray(f.mismatches) ? f.mismatches : []).filter((m) => m && m.ip);
+  const focusNames = Array.isArray(f.focusNames) ? f.focusNames : [];
+  return doc('ptr', k.title('ptr', [code(f.label || '')]), [
+    [swept.join(' · ')],
+    forward.length ? [forward.join(' · ')] : null,
+    mismatches.length ? [`${t('sum.ptr.notBack')} `, ...k.values(mismatches.map((m) => `${m.ip} → ${m.name}`), NET_MAX_NAMES)] : null,
+    f.focus ? [...textParts(t, 'sum.ptr.focus', { count: focusNames.length, domain: f.focus }), ...(focusNames.length ? [': ', ...k.values(focusNames, NET_MAX_NAMES)] : [])] : null,
+    f.status === 'cancelled' ? [t('sum.ptr.stopped', { done: Number(f.done) || 0, total: Number(f.planned) || 0 })] : null
+  ], { when: whenText(t, 'sum.at.checked', f.at, opts.now || new Date()), url: opts.url });
+}
+
 /** Severities of lib/retire.js whose records break something, worst first (`sum.retire.sev.<id>` labels them). */
 export const RETIRE_BREAKING_SEVERITIES = Object.freeze(['mail', 'ns', 'live', 'origin', 'chain']);
 /** Records a Retire an IP summary lists by name (the 12-line budget holds four next to its other lines). */
@@ -845,6 +922,8 @@ const BUILDERS = {
   global: globalSummary,
   lookup: lookupSummary,
   ip: ipSummary,
+  bulk: bulkSummary,
+  ptr: ptrSummary,
   retire: retireSummary,
   health: healthSummary,
   estate: estateSummary,
@@ -1084,6 +1163,24 @@ const STRINGS = [
   ['sum.ip.failedOne', ['lookup failed', 'sorgu başarısız']],
   ['sum.ip.stopped', [{ one: 'stopped: {count} address not looked up', other: 'stopped: {count} addresses not looked up' }, 'durduruldu: {count} adres sorgulanmadı']],
   ['sum.ip.stoppedOne', ['stopped before it was looked up', 'sorgulanmadan durduruldu']],
+
+  ['sum.bulk.names', [{ one: '{count} host name', other: '{count} host names' }, '{count} host adı']],
+  ['sum.bulk.failed', [{ one: '{count} lookup failed', other: '{count} lookups failed' }, '{count} sorgu başarısız']],
+  ['sum.bulk.ips', [{ one: '{count} unique IP address', other: '{count} unique IP addresses' }, '{count} farklı IP adresi']],
+  ['sum.bulk.notFound', ['Not resolving:', 'Çözümlenmeyenler:']],
+  ['sum.bulk.failedNames', ['Lookup failed:', 'Sorgusu başarısız olanlar:']],
+  ['sum.bulk.cancelled', ['Cancelled: {done} of {total} host names resolved', 'İptal edildi: {total} host adından {done} tanesi çözümlendi']],
+
+  ['sum.ptr.swept', [{ one: '{count} address swept', other: '{count} addresses swept' }, '{count} adres tarandı']],
+  ['sum.ptr.named', ['{count} with a PTR name', '{count} tanesinin PTR adı var']],
+  ['sum.ptr.none', ['{count} without reverse DNS', '{count} tanesinin ters DNS’i yok']],
+  ['sum.ptr.failed', [{ one: '{count} lookup failed', other: '{count} lookups failed' }, '{count} sorgu başarısız']],
+  ['sum.ptr.confirmed', ['{count} forward-confirmed', '{count} tanesi ileri doğrulandı']],
+  ['sum.ptr.mismatch', [{ one: '{count} does not resolve back', other: '{count} do not resolve back' }, '{count} tanesi adresine geri çözülmüyor']],
+  ['sum.ptr.templated', [{ one: '{count} name generated by a provider', other: '{count} names generated by a provider' }, 'sağlayıcının ürettiği {count} ad']],
+  ['sum.ptr.notBack', ['Not resolving back:', 'Adresine geri çözülmeyenler:']],
+  ['sum.ptr.focus', [{ one: '{count} name under {domain}', other: '{count} names under {domain}' }, '{domain} altında {count} ad']],
+  ['sum.ptr.stopped', ['Stopped: {done} of {total} addresses looked up', 'Durduruldu: {total} adresten {done} tanesine bakıldı']],
 
   ['sum.retire.records', [{ one: '{count} record still points at it', other: '{count} records still point at it' }, '{count} kayıt hâlâ bu adresi gösteriyor']],
   ['sum.retire.breaking', [{ one: '{count} breaks something once it is gone', other: '{count} break something once it is gone' }, 'adres kalkınca {count} tanesi bir şeyi bozar']],

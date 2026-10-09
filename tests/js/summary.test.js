@@ -134,6 +134,12 @@ describe('permalinkParams', () => {
     assert.deepEqual(S.permalinkParams('ip', { ips: '10.0.0.5' }), {}, 'nothing left: no ips key');
   });
 
+  test('Bulk Resolve carries its host names, Reverse DNS its target and focus domain', () => {
+    assert.deepEqual(S.permalinkParams('bulk', { names: 'www.example.com,api.example.com', run: '0' }), { names: 'www.example.com,api.example.com' });
+    assert.deepEqual(S.permalinkParams('ptr', { target: '192.0.2.0/28', focus: 'example.com', tab: 'x' }), { target: '192.0.2.0/28', focus: 'example.com' });
+    assert.deepEqual(S.permalinkParams('ptr', { target: 'AS64496', focus: null }), { target: 'AS64496' });
+  });
+
   test('Retire an IP drops private addresses and networks and inventory addresses, keeps the domains', () => {
     const p = S.permalinkParams('retire', { ips: '192.0.2.10,10.0.0.0/28,198.51.100.0/28,203.0.113.7', domains: 'example.com,example.net', run: '0' },
       { exclude: ['192.0.2.10'] });
@@ -914,6 +920,122 @@ describe('ip (one line)', () => {
   });
 });
 
+describe('bulk (Bulk Resolve)', () => {
+  /** The facts of a finished job (lib/netresults.js bulkSummaryFacts). */
+  const facts = (extra = {}) => ({
+    names: 8, one: null, status: 'done', done: 8, resolved: 6, cloudflare: 2, cdn: 1, direct: 3, private: 1,
+    notFound: ['staging.example.net'], failed: ['broken.example.net'], ips: 7, v4: 6, v6: 1, mine: 2,
+    at: new Date('2026-10-09T15:47:00Z'), ...extra
+  });
+
+  test('what resolves, the classes, the addresses and how many are yours, what does not resolve and what failed; never a server name', () => {
+    const doc = S.bulkSummary(facts(), opts('en', `${URL_BASE}#/bulk?names=example.net`));
+    assertShape(doc);
+    assert.deepEqual(lines(md(doc)), [
+      '**Bulk Resolve · 8 host names**',
+      '- 6 resolve · 1 not resolving · 1 lookup failed',
+      '- 2 Cloudflare · 1 other CDN / platform · 3 direct IPs (1 of them private)',
+      '- 7 unique IP addresses · 2 in your server list',
+      '- Not resolving: `staging.example.net`',
+      '- Lookup failed: `broken.example.net`',
+      '',
+      `DomainScope · checked 2026-10-09 15:47 UTC · ${URL_BASE}#/bulk?names=example.net`
+    ]);
+    assert.equal(lines(txt(doc))[4], '- Not resolving: staging.example.net');
+  });
+
+  test('Turkish', () => {
+    const doc = S.bulkSummary(facts(), opts('tr'));
+    assertShape(doc);
+    assert.deepEqual(lines(md(doc)).slice(0, 6), [
+      '**Toplu Çözümleme · 8 host adı**',
+      '- 6 tanesi çözümleniyor · 1 çözümlenmiyor · 1 sorgu başarısız',
+      '- 2 Cloudflare · 1 diğer CDN / platform · 3 doğrudan IP (1 tanesi özel IP)',
+      '- 7 farklı IP adresi · 2 tanesi sunucu listenizde',
+      '- Çözümlenmeyenler: `staging.example.net`',
+      '- Sorgusu başarısız olanlar: `broken.example.net`'
+    ]);
+  });
+
+  test('one host name is the subject; no server list, nothing failed: no such lines; three names, then "+N more"', () => {
+    const one = S.bulkSummary(facts({ names: 1, one: 'www.example.net', resolved: 1, cloudflare: 1, cdn: 0, direct: 0, private: 0, notFound: [], failed: [], ips: 1, mine: null }), opts());
+    assertShape(one, { min: 4 });
+    assert.deepEqual(lines(md(one)).slice(0, 4), ['**Bulk Resolve · `www.example.net`**', '- 1 resolves', '- 1 Cloudflare', '- 1 unique IP address']);
+    const many = S.bulkSummary(facts({ notFound: ['a.example.net', 'b.example.net', 'c.example.net', 'd.example.net', 'e.example.net'], failed: [], mine: 0 }), opts());
+    assert.equal(lines(md(many))[4], '- Not resolving: `a.example.net`, `b.example.net`, `c.example.net` +2 more');
+    assert.doesNotMatch(md(many), /server list/, 'none of the addresses is yours: nothing said');
+  });
+
+  test('a cancelled job says how far it got; a hostile name is an inert code span', () => {
+    const doc = S.bulkSummary(facts({ status: 'cancelled', done: 5, notFound: ['[x](https://evil.example/)'] }), opts());
+    assertShape(doc);
+    const out = md(doc);
+    assert.match(out, /^- Cancelled: 5 of 8 host names resolved$/m);
+    assert.match(out, /^- Not resolving: `\[x\]\(https:\/\/evil\.example\/\)`$/m);
+    assert.match(md(S.bulkSummary(facts({ status: 'cancelled', done: 5 }), opts('tr'))), /^- İptal edildi: 8 host adından 5 tanesi çözümlendi$/m);
+  });
+
+  test('buildSummary dispatches it', () => {
+    assert.equal(S.buildSummary('bulk', facts(), opts()).kind, 'bulk');
+  });
+});
+
+describe('ptr (Reverse DNS)', () => {
+  /** The facts of a finished sweep (lib/netresults.js ptrSummaryFacts). */
+  const facts = (extra = {}) => ({
+    label: '192.0.2.0/28', planned: 16, status: 'done', done: 16, withPtr: 12, templated: 9, noReverse: 3, failed: 1, confirmed: 10, mismatch: 2,
+    mismatches: [{ ip: '192.0.2.2', name: 'www.example.com' }, { ip: '192.0.2.10', name: '192-0-2-10.dyn.isp.example.net' }],
+    focus: 'example.com', focusNames: ['mail.example.com', 'www.example.com'], at: new Date('2026-10-09T15:48:00Z'), ...extra
+  });
+
+  test('the addresses swept, the forward check, the names that do not resolve back, the focus domain\'s names', () => {
+    const doc = S.ptrSummary(facts(), opts('en', `${URL_BASE}#/ptr?target=192.0.2.0%2F28&focus=example.com`));
+    assertShape(doc);
+    assert.deepEqual(lines(md(doc)), [
+      '**Reverse DNS · `192.0.2.0/28`**',
+      '- 16 addresses swept · 12 with a PTR name · 3 without reverse DNS · 1 lookup failed',
+      '- 10 forward-confirmed · 2 do not resolve back · 9 names generated by a provider',
+      '- Not resolving back: `192.0.2.2 → www.example.com`, `192.0.2.10 → 192-0-2-10.dyn.isp.example.net`',
+      '- 2 names under `example.com`: `mail.example.com`, `www.example.com`',
+      '',
+      `DomainScope · checked 2026-10-09 15:48 UTC · ${URL_BASE}#/ptr?target=192.0.2.0%2F28&focus=example.com`
+    ]);
+    assert.equal(lines(txt(doc))[4], '- 2 names under example.com: mail.example.com, www.example.com');
+  });
+
+  test('Turkish', () => {
+    const doc = S.ptrSummary(facts(), opts('tr'));
+    assertShape(doc);
+    assert.deepEqual(lines(md(doc)).slice(0, 5), [
+      '**Ters DNS · `192.0.2.0/28`**',
+      '- 16 adres tarandı · 12 tanesinin PTR adı var · 3 tanesinin ters DNS’i yok · 1 sorgu başarısız',
+      '- 10 tanesi ileri doğrulandı · 2 tanesi adresine geri çözülmüyor · sağlayıcının ürettiği 9 ad',
+      '- Adresine geri çözülmeyenler: `192.0.2.2 → www.example.com`, `192.0.2.10 → 192-0-2-10.dyn.isp.example.net`',
+      '- `example.com` altında 2 ad: `mail.example.com`, `www.example.com`'
+    ]);
+  });
+
+  test('no PTR name at all: no forward line; no focus domain: no focus line; a stopped sweep says how far it got', () => {
+    const doc = S.ptrSummary(facts({ withPtr: 0, templated: 0, confirmed: 0, mismatch: 0, mismatches: [], noReverse: 15, focus: null, focusNames: [], status: 'cancelled', planned: 256 }), opts());
+    assertShape(doc, { min: 4 });
+    assert.deepEqual(lines(md(doc)).slice(0, 3), [
+      '**Reverse DNS · `192.0.2.0/28`**',
+      '- 16 addresses swept · 15 without reverse DNS · 1 lookup failed',
+      '- Stopped: 16 of 256 addresses looked up'
+    ]);
+    assert.match(md(S.ptrSummary(facts({ status: 'cancelled', planned: 256 }), opts('tr'))), /^- Durduruldu: 256 adresten 16 tanesine bakıldı$/m);
+    const none = S.ptrSummary(facts({ focusNames: [] }), opts());
+    assert.match(md(none), /^- 0 names under `example\.com`$/m, 'a focus domain with no name under it says so');
+  });
+
+  test('an AS label and a hostile PTR name stay inert; buildSummary dispatches it', () => {
+    const doc = S.ptrSummary(facts({ label: 'AS64496: 198.51.100.0/24', mismatches: [{ ip: '192.0.2.2', name: '*x*@here' }] }), opts());
+    assert.equal(lines(md(doc))[0], '**Reverse DNS · `AS64496: 198.51.100.0/24`**');
+    assert.match(md(doc), /`192\.0\.2\.2 → \*x\*@here`/);
+    assert.equal(S.buildSummary('ptr', facts(), opts()).kind, 'ptr');
+  });
+});
+
 describe('retire', () => {
   const counts = (bySeverity, extra = {}) => {
     const full = Object.fromEntries(['mail', 'ns', 'live', 'origin', 'chain', 'file', 'stale', 'unknown'].map((s) => [s, bySeverity[s] || 0]));
@@ -1078,7 +1200,7 @@ describe('reports (DMARC & TLS reports)', () => {
     assert.throws(() => S.buildSummary('reports', facts(), opts()), RangeError, 'not before its view registers it');
     S.registerSummaryBuilder('reports', R.reportsSummary);
     assert.equal(S.buildSummary('reports', facts(), opts()).kind, 'reports');
-    assert.throws(() => S.registerSummaryBuilder('bulk', R.reportsSummary), RangeError);
+    assert.throws(() => S.registerSummaryBuilder('inventory', R.reportsSummary), RangeError);
     assert.deepEqual(S.permalinkParams('reports', { domain: 'example.com', tab: 'tls' }), {}, 'the reports never go into a link');
   });
 
@@ -1584,7 +1706,7 @@ describe('rendering and dispatch', () => {
   test('buildSummary dispatches by view id and refuses unknown views', () => {
     const doc = S.buildSummary('zone', { origin: 'example.com', counts: { records: 1, names: 1, proxied: 0 } }, opts());
     assert.equal(doc.kind, 'zone');
-    assert.throws(() => S.buildSummary('bulk', {}, opts()), RangeError);
+    assert.throws(() => S.buildSummary('inventory', {}, opts()), RangeError, 'Servers has no summary');
     assert.throws(() => S.buildSummary('zone', {}, { lang: 'en' }), TypeError, 'a translator is required');
     assert.deepEqual([...S.SUMMARY_KINDS].sort(), Object.keys(S.PERMALINK_PARAMS).sort());
   });

@@ -22,8 +22,8 @@
 import { isPrivateIP, normalizeIP } from './ip.js';
 
 /** Views with a summary, in navigation order. */
-export const SUMMARY_KINDS = Object.freeze(['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'change', 'ip', 'retire',
-  'health', 'reports', 'portfolio', 'monitor']);
+export const SUMMARY_KINDS = Object.freeze(['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'change', 'ip', 'bulk',
+  'ptr', 'retire', 'health', 'reports', 'portfolio', 'monitor']);
 
 /** Output formats of {@link renderSummary}. */
 export const SUMMARY_FORMATS = Object.freeze(['markdown', 'text']);
@@ -50,6 +50,8 @@ export const PERMALINK_PARAMS = Object.freeze({
   lookup: Object.freeze(['name', 'type', 'resolver', 'dnssec', 'cd']),
   change: Object.freeze([]),
   ip: Object.freeze(['ips']),
+  bulk: Object.freeze(['names']),
+  ptr: Object.freeze(['target', 'focus']),
   retire: Object.freeze(['ips', 'domains']),
   health: Object.freeze(['domain', 'selectors']),
   reports: Object.freeze([]),

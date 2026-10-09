@@ -15,15 +15,16 @@
  *   - the folder: five reports, three months of history (two bad lines skipped and said), the
  *     Markdown summaries left alone, a stray file named; the tiles (5 targets, 3 with bad changes
  *     in 7 days, 2 certificates under 21 days, 2 checks that did not complete), worst rows first,
- *     each row's sparklines, grade, certificates, takeover and audit, and its checks; a tile filters
- *     the table and keeps the focus; a row's details list every check;
- *   - the timeline newest first with the runs' own words, filtered by tone and by a row's target,
- *     and its CSV; Copy summary (names only, a bare #/monitor link); the links to the nightly
- *     issues and the latest run;
- *   - GitHub: the token read once and emptied, sent only in the Authorization header to
- *     api.github.com (no cookies, no referrer, no redirects), kept nowhere (the DOM, storage,
- *     IndexedDB); the ledger names GitHub with the repository and the token; the open issue
- *     linked; a refused token in the page's words;
+ *     each row's sparklines, grade, certificates, takeover and audit, and its checks (a button to
+ *     its changes only when it has some); a tile filters the table and keeps the focus; a row's
+ *     details list every check;
+ *   - the timeline newest first (times in UTC) with the runs' own words, filtered by tone and by a
+ *     row's target, and its CSV; Copy summary (names only, a bare #/monitor link); the links to the
+ *     nightly issues and the latest run;
+ *   - GitHub: a missing token said before anything is sent; the token read once and emptied, sent
+ *     only in the Authorization header to api.github.com (no cookies, no referrer, no redirects),
+ *     kept nowhere (the DOM, storage, IndexedDB); the ledger names GitHub with the repository and
+ *     the token; the open issue linked; a refused token in the page's words;
  *   - Forget, "Delete all local data" and another workspace forget the results;
  *   - Turkish + dark at 375 px and English at 320 px: no horizontal scroll, the table as cards;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; no request sent.
@@ -304,6 +305,8 @@ async function main() {
       assert(org.includes('E') && org.includes('58/100') && org.includes('Health: did not complete'), org);
       const net = await page.evaluate(() => [...document.querySelectorAll('.mon-table tbody tr.dt-row')][4].textContent);
       assert(net.includes('A') && net.includes('95/100') && net.includes('no bad change') && net.includes('completed'), net);
+      const filters = await page.evaluate(() => [...document.querySelectorAll('.mon-table tbody tr.dt-row')].map((tr) => !!tr.querySelector('.mon-target-filter')));
+      assertEqual(filters, [true, true, true, true, false], 'a button to its changes only on a row that has some (example.net has none)');
     });
 
     await run.step('a tile filters the table and keeps the focus; pressed again it shows all', async () => {
@@ -340,11 +343,13 @@ async function main() {
       assertEqual(info.entries.slice(0, 3), ['ISSUER example.com', 'NEW example.org', 'SCORE example.org'], 'newest first');
       assertEqual(info.entries.length, 8, 'every change');
       const first = await page.evaluate(() => ({
+        time: document.querySelector('.mon-tl-entry .mon-tl-time')?.textContent,
         text: document.querySelector('.mon-tl-entry .mon-tl-text')?.textContent,
         run: document.querySelector('.mon-tl-entry .mon-tl-run')?.getAttribute('href'),
         tip: document.querySelector('.mon-tl-entry .mon-tl-tag')?.title
       }));
       assertEqual(first, {
+        time: '03:25 UTC',
         text: 'example.com: new issuer Google Trust Services (1 certificate)',
         run: 'https://github.com/example-org/nightly/actions/runs/4069',
         tip: 'A certificate issuer new to Certificate Transparency for the domain'
@@ -409,6 +414,16 @@ async function main() {
       assert(/only to api\.github\.com/.test(ui.privacy) && /never saved/.test(ui.privacy) && /emptied/.test(ui.privacy), ui.privacy);
       assertEqual(ui.links[0], 'https://github.com/settings/personal-access-tokens/new', 'where a token is made');
       await page.type('[data-role="mon-gh-repo"]', 'https://github.com/example-org/nightly');
+      // no token yet: said at once, no read started, nothing sent, nothing said to have been emptied
+      await page.evaluate(() => { window.__gh.calls = []; });
+      await page.click('[data-action="mon-gh-load"]');
+      const missing = await page.waitFor(() => {
+        const el = document.querySelector('[data-role="mon-gh-status"][data-state="error"]');
+        return el ? { code: el.dataset.code, text: el.textContent, focus: document.activeElement?.dataset.role || '' } : false;
+      }, { message: 'the missing token said' });
+      assertEqual([missing.code, missing.focus], ['token', 'mon-gh-token'], 'the token\'s error, the focus on its field');
+      assert(missing.text.includes('Paste the token') && !missing.text.includes('emptied'), missing.text);
+      assertEqual(await page.evaluate(() => window.__gh.calls.length), 0, 'nothing sent without a token');
       await page.type('[data-role="mon-gh-token"]', TOKEN);
       await page.click('.mon-gh-issue .check-input');
       await page.evaluate(() => { window.__gh.calls = []; });

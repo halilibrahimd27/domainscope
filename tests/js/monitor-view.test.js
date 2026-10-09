@@ -50,7 +50,7 @@ describe('a results folder in the view', () => {
       assert.equal(lines[1], '- 5 targets, from 5 reports · history since 2026-08-20');
       assert.match(md, /\*\*Bad changes in the last 7 days, 3 targets:\*\* `example\.com` \(3\), /);
       assert.match(md, /\*\*2 certificates under 21 days:\*\* `mail\.example\.net` expired 4 days ago, `example\.com` 15 days left/);
-      assert.match(md, /\*\*2 checks did not complete:\*\* `example\.com` takeover \(not run since\), `example\.org` health/);
+      assert.match(md, /\*\*2 checks did not complete:\*\* `example\.com` takeover \(not run since 2026-10-07\), `example\.org` health/);
       assert.match(md, /- Health grades: A 1 · B 1 · E 1/);
       assert.match(lines[lines.length - 1], /^DomainScope · checked 2026-10-09 03:40 UTC · https:\/\/example\.org\/#\/monitor$/);
       assert.ok(!/192\.0\.2\.|198\.51\.100\.|2001:db8/.test(md), 'no address');
@@ -58,6 +58,28 @@ describe('a results folder in the view', () => {
       const tr = renderSummary(buildSummary('monitor', facts, { t, lang: 'tr', url: null, now: new Date(MONITOR_NOW) }), 'text');
       assert.match(tr, /^İzleme · 5 hedef\n- 5 rapordan 5 hedef · geçmiş 2026-08-20 tarihinden başlıyor\n/);
       assert.match(tr, /21 günden az kalan 2 sertifika: mail\.example\.net 4 gün önce doldu, example\.com 15 gün kaldı/);
+      assert.match(tr, /Tamamlanmayan 2 kontrol: example\.com takeover \(2026-10-07 tarihinden beri çalışmadı\), example\.org health/);
+    } finally {
+      setLang('en');
+    }
+  });
+
+  test('the Copy summary\'s scope: one report is one, the history alone has none', () => {
+    const fx = monitorFixture();
+    const text = (files, lang) => {
+      const { data } = importFiles(null, files);
+      const view = viewOf(data, MONITOR_NOW);
+      setLang(lang);
+      return renderSummary(buildSummary('monitor', monitorSummaryFacts(view.rows, view.tiles, data), { t, lang, url: null, now: new Date(MONITOR_NOW) }), 'text');
+    };
+    try {
+      const tls = fx.files.filter((f) => f.name === 'tls.json');
+      assert.match(text(tls, 'en'), /\n- 2 targets, from 1 report · history since 2026-10-09\n/);
+      assert.match(text(tls, 'tr'), /\n- 1 rapordan 2 hedef · geçmiş 2026-10-09 tarihinden başlıyor\n/);
+      const history = text(fx.history, 'en');
+      assert.match(history, /\n- 5 targets · history since 2026-08-20\n/);
+      assert.match(history, /2 certificates under 21 days: mail\.example\.net expired 4 days ago, example\.com 15 days left/, 'the history\'s certificates');
+      assert.match(text(fx.history, 'tr'), /\n- 5 hedef · geçmiş 2026-08-20 tarihinden başlıyor\n/);
     } finally {
       setLang('en');
     }

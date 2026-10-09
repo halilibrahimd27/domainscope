@@ -40,7 +40,8 @@ import {
   sparkPoints, timelineCsv, timelineEntries
 } from '../lib/monitor.js';
 import {
-  GITHUB_FETCH_ERRORS, GITHUB_HISTORY_MONTHS, GITHUB_MAX_FILES, GITHUB_MONTH_CHOICES, GITHUB_TOKEN_DOCS, GITHUB_TOKEN_URL, GITHUB_WEB, fetchResults, parseRepo, repoLinks
+  GITHUB_FETCH_ERRORS, GITHUB_HISTORY_MONTHS, GITHUB_MAX_FILES, GITHUB_MONTH_CHOICES, GITHUB_TOKEN_DOCS, GITHUB_TOKEN_URL, GITHUB_WEB, cleanToken, fetchResults, parseRepo,
+  repoLinks
 } from '../lib/monitorfetch.js';
 
 /** Route id (`#/monitor`). */
@@ -152,6 +153,7 @@ registerStrings('en', {
   'mon.stat.incompleteHint': 'checks, latest runs',
   'mon.stat.targets': 'Targets',
   'mon.stat.targetsHint': { one: 'from {count} report', other: 'from {count} reports' },
+  'mon.stat.targetsHistory': 'from the history',
   'mon.stat.filterTitle': 'Show these targets in the table',
   'mon.link.issue': 'Nightly issue #{number}',
   'mon.link.issues': 'Open nightly issues',
@@ -340,6 +342,7 @@ registerStrings('tr', {
   'mon.stat.incompleteHint': 'kontrol, son çalışmalar',
   'mon.stat.targets': 'Hedefler',
   'mon.stat.targetsHint': { other: '{count} rapordan' },
+  'mon.stat.targetsHistory': 'geçmişten',
   'mon.stat.filterTitle': 'Tabloda bu hedefleri göster',
   'mon.link.issue': 'Gece issue’su #{number}',
   'mon.link.issues': 'Açık gece issue’ları',
@@ -487,7 +490,7 @@ export function importFiles(data, files) {
 export function viewOf(data, now = Date.now()) {
   if (!data || (!data.reports.length && !data.lines.length)) return null;
   const rows = monitorRows(data, { now });
-  return { rows, tiles: monitorTiles(rows, data, { now }), entries: timelineEntries(data) };
+  return { rows, tiles: monitorTiles(rows), entries: timelineEntries(data) };
 }
 
 /** Badge variant of a number of days left. */
@@ -538,6 +541,16 @@ const S = {
 };
 let subscribed = false;
 let rerender = null;
+/** What the page draws of the open results ({@link viewOf}), computed once per dataset and minute: a tile, a filter or "Show more" redraws without it. */
+let drawn = { data: null, minute: -1, view: null };
+
+/** The view of the open results now (days and the 7-day window counted from this minute). */
+function currentView() {
+  const now = Date.now();
+  const minute = Math.floor(now / 60000);
+  if (drawn.data !== S.data || drawn.minute !== minute) drawn = { data: S.data, minute, view: viewOf(S.data, now) };
+  return drawn.view;
+}
 
 /** Stop a running GitHub read. */
 function stopRead() {
@@ -547,6 +560,7 @@ function stopRead() {
 
 function forgetAll() {
   stopRead();
+  drawn = { data: null, minute: -1, view: null };
   S.data = null;
   S.problems = [];
   S.skippedLines = 0;
@@ -629,7 +643,7 @@ export function mount(container, ctx) {
   function render() {
     clear(root);
     root.append(sourceCard());
-    const view = viewOf(S.data);
+    const view = currentView();
     if (!view) {
       root.append(EmptyState({ icon: 'eye', title: t('mon.emptyTitle'), message: t('mon.emptyBody') }));
       return;
@@ -637,7 +651,7 @@ export function mount(container, ctx) {
     const summary = SummaryButton({
       kind: 'monitor',
       facts: () => {
-        const v = viewOf(S.data);
+        const v = currentView();
         return v ? monitorSummaryFacts(v.rows, v.tiles, S.data) : null;
       },
       // the view's bare link: the results never go into a URL
@@ -766,6 +780,7 @@ export function mount(container, ctx) {
       if (!ctx.requireOnline()) return;
       const raw = tokenField.value;
       tokenField.value = '';
+      // "emptied" only when something was in the field
       const cleared = raw.length > 0;
       gh.repo = repoField.value.trim();
       gh.error = null;
@@ -774,6 +789,13 @@ export function mount(container, ctx) {
         gh.error = { code: 'repo', params: {}, cleared };
         render();
         focus('[data-role="mon-gh-repo"]');
+        return;
+      }
+      // an empty or malformed token is said at once: no read starts, nothing is sent
+      if (!cleanToken(raw)) {
+        gh.error = { code: 'token', params: {}, cleared };
+        render();
+        focus('[data-role="mon-gh-token"]');
         return;
       }
       const controller = new AbortController();
@@ -809,7 +831,7 @@ export function mount(container, ctx) {
         if (gh.job !== job) return;
         gh.job = null;
         if (err && err.name === 'AbortError') return;
-        gh.error = { code: err && err.code ? err.code : 'network', params: (err && err.params) || {}, cleared: true };
+        gh.error = { code: err && err.code ? err.code : 'network', params: (err && err.params) || {}, cleared };
         if (rerender) {
           render();
           focus('[data-role="mon-gh-token"]');
@@ -906,7 +928,8 @@ export function mount(container, ctx) {
     };
     const first = tiles.expiring[0];
     return h('div', { class: 'stat-grid mon-stats' },
-      tile('all', t('mon.stat.targets'), rows.length, t('mon.stat.targetsHint', { count: S.data.reports.length }), 'accent'),
+      tile('all', t('mon.stat.targets'), rows.length,
+        S.data.reports.length ? t('mon.stat.targetsHint', { count: S.data.reports.length }) : t('mon.stat.targetsHistory'), 'accent'),
       tile('bad', t('mon.stat.bad'), tiles.bad.length, t('mon.stat.badHint', { count: tiles.bad.length, days: MONITOR_RECENT_DAYS }), 'error'),
       tile('expiring', t('mon.stat.expiring', { days: MONITOR_WARN_DAYS }), tiles.expiring.length,
         first ? t('mon.stat.expiringHint', { name: `${first.name} (${daysText(first.daysLeft)})` }) : t('mon.stat.expiringNone'), 'warn'),
@@ -1031,7 +1054,8 @@ export function mount(container, ctx) {
           render: (r) => h('div', { class: 'mon-target' },
             h('div', { class: 'mon-target-head' },
               h('span', { class: 'mon-target-name mono' }, r.target),
-              IconButton({ icon: 'filter', label: t('mon.showChanges', { target: r.target }), size: 'sm', className: 'mon-target-filter', onClick: () => showChangesOf(r.target) })),
+              // a target with no change recorded has nothing to show in the timeline
+              r.lastChange ? IconButton({ icon: 'filter', label: t('mon.showChanges', { target: r.target }), size: 'sm', className: 'mon-target-filter', onClick: () => showChangesOf(r.target) }) : null),
             h('span', { class: 'muted text-xs' }, r.commands.map(cmdName).join(' · ')))
         },
         {
@@ -1114,7 +1138,7 @@ export function mount(container, ctx) {
       }
       list.push(h('li', { class: ['mon-tl-entry', `mon-tl-${e.tone}`], dataset: { tag: e.tag, tone: e.tone, command: e.command } },
         h('div', { class: 'mon-tl-head' },
-          h('span', { class: 'mon-tl-time num muted text-xs' }, e.at.slice(11, 16)),
+          h('span', { class: 'mon-tl-time num muted text-xs' }, `${e.at.slice(11, 16)} UTC`),
           Badge(e.tag, { variant: toneVariant(e.tone), mono: true, title: MONITOR_TAGS.includes(e.tag) ? t(`mon.tag.${e.tag}`) : null, className: 'mon-tl-tag' }),
           h('span', { class: 'mon-tl-target mono' }, e.target),
           h('span', { class: 'muted text-sm' }, cmdName(e.command)),

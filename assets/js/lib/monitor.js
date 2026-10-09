@@ -19,8 +19,11 @@
  *   history lines stand in for a command whose report is not open); a report older than the newest
  *   one by more than {@link STALE_MS} did not run since (a nightly check that failed leaves last
  *   night's file in place), so its checks count as not completed.
- * - Days left are counted from `now` for what the reports hold (the certificates' expiry dates);
- *   the history keeps them as of each run.
+ * - Days left are counted from `now`: a report's certificates by their expiry dates, a history
+ *   line's count less the whole days since it was written. The history keeps each run's own count
+ *   (the sparklines draw them). The tiles, the table's filters and the summary read the same cells.
+ * - Large histories are fine: nothing spreads a list of lines into a call's arguments, and a
+ *   dataset's lines are merged once ({@link allLines}).
  *
  * DOM-free, no I/O; runs in browsers and Node 22 (the runner imports it).
  */
@@ -71,6 +74,8 @@ const TAG_RE = /^[A-Z][A-Z-]{0,15}$/;
 const GRADE_RE = /^[A-F]$/;
 /** Statuses of a source that answered (lib/sourceinfo.js OK_STATES). */
 const SOURCE_OK = new Set(['ok', 'empty', 'partial']);
+/** A `tls` host's DNS statuses that are an answer (tools/ds/tls.mjs: any other one is a lookup that failed). */
+const DNS_ANSWERED = new Set(['NOERROR', 'NXDOMAIN']);
 /** `tls` endpoint statuses, worst first (tools/ds/tlsdiff.mjs; a failed handshake below a certificate's own problem). */
 export const TLS_WORST = Object.freeze(['EXPIRED', 'UNTRUSTED', 'NAME_MISMATCH', 'TLS_ERROR', 'TIMEOUT', 'CLOSED', 'OK', 'SKIPPED']);
 /** Takeover risk severities, worst first (lib/takeover.js TAKEOVER_SEVERITIES); medium and worse are open problems. */
@@ -93,9 +98,16 @@ const daysFrom = (iso, now) => {
   const ms = msOf(iso);
   return ms === null ? null : Math.floor((ms - now) / DAY_MS);
 };
+/** The smallest / largest finite number of a list, or null (a loop: a list can be longer than a call's arguments). */
 const minOf = (list) => {
-  const n = list.filter((x) => Number.isFinite(x));
-  return n.length ? Math.min(...n) : null;
+  let out = null;
+  for (const x of list) if (Number.isFinite(x) && (out === null || x < out)) out = x;
+  return out;
+};
+const maxOf = (list) => {
+  let out = null;
+  for (const x of list) if (Number.isFinite(x) && (out === null || x > out)) out = x;
+  return out;
 };
 
 /* ------------------------------------------------------------------------ */
@@ -106,8 +118,9 @@ const minOf = (list) => {
  * Did one target's check read what it needed? health: no lookup failed; subdomains: the DNS
  * answered and a passive source did (an exact run asks none); ct: a source answered; drift: the
  * budget lasted and no record set's lookup failed; renew: a verdict; dane: no endpoint's lookup
- * failed; audit: every rule could be checked; tls: the host's DNS answered; takeover: every lookup
- * answered. A command this module does not know: null.
+ * failed; audit: every rule could be checked; tls: the host's DNS answered (NOERROR or NXDOMAIN, as
+ * tools/ds/tls.mjs reads it: a failed lookup checks nothing, whether or not a baseline's endpoints
+ * were carried); takeover: every lookup answered. A command this module does not know: null.
  * @param {string} command
  * @param {object} x a report's target
  * @returns {boolean|null}
@@ -125,7 +138,7 @@ export function checkCompleted(command, x) {
     case 'renew': return t.verdict !== 'unknown';
     case 'dane': return (Array.isArray(t.endpoints) ? t.endpoints : []).every((e) => !isObj(e) || e.status !== 'error');
     case 'audit': return !(Number(t.unknown) > 0);
-    case 'tls': return !t.carried;
+    case 'tls': return !t.carried && !(isObj(t.dns) && isStr(t.dns.status) && !DNS_ANSWERED.has(t.dns.status));
     case 'takeover': return !(Array.isArray(t.failures) && t.failures.length);
     default: return null;
   }
@@ -155,6 +168,62 @@ export function minDaysLeftOf(command, x, now) {
   if (command === 'ct') return minOf(ctCurrent(x, now).map((c) => daysFrom(c.notAfter, now)));
   return null;
 }
+
+/** A serial number as lowercase hex without leading zero bytes, however a source writes it ('00:0A:1B' → '0a1b'), or null. */
+function serialOf(value) {
+  let hex = isStr(value) ? value.toLowerCase().replace(/[^0-9a-f]/g, '') : '';
+  if (!hex) return null;
+  if (hex.length % 2) hex = `0${hex}`;
+  while (hex.length > 2 && hex.startsWith('00')) hex = hex.slice(2);
+  return hex;
+}
+
+/**
+ * The certificates a `tls` or `ct` target's check saw ({@link minDaysLeftOf}'s), each with its
+ * name, its expiry, its whole days left from `now` and what tells it from another one (`id`).
+ * @returns {Array<{ name: string, notAfter: string, daysLeft: number, id: { serial: string|null, ca: string|null,
+ *   notAfter: number, sha256: string|null, ct: string|null } }>}
+ */
+function certsSeen(command, x, now) {
+  const list = command === 'tls' ? tlsCerts(x) : command === 'ct' ? ctCurrent(x, now) : [];
+  const out = [];
+  for (const c of list) {
+    const daysLeft = daysFrom(c.notAfter, now);
+    if (daysLeft === null) continue;
+    const names = Array.isArray(c.names) ? c.names.filter(isStr) : [];
+    out.push({
+      name: (isStr(c.subject) && c.subject) || names[0] || x.target,
+      notAfter: isoOf(c.notAfter),
+      daysLeft,
+      id: {
+        serial: serialOf(c.serialHex),
+        ca: isStr(c.ca) && c.ca.trim() ? c.ca.trim().toLowerCase().replace(/\s+/g, ' ') : null,
+        notAfter: msOf(c.notAfter),
+        sha256: isStr(c.sha256) && c.sha256 ? c.sha256.toLowerCase() : null,
+        ct: command === 'ct' && isStr(c.id) && c.id ? c.id : null
+      }
+    });
+  }
+  return out;
+}
+
+/**
+ * Are two certificates seen (tls's served one, ct's logged ones) the same? With both serial numbers:
+ * the same serial from the same CA (when both name it) with the same expiry — a precertificate
+ * shares them with its certificate, and crt.sh gives no SHA-256; else the same SHA-256; else the
+ * same CT id.
+ */
+function sameCertificate(a, b) {
+  if (!a || !b) return false;
+  if (a.serial && b.serial) return a.serial === b.serial && (!a.ca || !b.ca || a.ca === b.ca) && a.notAfter === b.notAfter;
+  if (a.sha256 && b.sha256) return a.sha256 === b.sha256;
+  return !!a.ct && a.ct === b.ct;
+}
+
+/** One certificate's identity from two sightings of it: what either knows. */
+const mergedIdentity = (a, b) => ({
+  serial: a.serial || b.serial, ca: a.ca || b.ca, notAfter: a.notAfter ?? b.notAfter, sha256: a.sha256 || b.sha256, ct: a.ct || b.ct
+});
 
 /**
  * The facts a history line keeps of one target's check, as of the run's end `at`.
@@ -557,14 +626,23 @@ export function readMonitorFiles(data, files) {
   };
 }
 
+/** {@link allLines} of each dataset, merged once: a render asks for them several times (rows, timeline, links, summary). */
+const LINES_OF = new WeakMap();
+
 /**
  * Every line of a dataset: the history files' first, then each report's own (which only add the runs
- * the history does not have yet).
+ * the history does not have yet). Merged once per dataset (a dataset is never changed in place:
+ * {@link readMonitorFiles} makes a new one), so the list is shared and frozen.
  * @param {{ reports: object[], lines: object[] }} data
- * @returns {object[]}
+ * @returns {ReadonlyArray<object>}
  */
 export function allLines(data) {
-  return mergeLines(data.lines, ...data.reports.map((r) => r.lines));
+  const size = data.lines.length + data.reports.length;
+  const hit = LINES_OF.get(data);
+  if (hit && hit.lines === data.lines && hit.reports === data.reports && hit.size === size) return hit.out;
+  const out = Object.freeze(mergeLines(data.lines, ...data.reports.map((r) => r.lines)));
+  LINES_OF.set(data, { lines: data.lines, reports: data.reports, size, out });
+  return out;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -587,7 +665,8 @@ export function worstTlsStatus(statuses) {
 
 /**
  * The facts of one target's latest check of one command, from its report (`now`: when days left
- * are counted from).
+ * are counted from). tls and ct: `certs`, the certificates seen ({@link expiringCertificates} reads
+ * them), and `minDaysLeft`, the soonest of them.
  * @param {string} command
  * @param {object} x the report's target
  * @param {object} report readReport's report
@@ -611,10 +690,12 @@ export function cellFacts(command, x, report, now, changes = []) {
     case 'ct': {
       const watch = isObj(x.watch) && isObj(x.watch.counts) ? x.watch.counts : {};
       const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+      const certs = certsSeen('ct', x, now);
       return {
         ...cell,
         current: ctCurrent(x, now).length,
-        minDaysLeft: minDaysLeftOf('ct', x, now),
+        minDaysLeft: minOf(certs.map((c) => c.daysLeft)),
+        certs,
         newIssuers: [...new Set(changes.filter((c) => c.tag === 'ISSUER' && c.kind === 'appeared' && isStr(c.item)).map((c) => c.item))],
         unexpected: n(watch.unexpected),
         revoked: n(watch.revoked)
@@ -622,12 +703,14 @@ export function cellFacts(command, x, report, now, changes = []) {
     }
     case 'tls': {
       const endpoints = (Array.isArray(x.endpoints) ? x.endpoints : []).filter(isObj);
+      const certs = certsSeen('tls', x, now);
       return {
         ...cell,
         endpoints: endpoints.length,
         worst: worstTlsStatus(endpoints.map((e) => e.status)),
         problems: endpoints.filter((e) => e.status !== 'OK' && e.status !== 'SKIPPED').length,
-        minDaysLeft: minDaysLeftOf('tls', x, now)
+        minDaysLeft: minOf(certs.map((c) => c.daysLeft)),
+        certs
       };
     }
     case 'takeover': {
@@ -652,44 +735,51 @@ export function cellFacts(command, x, report, now, changes = []) {
   }
 }
 
-/** A cell from a history line, for a command whose report is not open. */
-function lineCell(l) {
+/**
+ * A cell from a history line, for a command whose report is not open (or is older). The line keeps
+ * its run's days left: from `now`, that many whole days fewer — what the run's report would say now.
+ * Its soonest expiry stands for the certificates seen (`certs`: one, named by the target, that
+ * nothing tells apart from another).
+ */
+function lineCell(l, now) {
+  const days = l.minDaysLeft === undefined ? null : l.minDaysLeft - Math.max(0, Math.floor((now - l.ms) / DAY_MS));
   return {
     command: l.command, ms: l.ms, ok: l.ok, stale: false, from: 'history', report: null, changes: { ...l.counts },
     ...(l.score !== undefined ? { score: l.score } : {}),
     ...(l.grade !== undefined ? { grade: l.grade } : {}),
-    ...(l.minDaysLeft !== undefined ? { minDaysLeft: l.minDaysLeft } : {})
+    ...(days !== null ? { minDaysLeft: days, certs: [{ name: l.target, notAfter: null, daysLeft: days, id: null }] } : {})
   };
 }
 
 /**
- * The certificates the open reports say expire soonest: tls's served ones, ct's current ones,
- * each once (by SHA-256, else by its CT id), days counted from `now`, soonest first.
- * @param {object[]} reports
- * @param {number} now ms
- * @param {number} [days] only those with fewer days left (Infinity: all)
- * @returns {Array<{ target: string, command: string, name: string, notAfter: string, daysLeft: number }>}
+ * The certificates under `days` days left that the rows' tls and ct cells saw — the cells the
+ * table's filter and each row's days left read, so the three agree —, soonest first. A report's
+ * cell lists each certificate (tls: served, ct: the current ones logged); a history cell its
+ * soonest expiry, named by its target. A certificate seen twice (by tls and by ct, by two targets)
+ * is one ({@link sameCertificate}), named by the served one when tls saw it.
+ * @param {object[]} rows monitorRows
+ * @param {{ days?: number }} [opts] only those with fewer days left (Infinity: all)
+ * @returns {Array<{ target: string, command: string, name: string, notAfter: string|null, daysLeft: number }>}
  */
-export function expiringCertificates(reports, now, days = MONITOR_WARN_DAYS) {
-  const latest = latestTargets(reports);
-  const by = new Map();
-  for (const [target, cmds] of latest) {
+export function expiringCertificates(rows, { days = MONITOR_WARN_DAYS } = {}) {
+  const found = [];
+  for (const row of rows || []) {
     for (const command of ['tls', 'ct']) {
-      const hit = cmds.get(command);
-      if (!hit) continue;
-      const certs = command === 'tls' ? tlsCerts(hit.x) : ctCurrent(hit.x, now);
-      for (const c of certs) {
-        const left = daysFrom(c.notAfter, now);
-        if (left === null || !(left < days)) continue;
-        const key = isStr(c.sha256) && c.sha256 ? `sha:${c.sha256.toLowerCase()}` : `ct:${c.id}`;
-        const names = Array.isArray(c.names) ? c.names.filter(isStr) : [];
-        const name = (isStr(c.subject) && c.subject) || names[0] || target;
-        const prev = by.get(key);
-        if (!prev || (command === 'tls' && prev.command !== 'tls')) by.set(key, { target, command, name, notAfter: isoOf(c.notAfter), daysLeft: left });
+      const cell = row.cells && row.cells[command];
+      for (const c of (cell && cell.certs) || []) {
+        if (!(c.daysLeft < days)) continue;
+        const entry = { target: row.target, command, name: c.name, notAfter: c.notAfter, daysLeft: c.daysLeft };
+        const same = c.id ? found.find((f) => sameCertificate(f.id, c.id)) : null;
+        if (!same) {
+          found.push({ ...entry, id: c.id });
+          continue;
+        }
+        if (command === 'tls' && same.command !== 'tls') Object.assign(same, entry);
+        same.id = mergedIdentity(same.id, c.id);
       }
     }
   }
-  return [...by.values()].sort((a, b) => a.daysLeft - b.daysLeft || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return found.map(({ id, ...c }) => c).sort((a, b) => a.daysLeft - b.daysLeft || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
 /** Per target, the newest report of each command naming it: Map<target, Map<command, { report, x }>>. */
@@ -733,8 +823,8 @@ export function seriesOf(lines) {
 export function sparkPoints(values, { width = 96, height = 24, domain = null } = {}) {
   const v = (values || []).filter((n) => Number.isFinite(n));
   if (!v.length) return { points: '', last: null };
-  const lo = domain ? Math.min(domain[0], ...v) : Math.min(...v);
-  const hi = domain ? Math.max(domain[1], ...v) : Math.max(...v);
+  const lo = minOf(domain ? [domain[0], ...v] : v);
+  const hi = maxOf(domain ? [domain[1], ...v] : v);
   const pad = 2;
   const w = width - pad * 2;
   const h = height - pad * 2;
@@ -750,7 +840,8 @@ export function sparkPoints(values, { width = 96, height = 24, domain = null } =
 /**
  * One row per target: the latest check of each command (its report, else its newest history line),
  * whether every one of them completed, the bad changes of the last {@link MONITOR_RECENT_DAYS} days,
- * the soonest certificate expiry, the newest change and the sparkline series.
+ * the soonest certificate expiry of its tls and ct cells (days left from `now`, a history cell's
+ * too), the newest change and the sparkline series.
  * @param {{ reports: object[], lines: object[] }} data
  * @param {{ now?: number, recentDays?: number }} [opts]
  * @returns {object[]} worst first: did not complete, bad changes, soonest expiry, then by name
@@ -760,7 +851,7 @@ export function monitorRows(data, { now = Date.now(), recentDays = MONITOR_RECEN
   const lines = allLines(data);
   const latest = latestTargets(reports);
   // the newest check of any kind: a report or a line older than it by STALE_MS did not run since
-  const newest = Math.max(-Infinity, ...reports.map((r) => r.finishedAt), lines.length ? lines[lines.length - 1].ms : -Infinity);
+  const newest = maxOf([...reports.map((r) => r.finishedAt), lines.length ? lines[lines.length - 1].ms : null]) ?? -Infinity;
   const linesBy = new Map();
   for (const l of lines) {
     if (!linesBy.has(l.target)) linesBy.set(l.target, []);
@@ -782,7 +873,7 @@ export function monitorRows(data, { now = Date.now(), recentDays = MONITOR_RECEN
     }
     const own = linesBy.get(target) || [];
     // the history stands in for a command whose report is not open (or is older than its last line)
-    for (const l of lastLines(own)) if (!cells[l.command] || cells[l.command].ms < l.ms) cells[l.command] = lineCell(l);
+    for (const l of lastLines(own)) if (!cells[l.command] || cells[l.command].ms < l.ms) cells[l.command] = lineCell(l, now);
     for (const cell of Object.values(cells)) if (newest - cell.ms > STALE_MS) cell.stale = true;
     const commands = Object.keys(cells).sort(commandOrder);
     if (!commands.length) continue;
@@ -795,7 +886,7 @@ export function monitorRows(data, { now = Date.now(), recentDays = MONITOR_RECEN
       target,
       cells,
       commands,
-      ms: Math.max(...commands.map((c) => cells[c].ms)),
+      ms: maxOf(commands.map((c) => cells[c].ms)),
       incomplete,
       bad7: recent.reduce((n, l) => n + l.counts.bad, 0),
       minDaysLeft: days,
@@ -814,19 +905,18 @@ export function monitorRows(data, { now = Date.now(), recentDays = MONITOR_RECEN
 }
 
 /**
- * The three tiles: the targets with a bad change in the last {@link MONITOR_RECENT_DAYS} days, the
- * certificates with under {@link MONITOR_WARN_DAYS} days left, the checks that did not complete
- * (their target and command; `stale`: the report is older than the newest one: it did not run since).
+ * The three tiles, from the rows alone (what their filters show): the targets with a bad change in
+ * the last {@link MONITOR_RECENT_DAYS} days, the certificates with under {@link MONITOR_WARN_DAYS}
+ * days left ({@link expiringCertificates}), the checks that did not complete (their target, command
+ * and last run `ms`; `stale`: older than the newest check: it did not run since).
  * @param {object[]} rows monitorRows
- * @param {{ reports: object[] }} data
- * @param {{ now?: number }} [opts]
  */
-export function monitorTiles(rows, data, { now = Date.now() } = {}) {
+export function monitorTiles(rows) {
   return {
     targets: rows.length,
     bad: rows.filter((r) => r.bad7 > 0).map((r) => r.target),
-    expiring: expiringCertificates(data.reports, now),
-    incomplete: rows.flatMap((r) => r.incomplete.map((command) => ({ target: r.target, command, stale: r.cells[command].stale })))
+    expiring: expiringCertificates(rows),
+    incomplete: rows.flatMap((r) => r.incomplete.map((command) => ({ target: r.target, command, stale: r.cells[command].stale, ms: r.cells[command].ms })))
   };
 }
 
@@ -913,25 +1003,28 @@ export function latestRun(data) {
 
 /**
  * The Copy summary's facts (lib/monitorsummary.js): the counts of the tiles, the targets with bad
- * changes and the checks that did not complete (by name), the certificates expiring first, when the
- * newest check ran. Names only: never an address of a report.
+ * changes and the checks that did not complete (by name; a stale one with its last run, `since`),
+ * the certificates expiring first, when the newest check ran. Names only: never an address of a report.
  * @param {object[]} rows
  * @param {object} tiles monitorTiles
  * @param {{ reports: object[], lines: object[] }} data
  */
 export function monitorSummaryFacts(rows, tiles, data) {
   const lines = allLines(data);
-  const times = [...(data.reports || []).map((r) => r.finishedAt), ...lines.map((l) => l.ms)].filter(Number.isFinite);
+  const reports = data.reports || [];
   const first = lines.length ? lines[0].ms : null;
+  // the lines are oldest first: the newest check is the last one's, or a report's (a run without targets has no line)
+  const newest = maxOf([lines.length ? lines[lines.length - 1].ms : null, ...reports.map((r) => r.finishedAt)]);
+  const bad7 = new Map(rows.map((r) => [r.target, r.bad7]));
   return {
     targets: rows.length,
-    reports: (data.reports || []).length,
+    reports: reports.length,
     runs: new Set(lines.map((l) => `${l.at}|${l.command}`)).size,
     since: first === null ? null : new Date(first),
-    bad: tiles.bad.map((target) => ({ target, count: (rows.find((r) => r.target === target) || { bad7: 0 }).bad7 })),
+    bad: tiles.bad.map((target) => ({ target, count: bad7.get(target) || 0 })),
     expiring: tiles.expiring.map((c) => ({ name: c.name, daysLeft: c.daysLeft })),
-    incomplete: tiles.incomplete.map((x) => ({ target: x.target, command: x.command, stale: !!x.stale })),
+    incomplete: tiles.incomplete.map((x) => ({ target: x.target, command: x.command, stale: !!x.stale, since: x.stale && Number.isFinite(x.ms) ? new Date(x.ms) : null })),
     grades: rows.filter((r) => r.cells.health && r.cells.health.grade).map((r) => ({ target: r.target, grade: r.cells.health.grade, score: r.cells.health.score ?? null })),
-    at: times.length ? new Date(Math.max(...times)) : null
+    at: newest === null ? null : new Date(newest)
   };
 }

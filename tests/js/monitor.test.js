@@ -87,6 +87,13 @@ describe('the history line', () => {
     assert.equal(checkCompleted('dane', { endpoints: [{ status: 'error' }] }), false);
     assert.equal(checkCompleted('audit', { unknown: 2 }), false);
     assert.equal(checkCompleted('tls', { carried: { from: null } }), false);
+    // tls: the host's DNS answered (NOERROR or NXDOMAIN); a failed lookup with nothing to carry (a
+    // host's first night, a run without --baseline) checked nothing either
+    assert.equal(checkCompleted('tls', { dns: { status: 'SERVFAIL' }, endpoints: [] }), false);
+    assert.equal(checkCompleted('tls', { dns: { status: 'REFUSED' }, endpoints: [] }), false);
+    assert.equal(checkCompleted('tls', { dns: { status: 'NXDOMAIN' }, endpoints: [] }), true, 'the name went: an answer');
+    assert.equal(checkCompleted('tls', { dns: { status: 'NOERROR' }, endpoints: [] }), true);
+    assert.equal(checkCompleted('tls', { dns: null, endpoints: [] }), true, 'an address:port target asks no DNS');
     assert.equal(checkCompleted('takeover', { failures: [{ source: 'rdap' }] }), false);
     assert.equal(checkCompleted('watch', {}), null, 'a command this page does not know');
   });
@@ -154,6 +161,16 @@ describe('reading the history', () => {
     assert.deepEqual(merged.map(lineKey), [lineKey(b), lineKey(a), lineKey(c)]);
     assert.equal(merged[1].run, a.run, 'the history file\'s line, with its run, wins over a report\'s own');
     assert.deepEqual(pruneLines(merged, Date.parse('2026-10-08T00:00:00Z')).map((x) => x.target), ['example.com', 'example.com']);
+  });
+
+  test('a dataset\'s lines are merged once: the rows, the timeline, the links and the summary share them', () => {
+    const { data } = loaded();
+    const lines = allLines(data);
+    assert.equal(allLines(data), lines, 'the same dataset: the same lines, not merged again');
+    assert.ok(Object.isFrozen(lines), 'shared, so never changed in place');
+    const fewer = { ...data, lines: data.lines.slice(1) };
+    assert.notEqual(allLines(fewer), lines, 'another dataset is merged on its own');
+    assert.equal(allLines(fewer).length, lines.length - 1);
   });
 });
 
@@ -268,26 +285,67 @@ describe('rows, tiles, timeline', () => {
   test('the tiles: bad changes in 7 days, certificates under 21 days, checks that did not complete', () => {
     const { data } = loaded();
     const rows = monitorRows(data, { now: NOW });
-    const tiles = monitorTiles(rows, data, { now: NOW });
+    const tiles = monitorTiles(rows);
     assert.equal(tiles.targets, 5);
     assert.deepEqual(tiles.bad.sort(), ['example.com', 'example.org', 'mail.example.net']);
     assert.deepEqual(tiles.expiring.map((c) => `${c.name} ${c.daysLeft} ${c.command}`), ['mail.example.net -4 tls', 'example.com 15 ct']);
-    assert.deepEqual(tiles.incomplete, [{ target: 'example.com', command: 'takeover', stale: true }, { target: 'example.org', command: 'health', stale: false }]);
+    assert.deepEqual(tiles.incomplete, [
+      { target: 'example.com', command: 'takeover', stale: true, ms: Date.parse('2026-10-07T03:35:00Z') },
+      { target: 'example.org', command: 'health', stale: false, ms: Date.parse('2026-10-09T03:20:00Z') }
+    ]);
     assert.deepEqual(rows.filter((r) => rowMatches(r, 'expiring')).map((r) => r.target), ['example.com', 'mail.example.net']);
     assert.deepEqual(rows.filter((r) => rowMatches(r, 'incomplete')).map((r) => r.target), ['example.com', 'example.org']);
     assert.equal(rows.filter((r) => rowMatches(r, 'all')).length, 5);
     assert.equal(MONITOR_WARN_DAYS, 21);
     // a week later nothing is "recent" any more, and the expired certificate has more days behind it
-    const later = monitorTiles(monitorRows(data, { now: NOW + 8 * DAY }), data, { now: NOW + 8 * DAY });
+    const later = monitorTiles(monitorRows(data, { now: NOW + 8 * DAY }));
     assert.deepEqual(later.bad, []);
     assert.equal(later.expiring[0].daysLeft, -12);
   });
 
-  test('a certificate seen by tls and ct is one, by its SHA-256', () => {
-    const tls = readReport(JSON.stringify(report('tls', [{ target: 'www.example.com', endpoints: [{ address: '192.0.2.1', port: 443, status: 'OK', cert: { sha256: 'AB'.repeat(32), subject: 'www.example.com', notAfter: '2026-10-19T00:00:00Z' } }] }]))).report;
-    const ct = readReport(JSON.stringify(report('ct', [{ target: 'example.com', names: [], issuers: [], answered: true, certificates: [{ id: 'c1', ca: 'x', names: ['www.example.com'], sha256: 'ab'.repeat(32), notAfter: '2026-10-19T00:00:00Z', current: true }] }]))).report;
-    const certs = expiringCertificates([ct, tls], NOW);
-    assert.deepEqual(certs.map((c) => [c.command, c.daysLeft]), [['tls', 9]]);
+  test('the history alone: the tile, its filter and the summary name the same certificates, days left counted from now', () => {
+    const fx = monitorFixture();
+    // the history picked alone, or a report left out (a GitHub read past its cap of files)
+    for (const [label, files] of [['the history alone', fx.history], ['without tls.json', fx.files.filter((f) => f.name !== 'tls.json')],
+      ['without ct.json', fx.files.filter((f) => f.name !== 'ct.json')]]) {
+      const { data } = readMonitorFiles(emptyMonitor(), files);
+      const rows = monitorRows(data, { now: NOW });
+      const tiles = monitorTiles(rows);
+      assert.deepEqual(tiles.expiring.map((c) => `${c.target} ${c.daysLeft}`), ['mail.example.net -4', 'example.com 15'], `${label}: the tile`);
+      assert.deepEqual(rows.filter((r) => rowMatches(r, 'expiring')).map((r) => r.target), ['example.com', 'mail.example.net'], `${label}: its filter`);
+      assert.deepEqual(monitorSummaryFacts(rows, tiles, data).expiring, [{ name: 'mail.example.net', daysLeft: -4 }, { name: 'example.com', daysLeft: 15 }], `${label}: the summary`);
+    }
+    // three days on with no night since: a line's days left count from now, as a report's do
+    const later = NOW + 3 * DAY;
+    const fromHistory = monitorRows(readMonitorFiles(emptyMonitor(), fx.history).data, { now: later });
+    const fromReports = monitorRows(loaded().data, { now: later });
+    for (const target of ['example.com', 'example.org', 'www.example.com', 'mail.example.net']) {
+      const days = (rows) => rows.find((r) => r.target === target).minDaysLeft;
+      assert.equal(days(fromHistory), days(fromReports), target);
+    }
+    assert.equal(fromHistory.find((r) => r.target === 'example.com').minDaysLeft, 12);
+    // the sparkline keeps each night's own count
+    assert.equal(fromHistory.find((r) => r.target === 'example.com').series.days.at(-1).value, 15);
+  });
+
+  test('a certificate seen by tls and ct is one: its serial number with its CA and expiry (crt.sh has no SHA-256, a precertificate its own), else its SHA-256', () => {
+    const notAfter = '2026-10-19T12:00:00.000Z';
+    const tls = readReport(JSON.stringify(report('tls', [{ target: 'www.example.com', endpoints: [{ address: '192.0.2.10', port: 443, status: 'OK', cert: {
+      sha256: 'a1'.repeat(32), serialHex: '0a1b2c3d4e', subject: 'www.example.com', ca: 'Let\'s Encrypt', names: ['www.example.com', 'example.com'], notAfter
+    } }] }]))).report;
+    const ct = (cert) => readReport(JSON.stringify(report('ct', [{ target: 'example.com', names: [], issuers: [], answered: true, certificates: [{
+      id: 'ct-1', ca: 'Let\'s Encrypt', names: ['example.com', 'www.example.com'], sha256: null, serialHex: '0a1b2c3d4e', notAfter, current: true, ...cert
+    }] }]))).report;
+    const expiring = (ctCert) => expiringCertificates(monitorRows({ reports: [ct(ctCert), tls], lines: [], files: [] }, { now: NOW }))
+      .map((c) => `${c.command} ${c.name} ${c.daysLeft}`);
+    const one = ['tls www.example.com 10'];
+    assert.deepEqual(expiring({}), one, 'crt.sh: no SHA-256, the serial and the CA');
+    assert.deepEqual(expiring({ serialHex: '00:0A:1B:2C:3D:4E' }), one, 'the serial however it is written');
+    assert.deepEqual(expiring({ sha256: 'b2'.repeat(32), precert: true }), one, 'the precertificate: its own SHA-256, the same serial');
+    assert.deepEqual(expiring({ serialHex: null, sha256: 'A1'.repeat(32) }), one, 'no serial in CT: the SHA-256');
+    assert.equal(expiring({ ca: 'Google Trust Services' }).length, 2, 'the same serial from another CA');
+    assert.equal(expiring({ notAfter: '2026-10-20T12:00:00.000Z' }).length, 2, 'the same serial with another expiry');
+    assert.equal(expiring({ serialHex: null }).length, 2, 'nothing tells them apart or the same: both');
   });
 
   test('the timeline: newest first, a run\'s own words where its report is open, filtered by command, target and tone', () => {
@@ -341,13 +399,36 @@ describe('rows, tiles, timeline', () => {
     assert.deepEqual(['watch', 'audit', 'health', 'drift', 'beta'].sort(commandOrder), ['health', 'audit', 'drift', 'beta', 'watch']);
     const { data } = loaded();
     const rows = monitorRows(data, { now: NOW });
-    const facts = monitorSummaryFacts(rows, monitorTiles(rows, data, { now: NOW }), data);
+    const facts = monitorSummaryFacts(rows, monitorTiles(rows), data);
     assert.deepEqual([facts.targets, facts.reports], [5, 5]);
     assert.deepEqual(facts.bad.map((b) => `${b.target} ${b.count}`).sort(), ['example.com 3', 'example.org 1', 'mail.example.net 1']);
     assert.deepEqual(facts.expiring, [{ name: 'mail.example.net', daysLeft: -4 }, { name: 'example.com', daysLeft: 15 }]);
+    assert.deepEqual(facts.incomplete.map((x) => [x.target, x.command, x.stale, x.since && x.since.toISOString()]),
+      [['example.com', 'takeover', true, '2026-10-07T03:35:00.000Z'], ['example.org', 'health', false, null]], 'a stale check: since when');
     assert.equal(facts.at.toISOString(), '2026-10-09T03:40:00.000Z');
     assert.equal(facts.since.toISOString(), '2026-08-20T03:20:00.000Z');
     assert.ok(!/192\.0\.2\.|198\.51\.100\.|2001:db8/.test(JSON.stringify(facts)), 'no address');
     assert.ok(STALE_MS >= DAY);
+  });
+
+  test('a year of nightly checks of 200 targets: more lines than a call takes as arguments, the summary\'s facts still read', () => {
+    // 200 targets × 3 checks × 267 nights = 160,200 lines: past the ~125,000 a spread into Math.max can take
+    const lines = [];
+    const first = NOW - 267 * DAY;
+    for (let night = 0; night < 267; night += 1) {
+      for (const [i, command] of ['health', 'ct', 'takeover'].entries()) {
+        const ms = first + night * DAY + i * 60000;
+        const at = new Date(ms).toISOString();
+        const facts = command === 'health' ? { score: 90, grade: 'A' } : command === 'ct' ? { minDaysLeft: 60 - (night % 60) } : {};
+        for (let n = 0; n < 200; n += 1) lines.push({ v: 1, at, ms, command, target: `d${n}.example.com`, ok: true, ...facts, counts: { bad: 0, info: 0 }, changes: [] });
+      }
+    }
+    assert.equal(lines.length, 160200);
+    const data = { reports: [], lines, files: [] };
+    const rows = monitorRows(data, { now: NOW });
+    const facts = monitorSummaryFacts(rows, monitorTiles(rows), data);
+    assert.deepEqual([facts.targets, facts.reports, facts.runs], [200, 0, 801]);
+    assert.equal(facts.at.toISOString(), lines.at(-1).at, 'the newest check');
+    assert.equal(facts.since.toISOString(), lines[0].at);
   });
 });

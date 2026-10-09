@@ -15,11 +15,12 @@ const { kit, doc, code, strong, isoDay, whenText } = BUILDER_KIT;
 const MONITOR_MAX_NAMED = 5;
 
 /**
- * The Monitoring view: how many targets the open results cover and since when, the targets with a
- * bad change in the last 7 days (with how many), the certificates under 21 days (soonest first), the
- * checks that did not complete and the health grades.
+ * The Monitoring view: how many targets the open results cover (from how many reports; the history
+ * alone has none) and since when, the targets with a bad change in the last 7 days (with how many),
+ * the certificates under 21 days (soonest first), the checks that did not complete (one that did not
+ * run since a day, with that day) and the health grades.
  * @param {{ targets: number, reports: number, runs: number, since: Date|null, bad: Array<{ target: string, count: number }>,
- *   expiring: Array<{ name: string, daysLeft: number }>, incomplete: Array<{ target: string, command: string, stale: boolean }>,
+ *   expiring: Array<{ name: string, daysLeft: number }>, incomplete: Array<{ target: string, command: string, stale: boolean, since: Date|null }>,
  *   grades: Array<{ target: string, grade: string, score: number|null }>, at: Date|null }} facts lib/monitor.js monitorSummaryFacts
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {import('./summarycore.js').SummaryDoc}
@@ -34,7 +35,9 @@ export function monitorSummary(facts, opts) {
     if (list.length > MONITOR_MAX_NAMED) parts.push(` ${t('common.moreCount', { count: list.length - MONITOR_MAX_NAMED })}`);
     return parts;
   };
-  const scope = [t('sum.mon.scope', { count: Number(facts.targets) || 0, reports: Number(facts.reports) || 0 })];
+  const targets = t('sum.mon.targets', { count: Number(facts.targets) || 0 });
+  const reports = Number(facts.reports) || 0;
+  const scope = [reports ? t('sum.mon.scope', { targets, reports: t('sum.mon.reports', { count: reports }) }) : targets];
   if (facts.since) scope.push(' · ', t('sum.mon.since', { day: isoDay(facts.since) }));
   lines.push(scope);
   const bad = facts.bad || [];
@@ -49,7 +52,7 @@ export function monitorSummary(facts, opts) {
   const incomplete = facts.incomplete || [];
   lines.push(incomplete.length
     ? [strong(`${t('sum.mon.incomplete', { count: incomplete.length })}:`), ' ', ...named(incomplete, (x) => [code(x.target), ' ', x.command,
-      x.stale ? ` (${t('sum.mon.stale')})` : ''])]
+      x.stale && x.since ? ` (${t('sum.mon.stale', { day: isoDay(x.since) })})` : ''])]
     : [t('sum.mon.complete')]);
   const grades = facts.grades || [];
   if (grades.length) {
@@ -64,7 +67,9 @@ export function monitorSummary(facts, opts) {
 /** English and Turkish texts of the `sum.mon.*` keys: [key, [en, tr]] (lib/summarycore.js's shape). */
 const STRINGS = [
   ['sum.mon.title', [{ one: '{count} target', other: '{count} targets' }, '{count} hedef']],
-  ['sum.mon.scope', [{ one: '{count} target, from {reports} reports', other: '{count} targets, from {reports} reports' }, '{reports} rapordan {count} hedef']],
+  ['sum.mon.targets', [{ one: '{count} target', other: '{count} targets' }, '{count} hedef']],
+  ['sum.mon.reports', [{ one: '{count} report', other: '{count} reports' }, '{count} rapordan']],
+  ['sum.mon.scope', ['{targets}, from {reports}', '{reports} {targets}']],
   ['sum.mon.since', ['history since {day}', 'geçmiş {day} tarihinden başlıyor']],
   ['sum.mon.bad', [{ one: 'Bad changes in the last 7 days, {count} target', other: 'Bad changes in the last 7 days, {count} targets' }, 'Son 7 günde kötü değişiklikler, {count} hedef']],
   ['sum.mon.badNone', ['No bad change in the last 7 days', 'Son 7 günde kötü değişiklik yok']],
@@ -73,7 +78,7 @@ const STRINGS = [
   ['sum.mon.daysLeft', [{ one: '{count} day left', other: '{count} days left' }, '{count} gün kaldı']],
   ['sum.mon.expiredAgo', [{ one: 'expired {count} day ago', other: 'expired {count} days ago' }, '{count} gün önce doldu']],
   ['sum.mon.incomplete', [{ one: '{count} check did not complete', other: '{count} checks did not complete' }, 'Tamamlanmayan {count} kontrol']],
-  ['sum.mon.stale', ['not run since', 'o tarihten beri çalışmadı']],
+  ['sum.mon.stale', ['not run since {day}', '{day} tarihinden beri çalışmadı']],
   ['sum.mon.complete', ['Every check completed', 'Her kontrol tamamlandı']],
   ['sum.mon.grades', ['Health grades', 'Sağlık notları']]
 ];

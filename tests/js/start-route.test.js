@@ -89,6 +89,10 @@ const JS = join(ASSETS, 'js');
  * under the budget. The one start-route file that grew is lib/pwa.js (127 bytes): its precache skip list names the two
  * sender lists. The score's panel and libraries load with the portfolio's Domain security tab, and lib/senders.js with
  * the views that use it.
+ * With the rest of wave 7b merged (the runner's alerts, the takeover watch with Domain Health's Dependencies card, and the renewal
+ * radar): ≈ 335 KB (342,873 bytes), 36,007 bytes under the budget. The one start-route file that grew is assets/css/style.css
+ * (223 bytes): the Takeover risks table's styles, which Subdomains' results and the Dependencies card share. The revocation card and
+ * its libraries load with the Certificate view and the portfolio's CT tab, and the runner's modules are not in the Pages bundle.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

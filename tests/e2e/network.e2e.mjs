@@ -31,8 +31,9 @@
  *     tabs say where things stay in a privacy note, not a green alert;
  *   - phones, 375×812 in Turkish and dark: Copy summary alone in the row and the rest behind "⋯";
  *     every table of the five pages is a card per row (no header row, the first cell heads the card,
- *     the others are labelled lines) with no sideways scroll; 320 px: none of the five pages scrolls
- *     sideways, empty or with a result;
+ *     the others are lines, each value beside its column's label) with no sideways scroll; 320 px in
+ *     Turkish: the same cards with each label above its value, none wider than its card; none of the
+ *     five pages scrolls sideways, empty or with a result;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; nothing sent.
  */
 
@@ -216,7 +217,8 @@ async function linkOf(page, head) {
 /**
  * A table in card mode (style.css .dt-cards, DataTable({ cellLabels: true })): no header row,
  * each row a grid, its first cell unlabelled at the top, the others lines labelled by their
- * column; nothing wider than its scroller.
+ * column — each value beside its label, or under it below 360 px (`labels`: where the values of
+ * the first row's labelled cells start, every one of them) —; nothing wider than its scroller.
  */
 const cardMode = (page, sel) => page.evaluate((s) => {
   const root = document.querySelector(s);
@@ -226,19 +228,32 @@ const cardMode = (page, sel) => page.evaluate((s) => {
   const cells = [...row.children].filter((td) => !td.classList.contains('dt-expander') && getComputedStyle(td).display !== 'none');
   const label = (td) => getComputedStyle(td, '::before').content;
   const scroller = root.matches('.dt-scroll') ? root : root.querySelector('.dt-scroll');
+  // The label is the cell's ::before: its value (the cell's own nodes) starts to its right, or on the next line at the cell's left edge.
+  const place = (td) => {
+    const range = document.createRange();
+    range.selectNodeContents(td);
+    const value = range.getBoundingClientRect();
+    const cell = td.getBoundingClientRect();
+    if (value.left - cell.left >= 24 && value.top - cell.top < 8) return 'beside';
+    if (Math.abs(value.left - cell.left) <= 1 && value.top - cell.top >= 8) return 'above';
+    return `${Math.round(value.left - cell.left)},${Math.round(value.top - cell.top)}`;
+  };
   return {
     head: getComputedStyle(table.querySelector('thead')).display,
     row: getComputedStyle(row).display,
     first: label(cells[0]),
     labelled: cells.slice(1).every((td) => !!td.dataset.label && label(td) === JSON.stringify(td.dataset.label)),
+    labels: [...new Set(cells.slice(1).map(place))].join(' '),
     fits: scroller.scrollWidth <= scroller.clientWidth + 1
   };
 }, sel);
-const CARDS = { head: 'none', row: 'grid', first: 'none', labelled: true, fits: true };
+const CARDS = { head: 'none', row: 'grid', first: 'none', labelled: true, labels: 'beside', fits: true };
 
 const IP_DONE = "document.querySelectorAll('.ipi-row').length > 0 && !document.querySelector('.ipi-row.is-pending') && !document.querySelector('[data-action=\"run\"]').hidden";
 const BULK_DONE = "document.querySelector('.bulk-progress')?.dataset.status === 'done' && !document.querySelector('[data-action=\"bulk-run\"]').hidden";
 const PTR_DONE = "document.querySelector('.ptr-progress')?.dataset.status === 'done' && !document.querySelector('[data-action=\"ptr-run\"]').hidden";
+/** The five pages' card tables on a phone, and when the kept result is on screen again. */
+const CARD_TABLES = [['ip', '.ipi-table', IP_DONE], ['bulk', '.bulk-hosts', BULK_DONE], ['ptr', '.ptr-table', PTR_DONE], ['inventory', '.inv-table', null], ['about', '#about-sources .about-table', null]];
 
 async function main() {
   const opts = cliOptions();
@@ -503,15 +518,20 @@ async function main() {
       await shot(page, 'network-about-375-dark-tr');
     });
 
-    await run.step('320 px (English, light): none of the five pages scrolls sideways, empty or with a result', async () => {
+    await run.step('320 px (Turkish, light): every table a card per row, each label above its value, none wider than its card; no page scrolls sideways, empty or with a result', async () => {
       await page.setViewport({ width: 320, height: 700, mobile: true });
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
-      await setLangUi(page, 'en');
-      for (const id of ['ip', 'bulk', 'ptr', 'inventory', 'about']) {
+      await setLangUi(page, 'tr');
+      for (const [id, table, done] of CARD_TABLES) {
         await gotoRoute(page, `#/${id}`);
+        if (done) await page.waitFor(done, { timeout: 15000, message: `${id}: the kept result` });
         await sleep(150);
-        await assertNoHorizontalScroll(page, `${id} 320 with a result`);
+        // IP Intel's "Alan adlarını bul" is the widest value a card holds.
+        assertEqual(await cardMode(page, table), { ...CARDS, labels: 'above' }, `${id}: cards at 320 px`);
+        await assertNoHorizontalScroll(page, `${id} 320 tr with a result`);
+        await shot(page, `network-${id}-result-320-light-tr`);
       }
+      await setLangUi(page, 'en');
       const fresh = await openPage(browser, server, { width: 320, height: 700, mobile: true });
       pages.push({ ...fresh, where: 'phone' });
       await setLangUi(fresh.page, 'en');

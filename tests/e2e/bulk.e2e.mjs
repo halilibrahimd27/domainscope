@@ -93,7 +93,8 @@ async function nodeChecks(run) {
       row('unresolved', { dangling: true, status: 'NOERROR' })
     ];
     const pick = (f) => rows.filter((r) => B.bulkRowMatches(r, f)).length;
-    assertEqual(BULK_COUNTS.map((f) => [f, pick(f)]), [['all', 7], ['resolving', 4], ['hidden', 1], ['direct', 3], ['mine', 1], ['unknown', 1], ['unresolved', 3], ['errors', 1], ['dangling', 1]], 'filters');
+    // "Not resolving" and "lookup errors" never overlap: the SERVFAIL row is a lookup error only.
+    assertEqual(BULK_COUNTS.map((f) => [f, pick(f)]), [['all', 7], ['resolving', 4], ['hidden', 1], ['direct', 3], ['mine', 1], ['unknown', 1], ['unresolved', 2], ['errors', 1], ['dangling', 1]], 'filters');
     const ips = new Map([
       ['8.8.8.8', { ip: '8.8.8.8', version: 4, private: false, provider: null, servers: [{}] }],
       ['104.16.0.1', { ip: '104.16.0.1', version: 4, private: false, provider: { id: 'cloudflare' }, servers: [] }],
@@ -107,7 +108,7 @@ async function nodeChecks(run) {
     assertEqual(ipPick('private'), ['10.0.0.1'], 'private');
     const s = B.bulkStats(rows, ips);
     assertEqual([s.total, s.resolved, s.hidden, s.cloudflare, s.direct, s.onServers, s.unresolved, s.errors, s.ips, s.v4, s.v6, s.servers],
-      [7, 4, 1, 1, 3, 1, 3, 1, 4, 3, 1, 1], 'stats');
+      [7, 4, 1, 1, 3, 1, 2, 1, 4, 3, 1, 1], 'stats');
   });
 }
 const BULK_COUNTS = ['all', 'resolving', 'hidden', 'direct', 'mine', 'unknown', 'unresolved', 'errors', 'dangling'];
@@ -122,6 +123,15 @@ async function waitJobDone(page, prevId, timeout = 180000) {
     const el = document.querySelector('.bulk-results');
     return el && el.dataset.job !== prev && ['done', 'cancelled', 'error'].includes(el.querySelector('.bulk-progress').dataset.status);
   }, { args: [prevId || ''], timeout, interval: 300, message: 'bulk job finished' });
+}
+
+/** The input card is compact while a job is shown: press its Edit (as a user would) so the controls under the list show. */
+async function unfoldInput(page) {
+  const folded = await page.evaluate(() => {
+    const card = document.querySelector('.bulk-input');
+    return !!card && card.classList.contains('is-compact') && !card.classList.contains('is-editing');
+  });
+  if (folded) await page.click('.bulk-input [data-action="tool-input-edit"]');
 }
 
 async function setOption(page, name, on) {
@@ -216,10 +226,9 @@ async function main() {
       }
       const kinds = new Set(rows.map((r) => r.kind));
       assert(kinds.has('cdn') || kinds.has('platform'), `CDN / platform present: ${[...kinds]}`);
-      // The metric strips of both tabs (the IP addresses tab's is drawn while hidden).
-      const stats = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.bulk-stats .metric, .bulk-ip-stats .metric')].map((m) => [m.dataset.metric, m.querySelector('.metric-value').textContent])));
+      // The Host names tab's metric strip (the IP addresses tab's is drawn when that tab first opens).
+      const stats = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.bulk-stats .metric')].map((m) => [m.dataset.metric, m.querySelector('.metric-value').textContent])));
       assertEqual(Number(stats.names), expected.names.length, 'names metric');
-      assert(Number(stats.servers) >= 1, `servers metric ${stats.servers}`);
       await page.evaluate(() => window.scrollTo(0, 0));
       await shot(page, opts, 'bulk-desktop-light-en-results');
     });
@@ -264,6 +273,8 @@ async function main() {
     await run.step('IP addresses tab: 8.8.8.8 with its names, owner type, server and PTR', async () => {
       await page.click('.bulk-tabs [data-tab="ips"]');
       await page.waitForSelector('.bulk-ips tbody tr.dt-row');
+      const servers = await page.evaluate(() => document.querySelector('.bulk-ip-stats [data-metric="servers"] .metric-value')?.textContent);
+      assert(Number(servers) >= 1, `"Your servers" metric: ${servers}`);
       const rows = await page.evaluate(() => [...document.querySelectorAll('.bulk-ips tbody tr.dt-row')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent.trim())));
       const g = rows.find((r) => r[0] === '8.8.8.8');
       assert(g, '8.8.8.8 listed');
@@ -373,6 +384,8 @@ async function main() {
       await page.evaluate(async () => (await import('./assets/js/state.js')).state.setSession('scanHosts', {
         domains: ['example.com'], names: ['www.example.com', 'example.com', 'mail.example.com'], finishedAt: new Date()
       }));
+      // The input card is compact while a job is on screen: its Edit unfolds the button.
+      await unfoldInput(page);
       await page.waitForSelector('[data-action="bulk-from-scan"]');
       await page.click('[data-action="bulk-from-scan"]');
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="bulk-input"]').value.trim().split('\n')), ['www.example.com', 'example.com', 'mail.example.com'], 'from scan');

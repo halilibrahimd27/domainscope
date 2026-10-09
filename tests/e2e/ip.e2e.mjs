@@ -37,7 +37,9 @@
  * addresses are never sent; a listing shows its meaning and delist page; a refusal code or a test
  * point that does not come back listed says "cannot check here" (never "not listed") and the address
  * never goes to that list; a failed list has a Retry that asks only it again; Stop asks nothing
- * more; the results survive a row redraw and a language re-mount; 1440, 375 and 320 px, EN + TR.
+ * more; the results survive a row redraw and a language re-mount; 1440, 680, 375 and 320 px, EN +
+ * TR, each list's name beside its result (a table in a row's details keeps its own layout inside
+ * IP Intel's cards).
  *
  * --no-quota-apis blocks ipwho.is and HackerTarget in the browser (their anonymous daily quotas
  * are small): the reverse-IP step then checks the error path instead of spending a unit.
@@ -144,6 +146,15 @@ async function gotoHash(page, hash, view) {
 async function assertNoHorizontalScroll(page, where) {
   const rep = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
   assert(rep.sw <= rep.cw + 1, `${where}: page scrolls horizontally (${rep.sw} > ${rep.cw})`);
+}
+
+/** The input card is compact while a result is shown: press its Edit (as a user would) so the controls under the box show. */
+async function unfoldInput(page) {
+  const folded = await page.evaluate(() => {
+    const card = document.querySelector('.ipi-form-card');
+    return !!card && card.classList.contains('is-compact') && !card.classList.contains('is-editing');
+  });
+  if (folded) await page.click('.ipi-form-card [data-action="tool-input-edit"]');
 }
 
 async function shot(page, name) {
@@ -1554,6 +1565,23 @@ function blocklistInfo(ip) {
   };
 }
 
+/**
+ * How the Blocklists tables of the row of `ip` are drawn (a table inside the row's details, never a
+ * card of IP Intel's own table): their header rows' display, and how many lists have their name,
+ * readable, beside the result (on its line, to its left) and the result's tag on one line.
+ */
+function blocklistLayout(ip) {
+  const tables = [...document.querySelectorAll(`.ipi-bl[data-ip="${ip}"] .ipi-bl-table`)];
+  const rows = tables.flatMap((table) => [...table.querySelectorAll('tbody > tr.ipi-bl-row')]);
+  const beside = rows.filter((tr) => {
+    const name = tr.querySelector('th').getBoundingClientRect();
+    const result = tr.querySelector('.ipi-bl-result').getBoundingClientRect();
+    const tag = tr.querySelector('.ipi-bl-result .badge').getBoundingClientRect();
+    return name.width >= 60 && result.left >= name.right - 1 && result.top < name.bottom && tag.height < 30;
+  });
+  return { heads: [...new Set(tables.map((table) => getComputedStyle(table.querySelector('thead')).display))], rows: rows.length, beside: beside.length };
+}
+
 /** Open the details of the row of `ip` (no-op when open) and wait for its Blocklists slot to fill. */
 async function openBlocklists(page, ip) {
   await page.evaluate((x) => {
@@ -1661,8 +1689,9 @@ async function blocklistGroup(browser, server) {
       await page.evaluate(() => { window.__bl.delay = 0; });
     });
 
-    for (const [scheme, lang, width] of [['dark', 'tr', 1440], ['light', 'en', 375], ['dark', 'tr', 320]]) {
-      await step(`[${scheme}, ${lang.toUpperCase()}, ${width} px] the last finished check is kept over a language re-mount and fits`, async () => {
+    // 680 px: IP Intel's table is a card per row (style.css .dt-cards) while the Blocklists table keeps its header row.
+    for (const [scheme, lang, width] of [['dark', 'tr', 1440], ['light', 'en', 680], ['light', 'en', 375], ['dark', 'tr', 320]]) {
+      await step(`[${scheme}, ${lang.toUpperCase()}, ${width} px] the last finished check is kept over a language re-mount and fits; each list's name sits beside its result`, async () => {
         await page.setViewport(width < 600 ? { width, height: 812, mobile: true } : { width, height: 900 });
         await page.emulateMedia({ 'prefers-color-scheme': scheme });
         await setLangUi(page, lang);
@@ -1675,8 +1704,12 @@ async function blocklistGroup(browser, server) {
           assert(i.status.startsWith('2 listede yer alıyor · 14 listede yok · 4 liste genel bir çözümleyiciden kontrol edilemez · kontrol: '), `TR summary: ${i.status}`);
           assert(/Buradan kontrol edilemez/.test(i.lists['8.8.8.8 spamhaus-zen'].text), `TR refused: ${i.lists['8.8.8.8 spamhaus-zen'].text}`);
         }
+        // A table of the row's details, never a card of IP Intel's table: its header row goes only at 640 px and below (ip.css).
+        const layout = await page.evaluate(blocklistLayout, '8.8.8.8');
+        assert(layout.rows >= 4, `Blocklists rows: ${JSON.stringify(layout)}`);
+        assertEqual(layout, { heads: [width > 640 ? 'table-header-group' : 'none'], rows: layout.rows, beside: layout.rows }, `the Blocklists tables at ${width} px`);
         await assertNoHorizontalScroll(page, `blocklists ${scheme} ${lang} ${width}`);
-        await shot(page, `ip-offline-${width < 600 ? 'mobile' : 'desktop'}-${scheme}-${lang}-blocklists`);
+        await shot(page, `ip-offline-${width < 600 ? 'mobile' : width < 720 ? 'tablet' : 'desktop'}-${scheme}-${lang}-blocklists`);
       });
     }
 
@@ -1827,6 +1860,8 @@ async function liveGroups(browser, server) {
 
   await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
   await step('[dark] example list renders; language switch keeps rows (no re-query)', async () => {
+    // The input card is compact while a lookup is on screen: its Edit unfolds the example chips.
+    await unfoldInput(page);
     await page.click('.ipi-examples .example-chip');
     await page.click('[data-action="run"]');
     await page.waitFor(ROWS_DONE, { timeout: 60000 });
@@ -1851,7 +1886,8 @@ async function liveGroups(browser, server) {
     // Hold the HackerTarget request in the browser (it never leaves: no quota unit is used).
     if (NO_QUOTA_APIS) await page.send('Network.setBlockedURLs', { urls: [] });
     await page.send('Fetch.enable', { patterns: [{ urlPattern: '*hackertarget*', requestStage: 'Request' }] });
-    const btn = '[data-action="reverse"][data-ip="9.9.9.9"]';
+    // 8.8.8.8: a row of the example chip's run, whose other domains were never asked for here.
+    const btn = '[data-action="reverse"][data-ip="8.8.8.8"]';
     try {
       await page.evaluate((sel) => document.querySelector(sel).click(), btn);
       await page.waitFor((sel) => document.querySelector(sel)?.getAttribute('aria-busy') === 'true', { args: [btn], message: 'reverse lookup running' });

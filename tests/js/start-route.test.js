@@ -100,6 +100,10 @@ const JS = join(ASSETS, 'js');
  * (lib/summarycore.js, 20; ui/summary-button.js, 6) and the masking of a GitHub repository's owner and name in request signatures
  * (lib/egresslog.js, 13). The view, its libraries (lib/monitor.js, lib/monitorfetch.js, lib/monitorsummary.js, lib/runreport.js) and
  * its stylesheet load on its first visit; the waiver dialog, the History tab and the registration watch load with the view that uses them.
+ * With the content audit and the batched nits pass merged (after wave 7b): ≈ 336 KB (343,878 bytes), 35,002 bytes under the budget. Two start-route
+ * files grew, by 400 bytes together: views/subdomains.js (388: `originExport`, the `origin` block of the JSON export that Subdomains and SSL Targets
+ * share, with the Exclude box's tokens applied) and app.js (12: the Subdomains view's idle modulepreload names lib/originnow.js). The content audit
+ * is a CLI; its card is in views/about.js, which loads on the first visit to About.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

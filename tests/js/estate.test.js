@@ -8,9 +8,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   ESTATE_ARI_COLUMNS, ESTATE_ARI_STATES, ESTATE_BUCKETS, ESTATE_CSV_COLUMNS, ESTATE_FILTERS, ESTATE_FLAGS, ESTATE_KINDS, ESTATE_MAX_BYTES,
-  ESTATE_REVOCATION_COLUMNS, ESTATE_REVOCATION_STATES, REPORT_ERRORS, SHARED_KEY_WIDE_HOSTS, estateAriWindow, estateCsv, estateCsvRows,
-  estateFilterCounts, estateMatches, estateOf, estateStatusColumns, estateStatusCounts, expiryBucket, keyLabel, mergeReports, readEstateReport,
-  sharedKeyNeedsLook, weakReasons
+  ESTATE_REVOCATION_COLUMNS, ESTATE_REVOCATION_STATES, ESTATE_TRUST_CODES, ESTATE_TRUST_COLUMNS, REPORT_ERRORS, SHARED_KEY_WIDE_HOSTS,
+  estateAriWindow, estateCsv, estateCsvRows, estateFilterCounts, estateMatches, estateOf, estateStatusColumns, estateStatusCounts,
+  estateTrustColumns, expiryBucket, keyLabel, mergeReports, readEstateReport, sharedKeyNeedsLook, trustDetailCode, weakReasons
 } from '../../assets/js/lib/estate.js';
 
 const text = (f) => readFileSync(new URL(`../fixtures/estate/${f}`, import.meta.url), 'utf8');
@@ -259,7 +259,8 @@ describe('filters and CSV', () => {
     assert.equal(md5[0].flags, 'shared-key weak covers-none');
     const csv = estateCsv(estate);
     assert.ok(csv.startsWith('﻿sha256,subject_cn,issuer,kind,not_after,days_left,expiry,key,'));
-    assert.deepEqual(csv.split('\r\n')[0].replace('﻿', '').split(','), ESTATE_CSV_COLUMNS.map((c) => c.key));
+    // site A's scan checked trust: the CLI's two columns come last
+    assert.deepEqual(csv.split('\r\n')[0].replace('﻿', '').split(','), [...ESTATE_CSV_COLUMNS, ...ESTATE_TRUST_COLUMNS].map((c) => c.key));
     // a filtered view, and the report of each row when several are merged
     const weak = estate.certificates.filter((c) => estateMatches(c, 'weak'));
     const some = estateCsvRows(estate, { certificates: weak, reportName: () => 'report-a.json' });
@@ -307,7 +308,7 @@ describe('filters and CSV', () => {
     // the CSV: the CLI's ARI and revocation columns after its own, the report last
     assert.deepEqual(estateStatusColumns(estate).map((x) => x.key), [...ESTATE_ARI_COLUMNS, ...ESTATE_REVOCATION_COLUMNS].map((x) => x.key));
     const header = estateCsv(estate, { reportName: () => 'r.json' }).split('\r\n')[0].replace('﻿', '').split(',');
-    assert.deepEqual(header, [...ESTATE_CSV_COLUMNS, ...ESTATE_ARI_COLUMNS, ...ESTATE_REVOCATION_COLUMNS].map((x) => x.key).concat('report'));
+    assert.deepEqual(header, [...ESTATE_CSV_COLUMNS, ...ESTATE_ARI_COLUMNS, ...ESTATE_REVOCATION_COLUMNS, ...ESTATE_TRUST_COLUMNS].map((x) => x.key).concat('report'));
     const row = estateCsvRows(estate).find((r) => r.sha256 === a);
     assert.deepEqual([row.ari_start, row.ari_end, row.ari_explanation, row.ari_error, row.revocation, row.revoked_at, row.revocation_reason, row.revocation_error],
       ['2026-09-27T00:00:00Z', '2026-09-29T00:00:00Z', 'https://ca.example.org/incident', '', 'revoked', '2026-09-21T10:15:00Z', 'keyCompromise', '']);
@@ -326,6 +327,43 @@ describe('filters and CSV', () => {
     const tuple = (name) => cli.match(new RegExp(`^${name} = \\(([^)]*)\\)`, 'm'))[1].split(',').map((s) => s.trim().replace(/'/g, '')).filter(Boolean);
     assert.deepEqual(tuple('ARI_CSV_COLUMNS'), ESTATE_ARI_COLUMNS.map((x) => x.key));
     assert.deepEqual(tuple('REVOCATION_CSV_COLUMNS'), ESTATE_REVOCATION_COLUMNS.map((x) => x.key));
+    assert.deepEqual(tuple('TRUST_CSV_COLUMNS'), ESTATE_TRUST_COLUMNS.map((x) => x.key));
+  });
+
+  test('the CLI\'s trust check: each endpoint\'s verdict, the untrusted flag and filter, its CSV cells; none in a report without it', () => {
+    const estate = estateOf(docA());
+    const cert = (cn) => byCn(estate, cn);
+    // web01 sends the old wildcard (self-signed), the Origin CA certificate is Cloudflare's only, the weak one self-signed
+    const wild = cert('*.wild.example.net').find((c) => c.endpoints.some((e) => e.ip === '192.0.2.10'));
+    assert.deepEqual(wild.endpoints.map((e) => [e.ip, e.trusted, e.trustDetail]), [['192.0.2.10', false, 'self-signed (code 18)']]);
+    assert.ok(wild.flags.includes('untrusted'));
+    const www = cert(WWW).find((c) => c.endpoints.some((e) => e.ip === '192.0.2.10'));
+    assert.deepEqual(www.endpoints.map((e) => e.trusted), [true, true]);
+    assert.ok(!www.flags.includes('untrusted'));
+    const untrusted = estate.certificates.filter((c) => estateMatches(c, 'untrusted'));
+    assert.equal(untrusted.length, 3);
+    assert.equal(estateFilterCounts(estate).untrusted, 3);
+    assert.ok(untrusted.every((c) => estateMatches(c, 'attention')));
+    const rows = estateCsvRows(estate, { certificates: [wild] });
+    assert.deepEqual(rows.map((r) => [r.cert_trusted, r.trust_detail]), [['no', 'self-signed (code 18)']]);
+    assert.deepEqual(estateTrustColumns(estate).map((c) => c.key), ['cert_trusted', 'trust_detail']);
+    // site B's CLI did not check trust: no verdict, no column
+    const b = estateOf(docB());
+    assert.ok(b.certificates.every((c) => c.endpoints.every((e) => !('trusted' in e)) && !c.flags.includes('untrusted')));
+    assert.deepEqual(estateTrustColumns(b), []);
+    assert.ok(!('cert_trusted' in estateCsvRows(b)[0]));
+    // both merged: each endpoint keeps what its report said
+    const merged = estateOf(mergeReports([{ doc: docA() }, { doc: docB() }]).doc);
+    assert.deepEqual(estateTrustColumns(merged).map((c) => c.key), ['cert_trusted', 'trust_detail']);
+    assert.ok(merged.certificates.some((c) => c.flags.includes('untrusted')));
+    // the verify codes the CLI names, for the view's words
+    assert.deepEqual(ESTATE_TRUST_CODES, [20, 21, 18, 19, 10, 9, 62]);
+    assert.equal(trustDetailCode('missing intermediate or private CA (code 20)'), 20);
+    assert.equal(trustDetailCode('hostname mismatch (code 62) '), 62);
+    for (const other of ['certificate revoked (code 23)', 'issued by a --private-ca', '', null, undefined, 'code 20']) assert.equal(trustDetailCode(other), null, String(other));
+    const cli = readFileSync(new URL('../../cli/ssl_origin_scan.py', import.meta.url), 'utf8');
+    const named = [...cli.slice(cli.indexOf('TRUST_DETAILS = {'), cli.indexOf('}', cli.indexOf('TRUST_DETAILS = {'))).matchAll(/^\s+(\d+): '/gm)].map((m) => Number(m[1]));
+    assert.deepEqual(named, ESTATE_TRUST_CODES, 'the CLI names the same codes');
   });
 
   test('a certificate field that looks like a formula stays text', () => {

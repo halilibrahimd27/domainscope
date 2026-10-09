@@ -19,6 +19,10 @@
         "subjectKeyId": "2fc65037d25ce01d14ac3a0d7bec5a70f37d7406"
       }
     ],
+    "trust": {
+      "store": "system",
+      "cafile": null
+    },
     "estate": true
   },
   "newCertificates": [],
@@ -266,7 +270,9 @@
       "certDaysLeft": 3016,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "web01",
@@ -286,7 +292,9 @@
       "certDaysLeft": 2802,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": true,
+      "trustDetail": null
     },
     {
       "server": "web01",
@@ -306,7 +314,9 @@
       "certDaysLeft": 8860,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": false,
+      "trustDetail": "self-signed (code 18)"
     },
     {
       "server": "web02",
@@ -326,7 +336,9 @@
       "certDaysLeft": 3016,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "web02",
@@ -346,7 +358,9 @@
       "certDaysLeft": 2802,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": true,
+      "trustDetail": null
     },
     {
       "server": "web02",
@@ -366,7 +380,9 @@
       "certDaysLeft": 9225,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": true,
+      "trustDetail": null
     },
     {
       "server": "web03",
@@ -386,7 +402,9 @@
       "certDaysLeft": 5,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "web03",
@@ -406,7 +424,9 @@
       "certDaysLeft": 5,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": false,
+      "trustDetail": "self-signed (code 18)"
     },
     {
       "server": "web03",
@@ -426,7 +446,9 @@
       "certDaysLeft": null,
       "tlsVersion": null,
       "error": "server refused this name (sslv3 alert handshake failure)",
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "origin",
@@ -446,7 +468,9 @@
       "certDaysLeft": 8495,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "origin",
@@ -466,7 +490,9 @@
       "certDaysLeft": null,
       "tlsVersion": null,
       "error": "server refused this name (sslv3 alert handshake failure)",
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "origin",
@@ -486,7 +512,9 @@
       "certDaysLeft": 8495,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": false,
+      "trustDetail": "missing intermediate or private CA (code 20)"
     },
     {
       "server": "closed",
@@ -506,7 +534,9 @@
       "certDaysLeft": null,
       "tlsVersion": null,
       "error": "connection refused",
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "intranet",
@@ -526,7 +556,9 @@
       "certDaysLeft": 8495,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "intranet",
@@ -546,7 +578,9 @@
       "certDaysLeft": 8495,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "intranet",
@@ -566,7 +600,9 @@
       "certDaysLeft": null,
       "tlsVersion": null,
       "error": "server refused this name (sslv3 alert handshake failure)",
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "legacy-a",
@@ -586,7 +622,9 @@
       "certDaysLeft": 21,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "legacy-a",
@@ -606,7 +644,9 @@
       "certDaysLeft": -28,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "legacy-a",
@@ -626,7 +666,9 @@
       "certDaysLeft": -28,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "legacy-b",
@@ -646,7 +688,9 @@
       "certDaysLeft": 21,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "legacy-b",
@@ -666,7 +710,9 @@
       "certDaysLeft": -28,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     },
     {
       "server": "legacy-b",
@@ -686,7 +732,9 @@
       "certDaysLeft": -28,
       "tlsVersion": "TLSv1.3",
       "error": null,
-      "elapsedMs": 0
+      "elapsedMs": 0,
+      "certTrusted": null,
+      "trustDetail": null
     }
   ],
   "excluded": [],
@@ -1068,7 +1116,9 @@
             "names": [
               "www.example-test.com.tr",
               "a.wild.example.net"
-            ]
+            ],
+            "trusted": null,
+            "trustDetail": null
           }
         ]
       },
@@ -1105,7 +1155,8 @@
         "flags": [
           "name-conflict",
           "shared-key",
-          "weak"
+          "weak",
+          "untrusted"
         ],
         "endpoints": [
           {
@@ -1117,7 +1168,9 @@
             "defaultCert": true,
             "names": [
               "www.example-test.com.tr"
-            ]
+            ],
+            "trusted": false,
+            "trustDetail": "self-signed (code 18)"
           }
         ]
       },
@@ -1163,7 +1216,9 @@
             "ip": "198.51.100.23",
             "port": 443,
             "defaultCert": true,
-            "names": []
+            "names": [],
+            "trusted": null,
+            "trustDetail": null
           }
         ]
       },
@@ -1211,7 +1266,9 @@
             "defaultCert": false,
             "names": [
               "www.example-test.com.tr"
-            ]
+            ],
+            "trusted": true,
+            "trustDetail": null
           },
           {
             "servers": [
@@ -1222,7 +1279,9 @@
             "defaultCert": false,
             "names": [
               "www.example-test.com.tr"
-            ]
+            ],
+            "trusted": true,
+            "trustDetail": null
           }
         ]
       },
@@ -1262,7 +1321,9 @@
             "ip": "192.0.2.10",
             "port": 443,
             "defaultCert": true,
-            "names": []
+            "names": [],
+            "trusted": null,
+            "trustDetail": null
           },
           {
             "servers": [
@@ -1271,7 +1332,9 @@
             "ip": "192.0.2.11",
             "port": 443,
             "defaultCert": true,
-            "names": []
+            "names": [],
+            "trusted": null,
+            "trustDetail": null
           }
         ]
       },
@@ -1304,7 +1367,8 @@
           "a.wild.example.net"
         ],
         "flags": [
-          "name-conflict"
+          "name-conflict",
+          "untrusted"
         ],
         "endpoints": [
           {
@@ -1316,7 +1380,9 @@
             "defaultCert": true,
             "names": [
               "a.wild.example.net"
-            ]
+            ],
+            "trusted": false,
+            "trustDetail": "missing intermediate or private CA (code 20)"
           }
         ]
       },
@@ -1359,7 +1425,9 @@
             "defaultCert": true,
             "names": [
               "www.example-test.com.tr"
-            ]
+            ],
+            "trusted": null,
+            "trustDetail": null
           }
         ]
       },
@@ -1393,7 +1461,8 @@
         ],
         "flags": [
           "name-conflict",
-          "stale"
+          "stale",
+          "untrusted"
         ],
         "endpoints": [
           {
@@ -1405,7 +1474,9 @@
             "defaultCert": false,
             "names": [
               "a.wild.example.net"
-            ]
+            ],
+            "trusted": false,
+            "trustDetail": "self-signed (code 18)"
           }
         ]
       },
@@ -1450,7 +1521,9 @@
             "defaultCert": false,
             "names": [
               "a.wild.example.net"
-            ]
+            ],
+            "trusted": true,
+            "trustDetail": null
           }
         ]
       }

@@ -166,7 +166,8 @@ class SeveralCertsCliTests(unittest.TestCase):
         self.assertEqual(by[('old', 'www.example-test.com.tr')]['status'], 'UPDATED')
         self.assertEqual(by[('old', 'www.example-test.com.tr')]['newCertFile'], self.tr)
         self.assertEqual([c['file'] for c in doc['newCertificates']], [self.wild, self.tr])
-        self.assertEqual(set(records[0]), set(sos.CSV_COLUMNS) | {'new_cert'})
+        # a real scan checks trust: its columns come last
+        self.assertEqual(set(records[0]), set(sos.CSV_COLUMNS) | {'new_cert'} | set(sos.TRUST_CSV_COLUMNS))
         self.assertIn(self.wild, {r['new_cert'] for r in records})
         self.assertIn('(matches %s)' % self.wild, ' '.join(out.split()))
         self.assertIn('Servers that need the new certificate: 1', out)
@@ -188,7 +189,7 @@ class SeveralCertsCliTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(len(doc['newCertificates']), 1)
         self.assertTrue(all('newCertFile' not in r for r in doc['results']))
-        self.assertEqual(set(records[0]), set(sos.CSV_COLUMNS))
+        self.assertEqual(set(records[0]), set(sos.CSV_COLUMNS) | set(sos.TRUST_CSV_COLUMNS))
         self.assertNotIn('matches', out)
 
     def test_help_shows_the_renewal_week_example(self):

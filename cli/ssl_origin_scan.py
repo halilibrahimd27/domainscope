@@ -3793,6 +3793,9 @@ class TlsResult:
     # Closed, reset or refused below TLS (no alert): a per-client connection limiter does
     # that too, so run_scan retries such a handshake once before it counts.
     transient: bool = False
+    # The SHA-256 of the certificates the server sent (Python 3.10+, else None): one leaf sent
+    # with or without its intermediate is a different chain to verify (check_trust).
+    chain_sha256: Optional[str] = None
 
 
 @dataclass
@@ -3829,6 +3832,9 @@ class ProbeResult:
     tls_version: Optional[str] = None
     error: Optional[str] = None
     elapsed_ms: Optional[int] = None
+    # check_trust: does this machine trust the chain served for the name (None: not checked)
+    trusted: Optional[bool] = None
+    trust_detail: str = ''
 
 
 @dataclass
@@ -3872,6 +3878,12 @@ class ScanReport:
     revocation: bool = False                                       # --revocation
     # sha256 -> {'ari': ..., 'revocation': ...} of every served certificate (check_certificate_status)
     cert_status: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # check_trust ran: the rows say whether this machine trusts what each name is served with,
+    # with the store it used ('system', 'windows' - which may lack a root it fetches on demand -,
+    # or 'cafile': only --cafile's CAs)
+    trust_checked: bool = False
+    trust_store: Optional[str] = None
+    cafile: Optional[str] = None
 
     def protocol_of(self, ip: str, port: int) -> str:
         """The protocol endpoint ``ip:port`` was scanned with (tls when it is no endpoint)."""
@@ -4431,7 +4443,8 @@ class TlsProber:
             der = tls.getpeercert(binary_form=True)
             cipher = tls.cipher()
             result = TlsResult(der=der, version=tls.version(),
-                               cipher=cipher[0] if cipher else None)
+                               cipher=cipher[0] if cipher else None,
+                               chain_sha256=chain_digest(_chain_ders(tls)))
             if not der:
                 result = TlsResult(status=TLS_ERROR, error='server sent no certificate')
         except Exception as exc:  # noqa: BLE001 - every failure becomes a status
@@ -4518,7 +4531,9 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
              exclude: Iterable[Union[str, ExcludeRule]] = (),
              private_cas: Sequence[CertInfo] = (), strict_public: bool = False,
              new_cert_files: Optional[Dict[str, str]] = None,
-             include_backends: bool = False) -> ScanReport:
+             include_backends: bool = False, verify_fn: Optional[TrustVerifier] = None,
+             cafile: Optional[str] = None,
+             trust: Optional[ssl.SSLContext] = None) -> ScanReport:
     """Probe every ``server IP x port`` for every name and classify the results.
 
     A served certificate that is any of ``new_certs`` is UPDATED; ``new_cert_files``
@@ -4540,9 +4555,14 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
     plus one without SNI (``tls_fn``), at most :data:`MAX_PER_ENDPOINT` at a time per
     endpoint unless its last ones all timed out, and retries a closed / reset / refused
     handshake (:func:`is_transient`) once where others completed. Both functions are
-    injectable for tests. ``progress(phase, done, total, info)`` is called from this
-    thread with phase ``connect``, ``tls`` or ``retry``. KeyboardInterrupt propagates.
+    injectable for tests. Phase 3 checks whether this machine trusts what each name is
+    served with (:func:`check_trust`: ``verify_fn``, else :func:`trust_verifier` over the
+    ``trust`` context or ``cafile``'s); a scan whose ``tls_fn`` was injected checks it only
+    with an injected ``verify_fn`` (its endpoints are not real). ``progress(phase, done,
+    total, info)`` is called from this thread with phase ``connect``, ``tls``, ``retry`` or
+    ``trust``. KeyboardInterrupt propagates.
     """
+    real_tls = tls_fn is None
     connect_fn = connect_fn or tcp_connect
     tls_fn = tls_fn or TlsProber()
     cancel = cancel or threading.Event()
@@ -4725,6 +4745,12 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
                                             new_fps, probes, new_covers(probe.sni),
                                             PROBE_WILDCARD if probe.wildcard else PROBE_SNI,
                                             works=works, hosted=hosted))
+
+    # Phase 3 - is each name served with a chain this machine trusts?
+    trust_checked = verify_fn is not None or real_tls
+    if trust_checked and not cancel.is_set():
+        verify = verify_fn or trust_verifier(cafile, private_cas, context=trust)
+        check_trust(results, endpoints, handshakes, verify, timeout, workers, cancel, progress)
     return ScanReport(servers=list(servers), probes=list(probes), ports=ports,
                       new_certs=list(new_certs), endpoints=list(endpoints.values()),
                       results=results, certificates=certificates, started_at=started,
@@ -4733,7 +4759,9 @@ def run_scan(servers: Sequence[Server], probes: Sequence[ProbeName], ports: Sequ
                       exclude=[rule.label for rule in exclude_rules], excluded=excluded,
                       private_cas=list(private_cas), strict_public=strict_public,
                       new_cert_files=dict(new_cert_files or {}), skipped_backends=skipped,
-                      include_backends=include_backends)
+                      include_backends=include_backends, trust_checked=trust_checked,
+                      trust_store=trust_store_name(cafile) if trust_checked else None,
+                      cafile=os.path.basename(cafile) if cafile and trust_checked else None)
 
 
 def _verdict(server: str, endpoint: Endpoint, name: Optional[str], sni: Optional[str],
@@ -4787,6 +4815,169 @@ def _verdict(server: str, endpoint: Endpoint, name: Optional[str], sni: Optional
     else:
         row.status = hosted(cert)
     return row
+
+
+# =====================================================================================
+# Trust: is each name served with a chain this machine trusts?
+# =====================================================================================
+# The scan's handshakes read whatever is served and trust nothing. After them, one verifying
+# handshake per distinct certificate served for a name - and, where this Python reads it
+# (3.10+), the chain sent with it: one leaf sent with or without its intermediate is two
+# answers - with this machine's trust store (ssl.create_default_context: CERT_REQUIRED and the
+# name checked, VERIFY_X509_STRICT taken off as verify_context does), or with only the CAs of
+# --cafile. A certificate a --private-ca issued counts as trusted (its dates checked).
+# OpenSSL's verify code says why not (TRUST_DETAILS). Python on Windows reads the Windows
+# store, which fetches the roots it lacks on demand: an untrusted verdict there may be a root
+# it has not fetched yet, which the summary says (--cafile names a bundle to check against).
+
+TRUST_DETAILS = {
+    20: 'missing intermediate or private CA',
+    21: 'missing intermediate',
+    18: 'self-signed',
+    19: 'a root this machine does not trust',
+    10: 'expired',
+    9: 'not yet valid',
+    62: 'hostname mismatch',
+}  # type: Dict[int, str]
+# The CSV columns of the trust check (after the others; the scan's and --estate's alike).
+TRUST_CSV_COLUMNS = ('cert_trusted', 'trust_detail')
+WINDOWS_STORE_NOTE = 'Windows store may be incomplete'
+# Rows whose certificate covers the name asked: their trust is checked.
+_TRUST_STATUSES = (UPDATED,) + HOSTED_STATUSES
+
+TrustVerifier = Callable[[str, int, str, str, float, CertInfo], Tuple[Optional[bool], str]]
+
+
+def chain_digest(ders: Optional[Sequence[bytes]]) -> Optional[str]:
+    """The SHA-256 of a chain as sent (each certificate's length, then its DER), or None."""
+    if not ders:
+        return None
+    digest = hashlib.sha256()
+    for der in ders:
+        digest.update(len(der).to_bytes(4, 'big'))
+        digest.update(der)
+    return digest.hexdigest()
+
+
+def trust_detail(code: Optional[int], message: str = '') -> str:
+    """Why OpenSSL did not trust a chain: ``missing intermediate or private CA (code 20)``,
+    the verify message for a code :data:`TRUST_DETAILS` does not name."""
+    if code is not None and code in TRUST_DETAILS:
+        return '%s (code %d)' % (TRUST_DETAILS[code], code)
+    text = (message or 'not trusted').strip()
+    return '%s (code %d)' % (text, code) if code is not None else text
+
+
+def trust_store_name(cafile: Optional[str]) -> str:
+    """The store the trust check used: 'cafile', 'windows' (it may lack a root it fetches on
+    demand) or 'system'."""
+    return 'cafile' if cafile else 'windows' if _IS_WINDOWS else 'system'
+
+
+def trust_context(cafile: Optional[str] = None) -> ssl.SSLContext:
+    """The trust check's verifying client: :func:`verify_context` with the name checked - this
+    machine's store, or with ``cafile`` only that file's CAs. Raises OSError / ssl.SSLError for
+    a ``cafile`` that cannot be read."""
+    return verify_context(True, cafile=cafile) if cafile else verify_context(True)
+
+
+def _verify_side(address: str, port: int, name: str, timeout: float, cert: CertInfo,
+                 private_cas: Sequence[CertInfo], protocol: str = PROTO_TLS,
+                 context: Optional[ssl.SSLContext] = None) -> Tuple[Optional[bool], str]:
+    """``(trusted, detail)`` from a verifying handshake with ``context`` (:func:`trust_context`,
+    this machine's store by default), after STARTTLS where ``protocol`` says so; None when it
+    could not be made. ``detail``: :func:`trust_detail` when not trusted, 'issued by a
+    --private-ca' for a certificate one of ``private_cas`` issued (trusted, its dates checked as
+    for a public one: OpenSSL names only the unknown issuer)."""
+    context = context or trust_context()
+    try:
+        with socket.create_connection((address, port), timeout=timeout) as raw:
+            starttls(raw, protocol, name)
+            with context.wrap_socket(raw, server_hostname=name):
+                return True, ''
+    except ssl.SSLCertVerificationError as exc:
+        code = getattr(exc, 'verify_code', None)
+        detail = trust_detail(code if isinstance(code, int) else None,
+                              getattr(exc, 'verify_message', '') or _clean_ssl_message(exc))
+        if cert.covers(name)[0] and any(issued_by(cert, ca) for ca in private_cas):
+            now = _utcnow()
+            if cert.not_after < now:
+                return False, trust_detail(10)
+            if cert.not_before > now:
+                return False, trust_detail(9)
+            return True, 'issued by a --private-ca'
+        return False, detail
+    except (OSError, ssl.SSLError, StartTlsError) as exc:
+        return None, _clean_ssl_message(exc)
+
+
+def load_trust_context(cafile: Optional[str]) -> ssl.SSLContext:
+    """:func:`trust_context`, a ``--cafile`` that cannot be read (no file, no certificate in
+    it) a :class:`UsageError` - before anything is sent."""
+    try:
+        return trust_context(cafile)
+    except (OSError, ssl.SSLError, ValueError) as exc:
+        why = getattr(exc, 'strerror', None) if isinstance(exc, OSError) and not isinstance(
+            exc, ssl.SSLError) else None
+        raise UsageError('--cafile: cannot read CA certificates from %s: %s'
+                         % (cafile, why or _clean_ssl_message(exc)))
+
+
+def trust_verifier(cafile: Optional[str] = None, private_cas: Sequence[CertInfo] = (),
+                   context: Optional[ssl.SSLContext] = None) -> TrustVerifier:
+    """``verify(ip, port, protocol, name, timeout, cert)``: :func:`_verify_side` with one
+    :func:`trust_context` (``context``, else made from ``cafile``) for the whole scan."""
+    context = context or trust_context(cafile)
+
+    def verify(ip: str, port: int, protocol: str, name: str, timeout: float,
+               cert: CertInfo) -> Tuple[Optional[bool], str]:
+        return _verify_side(_connect_address(ip), port, name, timeout, cert, private_cas,
+                            protocol=protocol, context=context)
+    return verify
+
+
+def check_trust(results: Sequence[ProbeResult], endpoints: Dict[Tuple[str, int], Endpoint],
+                handshakes: Dict[Tuple[str, int, Optional[str]], TlsResult],
+                verify: TrustVerifier, timeout: float, workers: int,
+                cancel: Optional[threading.Event] = None,
+                progress: Optional[ProgressCallback] = None) -> int:
+    """Set ``trusted`` and ``trust_detail`` on the rows whose certificate covers the name asked
+    (UPDATED, NEEDS_UPDATE, ORIGIN_CERT, PRIVATE_CERT): one ``verify`` per distinct certificate,
+    chain sent (``handshakes``' ``chain_sha256``; none on Python 3.8 / 3.9) and SNI, against
+    the first endpoint that served it, in parallel. Returns the handshakes made."""
+    cancel = cancel or threading.Event()
+    jobs = {}  # type: Dict[Tuple[str, str, str], ProbeResult]
+    keyed = []  # type: List[Tuple[ProbeResult, Tuple[str, str, str]]]
+    for row in results:
+        if (row.probe not in (PROBE_SNI, PROBE_WILDCARD) or row.cert is None or not row.sni
+                or row.status not in _TRUST_STATUSES):
+            continue
+        sent = handshakes.get((row.ip, row.port, row.sni))
+        key = (row.cert.sha256, (sent.chain_sha256 if sent is not None else None) or '', row.sni)
+        jobs.setdefault(key, row)
+        keyed.append((row, key))
+    verdicts = {}  # type: Dict[Tuple[str, str, str], Tuple[Optional[bool], str]]
+
+    def do_verify(item: Tuple[Tuple[str, str, str], ProbeResult]) -> Tuple[Optional[bool], str]:
+        _key, row = item
+        endpoint = endpoints.get((row.ip, row.port))
+        protocol = endpoint.protocol if endpoint is not None else PROTO_TLS
+        try:
+            return verify(row.ip, row.port, protocol, row.sni or '', timeout, row.cert)
+        except Exception as exc:  # noqa: BLE001 - an injected or unknown failure is no verdict
+            return None, _clean_ssl_message(exc)
+
+    def on_verify(item: Tuple[Tuple[str, str, str], ProbeResult],
+                  verdict: Tuple[Optional[bool], str]) -> None:
+        verdicts[item[0]] = verdict
+        if progress:
+            progress('trust', len(verdicts), len(jobs), {})
+
+    _parallel(do_verify, list(jobs.items()), workers, on_verify, cancel)
+    for row, key in keyed:
+        if key in verdicts:
+            row.trusted, row.trust_detail = verdicts[key]
+    return len(verdicts)
 
 
 # =====================================================================================
@@ -4997,13 +5188,14 @@ def _cipher_context(spec: str, label: str) -> AuditContext:
     return context, None
 
 
-def verify_context(check_hostname: bool = True) -> ssl.SSLContext:
+def verify_context(check_hostname: bool = True, cafile: Optional[str] = None) -> ssl.SSLContext:
     """The chain check's verifying client: this machine's trust store (ssl.create_default_context)
-    and, with ``check_hostname``, the name asked. VERIFY_X509_STRICT (on from Python 3.13) is
-    taken off: clients do not refuse what it adds, so neither does the check. Like today's
-    clients it stops at the first certificate it trusts (VERIFY_X509_TRUSTED_FIRST, OpenSSL's
-    default from 1.1.0): an expired cross-signed copy of a trusted root is not followed."""
-    context = ssl.create_default_context()
+    - or with ``cafile`` (--cafile) only that file's CAs - and, with ``check_hostname``, the name
+    asked. VERIFY_X509_STRICT (on from Python 3.13) is taken off: clients do not refuse what it
+    adds, so neither does the check. Like today's clients it stops at the first certificate it
+    trusts (VERIFY_X509_TRUSTED_FIRST, OpenSSL's default from 1.1.0): an expired cross-signed
+    copy of a trusted root is not followed."""
+    context = ssl.create_default_context(cafile=cafile) if cafile else ssl.create_default_context()
     context.check_hostname = check_hostname
     strict = getattr(ssl, 'VERIFY_X509_STRICT', 0)
     if strict and context.verify_flags & strict:
@@ -5020,7 +5212,7 @@ class AuditContexts:
     with and one without the name check (an endpoint asked without SNI), and a permissive one
     that reads what a server sends."""
 
-    def __init__(self) -> None:
+    def __init__(self, cafile: Optional[str] = None) -> None:
         self.library = ssl.OPENSSL_VERSION
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', DeprecationWarning)
@@ -5030,7 +5222,8 @@ class AuditContexts:
                             for group, spec in WEAK_CIPHER_GROUPS}  # type: Dict[str, AuditContext]
             self.key_types = {key: _cipher_context(spec, key)
                               for key, spec in AUDIT_KEY_TYPES}  # type: Dict[str, AuditContext]
-            self.verify = {True: verify_context(True), False: verify_context(False)}
+            store = {'cafile': cafile} if cafile else {}  # --cafile: only its CAs
+            self.verify = {True: verify_context(True, **store), False: verify_context(False, **store)}
             self.plain = make_client_context()
         self.chain_why = None if CAN_READ_CHAIN else (
             'Python %d.%d cannot read the certificates a server sends (3.10 and later can): a '
@@ -5492,11 +5685,13 @@ def run_tls_audit(report: ScanReport, timeout: float = DEFAULT_TIMEOUT,
                   contexts: Optional[AuditContexts] = None,
                   progress: Optional[ProgressCallback] = None,
                   cancel: Optional[threading.Event] = None,
-                  chain_attempt: Optional[ChainAttempt] = None) -> TlsAudit:
+                  chain_attempt: Optional[ChainAttempt] = None,
+                  cafile: Optional[str] = None) -> TlsAudit:
     """Audit the open endpoints of ``report`` (:func:`audit_targets`): endpoints in parallel,
     one handshake at a time to each, then the fleet's certificates per name
-    (:func:`serial_mismatches`). ``progress('audit', done, total, {})``."""
-    contexts = contexts or AuditContexts()
+    (:func:`serial_mismatches`). ``progress('audit', done, total, {})``. ``cafile``
+    (--cafile): the chain check trusts only its CAs."""
+    contexts = contexts or AuditContexts(cafile)
     targets = audit_targets(report)
     todo = [target for target in targets if target.status != AUDIT_NOT_TLS]
     done = [0]
@@ -5900,11 +6095,21 @@ def _new_cert_dict(report: ScanReport, cert: CertInfo, now: datetime) -> Dict[st
 
 def _result_dict(report: ScanReport, row: ProbeResult, now: datetime) -> Dict[str, Any]:
     """A ``results`` entry; with several new certificates ``newCertFile`` names the --cert
-    FILE of the certificate served (null when it is none of them)."""
+    FILE of the certificate served (null when it is none of them); after the trust check
+    (:func:`check_trust`) ``certTrusted`` (true / false, null where it was not asked: no
+    certificate covering the name, a failed handshake, the no-SNI probe) and ``trustDetail``."""
     entry = _row_dict(row, now)
     if report.several_new_certs:
         entry['newCertFile'] = report.new_cert_file(row.cert)
+    if report.trust_checked:
+        entry['certTrusted'] = row.trusted
+        entry['trustDetail'] = row.trust_detail or None
     return entry
+
+
+def trust_cells(trusted: Optional[bool], detail: Optional[str]) -> List[str]:
+    """The :data:`TRUST_CSV_COLUMNS` cells: yes / no / empty (not asked), and why not."""
+    return ['' if trusted is None else 'yes' if trusted else 'no', detail or '']
 
 
 def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
@@ -6026,6 +6231,8 @@ def report_to_dict(report: ScanReport, monitor: Optional[MonitorResult] = None,
         doc['options']['ari'] = True
     if report.revocation:
         doc['options']['revocation'] = True
+    if report.trust_checked:  # check_trust: the store it used, --cafile's base name
+        doc['options']['trust'] = {'store': report.trust_store, 'cafile': report.cafile}
     if estate:
         doc['options']['estate'] = True
         doc['estate'] = estate_from_report(doc, report.finished_at)
@@ -6098,7 +6305,8 @@ def _csv_cell(value: Any, terminal: bool = False) -> Any:
 def render_csv(report: ScanReport, lineterminator: str = '\r\n',
                terminal: bool = False) -> str:
     """One CSV row per result (RFC 4180 quoting); columns are :data:`CSV_COLUMNS`, plus
-    :data:`NEW_CERT_CSV_COLUMN` when --cert was given several times.
+    :data:`NEW_CERT_CSV_COLUMN` when --cert was given several times, the --ari / --revocation
+    columns, and :data:`TRUST_CSV_COLUMNS` after the trust check.
 
     With ``--exclude``, one more row per excluded target address follows the results:
     probe ``excluded``, status ``EXCLUDED``, empty port, the matching rule in ``error``.
@@ -6110,7 +6318,8 @@ def render_csv(report: ScanReport, lineterminator: str = '\r\n',
     writer = csv.writer(buffer, lineterminator=lineterminator)
     several = report.several_new_certs
     columns = CSV_COLUMNS + ((NEW_CERT_CSV_COLUMN,) if several else ()) \
-        + (ARI_CSV_COLUMNS if report.ari else ()) + (REVOCATION_CSV_COLUMNS if report.revocation else ())
+        + (ARI_CSV_COLUMNS if report.ari else ()) + (REVOCATION_CSV_COLUMNS if report.revocation else ()) \
+        + (TRUST_CSV_COLUMNS if report.trust_checked else ())
     writer.writerow(columns)
     for row in report.results:
         data = _row_dict(row, report.finished_at)
@@ -6129,6 +6338,8 @@ def render_csv(report: ScanReport, lineterminator: str = '\r\n',
         if report.ari or report.revocation:
             values.extend(status_csv_cells(report.cert_status.get(row.cert.sha256) if row.cert else None,
                                            report.ari, report.revocation))
+        if report.trust_checked:
+            values.extend(trust_cells(row.trusted, row.trust_detail))
         writer.writerow([_csv_cell(value, terminal) for value in values])
     for entry in report.excluded:
         row = dict.fromkeys(columns, '')  # type: Dict[str, Any]
@@ -6282,14 +6493,46 @@ _NOT_COUNTED_NOTE = ('Not counted as needing the new certificate (--fail-on-need
                      'ignores them); --strict-public counts them as NEEDS_UPDATE.')
 
 
+def trust_store_text(report: ScanReport) -> str:
+    """The store the trust check used, for a sentence."""
+    if report.trust_store == 'cafile':
+        return 'the CAs of --cafile %s' % (report.cafile or 'FILE')
+    return 'the Windows trust store' if report.trust_store == 'windows' else "this machine's trust store"
+
+
+def render_trust_line(report: ScanReport, style: Style, width: int = 100) -> List[str]:
+    """After the trust check, when some name is served with a chain the store does not trust:
+    how many, on how many endpoints (on Windows without --cafile: that its store may lack a
+    root it fetches on demand)."""
+    untrusted = [row for row in report.results if row.trusted is False]
+    if not report.trust_checked or not untrusted:
+        return []
+    endpoints = len({(row.ip, row.port) for row in untrusted})
+    text = 'Not trusted by %s: %s on %s' % (trust_store_text(report), _count_text(len(untrusted), 'name'),
+                                            _count_text(endpoints, 'endpoint'))
+    if report.trust_store == 'windows':
+        text += ' (%s: --cafile FILE checks against a CA bundle)' % WINDOWS_STORE_NOTE
+    return [style.paint(line, 'red', 'bold') for line in _wrap('', 0, display_text(text), width)] + ['']
+
+
+def untrusted_text(detail: str, store: Optional[str] = None) -> str:
+    """``untrusted: missing intermediate or private CA (code 20)``; on Windows without --cafile
+    ``untrusted (Windows store may be incomplete): ...`` (it fetches the roots it lacks on
+    demand)."""
+    head = 'untrusted (%s)' % WINDOWS_STORE_NOTE if store == 'windows' else 'untrusted'
+    return '%s: %s' % (head, detail) if detail else head
+
+
 def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: int,
                    now: datetime, has_new_cert: bool,
                    note: Optional[Callable[[str, CertInfo], str]] = None,
-                   tag: Optional[Callable[[Server], str]] = None) -> List[str]:
-    """Lines for one server: per endpoint, names grouped by (status, served certificate).
+                   tag: Optional[Callable[[Server], str]] = None,
+                   trust_store: Optional[str] = None) -> List[str]:
+    """Lines for one server: per endpoint, names grouped by (status, served certificate, trust).
 
     ``note(status, cert)`` may add why a group has its status (``self-signed``); ``tag(server)``
-    where TLS terminates (:func:`topology_tag`).
+    where TLS terminates (:func:`topology_tag`); a group this machine does not trust says why
+    (:func:`untrusted_text`, ``trust_store`` the store the trust check used).
     """
     server = summary.server
     head = '  ' + style.paint(display_text(server.name), 'bold')
@@ -6324,14 +6567,15 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
         if not named and not show_default:
             continue
         out.append('    ' + style.paint(label, 'bold'))
-        groups = {}  # type: Dict[Tuple[str, bool, str, str], List[ProbeResult]]
+        groups = {}  # type: Dict[Tuple[str, bool, str, str, Optional[str]], List[ProbeResult]]
         for row in named:
             # Coverage by the new cert is irrelevant for failed handshakes.
             relevant = row.status in (TLS_ERROR, TIMEOUT) or is_relevant(row)
-            key = (row.status, relevant, row.cert.sha256 if row.cert else '', row.error or '')
+            key = (row.status, relevant, row.cert.sha256 if row.cert else '', row.error or '',
+                   row.trust_detail if row.trusted is False else None)
             groups.setdefault(key, []).append(row)
         ordered = sorted(groups.items(), key=lambda item: _group_rank(item[0][0], item[0][1]))
-        for (status, relevant, _sha, error), group in ordered:
+        for (status, relevant, _sha, error, untrusted), group in ordered:
             prefix = '      %s  ' % style.status(status, label_width)
             if status in (TLS_ERROR, TIMEOUT) and len(group) == len(all_named) > 1:
                 text = 'all %d names' % len(group)
@@ -6350,6 +6594,9 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
                 out.append(' ' * (indent + 9) + style.paint(cert_ids(cert), 'dim'))
             elif error:  # handshake failures, names the server refused
                 out.append(' ' * indent + style.paint(display_text(error), 'dim'))
+            if untrusted is not None:
+                out.extend(style.paint(line, 'red') for line in _wrap(
+                    ' ' * indent, indent, display_text(untrusted_text(untrusted, trust_store)), width))
         if show_default and default is not None:
             text = '      default certificate (no SNI): %s' % style.status(default.status)
             if default.cert is not None:
@@ -6367,12 +6614,14 @@ def _render_server(summary: ServerSummary, style: Style, show_all: bool, width: 
 def _section(lines: List[str], title: str, summaries: Sequence[ServerSummary], style: Style,
              colors: Sequence[str], show_all: bool, width: int, now: datetime,
              has_new: bool, note: Optional[Callable[[str, CertInfo], str]] = None,
-             explain: Sequence[str] = (), tag: Optional[Callable[[Server], str]] = None) -> None:
+             explain: Sequence[str] = (), tag: Optional[Callable[[Server], str]] = None,
+             trust_store: Optional[str] = None) -> None:
     lines.append(style.paint('%s: %d' % (title, len(summaries)), *colors))
     for text in explain:
         lines.extend(style.paint(line, 'dim') for line in _wrap('  ', 2, text, width))
     for summary in summaries:
-        lines.extend(_render_server(summary, style, show_all, width, now, has_new, note, tag))
+        lines.extend(_render_server(summary, style, show_all, width, now, has_new, note, tag,
+                                    trust_store=trust_store))
     lines.append('')
 
 
@@ -6596,48 +6845,51 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
         source = report.new_cert_file(cert) if status == UPDATED else None
         return 'matches %s' % source if source else ''
 
+    def section(*args: Any, **kwargs: Any) -> None:
+        _section(*args, trust_store=report.trust_store, **kwargs)
+
     buckets = {}  # type: Dict[str, List[ServerSummary]]
     for summary in summaries:
         buckets.setdefault(summary.status, []).append(summary)
     needs = buckets.get(NEEDS_UPDATE, [])
-    _section(lines, 'Servers that need the new certificate' if has_new
-             else 'Servers hosting the names', needs, style,
-             ('red', 'bold') if needs else ('green', 'bold'), show_all, width, now, has_new,
-             note, tag=tag)
+    section(lines, 'Servers that need the new certificate' if has_new
+            else 'Servers hosting the names', needs, style,
+            ('red', 'bold') if needs else ('green', 'bold'), show_all, width, now, has_new,
+            note, tag=tag)
     if has_new:
-        _section(lines, 'Already serving the new certificate', buckets.get(UPDATED, []), style,
-                 ('green', 'bold'), show_all, width, now, has_new, note, tag=tag)
+        section(lines, 'Already serving the new certificate', buckets.get(UPDATED, []), style,
+                ('green', 'bold'), show_all, width, now, has_new, note, tag=tag)
     if buckets.get(ORIGIN_CERT):
-        _section(lines, 'Serving a Cloudflare Origin CA certificate', buckets[ORIGIN_CERT],
-                 style, ('cyan', 'bold'), show_all, width, now, has_new, note,
-                 (_ORIGIN_NOTE, _NOT_COUNTED_NOTE) if has_new else (_ORIGIN_NOTE,), tag=tag)
+        section(lines, 'Serving a Cloudflare Origin CA certificate', buckets[ORIGIN_CERT],
+                style, ('cyan', 'bold'), show_all, width, now, has_new, note,
+                (_ORIGIN_NOTE, _NOT_COUNTED_NOTE) if has_new else (_ORIGIN_NOTE,), tag=tag)
     if buckets.get(PRIVATE_CERT):
-        _section(lines, 'Serving a self-signed or private-CA certificate', buckets[PRIVATE_CERT],
-                 style, ('blue', 'bold'), show_all, width, now, has_new, note,
-                 (_PRIVATE_NOTE, _NOT_COUNTED_NOTE) if has_new else (_PRIVATE_NOTE,), tag=tag)
+        section(lines, 'Serving a self-signed or private-CA certificate', buckets[PRIVATE_CERT],
+                style, ('blue', 'bold'), show_all, width, now, has_new, note,
+                (_PRIVATE_NOTE, _NOT_COUNTED_NOTE) if has_new else (_PRIVATE_NOTE,), tag=tag)
 
     errors = [s for s in buckets.get(TLS_ERROR, []) + buckets.get(TIMEOUT, [])
               if any(r.probe != PROBE_CONNECT for r in s.rows)]
     if errors:
-        _section(lines, 'Handshake errors', errors, style, ('magenta', 'bold'), show_all, width,
-                 now, has_new, tag=tag)
+        section(lines, 'Handshake errors', errors, style, ('magenta', 'bold'), show_all, width,
+                now, has_new, tag=tag)
 
     not_hosted = buckets.get(NOT_HOSTED, [])
     other_cert = [s for s in not_hosted if any(r.status in HOSTED_STATUSES and not is_relevant(r)
                                                for r in s.rows)]
     not_hosted = [s for s in not_hosted if s not in other_cert]
     if other_cert:
-        _section(lines, 'Hosting only names the new certificate does not cover', other_cert,
-                 style, ('bold',), show_all, width, now, has_new, note, tag=tag)
+        section(lines, 'Hosting only names the new certificate does not cover', other_cert,
+                style, ('bold',), show_all, width, now, has_new, note, tag=tag)
     unreachable = [s for s in summaries if s.status in (CLOSED, TIMEOUT)
                    and all(r.probe == PROBE_CONNECT for r in s.rows)]
     if show_all:
         if not_hosted:
-            _section(lines, 'Not hosting any of the names', not_hosted, style, ('bold',), True,
-                     width, now, has_new, tag=tag)
+            section(lines, 'Not hosting any of the names', not_hosted, style, ('bold',), True,
+                    width, now, has_new, tag=tag)
         if unreachable:
-            _section(lines, 'Unreachable (no open port)', unreachable, style, ('bold',), True,
-                     width, now, has_new, tag=tag)
+            section(lines, 'Unreachable (no open port)', unreachable, style, ('bold',), True,
+                    width, now, has_new, tag=tag)
     else:
         hidden = []
         if not_hosted:
@@ -6650,6 +6902,7 @@ def render_summary(report: ScanReport, color: bool = False, show_all: bool = Fal
             lines.append('')
 
     lines.extend(render_cert_status(report, style, width, show_all))  # --ari / --revocation
+    lines.extend(render_trust_line(report, style, width))
     counts = report.status_counts()
     # ORIGIN_CERT / PRIVATE_CERT only when there are any: the line stays short otherwise.
     shown = [status for status in (NEEDS_UPDATE, UPDATED, ORIGIN_CERT, PRIVATE_CERT, NOT_HOSTED,
@@ -6665,7 +6918,8 @@ class ProgressPrinter:
     """Single-line progress on stderr (only when it is a TTY)."""
 
     _LABELS = {'connect': 'Checking ports', 'tls': 'TLS handshakes', 'resolve': 'Resolving',
-               'retry': 'Retrying reset handshakes', 'audit': 'TLS audit'}
+               'retry': 'Retrying reset handshakes', 'audit': 'TLS audit',
+               'trust': 'Trust check'}
 
     def __init__(self, stream: TextIO, enabled: bool) -> None:
         self.stream = stream
@@ -6745,9 +6999,12 @@ def _baseline_row_problem(row: Any) -> Optional[str]:
         return 'has no valid "status"'
     if not isinstance(row.get('probe'), str):
         return 'has no "probe"'
-    for key in ('server', 'name', 'certSubjectCN', 'certIssuer', 'certNotAfter', 'error'):
+    for key in ('server', 'name', 'certSubjectCN', 'certIssuer', 'certNotAfter', 'error',
+                'trustDetail'):
         if row.get(key) is not None and not isinstance(row.get(key), str):
             return 'has a "%s" that is not text' % key
+    if row.get('certTrusted') is not None and not isinstance(row.get('certTrusted'), bool):
+        return 'has a "certTrusted" that is not true, false or null'
     sha = row.get('certSha256')
     if sha is not None and not (isinstance(sha, str) and _SHA256_RE.match(sha)):
         return 'has no valid "certSha256"'
@@ -6811,9 +7068,38 @@ def load_baseline(path: str, allow_missing: bool = False) -> Optional[Dict[str, 
 
 
 def _row_view(row: Dict[str, Any]) -> Dict[str, Any]:
-    """The ``before`` / ``after`` side of a row change."""
-    return {key: row.get(key) for key in ('status', 'certSha256', 'certSubjectCN', 'certIssuer',
+    """The ``before`` / ``after`` side of a row change; with the trust check's verdict when the
+    report has one (a report of an older version has none)."""
+    view = {key: row.get(key) for key in ('status', 'certSha256', 'certSubjectCN', 'certIssuer',
                                            'certNotAfter', 'error')}
+    if 'certTrusted' in row:
+        trusted, detail = row.get('certTrusted'), row.get('trustDetail')
+        view['certTrusted'] = trusted if isinstance(trusted, bool) else None
+        view['trustDetail'] = detail if isinstance(detail, str) else None
+    return view
+
+
+def _checked_trust(doc: Dict[str, Any]) -> bool:
+    """Did the run of a report dict check trust (``options.trust``)?"""
+    options = doc.get('options')
+    return isinstance(options, dict) and isinstance(options.get('trust'), dict)
+
+
+def _trust_change(old: Optional[Dict[str, Any]], new: Optional[Dict[str, Any]], ip: str,
+                  port: int, name: Optional[str]) -> Optional[Dict[str, Any]]:
+    """A name now served with a chain this machine does not trust, where the baseline trusted
+    it or had no verdict (``untrusted``: counts, a bad change), or trusted again (``trusted``)."""
+    if new is None:
+        return None
+    after = new['view'].get('certTrusted')
+    before = old['view'].get('certTrusted') if old is not None else None
+    where = dict(servers=new['servers'], ip=ip, port=port, probe=new['probe'], name=name)
+    if after is False and before is not False:
+        return _change('untrusted', 'row', before=old['view'] if old else None, after=new['view'],
+                       **where)
+    if after is True and before is False and old is not None:
+        return _change('trusted', 'row', before=old['view'], after=new['view'], **where)
+    return None
 
 
 def _index_report(doc: Dict[str, Any]
@@ -6986,7 +7272,9 @@ def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
       certificate with the same status (``cert``: only for rows whose certificate
       covers the name - UPDATED, NEEDS_UPDATE or a status of a later version - also
       for the no-SNI probe, ``name`` None; a NOT_HOSTED row's fallback certificate is not
-      a change), or a row only one report has;
+      a change), or a row only one report has; and when both runs checked trust, a name now
+      served with a chain this machine does not trust (``untrusted``, where the baseline
+      trusted it or had no verdict) or trusted again (``trusted``), next to the row's own;
     * scope ``certificate`` - with --ari / --revocation, a certificate served now
       (:func:`_status_changes`): ``renew-now``, ``moved-up``, ``ca-notice``, ``revoked``.
 
@@ -6995,6 +7283,7 @@ def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
     """
     old_endpoints, old_names = _index_report(before)
     new_endpoints, new_names = _index_report(after)
+    trust_compared = _checked_trust(before) and _checked_trust(after)
     old_set, new_set = set(old_names), set(new_names)
     added = [name for name in new_names if name not in old_set]
     removed = [name for name in old_names if name not in new_set]
@@ -7038,6 +7327,10 @@ def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
             change = _row_change(old['rows'].get(name), new['rows'].get(name), ip, port, name)
             if change is not None:
                 changes.append(change)
+            if trust_compared:
+                change = _trust_change(old['rows'].get(name), new['rows'].get(name), ip, port, name)
+                if change is not None:
+                    changes.append(change)
     # --ari / --revocation: what the CAs say about the certificates served now
     changes.extend(_status_changes(before, after))
     return changes
@@ -7064,11 +7357,14 @@ def baseline_info(before: Dict[str, Any], after: Dict[str, Any],
 
     old_ports, new_ports = ports(before), ports(after)
     old_set, new_set = set(old_ports), set(new_ports)
-    return {'file': file, 'missing': False, 'version': text('version'),
+    info = {'file': file, 'missing': False, 'version': text('version'),
             'startedAt': text('startedAt'), 'finishedAt': text('finishedAt'),
             'portsAdded': [port for port in new_ports if port not in old_set],
             'portsRemoved': [port for port in old_ports if port not in new_set],
-            'newCertificateChanged': new_fps(before) != new_fps(after)}
+            'newCertificateChanged': new_fps(before) != new_fps(after)}  # type: Dict[str, Any]
+    if _checked_trust(before) != _checked_trust(after):  # UNTRUSTED compares runs that both checked
+        info['trustCheckedIn'] = 'this run' if _checked_trust(after) else 'the baseline run'
+    return info
 
 
 def expiring_certificates(doc: Dict[str, Any], warn_days: int) -> List[Dict[str, Any]]:
@@ -7144,16 +7440,19 @@ def build_monitor(report: ScanReport, baseline: Optional[Dict[str, Any]] = None,
 _CHANGE_TAGS = {'appeared': 'NEW', 'disappeared': 'GONE', 'cert': 'CERT',
                 # --ari / --revocation (the runner's tags, tools/ds/tlsdiff.mjs)
                 'renew-now': 'RENEW-NOW', 'moved-up': 'MOVED-UP', 'ca-notice': 'CA-NOTICE',
-                'revoked': 'REVOKED'}
+                'revoked': 'REVOKED',
+                # the trust check (the runner's UNTRUSTED is the same problem)
+                'untrusted': 'UNTRUSTED', 'trusted': 'TRUSTED'}
 _TAG_STYLES = {'FAILED': ('red', 'bold'), 'REGRESSED': ('red', 'bold'), 'UNHOSTED': ('red',),
                'GONE': ('red',), 'RECOVERED': ('green',), 'UPDATED': ('green', 'bold'),
                'HOSTED': ('green',), 'NEW': ('cyan',), 'CERT': ('yellow',),
                'CHANGED': ('yellow',), 'FAILING': ('dim',), SKIPPED: ('dim',),
                'RENEW-NOW': ('red', 'bold'), 'MOVED-UP': ('red', 'bold'),
-               'CA-NOTICE': ('red', 'bold'), 'REVOKED': ('red', 'bold')}
+               'CA-NOTICE': ('red', 'bold'), 'REVOKED': ('red', 'bold'),
+               'UNTRUSTED': ('red', 'bold'), 'TRUSTED': ('green',)}
 _BAD_TAGS = ('FAILED', 'REGRESSED', 'UNHOSTED', 'GONE', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE',
-             'REVOKED')
-_GOOD_TAGS = ('RECOVERED', 'UPDATED', 'HOSTED')
+             'REVOKED', 'UNTRUSTED')
+_GOOD_TAGS = ('RECOVERED', 'UPDATED', 'HOSTED', 'TRUSTED')
 # --ari / --revocation: each is about one certificate an endpoint serves
 _CERTIFICATE_TAGS = ('RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'REVOKED')
 _TAG_WIDTH = max(len(tag) for tag in _TAG_STYLES)
@@ -7285,6 +7584,14 @@ def change_text(change: Dict[str, Any]) -> str:
         what = 'new row, ' + _row_state(after)
     elif kind == 'disappeared':
         what = 'no longer reported; was ' + _row_state(before)
+    elif kind == 'untrusted':
+        what = '%s, not trusted by this machine: %s' % (after.get('status'),
+                                                         after.get('trustDetail') or 'no reason given')
+        if after.get('certSha256'):
+            what += ', serving ' + _cert_brief(after)
+    elif kind == 'trusted':
+        what = '%s, trusted again (was: %s)' % (after.get('status'),
+                                                 before.get('trustDetail') or 'not trusted')
     elif kind == 'cert':
         what = '%s, %s' % (after.get('status'), _cert_change_text(before, after))
     else:
@@ -7309,6 +7616,9 @@ def baseline_notes(info: Dict[str, Any]) -> List[str]:
     if info.get('newCertificateChanged'):
         notes.append("The new certificate (--cert) differs from the baseline's: UPDATED / "
                      'NEEDS_UPDATE moves can come from that rather than from the servers.')
+    if info.get('trustCheckedIn') in ('this run', 'the baseline run'):
+        notes.append('Trust was checked in %s only: UNTRUSTED compares runs that both '
+                     'checked it.' % info['trustCheckedIn'])
     return notes
 
 
@@ -7994,7 +8304,8 @@ def _problem_over(entry: Dict[str, Any], monitor: MonitorResult,
     renewed or replaced; a run without --warn-days says nothing). A row's or an endpoint's when
     the report shows it better - FAILED once it answers again, REGRESSED once the name is
     served with the new certificate (UPDATED), UNHOSTED once a certificate covering the name is
-    served again, GONE once it is back - or out of what the run checks: its name no longer
+    served again, UNTRUSTED once its chain is trusted, GONE once it is back - or out of what
+    the run checks: its name no longer
     probed, its endpoint no longer scanned. A certificate's (RENEW-NOW, MOVED-UP, CA-NOTICE,
     REVOKED: the item is its SHA-256) when the endpoint serves no more of it (renewed or
     replaced) or is no longer scanned, never while it is served. Never because another change
@@ -8034,6 +8345,8 @@ def _problem_over(entry: Dict[str, Any], monitor: MonitorResult,
         return False
     if tag == 'FAILED':
         return True
+    if tag == 'UNTRUSTED':  # trusted again (a run without the trust check says nothing)
+        return row['view'].get('certTrusted') is True
     if tag == 'REGRESSED':
         return status == UPDATED
     if tag == 'UNHOSTED':
@@ -8295,8 +8608,9 @@ WEAK_RSA_BITS = 2048
 # What is odd about a certificate (estate certificates[].flags, the CSV's flags column):
 # served for a name that other endpoints serve with another certificate, the older one
 # of such a pair (same key type, issued before), its key in several certificates or on
-# many hosts (:func:`shared_key_needs_look`), weak, covering none of the names asked.
-ESTATE_FLAGS = ('name-conflict', 'stale', 'shared-key', 'weak', 'covers-none')
+# many hosts (:func:`shared_key_needs_look`), weak, covering none of the names asked, served
+# by an endpoint with a chain this machine does not trust (the trust check, check_trust).
+ESTATE_FLAGS = ('name-conflict', 'stale', 'shared-key', 'weak', 'covers-none', 'untrusted')
 # A key is listed as shared when this many hosts (distinct addresses) serve it, or when
 # several certificates carry it. One certificate on the members of a load-balancer pool is
 # listed but not flagged: only a key in several certificates, or on SHARED_KEY_WIDE_HOSTS
@@ -8392,7 +8706,8 @@ def estate_from_report(doc: Dict[str, Any], now: Optional[datetime] = None) -> D
                          notAfter, daysLeft, expiry, hostnames, keyAlgorithm, keyBits, curve,
                          key, signatureAlgorithm, spkiSha256, kind, privateCa, isCA, weak,
                          coversAsked, flags, endpoints: [{servers, ip, port, defaultCert,
-                         names}]}],                  # soonest expiry first
+                         names, trusted?, trustDetail?}]}],   # soonest expiry first;
+                                                    # trusted: a report that checked trust
          nameConflicts: [{name, certificates: [{sha256, stale, endpoints: [{servers, ip,
                           port}]}]}],               # a name served with 2+ certificates
          sharedKeys: [{spkiSha256, key, hosts, servers, addresses, certificates}],
@@ -8439,6 +8754,8 @@ def estate_from_report(doc: Dict[str, Any], now: Optional[datetime] = None) -> D
         server = row.get('server')
         if isinstance(server, str) and server and server not in endpoint['servers']:
             endpoint['servers'].append(server)
+        if 'certTrusted' in row:  # the trust check (lib/estate.js alike)
+            _estate_trust(endpoint, row)
         name = row.get('name')
         if row['probe'] == PROBE_DEFAULT:
             endpoint['defaultCert'] = True
@@ -8471,6 +8788,8 @@ def estate_from_report(doc: Dict[str, Any], now: Optional[datetime] = None) -> D
     for sha in covers_none or []:
         flags.setdefault(sha, set()).add('covers-none')
     for entry in certificates:
+        if any(endpoint.get('trusted') is False for endpoint in entry['endpoints']):
+            flags.setdefault(entry['sha256'], set()).add('untrusted')
         entry['flags'] = [flag for flag in ESTATE_FLAGS if flag in flags.get(entry['sha256'], ())]
 
     report_endpoints = doc.get('endpoints') if isinstance(doc.get('endpoints'), list) else None
@@ -8499,6 +8818,20 @@ def estate_from_report(doc: Dict[str, Any], now: Optional[datetime] = None) -> D
         'weakKeys': weak,
         'coversNone': covers_none,
     }
+
+
+def _estate_trust(endpoint: Dict[str, Any], row: Dict[str, Any]) -> None:
+    """An endpoint's trust for one certificate (``trusted``, ``trustDetail``), from the rows
+    of a report that checked it: not trusted when a name's row is not (its detail kept),
+    trusted when one is, else null (not asked: the no-SNI probe, a failed handshake)."""
+    endpoint.setdefault('trusted', None)
+    endpoint.setdefault('trustDetail', None)
+    verdict = row.get('certTrusted')
+    if verdict is False and endpoint['trusted'] is not False:
+        detail = row.get('trustDetail')
+        endpoint['trusted'], endpoint['trustDetail'] = False, detail if isinstance(detail, str) else None
+    elif verdict is True and endpoint['trusted'] is None:
+        endpoint['trusted'] = True
 
 
 def _estate_entry(sha: str, row: Dict[str, Any], info: Any, probes: Sequence[Tuple[str, str]],
@@ -8637,16 +8970,27 @@ def estate_status_columns(estate: Dict[str, Any]) -> Tuple[str, ...]:
         (REVOCATION_CSV_COLUMNS if any('revocation' in cert for cert in certs) else ())
 
 
+def estate_trust_columns(estate: Dict[str, Any]) -> Tuple[str, ...]:
+    """The columns the trust check adds to the estate CSV (:data:`TRUST_CSV_COLUMNS`), when an
+    endpoint has a verdict (lib/estate.js estateTrustColumns)."""
+    return TRUST_CSV_COLUMNS if any('trusted' in endpoint for cert in estate.get('certificates') or []
+                                    for endpoint in cert['endpoints']) else ()
+
+
 def estate_csv_rows(estate: Dict[str, Any]) -> List[Dict[str, Any]]:
     """One row per certificate, endpoint and server (:data:`ESTATE_CSV_COLUMNS`, then
-    :func:`estate_status_columns`), in the estate's order; lib/estate.js estateCsvRows gives
-    the same rows."""
+    :func:`estate_status_columns` and :func:`estate_trust_columns`), in the estate's order;
+    lib/estate.js estateCsvRows gives the same rows."""
     rows = []
     extra = estate_status_columns(estate)
+    trust = bool(estate_trust_columns(estate))
     for cert in estate.get('certificates') or []:
         status = dict(zip(extra, status_csv_cells(cert, ARI_CSV_COLUMNS[0] in extra,
                                                   REVOCATION_CSV_COLUMNS[0] in extra)))
         for endpoint in cert['endpoints']:
+            if trust:
+                status = dict(status, **dict(zip(TRUST_CSV_COLUMNS, trust_cells(
+                    endpoint.get('trusted'), endpoint.get('trustDetail')))))
             for server in endpoint['servers'] or ['']:
                 rows.append({
                     'sha256': cert['sha256'], 'subject_cn': cert['subjectCN'] or '',
@@ -8672,7 +9016,7 @@ def render_estate_csv(estate: Dict[str, Any], lineterminator: str = '\r\n',
     every text cell spreadsheet-safe (:func:`_csv_cell`)."""
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator=lineterminator)
-    columns = ESTATE_CSV_COLUMNS + estate_status_columns(estate)
+    columns = ESTATE_CSV_COLUMNS + estate_status_columns(estate) + estate_trust_columns(estate)
     writer.writerow(columns)
     for row in estate_csv_rows(estate):
         writer.writerow([_csv_cell(row[column], terminal) for column in columns])
@@ -8823,6 +9167,25 @@ def render_estate(report: ScanReport, estate: Dict[str, Any], color: bool = Fals
         lines.extend(style.paint(line, 'dim') for line in _wrap(
             '    ', 4, display_text(_estate_where(entry['endpoints'], show_all)), width))
     lines.append('')
+
+    if any('trusted' in e for c in estate['certificates'] for e in c['endpoints']):  # the trust check
+        untrusted = [e for e in estate['certificates'] if 'untrusted' in e['flags']]
+        section('Not trusted by %s' % trust_store_text(report), len(untrusted), ('red', 'bold'))
+        if untrusted:
+            lines.extend(style.paint(line, 'dim') for line in _wrap('  ', 2, (
+                'A client refuses the chain these endpoints send for a name: a missing '
+                'intermediate, a private CA or a self-signed certificate.' + (
+                    ' %s: --cafile FILE checks against a CA bundle.' % WINDOWS_STORE_NOTE
+                    if report.trust_store == 'windows' else '')), width))
+        for entry in untrusted:
+            lines.extend(head(entry['sha256'], '  '))
+            bad = [e for e in entry['endpoints'] if e.get('trusted') is False]
+            details = sorted({e.get('trustDetail') or 'not trusted' for e in bad})
+            lines.extend(style.paint(line, 'red') for line in _wrap(
+                '    ', 4, display_text('; '.join(details)), width))
+            lines.extend(style.paint(line, 'dim') for line in _wrap(
+                '    ', 4, display_text(_estate_where(bad, show_all)), width))
+        lines.append('')
 
     if estate['coversNone'] is not None:
         section('Covering none of the names asked', len(estate['coversNone']), ('yellow', 'bold'))
@@ -10794,11 +11157,13 @@ def _charset(content_type: Optional[str]) -> Optional[str]:
 
 
 def fetch_side(ip: str, port: int, name: str, path: str, timeout: float,
-               private_cas: Sequence[CertInfo] = ()) -> CompareSide:
+               private_cas: Sequence[CertInfo] = (),
+               context: Optional[ssl.SSLContext] = None) -> CompareSide:
     """One TLS connection to ``ip:port`` with SNI ``name`` (whatever certificate is served:
     :func:`make_client_context`), one ``GET path`` over it with ``Host: name`` (http.client on
-    that socket), then one verifying handshake (the system's trust store and the host name;
-    a certificate issued by a ``--private-ca`` counts as trusted)."""
+    that socket), then one verifying handshake (:func:`_verify_side`: ``context``, the system's
+    trust store by default, or --cafile's, and the host name; a certificate issued by a
+    ``--private-ca`` counts as trusted)."""
     side = CompareSide(ip, port)
     address = _connect_address(ip)
     sock = None  # type: Optional[socket.socket]
@@ -10856,31 +11221,9 @@ def fetch_side(ip: str, port: int, name: str, path: str, timeout: float,
             except OSError:
                 pass
     if side.cert is not None:
-        side.trusted, side.trust_detail = _verify_side(address, port, name, timeout, side.cert, private_cas)
+        side.trusted, side.trust_detail = _verify_side(address, port, name, timeout, side.cert, private_cas,
+                                                       context=context)
     return side
-
-
-def _verify_side(address: str, port: int, name: str, timeout: float, cert: CertInfo,
-                 private_cas: Sequence[CertInfo]) -> Tuple[Optional[bool], str]:
-    """``(trusted, detail)`` from a verifying handshake; None when it could not be made."""
-    context = ssl.create_default_context()
-    try:
-        with socket.create_connection((address, port), timeout=timeout) as raw:
-            with context.wrap_socket(raw, server_hostname=name):
-                return True, ''
-    except ssl.SSLCertVerificationError as exc:
-        detail = getattr(exc, 'verify_message', '') or _clean_ssl_message(exc)
-        if cert.covers(name)[0] and any(issued_by(cert, ca) for ca in private_cas):
-            # OpenSSL names only the unknown issuer: the dates are checked here, as for a public one
-            now = _utcnow()
-            if cert.not_after < now:
-                return False, 'certificate has expired'
-            if cert.not_before > now:
-                return False, 'certificate is not yet valid'
-            return True, 'issued by a --private-ca'
-        return False, detail
-    except (OSError, ssl.SSLError) as exc:
-        return None, _clean_ssl_message(exc)
 
 
 _HSTS_TOKEN = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
@@ -11195,13 +11538,14 @@ def _run_compare(args: argparse.Namespace) -> int:
         raise UsageError('--timeout must be > 0 and <= %d seconds' % MAX_TIMEOUT)
     _check_output_path(args.json, '--json')
     private_cas, ca_messages = load_private_cas(args.private_ca)
+    context = load_trust_context(args.cafile) if args.cafile else None
     if not args.quiet:
         for message in ca_messages:
             print('warning: %s' % display_text(message), file=sys.stderr)
         print('Comparing %s on %s and %s ...' % (names[0], ips[0], ips[1]), file=sys.stderr)
     now = _utcnow()
-    old = fetch_side(ips[0], ports[0], names[0], path, args.timeout, private_cas)
-    new = fetch_side(ips[1], ports[0], names[0], path, args.timeout, private_cas)
+    old = fetch_side(ips[0], ports[0], names[0], path, args.timeout, private_cas, context=context)
+    new = fetch_side(ips[1], ports[0], names[0], path, args.timeout, private_cas, context=context)
     result = compare_sides(old, new, now)
     failed = False
     if args.json:
@@ -11253,6 +11597,9 @@ examples:
 
   CI / cron - exit code 1 while any server still needs the new certificate:
     python3 ssl_origin_scan.py -t hosts.ini --cert new.pem --fail-on-needs-update --no-color
+
+  Is every name served with a chain clients trust? (Windows: check against a CA bundle)
+    python3 ssl_origin_scan.py -t hosts.ini -n names.txt --cafile cacert.pem --csv trust.csv
 
   Renewal week - an RSA + ECDSA pair and another certificate, checked in one run:
     python3 ssl_origin_scan.py -t hosts.ini --cert a-rsa.pem --cert a-ecdsa.pem --cert b.pem
@@ -11458,6 +11805,23 @@ statuses (per server, port and name):
   when both certificates carry one, the key identifier; list the CA that signs the server
   certificates (the intermediate, if there is one) - a bundle file is fine.
 
+trust (every scan): the scan's handshakes read whatever is served and trust nothing. After
+  them, one verifying handshake per certificate served for a name - and, on Python 3.10+,
+  per chain sent with it: a leaf sent with or without its intermediate is two answers -
+  against this machine's trust store (CERT_REQUIRED and the name checked), or only the CAs
+  of --cafile FILE (a PEM bundle). A certificate a --private-ca issued counts as trusted.
+  Not trusted, with OpenSSL's verify code: missing intermediate or private CA (20), missing
+  intermediate (21), self-signed (18), a root this machine does not trust (19), expired
+  (10), not yet valid (9), hostname mismatch (62). On Windows the store fetches the roots
+  it lacks on demand, so the summary says "untrusted (Windows store may be incomplete)"
+  unless --cafile is given. The summary marks each untrusted group and counts them; the
+  JSON gives every row certTrusted (true, false or null where it was not asked: no
+  certificate covering the name, the no-SNI probe) and trustDetail, and options.trust the
+  store; the CSV adds cert_trusted (yes / no) and trust_detail; --estate marks the
+  certificate untrusted, with each endpoint's verdict. With --baseline, a name newly
+  served with an untrusted chain is UNTRUSTED (counted; PagerDuty: critical) and trusted
+  again TRUSTED; runs that did not both check it compare nothing of it.
+
 estate (--estate): an inventory of every certificate the servers serve. Each ip:port is
   asked without SNI and for every -n name and every host name among the targets (a
   server named web01.example.com, a target given by host name); no --cert is needed. The
@@ -11503,7 +11867,7 @@ monitoring (--baseline, --warn-days, --notify; for cron and scheduled tasks):
   (https://api.telegram.org/bot<token>/sendMessage?chat_id=<chat id>), Google Chat
   space webhooks, PagerDuty's Events API v2
   (https://events.pagerduty.com/v2/enqueue?routing_key=<integration key>: an incident
-  per bad change - FAILED, REGRESSED, UNHOSTED, GONE - and per expiring certificate,
+  per bad change - FAILED, REGRESSED, UNHOSTED, GONE, UNTRUSTED - and per expiring certificate,
   resolved on the run its problem is over; the JSON keeps the keys still open in
   "notify", at most 50 events a run), ntfy (https://ntfy.sh/<topic>: plain text, priority
   4 when something is bad; DOMAINSCOPE_NTFY_TOKEN as a bearer token), and JSON with the
@@ -11596,6 +11960,14 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   --private-ca ile verdiğiniz iç CA'nın imzaladığı sertifikayı sunanlar PRIVATE_CERT
   olarak ayrı listelenir ve "yeni sertifika gerekiyor" sayılmaz; --strict-public
   bunları da NEEDS_UPDATE sayar.
+  Her taramanın sonunda, bir ad için sunulan her sertifika (Python 3.10+ ile birlikte
+  gönderilen zincir de) bir kez doğrulanır: bu makinenin güven deposu, ya da --cafile
+  DOSYA ile yalnızca o dosyadaki CA'lar. Güvenilmeyenler nedeniyle yazılır (eksik ara
+  sertifika ya da özel CA, kendinden imzalı, süresi dolmuş, ad uyuşmazlığı); Windows'ta
+  depo eksik kökleri gerektiğinde indirdiğinden --cafile verilmedikçe "untrusted (Windows
+  store may be incomplete)" denir. JSON'da certTrusted ve trustDetail, CSV'de
+  cert_trusted ve trust_detail sütunları; --baseline ile yeni güvenilmeyen bir ad
+  UNTRUSTED değişikliğidir.
   Cron ile izleme: --baseline önceki --json raporuyla karşılaştırıp değişenleri
   (sunulan sertifika, durum, yeni ya da kaybolan satırlar) listeler; --warn-days N,
   süresi N gün içinde dolan sertifikaları gösterir; --notify (ya da
@@ -11663,6 +12035,11 @@ def build_parser() -> argparse.ArgumentParser:
     what.add_argument('--private-ca', metavar='FILE', action='append', default=[],
                       help='CA certificate(s) of your internal PKI (PEM/DER/P7B): what they '
                            'issued is PRIVATE_CERT, not NEEDS_UPDATE (repeatable)')
+    what.add_argument('--cafile', metavar='FILE',
+                      help='trust only the CA certificates of this PEM file when checking '
+                           'whether each name is served with a trusted chain (default: this '
+                           'machine\'s store; on Windows it may lack a root it fetches on '
+                           'demand), and in the --tls-audit chain check and --compare')
     what.add_argument('--strict-public', action='store_true',
                       help='count Cloudflare Origin CA, self-signed and private-CA '
                            'certificates as NEEDS_UPDATE too')
@@ -12201,6 +12578,8 @@ def _run(args: argparse.Namespace) -> int:
 
     private_cas, ca_messages = load_private_cas(args.private_ca)
     all_warnings.extend(ca_messages)
+    # a --cafile that cannot be read stops here, before anything is sent
+    trust = load_trust_context(args.cafile) if args.cafile else None
 
     names, name_warnings = load_names(args.names)
     all_warnings.extend(name_warnings)
@@ -12270,12 +12649,13 @@ def _run(args: argparse.Namespace) -> int:
                           workers=args.workers, progress=progress.update,
                           warnings=all_warnings, exclude=exclude_rules,
                           private_cas=private_cas, strict_public=args.strict_public,
-                          new_cert_files=new_cert_files, include_backends=args.include_backends)
+                          new_cert_files=new_cert_files, include_backends=args.include_backends,
+                          cafile=args.cafile, trust=trust)
         report.profiles = [name for i, name in enumerate(args.profile)
                            if name not in args.profile[:i]]
         if args.tls_audit:
             report.audit = run_tls_audit(report, timeout=args.timeout, workers=args.workers,
-                                         progress=progress.update)
+                                         progress=progress.update, cafile=args.cafile)
     finally:
         progress.finish()
     if args.ari or args.revocation:

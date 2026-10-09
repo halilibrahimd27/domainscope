@@ -5100,7 +5100,12 @@ class IntegrationTests(unittest.TestCase):
         with open(csv_path, encoding='utf-8-sig', newline='') as handle:
             records = list(csv.DictReader(handle))
         self.assertEqual(len(records), len(doc['results']))
-        self.assertEqual(set(records[0]), set(sos.CSV_COLUMNS))
+        # a real scan checks trust: its columns come last, and the test CA is no CA this machine trusts
+        self.assertEqual(set(records[0]), set(sos.CSV_COLUMNS) | set(sos.TRUST_CSV_COLUMNS))
+        self.assertEqual(doc['options']['trust'], {'store': sos.trust_store_name(None), 'cafile': None})
+        named = [r for r in doc['results'] if r['status'] in ('UPDATED', 'NEEDS_UPDATE')]
+        self.assertTrue(named and all(r['certTrusted'] is False and r['trustDetail'] for r in named), named)
+        self.assertTrue(all(r['certTrusted'] is None for r in doc['results'] if r['probe'] == 'default'))
 
         self.assertIn('Servers that need the new certificate: 1', out)
         self.assertIn('Results (server/port/name):', out)

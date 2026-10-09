@@ -15,7 +15,11 @@
  *     certificates, 3 expiring, 5 in name conflicts, 2 with a shared key, 2 weak, 3 covering no
  *     name), the expiry and kind lines and a row per certificate; a tile filters the table and
  *     keeps the focus, the select does too; a row's details show the fingerprints and where it is
- *     served; the CSV holds the CLI's --estate --csv columns, the rows of the filter only;
+ *     served; the CSV holds the CLI's --estate --csv columns (the trust check's two last: report A's
+ *     scan checked trust), the rows of the filter only; the untrusted filter lists the three
+ *     certificates an endpoint serves with a chain the CLI's machine does not trust, each flagged,
+ *     and a row's details say why per endpoint (self-signed (code 18); in Turkish "eksik ara
+ *     sertifika ya da özel CA (kod 20)");
  *   - the conflicts tab names both names and marks the old wildcard "older", the keys tab the
  *     RSA 1024 key on two addresses in two certificates ("needs a look") and two certificates on
  *     a web01 / web02 pair (listed only);
@@ -45,7 +49,10 @@ import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
   csvHeader, gotoRoute, installDownloadCapture, setLangUi, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
-import { ESTATE_CSV_COLUMNS } from '../../assets/js/lib/estate.js';
+import { ESTATE_CSV_COLUMNS, ESTATE_TRUST_COLUMNS } from '../../assets/js/lib/estate.js';
+
+/** The CLI's --estate --csv columns of report-a.json: its scan checked trust, so the two trust columns come last. */
+const CSV_A = [...ESTATE_CSV_COLUMNS, ...ESTATE_TRUST_COLUMNS].map((c) => c.key);
 
 const REPORT_A = path.join(FIXTURES, 'estate', 'report-a.json');
 const REPORT_B = path.join(FIXTURES, 'estate', 'report-b.json');
@@ -292,10 +299,37 @@ async function main() {
       const [file] = await takeDownloads(page);
       assert(file && /^estate-\d{8}-\d{4}\.csv$/.test(file.name), `file name: ${file && file.name}`);
       assert(file.bom, 'BOM for Excel');
-      assertEqual(csvHeader(file.text), ESTATE_CSV_COLUMNS.map((c) => c.key), 'columns');
+      assertEqual(csvHeader(file.text), CSV_A, 'columns');
       const rows = file.text.trim().split(/\r?\n/).slice(1);
       assertEqual(rows.length, 6, 'legacy.example.org on web01 and web02, legacy.example.net and old.example.net each on legacy-a and legacy-b');
       await removeToasts(page);
+    });
+
+    await run.step('the CLI\'s trust check: the untrusted filter, the flag, each endpoint\'s verdict in its own words', async () => {
+      await page.evaluate(() => {
+        const s = document.querySelector('.estate-filter select');
+        s.value = 'untrusted';
+        s.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await page.waitFor(() => document.querySelectorAll('.estate-table tbody tr.dt-row').length === 3, { message: 'untrusted rows' });
+      const info = await page.evaluate(() => ({
+        option: [...document.querySelectorAll('.estate-filter option')].find((o) => o.value === 'untrusted')?.textContent,
+        flagged: [...document.querySelectorAll('.estate-table tbody tr.dt-row')].map((tr) => !!tr.querySelector('.estate-flag-untrusted'))
+      }));
+      assertEqual(info.option, 'Served with an untrusted chain (3)', 'the filter and its count');
+      assertEqual(info.flagged, [true, true, true], 'each row carries the flag');
+      assertEqual((await viewInfo(page)).names.sort(), ['*.wild.example.net', 'CloudFlare Origin Certificate', 'www.example-test.com.tr'], 'untrusted');
+      // the old wildcard web01 still sends: self-signed
+      await page.evaluate(() => [...document.querySelectorAll('.estate-table tbody tr.dt-row')]
+        .find((tr) => tr.querySelector('.estate-cert-name')?.textContent === '*.wild.example.net').querySelector('.dt-expand-btn').click());
+      const served = await page.waitFor(() => {
+        const li = [...document.querySelectorAll('.estate-table .estate-d-endpoints li')].find((x) => x.querySelector('.estate-untrusted'));
+        return li ? { text: li.textContent, title: li.querySelector('.estate-flag-untrusted')?.title } : false;
+      }, { message: 'the endpoint\'s verdict' });
+      assert(served.text.includes('192.0.2.10') && served.text.includes('untrusted') && served.text.includes('self-signed (code 18)'), served.text);
+      assert(served.title.includes('a missing intermediate, a private CA or a self-signed certificate'), served.title);
+      await removeToasts(page);
+      await shotEl(page, opts, 'estate-untrusted-desktop-light-en', '.estate-table');
     });
 
     await run.step('conflicts: both names, the old wildcard older; keys: RSA 1024 on two addresses in two certificates', async () => {
@@ -329,7 +363,7 @@ async function main() {
       await takeDownloads(page);
       await page.click('.estate-table [data-export="csv"]');
       const [file] = await takeDownloads(page);
-      assertEqual(csvHeader(file.text), [...ESTATE_CSV_COLUMNS.map((c) => c.key), 'report'], 'report column');
+      assertEqual(csvHeader(file.text), [...CSV_A, 'report'], 'report column');
       assert(/,report-b\.json\r?\n/.test(file.text) && /,report-a\.json\r?\n/.test(file.text), 'rows name their report');
       await removeToasts(page);
     });
@@ -526,6 +560,27 @@ async function main() {
       await page.click('.estate-tabs .tab[data-tab="keys"]');
       assertEqual(await overflowingIn(page, '.estate-tabs'), [], 'keys inside 375 px');
       await page.click('.estate-tabs .tab[data-tab="certificates"]');
+      // the CLI's trust check in Turkish: the filter, and the verify code in the page's words
+      await page.waitFor(() => document.querySelector('.estate-filter select'), { message: 'filter (TR)' });
+      await page.evaluate(() => {
+        const s = document.querySelector('.estate-filter select');
+        s.value = 'untrusted';
+        s.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await page.waitFor(() => document.querySelectorAll('.estate-table tbody tr.dt-row').length === 3, { message: 'untrusted rows (TR)' });
+      await page.evaluate(() => [...document.querySelectorAll('.estate-table tbody tr.dt-row')]
+        .find((tr) => tr.querySelector('.estate-cert-name')?.textContent === 'CloudFlare Origin Certificate').querySelector('.dt-expand-btn').click());
+      const verdict = await page.waitFor(() => document.querySelector('.estate-table .estate-untrusted')?.textContent, { message: 'the verdict (TR)' });
+      assert(verdict.includes('güvenilmeyen') && verdict.includes('eksik ara sertifika ya da özel CA (kod 20)'), verdict);
+      await assertNoHorizontalScroll(page, 'estate untrusted phone dark TR');
+      assertEqual(await overflowingIn(page, PAGE), [], 'the details inside 375 px');
+      await removeToasts(page);
+      await shotEl(page, opts, 'estate-untrusted-phone-dark-tr', '.estate-table');
+      await page.evaluate(() => {
+        const s = document.querySelector('.estate-filter select');
+        s.value = 'all';
+        s.dispatchEvent(new Event('change', { bubbles: true }));
+      });
     });
 
     await run.step('320 px, English, light: still no horizontal scroll', async () => {

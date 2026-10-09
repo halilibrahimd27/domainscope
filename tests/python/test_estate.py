@@ -94,12 +94,30 @@ def refused():
                          refused=True)
 
 
-def estate_scan(servers, tls, connect=None, names=(WWW, WILD), now=NOW_A, private_cas=()):
+def estate_scan(servers, tls, connect=None, names=(WWW, WILD), now=NOW_A, private_cas=(),
+                verify=None):
     network = FakeNetwork(connect or {}, tls)
     with mock.patch.object(sos, '_utcnow', return_value=now):
-        return sos.run_scan(servers, sos.build_probe_names(list(names)), [443], timeout=1,
-                            workers=4, connect_fn=network.connect_fn, tls_fn=network.tls_fn,
-                            private_cas=list(private_cas))
+        report = sos.run_scan(servers, sos.build_probe_names(list(names)), [443], timeout=1,
+                              workers=4, connect_fn=network.connect_fn, tls_fn=network.tls_fn,
+                              private_cas=list(private_cas), verify_fn=verify)
+    if report.trust_checked:
+        report.trust_store = 'system'  # the same report on every platform (Windows names its store)
+    return report
+
+
+# Site A's trust check (a fake verifier): the weak certificate is self-signed, the Origin CA one is
+# trusted by Cloudflare only; web01 still sends the old wildcard, self-signed too. Site B's report
+# is one of a CLI that did not check trust.
+SITE_A_TRUST = {
+    ('2001:db8::13', WWW): (False, sos.trust_detail(18)),
+    ('198.51.100.20', WILD): (False, sos.trust_detail(20)),
+    ('192.0.2.10', WILD): (False, sos.trust_detail(18)),
+}
+
+
+def site_a_verify(ip, port, protocol, name, timeout, cert):
+    return SITE_A_TRUST.get((ip, name), (True, ''))
 
 
 def fleet_a():
@@ -117,7 +135,8 @@ def fleet_a():
          '198.51.100.20': serve(default=ORIGIN_DER, **{WWW: refused(), WILD: ORIGIN_DER}),
          '198.51.100.22': serve(default=PRIVATE_DER, **{WWW: PRIVATE_DER, WILD: refused()}),
          '198.51.100.23': serve(default=MD5_DER, other=EXPIRED_DER)},
-        connect={'198.51.100.21': ConnectionRefusedError()}, private_cas=[PRIVATE_CA])
+        connect={'198.51.100.21': ConnectionRefusedError()}, private_cas=[PRIVATE_CA],
+        verify=site_a_verify)
 
 
 def fleet_b():
@@ -184,11 +203,13 @@ class EstateOfReportTests(unittest.TestCase):
         self.assertEqual(rsa['key'], 'RSA 2048')
         self.assertEqual(rsa['spkiSha256'], sos.parse_certificate(RSA_DER).spki_sha256)
         self.assertEqual(rsa['issuer'], 'Subdomain Scanner Test Root CA (Test CA)')
-        # one address, two servers: one endpoint naming both; the fallback for every name
+        # one address, two servers: one endpoint naming both; the fallback for every name (served
+        # without SNI only: no trust verdict)
         md5 = self.cert(sos.parse_certificate(MD5_DER).sha256)
         self.assertEqual(md5['endpoints'], [{'servers': ['legacy-a', 'legacy-b'],
                                              'ip': '198.51.100.23', 'port': 443,
-                                             'defaultCert': True, 'names': []}])
+                                             'defaultCert': True, 'names': [],
+                                             'trusted': None, 'trustDetail': None}])
         expired = self.cert(sos.parse_certificate(EXPIRED_DER).sha256)
         self.assertEqual(expired['endpoints'][0]['names'], [WWW, WILD])
         self.assertFalse(expired['endpoints'][0]['defaultCert'])
@@ -322,6 +343,20 @@ class EstateOfReportTests(unittest.TestCase):
         self.assertEqual(estate['counts']['openEndpoints'], 6)
         self.assertEqual(len(estate['nameConflicts']), 2)
 
+    def test_each_endpoint_says_whether_this_machine_trusts_what_it_serves(self):
+        old, origin, private, weak, rsa = (self.cert(sos.parse_certificate(der).sha256)
+                                           for der in (EC_DER, ORIGIN_DER, PRIVATE_DER, WEAK_DER, RSA_DER))
+        self.assertEqual([(e['ip'], e['trusted'], e['trustDetail']) for e in old['endpoints']],
+                         [('192.0.2.10', False, 'self-signed (code 18)')])
+        self.assertEqual([(e['trusted'], e['trustDetail']) for e in origin['endpoints']],
+                         [(False, 'missing intermediate or private CA (code 20)')])
+        # served for no name it covers (only without SNI, and for a name it does not cover): not asked
+        self.assertEqual([(e['trusted'], e['trustDetail']) for e in private['endpoints']], [(None, None)])
+        self.assertEqual({e['trusted'] for e in rsa['endpoints']}, {True})
+        for cert, flagged in ((old, True), (origin, True), (weak, True), (private, False), (rsa, False)):
+            self.assertEqual('untrusted' in cert['flags'], flagged, cert['subjectCN'])
+        self.assertEqual(self.doc['options']['trust'], {'store': 'system', 'cafile': None})
+
     def test_csv_rows_one_per_certificate_endpoint_and_server(self):
         rows = sos.estate_csv_rows(self.estate)
         md5 = [r for r in rows if r['sha256'] == sos.parse_certificate(MD5_DER).sha256]
@@ -331,7 +366,11 @@ class EstateOfReportTests(unittest.TestCase):
         self.assertEqual(md5[0]['weak'], 'rsa-short md5')
         text = sos.render_estate_csv(self.estate)
         records = list(csv.DictReader(io.StringIO(text)))
-        self.assertEqual(text.splitlines()[0].split(','), list(sos.ESTATE_CSV_COLUMNS))
+        # site A's scan checked trust: its two columns come last
+        self.assertEqual(text.splitlines()[0].split(','), list(sos.ESTATE_CSV_COLUMNS) + list(sos.TRUST_CSV_COLUMNS))
+        self.assertEqual(md5[0]['cert_trusted'], '', 'served without SNI only: not asked')
+        weak = {(r['ip'], r['cert_trusted'], r['trust_detail']) for r in rows if r['sha256'] == sos.parse_certificate(WEAK_DER).sha256}
+        self.assertEqual(weak, {('2001:db8::13', 'no', 'self-signed (code 18)')})
         self.assertEqual(len(records), len(rows))
         self.assertEqual(sum(len(e['servers']) for c in self.estate['certificates']
                              for e in c['endpoints']), len(rows))
@@ -456,7 +495,9 @@ class EstateCliTests(unittest.TestCase):
         self.assertEqual(estate['sharedKeys'], [])
         self.assertEqual(estate['counts']['endpoints'], 3)
         self.assertEqual(estate['counts']['openEndpoints'], 2)
-        self.assertEqual(set(records[0]), set(sos.ESTATE_CSV_COLUMNS))
+        # a real scan checks trust: the endpoints carry the verdict, the CSV its columns
+        self.assertEqual(set(records[0]), set(sos.ESTATE_CSV_COLUMNS) | set(sos.TRUST_CSV_COLUMNS))
+        self.assertTrue(all('trusted' in e for c in estate['certificates'] for e in c['endpoints']))
         self.assertEqual(len(records), sum(len(e['servers']) for c in estate['certificates']
                                            for e in c['endpoints']))
         text = ' '.join(out.split())

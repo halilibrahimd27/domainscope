@@ -40,8 +40,11 @@ export const ESTATE_BUCKETS = Object.freeze(['expired', '7d', '30d', '90d', 'lat
 export const ESTATE_KINDS = Object.freeze(['origin-ca', 'self-signed', 'private-ca', 'other']);
 /** Why a certificate is weak: an RSA key under {@link WEAK_RSA_BITS} bits, a SHA-1 or an MD5 / MD2 signature. */
 export const ESTATE_WEAK_REASONS = Object.freeze(['rsa-short', 'sha1', 'md5']);
-/** What is odd about a certificate (`certificates[].flags`), in this order. */
-export const ESTATE_FLAGS = Object.freeze(['name-conflict', 'stale', 'shared-key', 'weak', 'covers-none']);
+/**
+ * What is odd about a certificate (`certificates[].flags`), in this order; `untrusted`: an endpoint
+ * serves it with a chain the CLI's machine does not trust (its trust check, reports that ran it).
+ */
+export const ESTATE_FLAGS = Object.freeze(['name-conflict', 'stale', 'shared-key', 'weak', 'covers-none', 'untrusted']);
 /** RSA keys shorter than this are weak. */
 export const WEAK_RSA_BITS = 2048;
 /** A key served by this many hosts (distinct addresses), or carried by several certificates, is listed as shared. */
@@ -53,7 +56,7 @@ export const SHARED_KEY_MIN_HOSTS = 2;
 export const SHARED_KEY_WIDE_HOSTS = 5;
 /** The Certificate estate view's filters, in display order. */
 export const ESTATE_FILTERS = Object.freeze(['all', 'attention', 'expiring', 'name-conflict', 'shared-key', 'weak',
-  'covers-none', 'private', 'origin-ca']);
+  'covers-none', 'untrusted', 'private', 'origin-ca']);
 /** Why a file is not a report ({@link readEstateReport}). */
 export const REPORT_ERRORS = Object.freeze(['too-large', 'not-json', 'not-report', 'version', 'no-results']);
 /** A report file larger than this is refused (reading it would hold the tab for long). */
@@ -77,6 +80,23 @@ export const ESTATE_ARI_COLUMNS = Object.freeze(['ari_start', 'ari_end', 'ari_ex
 /** The columns the CLI's `--revocation` adds (cli/ssl_origin_scan.py REVOCATION_CSV_COLUMNS). */
 export const ESTATE_REVOCATION_COLUMNS = Object.freeze(['revocation', 'revoked_at', 'revocation_reason', 'revocation_error']
   .map((key) => Object.freeze({ key, header: key })));
+/** The columns the CLI's trust check adds, last (cli/ssl_origin_scan.py TRUST_CSV_COLUMNS). */
+export const ESTATE_TRUST_COLUMNS = Object.freeze(['cert_trusted', 'trust_detail'].map((key) => Object.freeze({ key, header: key })));
+/** OpenSSL's verify codes the CLI's trust check names in words (cli/ssl_origin_scan.py TRUST_DETAILS). */
+export const ESTATE_TRUST_CODES = Object.freeze([20, 21, 18, 19, 10, 9, 62]);
+
+/**
+ * The verify code of a CLI trust detail (`missing intermediate or private CA (code 20)`) when it is
+ * one the CLI names ({@link ESTATE_TRUST_CODES}), so the view can say it in the page's language;
+ * null for any other text (shown as it is).
+ * @param {string|null|undefined} detail
+ * @returns {number|null}
+ */
+export function trustDetailCode(detail) {
+  const m = /\(code (\d{1,3})\)$/.exec(typeof detail === 'string' ? detail.trim() : '');
+  const code = m ? Number(m[1]) : null;
+  return code !== null && ESTATE_TRUST_CODES.includes(code) ? code : null;
+}
 
 /* ------------------------------------------------------------------------ */
 /* Small rules shared with the CLI                                          */
@@ -366,7 +386,29 @@ export function mergeReports(reports) {
  * @property {number} port
  * @property {boolean} defaultCert served without SNI
  * @property {string[]} names the names asked that got this certificate here (covering them or not)
+ * @property {boolean|null} [trusted] a report that checked trust (the CLI's rows carry `certTrusted`): false when
+ *   the chain served for a name here is not trusted, true when one is, null when none was asked ({@link endpointTrust})
+ * @property {string|null} [trustDetail] why not, as the CLI said it (`missing intermediate or private CA (code 20)`)
  */
+
+/**
+ * An endpoint's trust for one certificate from one of its rows, the CLI's `_estate_trust`: not
+ * trusted once a name's row is not (its detail kept), trusted once one is, else null.
+ * @param {EstateEndpoint} endpoint
+ * @param {object} row a report row with `certTrusted`
+ */
+function endpointTrust(endpoint, row) {
+  if (!('trusted' in endpoint)) {
+    endpoint.trusted = null;
+    endpoint.trustDetail = null;
+  }
+  if (row.certTrusted === false && endpoint.trusted !== false) {
+    endpoint.trusted = false;
+    endpoint.trustDetail = typeof row.trustDetail === 'string' ? row.trustDetail : null;
+  } else if (row.certTrusted === true && endpoint.trusted === null) {
+    endpoint.trusted = true;
+  }
+}
 
 /**
  * @typedef {object} EstateCertificate
@@ -448,6 +490,7 @@ export function estateOf(doc, { now } = {}) {
       entry.endpoints.push(endpoint);
     }
     if (typeof row.server === 'string' && row.server && !endpoint.servers.includes(row.server)) endpoint.servers.push(row.server);
+    if (Object.prototype.hasOwnProperty.call(row, 'certTrusted')) endpointTrust(endpoint, row);
     const name = row.name;
     if (row.probe === 'default') {
       endpoint.defaultCert = true;
@@ -481,6 +524,7 @@ export function estateOf(doc, { now } = {}) {
   for (const group of shared) if (sharedKeyNeedsLook(group)) for (const sha of group.certificates) flag(sha, 'shared-key');
   for (const item of weak) flag(item.sha256, 'weak');
   for (const sha of coversNone || []) flag(sha, 'covers-none');
+  for (const entry of certificates) if (entry.endpoints.some((e) => e.trusted === false)) flag(entry.sha256, 'untrusted');
   for (const entry of certificates) entry.flags = ESTATE_FLAGS.filter((f) => flags.has(entry.sha256) && flags.get(entry.sha256).has(f));
 
   let endpointCount;
@@ -675,7 +719,7 @@ export function estateMatches(cert, filter) {
     case 'expiring': return soon;
     case 'private': return cert.kind === 'self-signed' || cert.kind === 'private-ca';
     case 'origin-ca': return cert.kind === 'origin-ca';
-    case 'name-conflict': case 'shared-key': case 'weak': case 'covers-none': return cert.flags.includes(filter);
+    case 'name-conflict': case 'shared-key': case 'weak': case 'covers-none': case 'untrusted': return cert.flags.includes(filter);
     default: return true;
   }
 }
@@ -702,9 +746,14 @@ export function estateFilterCounts(estate) {
 export function estateCsvRows(estate, { certificates = null, reportName = null } = {}) {
   const rows = [];
   const extra = estateStatusColumns(estate);
+  const trust = estateTrustColumns(estate).length > 0;
   for (const cert of certificates || (estate && estate.certificates) || []) {
     const status = statusCells(cert, extra);
     for (const endpoint of cert.endpoints) {
+      const verdict = trust ? {
+        cert_trusted: endpoint.trusted === true ? 'yes' : endpoint.trusted === false ? 'no' : '',
+        trust_detail: typeof endpoint.trustDetail === 'string' ? endpoint.trustDetail : ''
+      } : {};
       for (const server of endpoint.servers.length ? endpoint.servers : ['']) {
         const row = {
           sha256: cert.sha256,
@@ -726,7 +775,8 @@ export function estateCsvRows(estate, { certificates = null, reportName = null }
           served_for: endpoint.names.join(' '),
           flags: cert.flags.join(' '),
           weak: cert.weak.join(' '),
-          ...status
+          ...status,
+          ...verdict
         };
         if (reportName) row.report = reportName(endpoint, cert);
         rows.push(row);
@@ -749,6 +799,17 @@ export function estateStatusColumns(estate) {
     ...(certs.some((c) => isObject(c.ari)) ? ESTATE_ARI_COLUMNS : []),
     ...(certs.some((c) => isObject(c.revocation)) ? ESTATE_REVOCATION_COLUMNS : [])
   ];
+}
+
+/**
+ * The columns the CLI's trust check adds to the estate CSV, last: {@link ESTATE_TRUST_COLUMNS} when an
+ * endpoint of the estate has a verdict (cli/ssl_origin_scan.py estate_trust_columns).
+ * @param {{ certificates?: EstateCertificate[] }} estate
+ * @returns {Array<{ key: string, header: string }>}
+ */
+export function estateTrustColumns(estate) {
+  const certs = (estate && estate.certificates) || [];
+  return certs.some((c) => c.endpoints.some((e) => 'trusted' in e)) ? ESTATE_TRUST_COLUMNS : [];
 }
 
 /** Where the certificates are in their ARI windows ({@link estateStatusCounts}; `error`: no window read). */
@@ -792,6 +853,7 @@ function statusCells(cert, columns) {
  * @returns {string}
  */
 export function estateCsv(estate, opts = {}) {
-  const columns = [...ESTATE_CSV_COLUMNS, ...estateStatusColumns(estate), ...(opts.reportName ? [{ key: 'report', header: 'report' }] : [])];
+  const columns = [...ESTATE_CSV_COLUMNS, ...estateStatusColumns(estate), ...estateTrustColumns(estate),
+    ...(opts.reportName ? [{ key: 'report', header: 'report' }] : [])];
   return toCsv(estateCsvRows(estate, opts), columns);
 }

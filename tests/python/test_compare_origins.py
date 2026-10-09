@@ -433,8 +433,9 @@ class CompareUnitTests(unittest.TestCase):
             cert, ca = fixture_cert('cli_private_wild.pem'), fixture_cert('cli_private_ca.pem')
             side = lambda: sos._verify_side('127.0.0.1', server.port, NAME, 3, cert, [ca])
             self.assertEqual(side(), (True, 'issued by a --private-ca'))
-            for now, detail in ((cert.not_after + timedelta(days=1), 'certificate has expired'),
-                                (cert.not_before - timedelta(days=1), 'certificate is not yet valid')):
+            # in the trust check's words (sos.trust_detail: OpenSSL's verify codes 10 and 9)
+            for now, detail in ((cert.not_after + timedelta(days=1), 'expired (code 10)'),
+                                (cert.not_before - timedelta(days=1), 'not yet valid (code 9)')):
                 with mock.patch.object(sos, '_utcnow', return_value=now):
                     self.assertEqual(side(), (False, detail))
         finally:

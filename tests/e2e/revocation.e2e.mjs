@@ -22,7 +22,8 @@
  *     with when Cert Spotter last read the CA's revocation list; a CA certificate has no card;
  *   - Certificate estate: a CLI report made with --ari and --revocation adds the renewal-window
  *     and revocation columns, their counts in the overview, the records in a row's details and
- *     the CLI's columns in the CSV; a report without them shows none of it;
+ *     the CLI's columns in the CSV (its trust check's two last); a report without them shows none
+ *     of it;
  *   - Turkish + dark at 375 px and 320 px: no horizontal scroll in the three places;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; nothing sent.
  *
@@ -40,7 +41,7 @@ import { orderSuites } from './run-all.mjs';
 import { spotterRow, CT_PROBLEM_REPORTING } from '../js/ct-fake.mjs';
 import { parseCertificates } from '../../assets/js/lib/x509.js';
 import { CT_EXPORT_COLUMNS } from '../../assets/js/lib/ctwatch.js';
-import { ESTATE_ARI_COLUMNS, ESTATE_CSV_COLUMNS, ESTATE_REVOCATION_COLUMNS } from '../../assets/js/lib/estate.js';
+import { ESTATE_ARI_COLUMNS, ESTATE_CSV_COLUMNS, ESTATE_REVOCATION_COLUMNS, ESTATE_TRUST_COLUMNS } from '../../assets/js/lib/estate.js';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
   csvHeader, gotoRoute, installDownloadCapture, setLangUi, takeDownloads, waitReady
@@ -471,7 +472,8 @@ async function main() {
       await takeDownloads(page);
       await page.click('.estate-table [data-export="csv"]');
       const [file] = await takeDownloads(page);
-      assertEqual(csvHeader(file.text), [...ESTATE_CSV_COLUMNS, ...ESTATE_ARI_COLUMNS, ...ESTATE_REVOCATION_COLUMNS].map((c) => c.key), 'columns');
+      // the fixture's scan checked trust: its two columns come last
+      assertEqual(csvHeader(file.text), [...ESTATE_CSV_COLUMNS, ...ESTATE_ARI_COLUMNS, ...ESTATE_REVOCATION_COLUMNS, ...ESTATE_TRUST_COLUMNS].map((c) => c.key), 'columns');
       assert(file.text.includes(',2026-10-08T00:00:00Z,2026-10-10T00:00:00Z,https://ca.example.org/incident-2026-10,,revoked,2026-09-21T10:15:00Z,keyCompromise,'), 'a revoked row');
       await removeToasts(page);
     });

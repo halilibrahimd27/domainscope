@@ -17,7 +17,9 @@
  *   Certificates (filter, search, a row's details: fingerprints and where it is served; CSV of
  *   what the filter shows, the CLI's --estate --csv columns; a report made with --ari or
  *   --revocation adds a renewal-window (ARI) or a revocation column, its counts in the overview
- *   and its records in the details, ui/revocation.js), Same name, different certificates,
+ *   and its records in the details, ui/revocation.js; a report whose scan checked trust flags the
+ *   certificates an endpoint serves with an untrusted chain, a filter of their own, and says why
+ *   per endpoint in the details, OpenSSL's verify code in the page's words), Same name, different certificates,
  *   and Shared keys. "Copy summary" (lib/summary.js estateSummary) above the numbers: the counts,
  *   what expires first and what needs a look, by certificate name only — never an address or a
  *   server of the reports — and a link to the view without them.
@@ -39,7 +41,7 @@ import { formatDate, formatDateTime, formatNumber, registerStrings } from '../i1
 import {
   ESTATE_ARI_STATES, ESTATE_BUCKETS, ESTATE_FILTERS, ESTATE_KINDS, ESTATE_MAX_BYTES, ESTATE_MAX_REPORTS, ESTATE_REVOCATION_STATES,
   SHARED_KEY_WIDE_HOSTS, estateCsv, estateFilterCounts, estateMatches, estateOf, estateStatusCounts, mergeReports, readEstateReport,
-  sharedKeyNeedsLook
+  sharedKeyNeedsLook, trustDetailCode
 } from '../lib/estate.js';
 
 /** Route id (`#/estate`). */
@@ -138,6 +140,7 @@ registerStrings('en', {
   'estate.filter.shared-key': 'Key in several certificates or on {hosts}+ addresses ({count})',
   'estate.filter.weak': 'Weak key or signature ({count})',
   'estate.filter.covers-none': 'Covers none of the names asked ({count})',
+  'estate.filter.untrusted': 'Served with an untrusted chain ({count})',
   'estate.filter.private': 'Self-signed or private CA ({count})',
   'estate.filter.origin-ca': 'Cloudflare Origin CA ({count})',
   'estate.col.cert': 'Certificate',
@@ -165,6 +168,17 @@ registerStrings('en', {
   'estate.flagTitle.shared-key': 'Its public key is in several certificates, or on {hosts} or more addresses',
   'estate.flagTitle.weak': 'A weak key or signature',
   'estate.flagTitle.covers-none': 'It covers none of the names asked: a fallback or forgotten certificate',
+  'estate.flag.untrusted': 'untrusted',
+  'estate.flagTitle.untrusted': 'An endpoint serves it with a chain the CLI’s machine does not trust: a missing intermediate, a private CA or a self-signed certificate',
+  'estate.trust.code20': 'missing intermediate or private CA',
+  'estate.trust.code21': 'missing intermediate',
+  'estate.trust.code18': 'self-signed',
+  'estate.trust.code19': 'a root the machine does not trust',
+  'estate.trust.code10': 'expired',
+  'estate.trust.code9': 'not yet valid',
+  'estate.trust.code62': 'issued for another name',
+  'estate.trust.withCode': '{reason} (code {code})',
+  'estate.trust.unknown': 'not trusted',
   'estate.weak.rsa-short': 'RSA key under 2048 bits',
   'estate.weak.sha1': 'SHA-1 signature',
   'estate.weak.md5': 'MD5 / MD2 signature',
@@ -283,6 +297,7 @@ registerStrings('tr', {
   'estate.filter.shared-key': 'Anahtarı birden çok sertifikada ya da {hosts}+ adreste olanlar ({count})',
   'estate.filter.weak': 'Zayıf anahtar ya da imza ({count})',
   'estate.filter.covers-none': 'Sorulan adların hiçbirini kapsamıyor ({count})',
+  'estate.filter.untrusted': 'Güvenilmeyen bir zincirle sunulan ({count})',
   'estate.filter.private': 'Kendinden imzalı ya da özel CA ({count})',
   'estate.filter.origin-ca': 'Cloudflare Origin CA ({count})',
   'estate.col.cert': 'Sertifika',
@@ -310,6 +325,17 @@ registerStrings('tr', {
   'estate.flagTitle.shared-key': 'Açık anahtarı birden çok sertifikada ya da {hosts} ya da daha çok adreste',
   'estate.flagTitle.weak': 'Zayıf bir anahtar ya da imza',
   'estate.flagTitle.covers-none': 'Sorulan adların hiçbirini kapsamıyor: bir yedek ya da unutulmuş sertifika',
+  'estate.flag.untrusted': 'güvenilmeyen',
+  'estate.flagTitle.untrusted': 'Bir uç nokta onu, CLI’nin çalıştığı makinenin güvenmediği bir zincirle sunuyor: eksik ara sertifika, özel CA ya da kendinden imzalı sertifika',
+  'estate.trust.code20': 'eksik ara sertifika ya da özel CA',
+  'estate.trust.code21': 'eksik ara sertifika',
+  'estate.trust.code18': 'kendinden imzalı',
+  'estate.trust.code19': 'makinenin güvenmediği bir kök',
+  'estate.trust.code10': 'süresi dolmuş',
+  'estate.trust.code9': 'henüz geçerli değil',
+  'estate.trust.code62': 'başka bir ad için verilmiş',
+  'estate.trust.withCode': '{reason} (kod {code})',
+  'estate.trust.unknown': 'güvenilmiyor',
   'estate.weak.rsa-short': '2048 bitten kısa RSA anahtarı',
   'estate.weak.sha1': 'SHA-1 imzası',
   'estate.weak.md5': 'MD5 / MD2 imzası',
@@ -836,8 +862,15 @@ export function mount(container, ctx) {
   }
 
   function flagBadge(flag, label = null) {
-    const variant = flag === 'weak' || flag === 'stale' ? 'error' : flag === 'covers-none' ? 'neutral' : 'warn';
+    const variant = flag === 'weak' || flag === 'stale' || flag === 'untrusted' ? 'error' : flag === 'covers-none' ? 'neutral' : 'warn';
     return Badge(label || t(`estate.flag.${flag}`), { variant, title: t(`estate.flagTitle.${flag}`, { hosts: SHARED_KEY_WIDE_HOSTS }), className: `estate-flag estate-flag-${flag}` });
+  }
+
+  /** Why the CLI's machine does not trust an endpoint's chain, in the page's language when the CLI named a verify code. */
+  function trustText(detail) {
+    const code = trustDetailCode(detail);
+    if (code === null) return detail || t('estate.trust.unknown');
+    return t('estate.trust.withCode', { reason: t(`estate.trust.code${code}`), code });
   }
 
   function daysText(days) {
@@ -878,6 +911,9 @@ export function mount(container, ctx) {
             h('span', { class: 'mono' }, endpointText(e)),
             e.defaultCert ? Badge(t('estate.default'), { variant: 'neutral', title: t('estate.defaultTitle') }) : null,
             e.names.length ? h('span', { class: 'muted text-sm' }, t('estate.d.servedFor', { names: e.names.join(', ') })) : null,
+            // the CLI's trust check: why its machine does not trust the chain served here
+            e.trusted === false ? h('span', { class: 'estate-untrusted cluster' },
+              flagBadge('untrusted'), h('span', { class: 'text-sm' }, trustText(e.trustDetail))) : null,
             report ? h('span', { class: 'muted text-xs' }, t('estate.d.report', { name: report })) : null);
         }))));
   }

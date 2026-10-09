@@ -11,7 +11,7 @@ import {
   ESTATE_TABS, CLI_EXAMPLE, bucketVariant, endpointLabel, estateOfReports, estateSummaryFacts, importReports
 } from '../../assets/js/views/estate.js';
 import {
-  ESTATE_BUCKETS, ESTATE_FILTERS, ESTATE_FLAGS, ESTATE_KINDS, ESTATE_MAX_REPORTS, ESTATE_WEAK_REASONS, REPORT_ERRORS
+  ESTATE_BUCKETS, ESTATE_FILTERS, ESTATE_FLAGS, ESTATE_KINDS, ESTATE_MAX_REPORTS, ESTATE_TRUST_CODES, ESTATE_WEAK_REASONS, REPORT_ERRORS
 } from '../../assets/js/lib/estate.js';
 
 const file = (name) => ({ name, text: readFileSync(new URL(`../fixtures/estate/${name}`, import.meta.url), 'utf8') });
@@ -88,6 +88,7 @@ describe('small helpers', () => {
     const keys = [
       ...ESTATE_FILTERS.map((f) => `estate.filter.${f}`),
       ...ESTATE_FLAGS.flatMap((f) => [`estate.flag.${f}`, `estate.flagTitle.${f}`]),
+      ...ESTATE_TRUST_CODES.map((code) => `estate.trust.code${code}`),
       ...ESTATE_KINDS.map((k) => `estate.kind.${k}`),
       ...ESTATE_BUCKETS.map((b) => `estate.bucket.${b}`),
       ...ESTATE_WEAK_REASONS.flatMap((w) => [`estate.weak.${w}`, `estate.weakShort.${w}`]),

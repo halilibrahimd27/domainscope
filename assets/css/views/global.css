@@ -572,7 +572,11 @@
   color: var(--text-2);
 }
 
-/* Region 7 (style.css .finding-list): a finding's group marks. */
+/* Region 7 (style.css .finding-list): "Show n more" at its own width, and a finding's group marks. */
+.glb-findings-card > .btn {
+  align-self: flex-start;
+}
+
 .glb-finding-marks {
   display: inline-flex;
   flex: none;

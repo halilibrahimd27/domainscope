@@ -2102,9 +2102,9 @@ export function mount(container, ctx) {
         }
       }
     }) : null;
-    findingsEl.append(h('section', { class: 'card finding-card glb-findings-card', attrs: { 'aria-labelledby': titleId } },
+    findingsEl.append(h('section', { class: 'card finding-list glb-findings-card', attrs: { 'aria-labelledby': titleId } },
       h('h3', { class: 'finding-title glb-findings-title', id: titleId }, t('glb.findings.label')),
-      h('ul', { class: 'glb-findings finding-list' }, rows.slice(0, limit)),
+      h('ul', { class: 'glb-findings finding-rows' }, rows.slice(0, limit)),
       more));
   }
 

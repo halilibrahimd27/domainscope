@@ -5030,51 +5030,6 @@ button.status-item[aria-pressed="true"] {
   background: var(--surface);
 }
 
-/* Region 7: the findings, one card with a row each (icon, text, an optional action). */
-.finding-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--card-pad);
-}
-
-.finding-title {
-  margin: 0;
-  font-size: var(--fs-md);
-  font-weight: var(--fw-semibold);
-}
-
-.finding-list {
-  display: grid;
-  gap: var(--space-2);
-  align-self: stretch;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.finding {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  min-width: 0;
-  font-size: var(--fs-sm);
-  line-height: var(--lh-sm);
-  overflow-wrap: anywhere;
-}
-
-.finding-icon {
-  display: inline-flex;
-  flex: none;
-  height: var(--lh-sm);
-  align-items: center;
-}
-
-.finding-text {
-  min-width: 0;
-}
-
 /* The empty result region: no card, a small icon, one line and the chips of what it checks. */
 .tool-empty {
   display: flex;
@@ -5185,6 +5140,14 @@ button.status-item[aria-pressed="true"] {
 
 .finding-list[hidden] {
   display: none;
+}
+
+/* The name of a findings card a view draws itself (Global DNS's, with its rows in `.finding-rows`). */
+.finding-title {
+  margin: 0;
+  padding-top: var(--space-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
 }
 
 .finding-rows {

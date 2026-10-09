@@ -12,7 +12,8 @@ records. **Never commit inventories or zone files unless you mean to**: the zone
 a zone export from the repository, so it stays commented out until that file belongs there (the
 origin addresses behind proxied names are hidden in the results unless you add
 `--include-origins`). **No secret is needed**: the job uses the workflow's own `GITHUB_TOKEN`, and
-the checks ask keyless public services only (the alerts below are optional secrets). The checkout
+the checks ask keyless public services only, and the tls check your own hosts (the alerts below
+are optional secrets). The checkout
 keeps no token while the checks run (`persist-credentials: false`): only the commit step and the
 issue step are given it.
 
@@ -20,9 +21,10 @@ issue step are given it.
 2. Copy `nightly-domainscope.yml` to its `.github/workflows/`, and pin `ref:` to a DomainScope
    commit SHA (or to a release tag once there is one).
 3. Switch on the steps you want (health, the Certificate Transparency watch and the takeover
-   watch run by default; subdomain discovery, an exact host list, the takeover watch over the
-   hosts discovery found, zone drift, renewal readiness, the policy audit and the served
-   certificates with their renewal windows and revocation are commented out).
+   watch run by default, and the served-certificate monitor when the repository has a
+   `tls-hosts.txt`; subdomain discovery, an exact host list, the takeover watch over the hosts
+   discovery found, zone drift, renewal readiness, the policy audit and the served certificates'
+   renewal windows, revocation and HTTP answers are commented out).
 4. Run it once by hand (Actions › DomainScope nightly › Run workflow): the first night has no
    baseline to compare with, so it only writes `results/`.
 
@@ -57,9 +59,9 @@ is not set is empty, and then nothing is sent:
   it paged, renewed. A night a lookup fails proves nothing, so the incident stays open. Severity
   is `critical` for registration, delegation, DNSSEC and trust problems — the audit's registrar,
   transfer lock, registry status, DNSSEC and expiry rules, drift's name servers, health's expired,
-  held or deleted registration and broken DNSSEC, ct's certificate in use revoked — and `error`
-  for the rest. `results/NAME.json` keeps the incidents still open (`notify.open`); at most 50
-  events a night.
+  held or deleted registration and broken DNSSEC, ct's certificate in use revoked, tls's untrusted
+  chain and expired or revoked certificate still served — and `error` for the rest.
+  `results/NAME.json` keeps the incidents still open (`notify.open`); at most 50 events a night.
 - `DOMAINSCOPE_NOTIFY_SECRET`: signs the JSON webhook. `X-DomainScope-Timestamp` carries the Unix
   time and `X-DomainScope-Signature` is `sha256=` and the hex HMAC-SHA256 of the timestamp, a dot
   and the body: compute the same over the raw body, compare in constant time, and refuse an old
@@ -83,7 +85,9 @@ and the score, a host that appears, stops resolving, leaves its proxy or becomes
 a new certificate issuer or a first certificate for a name, a new certificate from a CA you did
 not name, a certificate whose renewal is overdue crossing a radar day, a takeover risk of medium
 severity or above that appears, goes or moves, a zone record set whose live state moved, a renewal
-verdict. Moves between failure states, Certificate Transparency sources that
+verdict, a served certificate whose renewal is overdue entering its warning days or expiring, an
+address serving an untrusted chain, a certificate without the name or an older one than the
+renewal CT logged. Moves between failure states, Certificate Transparency sources that
 could not be read, what a failed lookup or source may hide and renewed certificates from known
 issuers are listed but never counted. GitHub's hosted runners share their IP addresses and the
 anonymous quotas of the passive sources are per address, so a source may be rate limited on some
@@ -140,18 +144,35 @@ yours"). A risk whose lookup gave no answer is carried from the last night that 
 gone. Hosts on a service only its page can tell (S3, GitHub Pages …) are listed "to check": the
 page check stays in the app, behind a click.
 
-**Served certificates, renewal windows and revocation.** `tls` (commented out: uncomment it and
-add a `tls-hosts.txt` with a host or `host:port` per line) connects to every address of each host,
-reads the certificate it serves and says whether it expired, is trusted and carries the name. With
-`--ari` it asks the issuing CA for its renewal window (ACME Renewal Information: Let's Encrypt,
-Google Trust Services, ZeroSSL, Sectigo, SSL.com), and with `--revocation` it reads the CRL the
-certificate names. A window that opens (`RENEW-NOW`), one that moves more than a day earlier
-(`MOVED-UP`: CAs do that before a mass revocation), a new explanation from the CA (`CA-NOTICE`)
-and a revoked certificate still served (`REVOKED`) count, and so do a handshake that stops
-completing and another certificate that drops a name or changes the key type or the CA. A CA is
-not asked again before the Retry-After of its last answer, and an IPv6 address the runner cannot
-reach (GitHub's hosted runners have no IPv6 route) is skipped, never a change. The CA receives
-each certificate's CertID (the issuer's key identifier and the serial number, both public).
+**Served certificates: the monitor.** `tls` runs when the repository has a `tls-hosts.txt` (a host
+or `host:port` per line). It connects to every address of each host and reads the certificate it
+serves: the expiry, whether a client's root store trusts the chain (a missing intermediate is named
+from the CCADB list the site ships), whether it carries the name, the chain the server sends, its
+OCSP staple (reported only: Let's Encrypt has had no OCSP since August 2025), the protocol and the
+key exchange. The template's line reads tonight's ct report (`--ct results/ct.json`, after the ct
+line) without a CT query of its own: an address still serving an older certificate than the
+renewal CT logged for the name (issued more than 48 hours later, with every name of the served one)
+is `NOT_DEPLOYED`. A certificate entering `--warn-days` (21 by default) with its automatic renewal
+overdue (`EXPIRING`: less than a quarter of its lifetime left, so a 90-day certificate at 21 days
+and a 47-day one at 11; earlier it is listed only), one expired and still served (`EXPIRED`), a host
+with an address serving an untrusted chain (`UNTRUSTED`), a certificate without the name
+(`MISMATCH`) or an older certificate than the renewal (`NOT-LIVE`) count, once per host and
+problem, and so do a handshake that stops completing and another certificate that drops a name or
+changes the key type or the CA. `--http` also sends `GET /` over HTTPS (the status and HSTS) and
+over HTTP to port 80: a 5xx (`HTTP`) and http:// no longer redirecting to https:// (`REDIRECT`)
+count. `--from-subdomains results/subdomains.json` adds the hosts subdomain discovery found
+(`--skip-cdn` leaves out the ones behind a CDN), and `--max-endpoints` (500) caps the handshakes of
+a night: the hosts past it keep their last check.
+
+**Renewal windows and revocation.** With `--ari` the tls check asks the issuing CA for its renewal
+window (ACME Renewal Information: Let's Encrypt, Google Trust Services, ZeroSSL, Sectigo, SSL.com),
+and with `--revocation` it reads the CRL the certificate names. A window that opens (`RENEW-NOW`),
+one that moves more than a day earlier (`MOVED-UP`: CAs do that before a mass revocation), a new
+explanation from the CA (`CA-NOTICE`) and a revoked certificate still served (`REVOKED`) count. A
+CA is not asked again before the Retry-After of its last answer, and an IPv6 address the runner
+cannot reach (GitHub's hosted runners have no IPv6 route) is skipped, never a change. Your hosts
+see a handshake (and with `--http` a GET) from GitHub's runners; the CA receives each certificate's
+CertID (the issuer's key identifier and the serial number, both public).
 
 **Cert Spotter and more than about 10 domains.** Cert Spotter answers about 10 full-domain queries
 an hour per IP address. After its first "rate limited" of a night the runner does not ask it
@@ -174,6 +195,8 @@ node tools/ds.mjs renew example.com '*.example.com' --ca letsencrypt --challenge
 node tools/ds.mjs dane fullchain.pem
 node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
 node tools/ds.mjs tls www.example.com example.com:8443 --ari --revocation --json tls.json
+node tools/ds.mjs tls --list tls-hosts.txt --ct ct.json --http --warn-days 30 --baseline tls.json --json tls.json
+node tools/ds.mjs tls --from-subdomains subs.json --skip-cdn --max-endpoints 200
 node tools/ds.mjs takeover --list domains.txt --from-subdomains subs.json --baseline takeover.json --json takeover.json
 ```
 

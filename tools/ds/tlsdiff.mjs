@@ -8,13 +8,26 @@
  * - FAILED / RECOVERED / FAILING: a handshake that stopped completing (counted), completes again
  *   (its tone is the new status's), or moved between two failures (listed only); SKIPPED (no IPv6
  *   route) is never a change;
- * - WORSE / BETTER: OK, NAME_MISMATCH, UNTRUSTED, EXPIRED, worst last;
  * - CERT: another certificate served — listed only when it renews the last one (the same CA, key
  *   type and every name kept), counted when it drops a name, changes the key type or the CA;
- * - a host whose DNS lookup failed is listed once (FAILED, not counted: nothing was compared) and
- *   the next run is compared with the endpoints it carried; NXDOMAIN (the name went) is GONE, counted.
- * Per certificate (ARI with --ari, the CRL with --revocation), counted, tone bad, also for a target
- * new to the list (compared with nothing):
+ * - a host whose DNS lookup failed, or that `--max-endpoints` left out, is listed once (FAILED, not
+ *   counted: nothing was compared) and the next run is compared with the endpoints it carried;
+ *   NXDOMAIN (the name went) is GONE, counted.
+ * Per target, the problems of its addresses ({@link TLS_PROBLEMS}), counted: UNTRUSTED (a chain this
+ * machine's root store does not trust), MISMATCH (a certificate without the name), NOT-LIVE (with
+ * --ct in both runs: an older certificate than the renewal CT logged), and with --http in both runs
+ * HTTP (GET / answers 5xx) and REDIRECT (http:// no longer redirects to https://) — said when an
+ * address read in both runs gets the problem, or a new address has it while none of the target's
+ * had it before (a pool's rotating addresses repeat nothing); BETTER (good) once no address has it
+ * and every one that had it was read again. The item is null: one PagerDuty incident per host and
+ * problem, however many of its addresses share it. A weaker HSTS header is listed only (HSTS).
+ * Per certificate (the item is its SHA-256), counted, tone bad, also for a target new to the list
+ * (compared with nothing):
+ * - EXPIRING: it entered --warn-days with its automatic renewal overdue (less than a quarter of its
+ *   lifetime left, tools/ds/ctwatch.mjs overdueDays: a 90-day certificate at 21 days, a 47-day one at
+ *   11) since the baseline last saw it served; entering --warn-days earlier is listed only, and a
+ *   short-lived certificate first seen inside it says nothing;
+ * - EXPIRED: it expired, still served;
  * - RENEW-NOW: the CA's ARI window has opened (or ended, the renewal overdue) since the baseline last
  *   saw that certificate served — the window it knew then, at that time (the target's check; the
  *   check a DNS outage carried; an endpoint's lastGood `at`), never at its answer's `checkedAt`: an
@@ -23,26 +36,83 @@
  *   does that before a mass revocation;
  * - CA-NOTICE: an explanationURL the target's last answers did not carry;
  * - REVOKED: its CRL lists it now, and did not at the last check (or it is new).
- * The research notes named MOVED-UP and CA-NOTICE "WINDOW-MOVED" and "EXPLANATION"; SPEC §9 has every
- * tag at most nine characters (tests/js/ds-runner.test.js), the change column of both tools.
+ * The research notes named MOVED-UP and CA-NOTICE "WINDOW-MOVED" and "EXPLANATION", and NOT-LIVE
+ * "NOT-DEPLOYED" (the endpoint status keeps that name: NOT_DEPLOYED); SPEC §9 has every tag at most
+ * nine characters (tests/js/ds-runner.test.js), the change column of both tools.
  */
 
 import { code, isoDay } from './render.mjs';
 import { windowState } from './ari.mjs';
+import { daysLeftAt, overdueDays } from './ctwatch.mjs';
 
-/** The endpoint statuses of `tls`: a certificate was read (the first four), or none. */
-export const TLS_STATUSES = Object.freeze(['OK', 'EXPIRED', 'UNTRUSTED', 'NAME_MISMATCH', 'TLS_ERROR', 'TIMEOUT', 'CLOSED', 'SKIPPED']);
+/**
+ * The endpoint statuses of `tls`, best first: a certificate was read (the first six), or none.
+ * EXPIRING and EXPIRED come from the certificate's dates, the other three from the endpoint.
+ */
+export const TLS_STATUSES = Object.freeze(['OK', 'EXPIRING', 'NOT_DEPLOYED', 'NAME_MISMATCH', 'UNTRUSTED', 'EXPIRED', 'TLS_ERROR', 'TIMEOUT', 'CLOSED', 'SKIPPED']);
 /** Statuses with no certificate read: the handshake did not complete. */
 export const TLS_FAILED = Object.freeze(['TLS_ERROR', 'TIMEOUT', 'CLOSED']);
+/** Node's codes for a certificate without the name asked (tls.checkServerIdentity), set only when the chain was trusted. */
+export const NAME_ERRORS = Object.freeze(['ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_TLS_CERT_ALTNAME_FORMAT']);
+/** A trust error that is the certificate's dates (EXPIRED, said per certificate), not the chain. */
+const EXPIRY_ERRORS = Object.freeze(['CERT_HAS_EXPIRED']);
 /** A window start this much earlier than the last answer's is MOVED-UP. */
 export const MOVED_UP_MS = 24 * 3600000;
-/** The statuses of a handshake that read a certificate, best first. */
-const CERT_RANK = Object.freeze({ OK: 0, NAME_MISMATCH: 1, UNTRUSTED: 2, EXPIRED: 3 });
 const STATE_RANK = Object.freeze({ before: 0, open: 1, past: 2 });
+/** A certificate's expiry states, in order ({@link expiryState}). */
+const EXPIRY_RANK = Object.freeze({ ok: 0, soon: 1, expiring: 2, expired: 3 });
+/** --warn-days of a report that does not say (written before it existed). */
+const DEFAULT_WARN_DAYS = 21;
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const isStr = (v) => typeof v === 'string';
 const isStrOrNull = (v) => v === null || v === undefined || typeof v === 'string';
+
+/** Does an endpoint record serve a chain this machine does not trust (not its dates, not the name)? */
+export const isUntrusted = (e) => !!(e && e.cert) && e.trusted === false && isStr(e.trustError)
+  && !EXPIRY_ERRORS.includes(e.trustError) && !NAME_ERRORS.includes(e.trustError);
+/** Does it serve a certificate without the name asked? */
+export const isMismatch = (e) => !!(e && e.cert) && e.nameMatch === false;
+/** Does it serve an older certificate than the renewal CT logged (--ct)? */
+export const isNotDeployed = (e) => !!(e && e.cert) && isObj(e.newer);
+/** Does GET / answer 5xx (--http)? */
+export const isHttpError = (e) => !!(e && e.cert) && isObj(e.http) && Number.isInteger(e.http.status) && e.http.status >= 500;
+/** Does http:// answer without a redirect to https:// (--http, port 443)? */
+export const isNoRedirect = (e) => !!(e && e.cert) && isObj(e.http) && isObj(e.http.plain) && Number.isInteger(e.http.plain.status) && e.http.plain.toHttps !== true;
+
+/**
+ * The problems of an endpoint the target-level changes are about: the tag, the endpoint status it
+ * stands for, its test, and what a run must have read for a comparison (`needs`: the target's CT
+ * lookup, an endpoint's HTTP answer).
+ */
+export const TLS_PROBLEMS = Object.freeze([
+  Object.freeze({ tag: 'UNTRUSTED', status: 'UNTRUSTED', has: isUntrusted, needs: null }),
+  Object.freeze({ tag: 'MISMATCH', status: 'NAME_MISMATCH', has: isMismatch, needs: null }),
+  Object.freeze({ tag: 'NOT-LIVE', status: 'NOT_DEPLOYED', has: isNotDeployed, needs: 'ct' }),
+  Object.freeze({ tag: 'HTTP', status: 'HTTP_ERROR', has: isHttpError, needs: 'http' }),
+  Object.freeze({ tag: 'REDIRECT', status: 'NO_REDIRECT', has: isNoRedirect, needs: 'redirect' })
+]);
+
+/**
+ * A certificate's expiry state at `at` (ms) with `warnDays`: `expired`; `expiring` with at most
+ * `warnDays` days left and its automatic renewal overdue (fewer days left than a quarter of its
+ * lifetime); `soon` within `warnDays` before that; `ok`.
+ * @param {{ notBefore: string, notAfter: string }} cert
+ * @param {number} at
+ * @param {number} warnDays
+ * @returns {'ok'|'soon'|'expiring'|'expired'}
+ */
+export function expiryState(cert, at, warnDays) {
+  const end = Date.parse(cert && cert.notAfter);
+  if (!Number.isFinite(end) || !Number.isFinite(at)) return 'ok';
+  if (end < at) return 'expired';
+  const left = daysLeftAt(cert.notAfter, at);
+  if (left > warnDays) return 'ok';
+  return left <= overdueDays(cert) ? 'expiring' : 'soon';
+}
+
+/** A report's --warn-days (the default for a report written before the option). */
+export const warnDaysOf = (doc) => (doc && isObj(doc.options) && Number.isInteger(doc.options.warnDays) ? doc.options.warnDays : DEFAULT_WARN_DAYS);
 
 /**
  * Why a `tls` baseline target is not what the comparison reads, or null.
@@ -52,13 +122,14 @@ const isStrOrNull = (v) => v === null || v === undefined || typeof v === 'string
 export function tlsTargetProblem(x) {
   if (!Array.isArray(x.endpoints)) return 'has no "endpoints" list';
   if (x.carried !== undefined && !(isObj(x.carried) && isStrOrNull(x.carried.from))) return 'has a "carried" without a "from"';
+  if (x.ct !== undefined && !isObj(x.ct)) return 'has a "ct" that is not an object';
   for (const [i, e] of x.endpoints.entries()) {
     const where = `endpoints[${i}]`;
     if (!isObj(e)) return `${where} is not an object`;
     if (!isStr(e.address)) return `${where} has no "address"`;
     if (!Number.isInteger(e.port)) return `${where} has no "port"`;
     if (!isStr(e.status)) return `${where} has no "status"`;
-    for (const [key, v] of [['cert', e.cert], ['lastGood', e.lastGood], ['ari', e.ari], ['revocation', e.revocation]]) {
+    for (const [key, v] of [['cert', e.cert], ['lastGood', e.lastGood], ['ari', e.ari], ['revocation', e.revocation], ['newer', e.newer], ['http', e.http]]) {
       if (v !== undefined && v !== null && !isObj(v)) return `${where} has a "${key}" that is not an object`;
     }
     for (const c of [e.cert, e.lastGood && e.lastGood.cert]) {
@@ -71,6 +142,7 @@ export function tlsTargetProblem(x) {
     for (const r of [e.revocation, e.lastGood && e.lastGood.revocation]) {
       if (r && !isStr(r.status)) return `${where} has a "revocation" without "status"`;
     }
+    if (e.http && e.http.plain !== undefined && e.http.plain !== null && !isObj(e.http.plain)) return `${where} has an "http.plain" that is not an object`;
   }
   return null;
 }
@@ -87,6 +159,18 @@ const certOf = (e) => (e && e.cert) || (e && e.lastGood && e.lastGood.cert) || n
 /** The ARI and revocation records of an endpoint's certificate, read now or carried. */
 const extrasOf = (e) => (e && e.cert ? { ari: e.ari || null, revocation: e.revocation || null } : { ari: (e && e.lastGood && e.lastGood.ari) || null, revocation: (e && e.lastGood && e.lastGood.revocation) || null });
 const certLabel = (c) => [code(c.subject || shortSha(c.sha256)), ' (', code(c.ca || '?'), `, expires ${isoDay(c.notAfter)})`];
+const days = (n) => `${n} day${n === 1 ? '' : 's'}`;
+
+/** Addresses as code parts, at most four, then "+N". */
+function addressParts(list) {
+  const out = [];
+  list.slice(0, 4).forEach((e, i) => {
+    if (i) out.push(', ');
+    out.push(code(where(e)));
+  });
+  if (list.length > 4) out.push(` +${list.length - 4}`);
+  return out;
+}
 
 /** What another certificate on the same endpoint changed: [] for a renewal of the same kind. */
 function certDifferences(a, b) {
@@ -102,6 +186,8 @@ function certDifferences(a, b) {
 const checkedMs = (x, doc) => Date.parse((x && x.checkedAt) || (doc && doc.startedAt) || '') || NaN;
 /** When a target's endpoints were read (ms): a DNS outage carried them from an earlier check. */
 const servedMs = (x, doc) => (x && x.carried && Date.parse(x.carried.from)) || checkedMs(x, doc);
+/** Why a target was carried: its DNS lookup failed (`dns`, the default of an older report) or --max-endpoints left it out. */
+const carriedWhy = (x) => (x && x.carried && x.carried.why === 'max-endpoints' ? 'max-endpoints' : 'dns');
 
 /**
  * @param {object} before the baseline report
@@ -112,25 +198,33 @@ export function diffTls(before, after) {
   const out = [];
   const old = new Map((before.targets || []).map((x) => [x.target, x]));
   const now = new Map((after.targets || []).map((x) => [x.target, x]));
+  const http = !!(before.options && before.options.http) && !!(after.options && after.options.http);
   for (const [target, a] of now) {
     const b = old.get(target);
     if (!b) {
       const ok = (a.endpoints || []).filter((e) => e.cert).length;
-      out.push(change('NEW', target, null, [a.carried ? 'now checked (its DNS lookup failed this run)' : `now checked: ${ok} endpoint${ok === 1 ? '' : 's'} served a certificate`], { kind: 'appeared' }));
-      // what its certificates are in now (a window open, a revocation) is said once, as the CLI does
-      if (!a.carried) out.push(...diffCertificates(target, a, { endpoints: [] }, before, after));
+      out.push(change('NEW', target, null, [a.carried ? `now listed, not checked this run (${carriedWhy(a) === 'dns' ? 'its DNS lookup failed' : '--max-endpoints'})`
+        : `now checked: ${ok} endpoint${ok === 1 ? '' : 's'} served a certificate`], { kind: 'appeared' }));
+      // what its certificates and addresses are in now (a window open, a revocation, an untrusted chain) is said once, as the CLI does
+      if (!a.carried) {
+        out.push(...diffProblems(target, a, { endpoints: [] }, { http: !!(after.options && after.options.http) }));
+        out.push(...diffCertificates(target, a, { endpoints: [] }, before, after));
+      }
       continue;
     }
     if (a.carried) {
       // said once: the endpoints of the last check are carried, the next run is compared with them
-      if (!b.carried) {
-        out.push(change('FAILED', target, null, [`DNS lookup failed this run (${a.dns ? a.dns.status : '?'}): nothing compared; the next run compares with the last check`],
-          { tone: 'quiet', counts: false }));
+      if (!b.carried || carriedWhy(b) !== carriedWhy(a)) {
+        out.push(change('FAILED', target, null, [carriedWhy(a) === 'dns'
+          ? `DNS lookup failed this run (${a.dns ? a.dns.status : '?'}): nothing compared; the next run compares with the last check`
+          : 'not checked this run (--max-endpoints: the run had checked as many endpoints as it may): the next run compares with the last check'],
+        { tone: 'quiet', counts: false }));
       }
       continue;
     }
     if (b.carried) {
-      out.push(change('RECOVERED', target, null, [`DNS answered again; compared with the check of ${isoDay(b.carried.from) || 'an earlier run'}`], { tone: 'quiet', counts: false }));
+      out.push(change('RECOVERED', target, null, [`${carriedWhy(b) === 'dns' ? 'DNS answered again' : 'checked again'}; compared with the check of ${isoDay(b.carried.from) || 'an earlier run'}`],
+        { tone: 'quiet', counts: false }));
     }
     const bDns = b.dns && b.dns.status;
     const aDns = a.dns && a.dns.status;
@@ -139,6 +233,7 @@ export function diffTls(before, after) {
       continue;
     }
     out.push(...diffEndpoints(target, a, b));
+    out.push(...diffProblems(target, a, b, { http }));
     out.push(...diffCertificates(target, a, b, before, after));
   }
   for (const [target] of old) if (!now.has(target)) out.push(change('GONE', target, null, ['no longer checked'], { kind: 'disappeared' }));
@@ -173,10 +268,6 @@ function diffEndpoints(target, a, b) {
       const last = p.lastGood && p.lastGood.cert;
       const moved = last && last.sha256 !== e.cert.sha256 ? [', another certificate than before it failed: ', ...certLabel(e.cert)] : [];
       out.push(change('RECOVERED', target, key(e), [...at, `answers again: ${e.status}`, ...moved], { tone: e.status === 'OK' ? 'good' : 'bad', before: p.status, after: e.status }));
-    } else if (e.status !== p.status) {
-      const worse = (CERT_RANK[e.status] ?? 0) > (CERT_RANK[p.status] ?? 0);
-      out.push(change(worse ? 'WORSE' : 'BETTER', target, key(e), [...at, `${p.status} → ${e.status}${e.trustError && worse ? ` (${e.trustError})` : ''}`],
-        { tone: worse ? 'bad' : 'good', before: p.status, after: e.status }));
     }
     const pc = certOf(p);
     if (e.cert && pc && pc.sha256 !== e.cert.sha256) {
@@ -188,6 +279,88 @@ function diffEndpoints(target, a, b) {
   for (const p of b.endpoints || []) {
     if (keys.has(key(p)) || p.status === 'SKIPPED') continue;
     out.push(change('GONE', target, key(p), ['address ', code(where(p)), ' no longer answered by DNS'], { tone: 'quiet', counts: false, kind: 'disappeared', before: p.status }));
+  }
+  return out;
+}
+
+/** The words of a problem on a target's addresses (bad), and of its end (good). */
+function problemText(problem, list) {
+  const first = list[0];
+  switch (problem.tag) {
+    case 'UNTRUSTED': {
+      const missing = list.map((e) => e.missingIntermediate).find(Boolean);
+      return [...addressParts(list), ` serve${list.length === 1 ? 's' : ''} a chain this machine does not trust (`, code(first.trustError), ')',
+        ...(missing ? ['; the intermediate ', code(missing.name), ...(missing.owner ? [' (', code(missing.owner), ')'] : []), ' is not sent'] : [])];
+    }
+    case 'MISMATCH':
+      return [...addressParts(list), ` serve${list.length === 1 ? 's' : ''} `, ...certLabel(first.cert), ', which does not cover the name'];
+    case 'NOT-LIVE':
+      return [...addressParts(list), ` still serve${list.length === 1 ? 's' : ''} the certificate of ${isoDay(first.cert.notBefore)} (expires ${isoDay(first.cert.notAfter)}); `,
+        `CT logged its renewal of ${isoDay(first.newer.notBefore)} (`, code(first.newer.ca || '?'), '), not installed there'];
+    case 'HTTP':
+      return [...addressParts(list), `: GET / answers ${first.http.status}`];
+    case 'REDIRECT':
+      return [...addressParts(list), `: http:// answers ${first.http.plain.status} without a redirect to https://`];
+    default:
+      return [...addressParts(list)];
+  }
+}
+
+const GOOD_TEXT = Object.freeze({
+  UNTRUSTED: 'every address serves a trusted chain again',
+  MISMATCH: 'every address serves a certificate for the name again',
+  'NOT-LIVE': 'every address serves the renewed certificate now',
+  HTTP: 'GET / no longer answers 5xx',
+  REDIRECT: 'http:// redirects to https:// again'
+});
+
+/**
+ * The target-level problems ({@link TLS_PROBLEMS}) one run has and the other had not, and a weaker
+ * HSTS header (listed only).
+ * @param {string} target
+ * @param {object} a this run's target
+ * @param {object} b the baseline's (`{ endpoints: [] }` for a target new to the list)
+ * @param {{ http: boolean }} opts both runs asked HTTP (a target new to the list: this run did)
+ */
+function diffProblems(target, a, b, { http }) {
+  const out = [];
+  const prev = new Map((b.endpoints || []).map((e) => [key(e), e]));
+  const now = (a.endpoints || []).filter((e) => e.cert);
+  const readBefore = (b.endpoints || []).filter((e) => e.cert);
+  const present = new Map((a.endpoints || []).map((e) => [key(e), e]));
+  for (const problem of TLS_PROBLEMS) {
+    if (problem.needs === 'ct' && !(isObj(a.ct) && (isObj(b.ct) || !readBefore.length))) continue;
+    if ((problem.needs === 'http' || problem.needs === 'redirect') && !http) continue;
+    const had = readBefore.filter((e) => problem.has(e));
+    const has = now.filter((e) => problem.has(e));
+    // an address read in both runs that got the problem, or a new one while the target had none
+    const newly = has.filter((e) => {
+      const p = prev.get(key(e));
+      if (p && p.cert) return !problem.has(p) && (problem.needs !== 'http' || isObj(p.http)) && (problem.needs !== 'redirect' || (isObj(p.http) && isObj(p.http.plain)));
+      return !p && !had.length;
+    });
+    if (newly.length) {
+      out.push(change(problem.tag, target, null, problemText(problem, newly), { tone: 'bad', after: problem.status }));
+    } else if (had.length && !has.length && had.every((e) => {
+      const n = present.get(key(e));
+      return !n || !!n.cert; // read again, or gone from DNS; one that failed this run may have it still
+    })) {
+      out.push(change('BETTER', target, null, [GOOD_TEXT[problem.tag]], { tone: 'good', before: problem.status }));
+    }
+  }
+  if (http) {
+    const weaker = now.filter((e) => {
+      const p = prev.get(key(e));
+      const was = p && p.cert && isObj(p.http) && isObj(p.http.hsts) && p.http.hsts.valid ? p.http.hsts.maxAge : null;
+      if (!was || !isObj(e.http) || !Number.isInteger(e.http.status)) return false;
+      const is = isObj(e.http.hsts) && e.http.hsts.valid ? e.http.hsts.maxAge : 0;
+      return is < was;
+    });
+    if (weaker.length) {
+      const p = prev.get(key(weaker[0]));
+      const is = isObj(weaker[0].http.hsts) && weaker[0].http.hsts.valid ? `max-age=${weaker[0].http.hsts.maxAge}` : 'none';
+      out.push(change('HSTS', target, null, [...addressParts(weaker), `: Strict-Transport-Security max-age=${p.http.hsts.maxAge} → ${is}`], { tone: 'info', counts: false }));
+    }
   }
   return out;
 }
@@ -214,6 +387,8 @@ function diffCertificates(target, a, b, before, after) {
   const out = [];
   const prev = certificatesOf(b, before);
   const at = checkedMs(a, after);
+  const warnNow = warnDaysOf(after);
+  const warnThen = warnDaysOf(before);
   const prevExplanations = new Set();
   let prevRead = false;
   for (const e of b.endpoints || []) {
@@ -225,20 +400,43 @@ function diffCertificates(target, a, b, before, after) {
   }
   // this run's certificates only: what the endpoints serve now
   const current = new Map();
-  for (const e of a.endpoints || []) if (e.cert && !current.has(e.cert.sha256)) current.set(e.cert.sha256, { cert: e.cert, ari: e.ari || null, revocation: e.revocation || null });
+  for (const e of a.endpoints || []) {
+    if (!e.cert) continue;
+    if (!current.has(e.cert.sha256)) current.set(e.cert.sha256, { cert: e.cert, ari: e.ari || null, revocation: e.revocation || null, endpoints: [] });
+    current.get(e.cert.sha256).endpoints.push(e);
+  }
   for (const [sha, x] of current) {
     const p = prev.get(sha) || null;
     const label = certLabel(x.cert);
+    // its expiry: entering --warn-days with the renewal overdue, expiring; the state the baseline saw when it last saw it served
+    const state = expiryState(x.cert, at, warnNow);
+    const pState = p ? expiryState(x.cert, p.seenAt, warnThen) : null;
+    const rank = EXPIRY_RANK[state];
+    const pRank = pState === null ? -1 : EXPIRY_RANK[pState];
+    if (rank > pRank && state !== 'ok') {
+      const left = daysLeftAt(x.cert.notAfter, at);
+      if (state === 'expired') {
+        out.push(change('EXPIRED', target, sha, [...label, `: expired on ${isoDay(x.cert.notAfter)}, still served by `, ...addressParts(x.endpoints)],
+          { tone: 'bad', before: pState, after: 'EXPIRED' }));
+      } else if (state === 'expiring') {
+        out.push(change('EXPIRING', target, sha, [...label, `: ${days(left)} left and not renewed (served by `, ...addressParts(x.endpoints), ')'],
+          { tone: 'bad', before: pState, after: 'EXPIRING' }));
+      } else if (p) {
+        // within --warn-days before its automatic renewal is due: listed (a short-lived certificate first seen there says nothing)
+        out.push(change('EXPIRING', target, sha, [...label, `: ${days(left)} left; its automatic renewal is not overdue yet`],
+          { tone: 'info', counts: false, before: pState, after: 'soon' }));
+      }
+    }
     const ari = x.ari && !x.ari.error ? x.ari : null;
     const pAri = p && p.ari && !p.ari.error ? p.ari : null;
     if (ari) {
-      const state = windowState(ari, at);
+      const windowNow = windowState(ari, at);
       // the window the baseline knew, when it last saw the certificate served (what its run said)
-      const pState = pAri ? windowState(pAri, [p.seenAt, Date.parse(pAri.checkedAt), at].find(Number.isFinite)) : null;
-      if ((state === 'open' || state === 'past') && STATE_RANK[state] > (pState === null ? -1 : STATE_RANK[pState])) {
-        out.push(change('RENEW-NOW', target, sha, [...label, state === 'open'
+      const windowThen = pAri ? windowState(pAri, [p.seenAt, Date.parse(pAri.checkedAt), at].find(Number.isFinite)) : null;
+      if ((windowNow === 'open' || windowNow === 'past') && STATE_RANK[windowNow] > (windowThen === null ? -1 : STATE_RANK[windowThen])) {
+        out.push(change('RENEW-NOW', target, sha, [...label, windowNow === 'open'
           ? `: the CA's renewal window opened (${isoDay(ari.start)} – ${isoDay(ari.end)}): renew it now`
-          : `: the CA's renewal window ended on ${isoDay(ari.end)}: the renewal is overdue`], { tone: 'bad', after: state }));
+          : `: the CA's renewal window ended on ${isoDay(ari.end)}: the renewal is overdue`], { tone: 'bad', after: windowNow }));
       }
       if (pAri && Date.parse(ari.start) < Date.parse(pAri.start) - MOVED_UP_MS) {
         const ahead = Math.round((Date.parse(pAri.start) - Date.parse(ari.start)) / 86400000);
@@ -268,5 +466,10 @@ export function tlsNotes(o, n) {
   const notes = [];
   if (o.ari !== undefined && !!o.ari !== !!n.ari) notes.push(`ARI was asked in ${n.ari ? 'this run only' : 'the baseline run only'} (--ari): RENEW-NOW, MOVED-UP and CA-NOTICE compare runs that both asked it.`);
   if (o.revocation !== undefined && !!o.revocation !== !!n.revocation) notes.push(`Revocation was checked in ${n.revocation ? 'this run only' : 'the baseline run only'} (--revocation).`);
+  const ow = Number.isInteger(o.warnDays) ? o.warnDays : DEFAULT_WARN_DAYS;
+  const nw = Number.isInteger(n.warnDays) ? n.warnDays : DEFAULT_WARN_DAYS;
+  if (ow !== nw) notes.push(`The warning days differ from the baseline's (${ow} → ${nw}, --warn-days): EXPIRING can come from that.`);
+  if (!!o.ct !== !!n.ct) notes.push(`CT was read in ${n.ct ? 'this run only' : 'the baseline run only'} (--ct): NOT-LIVE compares runs that both read it.`);
+  if (!!o.http !== !!n.http) notes.push(`HTTP was asked in ${n.http ? 'this run only' : 'the baseline run only'} (--http): HTTP and REDIRECT compare runs that both asked it.`);
   return notes;
 }

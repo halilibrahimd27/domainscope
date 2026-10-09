@@ -106,8 +106,9 @@ const NOT_COUNTED = 'sources that could not be read, moves between failure state
   + 'certificates in the expiry radar while their automatic renewal is not overdue';
 /** The audit's (diff.mjs diffAudit): a rule not checked this run, what comes in meeting the policy, a rule taken out of it. */
 const NOT_COUNTED_AUDIT = 'rules that could not be checked this run, a domain or rule added that meets the policy, a rule taken out of it';
-/** tls's (tools/ds/tlsdiff.mjs): what DNS moves and a renewal are, and an outage that compared nothing. */
-const NOT_COUNTED_TLS = 'moves between failure states, a DNS lookup that failed, addresses a name gained or lost, renewed certificates';
+/** tls's (tools/ds/tlsdiff.mjs): what DNS moves and a renewal are, an outage that compared nothing, an expiry not overdue yet. */
+const NOT_COUNTED_TLS = 'moves between failure states, a DNS lookup that failed or a host --max-endpoints left out, addresses a name gained or lost, '
+  + 'renewed certificates, certificates within --warn-days before their automatic renewal is overdue, a weaker HSTS header';
 /** The takeover watch's (tools/ds/takeover.mjs diffTakeover): what stays below medium severity. */
 const NOT_COUNTED_TAKEOVER = 'risks of low severity and the ones only the page can tell (to check in the app), and their moves';
 /** What is listed but not counted, for the run's command; the accepted risks named when a change listed is about one. */
@@ -119,7 +120,8 @@ const notCounted = (command, changes = []) => (command === 'audit' ? NOT_COUNTED
 export const MAX_SUMMARY_CHANGES = 50;
 /** Every tag a change can carry, widest first for the column. */
 export const CHANGE_TAGS = Object.freeze(['NEW', 'GONE', 'WORSE', 'BETTER', 'CHANGED', 'FAILED', 'RECOVERED', 'FAILING', 'SCORE',
-  'ISSUER', 'NAME', 'CERT', 'CA', 'EXPIRING', 'REVOKED', 'EXPOSED', 'DANGLING', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'RISK', 'WAIVED', 'LAPSED']);
+  'ISSUER', 'NAME', 'CERT', 'CA', 'EXPIRING', 'REVOKED', 'EXPOSED', 'DANGLING', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'RISK', 'WAIVED', 'LAPSED',
+  'EXPIRED', 'UNTRUSTED', 'MISMATCH', 'NOT-LIVE', 'HTTP', 'REDIRECT', 'HSTS']);
 const TAG_WIDTH = Math.max(...CHANGE_TAGS.map((tag) => tag.length));
 
 const ANSI = { red: '31', green: '32', yellow: '33', cyan: '36', dim: '2', bold: '1' };

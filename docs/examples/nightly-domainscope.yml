@@ -2,8 +2,9 @@
 #
 # Copy this file to .github/workflows/ of a PRIVATE repository of yours, next to a domains.txt
 # (one domain per line, # comments). Every night it runs Domain Health, the Certificate
-# Transparency watch and the takeover watch for those domains (subdomain discovery, zone drift,
-# renewal readiness and the policy audit are there to switch on), commits the JSON reports and
+# Transparency watch and the takeover watch for those domains, and the served-certificate monitor
+# for the hosts of a tls-hosts.txt when there is one (subdomain discovery, zone drift, renewal
+# readiness and the policy audit are there to switch on), commits the JSON reports and
 # Markdown summaries under results/, and keeps ONE issue: opened or updated when something changed
 # since the night before, closed on a night with no change when every check completed. The
 # results/*.json of one night are the next night's baseline; git history keeps every night.
@@ -16,7 +17,8 @@
 #   addresses behind proxied names stay hidden in the results unless you add --include-origins.
 # - No secret is needed. The job uses the workflow's own GITHUB_TOKEN (contents: write to commit
 #   the results, issues: write for the issue); the checks ask keyless public services only (DNS
-#   over HTTPS, RDAP, crt.sh, Cert Spotter, the passive subdomain sources). Nothing goes to
+#   over HTTPS, RDAP, crt.sh, Cert Spotter, the passive subdomain sources), and the tls check
+#   your own hosts (a TLS handshake with each address, from GitHub's runners). Nothing goes to
 #   Globalping: the checks that need a probe stay in the web app, behind a click. The checkout
 #   keeps no token while the checks run (persist-credentials: false): only the commit step and
 #   the issue step are given it.
@@ -130,6 +132,11 @@ jobs:
           # certificate from another CA counts, and so does a certificate crossing a radar day once its
           # automatic renewal is overdue (less than a quarter of its lifetime left):
           # ds ct ct --list domains.txt --expected-ca letsencrypt --radar 30,14,7
+          # The certificates your hosts serve, when there is a tls-hosts.txt (a host or host:port per
+          # line): each address's expiry (EXPIRING: 21 days left with its automatic renewal overdue),
+          # trust (a missing intermediate is named), name, and with tonight's ct report a renewed
+          # certificate that is not installed yet (NOT-LIVE):
+          [ -f tls-hosts.txt ] && ds tls tls --list tls-hosts.txt --ct results/ct.json
           # Subdomain discovery (slower, and heavier on the passive sources' quotas):
           # ds subdomains subdomains --list domains.txt --level small
           # Only the names you list, no source and no guess (quota-free):
@@ -147,10 +154,10 @@ jobs:
           # The Domain portfolio's policy audit (policy.json as the app exports it): exit 4 while a rule
           # fails, so the issue stays open until every rule passes:
           # ds audit audit --list domains.txt --policy policy.json
-          # The certificates your hosts serve (tls-hosts.txt: a host or host:port per line), with each
-          # CA's renewal window (ARI) and revocation list: a window that opens or moves earlier (as CAs
-          # do before a mass revocation), a CA's notice and a revoked certificate count:
-          # ds tls tls --list tls-hosts.txt --ari --revocation
+          # Instead of the tls line above, the same with each CA's renewal window (ARI) and revocation
+          # list, and GET / over HTTPS and HTTP: a window that opens or moves earlier (as CAs do before
+          # a mass revocation), a CA's notice, a revoked certificate, a 5xx and a lost redirect count:
+          # [ -f tls-hosts.txt ] && ds tls tls --list tls-hosts.txt --ct results/ct.json --ari --revocation --http
           echo "changed=${changed[*]}" >> "$GITHUB_OUTPUT"
           echo "failed=${failed[*]}" >> "$GITHUB_OUTPUT"
 

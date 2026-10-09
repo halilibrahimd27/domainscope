@@ -57,7 +57,7 @@ export const COMMAND_SPECS = Object.freeze({
   renew: Object.freeze({ targets: 'names', options: Object.freeze(['list', 'ca', 'challenge']) }),
   dane: Object.freeze({ targets: 'file', options: Object.freeze([]) }),
   audit: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'policy', 'preset', 'no-dkim', 'waivers']) }),
-  tls: Object.freeze({ targets: 'endpoints', options: Object.freeze(['list', 'ari', 'revocation']) }),
+  tls: Object.freeze({ targets: 'endpoints', options: Object.freeze(['list', 'ari', 'revocation', 'from-subdomains', 'skip-cdn', 'warn-days', 'ct', 'http', 'max-endpoints']) }),
   takeover: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'names', 'from-subdomains', 'dkim-selectors']) })
 });
 
@@ -125,6 +125,13 @@ export function parseTlsTarget(token) {
   if (!name) return null;
   return { target: `${name}${suffix}`, host: name, address: null, port };
 }
+
+/** `tls --warn-days`: a certificate with at most this many days left is EXPIRING (the default, and the most). */
+export const TLS_DEFAULT_WARN_DAYS = 21;
+export const TLS_MAX_WARN_DAYS = 398;
+/** `tls --max-endpoints`: the handshakes of one run at most (the default, and the most). */
+export const TLS_DEFAULT_MAX_ENDPOINTS = 500;
+export const TLS_MAX_MAX_ENDPOINTS = 10000;
 
 /** `takeover --dkim-selectors`: at most this many selectors besides the common ones. */
 export const DS_MAX_DKIM_SELECTORS = 20;
@@ -204,6 +211,11 @@ const OPTION_SPEC = Object.freeze({
   'from-subdomains': { type: 'string' },
   'dkim-selectors': { type: 'string' },
   waivers: { type: 'string' },
+  'skip-cdn': { type: 'boolean' },
+  'warn-days': { type: 'string' },
+  ct: { type: 'string' },
+  http: { type: 'boolean' },
+  'max-endpoints': { type: 'string' },
   notify: { type: 'string', multiple: true },
   'notify-bad': { type: 'string', multiple: true },
   'notify-format': { type: 'string' },
@@ -244,13 +256,19 @@ const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'res
  * @property {boolean} dkim audit: look for DKIM keys at the common selectors (off with --no-dkim)
  * @property {boolean} ari tls: ask each certificate's CA for its ARI renewal window (--ari)
  * @property {boolean} revocation tls: read each certificate's CRL (--revocation)
+ * @property {number} warnDays tls: a certificate with at most this many days left is EXPIRING (--warn-days)
+ * @property {string|null} ct tls: the same night's `ct` --json report (--ct): a renewed certificate not installed is NOT_DEPLOYED
+ * @property {boolean} http tls: GET / over HTTPS on each endpoint, and over HTTP on port 80 for a port-443 target (--http)
+ * @property {boolean} skipCdn tls: leave out the --from-subdomains hosts behind a CDN (Cloudflare or another CDN's edge)
+ * @property {number} maxEndpoints tls: the handshakes of one run at most (--max-endpoints); the targets past it are carried
  * @property {string[]} notify `--notify` URLs (none: DOMAINSCOPE_NOTIFY_URL's; tools/ds/notify.mjs notifyRoutes)
  * @property {string[]} notifyBad `--notify-bad` URLs, for the bad changes only (none: DOMAINSCOPE_NOTIFY_BAD_URL's)
  * @property {string} notifyFormat NOTIFY_FORMATS: `auto` follows each URL
  * @property {boolean} notifyAlways post after every run (the `--notify` routes), even when nothing counts
  * @property {boolean} failOnNotifyError exit 5 when a notification was not delivered
  * @property {string|null} names takeover: a file of host names whose CNAME chains are asked
- * @property {string|null} fromSubdomains takeover: a `subdomains` --json report whose hosts with a CNAME are asked
+ * @property {string|null} fromSubdomains takeover: a `subdomains` --json report whose hosts with a CNAME are asked; tls: whose
+ *   hosts with an address are checked
  * @property {string[]} dkimSelectors takeover: DKIM selectors followed besides the common ones
  * @property {string|null} waivers health, audit, ct: the accepted risks (lib/waivers.js waivers.json)
  */
@@ -476,7 +494,7 @@ export function parseCommandLine(argv) {
   }
   if (help || version) return { command, targets: [], options: defaults(), help, version };
 
-  for (const name of ['json', 'md', 'baseline', 'exact', 'policy', 'names', 'from-subdomains', 'waivers']) {
+  for (const name of ['json', 'md', 'baseline', 'exact', 'policy', 'names', 'from-subdomains', 'waivers', 'ct']) {
     if (v[name] === '-') throw new UsageError(`--${name} takes a file, not "-"`);
     if (v[name] !== undefined && !String(v[name]).trim()) throw new UsageError(`--${name} needs a file name`);
   }
@@ -560,6 +578,13 @@ export function parseCommandLine(argv) {
   if (command === 'tls') {
     options.ari = v.ari === true;
     options.revocation = v.revocation === true;
+    options.warnDays = intOption(v['warn-days'], 'warn-days', 0, TLS_MAX_WARN_DAYS, TLS_DEFAULT_WARN_DAYS);
+    options.maxEndpoints = intOption(v['max-endpoints'], 'max-endpoints', 1, TLS_MAX_MAX_ENDPOINTS, TLS_DEFAULT_MAX_ENDPOINTS);
+    options.ct = v.ct ?? null;
+    options.http = v.http === true;
+    options.fromSubdomains = v['from-subdomains'] ?? null;
+    options.skipCdn = v['skip-cdn'] === true;
+    if (options.skipCdn && !options.fromSubdomains) throw new UsageError('--skip-cdn leaves out the hosts of --from-subdomains behind a CDN: give --from-subdomains FILE');
   }
 
   if (command === 'audit') {
@@ -591,9 +616,10 @@ export function parseCommandLine(argv) {
     if (parsed.invalid.length) {
       throw new UsageError(`not ${TARGET_WHAT[spec.targets]}: ${parsed.invalid.map((s) => `"${s}"`).join(', ')}`);
     }
-    if (!parsed.targets.length && !options.lists.length) {
+    // tls: the hosts of a subdomains report can be the only targets
+    if (!parsed.targets.length && !options.lists.length && !(command === 'tls' && options.fromSubdomains)) {
       const one = { names: 'name', endpoints: 'host' }[spec.targets] || 'domain';
-      throw new UsageError(`${command} needs at least one ${one} (or --list FILE)`);
+      throw new UsageError(`${command} needs at least one ${one} (or --list FILE${command === 'tls' ? ', or --from-subdomains FILE' : ''})`);
     }
     targets = parsed.targets;
   }
@@ -606,6 +632,7 @@ export function parseCommandLine(argv) {
     ...(options.names ? [['--names', options.names]] : []),
     ...(options.fromSubdomains ? [['--from-subdomains', options.fromSubdomains]] : []),
     ...(options.waivers ? [['--waivers', options.waivers]] : []),
+    ...(options.ct ? [['--ct', options.ct]] : []),
     ...(spec.targets === 'file' ? [[command === 'drift' ? 'the zone file' : 'the certificate file', rest[0]]] : [])
   ];
   for (const [option, out] of [['--json', options.json], ['--md', options.md]]) {
@@ -623,6 +650,7 @@ function defaults() {
     exact: null, level: DS_DEFAULT_LEVEL, sources: null, days: DS_DEFAULT_DAYS, radar: [...DS_DEFAULT_RADAR], expectedCas: [],
     origin: null, includeOrigins: false, maxQueries: DRIFT_DEFAULT_BUDGET, ca: null, challenge: 'unknown',
     policy: null, preset: null, dkim: true, ari: false, revocation: false,
+    warnDays: TLS_DEFAULT_WARN_DAYS, ct: null, http: false, skipCdn: false, maxEndpoints: TLS_DEFAULT_MAX_ENDPOINTS,
     names: null, fromSubdomains: null, dkimSelectors: [], waivers: null,
     notify: [], notifyBad: [], notifyFormat: 'auto', notifyAlways: false, failOnNotifyError: false
   };
@@ -672,6 +700,16 @@ commands:
   tls HOST[:PORT]...             the certificate every address of a host serves (SNI = the host; an
                                  address alone: no SNI), its expiry, trust and name, each address on
                                  its own (default port ${TLS_DEFAULT_PORT}; [2001:db8::1]:8443 for IPv6)
+      [--from-subdomains FILE]   also the hosts with an address in a subdomains --json report
+      [--skip-cdn]               but not the ones behind a CDN (its edge serves the CDN's certificate)
+      [--warn-days N]            EXPIRING with N days left or fewer (default ${TLS_DEFAULT_WARN_DAYS})
+      [--ct FILE]                the same night's ct --json report (no CT query): an address still
+                                 serving a certificate more than 48 hours older than the newest one
+                                 CT logged for the name is NOT_DEPLOYED (the renewal is not installed)
+      [--http]                   GET / over HTTPS on each address (the status, HSTS) and, for port
+                                 443, over HTTP on port 80 (does it redirect to HTTPS?)
+      [--max-endpoints N]        at most N handshakes a run (default ${TLS_DEFAULT_MAX_ENDPOINTS}); the hosts past it
+                                 keep their last check
       [--ari]                    ask the issuing CA for its ACME renewal window (RFC 9773): Let's
                                  Encrypt, Google Trust Services, ZeroSSL, Sectigo, SSL.com
       [--revocation]             read the CRL each certificate names (no OCSP): REVOKED, with the
@@ -733,19 +771,25 @@ what is sent: names and record types to the DoH resolvers (renew also asks Cloud
   checks that need a probe (Verify, the MTA-STS policy, the HTTP-01 test) stay in the app,
   behind a click. audit asks the DoH resolvers and RDAP (the registry's server from the IANA
   bootstrap; rdap.org only as the fallback, one request a second), each name server domain once.
-  tls connects to every address of each target (a TLS handshake); --ari sends each certificate's
+  tls connects to every address of each target (a TLS handshake, asking for an OCSP staple; with
+  --http a GET / over it, and one over HTTP to port 80); --ari sends each certificate's
   CertID (the issuer's key identifier and the serial number, both public) to the issuing CA's ARI
   server, --revocation downloads the CRLs the certificates name from their CAs (at most 20 MB each).
   takeover asks the same, each registrable domain once a run; a service only its page can tell
   (S3, GitHub Pages ...) is listed "to check": the page check stays in the app.
 
-tls changes: another certificate on an address (CERT: counted when it drops a name, changes the
-  key type or the CA), a handshake that stops completing (FAILED), a worse status (WORSE), and with
-  --ari / --revocation: RENEW-NOW (the CA's renewal window has opened, or ended), MOVED-UP (it now
-  starts more than a day earlier: CAs do that before a mass revocation), CA-NOTICE (an explanation
-  URL the CA did not give before) and REVOKED (the CRL lists a served certificate). A CA is not
-  asked again before the Retry-After of its last answer. An IPv6 address this machine cannot reach
-  is SKIPPED (GitHub's hosted runners have no IPv6 route), never a change.
+tls changes: a served certificate entering --warn-days (EXPIRING) or expiring (EXPIRED); a host
+  some address of which now serves an untrusted chain (UNTRUSTED: a missing intermediate is named
+  from the CCADB list the app ships), a certificate without the name (MISMATCH) or, with --ct, an
+  older certificate than the renewed one CT logged (NOT-LIVE), and BETTER once none does; another
+  certificate on an address (CERT: counted when it drops a name, changes the key type or the CA), a
+  handshake that stops completing (FAILED); with --http, GET / answering 5xx (HTTP) and http://
+  no longer redirecting to https:// (REDIRECT); and with --ari / --revocation: RENEW-NOW (the CA's
+  renewal window has opened, or ended), MOVED-UP (it now starts more than a day earlier: CAs do
+  that before a mass revocation), CA-NOTICE (an explanation URL the CA did not give before) and
+  REVOKED (the CRL lists a served certificate). A CA is not asked again before the Retry-After of
+  its last answer. An IPv6 address this machine cannot reach is SKIPPED (GitHub's hosted runners
+  have no IPv6 route), never a change.
 
 ct watch: each domain's report keeps the ids of the certificates seen (the next run's baseline,
   as the app's workspace keeps them), so a run with --baseline marks what was logged since. A
@@ -805,6 +849,8 @@ examples:
   node tools/ds.mjs audit --preset corporate --list domains.txt --md audit.md
   node tools/ds.mjs health --list domains.txt --waivers waivers.json --baseline health.json --json health.json
   node tools/ds.mjs tls --list tls-hosts.txt --ari --revocation --baseline tls.json --json tls.json
+  node tools/ds.mjs tls --list tls-hosts.txt --ct ct.json --http --warn-days 30
+  node tools/ds.mjs tls --from-subdomains subs.json --skip-cdn --max-endpoints 200
   node tools/ds.mjs tls www.example.com example.com:8443 --ari
   node tools/ds.mjs takeover --list domains.txt --from-subdomains subs.json --baseline takeover.json --json takeover.json
 `;

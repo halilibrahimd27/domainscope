@@ -8,30 +8,43 @@
  * directory per key type); the CRLs read through a fake fetch (revoked with its reason, good, another
  * CA's, a signature that does not verify, a CRL too large, an HTML page, each URL once); every change
  * (RENEW-NOW, MOVED-UP, CA-NOTICE, REVOKED, CERT, FAILED / RECOVERED / FAILING, a DNS outage carried,
- * NXDOMAIN) and three nights of `main()` over the local server and the fakes. No request leaves the
- * machine; documentation names only.
+ * NXDOMAIN) and three nights of `main()` over the local server and the fakes.
+ * The served-certificate monitor: its command line, handshakes with fixture certificates (the
+ * cross_* PKI — a chain as built and as sent, a missing intermediate, an unknown root —, a
+ * self-signed certificate, a name not covered, an OCSP staple and none), statuses by the run's clock
+ * (EXPIRING, EXPIRED), --http over the handshake's connection and port 80, the missing intermediate
+ * named from the fixture CCADB dataset, --ct (tools/ds/tlsct.mjs), --from-subdomains, every new
+ * change and its PagerDuty standing, --max-endpoints, and three nights over a local HTTPS server. No
+ * request leaves the machine; documentation names only.
  */
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import tls from 'node:tls';
 import net from 'node:net';
+import http from 'node:http';
+import https from 'node:https';
 import { EventEmitter } from 'node:events';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { main } from '../../tools/ds.mjs';
-import { parseCommandLine, parseTlsTarget, parseTargets, UsageError, EXIT, COMMANDS, USAGE } from '../../tools/ds/args.mjs';
-import { handshake, runTls, ariParts, revocationParts, tlsDoc } from '../../tools/ds/tls.mjs';
+import { parseCommandLine, parseTlsTarget, parseTargets, UsageError, EXIT, COMMANDS, USAGE, DS_TOOL, DS_VERSION } from '../../tools/ds/args.mjs';
+import { handshake, runTls, ariParts, revocationParts, tlsDoc, statusOf, nameMissingIntermediates, subdomainTlsHosts, tlsInputs, connectionParts, httpText } from '../../tools/ds/tls.mjs';
 import { ARI_SERVER_DIRECTORIES, ariDirectoryFor, createAriClient, windowState, ARI_MAX_RETRY_MS } from '../../tools/ds/ari.mjs';
 import { createRevocationChecker, verifyCrlSignature, issuerFromChain, fetchCrl } from '../../tools/ds/revocation.mjs';
-import { diffTls, tlsTargetProblem, tlsNotes, MOVED_UP_MS } from '../../tools/ds/tlsdiff.mjs';
+import { diffTls, tlsTargetProblem, tlsNotes, MOVED_UP_MS, expiryState, TLS_STATUSES } from '../../tools/ds/tlsdiff.mjs';
+import { ctReportProblem, ctLookup, newestInCt, renewalNotDeployed, NOT_DEPLOYED_MS } from '../../tools/ds/tlsct.mjs';
+import { getHead, httpRecord, redirectsToHttps, hostHeader } from '../../tools/ds/tlshttp.mjs';
+import { problemStanding } from '../../tools/ds/states.mjs';
+import { eventSeverity } from '../../tools/ds/notify.mjs';
 import { diffReports, baselineProblem, baselineNotes } from '../../tools/ds/diff.mjs';
 import { setupStrings, CHANGE_TAGS, changeText } from '../../tools/ds/render.mjs';
 import { parseCertificates } from '../../assets/js/lib/x509.js';
 import { parseCrl } from '../../assets/js/lib/crl.js';
 import { ariCertId } from '../../assets/js/lib/renewalplan.js';
+import { createIntermediateStore, rootTable } from '../../assets/js/lib/chainfix.js';
 import { renderMarkdown } from '../../assets/js/lib/summary.js';
 import { createFakeFetch } from './ds-fake-doh.mjs';
 
@@ -49,16 +62,82 @@ const OTHER_CA = certOf('crl_other_ca.pem');
 const DP = 'http://crl.example.com/test-ca.crl';
 const AT = (s) => new Date(s);
 const NOW = AT('2026-10-09T03:00:00Z');
+// the three-level test PKI of the CLI's chain check (gen_cross_fixtures.sh): root → Issuing CA → leaf, with the leaf's key
+const CROSS_ROOT_PEM = read('cross_root.pem');
+const CROSS_INTER_PEM = read('cross_inter.pem');
+const CROSS_LEAF_PEM = read('cross_leaf.pem');
+const CROSS_LEAF_KEY = read('cross_leaf.key');
+const CROSS_ROOT = certOf('cross_root.pem');
+const CROSS_INTER = certOf('cross_inter.pem');
+// a self-signed certificate for www.example.com and example.com, with its key (gen_starttls_fixtures.sh)
+const SELF_PEM = read('starttls_ec_leaf.pem');
+const SELF_KEY = read('starttls_ec_leaf.key');
 
-/** An in-process TLS server on 127.0.0.1 that completes the handshake and closes. */
-async function tlsServer({ cert = Buffer.concat([LEAF_PEM, CA_PEM]), key = LEAF_KEY } = {}) {
+/**
+ * An in-process TLS server on 127.0.0.1 that completes the handshake and closes; `staple`: the
+ * OCSP response it staples when asked (a Buffer, or null for none); `setCert` swaps what it serves.
+ */
+async function tlsServer({ cert = Buffer.concat([LEAF_PEM, CA_PEM]), key = LEAF_KEY, staple } = {}) {
   const server = tls.createServer({ key, cert }, (s) => {
     s.on('error', () => {});
     s.end();
   });
   server.on('tlsClientError', () => {});
+  if (staple !== undefined) server.on('OCSPRequest', (c, issuer, done) => done(null, staple));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return { port: server.address().port, close: () => new Promise((resolve) => server.close(resolve)) };
+  return {
+    port: server.address().port,
+    setCert: (next) => server.setSecureContext({ key: next.key || key, cert: next.cert }),
+    close: () => new Promise((resolve) => server.close(resolve))
+  };
+}
+
+/**
+ * An HTTPS server on 127.0.0.1 answering every GET with `answer.status` and `answer.headers`
+ * (changeable between requests), serving `cert` with `key`.
+ */
+async function httpsServer({ cert, key, answer }) {
+  const server = https.createServer({ key, cert, ALPNProtocols: ['http/1.1'] }, (req, res) => {
+    res.writeHead(answer.status, answer.headers || {});
+    res.end('ok');
+  });
+  server.on('tlsClientError', () => {});
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    port: server.address().port,
+    setCert: (next) => server.setSecureContext({ key: next.key || key, cert: next.cert }),
+    close: () => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); })
+  };
+}
+
+/** A plain HTTP server on 127.0.0.1 answering with `answer` (`location` → a Location header). */
+async function plainServer(answer) {
+  const server = http.createServer((req, res) => {
+    res.writeHead(answer.status, answer.location ? { Location: answer.location } : {});
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { port: server.address().port, close: () => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }) };
+}
+
+/** node:http's request with port 80 moved to a local plain server (the GET over TLS goes as it is). */
+const requestVia = (plainPort) => (opts, cb) => http.request(opts.createConnection ? opts : { ...opts, port: plainPort }, cb);
+
+/** A lib/chainfix.js store that knows the cross PKI's Issuing CA under its root, trusted by every store. */
+function crossStore() {
+  const roots = rootTable({
+    generated: '2026-10-05',
+    roots: [{
+      sha256: 'ab'.repeat(32), name: 'Example Test Cross Root', owner: 'Example Test PKI', ski: CROSS_ROOT.subjectKeyId, dn: CROSS_ROOT.subjectDN,
+      notAfter: '2060-01-01', stores: { chrome: 'tls', mozilla: 'tls', apple: 'tls', microsoft: 'tls' }
+    }]
+  });
+  return {
+    manifest: async () => ({ format: 1, generated: '2026-10-05', shards: { ski: { dir: 'ski', digits: 2 }, dn: { dir: 'dn', digits: 1 } } }),
+    roots: async () => roots,
+    bySki: async (ski) => (String(ski).toLowerCase() === CROSS_INTER.subjectKeyId ? [{ cert: CROSS_INTER, owner: 'Example Test PKI' }] : []),
+    byDn: async (dn) => (dn === CROSS_INTER.subjectDN ? [{ cert: CROSS_INTER, owner: 'Example Test PKI' }] : [])
+  };
 }
 
 /** A fetch from routes (url → [status, body, headers] or a function), recording each call; other URLs: 404. */
@@ -117,7 +196,7 @@ test('the tls command line: --ari and --revocation are its own, a bad target is 
   const plain = parseCommandLine(['tls', '--list', 'hosts.txt']);
   assert.deepEqual([plain.options.ari, plain.options.revocation, plain.options.lists], [false, false, ['hosts.txt']]);
   assert.throws(() => parseCommandLine(['health', 'example.com', '--ari']), /--ari applies to tls only, not to health/);
-  assert.throws(() => parseCommandLine(['tls']), /tls needs at least one host \(or --list FILE\)/);
+  assert.throws(() => parseCommandLine(['tls']), /tls needs at least one host \(or --list FILE, or --from-subdomains FILE\)/);
   assert.throws(() => parseCommandLine(['tls', 'not a host']), (err) => err instanceof UsageError && /not a host name or address, with an optional port/.test(err.message));
 });
 
@@ -450,11 +529,11 @@ test('changes: CERT counted when a name goes or the key type or CA changes; hand
   const back = diffTls(night2, night3);
   assert.deepEqual(back.map((x) => [x.tag, x.tone]), [['RECOVERED', 'good'], ['CERT', 'bad']]);
   assert.match(changeText(back[0]), /answers again: OK, another certificate than before it failed/);
-  // a move between failures is listed only; untrusted is WORSE, back to OK is BETTER
-  const t1 = report([tgt([ep('192.0.2.10', 'CLOSED'), ep('192.0.2.11', 'OK', { cert: c })])]);
-  const t2 = report([tgt([ep('192.0.2.10', 'TIMEOUT'), ep('192.0.2.11', 'UNTRUSTED', { cert: c, trustError: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' })])]);
-  assert.deepEqual(diffTls(t1, t2).map((x) => [x.tag, x.counts]), [['FAILING', false], ['WORSE', true]]);
-  assert.match(changeText(diffTls(t1, t2)[1]), /OK → UNTRUSTED \(UNABLE_TO_VERIFY_LEAF_SIGNATURE\)$/);
+  // a move between failures is listed only; an untrusted chain is UNTRUSTED (the host's), trusted again is BETTER
+  const t1 = report([tgt([ep('192.0.2.10', 'CLOSED'), ep('192.0.2.11', 'OK', { cert: c, trusted: true })])]);
+  const t2 = report([tgt([ep('192.0.2.10', 'TIMEOUT'), ep('192.0.2.11', 'UNTRUSTED', { cert: c, trusted: false, trustError: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' })])]);
+  assert.deepEqual(diffTls(t1, t2).map((x) => [x.tag, x.counts, x.item]), [['FAILING', false, '192.0.2.10|443'], ['UNTRUSTED', true, null]]);
+  assert.match(changeText(diffTls(t1, t2)[1]), /^www\.example\.com: 192\.0\.2\.11 serves a chain this machine does not trust \(UNABLE_TO_VERIFY_LEAF_SIGNATURE\)$/);
   assert.deepEqual(diffTls(t2, t1).map((x) => [x.tag, x.tone]), [['FAILING', 'quiet'], ['BETTER', 'good']]);
   // addresses new or gone: listed only
   const moved = report([tgt([ep('192.0.2.12', 'OK', { cert: c })])]);
@@ -561,9 +640,11 @@ describe('three nights of `tls --ari --revocation` over a local server', () => {
     assert.match(n1.out, /- Not revoked \(CRL of 2026-10-01 00:00 UTC, signature verified\)\n/);
     const r1 = JSON.parse(readFileSync(json, 'utf8'));
     assert.equal(r1.command, 'tls');
-    assert.deepEqual(r1.options, { ari: true, revocation: true, resolvers: ['cloudflare', 'google', 'dnssb'] });
+    assert.deepEqual(r1.options, {
+      ari: true, revocation: true, warnDays: 21, http: false, ct: null, fromSubdomains: null, skipCdn: false, maxEndpoints: 500, resolvers: ['cloudflare', 'google', 'dnssb']
+    });
     const e1 = r1.targets[0].endpoints[0];
-    assert.deepEqual([e1.address, e1.port, e1.status, e1.trusted, e1.nameMatch, e1.chainLength], ['127.0.0.1', server.port, 'OK', true, true, 2]);
+    assert.deepEqual([e1.address, e1.port, e1.status, e1.trusted, e1.nameMatch, e1.chainLength, e1.chainSent, e1.ocspStapled], ['127.0.0.1', server.port, 'OK', true, true, 2, 2, false]);
     assert.equal(e1.cert.sha256, Buffer.from(await crypto.subtle.digest('SHA-256', LEAF.der)).toString('hex'));
     assert.deepEqual([e1.cert.serialHex, e1.cert.crlUrls, e1.cert.names], ['0c1001', [DP], ['www.example.com', 'example.com']]);
     assert.deepEqual([e1.ari.start, e1.ari.retryAfter, e1.ari.error], ['2026-11-01T00:00:00.000Z', '2026-10-10T03:00:00.000Z', null]);
@@ -642,5 +723,607 @@ describe('three nights of `tls --ari --revocation` over a local server', () => {
     assert.match(md, new RegExp(`\`127\\.0\\.0\\.1\`: ${e.status}`));
     const changes = diffTls(baseline, { ...report(res.targets) });
     assert.deepEqual(changes.map((x) => [x.tag, x.counts]), [['FAILED', true]]);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* The served-certificate monitor                                           */
+/* ------------------------------------------------------------------------ */
+
+test('the monitor\'s command line: --warn-days, --ct, --http, --max-endpoints, --from-subdomains, --skip-cdn', () => {
+  const cl = parseCommandLine(['tls', 'www.example.com', '--warn-days', '30', '--ct', 'results/ct.json', '--http', '--max-endpoints', '50']);
+  assert.deepEqual([cl.options.warnDays, cl.options.ct, cl.options.http, cl.options.maxEndpoints, cl.options.fromSubdomains, cl.options.skipCdn],
+    [30, 'results/ct.json', true, 50, null, false]);
+  const plain = parseCommandLine(['tls', 'www.example.com']);
+  assert.deepEqual([plain.options.warnDays, plain.options.ct, plain.options.http, plain.options.maxEndpoints], [21, null, false, 500]);
+  const subs = parseCommandLine(['tls', '--from-subdomains', 'subs.json', '--skip-cdn']);
+  assert.deepEqual([subs.targets, subs.options.fromSubdomains, subs.options.skipCdn], [[], 'subs.json', true], 'a subdomains report can give every target');
+  assert.equal(parseCommandLine(['tls', 'www.example.com', '--warn-days', '0']).options.warnDays, 0);
+  const refused = [
+    [['tls', 'www.example.com', '--skip-cdn'], /--skip-cdn leaves out the hosts of --from-subdomains behind a CDN: give --from-subdomains FILE/],
+    [['tls', 'www.example.com', '--warn-days', '399'], /--warn-days takes a whole number from 0 to 398, not "399"/],
+    [['tls', 'www.example.com', '--max-endpoints', '0'], /--max-endpoints takes a whole number from 1 to 10000, not "0"/],
+    [['tls', 'www.example.com', '--ct', 'ct.json', '--json', 'ct.json'], /--json names the same file as --ct \(ct\.json\)/],
+    [['tls', 'www.example.com', '--ct', '-'], /--ct takes a file, not "-"/],
+    [['tls', '--from-subdomains', 's.json', '--md', 's.json'], /--md names the same file as --from-subdomains \(s\.json\)/],
+    [['health', 'example.com', '--warn-days', '30'], /--warn-days applies to tls only, not to health/],
+    [['ct', 'example.com', '--http'], /--http applies to tls only, not to ct/],
+    [['takeover', 'example.com', '--skip-cdn'], /--skip-cdn applies to tls only, not to takeover/]
+  ];
+  for (const [argv, re] of refused) assert.throws(() => parseCommandLine(argv), (err) => err instanceof UsageError && re.test(err.message), argv.join(' '));
+  for (const option of ['--from-subdomains FILE', '--skip-cdn', '--warn-days N', '--ct FILE', '--http', '--max-endpoints N']) assert.ok(USAGE.includes(`[${option}]`), option);
+  assert.ok(['EXPIRED', 'UNTRUSTED', 'MISMATCH', 'NOT-LIVE', 'HTTP', 'REDIRECT', 'HSTS'].every((tag) => CHANGE_TAGS.includes(tag) && tag.length <= 9));
+});
+
+describe('the monitor\'s handshakes: fixture certificates on a local server', () => {
+  const servers = {};
+  before(async () => {
+    servers.trusted = await tlsServer();
+    servers.self = await tlsServer({ cert: SELF_PEM, key: SELF_KEY });
+    servers.lone = await tlsServer({ cert: CROSS_LEAF_PEM, key: CROSS_LEAF_KEY });
+    servers.withInter = await tlsServer({ cert: Buffer.concat([CROSS_LEAF_PEM, CROSS_INTER_PEM]), key: CROSS_LEAF_KEY });
+    servers.stapled = await tlsServer({ staple: Buffer.from('a stapled OCSP response') });
+    servers.noStaple = await tlsServer({ staple: null });
+  });
+  after(async () => {
+    for (const s of Object.values(servers)) await s.close();
+  });
+
+  test('the chain as Node built it and as the server sent it, the key exchange, the staple asked for', async () => {
+    const h = await handshake({ address: '127.0.0.1', port: servers.withInter.port, servername: 'www.example.com', ca: [CROSS_ROOT_PEM] });
+    assert.deepEqual([h.status, h.authorized, h.authorizationError, h.nameMatch], ['OK', true, null, true]);
+    assert.equal(h.chain.length, 3, 'built: the leaf, the Issuing CA sent with it and the root of the trust store');
+    assert.equal(h.sent.length, 2, 'sent: the leaf and the Issuing CA');
+    assert.deepEqual(Buffer.from(h.sent[1]), Buffer.from(CROSS_INTER.der));
+    assert.equal(h.ocspStapled, false, 'asked for, none stapled');
+    assert.ok(h.ephemeralKey === null || (typeof h.ephemeralKey.name === 'string' && h.ephemeralKey.name.length > 0), JSON.stringify(h.ephemeralKey));
+    const stapled = await handshake({ address: '127.0.0.1', port: servers.stapled.port, servername: 'www.example.com', ca: [CA_PEM] });
+    assert.deepEqual([stapled.status, stapled.ocspStapled], ['OK', true]);
+    assert.equal((await handshake({ address: '127.0.0.1', port: servers.noStaple.port, servername: 'www.example.com', ca: [CA_PEM] })).ocspStapled, false);
+  });
+
+  test('untrusted: self-signed, a missing intermediate, an unknown root; a name not covered and an address are no trust error on a trusted chain', async () => {
+    const self = await handshake({ address: '127.0.0.1', port: servers.self.port, servername: 'www.example.com' });
+    assert.deepEqual([self.authorized, self.authorizationError, self.sent.length], [false, 'DEPTH_ZERO_SELF_SIGNED_CERT', 1]);
+    const missing = await handshake({ address: '127.0.0.1', port: servers.lone.port, servername: 'www.example.com', ca: [CROSS_ROOT_PEM] });
+    assert.deepEqual([missing.authorized, missing.authorizationError, missing.sent.length, missing.chain.length], [false, 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 1, 1]);
+    const unknownRoot = await handshake({ address: '127.0.0.1', port: servers.withInter.port, servername: 'www.example.com' });
+    assert.deepEqual([unknownRoot.authorized, unknownRoot.authorizationError], [false, 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY']);
+    // Node reports a name it does not find only on a trusted chain: the chain is trusted, the name is the endpoint's own status
+    const other = await handshake({ address: '127.0.0.1', port: servers.trusted.port, servername: 'mail.example.org', ca: [CA_PEM] });
+    assert.deepEqual([other.authorized, other.authorizationError, other.nameMatch], [true, null, false]);
+    const address = await handshake({ address: '127.0.0.1', port: servers.trusted.port, servername: null, ca: [CA_PEM] });
+    assert.deepEqual([address.authorized, address.authorizationError, address.nameMatch], [true, null, null]);
+  });
+
+  test('--http: GET / over the handshake\'s connection, and over HTTP to port 80; the answers as the report keeps them', async () => {
+    const answer = { status: 200, headers: { 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains' } };
+    const web = await httpsServer({ cert: Buffer.concat([LEAF_PEM, CA_PEM]), key: LEAF_KEY, answer });
+    const plain = await plainServer({ status: 301, location: 'https://www.example.com/' });
+    const mute = await tlsServer();
+    try {
+      const h = await handshake({ address: '127.0.0.1', port: web.port, servername: 'www.example.com', ca: [CA_PEM], http: true });
+      assert.equal(h.status, 'OK');
+      assert.equal(h.https.status, 200);
+      const p = await getHead({ host: '127.0.0.1', port: 80, agent: false, headers: { Host: 'www.example.com' } }, { request: requestVia(plain.port) });
+      assert.deepEqual(httpRecord(h.https, p, 'www.example.com'), {
+        status: 200, error: null, hsts: { maxAge: 31536000, includeSubDomains: true, preload: false, valid: true },
+        plain: { status: 301, location: 'https://www.example.com/', toHttps: true, error: null }
+      });
+      answer.status = 503;
+      answer.headers = {};
+      const down = await handshake({ address: '127.0.0.1', port: web.port, servername: 'www.example.com', ca: [CA_PEM], http: true });
+      assert.deepEqual(httpRecord(down.https, undefined, 'www.example.com'), { status: 503, error: null, hsts: null, plain: null });
+      // a TLS server that answers no HTTP: the GET's failure, the handshake's facts kept
+      const quiet = await handshake({ address: '127.0.0.1', port: mute.port, servername: 'www.example.com', ca: [CA_PEM], http: true, httpTimeoutMs: 300 });
+      assert.equal(quiet.status, 'OK');
+      assert.ok(quiet.https.error, JSON.stringify(quiet.https));
+      assert.equal(httpRecord(quiet.https, undefined, 'www.example.com').status, null);
+    } finally {
+      await web.close();
+      await plain.close();
+      await mute.close();
+    }
+  });
+});
+
+test('statuses through real handshakes: self-signed UNTRUSTED, another name NAME_MISMATCH, EXPIRING and EXPIRED by the run\'s clock', async () => {
+  const t = await setupStrings();
+  const self = await tlsServer({ cert: SELF_PEM, key: SELF_KEY });
+  const good = await tlsServer();
+  try {
+    const fetchImpl = createFakeFetch({ 'www.example.com': { A: ['127.0.0.1'] }, 'mail.example.com': { A: ['127.0.0.1'] } }, { apex: 'example.com' });
+    const { DohClient } = await import('../../assets/js/lib/doh.js');
+    const run = (targets, now) => runTls(targets, { ari: false, revocation: false, chain: ['cloudflare'], warnDays: 21 }, {
+      dns: new DohClient({ chain: ['cloudflare'], fetchImpl }), fetchImpl, now: () => now, t, progress: () => {}, baseline: null, inputs: {}, tls: { ca: [CA_PEM] }
+    });
+    const res = await run([`www.example.com:${self.port}`, `mail.example.com:${good.port}`, `www.example.com:${good.port}`], NOW);
+    assert.deepEqual(res.targets.map((x) => [x.endpoints[0].status, x.endpoints[0].trustError, x.endpoints[0].trusted, x.endpoints[0].nameMatch]), [
+      ['UNTRUSTED', 'DEPTH_ZERO_SELF_SIGNED_CERT', false, true], ['NAME_MISMATCH', null, true, false], ['OK', null, true, true]]);
+    assert.equal(res.targets[0].endpoints[0].missingIntermediate, undefined, 'a self-signed certificate lacks no intermediate');
+    // crl_leaf.pem runs to 2060-01-01: 12 days left of 35 years is EXPIRING, a day after its end EXPIRED
+    const soon = (await run([`www.example.com:${good.port}`], AT('2059-12-20T00:00:00Z'))).targets[0];
+    assert.deepEqual([soon.endpoints[0].status, soon.endpoints[0].cert.daysLeft], ['EXPIRING', 12]);
+    assert.match(renderMarkdown(tlsDoc(soon, { t, now: AT('2059-12-20T00:00:00Z'), warnDays: 21 })), /\(12 days left: EXPIRING\)/);
+    const gone = (await run([`www.example.com:${good.port}`], AT('2060-01-02T00:00:00Z'))).targets[0].endpoints[0];
+    assert.deepEqual([gone.status, gone.trustError, gone.trusted], ['EXPIRED', 'CERT_HAS_EXPIRED', false]);
+  } finally {
+    await self.close();
+    await good.close();
+  }
+});
+
+test('the HTTP answers in words: a redirect to https://, the Host header, HSTS, the connection line', () => {
+  assert.ok(redirectsToHttps(301, 'https://www.example.com/', 'www.example.com'));
+  assert.equal(redirectsToHttps(308, '//www.example.com/', 'www.example.com'), false, 'a scheme-relative URL stays on http://');
+  assert.ok(redirectsToHttps(302, 'https://login.example.org/', 'www.example.com'), 'to another host, over https');
+  assert.ok(!redirectsToHttps(200, 'https://www.example.com/', 'www.example.com'));
+  assert.ok(!redirectsToHttps(301, '/elsewhere', 'www.example.com'));
+  assert.ok(!redirectsToHttps(301, 'http://[bad', 'www.example.com'));
+  assert.equal(hostHeader('www.example.com', '192.0.2.10', 443, 443), 'www.example.com');
+  assert.equal(hostHeader('www.example.com', '192.0.2.10', 8443, 443), 'www.example.com:8443');
+  assert.equal(hostHeader(null, '2001:db8::10', 443, 443), '[2001:db8::10]');
+  assert.equal(httpText({ status: 200, error: null, hsts: { maxAge: 31536000, includeSubDomains: true, preload: true, valid: true }, plain: { status: 301, location: 'https://www.example.com/', toHttps: true, error: null } }),
+    'GET / 200 · HSTS max-age=31536000; includeSubDomains; preload · http:// redirects to https:// (301)');
+  assert.equal(httpText({ status: 503, error: null, hsts: null, plain: { status: 200, location: null, toHttps: false, error: null } }), 'GET / 503 · no HSTS · http:// answers 200, no redirect to https://');
+  assert.equal(httpText({ status: null, error: 'no answer within 10 s', hsts: null, plain: { status: null, location: null, toHttps: false, error: 'connection refused' } }),
+    'GET / failed: no answer within 10 s · http:// failed: connection refused');
+  assert.equal(httpText({ status: 200, error: null, hsts: { maxAge: null, includeSubDomains: false, preload: false, valid: false }, plain: null }), 'GET / 200 · HSTS header not valid (browsers ignore it)');
+  assert.equal(httpText(undefined), null);
+  assert.deepEqual(connectionParts([
+    { protocol: 'TLSv1.3', cipher: 'TLS_AES_256_GCM_SHA384', ephemeralKey: { type: 'TLSGroup', name: 'X25519MLKEM768', size: null }, chainSent: 2, ocspStapled: false },
+    { protocol: 'TLSv1.2', cipher: 'ECDHE-ECDSA-AES128-GCM-SHA256', ephemeralKey: { type: 'ECDH', name: 'X25519', size: 253 }, chainSent: 2, ocspStapled: true }
+  ]), ['TLSv1.3/TLSv1.2 · TLS_AES_256_GCM_SHA384/ECDHE-ECDSA-AES128-GCM-SHA256 · X25519MLKEM768/X25519 · chain sent: 2 certificates · OCSP staple: some addresses']);
+  assert.deepEqual(connectionParts([{ protocol: 'TLSv1.3', chainSent: 1, ocspStapled: null }]), ['TLSv1.3 · chain sent: 1 certificate']);
+});
+
+test('the status, worst first: expired, untrusted, the name, not deployed, expiring (its automatic renewal overdue), OK', () => {
+  const c = cert('a'); // 90 days: 2026-09-01 → 2026-11-30
+  const ok = { authorized: true, authorizationError: null, nameMatch: true };
+  const s = (h, when, opts = {}) => statusOf(h, opts.cert || c, Date.parse(when), { warnDays: 21, ...opts });
+  assert.deepEqual(s(ok, '2026-10-09T03:00:00Z'), { status: 'OK', trustError: null });
+  assert.deepEqual(s(ok, '2026-11-09T00:00:00Z'), { status: 'EXPIRING', trustError: null }, '21 days left; a quarter of 90 days is 22.5');
+  assert.deepEqual(s(ok, '2026-11-09T00:00:00Z', { warnDays: 14 }), { status: 'OK', trustError: null });
+  assert.deepEqual(s(ok, '2026-12-01T00:00:00Z'), { status: 'EXPIRED', trustError: 'CERT_HAS_EXPIRED' });
+  assert.deepEqual(s(ok, '2026-08-01T00:00:00Z'), { status: 'UNTRUSTED', trustError: 'CERT_NOT_YET_VALID' });
+  const missing = { authorized: false, authorizationError: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', nameMatch: true };
+  assert.deepEqual(s(missing, '2026-11-09T00:00:00Z'), { status: 'UNTRUSTED', trustError: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' }, 'worse than expiring');
+  assert.deepEqual(s(missing, '2026-12-01T00:00:00Z'), { status: 'EXPIRED', trustError: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' }, 'expired, the trust error kept');
+  assert.deepEqual(s({ ...missing, authorizationError: 'CERT_HAS_EXPIRED' }, '2026-10-09T03:00:00Z'), { status: 'OK', trustError: null }, 'the dates are the run\'s clock\'s');
+  assert.deepEqual(s({ ...ok, nameMatch: false }, '2026-11-09T00:00:00Z'), { status: 'NAME_MISMATCH', trustError: null });
+  const newer = { id: 'r1', notBefore: '2026-10-05T00:00:00.000Z' };
+  assert.deepEqual(s(ok, '2026-11-09T00:00:00Z', { newer }), { status: 'NOT_DEPLOYED', trustError: null }, 'the renewal not installed says more than the expiry');
+  // a 47-day certificate is renewed at a third of its life (16 days left), overdue at a quarter (11.75)
+  const short = cert('b', { notBefore: '2026-10-01T00:00:00.000Z', notAfter: '2026-11-17T00:00:00.000Z' });
+  assert.equal(s(ok, '2026-10-27T00:00:00Z', { cert: short }).status, 'OK');
+  assert.equal(s(ok, '2026-11-06T00:00:00Z', { cert: short }).status, 'EXPIRING');
+  assert.deepEqual(['2026-10-20T00:00:00Z', '2026-10-27T00:00:00Z', '2026-11-06T00:00:00Z', '2026-11-18T00:00:00Z'].map((at) => expiryState(short, Date.parse(at), 21)), ['ok', 'soon', 'expiring', 'expired']);
+  assert.equal(expiryState({ notBefore: null, notAfter: null }, 0, 21), 'ok');
+  assert.deepEqual(TLS_STATUSES.slice(0, 6), ['OK', 'EXPIRING', 'NOT_DEPLOYED', 'NAME_MISMATCH', 'UNTRUSTED', 'EXPIRED']);
+});
+
+test('a missing intermediate is named from the CCADB list (the site\'s dataset format); a CA the list lacks is null, an unreadable list an error', async () => {
+  const manifest = pathToFileURL(join(FIX, 'intermediates', 'manifest.json')).href;
+  const fileFetch = async (url) => {
+    try {
+      return new Response(readFileSync(fileURLToPath(url)), { status: 200, headers: { 'content-type': 'application/json' } });
+    } catch {
+      return new Response('{}', { status: 200 });
+    }
+  };
+  const store = createIntermediateStore({ url: manifest, fetchImpl: fileFetch });
+  const leaf = certOf('chainfix_leaf.pem');
+  const unlisted = certOf('chainfix_leaf_unknown.pem');
+  const at = Date.parse('2026-10-09T03:00:00Z');
+  const { found, error } = await nameMissingIntermediates([{ key: 'a', leaf, certs: [leaf] }, { key: 'b', leaf: unlisted, certs: [unlisted] }, { key: 'a', leaf, certs: [leaf] }], { store, now: at });
+  assert.equal(error, null);
+  assert.deepEqual(found.get('a'), { name: 'DomainScope Test Issuing CA', owner: 'DomainScope Test', subjectDN: 'CN=DomainScope Test Issuing CA,O=DomainScope Test,C=XX', added: 1 });
+  assert.equal(found.get('b'), null, 'not in the list: a private CA, or an intermediate the list lacks');
+  const broken = createIntermediateStore({ url: manifest, fetchImpl: async () => { throw new TypeError('Failed to fetch'); } });
+  const failed = await nameMissingIntermediates([{ key: 'a', leaf, certs: [leaf] }], { store: broken, now: at });
+  assert.equal(failed.found.size, 0);
+  assert.match(failed.error, /Failed to fetch/);
+  // without a store: the site's own list, read from disk (it has no test CA)
+  const site = await nameMissingIntermediates([{ key: 'x', leaf: unlisted, certs: [unlisted] }], { now: at });
+  assert.deepEqual([site.error, site.found.get('x')], [null, null]);
+  assert.deepEqual(await nameMissingIntermediates([], { now: at }), { found: new Map(), error: null });
+});
+
+describe('the monitor\'s inputs: the same night\'s ct report, the hosts of a subdomains report', () => {
+  const ctc = (id, notBefore, notAfter, names, extra = {}) => ({
+    id, ca: 'Example CA', intermediate: 'Example R1', issuer: 'CN=Example R1,O=Example CA', notBefore, notAfter, names, sha256: null, serialHex: `0${id}`,
+    sources: ['crtsh'], revoked: null, precert: null, ...extra
+  });
+  const ctDoc = {
+    tool: DS_TOOL, version: DS_VERSION, command: 'ct', startedAt: '2026-10-09T02:40:00.000Z', finishedAt: '2026-10-09T02:50:00.000Z', options: {},
+    targets: [
+      { target: 'example.com', names: [], readAt: null, certificates: [
+        ctc('a1', '2026-09-01T00:00:00.000Z', '2026-11-30T00:00:00.000Z', ['example.com', 'www.example.com']),
+        ctc('a2', '2026-10-05T00:00:00.000Z', '2027-01-03T00:00:00.000Z', ['example.com', 'www.example.com']),
+        ctc('a3', '2026-10-07T00:00:00.000Z', '2027-01-05T00:00:00.000Z', ['www.example.com']),
+        ctc('a4', '2026-10-08T00:00:00.000Z', '2027-01-06T00:00:00.000Z', ['example.com', 'www.example.com'], { revoked: true }),
+        ctc('a5', '2026-10-10T00:00:00.000Z', '2027-01-08T00:00:00.000Z', ['example.com', 'www.example.com']),
+        ctc('w1', '2026-10-06T00:00:00.000Z', '2027-01-04T00:00:00.000Z', ['*.example.com', 'example.com']),
+        { id: 'broken', names: ['example.com'], notBefore: 'soon', notAfter: null }
+      ] },
+      { target: 'example.org', names: [], readAt: null, certificates: [ctc('b1', '2026-10-06T00:00:00.000Z', '2027-01-04T00:00:00.000Z', ['www.example.org'])] }
+    ]
+  };
+  const at = Date.parse('2026-10-09T03:00:00Z');
+
+  test('--ct: the renewal CT logged more than 48 hours later, for every name served, current and not revoked', () => {
+    assert.equal(ctReportProblem(ctDoc), null);
+    assert.match(ctReportProblem({ tool: 'ssl_origin_scan' }), /not a --json report of domainscope-ds/);
+    assert.match(ctReportProblem({ ...ctDoc, version: '0.9.0' }), /written by version "0\.9\.0"/);
+    assert.match(ctReportProblem({ ...ctDoc, command: 'tls' }), /a report of "tls", not of "ct"/);
+    assert.match(ctReportProblem({ ...ctDoc, targets: [{ target: 'example.com' }] }), /targets\[0\] has no "certificates" list/);
+    const lookup = ctLookup(ctDoc, 'ct.json');
+    assert.deepEqual([lookup.file, lookup.finishedAt, lookup.domains.map((d) => [d.domain, d.certificates.length])], ['ct.json', '2026-10-09T02:50:00.000Z', [['example.com', 6], ['example.org', 1]]]);
+    const served = cert('a', { notBefore: '2026-09-01T00:00:00.000Z', names: ['www.example.com', 'example.com'] });
+    assert.deepEqual(renewalNotDeployed(lookup, 'www.example.com', served, at), {
+      id: 'a2', ca: 'Example CA', intermediate: 'Example R1', notBefore: '2026-10-05T00:00:00.000Z', notAfter: '2027-01-03T00:00:00.000Z', serialHex: '0a2'
+    }, 'not a3 (the origin\'s own, without example.com), a4 (revoked) or a5 (not valid yet); w1 is older than a2');
+    assert.equal(newestInCt(lookup, 'www.example.com', at).id, 'a3', 'the newest current certificate for the name, whatever else it carries');
+    const within = { ...served, notBefore: new Date(Date.parse('2026-10-05T00:00:00Z') - NOT_DEPLOYED_MS + 3600000).toISOString() };
+    assert.equal(renewalNotDeployed(lookup, 'www.example.com', within, at), null, '47 hours apart: a deploy hook\'s time');
+    assert.equal(renewalNotDeployed(lookup, 'www.example.com', { ...served, notBefore: '2026-10-05T00:00:00.000Z' }, at), null, 'the renewal itself is served');
+    // a wildcard covers the host; the names of another domain on the served certificate are not asked of this domain's
+    const wild = cert('w', { notBefore: '2026-07-01T00:00:00.000Z', names: ['*.example.com', 'example.com', 'www.example.net'] });
+    assert.equal(renewalNotDeployed(lookup, 'shop.example.com', wild, at).id, 'w1');
+    assert.equal(renewalNotDeployed(lookup, 'api.example.net', served, at), null, 'no report for that domain');
+    assert.equal(renewalNotDeployed(lookup, null, served, at), null, 'an address target asks no name');
+    assert.equal(newestInCt(lookup, 'api.example.net', at), null);
+  });
+
+  test('--from-subdomains: hosts with an address, or one a failed lookup carried; private ones, look-alikes and with --skip-cdn CDN ones left out', () => {
+    const doc = { tool: DS_TOOL, version: DS_VERSION, command: 'subdomains', targets: [{ target: 'example.com', mode: 'discover', hosts: [
+      { name: 'www.example.com', kind: 'direct', ipv4: ['192.0.2.10'], ipv6: [], cnames: [] },
+      { name: 'shop.example.com', kind: 'cloudflare', ipv4: ['198.51.100.7'], ipv6: [], cnames: [] },
+      { name: 'cdn.example.com', kind: 'cdn', ipv4: ['203.0.113.5'], ipv6: [], cnames: ['cdn.example.net'] },
+      { name: 'intranet.example.com', kind: 'private', ipv4: ['10.0.0.5'], ipv6: [], cnames: [] },
+      { name: 'old.example.com', kind: 'unresolved', status: 'SERVFAIL', ipv4: [], ipv6: [], cnames: [], lastGood: { at: '2026-10-08T03:00:00.000Z', ipv4: ['192.0.2.20'], ipv6: [] } },
+      { name: 'gone.example.com', kind: 'nxdomain', ipv4: [], ipv6: [], cnames: [] },
+      { name: 'x1.example.com', kind: 'direct', wildcardSuspect: true, ipv4: ['192.0.2.30'], ipv6: [], cnames: [] },
+      { name: 'bad‮example.com', kind: 'direct', ipv4: ['192.0.2.31'], ipv6: [], cnames: [] },
+      { name: 'v6.example.com', kind: 'direct', ipv4: [], ipv6: ['2001:db8::10'], cnames: [] },
+      { name: 'WWW.example.com', kind: 'direct', ipv4: ['192.0.2.10'], ipv6: [], cnames: [] }
+    ] }] };
+    assert.deepEqual(subdomainTlsHosts(doc), {
+      hosts: ['www.example.com', 'shop.example.com', 'cdn.example.com', 'old.example.com', 'v6.example.com'], invalid: ['bad‮example.com'], cdn: 0, private: 1, problem: null
+    });
+    const noCdn = subdomainTlsHosts(doc, { skipCdn: true });
+    assert.deepEqual([noCdn.hosts, noCdn.cdn], [['www.example.com', 'old.example.com', 'v6.example.com'], 2]);
+    assert.match(subdomainTlsHosts({ ...doc, command: 'ct' }).problem, /a report of "ct", not of "subdomains"/);
+    assert.match(subdomainTlsHosts([]).problem, /not a --json report/);
+    assert.match(subdomainTlsHosts({ ...doc, targets: null }).problem, /no "targets" list/);
+  });
+
+  test('both are read and checked before anything is sent; a --ct file not written yet is a warning', async () => {
+    const subs = { tool: DS_TOOL, version: DS_VERSION, command: 'subdomains', targets: [{ target: 'example.com', hosts: [
+      { name: 'www.example.com', kind: 'direct', ipv4: ['192.0.2.10'], ipv6: [] }, { name: 'intranet.example.com', kind: 'private', ipv4: ['10.0.0.5'], ipv6: [] },
+      { name: 'shop.example.com', kind: 'cloudflare', ipv4: ['198.51.100.7'], ipv6: [] }
+    ] }] };
+    const files = { 'subs.json': JSON.stringify(subs), 'ct.json': JSON.stringify(ctDoc), 'health.json': JSON.stringify({ tool: DS_TOOL, version: DS_VERSION, command: 'health', targets: [] }), 'junk.json': '{' };
+    const run = async (options) => {
+      const warnings = [];
+      const got = await tlsInputs({ fromSubdomains: null, skipCdn: false, ct: null, ...options }, {
+        read: async (path) => files[path], exists: async (path) => path in files, warn: (w) => warnings.push(w),
+        skipped: (label, invalid, what) => invalid.map((x) => `${label}: skipped "${x}": not ${what}`)
+      });
+      return { got, warnings };
+    };
+    const one = await run({ fromSubdomains: 'subs.json', skipCdn: true, ct: 'ct.json' });
+    assert.deepEqual([one.got.hosts, one.got.fromSubdomains, one.got.ct.file, one.got.ct.domains.length], [['www.example.com'], 'subs.json', 'ct.json', 2]);
+    assert.deepEqual(one.warnings, [
+      '--from-subdomains subs.json: 1 host with private addresses only left out (a hosted runner cannot reach them; --list them to check them from your own network)',
+      '--from-subdomains subs.json: 1 host behind a CDN left out (--skip-cdn)'
+    ]);
+    const missing = await run({ ct: 'results/ct.json' });
+    assert.equal(missing.got.ct, null);
+    assert.deepEqual(missing.warnings, ['--ct results/ct.json: no such file: NOT_DEPLOYED is not checked this run (the ct check writes it; run that first)']);
+    await assert.rejects(run({ ct: 'health.json' }), (err) => err instanceof UsageError && /--ct: cannot read certificates from health\.json: it is a report of "health", not of "ct" \(give a report written by "ct --json"\)/.test(err.message));
+    await assert.rejects(run({ ct: 'junk.json' }), (err) => err instanceof UsageError && /--ct: junk\.json is not JSON/.test(err.message));
+    await assert.rejects(run({ fromSubdomains: 'ct.json' }), (err) => err instanceof UsageError && /--from-subdomains: cannot read hosts from ct\.json: it is a report of "ct"/.test(err.message));
+    await assert.rejects(run({ fromSubdomains: 'junk.json' }), (err) => err instanceof UsageError && /--from-subdomains: junk\.json is not JSON/.test(err.message));
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* The monitor's changes                                                    */
+/* ------------------------------------------------------------------------ */
+
+describe('the monitor\'s changes', () => {
+  const night = (at, endpoints, extra = {}, options = { ari: false, revocation: false, warnDays: 21 }) => report([tgt(endpoints, { checkedAt: at, ...extra })], at, options);
+
+  test('EXPIRING once a certificate\'s automatic renewal is overdue inside --warn-days, listed before that; EXPIRED; said once', () => {
+    const c = cert('a'); // 90 days, to 2026-11-30
+    const served = (at) => night(at, [ep('192.0.2.10', 'OK', { cert: c }), ep('192.0.2.11', 'OK', { cert: c })]);
+    assert.deepEqual(diffTls(served('2026-10-09T03:00:00.000Z'), served('2026-11-01T03:00:00.000Z')), [], '29 days left');
+    const crossed = diffTls(served('2026-11-01T03:00:00.000Z'), served('2026-11-09T03:00:00.000Z'));
+    assert.deepEqual(crossed.map((x) => [x.tag, x.tone, x.counts, x.item, x.after]), [['EXPIRING', 'bad', true, c.sha256, 'EXPIRING']]);
+    assert.equal(changeText(crossed[0]), 'www.example.com: www.example.com (Example CA, expires 2026-11-30): 20 days left and not renewed (served by 192.0.2.10, 192.0.2.11)');
+    assert.deepEqual(diffTls(served('2026-11-09T03:00:00.000Z'), served('2026-11-10T03:00:00.000Z')), [], 'said once');
+    const expired = diffTls(served('2026-11-29T03:00:00.000Z'), served('2026-12-01T03:00:00.000Z'));
+    assert.deepEqual(expired.map((x) => [x.tag, x.tone, x.counts]), [['EXPIRED', 'bad', true]]);
+    assert.match(changeText(expired[0]), /: expired on 2026-11-30, still served by 192\.0\.2\.10, 192\.0\.2\.11$/);
+    assert.deepEqual(diffTls(served('2026-11-01T03:00:00.000Z'), served('2026-12-01T03:00:00.000Z')).map((x) => x.tag), ['EXPIRED'], 'a night skipped: expired only');
+    // a 47-day certificate inside 21 days is listed only until its renewal is overdue (11.75 days)
+    const s = cert('b', { notBefore: '2026-10-01T00:00:00.000Z', notAfter: '2026-11-17T00:00:00.000Z' });
+    const short = (at) => night(at, [ep('192.0.2.10', 'OK', { cert: s })]);
+    const soon = diffTls(short('2026-10-20T03:00:00.000Z'), short('2026-10-27T03:00:00.000Z'));
+    assert.deepEqual(soon.map((x) => [x.tag, x.counts, x.after]), [['EXPIRING', false, 'soon']]);
+    assert.match(changeText(soon[0]), /: 20 days left; its automatic renewal is not overdue yet$/);
+    assert.deepEqual(diffTls(short('2026-10-27T03:00:00.000Z'), short('2026-11-06T03:00:00.000Z')).map((x) => [x.tag, x.counts]), [['EXPIRING', true]]);
+    // a short-lived certificate first served inside --warn-days says nothing
+    const six = cert('c', { notBefore: '2026-10-08T00:00:00.000Z', notAfter: '2026-10-14T00:00:00.000Z' });
+    assert.deepEqual(diffTls(night('2026-10-08T03:00:00.000Z', [ep('192.0.2.10', 'OK', { cert: c })]), night('2026-10-09T03:00:00.000Z', [ep('192.0.2.10', 'OK', { cert: six })])).map((x) => [x.tag, x.counts]),
+      [['CERT', false]], 'the renewal of the day');
+    // each run's own --warn-days
+    const wide = { ari: false, revocation: false, warnDays: 30 };
+    assert.deepEqual(diffTls(served('2026-11-01T03:00:00.000Z'), report([tgt([ep('192.0.2.10', 'OK', { cert: c })], { checkedAt: '2026-11-02T03:00:00.000Z' })], '2026-11-02T03:00:00.000Z', wide))
+      .map((x) => [x.tag, x.counts]), [['GONE', false], ['EXPIRING', false]], '28 days left of 90: not overdue yet, listed');
+    // a target new to the list with an expired certificate
+    const fresh = report([served('2026-12-01T03:00:00.000Z').targets[0], { ...tgt([ep('192.0.2.30', 'EXPIRED', { cert: cert('d', { notAfter: '2026-11-20T00:00:00.000Z' }) })]), target: 'old.example.com', host: 'old.example.com', checkedAt: '2026-12-01T03:00:00.000Z' }], '2026-12-01T03:00:00.000Z', { warnDays: 21 });
+    assert.deepEqual(diffTls(served('2026-11-29T23:00:00.000Z'), fresh).map((x) => [x.target, x.tag]), [['www.example.com', 'EXPIRED'], ['old.example.com', 'NEW'], ['old.example.com', 'EXPIRED']]);
+    assert.deepEqual(diffTls(served('2026-11-30T01:00:00.000Z'), fresh).map((x) => [x.target, x.tag]), [['old.example.com', 'NEW'], ['old.example.com', 'EXPIRED']], 'the baseline saw it expired already');
+  });
+
+  test('UNTRUSTED, MISMATCH once per host and problem; a pool\'s rotating addresses repeat nothing; BETTER once none has it', () => {
+    const c = cert('a');
+    const okEp = (address) => ep(address, 'OK', { cert: c, trusted: true, trustError: null, nameMatch: true });
+    const bad = (address, extra = {}) => ep(address, 'UNTRUSTED', { cert: c, trusted: false, trustError: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', nameMatch: true,
+      missingIntermediate: { name: 'Example R1', owner: 'Example CA', subjectDN: 'CN=Example R1,O=Example CA', added: 1 }, ...extra });
+    const n1 = night('2026-10-08T03:00:00.000Z', [okEp('192.0.2.10'), okEp('192.0.2.11')]);
+    const n2 = night('2026-10-09T03:00:00.000Z', [bad('192.0.2.10'), okEp('192.0.2.11')]);
+    const untrusted = diffTls(n1, n2);
+    assert.deepEqual(untrusted.map((x) => [x.tag, x.tone, x.counts, x.item, x.after]), [['UNTRUSTED', 'bad', true, null, 'UNTRUSTED']]);
+    assert.equal(changeText(untrusted[0]), 'www.example.com: 192.0.2.10 serves a chain this machine does not trust (UNABLE_TO_VERIFY_LEAF_SIGNATURE); the intermediate Example R1 (Example CA) is not sent');
+    // the pool rotates: a new address with the problem the host already had is nothing new; one read before that gets it is
+    const n3 = night('2026-10-10T03:00:00.000Z', [bad('192.0.2.10'), okEp('192.0.2.11'), bad('192.0.2.12')]);
+    assert.deepEqual(diffTls(n2, n3).map((x) => [x.tag, x.counts]), [['NEW', false]]);
+    const n4 = night('2026-10-11T03:00:00.000Z', [bad('192.0.2.10'), bad('192.0.2.11'), bad('192.0.2.12')]);
+    const second = diffTls(n3, n4);
+    assert.deepEqual(second.map((x) => x.tag), ['UNTRUSTED']);
+    assert.match(changeText(second[0]), /^www\.example\.com: 192\.0\.2\.11 serves a chain/);
+    // fixed everywhere: BETTER — but not while an address that had it failed this run
+    const n5 = night('2026-10-12T03:00:00.000Z', [okEp('192.0.2.10'), okEp('192.0.2.11'), ep('192.0.2.12', 'TIMEOUT', { error: 'no answer within 10 s' })]);
+    assert.deepEqual(diffTls(n4, n5).map((x) => x.tag), ['FAILED']);
+    const n6 = night('2026-10-13T03:00:00.000Z', [okEp('192.0.2.10'), okEp('192.0.2.11')]);
+    const better = diffTls(n4, n6);
+    assert.deepEqual(better.map((x) => [x.tag, x.tone, x.counts, x.item]), [['GONE', 'quiet', false, '192.0.2.12|443'], ['BETTER', 'good', true, null]]);
+    assert.equal(changeText(better[1]), 'www.example.com: every address serves a trusted chain again');
+    // a new address with the problem while the host had none: said
+    assert.deepEqual(diffTls(n1, night('2026-10-09T03:00:00.000Z', [okEp('192.0.2.10'), okEp('192.0.2.11'), bad('192.0.2.13')])).map((x) => [x.tag, x.counts]), [['NEW', false], ['UNTRUSTED', true]]);
+    // a certificate without the name
+    const other = cert('b', { subject: 'mail.example.org', names: ['mail.example.org'] });
+    const mismatch = diffTls(n1, night('2026-10-09T03:00:00.000Z', [ep('192.0.2.10', 'NAME_MISMATCH', { cert: other, trusted: true, trustError: null, nameMatch: false }), okEp('192.0.2.11')]));
+    assert.deepEqual(mismatch.map((x) => [x.tag, x.counts, x.after]), [['CERT', true, other.sha256], ['MISMATCH', true, 'NAME_MISMATCH']]);
+    assert.equal(changeText(mismatch[1]), 'www.example.com: 192.0.2.10 serves mail.example.org (Example CA, expires 2026-11-30), which does not cover the name');
+    // a record of an earlier version: a name mismatch it took for a trust error is no untrusted chain
+    const older = night('2026-10-08T03:00:00.000Z', [ep('192.0.2.10', 'UNTRUSTED', { cert: other, trusted: false, trustError: 'ERR_TLS_CERT_ALTNAME_INVALID', nameMatch: false })]);
+    assert.deepEqual(diffTls(older, night('2026-10-09T03:00:00.000Z', [ep('192.0.2.10', 'NAME_MISMATCH', { cert: other, trusted: true, trustError: null, nameMatch: false })])), []);
+    // a target new to the list with an untrusted chain
+    const added = report([n1.targets[0], { ...tgt([bad('192.0.2.40'), bad('192.0.2.41')]), target: 'api.example.com', host: 'api.example.com' }], '2026-10-09T03:00:00.000Z', { warnDays: 21 });
+    assert.deepEqual(diffTls(n1, added).map((x) => [x.target, x.tag]), [['api.example.com', 'NEW'], ['api.example.com', 'UNTRUSTED']]);
+    assert.match(changeText(diffTls(n1, added)[1]), /^api\.example\.com: 192\.0\.2\.40, 192\.0\.2\.41 serve a chain/);
+  });
+
+  test('NOT-LIVE compares runs that both read CT; HTTP and REDIRECT runs that both asked; a weaker HSTS header is listed', () => {
+    const c = cert('a');
+    const newer = { id: 'a2', ca: 'Example CA', intermediate: 'Example R1', notBefore: '2026-10-05T00:00:00.000Z', notAfter: '2027-01-03T00:00:00.000Z', serialHex: '0a2' };
+    const ct = { newest: newer };
+    const live = (address, extra = {}) => ep(address, 'OK', { cert: c, trusted: true, trustError: null, nameMatch: true, ...extra });
+    const n1 = night('2026-10-04T03:00:00.000Z', [live('192.0.2.10')], { ct: { newest: null } });
+    const n2 = night('2026-10-09T03:00:00.000Z', [live('192.0.2.10', { status: 'NOT_DEPLOYED', newer })], { ct });
+    const stale = diffTls(n1, n2);
+    assert.deepEqual(stale.map((x) => [x.tag, x.tone, x.counts, x.item, x.after]), [['NOT-LIVE', 'bad', true, null, 'NOT_DEPLOYED']]);
+    assert.equal(changeText(stale[0]), 'www.example.com: 192.0.2.10 still serves the certificate of 2026-09-01 (expires 2026-11-30); CT logged its renewal of 2026-10-05 (Example CA), not installed there');
+    assert.deepEqual(diffTls(night('2026-10-04T03:00:00.000Z', [live('192.0.2.10')]), n2), [], 'the baseline did not read CT');
+    const installed = night('2026-10-10T03:00:00.000Z', [ep('192.0.2.10', 'OK', { cert: cert('b', { notBefore: '2026-10-05T00:00:00.000Z', notAfter: '2027-01-03T00:00:00.000Z' }), trusted: true, nameMatch: true })], { ct });
+    assert.deepEqual(diffTls(n2, installed).map((x) => [x.tag, x.tone]), [['CERT', 'quiet'], ['BETTER', 'good']]);
+    // --http in both runs
+    const web = { ari: false, revocation: false, warnDays: 21, http: true };
+    const answer = (status, plain, hsts = { maxAge: 31536000, includeSubDomains: true, preload: false, valid: true }) => ({ status, error: null, hsts, plain });
+    const h1 = night('2026-10-08T03:00:00.000Z', [live('192.0.2.10', { http: answer(200, { status: 301, location: 'https://www.example.com/', toHttps: true, error: null }) })], {}, web);
+    const h2 = night('2026-10-09T03:00:00.000Z', [live('192.0.2.10', { http: answer(503, { status: 200, location: null, toHttps: false, error: null }, null) })], {}, web);
+    const moved = diffTls(h1, h2);
+    assert.deepEqual(moved.map((x) => [x.tag, x.tone, x.counts]), [['HTTP', 'bad', true], ['REDIRECT', 'bad', true], ['HSTS', 'info', false]]);
+    assert.deepEqual(moved.map(changeText), [
+      'www.example.com: 192.0.2.10: GET / answers 503',
+      'www.example.com: 192.0.2.10: http:// answers 200 without a redirect to https://',
+      'www.example.com: 192.0.2.10: Strict-Transport-Security max-age=31536000 → none'
+    ]);
+    assert.deepEqual(diffTls(h2, h1).map((x) => [x.tag, x.tone]), [['BETTER', 'good'], ['BETTER', 'good']]);
+    assert.deepEqual(diffTls(h1, { ...h2, options: { ...web, http: false } }), [], 'one run did not ask');
+    // port 80 refused is no lost redirect; a GET that failed is no 5xx
+    const h3 = night('2026-10-09T03:00:00.000Z', [live('192.0.2.10', { http: { status: null, error: 'connection reset', hsts: null, plain: { status: null, location: null, toHttps: false, error: 'connection refused' } } })], {}, web);
+    assert.deepEqual(diffTls(h1, h3), []);
+  });
+
+  test('a host --max-endpoints left out is carried like a DNS outage, said once; the notes; the baseline\'s new fields are checked', () => {
+    const c = cert('a');
+    const n1 = night('2026-10-08T03:00:00.000Z', [ep('192.0.2.10', 'OK', { cert: c })]);
+    const capped = night('2026-10-09T03:00:00.000Z', n1.targets[0].endpoints, { carried: { from: '2026-10-08T03:00:00.000Z', why: 'max-endpoints' } });
+    const out = diffTls(n1, capped);
+    assert.deepEqual(out.map((x) => [x.tag, x.counts]), [['FAILED', false]]);
+    assert.match(changeText(out[0]), /not checked this run \(--max-endpoints: the run had checked as many endpoints as it may\): the next run compares with the last check$/);
+    assert.deepEqual(diffTls(capped, { ...capped, startedAt: '2026-10-10T03:00:00.000Z' }), [], 'said once');
+    assert.match(changeText(diffTls(capped, night('2026-10-10T03:00:00.000Z', [ep('192.0.2.10', 'OK', { cert: c })]))[0]), /checked again; compared with the check of 2026-10-08$/);
+    const dnsAfterCap = night('2026-10-10T03:00:00.000Z', n1.targets[0].endpoints, { carried: { from: '2026-10-08T03:00:00.000Z' }, dns: { status: 'SERVFAIL', ipv4: [], ipv6: [], cnames: [], error: 'x' } });
+    assert.match(changeText(diffTls(capped, dnsAfterCap)[0]), /DNS lookup failed this run \(SERVFAIL\)/, 'another reason is said');
+    const newCapped = report([n1.targets[0], { ...tgt([]), target: 'new.example.com', host: 'new.example.com', carried: { from: null, why: 'max-endpoints' } }]);
+    assert.match(changeText(diffTls(n1, newCapped)[0]), /new\.example\.com: now listed, not checked this run \(--max-endpoints\)$/);
+    assert.deepEqual(tlsNotes({ ari: false, revocation: false, warnDays: 21, ct: null, http: false }, { ari: false, revocation: false, warnDays: 30, ct: { file: 'ct.json' }, http: true }), [
+      'The warning days differ from the baseline\'s (21 → 30, --warn-days): EXPIRING can come from that.',
+      'CT was read in this run only (--ct): NOT-LIVE compares runs that both read it.',
+      'HTTP was asked in this run only (--http): HTTP and REDIRECT compare runs that both asked it.'
+    ]);
+    assert.deepEqual(tlsNotes({ ari: true, revocation: true }, { ari: true, revocation: true, warnDays: 21, ct: null, http: false }), [], 'a report of the version before: the defaults');
+    const bad = (endpoints, extra = {}) => baselineProblem(report([tgt(endpoints, extra)]), 'tls');
+    assert.match(bad([ep('192.0.2.10', 'OK', { newer: 'a2' })]), /endpoints\[0\] has a "newer" that is not an object/);
+    assert.match(bad([ep('192.0.2.10', 'OK', { http: { plain: 301 } })]), /endpoints\[0\] has an "http\.plain" that is not an object/);
+    assert.match(bad([], { ct: 'ct.json' }), /has a "ct" that is not an object/);
+  });
+
+  test('PagerDuty: a host\'s problem is over once no address read has it, a certificate\'s expiry once it is no longer served; severities', () => {
+    const c = cert('a');
+    const key = (tag, item = null) => ({ tag, item });
+    const x = (endpoints, extra = {}) => tgt(endpoints, extra);
+    const untrusted = ep('192.0.2.10', 'UNTRUSTED', { cert: c, trusted: false, trustError: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' });
+    const fine = ep('192.0.2.10', 'OK', { cert: c, trusted: true });
+    assert.equal(problemStanding('tls', x([untrusted]), key('UNTRUSTED')), 'bad');
+    assert.equal(problemStanding('tls', x([fine]), key('UNTRUSTED')), 'over');
+    assert.equal(problemStanding('tls', x([fine, ep('192.0.2.11', 'TIMEOUT')]), key('UNTRUSTED')), 'over', 'a dead pool member is not waited for');
+    assert.equal(problemStanding('tls', x([ep('192.0.2.10', 'TIMEOUT')]), key('UNTRUSTED')), 'unknown', 'nothing read');
+    assert.equal(problemStanding('tls', x([untrusted], { carried: { from: null } }), key('UNTRUSTED')), 'unknown');
+    assert.equal(problemStanding('tls', x([ep('192.0.2.10', 'NAME_MISMATCH', { cert: c, nameMatch: false })]), key('MISMATCH')), 'bad');
+    const stale = ep('192.0.2.10', 'NOT_DEPLOYED', { cert: c, newer: { id: 'a2' } });
+    assert.equal(problemStanding('tls', x([stale], { ct: { newest: null } }), key('NOT-LIVE')), 'bad');
+    assert.equal(problemStanding('tls', x([fine], { ct: { newest: null } }), key('NOT-LIVE')), 'over');
+    assert.equal(problemStanding('tls', x([fine]), key('NOT-LIVE')), 'unknown', 'a run that did not read CT');
+    const web = (status, plain = null) => ep('192.0.2.10', 'OK', { cert: c, http: { status, error: null, hsts: null, plain } });
+    assert.equal(problemStanding('tls', x([web(503)]), key('HTTP')), 'bad');
+    assert.equal(problemStanding('tls', x([web(200)]), key('HTTP')), 'over');
+    assert.equal(problemStanding('tls', x([fine]), key('HTTP')), 'unknown', 'a run that did not ask');
+    assert.equal(problemStanding('tls', x([web(200, { status: 200, location: null, toHttps: false, error: null })]), key('REDIRECT')), 'bad');
+    assert.equal(problemStanding('tls', x([web(200, { status: 301, location: 'https://www.example.com/', toHttps: true, error: null })]), key('REDIRECT')), 'over');
+    assert.equal(problemStanding('tls', x([fine]), key('EXPIRING', c.sha256)), 'bad', 'still served');
+    assert.equal(problemStanding('tls', x([ep('192.0.2.10', 'OK', { cert: cert('b') })]), key('EXPIRED', c.sha256)), 'over', 'renewed');
+    assert.equal(eventSeverity({ tag: 'UNTRUSTED', item: null, after: 'UNTRUSTED' }, 'tls'), 'critical');
+    assert.equal(eventSeverity({ tag: 'EXPIRED', item: c.sha256, after: 'EXPIRED' }, 'tls'), 'critical');
+    for (const tag of ['EXPIRING', 'MISMATCH', 'NOT-LIVE', 'HTTP', 'REDIRECT']) assert.equal(eventSeverity({ tag, item: null, after: null }, 'tls'), 'error', tag);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* The monitor's runs                                                       */
+/* ------------------------------------------------------------------------ */
+
+test('--max-endpoints: the hosts past it keep their last check, said once; one never checked is left out', async () => {
+  const t = await setupStrings();
+  const fetchImpl = createFakeFetch({ 'a.example.com': { A: ['192.0.2.10', '192.0.2.11'] }, 'b.example.com': { A: ['192.0.2.12'] }, 'c.example.com': { A: ['192.0.2.13'] } }, { apex: 'example.com' });
+  const { DohClient } = await import('../../assets/js/lib/doh.js');
+  const dns = new DohClient({ chain: ['cloudflare'], fetchImpl });
+  const asked = [];
+  const refused = (opts) => {
+    asked.push(opts.host);
+    const s = new EventEmitter();
+    s.destroy = () => {};
+    setImmediate(() => s.emit('error', Object.assign(new Error(`connect ECONNREFUSED ${opts.host}:443`), { code: 'ECONNREFUSED' })));
+    return s;
+  };
+  const baseline = report([{ ...tgt([ep('192.0.2.12', 'OK', { cert: cert('b') })]), target: 'b.example.com', host: 'b.example.com', checkedAt: '2026-10-08T03:00:00.000Z' }], '2026-10-08T03:00:00.000Z');
+  const env = { dns, fetchImpl, now: () => NOW, t, progress: () => {}, baseline, inputs: {}, tls: { connect: refused } };
+  const res = await runTls(['a.example.com', 'b.example.com', 'c.example.com'], { ari: false, revocation: false, chain: ['cloudflare'], maxEndpoints: 2, warnDays: 21 }, env);
+  assert.deepEqual(asked.sort(), ['192.0.2.10', '192.0.2.11'], 'two handshakes, the first host\'s');
+  assert.deepEqual(res.targets.map((x) => [x.target, x.carried || null]), [['a.example.com', null], ['b.example.com', { from: '2026-10-08T03:00:00.000Z', why: 'max-endpoints' }]]);
+  assert.deepEqual(res.targets[1].endpoints, baseline.targets[0].endpoints, 'the last check kept');
+  assert.deepEqual(res.warnings, ['--max-endpoints 2: 2 targets (2 addresses) not checked this run, from b.example.com on; their last check is kept for the next comparison (raise --max-endpoints, or split the list)']);
+  assert.match(renderMarkdown(res.docs[1]), /not checked this run \(--max-endpoints\); the endpoints of the last check \(2026-10-08\) are kept for the next comparison/);
+  const changes = diffTls(baseline, { ...report(res.targets), options: res.options });
+  assert.deepEqual(changes.map((x) => [x.target, x.tag, x.counts]), [['a.example.com', 'NEW', true], ['b.example.com', 'FAILED', false]]);
+});
+
+describe('three nights of `tls --ct --http` over a local server: a missing intermediate, a renewal not installed, a 5xx and a lost redirect', () => {
+  const answer = { status: 200, headers: { 'Strict-Transport-Security': 'max-age=31536000' } };
+  const redirect = { status: 301, location: 'https://www.example.com/' };
+  const full = { cert: Buffer.concat([CROSS_LEAF_PEM, CROSS_INTER_PEM]), key: CROSS_LEAF_KEY };
+  let web;
+  let plain;
+  let dir;
+  before(async () => {
+    web = await httpsServer({ ...full, answer });
+    plain = await plainServer(redirect);
+    dir = mkdtempSync(join(tmpdir(), 'ds-tls-monitor-'));
+  });
+  after(async () => {
+    await web.close();
+    await plain.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** The same night's ct report: the served certificate, and `renewal` when CT has logged one. */
+  function writeCt(renewal) {
+    const row = (id, notBefore, notAfter) => ({ id, ca: 'Example Test PKI', intermediate: 'Example Test Cross Issuing CA', issuer: 'CN=Example Test Cross Issuing CA,O=Example Test PKI',
+      notBefore, notAfter, names: ['example.com', 'www.example.com'], sha256: null, serialHex: null, sources: ['crtsh'], revoked: null, precert: null });
+    const doc = { tool: DS_TOOL, version: DS_VERSION, command: 'ct', startedAt: '2026-10-08T02:40:00.000Z', finishedAt: '2026-10-08T02:50:00.000Z', options: {},
+      targets: [{ target: 'example.com', names: [], readAt: null, certificates: [row('served', '2025-01-01T00:00:00.000Z', '2060-01-01T00:00:00.000Z'),
+        ...(renewal ? [row('renewal', '2026-10-05T00:00:00.000Z', '2027-01-03T00:00:00.000Z')] : [])] }] };
+    writeFileSync(join(dir, 'ct.json'), JSON.stringify(doc));
+  }
+
+  async function run(argv, now, sent) {
+    const fetchImpl = createFakeFetch({ 'www.example.com': { A: ['127.0.0.1'] } }, {
+      apex: 'example.com',
+      other: (url, init) => {
+        if (!String(url).startsWith('https://events.pagerduty.com/')) return new Response('not found', { status: 404 });
+        sent.push(JSON.parse(init.body));
+        return new Response('{"status":"success"}', { status: 202 });
+      }
+    });
+    let out = '';
+    let err = '';
+    const code = await main(argv, {
+      stdout: { isTTY: false, write: (s) => { out += s; return true; } }, stderr: { write: (s) => { err += s; return true; } }, fetchImpl, env: {}, now: () => now,
+      tls: {
+        ca: [CROSS_ROOT_PEM], intermediates: crossStore(), request: requestVia(plain.port),
+        // the target is www.example.com on 443: the local server's port stands in for it
+        connect: (opts, cb) => tls.connect({ ...opts, port: opts.port === 443 ? web.port : opts.port }, cb)
+      }
+    });
+    return { code, out, err };
+  }
+
+  test('night 1 all well; night 2 every problem counted and paged; night 3 fixed but the renewal, each incident resolved but its', async () => {
+    const json = join(dir, 'tls.json');
+    const md = join(dir, 'tls.md');
+    const url = 'https://events.pagerduty.com/v2/enqueue?routing_key=' + 'R0UT1NGKEY' + 'y'.repeat(22);
+    const argv = ['tls', 'www.example.com', '--ct', join(dir, 'ct.json'), '--http', '--baseline', json, '--json', json, '--md', md, '--fail-on-change', '--notify-bad', url, '--no-color'];
+    const sent = [];
+    writeCt(false);
+    const n1 = await run(argv, AT('2026-10-08T03:00:00Z'), sent);
+    assert.equal(n1.code, EXIT.OK, n1.err);
+    assert.match(n1.out, /TLS · www\.example\.com\n- www\.example\.com · Example Test PKI · expires 2060-01-01 \(\d+ days left\) · 127\.0\.0\.1\n- TLSv1\.[23] · [^\n]+ · chain sent: 2 certificates · OCSP staple: no\n- GET \/ 200 · HSTS max-age=31536000 · http:\/\/ redirects to https:\/\/ \(301\)\n/);
+    const r1 = JSON.parse(readFileSync(json, 'utf8'));
+    assert.deepEqual(r1.options, { ari: false, revocation: false, warnDays: 21, http: true, ct: { file: 'ct.json', finishedAt: '2026-10-08T02:50:00.000Z' }, fromSubdomains: null, skipCdn: false, maxEndpoints: 500,
+      resolvers: ['cloudflare', 'google', 'dnssb'] });
+    const e1 = r1.targets[0].endpoints[0];
+    assert.deepEqual([e1.status, e1.trusted, e1.chainSent, e1.chainLength, e1.ocspStapled, e1.http.status, e1.http.plain.toHttps], ['OK', true, 2, 3, false, 200, true]);
+    assert.deepEqual(r1.targets[0].ct, { newest: { id: 'served', ca: 'Example Test PKI', intermediate: 'Example Test Cross Issuing CA', notBefore: '2025-01-01T00:00:00.000Z', notAfter: '2060-01-01T00:00:00.000Z', serialHex: null } });
+    assert.deepEqual(sent, []);
+
+    // night 2: the server sends its leaf alone, answers 503 without HSTS, port 80 no longer redirects; CT has logged the renewal
+    web.setCert({ cert: CROSS_LEAF_PEM });
+    Object.assign(answer, { status: 503, headers: {} });
+    Object.assign(redirect, { status: 200, location: null });
+    writeCt(true);
+    const n2 = await run(argv, AT('2026-10-09T03:00:00Z'), sent);
+    assert.equal(n2.code, EXIT.CHANGED, n2.err);
+    const r2 = JSON.parse(readFileSync(json, 'utf8'));
+    assert.deepEqual(r2.changes.map((c) => [c.tag, c.counts]), [['UNTRUSTED', true], ['NOT-LIVE', true], ['HTTP', true], ['REDIRECT', true], ['HSTS', false]]);
+    const e2 = r2.targets[0].endpoints[0];
+    assert.deepEqual([e2.status, e2.trustError, e2.chainSent, e2.missingIntermediate, e2.newer.id], ['UNTRUSTED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 1,
+      { name: 'Example Test Cross Issuing CA', owner: 'Example Test PKI', subjectDN: 'CN=Example Test Cross Issuing CA,O=Example Test PKI', added: 1 }, 'renewal']);
+    assert.match(n2.out, /\n {2}UNTRUSTED {2}www\.example\.com: 127\.0\.0\.1 serves a chain this machine does not trust \(UNABLE_TO_VERIFY_LEAF_SIGNATURE\); the intermediate Example Test Cross Issuing CA \(Example Test PKI\) is not sent\n/);
+    assert.match(n2.out, /- The intermediate Example Test Cross Issuing CA \(Example Test PKI\) is not sent by 127\.0\.0\.1: named from the CCADB list; add it to the certificate file\n/);
+    assert.match(n2.out, /- CT logged its renewal of 2026-10-05 \(Example Test PKI, expires 2027-01-03\): not installed on 127\.0\.0\.1\n/);
+    assert.match(readFileSync(md, 'utf8'), /- \*\*NOT-LIVE\*\* `www\.example\.com`: `127\.0\.0\.1` still serves the certificate of 2025-01-01 \(expires 2060-01-01\); CT logged its renewal of 2026-10-05 \(`Example Test PKI`\), not installed there/);
+    assert.deepEqual(sent.map((e) => [e.event_action, e.payload.custom_details.tag, e.payload.severity, e.payload.custom_details.item]),
+      [['trigger', 'UNTRUSTED', 'critical', null], ['trigger', 'NOT-LIVE', 'error', null], ['trigger', 'HTTP', 'error', null], ['trigger', 'REDIRECT', 'error', null]]);
+    assert.deepEqual(r2.notify.open.map((k) => k.tag), ['UNTRUSTED', 'NOT-LIVE', 'HTTP', 'REDIRECT']);
+
+    // night 3: the chain, the page and the redirect are fixed; the renewal is still not installed
+    sent.length = 0;
+    web.setCert(full);
+    Object.assign(answer, { status: 200, headers: { 'Strict-Transport-Security': 'max-age=31536000' } });
+    Object.assign(redirect, { status: 301, location: 'https://www.example.com/' });
+    const n3 = await run(argv, AT('2026-10-10T03:00:00Z'), sent);
+    assert.equal(n3.code, EXIT.CHANGED, n3.err);
+    const r3 = JSON.parse(readFileSync(json, 'utf8'));
+    assert.deepEqual(r3.changes.map((c) => [c.tag, c.tone]), [['BETTER', 'good'], ['BETTER', 'good'], ['BETTER', 'good']]);
+    assert.deepEqual(r3.targets[0].endpoints[0].status, 'NOT_DEPLOYED');
+    assert.deepEqual(sent.map((e) => e.event_action), ['resolve', 'resolve', 'resolve']);
+    assert.deepEqual(r3.notify.open.map((k) => k.tag), ['NOT-LIVE'], 'the renewal is still not installed');
+    assert.ok(!(n1.out + n1.err + n2.out + n2.err + n3.out + n3.err).includes('R0UT1NGKEY'), 'the routing key is never printed');
   });
 });

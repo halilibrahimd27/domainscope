@@ -12,7 +12,7 @@
  *   node tools/ds.mjs renew example.com '*.example.com' --ca letsencrypt
  *   node tools/ds.mjs dane fullchain.pem
  *   node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
- *   node tools/ds.mjs tls --list tls-hosts.txt --ari --revocation --json tls.json
+ *   node tools/ds.mjs tls --list tls-hosts.txt --ct ct.json --ari --revocation --json tls.json
  *   node tools/ds.mjs takeover --list domains.txt --from-subdomains subs.json --json takeover.json
  *
  * Commands, options and exit codes: tools/ds/args.mjs (USAGE, `--help`). The checks:
@@ -238,7 +238,8 @@ export function withOpenKeys(doc, open) {
  *   fetchImpl?: typeof fetch, env?: Record<string, string|undefined>, now?: () => Date,
  *   signal?: AbortSignal, tls?: object, notifyTiming?: { timeoutMs?: number, retryDelayMs?: number, sleep?: Function } }} [io]
  *   injected streams, fetch and clock (tests), the notifications' timeout and retry delay (`notifyTiming`); `tls`: the
- *   `tls` command's hooks (tools/ds/tls.mjs runTls: a trust store, the issuer → CA mapping, ARI directories)
+ *   `tls` command's hooks (tools/ds/tls.mjs runTls: a trust store, the issuer → CA mapping, ARI directories, node:http's
+ *   request, the intermediates list)
  * @returns {Promise<number>}
  */
 export async function main(argv, io = {}) {
@@ -296,7 +297,21 @@ export async function main(argv, io = {}) {
       for (const w of skippedWarnings(`--list ${file}`, invalid, what)) warn(w);
       for (const x of listed) if (!targets.includes(x)) targets = [...targets, x];
     }
-    if (!targets.length) throw new UsageError(`${command}: no target: ${options.lists.map((f) => `--list ${f}`).join(', ')} names none`);
+    if (command === 'tls') {
+      // --from-subdomains: more hosts; --ct: the same night's ct report (tools/ds/tls.mjs)
+      const { tlsInputs } = await import('./ds/tls.mjs');
+      inputs.tls = await tlsInputs(options, {
+        read: async (path, option) => decodeText(await readInput(path, option)),
+        exists: async (path) => !!(await stat(path).catch(() => null)),
+        warn,
+        skipped: skippedWarnings
+      });
+      for (const x of inputs.tls.hosts) if (!targets.includes(x)) targets = [...targets, x];
+    }
+    if (!targets.length) {
+      const sources = [...options.lists.map((f) => `--list ${f}`), ...(command === 'tls' && options.fromSubdomains ? [`--from-subdomains ${options.fromSubdomains}`] : [])];
+      throw new UsageError(`${command}: no target: ${sources.join(', ')} ${sources.length === 1 ? 'names' : 'name'} none`);
+    }
     if (COMMAND_SPECS[command].targets === 'file') {
       inputs.file = { name: basename(targets[0]), bytes: await readInput(targets[0]) };
     }

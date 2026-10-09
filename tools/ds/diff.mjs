@@ -5,9 +5,10 @@
  *
  * A change is `{ tag, tone, counts, target, item, kind, before, after, parts }`:
  * - `tag`: render.mjs CHANGE_TAGS (NEW, GONE, WORSE, BETTER, CHANGED, FAILED, RECOVERED, FAILING,
- *   SCORE, ISSUER, NAME, CERT, CA, EXPIRING, REVOKED, EXPOSED, DANGLING; tls's RENEW-NOW, MOVED-UP and
- *   CA-NOTICE, tools/ds/tlsdiff.mjs; takeover's RISK, tools/ds/takeover.mjs diffTakeover; the accepted
- *   risks' WAIVED and LAPSED); `tone`: 'bad' | 'good' | 'info' | 'quiet';
+ *   SCORE, ISSUER, NAME, CERT, CA, EXPIRING, REVOKED, EXPOSED, DANGLING; tls's EXPIRED, UNTRUSTED,
+ *   MISMATCH, NOT-LIVE, HTTP, REDIRECT, HSTS, RENEW-NOW, MOVED-UP and CA-NOTICE, tools/ds/tlsdiff.mjs;
+ *   takeover's RISK, tools/ds/takeover.mjs diffTakeover; the accepted risks' WAIVED and LAPSED);
+ *   `tone`: 'bad' | 'good' | 'info' | 'quiet';
  * - accepted risks (`--waivers`, lib/waivers.js): an item a waiver accepts in this run — a health
  *   finding, an audit rule, a known certificate — is never counted: its changes are listed only, and
  *   one newly accepted is WAIVED (listed only). An item accepted in the baseline run whose waiver is

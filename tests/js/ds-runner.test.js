@@ -1748,8 +1748,11 @@ describe('the documented commands', () => {
 
   test('every ds line of the nightly template, commented ones too, is a command line the runner takes', () => {
     const yml = readFileSync(join(ROOT, 'docs', 'examples', 'nightly-domainscope.yml'), 'utf8').replace(/\r\n/g, '\n');
-    const lines = [...yml.matchAll(/^ *#? *ds ([a-z][\w-]*) ([a-z]+)((?: [^\s#]+)*) *$/gm)];
-    assert.equal(lines.length, 11, `${lines.length} ds lines`);
+    // a check of a file the repository may not have runs only when it is there: `[ -f FILE ] && ds …`
+    const lines = [...yml.matchAll(/^ *#? *(?:\[ -f [^\s\]]+ \] && )?ds ([a-z][\w-]*) ([a-z]+)((?: [^\s#]+)*) *$/gm)];
+    assert.equal(lines.length, 12, `${lines.length} ds lines`);
+    assert.match(yml, /\n {10}ds ct ct --list domains\.txt\n(?: {10}#[^\n]*\n)+ {10}\[ -f tls-hosts\.txt \] && ds tls tls --list tls-hosts\.txt --ct results\/ct\.json\n/,
+      'the tls check reads the ct report the ct line writes first');
     for (const [, name, command, rest] of lines) {
       assert.ok(COMMANDS.includes(command), command);
       const argv = [command, ...rest.trim().split(/\s+/).filter(Boolean).map(unquote), '--baseline', `results/${name}.json`,

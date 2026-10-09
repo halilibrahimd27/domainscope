@@ -14,7 +14,7 @@
  */
 
 import { isLookupError, checkAreas, failedAreas, knownChecks, lookupFailed } from './carry.mjs';
-import { TLS_FAILED } from './tlsdiff.mjs';
+import { TLS_FAILED, TLS_PROBLEMS } from './tlsdiff.mjs';
 import { DRIFT_SEVERITY } from '../../assets/js/lib/zonedrift.js';
 import { DANE_SEVERITY } from '../../assets/js/lib/dane.js';
 import { TAKEOVER_SEVERITIES } from '../../assets/js/lib/takeover.js';
@@ -66,8 +66,10 @@ const driftRank = (status) => SEVERITY_RANK[driftSev(status)];
 /** A DANE status's rank (a status of a later version: NaN). */
 const daneRank = (status) => (has(DANE_SEVERITY, status) ? SEVERITY_RANK[DANE_SEVERITY[status]] ?? 0 : NaN);
 
-/** The tls changes about one certificate (their item is its SHA-256): the CA's renewal window, its notice, its revocation. */
-const TLS_CERTIFICATE_TAGS = new Set(['RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'REVOKED']);
+/** The tls changes about one certificate (their item is its SHA-256): its expiry, the CA's renewal window, its notice, its revocation. */
+const TLS_CERTIFICATE_TAGS = new Set(['EXPIRING', 'EXPIRED', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'REVOKED']);
+/** The tls problems of a host's addresses (item null; tools/ds/tlsdiff.mjs TLS_PROBLEMS), by tag. */
+const TLS_TARGET_PROBLEMS = new Map(TLS_PROBLEMS.map((p) => [p.tag, p]));
 /** The least takeover severity a change counts at (tools/ds/takeover.mjs COUNTED_SEVERITY). */
 export const TAKEOVER_COUNTED = 'medium';
 const takeoverRank = (severity) => {
@@ -181,18 +183,32 @@ const STANDINGS = Object.freeze({
   },
 
   /**
-   * A certificate's problem (RENEW-NOW, MOVED-UP, CA-NOTICE, REVOKED: the item is its SHA-256) is over
-   * once no endpoint serves that certificate any more (renewed or replaced) — never while one does, and
-   * not known while an endpoint that served it last time could not be read. An endpoint's (item
+   * A certificate's problem (EXPIRING, EXPIRED, RENEW-NOW, MOVED-UP, CA-NOTICE, REVOKED: the item is
+   * its SHA-256) is over once no endpoint serves that certificate any more (renewed or replaced) —
+   * never while one does, and not known while an endpoint that served it last time could not be read.
+   * A host's (item null): UNTRUSTED, MISMATCH, NOT-LIVE, HTTP and REDIRECT are over once none of the
+   * addresses read has the problem (NOT-LIVE: only in a run that read CT, HTTP and REDIRECT: in one that
+   * asked; an address that failed is not waited for); the name no longer resolving (GONE) once it
+   * resolves again. An endpoint's (item
    * `address|port`): FAILED is over once a handshake completes there, WORSE and RECOVERED once its
    * status is OK, an endpoint no longer asked is over; a CERT (another certificate) is never known fixed.
-   * The name no longer resolving (GONE) is over once it resolves again. A DNS lookup that failed
-   * (`carried`: last night's endpoints) says nothing.
+   * A DNS lookup that failed, or a host --max-endpoints left out (`carried`: the last check's
+   * endpoints), says nothing.
    */
   tls(x, e) {
     if (x.carried) return 'unknown';
     const endpoints = (Array.isArray(x.endpoints) ? x.endpoints : []).filter((p) => p && typeof p === 'object');
     if (e.item === null) {
+      const problem = TLS_TARGET_PROBLEMS.get(e.tag);
+      if (problem) {
+        const read = endpoints.filter((p) => p.cert);
+        if (!read.length) return 'unknown';
+        if (problem.needs === 'ct' && !(x.ct && typeof x.ct === 'object')) return 'unknown';
+        if ((problem.needs === 'http' || problem.needs === 'redirect') && !read.some((p) => p.http && typeof p.http === 'object')) return 'unknown';
+        // an address that failed this run is not waited for (a dead pool member would keep the incident open
+        // for ever): back with the problem, it is RECOVERED with a bad status, paged on its own
+        return read.some((p) => problem.has(p)) ? 'bad' : 'over';
+      }
       if (e.tag !== 'GONE') return 'unknown';
       const status = x.dns && x.dns.status;
       if (status === 'NXDOMAIN') return 'bad';

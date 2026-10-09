@@ -63,7 +63,7 @@ describe('takeover: command line', () => {
       [['takeover', 'example.com', '--dkim-selectors', Array.from({ length: DS_MAX_DKIM_SELECTORS + 1 }, (_, i) => `x${i}`).join(',')], /at most 20 selectors besides the common ones, not 21/],
       [['takeover', 'example.com', '--names', 'h.txt', '--json', 'h.txt'], /--json names the same file as --names \(h\.txt\)/],
       [['takeover', '--from-subdomains', 's.json'], /takeover needs at least one domain \(or --list FILE\)/],
-      [['health', 'example.com', '--from-subdomains', 's.json'], /--from-subdomains applies to takeover only, not to health/],
+      [['health', 'example.com', '--from-subdomains', 's.json'], /--from-subdomains applies to tls and takeover only, not to health/],
       [['takeover', 'example.com', '--exact', 'h.txt'], /--exact applies to subdomains only, not to takeover/]
     ];
     for (const [argv, re] of refused) assert.throws(() => parseCommandLine(argv), (err) => err instanceof UsageError && re.test(err.message), argv.join(' '));

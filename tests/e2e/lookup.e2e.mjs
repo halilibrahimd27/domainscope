@@ -10,7 +10,8 @@
  * the resolver and the header flags are said once there, a card repeats only what differs; a
  * query that got no answer (HTTP 429 from every resolver) keeps its card with the reason and a
  * Retry that asks that type alone again, also while a slower type of the same lookup still runs;
- * 1440 and 375 px, light and dark, English and Turkish.
+ * Stop (Esc) during a lookup keeps what came in, each type still asked says it was stopped, with a
+ * Retry of its own, and the summary counts them; 1440 and 375 px, light and dark, English and Turkish.
  *
  * OFFLINE group "DNSSEC chain" (always runs): the summary's "DNSSEC chain" button validates the
  * chain of trust in the page (ui/dnssec-panel.js, lib/dnssec.js) against zones signed with
@@ -403,6 +404,36 @@ async function offlineGroup(browser, server) {
       assertEqual([Object.keys(c), c.MX.state, c.MX.count, c.TXT.state], [['A', 'MX', 'TXT'], 'noerror', 2, 'noerror'], 'the run ends with MX answered; CAA folds');
       assert(!(await page.evaluate(summaryInfo)).meta.includes('failed'), 'no failure left in the summary');
       await page.evaluate(() => { window.__dohFail.slow = {}; });
+    });
+
+    await step('Stop (Esc) while a slow type is still asked: the answers in so far stay, the rest says so with a Retry of its own', async () => {
+      await page.evaluate(() => { window.__dohFail.types = []; window.__dohFail.slow = { TXT: 8000 }; });
+      await gotoHash(page, '#/lookup?name=example.com&type=A,TXT', 'lookup');
+      await page.waitFor(() => document.querySelector('.lkp-card[data-type="A"]')?.dataset.state === 'noerror'
+        && !document.querySelector('[data-action="lkp-stop"]')?.hidden, { timeout: 15000, message: 'A answered, TXT still asked, Stop on screen' });
+      assert(await page.evaluate(() => document.querySelector('[data-action="run"]').hidden), 'Stop takes the place of Look up');
+      await page.press('Escape');
+      await page.waitFor(() => document.querySelector('.lkp-card[data-type="TXT"]')?.dataset.state === 'stopped', { timeout: 5000, message: 'TXT stopped' });
+      const info = await page.evaluate(() => ({
+        run: !document.querySelector('[data-action="run"]').hidden,
+        stop: !document.querySelector('[data-action="lkp-stop"]').hidden,
+        a: document.querySelector('.lkp-card[data-type="A"]').dataset.state,
+        txt: document.querySelector('.lkp-card[data-type="TXT"]').textContent,
+        retry: !!document.querySelector('.lkp-card[data-type="TXT"] [data-action="retry-source"]'),
+        sum: (document.querySelector('[data-role="lkp-stopped"]')?.textContent || '').trim(),
+        busy: document.getElementById('app-header').classList.contains('is-busy')
+      }));
+      assertEqual([info.run, info.stop, info.a, info.retry, info.busy], [true, false, 'noerror', true, false], 'Look up back, the A answer kept, a Retry for TXT, not busy');
+      assert(/Stopped before an answer came\./.test(info.txt), info.txt);
+      assertEqual(info.sum, 'Stopped: 1 type not answered', 'the summary says so');
+      await shot(page, 'lookup-offline-desktop-light-en-stopped');
+      // Its Retry asks TXT alone and fills it in: the lookup is complete again.
+      await page.evaluate(() => { window.__dohFail.slow = {}; });
+      const before = await page.evaluate(() => window.__dohFail.asked.length);
+      await page.click('.lkp-card[data-type="TXT"] [data-action="retry-source"]');
+      await page.waitFor(() => document.querySelector('.lkp-card[data-type="TXT"]')?.dataset.state === 'noerror', { timeout: 5000, message: 'TXT answered by its Retry' });
+      assertEqual(await page.evaluate((b) => window.__dohFail.asked.slice(b), before), ['TXT'], 'one query: TXT');
+      assert(!(await page.evaluate(() => !!document.querySelector('[data-role="lkp-stopped"]'))), 'nothing left unanswered');
     });
 
     await step('the "No records" line keeps its open raw answer and the keyboard focus while slower types answer', async () => {

@@ -116,6 +116,7 @@ registerStrings('en', {
   'lkp.sum.types': { one: '{count} type', other: '{count} types' },
   'lkp.sum.records': { zero: 'no records', one: '{count} record', other: '{count} records' },
   'lkp.sum.time': 'in {time}',
+  'lkp.sum.stopped': { one: 'Stopped: {count} type not answered', other: 'Stopped: {count} types not answered' },
   'lkp.sum.answeredBy': 'answered by {resolver}',
   'lkp.noRecords': 'No records:',
   'lkp.noRecordsBody': 'The name exists but has no records of these types (NODATA).',
@@ -130,6 +131,7 @@ registerStrings('en', {
   'lkp.card.pop': 'PoP {id}',
   'lkp.card.failover': 'answered after trying {tried}',
   'lkp.card.querying': 'Querying…',
+  'lkp.card.stopped': 'Stopped before an answer came.',
   'lkp.card.raw': 'Raw answer (dig format)',
   'lkp.card.failed': 'The query failed',
   'lkp.card.attempts': 'Resolvers tried',
@@ -273,6 +275,7 @@ registerStrings('tr', {
   'lkp.sum.types': '{count} tür',
   'lkp.sum.records': { zero: 'kayıt yok', other: '{count} kayıt' },
   'lkp.sum.time': '{time} içinde',
+  'lkp.sum.stopped': 'Durduruldu: {count} tür yanıtlanmadı',
   'lkp.sum.answeredBy': '{resolver} yanıtladı',
   'lkp.noRecords': 'Kayıt yok:',
   'lkp.noRecordsBody': 'Ad mevcut ama bu türlerde kaydı yok (NODATA).',
@@ -287,6 +290,7 @@ registerStrings('tr', {
   'lkp.card.pop': 'PoP {id}',
   'lkp.card.failover': '{tried} denendikten sonra yanıtlandı',
   'lkp.card.querying': 'Sorgulanıyor…',
+  'lkp.card.stopped': 'Yanıt gelmeden durduruldu.',
   'lkp.card.raw': 'Ham yanıt (dig biçimi)',
   'lkp.card.failed': 'Sorgu başarısız oldu',
   'lkp.card.attempts': 'Denenen çözümleyiciler',
@@ -642,6 +646,9 @@ export function mount(container, ctx) {
   });
   resolverField.input.dataset.role = 'lookup-resolver';
   const runBtn = Button({ label: t('lkp.run'), icon: 'search', variant: 'primary', dataset: { action: 'run', shortcut: 'submit' }, onClick: () => start() });
+  // Stop (Esc) while a lookup asks: the answers in so far stay, each type still asked offers its Retry.
+  const stopBtn = Button({ label: t('common.stop'), icon: 'stop', variant: 'secondary', dataset: { action: 'lkp-stop', shortcut: 'cancel' }, onClick: () => stop() });
+  stopBtn.hidden = true;
 
   const known = new Set(LOOKUP_TYPES);
   const typeGroup = checkboxGroup({
@@ -705,7 +712,7 @@ export function mount(container, ctx) {
   const formCard = Card({
     className: 'lkp-form-card',
     children: h('div', { class: 'stack' },
-      h('div', { class: 'lkp-form' }, nameField.el, resolverField.el, h('div', { class: 'lkp-buttons' }, runBtn)),
+      h('div', { class: 'lkp-form' }, nameField.el, resolverField.el, h('div', { class: 'lkp-buttons' }, runBtn, stopBtn)),
       h('div', { class: 'lkp-types-wrap' }, typeGroup.el, presetBar),
       h('div', { class: 'lkp-options' }, otherField.el, h('div', { class: 'stack-sm' }, dnssecField.el, cdField.el)),
       formError,
@@ -1261,6 +1268,15 @@ export function mount(container, ctx) {
         card.dataset.state = 'pending';
         clear(body);
         body.append(querying());
+      },
+      /** Stopped before it answered: its Retry asks this type alone. */
+      setStopped() {
+        card.dataset.state = 'stopped';
+        clear(body);
+        body.append(Alert({
+          variant: 'info', compact: true, icon: 'stop', message: t('lkp.card.stopped'),
+          actions: onRetry ? [RetryButton({ sources: ['doh'], target: type, onClick: onRetry, variant: 'secondary', dataset: { type } })] : null
+        }));
       }
     };
   }
@@ -1425,6 +1441,8 @@ export function mount(container, ctx) {
           : h('span', null, t('lkp.sum.via', { resolver: resolverLabel })),
         shared.nsid ? h('span', { class: 'mono lkp-pop', title: shared.nsid }, t('lkp.card.pop', { id: shared.nsid })) : null,
         Number.isFinite(elapsed) && done === q.types.length ? h('span', null, t('lkp.sum.time', { time: formatDuration(elapsed) })) : null,
+        current && current.q === q && current.stopped && done < q.types.length
+          ? h('span', { class: 'lkp-sum-stopped', dataset: { role: 'lkp-stopped' } }, Icon('stop', { size: 13 }), ' ', t('lkp.sum.stopped', { count: q.types.length - done })) : null,
         q.dnssec ? Badge('DO', { variant: 'accent', title: t('lkp.dnssec') }) : null,
         q.cd ? Badge('CD', { variant: 'warn', title: t('lkp.cd') }) : null),
       shared.flags ? h('div', { class: 'lkp-sum-flags' }, flagsRow(shared.flags)) : null);
@@ -1612,8 +1630,10 @@ export function mount(container, ctx) {
     }
 
     if (preset) {
+      state.stopped = preset.some((resp) => !resp);
       preset.forEach((resp, i) => { if (resp) finish(i, resp); });
       state.controller = null;
+      markStopped();
       return;
     }
 
@@ -1630,13 +1650,36 @@ export function mount(container, ctx) {
     } finally {
       if (current === state) {
         state.controller = null;
-        if (!ctx.signal.aborted) setButtonState(false);
+        if (!ctx.signal.aborted) {
+          markStopped();
+          setButtonState(false);
+        }
       }
+    }
+
+    /** After a Stop: each type not answered says so, with its Retry; the summary counts them. */
+    function markStopped() {
+      if (!state.stopped || current !== state) return;
+      state.responses.forEach((resp, i) => { if (!resp) cards[i].setStopped(); });
+      renderSummary(q, state.responses, state.elapsed, state.finishedAt);
     }
   }
 
+  /** Stop the lookup that asks now (the Stop button, Esc): what came in stays. */
+  function stop() {
+    if (!current || !current.controller) return;
+    current.stopped = true;
+    current.controller.abort();
+  }
+
   function setButtonState(busy) {
+    const doc = globalThis.document;
+    // The keyboard focus follows the button that takes the other's place.
+    const from = doc && (busy ? runBtn : stopBtn).contains(doc.activeElement);
     setButtonBusy(runBtn, busy);
+    runBtn.hidden = busy;
+    stopBtn.hidden = !busy;
+    if (from) (busy ? stopBtn : runBtn).focus();
     ctx.setBusy(busy);
   }
 

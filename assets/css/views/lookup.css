@@ -93,6 +93,14 @@
   color: var(--error);
 }
 
+/* Stopped (Stop, Esc) before every type answered: how many did not. */
+.lkp-sum-stopped {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--warn);
+}
+
 /* The header flags every answer shares, once (lib/density.js lookupLayout). */
 .lkp-sum-flags {
   margin-top: 8px;

@@ -126,12 +126,16 @@ const JS = join(ASSETS, 'js');
  * by 335 (the ¶ button, and copy() for a menu item), app.js by 247 (the kept-result note in the result header's slot) and ui/components.js
  * by 166 (the ¶ icon, CopyButton's icon, MenuButton's visible label). ui/template.js and lib/template.js load with the four tools,
  * never with Home.
- * Phase 3 (Deploy & renew certificates on the template, docs/DESIGN.md §8): ≈ 273 KB (280,031 bytes), 98,849 bytes under the budget.
- * The one start-route file that grew is style.css, by 649 bytes: the template's phase 3 parts — the file input card, the findings list
- * (its "n more" a 24 px target, 40 px on a touch screen), the run bar's grouped and sticky variants, Run in the input's footer.
- * lib/certtools.js loads with SSL Targets and the Certificate view. The four tools' own sheets, off the route, shrank by 764 bytes
- * together (scan.css 67, cert.css 832 — the old overview card's rules —, renew.css 178; estate.css grew by 313 with its figures band),
- * though gzip takes 555 bytes more of them: what left them compressed better than what came.
+ * UI phases 3–6 (Deploy & renew certificates, Change & migrate DNS, Map IPs to servers with the workspace pages, Watch & report: all on the
+ * template, docs/DESIGN.md §8), as measured after they were merged: ≈ 275 KB (281,663 bytes), 97,217 bytes under the budget, 2,281 bytes
+ * more than after phase 2. Two start-route files grew. style.css by 2,251 bytes: the template's findings list (its "n more" a 24 px target,
+ * 40 px on a touch screen), the file input (one rule set for FileInput and for the card Monitoring and DMARC & TLS reports draw by hand), the
+ * run bar's grouped and sticky variants, Run in the input's footer, the rules the DNS tools' sheets no longer repeat (the regions' stack, the
+ * note line, the filter note, a metric strip on its own surface, a findings card's title, a textarea as the compact card's field, a status
+ * item's wrapped words, less the run bar's own [hidden] rule) and the DataTable's card mode (`dt-cards`: its rules reach the card table's own
+ * rows and cells only, and below 360 px a label sits above its value). lib/summarycore.js by 30 bytes: the Copy summary kinds of Bulk Resolve
+ * and Reverse DNS and their link params. The tools, lib/certtools.js, lib/netresults.js, lib/summary.js's builders and the Watch & report
+ * libraries load with their views, never with Home.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

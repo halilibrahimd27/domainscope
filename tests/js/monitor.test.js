@@ -12,7 +12,7 @@ import {
   checkCompleted, targetFacts, historyLines, historyFileName, monthIndex, staleHistoryFiles, recentHistoryFiles, runLink, repoOfRun,
   readHistoryLine, parseHistory, mergeLines, pruneLines, lineKey, readReport, readMonitorFiles, emptyMonitor, allLines, fileKind,
   monitorRows, monitorTiles, rowMatches, timelineEntries, filterTimeline, timelineCsv, seriesOf, sparkPoints, expiringCertificates,
-  worstTlsStatus, latestRun, monitorSummaryFacts, commandOrder
+  worstTlsStatus, latestRun, monitorSummaryFacts, commandOrder, cellFacts
 } from '../../assets/js/lib/monitor.js';
 import { reportProblem, DS_TOOL, DS_VERSION } from '../../assets/js/lib/runreport.js';
 import { baselineProblem } from '../../tools/ds/diff.mjs';
@@ -95,7 +95,29 @@ describe('the history line', () => {
     assert.equal(checkCompleted('tls', { dns: { status: 'NOERROR' }, endpoints: [] }), true);
     assert.equal(checkCompleted('tls', { dns: null, endpoints: [] }), true, 'an address:port target asks no DNS');
     assert.equal(checkCompleted('takeover', { failures: [{ source: 'rdap' }] }), false);
-    assert.equal(checkCompleted('watch', {}), null, 'a command this page does not know');
+    assert.equal(checkCompleted('inventory', {}), null, 'a command this page does not know');
+    assert.equal(checkCompleted('watch', { registration: { state: 'ok' }, failures: [] }), true);
+    assert.equal(checkCompleted('watch', { registration: { state: 'unsupported' }, failures: [] }), true, 'a registry without RDAP is no failure');
+    assert.equal(checkCompleted('watch', { registration: { state: 'ok', carried: { from: null } }, failures: [] }), false, 'the last read, carried');
+    assert.equal(checkCompleted('watch', { registration: { state: 'failed' }, failures: [] }), false);
+    assert.equal(checkCompleted('watch', { registration: { state: 'ok' }, failures: [{ name: 'example.com', type: 'MX' }] }), false, 'a record set that gave no answer');
+  });
+
+  test('a watch report: one line per domain, ok when the registry was read and every record set answered, its changes with their tags', () => {
+    const doc = report('watch', [
+      { target: 'example.com', names: ['example.com'], types: ['A'], registration: { state: 'ok' }, failures: [] },
+      { target: 'example.org', names: ['example.org'], types: ['A'], registration: { state: 'failed', carried: { from: null } }, failures: [] }
+    ], {
+      changes: [
+        { tag: 'REGISTRAR', tone: 'bad', counts: true, target: 'example.com', item: null, kind: 'changed', text: 'example.com: registrar changed' },
+        { tag: 'SERIAL', tone: 'quiet', counts: false, target: 'example.com', item: 'example.com|SOA', kind: 'changed', text: 'example.com: SOA serial moved' }
+      ]
+    });
+    const [com, org] = historyLines(doc);
+    assert.deepEqual([com.command, com.ok, org.ok], ['watch', true, false]);
+    assert.deepEqual(com.counts, { bad: 1, info: 1 });
+    assert.deepEqual(com.changes.map((c) => c.tag), ['REGISTRAR', 'SERIAL']);
+    assert.equal(com.score, undefined, 'a watch has no score');
   });
 
   test('the month files: a run\'s file, the months the runner deletes, the months the page reads', () => {
@@ -189,8 +211,24 @@ describe('reading the reports', () => {
     assert.equal(r.detail, 'targets[0] checks[0] has no "severity"');
     assert.equal(readReport(JSON.stringify(report('health', []))).ok, true, 'a run without targets is a report');
     // a command this version does not know (a newer runner's): the envelope and the targets' names only
-    assert.equal(readReport(JSON.stringify(report('watch', [{ target: 'example.com', anything: 1 }]))).ok, true);
-    assert.equal(readReport(JSON.stringify(report('watch', [{ name: 'example.com' }]))).detail, 'targets[0] has no "target"');
+    assert.equal(readReport(JSON.stringify(report('inventory', [{ target: 'example.com', anything: 1 }]))).ok, true);
+    assert.equal(readReport(JSON.stringify(report('inventory', [{ name: 'example.com' }]))).detail, 'targets[0] has no "target"');
+    // the change watch is known: its targets are checked as the runner checks a baseline
+    assert.equal(readReport(JSON.stringify(report('watch', [{ target: 'example.com', anything: 1 }]))).detail, 'targets[0] has no "names" list');
+  });
+
+  test('a finding an accepted risk covers is left out of the errors and warnings of a health cell, as the score leaves it out', () => {
+    const x = {
+      target: 'example.com', score: 100, grade: 'A', failedLookups: [],
+      checks: [
+        { id: 'dmarc.policy-none', severity: 'warn', waiver: { id: 'w-0123456789abcdef', expires: '2026-12-31' } },
+        { id: 'mx.unresolvable', severity: 'error', waiver: { id: 'w-fedcba9876543210', expires: '2026-12-31' } },
+        { id: 'spf.ptr', severity: 'warn' },
+        { id: 'caa.missing', severity: 'warn', waiverExpired: { id: 'w-1', expires: '2026-10-01' } }
+      ]
+    };
+    const cell = cellFacts('health', x, { name: 'health.json', finishedAt: NOW }, NOW);
+    assert.deepEqual([cell.errors, cell.warnings], [0, 2], 'a waiver that ended counts again');
   });
 
   test('the page and the runner judge a report with one set of rules (lib/runreport.js)', () => {
@@ -199,6 +237,7 @@ describe('reading the reports', () => {
       report('tls', [{ target: 'www.example.com', endpoints: [{ address: '192.0.2.1', port: 443 }] }]),
       report('takeover', [{ target: 'example.com', risks: [{ key: 'k', kind: 'mx', host: 'example.com', target: 'mx.example.org' }] }]),
       report('audit', [{ target: 'example.com', rules: [{ id: 'dnssec', status: 'maybe' }] }]),
+      report('watch', [{ target: 'example.com', names: ['example.com'], types: ['A'] }]),
       report('subdomains', [{ target: 'example.com', mode: 'discover', hosts: [{ name: 'a.example.com', ipv4: '192.0.2.1' }] }]),
       report('health', [{ target: 'example.com', score: 90, failedLookups: [], checks: [] }])
     ];
@@ -395,8 +434,10 @@ describe('rows, tiles, timeline', () => {
   test('the worst tls status, the commands\' order, the Copy summary\'s facts (names only)', () => {
     assert.equal(worstTlsStatus(['OK', 'SKIPPED', 'TIMEOUT']), 'TIMEOUT');
     assert.equal(worstTlsStatus(['OK', 'NAME_MISMATCH', 'EXPIRED']), 'EXPIRED');
+    assert.equal(worstTlsStatus(['OK', 'EXPIRING', 'NOT_DEPLOYED']), 'NOT_DEPLOYED');
+    assert.equal(worstTlsStatus(['OK', 'EXPIRING', 'TIMEOUT']), 'EXPIRING', 'a certificate problem is above a failed handshake');
     assert.equal(worstTlsStatus([]), null);
-    assert.deepEqual(['watch', 'audit', 'health', 'drift', 'beta'].sort(commandOrder), ['health', 'audit', 'drift', 'beta', 'watch']);
+    assert.deepEqual(['watch', 'audit', 'health', 'drift', 'beta'].sort(commandOrder), ['health', 'audit', 'drift', 'watch', 'beta']);
     const { data } = loaded();
     const rows = monitorRows(data, { now: NOW });
     const facts = monitorSummaryFacts(rows, monitorTiles(rows), data);

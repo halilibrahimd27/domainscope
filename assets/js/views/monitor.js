@@ -57,7 +57,9 @@ export const MONITOR_FILTERS = Object.freeze(['all', 'bad', 'expiring', 'incompl
 export const MONITOR_SOURCES = Object.freeze(['files', 'github']);
 /** The change tags the runner writes (tools/ds/render.mjs CHANGE_TAGS): each has a tooltip in both languages. */
 export const MONITOR_TAGS = Object.freeze(['NEW', 'GONE', 'WORSE', 'BETTER', 'CHANGED', 'FAILED', 'RECOVERED', 'FAILING', 'SCORE', 'ISSUER', 'NAME', 'CERT', 'CA',
-  'EXPIRING', 'REVOKED', 'EXPOSED', 'DANGLING', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'RISK']);
+  'EXPIRING', 'REVOKED', 'EXPOSED', 'DANGLING', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'RISK', 'WAIVED', 'LAPSED',
+  'EXPIRED', 'UNTRUSTED', 'MISMATCH', 'NOT-LIVE', 'HTTP', 'REDIRECT', 'HSTS',
+  'REGISTRAR', 'LOCK', 'STATUS', 'NS', 'DS', 'EXPIRY', 'RECORD', 'SERIAL', 'FLAPPING', 'SYNC', 'LAME']);
 /** Timeline entries shown at first, and per "Show more". */
 export const TIMELINE_PAGE = 100;
 /** Files one drop or folder reads at most (a year of month files and every report, with room). */
@@ -232,9 +234,12 @@ registerStrings('en', {
   'mon.cmd.drift': 'Zone drift',
   'mon.cmd.renew': 'Renewal',
   'mon.cmd.dane': 'DANE',
+  'mon.cmd.watch': 'Change watch',
   'mon.tls.EXPIRED': 'expired',
   'mon.tls.UNTRUSTED': 'untrusted',
   'mon.tls.NAME_MISMATCH': 'name mismatch',
+  'mon.tls.NOT_DEPLOYED': 'renewal not installed',
+  'mon.tls.EXPIRING': 'expiring',
   'mon.tls.TLS_ERROR': 'TLS error',
   'mon.tls.TIMEOUT': 'timed out',
   'mon.tls.CLOSED': 'closed',
@@ -260,7 +265,27 @@ registerStrings('en', {
   'mon.tag.RENEW-NOW': 'The CA’s renewal window (ARI) opened',
   'mon.tag.MOVED-UP': 'The CA moved its renewal window earlier',
   'mon.tag.CA-NOTICE': 'The CA published an explanation for its renewal window',
-  'mon.tag.RISK': 'A new takeover risk'
+  'mon.tag.RISK': 'A new takeover risk',
+  'mon.tag.WAIVED': 'A problem was accepted as a risk until an end date (listed only)',
+  'mon.tag.LAPSED': 'An accepted risk ended: the problem counts again',
+  'mon.tag.EXPIRED': 'A served certificate has expired',
+  'mon.tag.UNTRUSTED': 'A host serves a certificate chain that clients do not trust',
+  'mon.tag.MISMATCH': 'A host serves a certificate without its name',
+  'mon.tag.NOT-LIVE': 'A renewal was issued but the host still serves the older certificate',
+  'mon.tag.HTTP': 'GET / now answers with a server error',
+  'mon.tag.REDIRECT': 'Plain HTTP no longer redirects to HTTPS',
+  'mon.tag.HSTS': 'The HSTS header got weaker',
+  'mon.tag.REGISTRAR': 'The domain moved to another registrar',
+  'mon.tag.LOCK': 'A transfer lock was removed or added',
+  'mon.tag.STATUS': 'A registry status changed: a hold, a pending delete or transfer, a redemption period',
+  'mon.tag.NS': 'The name servers changed',
+  'mon.tag.DS': 'The DS records at the parent changed',
+  'mon.tag.EXPIRY': 'The registration’s expiry changed',
+  'mon.tag.RECORD': 'A DNS record set changed',
+  'mon.tag.SERIAL': 'The SOA serial moved',
+  'mon.tag.FLAPPING': 'A record set keeps changing',
+  'mon.tag.SYNC': 'Name servers answer one serial differently',
+  'mon.tag.LAME': 'A name server does not answer with authority'
 });
 
 registerStrings('tr', {
@@ -421,9 +446,12 @@ registerStrings('tr', {
   'mon.cmd.drift': 'Zone sapması',
   'mon.cmd.renew': 'Yenileme',
   'mon.cmd.dane': 'DANE',
+  'mon.cmd.watch': 'Değişiklik izleme',
   'mon.tls.EXPIRED': 'süresi dolmuş',
   'mon.tls.UNTRUSTED': 'güvenilmiyor',
   'mon.tls.NAME_MISMATCH': 'ad uyuşmuyor',
+  'mon.tls.NOT_DEPLOYED': 'yenileme kurulmadı',
+  'mon.tls.EXPIRING': 'süresi doluyor',
   'mon.tls.TLS_ERROR': 'TLS hatası',
   'mon.tls.TIMEOUT': 'zaman aşımı',
   'mon.tls.CLOSED': 'bağlantı kapandı',
@@ -449,7 +477,27 @@ registerStrings('tr', {
   'mon.tag.RENEW-NOW': 'CA’nın yenileme penceresi (ARI) açıldı',
   'mon.tag.MOVED-UP': 'CA yenileme penceresini öne çekti',
   'mon.tag.CA-NOTICE': 'CA yenileme penceresi için bir açıklama yayımladı',
-  'mon.tag.RISK': 'Yeni bir ele geçirme riski'
+  'mon.tag.RISK': 'Yeni bir ele geçirme riski',
+  'mon.tag.WAIVED': 'Bir sorun bir bitiş tarihine kadar risk olarak kabul edildi (yalnızca listelenir)',
+  'mon.tag.LAPSED': 'Kabul edilen riskin süresi doldu: sorun yeniden sayılıyor',
+  'mon.tag.EXPIRED': 'Sunulan bir sertifikanın süresi doldu',
+  'mon.tag.UNTRUSTED': 'Bir host istemcilerin güvenmediği bir sertifika zinciri sunuyor',
+  'mon.tag.MISMATCH': 'Bir host adını taşımayan bir sertifika sunuyor',
+  'mon.tag.NOT-LIVE': 'Bir yenileme alındı ama host hâlâ eski sertifikayı sunuyor',
+  'mon.tag.HTTP': 'GET / artık sunucu hatasıyla yanıt veriyor',
+  'mon.tag.REDIRECT': 'Düz HTTP artık HTTPS’ye yönlendirmiyor',
+  'mon.tag.HSTS': 'HSTS başlığı zayıfladı',
+  'mon.tag.REGISTRAR': 'Alan adı başka bir kayıt firmasına geçti',
+  'mon.tag.LOCK': 'Bir transfer kilidi kaldırıldı ya da eklendi',
+  'mon.tag.STATUS': 'Kayıt kuruluşundaki bir durum değişti: askıya alma, bekleyen silme ya da transfer, geri alma dönemi',
+  'mon.tag.NS': 'Ad sunucuları değişti',
+  'mon.tag.DS': 'Üst zone’daki DS kayıtları değişti',
+  'mon.tag.EXPIRY': 'Kaydın bitiş tarihi değişti',
+  'mon.tag.RECORD': 'Bir DNS kayıt kümesi değişti',
+  'mon.tag.SERIAL': 'SOA seri numarası ilerledi',
+  'mon.tag.FLAPPING': 'Bir kayıt kümesi sürekli değişiyor',
+  'mon.tag.SYNC': 'Ad sunucuları aynı seri numarasında farklı yanıt veriyor',
+  'mon.tag.LAME': 'Bir ad sunucusu yetkiyle yanıt vermiyor'
 });
 
 /* ------------------------------------------------------------------------ */
@@ -515,7 +563,7 @@ export function toneVariant(tone) {
 export function tlsVariant(status) {
   if (status === 'OK') return 'ok';
   if (status === 'SKIPPED' || !status) return 'neutral';
-  if (['TLS_ERROR', 'TIMEOUT', 'CLOSED'].includes(status)) return 'warn';
+  if (['EXPIRING', 'TLS_ERROR', 'TIMEOUT', 'CLOSED'].includes(status)) return 'warn';
   return 'error';
 }
 

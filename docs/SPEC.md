@@ -3641,8 +3641,8 @@ export function complianceBand(c) ; complianceStack(slot) ; volumeSegments(slot)
 The headless runner (§9) commits a report per check every night (`results/NAME.json`) and, with `--history DIR`, one line per target and check (`results/history/YYYY-MM.jsonl`); today that history sat unread in git. The Monitoring view (§6) reads both, from a folder in the browser or from the repository on GitHub, into one row per target, three tiles, the change timeline and the sparklines. All four modules are DOM-free and load with the view; the runner imports `lib/runreport.js` and `lib/monitor.js` too.
 ```js
 // lib/runreport.js — the report as data, one copy of its rules for the runner (--baseline) and the page
-export const DS_TOOL = 'domainscope-ds', DS_VERSION = '1.0.0', AUDIT_STATUSES = ['pass', 'fail', 'unknown']
-export const TARGET_CHECKS = { health, subdomains, ct, drift, renew, dane, audit, tls: tlsTargetProblem, takeover: takeoverTargetProblem }
+export const DS_TOOL = 'domainscope-ds', DS_VERSION = '1.0.0', AUDIT_STATUSES = ['pass', 'fail', 'unknown', 'waived']
+export const TARGET_CHECKS = { health, subdomains, ct, drift, renew, dane, audit, tls: tlsTargetProblem, takeover: takeoverTargetProblem, watch: watchTargetProblem }
 export function reportProblem(doc, command = null) -> string|null
   // not this tool, another major version, (with `command`) another command / (without) no command word, `options` not an
   // object, no `targets` list, a target without `target`, or a list its command's comparison walks damaged (with its index);
@@ -3651,14 +3651,15 @@ export function tlsTargetProblem(x), takeoverTargetProblem(x) -> string|null
 
 // lib/monitor.js
 export const HISTORY_VERSION = 1, HISTORY_MAX_CHANGES = 20, HISTORY_KEEP_MONTHS = 13, HISTORY_FILE_RE /* YYYY-MM.jsonl */,
-  CHANGE_TONES = ['bad', 'good', 'info', 'quiet'], MONITOR_COMMANDS /* health, ct, tls, takeover, audit, subdomains, drift, renew, dane */,
+  CHANGE_TONES = ['bad', 'good', 'info', 'quiet'], MONITOR_COMMANDS /* health, ct, tls, takeover, audit, subdomains, drift, renew, dane, watch */,
   MONITOR_MAX_BYTES = 64 MB, MONITOR_MAX_REPORTS = 60, MONITOR_MAX_LINES = 250000, MONITOR_RECENT_DAYS = 7, MONITOR_WARN_DAYS = 21,
   STALE_MS = 36 h, SPARK_MAX_POINTS = 60, MONITOR_FILE_ERRORS, HISTORY_LINE_PROBLEMS, TIMELINE_CSV_COLUMNS, TLS_WORST, TIMELINE_TONES
 export function checkCompleted(command, target) -> boolean|null
   // health: no lookup failed; subdomains: the DNS answered (no DNS_UNREACHABLE) and a passive source did (exact: none asked);
   // ct: a source answered (one of two is a read); drift: the budget lasted and no record set's lookup failed; renew: a verdict;
   // dane: no endpoint's lookup failed; audit: every rule checked; tls: the host's DNS answered (NOERROR or NXDOMAIN; a failed
-  // lookup checked nothing, its endpoints carried from the baseline or not); takeover: every lookup answered; another command: null
+  // lookup checked nothing, its endpoints carried from the baseline or not); takeover: every lookup answered; watch: the registry read (not carried, not
+  // failed: a registry without RDAP is a read) and every record set answered; another command: null
 export function minDaysLeftOf(command, target, now) -> number|null   // tls: the certificates served this run; ct: the current ones
   // (the CT watch's `current`; a report without it: the ones still valid); whole days, floor, as the runner counts them
 export function targetFacts(command, target, at) -> { ok, score?, grade? /* health */, minDaysLeft? }
@@ -3687,8 +3688,8 @@ export function readMonitorFiles(data, files) -> { data, added: { reports, lines
 export function allLines(data) -> lines   // the history files' lines, then each report's own (the runs the history lacks); merged
   // once per dataset (a dataset is never changed in place), the list shared and frozen
 export function cellFacts(command, target, report, now, changes) -> { command, ms, ok, stale, from: 'report', report, changes: { bad, info }, ... }
-  // health: score, grade, errors, warnings; ct: current, minDaysLeft, certs, newIssuers (the run's ISSUER changes that appeared),
-  // unexpected, revoked; tls: endpoints, worst (TLS_WORST: EXPIRED, UNTRUSTED, NAME_MISMATCH, TLS_ERROR, TIMEOUT, CLOSED, OK, SKIPPED),
+  // health: score, grade, errors, warnings (a finding an accepted risk covers, `waiver`, is neither: the score leaves it out too); ct: current, minDaysLeft, certs, newIssuers (the run's ISSUER changes that appeared),
+  // unexpected, revoked; tls: endpoints, worst (TLS_WORST: EXPIRED, UNTRUSTED, NAME_MISMATCH, NOT_DEPLOYED, EXPIRING, TLS_ERROR, TIMEOUT, CLOSED, OK, SKIPPED),
   // problems, minDaysLeft, certs; takeover: risks (medium and worse), low, worst; audit: fail (a rule not checked that failed when
   // last checked too), unknown, pass, security { score, max }. certs: each certificate seen (tls: served; ct: the current ones) with
   // its name, notAfter, days left from `now` and what tells it apart; minDaysLeft: the soonest of them

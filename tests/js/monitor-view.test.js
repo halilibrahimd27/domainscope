@@ -89,7 +89,7 @@ describe('a results folder in the view', () => {
     assert.deepEqual([-4, 0, 6, 7, 20, 21, 90, null].map(daysVariant), ['error', 'error', 'error', 'warn', 'warn', 'ok', 'ok', 'neutral']);
     assert.deepEqual(['A', 'B', 'C', 'D', 'E', 'F', null].map(gradeVariant), ['ok', 'ok', 'info', 'warn', 'error', 'error', 'neutral']);
     assert.deepEqual(['bad', 'good', 'info', 'quiet'].map(toneVariant), ['error', 'ok', 'info', 'neutral']);
-    assert.deepEqual(['OK', 'SKIPPED', 'TIMEOUT', 'EXPIRED', 'NAME_MISMATCH'].map(tlsVariant), ['ok', 'neutral', 'warn', 'error', 'error']);
+    assert.deepEqual(['OK', 'SKIPPED', 'TIMEOUT', 'EXPIRED', 'NAME_MISMATCH', 'EXPIRING', 'NOT_DEPLOYED'].map(tlsVariant), ['ok', 'neutral', 'warn', 'error', 'error', 'warn', 'error']);
     const { data } = importFiles(null, monitorFixture().files);
     assert.deepEqual(repoOf(null, data), { owner: 'example-org', repo: 'nightly' }, 'from the history\'s run links');
     assert.deepEqual(repoOf({ owner: 'a', repo: 'b' }, data), { owner: 'a', repo: 'b' }, 'GitHub\'s own wins');

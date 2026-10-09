@@ -42,7 +42,7 @@ export const HISTORY_FILE_RE = /^(\d{4})-(0[1-9]|1[0-2])\.jsonl$/;
 /** A change's tone (tools/ds/diff.mjs). */
 export const CHANGE_TONES = Object.freeze(['bad', 'good', 'info', 'quiet']);
 /** The commands this view knows, in the order its rows show them (an unknown one goes last, by name). */
-export const MONITOR_COMMANDS = Object.freeze(['health', 'ct', 'tls', 'takeover', 'audit', 'subdomains', 'drift', 'renew', 'dane']);
+export const MONITOR_COMMANDS = Object.freeze(['health', 'ct', 'tls', 'takeover', 'audit', 'subdomains', 'drift', 'renew', 'dane', 'watch']);
 /** The largest file read (a big domain's subdomains report runs to megabytes). */
 export const MONITOR_MAX_BYTES = 64 * 1024 * 1024;
 /** Reports open at once at most. */
@@ -76,8 +76,8 @@ const GRADE_RE = /^[A-F]$/;
 const SOURCE_OK = new Set(['ok', 'empty', 'partial']);
 /** A `tls` host's DNS statuses that are an answer (tools/ds/tls.mjs: any other one is a lookup that failed). */
 const DNS_ANSWERED = new Set(['NOERROR', 'NXDOMAIN']);
-/** `tls` endpoint statuses, worst first (tools/ds/tlsdiff.mjs; a failed handshake below a certificate's own problem). */
-export const TLS_WORST = Object.freeze(['EXPIRED', 'UNTRUSTED', 'NAME_MISMATCH', 'TLS_ERROR', 'TIMEOUT', 'CLOSED', 'OK', 'SKIPPED']);
+/** `tls` endpoint statuses, worst first (tools/ds/tlsdiff.mjs TLS_STATUSES; a failed handshake below a certificate's own problem). */
+export const TLS_WORST = Object.freeze(['EXPIRED', 'UNTRUSTED', 'NAME_MISMATCH', 'NOT_DEPLOYED', 'EXPIRING', 'TLS_ERROR', 'TIMEOUT', 'CLOSED', 'OK', 'SKIPPED']);
 /** Takeover risk severities, worst first (lib/takeover.js TAKEOVER_SEVERITIES); medium and worse are open problems. */
 const RISK_ORDER = Object.freeze(['critical', 'high', 'medium', 'low', 'info']);
 const RISK_COUNTED = new Set(['critical', 'high', 'medium']);
@@ -120,7 +120,8 @@ const maxOf = (list) => {
  * budget lasted and no record set's lookup failed; renew: a verdict; dane: no endpoint's lookup
  * failed; audit: every rule could be checked; tls: the host's DNS answered (NOERROR or NXDOMAIN, as
  * tools/ds/tls.mjs reads it: a failed lookup checks nothing, whether or not a baseline's endpoints
- * were carried); takeover: every lookup answered. A command this module does not know: null.
+ * were carried); takeover: every lookup answered; watch: the registry was read (not carried, not failed) and every record set
+ * answered. A command this module does not know: null.
  * @param {string} command
  * @param {object} x a report's target
  * @returns {boolean|null}
@@ -140,6 +141,10 @@ export function checkCompleted(command, x) {
     case 'audit': return !(Number(t.unknown) > 0);
     case 'tls': return !t.carried && !(isObj(t.dns) && isStr(t.dns.status) && !DNS_ANSWERED.has(t.dns.status));
     case 'takeover': return !(Array.isArray(t.failures) && t.failures.length);
+    case 'watch': {
+      const r = isObj(t.registration) ? t.registration : {};
+      return !(Array.isArray(t.failures) && t.failures.length) && !r.carried && r.state !== 'failed';
+    }
     default: return null;
   }
 }
@@ -683,8 +688,9 @@ export function cellFacts(command, x, report, now, changes = []) {
         ...cell,
         score: Number.isFinite(x.score) ? x.score : null,
         grade: isStr(x.grade) && GRADE_RE.test(x.grade) ? x.grade : null,
-        errors: checks.filter((c) => c.severity === 'error').length,
-        warnings: checks.filter((c) => c.severity === 'warn').length
+        // a finding an accepted risk covers (`waiver`, --waivers) is left out, as the score leaves it out
+        errors: checks.filter((c) => c.severity === 'error' && !isObj(c.waiver)).length,
+        warnings: checks.filter((c) => c.severity === 'warn' && !isObj(c.waiver)).length
       };
     }
     case 'ct': {

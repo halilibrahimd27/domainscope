@@ -23,6 +23,7 @@
  *   dependency-expiry audit of one domain), right after health; reports, the offline suite of
  *   DMARC & TLS reports, then portfolio, the offline suite of the Domain portfolio,
  *   secscore, the offline suite of its domain security: lock depth, registrar class, the score,
+ *   regwatch, the offline suite of its registration watch ("Changed since your last check"),
  *   and revocation, the offline suite of the renewal radar in the page: revocation from Cert Spotter
  *   in the portfolio's CT tab and the Certificate view, the CLI's --ari / --revocation in Certificate estate,
  *   and waivers, the offline suite of the accepted risks: Domain Health's "Accept this risk…" and the end date
@@ -53,7 +54,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ORDER = ['shell', 'subdomains', 'domain', 'locales', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'lookup', 'explain', 'bulk', 'change', 'cutover', 'ip', 'ptr', 'retire', 'health', 'takeover', 'reports', 'portfolio', 'secscore', 'revocation', 'waivers', 'carry', 'workspaces', 'origins', 'privacy', 'integration'];
+const ORDER = ['shell', 'subdomains', 'domain', 'locales', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'lookup', 'explain', 'bulk', 'change', 'cutover', 'ip', 'ptr', 'retire', 'health', 'takeover', 'reports', 'portfolio', 'secscore', 'regwatch', 'revocation', 'waivers', 'carry', 'workspaces', 'origins', 'privacy', 'integration'];
 const POSIX = process.platform !== 'win32';
 /** After SIGTERM, how long a timed-out suite gets before SIGKILL. */
 const KILL_GRACE_MS = 5000;

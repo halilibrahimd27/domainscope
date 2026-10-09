@@ -127,6 +127,7 @@ registerStrings('en', {
   'ws.sum.notes': 'notes',
   'ws.sum.policy': 'a domain policy',
   'ws.sum.ctSeen': 'a CT watch baseline',
+  'ws.sum.rdapSeen': 'a registration watch baseline',
   'ws.sum.rollout': 'a Rollout board',
   'ws.sum.encrypted': 'was encrypted',
   'ws.importNew': 'Import as a new workspace',
@@ -221,6 +222,7 @@ registerStrings('tr', {
   'ws.sum.notes': 'notlar',
   'ws.sum.policy': 'bir alan adı politikası',
   'ws.sum.ctSeen': 'bir CT izleme referansı',
+  'ws.sum.rdapSeen': 'bir kayıt izleme referansı',
   'ws.sum.rollout': 'bir dağıtım panosu',
   'ws.sum.encrypted': 'şifreliydi',
   'ws.importNew': 'Yeni çalışma alanı olarak içe aktar',
@@ -310,6 +312,7 @@ export function importSummary(ws) {
   if (d.notes.trim()) parts.push(t('ws.sum.notes'));
   if ((d.policy || '').trim()) parts.push(t('ws.sum.policy'));
   if (d.ctSeen) parts.push(t('ws.sum.ctSeen'));
+  if (d.rdapSeen) parts.push(t('ws.sum.rdapSeen'));
   if (d.rollout) parts.push(t('ws.sum.rollout'));
   // the accepted risks the file carries (an entry that cannot be read is left out when they are read)
   const waivers = readWaivers(d.waivers);

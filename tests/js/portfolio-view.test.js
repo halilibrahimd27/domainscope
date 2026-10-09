@@ -10,10 +10,12 @@ import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { setLang, t } from '../../assets/js/i18n.js';
 import {
-  id, titleKey, icon, result, linkText, shareParams, matchesFilter, calendarEvents, matrixCountsText,
+  id, titleKey, icon, result, linkText, shareParams, matchesFilter, calendarEvents, matrixCountsText, rowChanges,
   PORTFOLIO_FILTERS, PORTFOLIO_TILES, RISK_BADGES, PORTFOLIO_TABS, MAX_LINK_DOMAINS
 } from '../../assets/js/views/portfolio.js';
 import { expiryUid } from '../../assets/js/lib/portfolio.js';
+import { changedWords } from '../../assets/js/lib/portfoliosummary.js';
+import { emptyRdapSeen, updateRdapSeen } from '../../assets/js/lib/regwatch.js';
 import { buildCalendar } from '../../assets/js/lib/ics.js';
 import { totalsText, barModel, generatedKeys, BAR_SEGMENTS } from '../../assets/js/ui/secscore-panel.js';
 import { SECURITY_MEASURES } from '../../assets/js/lib/secscore.js';
@@ -115,6 +117,41 @@ describe('Domain portfolio view helpers', () => {
     // A pending transfer needs a look.
     const moving = facts('example.com', { registration: { risk: 'pending-transfer', statuses: ['client transfer prohibited', 'pending transfer'] } });
     assert.ok(matchesFilter(moving, 'attention') && RISK_BADGES.includes('pending-transfer'));
+  });
+
+  test('changed since your last check: the registration against the workspace\'s baseline; the tile and filter; a bad change needs a look', () => {
+    const at = '2026-09-25T12:00:00.000Z';
+    // the workspace's last check of example.com: another registrar, its transfer lock, the DS of then
+    const seen = updateRdapSeen(emptyRdapSeen(), [{
+      domain: 'example.com',
+      snapshot: { state: 'ok', registrar: 'Old Registrar LLC', ianaId: '1068', statuses: ['client transfer prohibited'], expires: '2027-05-20', nameservers: [], ds: null }
+    }, {
+      domain: 'example.org',
+      snapshot: { state: 'ok', registrar: 'Example Registrar, Inc.', ianaId: '9999', statuses: ['client transfer prohibited'], expires: day(100).toISOString().slice(0, 10), nameservers: [], ds: null }
+    }], { now: new Date(at) });
+    const com = facts('example.com', { registration: { ianaId: '9999', statuses: [] } });
+    const org = facts('example.org', { registration: { ianaId: '9999', expires: day(465) } });
+    const net = facts('example.net', { registration: { ianaId: '9999' } });
+    const changedCom = rowChanges(com, seen);
+    assert.deepEqual([changedCom.at, changedCom.tone, changedCom.changes.map((c) => c.code)], [at, 'bad', ['registrar', 'lock-removed', 'expiry-earlier']]);
+    assert.deepEqual(rowChanges(org, seen).changes.map((c) => c.code), ['expiry-later']);
+    assert.equal(rowChanges(org, seen).tone, 'good');
+    assert.equal(rowChanges(net, seen), null, 'checked for the first time in this workspace');
+    assert.equal(rowChanges(facts('example.org', { registration: { state: 'failed', failure, ianaId: '1' } }), seen), null, 'the registry not read: nothing to say');
+    assert.equal(rowChanges(com, null), null);
+    const changedOf = (d) => rowChanges([com, org, net].find((f) => f.domain === d), seen);
+    assert.deepEqual([com, org, net].filter((f) => matchesFilter(f, 'changed', { changedOf })).map((f) => f.domain), ['example.com', 'example.org']);
+    assert.ok(matchesFilter(com, 'attention', { changedOf }), 'another registrar, a lock removed: a look');
+    assert.ok(!matchesFilter(org, 'attention', { changedOf }), 'renewed: good news, no look');
+    assert.ok(PORTFOLIO_TILES.includes('changed') && PORTFOLIO_FILTERS.includes('changed'));
+    // what the badge and Copy summary say
+    setLang('en');
+    assert.equal(changedWords(changedCom.changes, t), 'registrar, lock removed, expiry moved earlier');
+    assert.equal(changedWords([{ code: 'hold', item: 'client hold' }, { code: 'status', item: 'a' }, { code: 'status', item: 'b' }], t), 'client hold added, status changed');
+    setLang('tr');
+    assert.equal(changedWords(changedCom.changes, t), 'kayıt firması, kilit kaldırıldı, bitiş tarihi öne alındı');
+    assert.equal(t('pf.chg.badge'), 'Son kontrolünüzden beri değişti');
+    setLang('en');
   });
 
   test('calendar events: one per domain, the name servers\' domains too, worded in the language; the .ics they make', () => {

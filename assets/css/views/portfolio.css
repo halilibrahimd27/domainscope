@@ -190,6 +190,20 @@
   font-size: 13px;
 }
 
+/* What changed in the registration since the last check: the badge, then what changed (it wraps). */
+.pf-changed {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pf-changed-what {
+  overflow-wrap: anywhere;
+}
+
 
 .pf-break {
   overflow-wrap: anywhere;

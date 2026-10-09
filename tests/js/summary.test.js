@@ -1175,6 +1175,24 @@ describe('portfolio (Domain portfolio)', () => {
     ]);
   });
 
+  test('changed since your last check: first, by name, with what changed (bad ones first); kept when the rest gives way', async () => {
+    const changed = [
+      { domain: 'example.org', at: '2026-09-20T10:00:00.000Z', tone: 'good', changes: [{ code: 'expiry-later', item: null }] },
+      { domain: 'example.com', at: '2026-09-20T10:00:00.000Z', tone: 'bad', changes: [{ code: 'registrar', item: null }, { code: 'lock-removed', item: 'client transfer prohibited' }, { code: 'hold', item: 'client hold' }] }
+    ];
+    const { portfolioSummaryFacts } = await imp('assets/js/lib/portfolio.js');
+    const list = portfolioSummaryFacts([], { changed }).changed;
+    assert.deepEqual(list.map((x) => x.domain), ['example.com', 'example.org'], 'the bad ones first');
+    const doc = PF.portfolioSummary(facts({ changed: list }), opts());
+    assertShape(doc);
+    assert.equal(lines(md(doc))[1], '- **Changed since your last check:** `example.com` (registrar, lock removed, client hold added), `example.org` (renewed)');
+    assert.ok(!lines(md(doc)).some((l) => l.startsWith('- **Take no mail')), 'the parked line gave way');
+    assert.ok(lines(md(doc)).some((l) => l.startsWith('- **Policy**')), 'the policy stays');
+    const tr = PF.portfolioSummary(facts({ changed: list }), opts('tr'));
+    assert.equal(lines(md(tr))[1], '- **Son kontrolünüzden beri değişenler:** `example.com` (kayıt firması, kilit kaldırıldı, client hold eklendi), `example.org` (yenilendi)');
+    assert.deepEqual(portfolioSummaryFacts([], {}).changed, [], 'none without a baseline');
+  });
+
   test('nothing to say: no expiry within 30 days (only of the known ones when RDAP is missing or the check stopped); the policy met; the name as a code span', () => {
     const quiet = facts({
       expiring: [], critical: [], unlocked: [], nsExpiring: [], spfOver: [], dmarcWeak: [], parkedOpen: [], failedLookups: 0, noRdap: 0,

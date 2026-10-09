@@ -5,7 +5,9 @@
  *
  * - The list: pasted domains (host names and URLs give their registrable domain), filled in from
  *   the workspace's recent domains while the box is empty; nothing is sent until Check portfolio.
- * - The table (Domains tab): per domain the expiry with its countdown (coloured by the days left),
+ * - The table (Domains tab): per domain what changed in its registration since the workspace's last
+ *   check (lib/regwatch.js: the registrar, a lock removed, a hold, the name servers, the DS records, a
+ *   renewal — a badge, a tile, a filter and a Copy summary line), the expiry with its countdown (coloured by the days left),
  *   the registry status flags read for risk, the registrar, DNSSEC, the name servers' own domains
  *   with their expiry, CAA and the mail posture (SPF, DMARC, DKIM, MTA-STS / TLS-RPT, the
  *   lock-down of a domain that takes no mail). Rows fill as the lookups land; a lookup that
@@ -43,10 +45,11 @@ import {
 } from '../lib/policy.js';
 import { WAIVERS_I18N, readWaivers } from '../lib/waivers.js';
 import { corporateRegistrar } from '../lib/registrars.js';
+import { registrationSnapshot, readRdapSeen, updateRdapSeen, rdapSeenText, seenChanges, worstTone } from '../lib/regwatch.js';
 import { buildCalendar } from '../lib/ics.js';
 import { toCsv, toJson } from '../lib/export.js';
 import { registerSummaryBuilder, permalinkParams } from '../lib/summarycore.js';
-import { portfolioSummary, PORTFOLIO_SUMMARY_I18N } from '../lib/portfoliosummary.js';
+import { portfolioSummary, changedWords, PORTFOLIO_SUMMARY_I18N } from '../lib/portfoliosummary.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { mergeSignals, onceAsync } from '../lib/util.js';
 import { NaMark, RetryButton, setRetryBusy, statusText } from '../ui/source-status.js';
@@ -64,9 +67,9 @@ export const titleKey = 'nav.portfolio';
 export const icon = 'box';
 
 /** The table's filters, in the select's order. */
-export const PORTFOLIO_FILTERS = Object.freeze(['all', 'attention', 'expiring', 'critical', 'unlocked', 'ns', 'nordap', 'failed', 'policy']);
+export const PORTFOLIO_FILTERS = Object.freeze(['all', 'attention', 'changed', 'expiring', 'critical', 'unlocked', 'ns', 'nordap', 'failed', 'policy']);
 /** The tiles above the table: each one a filter. */
-export const PORTFOLIO_TILES = Object.freeze(['expiring', 'critical', 'unlocked', 'ns', 'failed']);
+export const PORTFOLIO_TILES = Object.freeze(['changed', 'expiring', 'critical', 'unlocked', 'ns', 'failed']);
 /** The risks a domain cell names (lib/portfolio.js rowRisk), 'ok' left out. */
 export const RISK_BADGES = Object.freeze(['critical', 'ns-unregistered', 'pending-transfer', 'expired', 'expiring', 'ns-expiring', 'hijack', 'warn']);
 /** A link carries the list only up to this many domains (a summary's link too). */
@@ -124,6 +127,7 @@ registerStrings('en', {
   'pf.sec.failed': 'The Domain security tab could not be loaded',
 
   'pf.tile.domains': 'Domains',
+  'pf.tile.changed': 'Changed since last check',
   'pf.tile.expiring': 'Expire < 30 days',
   'pf.tile.critical': 'Critical status',
   'pf.tile.unlocked': 'No transfer lock',
@@ -134,7 +138,11 @@ registerStrings('en', {
   'pf.filter.label': 'Show',
   'pf.filter.all': 'All domains ({count})',
   'pf.filter.attention': 'Needs a look ({count})',
+  'pf.filter.changed': 'Changed since your last check ({count})',
   'pf.filter.expiring': 'Expire within 30 days ({count})',
+  'pf.chg.badge': 'Changed since your last check',
+  'pf.chg.since': '({date}): {list}',
+  'pf.chg.title': 'What the registry said at your last check of this domain in this workspace, compared with now: the registrar, its locks and statuses, the expiry, the name servers and the DS records.',
   'pf.filter.critical': 'Critical registry status ({count})',
   'pf.filter.unlocked': 'No transfer lock ({count})',
   'pf.filter.ns': 'Name server domain expiring or not registered ({count})',
@@ -325,6 +333,7 @@ registerStrings('tr', {
   'pf.sec.failed': 'Alan adı güvenliği sekmesi yüklenemedi',
 
   'pf.tile.domains': 'Alan adları',
+  'pf.tile.changed': 'Son kontrolden beri değişen',
   'pf.tile.expiring': '< 30 günde doluyor',
   'pf.tile.critical': 'Kritik durum',
   'pf.tile.unlocked': 'Transfer kilidi yok',
@@ -335,7 +344,11 @@ registerStrings('tr', {
   'pf.filter.label': 'Göster',
   'pf.filter.all': 'Bütün alan adları ({count})',
   'pf.filter.attention': 'Bakılması gerekenler ({count})',
+  'pf.filter.changed': 'Son kontrolünüzden beri değişenler ({count})',
   'pf.filter.expiring': '30 gün içinde süresi dolanlar ({count})',
+  'pf.chg.badge': 'Son kontrolünüzden beri değişti',
+  'pf.chg.since': '({date}): {list}',
+  'pf.chg.title': 'Bu çalışma alanında bu alan adının son kontrolünde kayıt kuruluşunun söyledikleri şimdikiyle karşılaştırıldı: kayıt firması, kilitler ve durumlar, bitiş tarihi, ad sunucuları ve DS kayıtları.',
   'pf.filter.critical': 'Kritik kayıt durumu ({count})',
   'pf.filter.unlocked': 'Transfer kilidi olmayanlar ({count})',
   'pf.filter.ns': 'Ad sunucusu alan adının süresi dolan ya da kayıtlı olmayanlar ({count})',
@@ -517,13 +530,28 @@ export function shareParams(domains) {
 }
 
 /**
+ * What changed in a row's registration since the workspace's last check (lib/regwatch.js over the
+ * baseline as it was when the check started), with the worst tone; null for a domain checked for
+ * the first time in the workspace, one whose registry could not be read, or nothing changed.
+ * @param {object} facts lib/portfolio.js portfolioFacts
+ * @param {import('../lib/regwatch.js').RdapSeen|null} seen
+ * @returns {{ at: string, changes: object[], tone: string }|null}
+ */
+export function rowChanges(facts, seen) {
+  if (!facts || !seen || !seen.domains) return null;
+  const got = seenChanges(seen.domains[facts.domain], registrationSnapshot(facts));
+  return got && got.changes.length ? { ...got, tone: worstTone(got.changes) } : null;
+}
+
+/**
  * Does a row pass a filter of {@link PORTFOLIO_FILTERS}?
  * @param {object} facts lib/portfolio.js portfolioFacts
  * @param {string} filter
- * @param {{ policyFails?: (domain: string) => boolean }} [opts]
+ * @param {{ policyFails?: (domain: string) => boolean, changedOf?: (domain: string) => object|null }} [opts]
+ *   `changedOf`: {@link rowChanges} of a domain
  * @returns {boolean}
  */
-export function matchesFilter(facts, filter, { policyFails = () => false } = {}) {
+export function matchesFilter(facts, filter, { policyFails = () => false, changedOf = () => null } = {}) {
   if (!facts) return false;
   const reg = facts.registration || {};
   const failed = PORTFOLIO_CELLS.some((c) => cellFailures(facts, c).length);
@@ -538,10 +566,12 @@ export function matchesFilter(facts, filter, { policyFails = () => false } = {})
     case 'nordap': return reg.state === 'unsupported';
     case 'failed': return failed;
     case 'policy': return policyFails(facts.domain);
+    case 'changed': return !!changedOf(facts.domain);
     case 'attention': {
       const risk = rowRisk(facts);
+      const changed = changedOf(facts.domain);
       return (risk && risk !== 'ok') || failed || reg.state === 'not-found' || policyFails(facts.domain)
-        || (!!facts.spf && facts.spf.over) || (!!facts.parked && facts.parked.complete === false);
+        || (!!facts.spf && facts.spf.over) || (!!facts.parked && facts.parked.complete === false) || (!!changed && changed.tone === 'bad');
     }
     default: return true;
   }
@@ -625,12 +655,27 @@ function emit(job, type, payload) {
   }
 }
 
+/**
+ * The registrations a check read go into the workspace's registration watch baseline (lib/regwatch.js,
+ * part `rdapSeen`): each domain whose registry answered, with the time; one it could not read keeps
+ * its entry. The next Check portfolio says what changed since.
+ * @param {object} job
+ * @param {string[]} [domains]
+ */
+function saveRdapSeen(job, domains = job.domains) {
+  const reads = domains.map((d) => ({ domain: d, snapshot: registrationSnapshot(job.run.facts(d)) }));
+  const next = updateRdapSeen(readRdapSeen(stateSingleton.workspaceData('rdapSeen')), reads, { now: Date.now() });
+  Promise.resolve(stateSingleton.setWorkspaceData('rdapSeen', rdapSeenText(next))).catch(() => {});
+}
+
 /** Start a run over the shared DohClient; its events go to the job's listeners (the view on screen). */
 function startRun({ domains, reduced, dkim, dns }) {
   jobCounter += 1;
   const job = {
     id: jobCounter, domains, reduced, dkim, status: 'running', startedAt: new Date(), finishedAt: null,
-    controller: new AbortController(), listeners: new Set(), handle: startJob({ view: 'portfolio' }), done: 0, busy: new Map()
+    controller: new AbortController(), listeners: new Set(), handle: startJob({ view: 'portfolio' }), done: 0, busy: new Map(),
+    // what the registries said at the workspace's last check: this check's changes are against it
+    seenBefore: readRdapSeen(stateSingleton.workspaceData('rdapSeen'))
   };
   job.run = createPortfolio({
     domains, dns, dkim,
@@ -649,11 +694,13 @@ function startRun({ domains, reduced, dkim, dns }) {
     job.error = err;
   }).then(() => {
     job.finishedAt = new Date();
+    // not after another workspace or "Delete all local data" dropped the check
+    if (session.job === job) saveRdapSeen(job);
     job.handle.finish({ status: job.status === 'done' ? 'done' : job.status === 'error' ? 'error' : 'cancelled' });
     emit(job, job.status, null);
     if (job.status === 'done' && !active && session.job === job) {
       const facts = job.run.allFacts();
-      const need = facts.filter((f) => matchesFilter(f, 'attention')).length;
+      const need = facts.filter((f) => matchesFilter(f, 'attention', { changedOf: (d) => rowChanges(job.run.facts(d), job.seenBefore) })).length;
       toast(translate('pf.doneToast', { count: need }), {
         type: need ? 'warn' : 'success',
         timeout: 10000,
@@ -847,6 +894,11 @@ export function mount(container, ctx) {
     }) : null;
     if (lookUp && job.busy.get(row.domain) && job.busy.get(row.domain).has('*')) setRetryBusy(lookUp);
     const reduced = job ? job.reduced.filter((x) => x.domain === row.domain).map((x) => x.input) : [];
+    // what the registry says now that it did not at the workspace's last check of the domain
+    const changed = changedOf(row.domain);
+    const changedEl = changed ? h('span', { class: 'pf-changed', title: t('pf.chg.title'), dataset: { changed: changed.changes.map((c) => c.code).join(' '), tone: changed.tone } },
+      Badge(t('pf.chg.badge'), { variant: changed.tone === 'bad' ? 'error' : changed.tone === 'good' ? 'ok' : 'info', icon: changed.tone === 'good' ? 'check' : 'alert' }),
+      ' ', h('span', { class: 'text-sm pf-changed-what' }, t('pf.chg.since', { date: formatDate(new Date(changed.at)), list: changedWords(changed.changes, t) }))) : null;
     // A registry without RDAP: the row says it is partial, never that the registration is fine.
     const partial = f.registration.state === 'unsupported'
       ? h('span', { class: 'pf-partial', dataset: { partial: 'no-rdap' }, title: t('pf.partialTitle', { tld: f.registration.tld || '' }) }, Badge(t('pf.partial'), { icon: 'info' }))
@@ -854,6 +906,7 @@ export function mount(container, ctx) {
     return stack(
       h('strong', { class: 'mono pf-break pf-domain' }, row.domain),
       risk && RISK_BADGES.includes(risk) ? Badge(t(`pf.risk.${risk}`), { variant: risk === 'warn' || risk === 'hijack' ? 'warn' : 'error', className: 'pf-risk' }) : null,
+      changedEl,
       partial,
       reduced.length ? muted(reduced.join(', ')) : null,
       lookUp);
@@ -1070,7 +1123,7 @@ export function mount(container, ctx) {
     search: { placeholder: t('pf.search') },
     sort: { key: 'domain', dir: 'asc' },
     toolbar: filterSelect.el,
-    filter: (r) => matchesFilter(r.facts, session.filter, { policyFails }),
+    filter: (r) => matchesFilter(r.facts, session.filter, { policyFails, changedOf }),
     export: false,
     cellLabels: true,
     pageSize: 100,
@@ -1174,6 +1227,15 @@ export function mount(container, ctx) {
   /* --- head, tiles, filter ----------------------------------------------------------- */
   const allFacts = () => rows.map((r) => r.facts);
   const policyFails = (domain) => !!audit && audit.rows.some((r) => r.domain === domain && r.fail > 0);
+  /** What changed in a row's registration since the workspace's last check (rowChanges), or null. */
+  function changedOf(domain) {
+    const job = session.job;
+    const row = byDomain.get(domain);
+    return job && row ? rowChanges(row.facts, job.seenBefore) : null;
+  }
+  /** The rows that changed, for Copy summary: their domain, when last checked and what changed. */
+  const changedRows = () => rows.map((r) => ({ domain: r.domain, c: changedOf(r.domain) })).filter((x) => x.c)
+    .map((x) => ({ domain: x.domain, at: x.c.at, tone: x.c.tone, changes: x.c.changes.map((c) => ({ code: c.code, item: c.item })) }));
 
   function renderHead() {
     const old = headEl.firstElementChild;
@@ -1186,7 +1248,10 @@ export function mount(container, ctx) {
     summary = SummaryButton({
       kind: 'portfolio',
       facts: () => (session.job && session.job.status !== 'running'
-        ? portfolioSummaryFacts(allFacts(), { at: session.job.finishedAt, stopped: session.job.status === 'stopped', notLooked: session.job.domains.filter((d) => session.job.run.pending(d).length).length, audit })
+        ? portfolioSummaryFacts(allFacts(), {
+          at: session.job.finishedAt, stopped: session.job.status === 'stopped', notLooked: session.job.domains.filter((d) => session.job.run.pending(d).length).length, audit,
+          changed: changedRows()
+        })
         : null),
       url: () => (session.job ? ctx.shareUrl(permalinkParams('portfolio', shareParams(session.job.domains))) : null),
       disabled: job.status === 'running'
@@ -1214,9 +1279,11 @@ export function mount(container, ctx) {
 
   function renderTiles() {
     const list = allFacts();
-    const count = (f) => list.filter((x) => matchesFilter(x, f, { policyFails })).length;
+    const count = (f) => list.filter((x) => matchesFilter(x, f, { policyFails, changedOf })).length;
     tiles.domains.set({ value: list.length, pressed: session.filter === 'all' });
-    const variants = { expiring: 'error', critical: 'error', unlocked: 'warn', ns: 'error', failed: 'warn' };
+    // a change counts red when one of them is bad (another registrar, a lock removed …)
+    const changedBad = rows.some((r) => (changedOf(r.domain) || {}).tone === 'bad');
+    const variants = { changed: changedBad ? 'error' : 'warn', expiring: 'error', critical: 'error', unlocked: 'warn', ns: 'error', failed: 'warn' };
     for (const k of PORTFOLIO_TILES) {
       const n = count(k);
       tiles[k].set({ value: n, variant: n ? variants[k] : 'default', pressed: session.filter === k });
@@ -1230,7 +1297,7 @@ export function mount(container, ctx) {
     // "Fail the policy" while the policy has no rule (cleared, or another workspace's): every domain.
     const noPolicy = f === 'policy' && !(parsed.policy && parsed.policy.rules.length);
     session.filter = PORTFOLIO_FILTERS.includes(f) && !noPolicy ? f : 'all';
-    table.setFilter((r) => matchesFilter(r.facts, session.filter, { policyFails }));
+    table.setFilter((r) => matchesFilter(r.facts, session.filter, { policyFails, changedOf }));
     renderTiles();
   }
 
@@ -1396,6 +1463,8 @@ export function mount(container, ctx) {
     } finally {
       busy.delete(column);
     }
+    // a registration read on a Retry goes into the baseline too
+    if (session.job === job && lookups.some((l) => l === 'rdap' || l === 'ds')) saveRdapSeen(job, [domain]);
     if (session.job !== job || ctx.signal.aborted) return;
     const hadFocus = !document.activeElement || document.activeElement === document.body || table.el.contains(document.activeElement) || (btn && !btn.isConnected);
     redraw([domain, ...nsDomains.flatMap((d) => job.run.affectedBy(d))]);
@@ -1451,6 +1520,7 @@ export function mount(container, ctx) {
     } finally {
       busy.clear();
     }
+    if (session.job === job) saveRdapSeen(job, [domain]);
     if (session.job !== job || ctx.signal.aborted) return;
     // Every row looked up after the stop: the portfolio is complete again.
     if (job.status === 'stopped' && job.domains.every((d) => !job.run.pending(d).length)) {

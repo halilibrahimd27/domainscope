@@ -16,7 +16,8 @@ const MAX_NAMED = 3;
 const MAX_LINES = 10;
 
 /**
- * Domain portfolio: what expires within 30 days (the portfolio's domains and the name servers'
+ * Domain portfolio: what changed in a registration since the workspace's last check (the registrar,
+ * a lock removed, a hold, the name servers, the DS records, a renewal), what expires within 30 days (the portfolio's domains and the name servers'
  * domains), name server domains nobody has registered, critical registry statuses, domains without a transfer lock, DNSSEC, the mail posture
  * that needs a look, parked domains not locked down, the policy audit's result, and what could not
  * be read (no RDAP, failed lookups, a stopped run). Past {@link MAX_LINES} the last lines before the
@@ -45,6 +46,8 @@ export function portfolioSummary(facts, opts) {
   };
   const days = (x) => (x.daysLeft < 0 ? t('sum.pf.expiredAgo', { count: -x.daysLeft }) : t('sum.pf.daysLeft', { count: x.daysLeft }));
 
+  // a registration that changed since the last check: the first sign of a hijack
+  if ((f.changed || []).length) lines.push([strong(`${t('sum.pf.changed')}:`), ' ', ...named(f.changed, (x) => changedWords(x.changes, t))]);
   if ((f.expiring || []).length) lines.push([strong(`${t('sum.pf.expiring')}:`), ' ', ...named(f.expiring, days)]);
   else lines.push([t(f.noRdap || f.stopped ? 'sum.pf.noneExpiringKnown' : 'sum.pf.noneExpiring')]);
   if ((f.nsUnregistered || []).length) {
@@ -86,8 +89,38 @@ export function portfolioSummary(facts, opts) {
     { when: whenText(t, 'sum.at.checked', f.at, opts.now || new Date()), url: opts.url });
 }
 
+/**
+ * The words of a domain's registration changes (lib/regwatch.js codes), each once: "registrar, lock removed".
+ * @param {Array<{ code: string, item?: string|null }>} changes
+ * @param {Function} t
+ * @returns {string}
+ */
+export function changedWords(changes, t) {
+  const out = [];
+  for (const c of changes || []) {
+    const label = c.code === 'hold' ? t('sum.pf.chg.hold', { status: c.item || '' }) : t(`sum.pf.chg.${c.code}`);
+    if (!out.includes(label)) out.push(label);
+  }
+  return out.join(', ');
+}
+
 const STRINGS = [
   ['sum.pf.domains', [{ one: '{count} domain', other: '{count} domains' }, '{count} alan adı']],
+  ['sum.pf.changed', ['Changed since your last check', 'Son kontrolünüzden beri değişenler']],
+  ['sum.pf.chg.unregistered', ['no longer registered', 'artık kayıtlı değil']],
+  ['sum.pf.chg.registered', ['registered again', 'yeniden kayıtlı']],
+  ['sum.pf.chg.registrar', ['registrar', 'kayıt firması']],
+  ['sum.pf.chg.registrar-name', ["registrar's name", 'kayıt firmasının adı']],
+  ['sum.pf.chg.lock-removed', ['lock removed', 'kilit kaldırıldı']],
+  ['sum.pf.chg.lock-added', ['lock added', 'kilit eklendi']],
+  ['sum.pf.chg.hold', ['{status} added', '{status} eklendi']],
+  ['sum.pf.chg.status', ['status changed', 'durum değişti']],
+  ['sum.pf.chg.ns', ['name servers', 'ad sunucuları']],
+  ['sum.pf.chg.ds-removed', ['DS removed', 'DS kaldırıldı']],
+  ['sum.pf.chg.ds-changed', ['DS changed', 'DS değişti']],
+  ['sum.pf.chg.ds-added', ['DS added', 'DS eklendi']],
+  ['sum.pf.chg.expiry-later', ['renewed', 'yenilendi']],
+  ['sum.pf.chg.expiry-earlier', ['expiry moved earlier', 'bitiş tarihi öne alındı']],
   ['sum.pf.expiring', ['Expire within 30 days', '30 gün içinde süresi dolanlar']],
   ['sum.pf.noneExpiring', ['No domain expires within 30 days', '30 gün içinde süresi dolan alan adı yok']],
   ['sum.pf.noneExpiringKnown', ['No domain whose expiry is known expires within 30 days', 'Bitiş tarihi bilinenlerden 30 gün içinde süresi dolan yok']],

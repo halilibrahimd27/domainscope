@@ -182,6 +182,18 @@ describe('part values', () => {
     assert.equal(emptyWorkspaceData().waivers, '');
   });
 
+  test('the registration watch baseline: the JSON text lib/regwatch.js writes, kept as it is (it checks it when it reads it), capped at 512 KiB; anything else empty', () => {
+    const text = '{"v":1,"domains":{"example.com":{"at":"2026-10-08T12:00:00.000Z","state":"ok","registrar":"Example Registrar, Inc.","ianaId":"9999","statuses":[],"expires":"2027-11-13","nameservers":[],"ds":[]}}}';
+    assert.ok(WORKSPACE_PARTS.includes('rdapSeen'));
+    assert.equal(WORKSPACE_LIMITS.rdapSeen, 512 * 1024);
+    assert.equal(sanitizePart('rdapSeen', text), text);
+    assert.equal(sanitizePart('rdapSeen', 'r'.repeat(WORKSPACE_LIMITS.rdapSeen + 3)).length, WORKSPACE_LIMITS.rdapSeen);
+    assert.equal(sanitizePart('rdapSeen', { v: 1, domains: {} }), '');
+    assert.equal(sanitizePart('rdapSeen', null), '');
+    assert.equal(emptyWorkspaceData().rdapSeen, '');
+    assert.equal(sanitizeWorkspaceData({ rdapSeen: text }).rdapSeen, text);
+  });
+
   test('notes: free text with its line breaks; controls other than tab / newline dropped; capped', () => {
     assert.equal(sanitizePart('notes', 'Renewal:\r\n\tcall ops\u0007 first'), 'Renewal:\n\tcall ops first');
     assert.equal(sanitizePart('notes', 'n'.repeat(WORKSPACE_LIMITS.notes + 5)).length, WORKSPACE_LIMITS.notes);

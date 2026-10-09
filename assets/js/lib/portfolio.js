@@ -391,15 +391,21 @@ export async function runPortfolioLookup(id, domain, { dns, fetchImpl = globalTh
  * `{ type: 'rdap', domain }` (an RDAP result landed: the row of that domain and every row whose name
  * servers are under it), `{ type: 'row', domain, state }` ('running' | 'done' | 'stopped').
  * @param {{ domains: string[], dns: object, fetchImpl?: typeof fetch, dkim?: boolean, concurrency?: number,
- *   rdapConcurrency?: number, rdapOptions?: object, onEvent?: Function }} opts `dns`: a DohClient;
- *   `rdapOptions`: passed to rdapDomain (tests: the registries' and rdap.org's pacing)
+ *   rdapConcurrency?: number, rdapOptions?: object, onEvent?: Function, lookups?: string[], nsDomains?: boolean }} opts
+ *   `dns`: a DohClient; `rdapOptions`: passed to rdapDomain (tests: the registries' and rdap.org's pacing);
+ *   `lookups`: the lookups a row runs (default every one: the runner's `watch` asks rdap, ns and ds
+ *   only); `nsDomains` false: the name servers' own domains are not looked up in RDAP
  * @returns {object}
  */
 export function createPortfolio({
   domains, dns, fetchImpl = globalThis.fetch, dkim = true, concurrency = PORTFOLIO_CONCURRENCY,
-  rdapConcurrency = RDAP_CONCURRENCY, rdapOptions = {}, onEvent = null
+  rdapConcurrency = RDAP_CONCURRENCY, rdapOptions = {}, onEvent = null, lookups = PORTFOLIO_LOOKUPS, nsDomains: askNsDomains = true
 }) {
   if (!dns || typeof dns.query !== 'function') throw new TypeError('A DNS client with query(name, type, opts) is required');
+  const unknown = (lookups || []).filter((id) => !PORTFOLIO_LOOKUPS.includes(id));
+  if (unknown.length) throw new RangeError(`portfolio: unknown lookup "${unknown[0]}"`);
+  /** The lookups of a row, in PORTFOLIO_LOOKUPS order (SPF's count needs the TXT answer). */
+  const rowLookups = PORTFOLIO_LOOKUPS.filter((id) => (lookups || []).includes(id) && (id !== 'spf' || (lookups || []).includes('txt')));
   const order = uniq((domains || []).map(canon).filter(Boolean));
   const rows = new Map(order.map((d, index) => [d, { domain: d, index, raw: { domain: d }, state: 'queued', retrying: new Set() }]));
   /** domain → { promise } of its RDAP lookup (portfolio and name server domains alike). */
@@ -461,7 +467,7 @@ export function createPortfolio({
    * A row's lookups. `defer` (a run's row): the RDAP lookups — the row's own and its name servers'
    * domains' — are handed to it instead of awaited, so their wait holds no place of the run's rows.
    */
-  async function runRow(row, { signal, lookups = PORTFOLIO_LOOKUPS, noCache = false, defer = null }) {
+  async function runRow(row, { signal, lookups = rowLookups, noCache = false, defer = null }) {
     const client = passportDns(dns, { signal, noCache });
     const land = (id, result) => {
       row.raw[id] = result;
@@ -472,7 +478,7 @@ export function createPortfolio({
       const result = await runPortfolioLookup(id, row.domain, { dns: client, fetchImpl, signal, raw: row.raw, rdapFor, dkim, noCache });
       throwIfAborted(signal);
       land(id, result);
-      if (id === 'ns') await later(nsDomains(row, { signal }));
+      if (id === 'ns' && askNsDomains) await later(nsDomains(row, { signal }));
       return result;
     };
     const wantSpf = lookups.includes('spf');
@@ -541,11 +547,11 @@ export function createPortfolio({
   run.retry = async (domain, lookups, { signal } = {}) => {
     const row = rows.get(canon(domain));
     if (!row) throw new RangeError(`portfolio: not in this run: ${domain}`);
-    const list = PORTFOLIO_LOOKUPS.filter((id) => lookups.includes(id));
+    const list = rowLookups.filter((id) => lookups.includes(id));
     for (const id of list) row.retrying.add(id);
     try {
       await runRow(row, { signal, lookups: list, noCache: true });
-      if (!list.length || PORTFOLIO_LOOKUPS.every((id) => row.raw[id] !== undefined)) {
+      if (!list.length || rowLookups.every((id) => row.raw[id] !== undefined)) {
         row.state = 'done';
         emit({ type: 'row', domain: row.domain, state: 'done' });
       }
@@ -589,7 +595,7 @@ export function createPortfolio({
   /** Lookups of a row still to land (none for a finished row). */
   run.pending = (domain) => {
     const row = rows.get(canon(domain));
-    return row ? PORTFOLIO_LOOKUPS.filter((id) => row.raw[id] === undefined) : [];
+    return row ? rowLookups.filter((id) => row.raw[id] === undefined) : [];
   };
   return run;
 }
@@ -638,6 +644,8 @@ function registrationFacts(r, now) {
     // each once, in its RDAP spelling (as statusRisk says them)
     statuses: uniq((Array.isArray(r.status) ? r.status : []).map((x) => statusName(String(x ?? '').trim())).filter(Boolean)),
     ...risk,
+    // the name servers the registry delegates to (RDAP), sorted: the registration watch compares them (lib/regwatch.js)
+    nameservers: uniq((Array.isArray(r.nameservers) ? r.nameservers : []).map(canon).filter(Boolean)).sort(),
     delegationSigned: typeof r.dnssecSigned === 'boolean' ? r.dnssecSigned : null,
     server: r.rdapServer || null
   };
@@ -655,13 +663,29 @@ function policyRecord(res, kind, now) {
   return { state: ok ? 'present' : 'invalid', failure: null, record: records[0] };
 }
 
+/**
+ * The DS records of an answer by what identifies their key: the key tag, the algorithm and the digest
+ * type (the digest itself left out), each once, sorted.
+ * @param {object[]} records DS RRs (lib/dnswire.js data `{ keyTag, algorithm, digestType, digest }`)
+ * @returns {Array<{ keyTag: number, algorithm: number, digestType: number }>}
+ */
+function dsIdentities(records) {
+  const seen = new Map();
+  for (const rr of records) {
+    const d = rr && rr.data;
+    if (!d || !Number.isInteger(d.keyTag) || !Number.isInteger(d.algorithm) || !Number.isInteger(d.digestType)) continue;
+    seen.set(`${d.keyTag} ${d.algorithm} ${d.digestType}`, { keyTag: d.keyTag, algorithm: d.algorithm, digestType: d.digestType });
+  }
+  return [...seen.values()].sort((a, b) => a.keyTag - b.keyTag || a.algorithm - b.algorithm || a.digestType - b.digestType);
+}
+
 /** The DNSSEC state of the DS and DNSKEY answers (lib/passport.js dnsCard's reading). */
 function dnssecFacts(raw, now) {
   const failure = (id) => lookupStatus(raw[id], { now: now.getTime() });
   if (raw.ds === undefined) return { state: null, failure: null, pending: true };
   if (!answered(raw.ds)) return { state: null, failure: failure('ds') };
   const ds = (raw.ds.answers || []).filter((rr) => rr.type === 'DS');
-  if (!ds.length) return { state: 'unsigned', failure: null, dsCount: 0 };
+  if (!ds.length) return { state: 'unsigned', failure: null, dsCount: 0, ds: [] };
   let state = 'signed';
   let dnskeyFailure = null;
   if (raw.dnskey !== undefined) {
@@ -671,7 +695,7 @@ function dnssecFacts(raw, now) {
       dnskeyFailure = failure('dnskey');
     } else if (raw.dnskey.flags && raw.dnskey.flags.ad) state = 'validated';
   }
-  return { state, failure: null, dnskeyFailure, dsCount: ds.length, pending: raw.dnskey === undefined };
+  return { state, failure: null, dnskeyFailure, dsCount: ds.length, ds: dsIdentities(ds), pending: raw.dnskey === undefined };
 }
 
 /** The name servers, their DNS providers and their domains' expiry. */
@@ -980,10 +1004,13 @@ export const EXPORT_COLUMNS = Object.freeze(['domain', 'registration', 'registra
  * What lib/portfoliosummary.js writes for "Copy summary": counts and the domains that need a look,
  * never a record value.
  * @param {object[]} factsList
- * @param {{ at?: Date|null, stopped?: boolean, notLooked?: number, audit?: object|null }} [opts] `audit`: lib/policy.js auditPortfolio
+ * @param {{ at?: Date|null, stopped?: boolean, notLooked?: number, audit?: object|null,
+ *   changed?: Array<{ domain: string, at: string, tone: string, changes: Array<{ code: string, item: string|null }> }> }} [opts]
+ *   `audit`: lib/policy.js auditPortfolio; `changed`: the domains whose registration changed since the workspace's
+ *   last check (lib/regwatch.js, the view's rowChanges)
  * @returns {object}
  */
-export function portfolioSummaryFacts(factsList, { at = null, stopped = false, notLooked = 0, audit = null } = {}) {
+export function portfolioSummaryFacts(factsList, { at = null, stopped = false, notLooked = 0, audit = null, changed = [] } = {}) {
   const list = factsList || [];
   const reg = (f) => f.registration || {};
   const byDays = (a, b) => a.daysLeft - b.daysLeft || a.domain.localeCompare(b.domain, 'en');
@@ -1004,6 +1031,10 @@ export function portfolioSummaryFacts(factsList, { at = null, stopped = false, n
     at,
     stopped,
     notLooked,
+    // the bad ones first (another registrar, a lock removed …), then by domain
+    changed: (Array.isArray(changed) ? changed : []).filter((x) => x && x.domain && Array.isArray(x.changes) && x.changes.length)
+      .map((x) => ({ domain: x.domain, at: x.at || null, tone: x.tone || null, changes: x.changes.map((c) => ({ code: c.code, item: c.item ?? null })) }))
+      .sort((a, b) => Number(b.tone === 'bad') - Number(a.tone === 'bad') || a.domain.localeCompare(b.domain, 'en')),
     expiring,
     critical: list.filter((f) => (reg(f).critical || []).length).map((f) => ({ domain: f.domain, codes: reg(f).critical })),
     pendingTransfer: list.filter((f) => (reg(f).statuses || []).some((s) => squash(s) === 'pendingtransfer')).map((f) => f.domain),

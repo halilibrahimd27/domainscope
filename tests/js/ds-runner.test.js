@@ -246,7 +246,7 @@ describe('baseline', () => {
     assert.match(baselineProblem(report('drift', [{ target: 'example.com', rows: [{ key: 'x|A' }] }]), 'drift'), /rows\[0\] has no "status"/);
     assert.match(baselineProblem(report('renew', [{ target: 'example.com' }]), 'renew'), /has no "verdict"/);
     assert.match(baselineProblem(report('dane', [{ target: 'x', endpoints: [{ key: 'k' }] }]), 'dane'), /endpoints\[0\] has no "status"/);
-    assert.match(baselineProblem(report('audit', [{ target: 'example.com', rules: [{ id: 'dnssec', status: 'maybe' }] }]), 'audit'), /rules\[0\] has no "status" \(pass, fail or unknown\)/);
+    assert.match(baselineProblem(report('audit', [{ target: 'example.com', rules: [{ id: 'dnssec', status: 'maybe' }] }]), 'audit'), /rules\[0\] has no "status" \(pass, fail, unknown or waived\)/);
     assert.match(baselineProblem(report('audit', [{ target: 'example.com', rules: [{ status: 'pass' }] }]), 'audit'), /rules\[0\] has no "id"/);
     assert.match(baselineProblem(report('ct', [{ target: 'example.com', names: [], issuers: [], certificates: [{ id: 'x', ca: 'y' }] }]), 'ct'), /certificates\[0\] has no "names" list/);
     assert.match(baselineProblem(report('ct', [{ target: 'example.com', names: [], issuers: [], certificates: [{ id: 'x', ca: 'y', names: [], carried: true }] }]), 'ct'), /certificates\[0\] has a "carried" without a "from"/);
@@ -932,7 +932,8 @@ describe('render', () => {
     assert.equal(lines.at(-1), '');
     assert.ok(!lines.join('\n').includes('\u001b['));
     assert.ok(renderChangesText(run, { paint: painter(true) }).join('\n').includes('\u001b[31;1m'), 'red for a bad change');
-    assert.ok(CHANGE_TAGS.every((tag) => tag.length <= 9));
+    // every tag fits the 9-character column but WAIVER-EXPIRED, which widens it in a summary that shows it
+    assert.deepEqual(CHANGE_TAGS.filter((tag) => tag.length > 9), ['WAIVER-EXPIRED']);
   });
 
   test('a first run says so; nothing changed says none; the cap and the not-counted note', () => {

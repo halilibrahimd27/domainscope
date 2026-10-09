@@ -301,6 +301,13 @@ export async function main(argv, io = {}) {
       inputs.file = { name: basename(targets[0]), bytes: await readInput(targets[0]) };
     }
     if (command === 'audit') inputs.policy = await loadPolicy(options);
+    if (options.waivers) {
+      // the accepted risks (tools/ds/waivers.mjs): an entry that cannot be read is a warning, and its item counts
+      const { readWaiversFile } = await import('./ds/waivers.mjs');
+      const read = await readWaiversFile(options.waivers, { read: async (path, option) => decodeText(await readInput(path, option)), now: now() });
+      for (const w of read.warnings) warn(w);
+      inputs.waivers = { file: read.file, list: read.list };
+    }
     if (options.exact) {
       const { valid, invalid } = parseHostList(decodeText(await readInput(options.exact, '--exact')));
       for (const w of skippedWarnings(`--exact ${options.exact}`, invalid, 'a host name')) warn(w);
@@ -434,7 +441,7 @@ export async function main(argv, io = {}) {
   if (writeFailed) return EXIT.WRITE;
   if (notifyFailed && options.failOnNotifyError) return EXIT.NOTIFY;
   // audit: a rule of the policy failed (one that could not be checked is no failure, unless it
-  // failed when last checked (--baseline): it still counts as failed)
+  // failed when last checked (--baseline): it still counts as failed; one a waiver accepts is none)
   if (result.failed) return EXIT.CHANGED;
   if (options.failOnChange && notableChanges(run.changes).length) return EXIT.CHANGED;
   return EXIT.OK;

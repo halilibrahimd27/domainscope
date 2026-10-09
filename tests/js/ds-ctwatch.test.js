@@ -338,8 +338,12 @@ describe('the summary\'s watch lines', () => {
 describe('what Cert Spotter\'s DER says', () => {
   test('the serial number and a precertificate; anything unreadable is nothing', () => {
     const b64 = (o) => Buffer.from(certDer({ names: ['shop.example.com'], notBefore: '2026-09-01T00:00:00Z', notAfter: '2026-11-30T00:00:00Z', ...o })).toString('base64');
-    assert.deepEqual(readCertDer(b64({ serial: 9, precert: true }), parseCertificate), { serialHex: '09', precert: true });
-    assert.deepEqual(readCertDer(b64({ serial: 10 }), parseCertificate), { serialHex: '0a', precert: false });
+    const pre = readCertDer(b64({ serial: 9, precert: true }), parseCertificate);
+    assert.deepEqual([pre.serialHex, pre.precert], ['09', true]);
+    // the public key's SHA-256 (the SubjectPublicKeyInfo's): a known certificate's ref (lib/waivers.js)
+    assert.match(pre.spkiSha256, /^[0-9a-f]{64}$/);
+    const plain = readCertDer(b64({ serial: 10 }), parseCertificate);
+    assert.deepEqual([plain.serialHex, plain.precert, plain.spkiSha256], ['0a', false, pre.spkiSha256], 'the same fake key');
     assert.equal(readCertDer('bm90IGEgY2VydA==', parseCertificate), null);
     assert.equal(readCertDer(undefined, parseCertificate), null);
     assert.equal(readCertDer(b64({}), null), null);

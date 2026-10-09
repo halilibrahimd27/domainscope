@@ -50,13 +50,13 @@ export const COMMANDS = Object.freeze(['health', 'subdomains', 'drift', 'ct', 'r
  * {@link parseTlsTarget}) or 'file' (exactly one), and its own options.
  */
 export const COMMAND_SPECS = Object.freeze({
-  health: Object.freeze({ targets: 'domains', options: Object.freeze(['list']) }),
+  health: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'waivers']) }),
   subdomains: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'exact', 'level', 'sources']) }),
   drift: Object.freeze({ targets: 'file', options: Object.freeze(['origin', 'include-origins', 'max-queries']) }),
-  ct: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'days', 'sources', 'radar', 'expected-ca']) }),
+  ct: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'days', 'sources', 'radar', 'expected-ca', 'waivers']) }),
   renew: Object.freeze({ targets: 'names', options: Object.freeze(['list', 'ca', 'challenge']) }),
   dane: Object.freeze({ targets: 'file', options: Object.freeze([]) }),
-  audit: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'policy', 'preset', 'no-dkim']) }),
+  audit: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'policy', 'preset', 'no-dkim', 'waivers']) }),
   tls: Object.freeze({ targets: 'endpoints', options: Object.freeze(['list', 'ari', 'revocation']) }),
   takeover: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'names', 'from-subdomains', 'dkim-selectors']) })
 });
@@ -203,6 +203,7 @@ const OPTION_SPEC = Object.freeze({
   names: { type: 'string' },
   'from-subdomains': { type: 'string' },
   'dkim-selectors': { type: 'string' },
+  waivers: { type: 'string' },
   notify: { type: 'string', multiple: true },
   'notify-bad': { type: 'string', multiple: true },
   'notify-format': { type: 'string' },
@@ -251,6 +252,7 @@ const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'res
  * @property {string|null} names takeover: a file of host names whose CNAME chains are asked
  * @property {string|null} fromSubdomains takeover: a `subdomains` --json report whose hosts with a CNAME are asked
  * @property {string[]} dkimSelectors takeover: DKIM selectors followed besides the common ones
+ * @property {string|null} waivers health, audit, ct: the accepted risks (lib/waivers.js waivers.json)
  */
 
 /**
@@ -474,7 +476,7 @@ export function parseCommandLine(argv) {
   }
   if (help || version) return { command, targets: [], options: defaults(), help, version };
 
-  for (const name of ['json', 'md', 'baseline', 'exact', 'policy', 'names', 'from-subdomains']) {
+  for (const name of ['json', 'md', 'baseline', 'exact', 'policy', 'names', 'from-subdomains', 'waivers']) {
     if (v[name] === '-') throw new UsageError(`--${name} takes a file, not "-"`);
     if (v[name] !== undefined && !String(v[name]).trim()) throw new UsageError(`--${name} needs a file name`);
   }
@@ -504,6 +506,7 @@ export function parseCommandLine(argv) {
   }
   options.notifyAlways = v['notify-always'] === true;
   options.failOnNotifyError = v['fail-on-notify-error'] === true;
+  options.waivers = v.waivers ?? null;
   try {
     notifyRoutes(options, {}); // the URLs on the command line; the run reads the environment's
   } catch (err) {
@@ -602,6 +605,7 @@ export function parseCommandLine(argv) {
     ...(options.exact ? [['--exact', options.exact]] : []),
     ...(options.names ? [['--names', options.names]] : []),
     ...(options.fromSubdomains ? [['--from-subdomains', options.fromSubdomains]] : []),
+    ...(options.waivers ? [['--waivers', options.waivers]] : []),
     ...(spec.targets === 'file' ? [[command === 'drift' ? 'the zone file' : 'the certificate file', rest[0]]] : [])
   ];
   for (const [option, out] of [['--json', options.json], ['--md', options.md]]) {
@@ -619,7 +623,7 @@ function defaults() {
     exact: null, level: DS_DEFAULT_LEVEL, sources: null, days: DS_DEFAULT_DAYS, radar: [...DS_DEFAULT_RADAR], expectedCas: [],
     origin: null, includeOrigins: false, maxQueries: DRIFT_DEFAULT_BUDGET, ca: null, challenge: 'unknown',
     policy: null, preset: null, dkim: true, ari: false, revocation: false,
-    names: null, fromSubdomains: null, dkimSelectors: [],
+    names: null, fromSubdomains: null, dkimSelectors: [], waivers: null,
     notify: [], notifyBad: [], notifyFormat: 'auto', notifyAlways: false, failOnNotifyError: false
   };
 }
@@ -633,6 +637,7 @@ on stdout, a JSON report and a Markdown summary, and the changes since the last 
 
 commands:
   health DOMAIN...               Domain Health: DNS, mail, CAA, DNSSEC and registration checks
+      [--waivers FILE]           accepted risks (waivers.json): findings left out of the score
   subdomains DOMAIN...           discover the subdomains (passive sources, mining, a wordlist)
       [--level off|small|smart]  wordlist level (default ${DS_DEFAULT_LEVEL}; the app's default is smart)
       [--sources a,b]            passive sources (default: ${SOURCES.filter((s) => s.defaultEnabled).map((s) => s.id).join(', ')})
@@ -652,6 +657,7 @@ commands:
                                  part of a private CA's name; repeatable. Any other issuer is an
                                  unexpected CA
       [--sources crtsh,certspotter]
+      [--waivers FILE]           known certificates (waivers.json): never new nor unexpected
   renew NAME...                  Renewal readiness: will the next ACME renewal validate?
       [--ca ID] [--challenge http-01|dns-01|tls-alpn-01|unknown]
   dane CERT.pem                  the DANE / TLSA renewal guard for a certificate (fullchain.pem)
@@ -662,6 +668,7 @@ commands:
       --policy FILE              the policy (JSON, as the app exports it), or
       --preset NAME              a built-in one: ${POLICY_PRESET_IDS.join(', ')}
       [--no-dkim]                skip the DKIM keys (${PORTFOLIO_DKIM_SELECTORS.length} common selectors per domain)
+      [--waivers FILE]           accepted risks (waivers.json): a failed rule they accept is WAIVED
   tls HOST[:PORT]...             the certificate every address of a host serves (SNI = the host; an
                                  address alone: no SNI), its expiry, trust and name, each address on
                                  its own (default port ${TLS_DEFAULT_PORT}; [2001:db8::1]:8443 for IPv6)
@@ -749,6 +756,14 @@ ct watch: each domain's report keeps the ids of the certificates seen (the next 
   Cert Spotter's answers say which certificates are logged only as a precertificate; crt.sh's
   do not.
 
+waivers: --waivers FILE (health, audit, ct) reads the accepted risks the app's Workspaces dialog
+  exports (waivers.json: a reason, an owner and an end date each, at most a year ahead). An item
+  a waiver accepts - a Domain Health finding, a policy rule of a domain, a certificate's public key
+  (a known certificate) - does not count for --fail-on-change nor for audit's exit 4, and its
+  changes are listed only; the summary lists what was accepted and what ends within 14 days. From
+  the day after its end date it counts again, and a change says so (WAIVER-EXPIRED). An entry
+  that cannot be read is left out with a warning (its item counts).
+
 takeover watch: a new risk (RISK) counts at medium severity or above - a domain the records
   name that is unregistered, pending deletion, expired or expiring, a CNAME at a claimable service
   that no longer exists - and so do a risk gone (GONE; "registered now - make sure it is yours"
@@ -774,7 +789,8 @@ exit codes: 0 done, 1 the run failed (an unexpected error, printed), 2 usage err
   --fail-on-notify-error), 130 interrupted (nothing written). When several apply: 3, then 5,
   then 4.
   A rule that could not be checked (a lookup failed, a TLD without RDAP) is no failure, unless it
-  failed when last checked (--baseline): it still counts as failed.
+  failed when last checked (--baseline): it still counts as failed. A rule a waiver accepts
+  (--waivers) is no failure either, nor is a change of an accepted item.
 
 examples:
   node tools/ds.mjs health example.com example.org --json health.json --md health.md
@@ -787,6 +803,7 @@ examples:
   node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
   node tools/ds.mjs audit --preset parked example.org --baseline audit.json --json audit.json
   node tools/ds.mjs audit --preset corporate --list domains.txt --md audit.md
+  node tools/ds.mjs health --list domains.txt --waivers waivers.json --baseline health.json --json health.json
   node tools/ds.mjs tls --list tls-hosts.txt --ari --revocation --baseline tls.json --json tls.json
   node tools/ds.mjs tls www.example.com example.com:8443 --ari
   node tools/ds.mjs takeover --list domains.txt --from-subdomains subs.json --baseline takeover.json --json takeover.json

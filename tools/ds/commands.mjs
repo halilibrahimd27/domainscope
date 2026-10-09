@@ -21,9 +21,11 @@ import { targetOf, carryHealth, carryHosts, carryCt, ctIssuers, ctCertOrder, loo
 import { isSubdomainOf, sortHostnames } from '../../assets/js/lib/domain.js';
 import { chunk, throwIfAborted } from '../../assets/js/lib/util.js';
 import { textParts, renderParts, cleanText } from '../../assets/js/lib/summary.js';
-import { scoreHealth } from '../../assets/js/lib/healthscore.js';
+import { scoreHealth, countSeverities } from '../../assets/js/lib/healthscore.js';
 import { createCtCooldown, CT_COOLDOWN_MS } from '../../assets/js/lib/ctcert.js';
+import { healthWaivers, isWaivableCheck } from '../../assets/js/lib/waivers.js';
 import { watchTarget, renewalOverdue } from './ctwatch.mjs';
+import { waiversDoc } from './waivers.mjs';
 
 const APP = 'DomainScope';
 const DAY_MS = 86400000;
@@ -112,31 +114,47 @@ async function defaultSourceIds() {
 /* health                                                                   */
 /* ------------------------------------------------------------------------ */
 
+/** A waiver as a report keeps it beside its item (the file's own fields, never its kind or ref twice). */
+export const waiverOut = (w) => ({ id: w.id, reason: w.reason, owner: w.owner || '', expires: w.expires });
+
 /**
  * The compared part of one Domain Health report: the score, the counts, every check (its
  * title key and language-neutral params, so a change quotes their values as code spans, and
  * the English title to read the file by), the lookups that failed and, for each area whose
  * lookup failed, the checks the last run that read it found (`carried`, carry.mjs carryHealth);
- * `report` is the report itself (the view's "Report (JSON)").
+ * `report` is the report itself (the view's "Report (JSON)"). With `--waivers`: an error or a
+ * warning an active waiver accepts carries it (`waiver`) and is left out of the score, the grade
+ * and the light (`waived`: how many, the first day one ends, the score with them), one whose
+ * waiver is over carries that (`waiverExpired`: it counts again).
  * @param {object} report lib/health.js domainHealth() result
  * @param {{ t: Function, trafficLight: Function }} kit (the score and its grade: lib/healthscore.js, SPEC §5.78)
  * @param {{ prev?: object|null, prevAt?: string|null }} [baseline] the baseline's target of the
  *   domain and the baseline run's start
+ * @param {{ waivers?: object[]|null, now?: Date }} [accepted] lib/waivers.js waivers, read at `now`
  * @returns {object}
  */
-export function healthTarget(report, { t, trafficLight }, { prev = null, prevAt = null } = {}) {
-  const graded = scoreHealth(report.checks);
+export function healthTarget(report, { t, trafficLight }, { prev = null, prevAt = null } = {}, { waivers = null, now = new Date() } = {}) {
+  const hw = waivers ? healthWaivers(report, waivers, { now }) : null;
+  const ids = hw ? hw.ids : null;
+  const graded = scoreHealth(report.checks, { waived: ids });
+  const expiredById = new Map(hw ? hw.expired.map((e) => [e.check.id, e.waiver]) : []);
   const x = {
     target: report.domain,
     checkedAt: isoTime(report.checkedAt),
     score: graded.score,
     grade: graded.grade,
-    light: trafficLight(report.summary),
+    light: trafficLight(ids && ids.size ? countSeverities(report.checks, { waived: ids }) : report.summary),
     summary: { ...report.summary },
+    ...(hw ? { waived: { count: graded.waived, until: hw.until, scoreWith: graded.full ? graded.full.score : graded.score, gradeWith: graded.full ? graded.full.grade : graded.grade } } : {}),
     failedLookups: [...(report.failedLookups || [])],
-    checks: (report.checks || []).map((c) => ({
-      id: c.id, severity: c.severity, titleKey: c.titleKey, params: { ...c.params }, title: t(c.titleKey, localYesNo(t, c.params))
-    }))
+    checks: (report.checks || []).map((c) => {
+      const w = hw && isWaivableCheck(c) ? hw.byId.get(c.id) : null;
+      const gone = hw && !w && isWaivableCheck(c) ? expiredById.get(c.id) : null;
+      return {
+        id: c.id, severity: c.severity, titleKey: c.titleKey, params: { ...c.params }, title: t(c.titleKey, localYesNo(t, c.params)),
+        ...(w ? { waiver: waiverOut(w) } : {}), ...(gone ? { waiverExpired: waiverOut(gone) } : {})
+      };
+    })
   };
   const carried = carryHealth(x, prev, { prevAt });
   return { ...x, ...(carried.length ? { carried } : {}), report };
@@ -145,16 +163,26 @@ export function healthTarget(report, { t, trafficLight }, { prev = null, prevAt 
 async function runHealth(targets, options, env) {
   const { domainHealth } = await import('../../assets/js/lib/health.js');
   const { healthSummary, trafficLight } = await import('../../assets/js/lib/summary.js');
+  const waivers = env.inputs && env.inputs.waivers ? env.inputs.waivers : null;
   const out = [];
   const docs = [];
+  const use = { applied: [], expired: [], checked: [] };
   const prevAt = env.baseline ? env.baseline.startedAt ?? null : null;
   for (const [i, domain] of targets.entries()) {
     env.progress(`health ${domain} (${i + 1}/${targets.length})`);
     const report = await domainHealth(domain, { dns: env.dns, fetchImpl: env.fetchImpl, signal: env.signal });
-    out.push(healthTarget(report, { t: env.t, trafficLight }, { prev: targetOf(env.baseline, domain), prevAt }));
-    docs.push(healthSummary({ report }, { t: env.t, now: env.now() }));
+    const now = env.now();
+    const target = healthTarget(report, { t: env.t, trafficLight }, { prev: targetOf(env.baseline, domain), prevAt }, { waivers: waivers ? waivers.list : null, now });
+    out.push(target);
+    const accepted = target.checks.filter((c) => c.waiver);
+    docs.push(healthSummary({ report, waived: waivers ? { ids: accepted.map((c) => c.id), until: target.waived ? target.waived.until : null } : null }, { t: env.t, now }));
+    const what = (c) => [code(c.id), ' — ', ...textParts(env.t, c.titleKey || `health.${c.id}.title`, localYesNo(env.t, c.params))];
+    use.checked.push(target.target);
+    use.applied.push(...accepted.map((c) => ({ target: target.target, what: what(c), waiver: c.waiver })));
+    use.expired.push(...target.checks.filter((c) => c.waiverExpired).map((c) => ({ target: target.target, what: what(c), waiver: c.waiverExpired })));
   }
-  return { options: { resolvers: [...options.chain] }, targets: out, docs, warnings: [] };
+  if (waivers) docs.push(waiversDoc('health', waivers, use, { t: env.t, now: env.now() }));
+  return { options: { resolvers: [...options.chain], ...(waivers ? { waivers: waivers.file } : {}) }, targets: out, docs, warnings: [] };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -369,17 +397,20 @@ export function ctCertId(cert) {
 }
 
 /**
- * What a certificate's DER (Cert Spotter's `cert_der`, base64) says: its serial number and whether
- * it is a precertificate (the CT poison extension). Null when there is none or it cannot be read.
+ * What a certificate's DER (Cert Spotter's `cert_der`, base64) says: its serial number, whether
+ * it is a precertificate (the CT poison extension) and its public key's SHA-256 (the
+ * SubjectPublicKeyInfo's: a known certificate's ref, lib/waivers.js). Null when there is none or it
+ * cannot be read.
  * @param {string|undefined} b64
- * @param {(der: Uint8Array) => { serialHex: string, isPrecertificate: boolean }} parseCertificate lib/x509.js
- * @returns {{ serialHex: string|null, precert: boolean }|null}
+ * @param {(der: Uint8Array) => { serialHex: string, isPrecertificate: boolean, spkiDer?: Uint8Array }} parseCertificate lib/x509.js
+ * @returns {{ serialHex: string|null, precert: boolean, spkiSha256: string|null }|null}
  */
 export function readCertDer(b64, parseCertificate) {
   if (typeof b64 !== 'string' || !b64 || typeof parseCertificate !== 'function') return null;
   try {
     const cert = parseCertificate(new Uint8Array(Buffer.from(b64, 'base64')));
-    return { serialHex: cert.serialHex ? String(cert.serialHex).toLowerCase() : null, precert: !!cert.isPrecertificate };
+    const spki = cert.spkiDer instanceof Uint8Array && cert.spkiDer.length ? createHash('sha256').update(cert.spkiDer).digest('hex') : null;
+    return { serialHex: cert.serialHex ? String(cert.serialHex).toLowerCase() : null, precert: !!cert.isPrecertificate, spkiSha256: spki };
   } catch {
     return null;
   }
@@ -423,6 +454,8 @@ export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sourc
       notAfter: isoTime(c.notAfter),
       names: sortHostnames([...new Set((c.names || []).filter(own))]),
       sha256: c.sha256 || null,
+      // the public key's SHA-256: Cert Spotter's pubkey_sha256, else from its DER (a known certificate's ref)
+      spkiSha256: (typeof c.pubkeySha256 === 'string' && /^[0-9a-f]{64}$/.test(c.pubkeySha256) && c.pubkeySha256) || (der && der.spkiSha256) || null,
       serialHex: (typeof c.serialHex === 'string' && c.serialHex) || (der && der.serialHex) || null,
       sources: [...(c.sources || [c.source])].sort(),
       revoked: typeof c.revoked === 'boolean' ? c.revoked : null,
@@ -433,6 +466,7 @@ export function ctTarget(domain, fetched, { issuerName, dnPart, days, now, sourc
     if (twin) {
       twin.sources = [...new Set([...twin.sources, ...cert.sources])].sort();
       twin.sha256 = twin.sha256 || cert.sha256;
+      twin.spkiSha256 = twin.spkiSha256 || cert.spkiSha256;
       twin.serialHex = twin.serialHex || cert.serialHex;
       if (twin.revoked === null) twin.revoked = cert.revoked;
       if (twin.precert === null) twin.precert = cert.precert;
@@ -595,6 +629,9 @@ async function runCt(targets, options, env) {
   const sources = options.sources || [...CT_SOURCES];
   const radar = Array.isArray(options.radar) && options.radar.length ? [...options.radar] : [...DS_DEFAULT_RADAR];
   const expected = [...(options.expectedCas || [])];
+  // the known certificates (--waivers, kind 'cert'): never new nor unexpected while their waiver lasts
+  const waivers = env.inputs && env.inputs.waivers ? env.inputs.waivers : null;
+  const use = { applied: [], expired: [], checked: [] };
   const breaker = createSourceBreaker({ now: env.now, spotterHint: sources.includes('crtsh') ? '--sources crtsh leaves it out' : '' });
   const prevAt = env.baseline ? env.baseline.startedAt ?? null : null;
   const out = [];
@@ -620,18 +657,25 @@ async function runCt(targets, options, env) {
     // CT watch over what is known (ctwatch.mjs), with the store of the ids seen for the next run.
     const prev = targetOf(env.baseline, domain);
     const read = ctTarget(domain, { certs: fetched.certs, health }, { issuerName, dnPart, days: options.days, now, sources, readAt, parseCertificate });
-    const target = watchTarget(carryCt(read, prev, { now, prevAt }), { prev, prevAt, now, radar, expected });
+    const target = watchTarget(carryCt(read, prev, { now, prevAt }), { prev, prevAt, now, radar, expected, known: waivers ? waivers.list : [] });
     for (const entry of textual) {
       if (target.certificates.some((c) => (expectedCaStatus(c.issuer, [entry]) || {}).expected)) matched.add(entry);
     }
     out.push(target);
     docs.push(ctDoc(target, { t: env.t, now, baselined: !!options.baseline }));
+    if (waivers && target.answered) {
+      const what = (c) => [...valueParts(env.t, c.names), ' (', code(c.ca), ')'];
+      use.checked.push(domain);
+      use.applied.push(...target.certificates.filter((c) => c.known).map((c) => ({ target: domain, what: what(c), waiver: c.known })));
+      use.expired.push(...target.certificates.filter((c) => c.knownExpired).map((c) => ({ target: domain, what: what(c), waiver: c.knownExpired })));
+    }
   }
   for (const entry of textual.filter((e) => !matched.has(e))) {
     warnings.push(`--expected-ca "${cleanText(entry).slice(0, 80)}" names no CA DomainScope knows and no issuer read contains it: `
       + 'a typo there makes every issuer unexpected');
   }
-  return { options: { sources, days: options.days, radar, expectedCas: expected }, targets: out, docs, warnings };
+  if (waivers) docs.push(waiversDoc('ct', waivers, use, { t: env.t, now: env.now() }));
+  return { options: { sources, days: options.days, radar, expectedCas: expected, ...(waivers ? { waivers: waivers.file } : {}) }, targets: out, docs, warnings };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -871,7 +915,10 @@ const AUDIT_MAX_DOMAINS = 20;
  * evidence (in English, and as its key and params). A rule that could not be checked this run
  * carries `last`: the status the last run that checked it found (`from`: that run's check), so
  * the next run compares with that check and not with the gap — as long as the requirement is the
- * same (tools/ds/carry.mjs does the same for health, CT and hosts).
+ * same (tools/ds/carry.mjs does the same for health, CT and hosts). A rule an active waiver
+ * accepts is 'waived' with the waiver and the status it had (`was`); a rule that names an active
+ * waiver without needing it carries it too; a failed one whose waiver is over says so
+ * (`waiverExpired`: it counts again).
  * @param {object} row an auditPortfolio row
  * @param {object} facts portfolioFacts of the domain
  * @param {{ t: Function, exportRow: Function, evidenceText: Function, checkedAt: Date }} kit
@@ -886,14 +933,19 @@ export function auditTarget(row, facts, { t, exportRow, evidenceText, checkedAt 
     pass: row.pass,
     fail: row.fail,
     unknown: row.unknown,
+    ...(row.waived ? { waived: row.waived } : {}),
     rules: row.cells.map((c) => {
       const out = {
-        id: c.id, status: c.status, required: c.required, actual: c.actual, evidence: evidenceText(c, t), key: c.evidence.key, params: { ...c.evidence.params }
+        id: c.id, status: c.status, required: c.required, actual: c.actual, evidence: evidenceText(c, t), key: c.evidence.key, params: { ...c.evidence.params },
+        ...(c.was ? { was: c.was } : {}), ...(c.waiver ? { waiver: waiverOut(c.waiver) } : {}),
+        ...(c.waiverExpired ? { waiverExpired: { id: c.waiverExpired.id, expires: c.waiverExpired.expires } } : {})
       };
       const p = c.status === 'unknown' ? before.get(c.id) : null;
       if (p && p.required === c.required) {
-        const last = p.status === 'pass' || p.status === 'fail'
-          ? { status: p.status, evidence: p.evidence || '', from: prev.checkedAt || null }
+        // an accepted rule was a failed one: its status as checked
+        const status = p.status === 'waived' ? p.was || 'fail' : p.status;
+        const last = status === 'pass' || status === 'fail'
+          ? { status, evidence: p.evidence || '', from: prev.checkedAt || null }
           : p.last || null;
         if (last) out.last = last;
       }
@@ -919,7 +971,8 @@ export function auditDocs(audit, { t, now, at, policy, carried = [] }) {
   const plural = (n, one, other) => `${n} ${n === 1 ? one : other}`;
   const lines = [
     [`${plural(c.domains, 'domain', 'domains')}, ${plural(audit.rules.length, 'rule', 'rules')}: `,
-      `${c.failing} fail${c.failing === 1 ? 's' : ''} the policy, ${c.unknown} could not be checked in full, ${c.passing} meet${c.passing === 1 ? 's' : ''} every rule`],
+      `${c.failing} fail${c.failing === 1 ? 's' : ''} the policy, ${c.unknown} could not be checked in full, ${c.passing} meet${c.passing === 1 ? 's' : ''} every rule`,
+      c.waived ? ` (${plural(c.waived, 'failed rule', 'failed rules')} accepted by a waiver, not counted)` : ''],
     ['Rules: ', ...audit.rules.flatMap((r, i) => [i ? ', ' : '', code(`${r.id} ${r.required}`)])]
   ];
   if (carried.length) {
@@ -933,16 +986,19 @@ export function auditDocs(audit, { t, now, at, policy, carried = [] }) {
   const passing = audit.rows.filter((r) => !r.fail && !r.unknown).map((r) => r.domain);
   if (passing.length) lines.push(['Every rule met: ', ...valueParts(t, passing, AUDIT_MAX_DOMAINS)]);
   const docs = [summaryDoc('audit', ['Policy audit', ...name], lines, { t, at, now })];
-  const rank = { fail: 0, unknown: 1, pass: 2 };
+  const rank = { fail: 0, unknown: 1, waived: 2, pass: 3 };
+  const label = { fail: 'FAIL', unknown: 'NOT KNOWN', waived: 'ACCEPTED' };
   for (const r of audit.rows.filter((x) => x.fail || x.unknown)) {
     const cells = [...r.cells].sort((a, b) => rank[a.status] - rank[b.status]).filter((x) => x.status !== 'pass');
     docs.push(summaryDoc('audit', ['Policy audit · ', code(r.domain)], [
-      [`${plural(r.fail, 'rule', 'rules')} failed, ${r.unknown} could not be checked, ${r.pass} passed`],
+      [`${plural(r.fail, 'rule', 'rules')} failed, ${r.unknown} could not be checked, ${r.pass} passed${r.waived ? `, ${r.waived} accepted (waiver)` : ''}`],
       // the evidence quotes values from DNS and the registry: code parts (lib/summary.js textParts)
       ...cells.map((x) => {
         const last = x.status === 'unknown' ? lastFail.get(`${r.domain}|${x.id}`) : null;
-        return [strong(x.status === 'fail' ? 'FAIL' : 'NOT KNOWN'), ' ', code(`${x.id} ${x.required}`), ': ', ...textParts(t, x.evidence.key, x.evidence.params),
-          last ? ` — failed when last checked (${isoDay(last.from) || 'an earlier run'}): still counts as failed` : ''];
+        return [strong(label[x.status] || x.status), ' ', code(`${x.id} ${x.required}`), ': ', ...textParts(t, x.evidence.key, x.evidence.params),
+          last ? ` — failed when last checked (${isoDay(last.from) || 'an earlier run'}): still counts as failed` : '',
+          x.status === 'waived' && x.waiver ? ` — accepted until ${x.waiver.expires}` : '',
+          x.status === 'fail' && x.waiverExpired ? ` — its waiver expired on ${x.waiverExpired.expires}: it counts again` : ''];
       })
     ], { t, at, now }));
   }
@@ -1051,21 +1107,40 @@ async function runAudit(targets, options, env) {
   throwIfAborted(env.signal);
   const now = env.now();
   const facts = run.allFacts({ now });
-  const audit = auditPortfolio(policy, facts);
+  // the accepted risks (--waivers, kind 'rule'): a failed rule they accept is 'waived', never a failure
+  const waivers = env.inputs && env.inputs.waivers ? env.inputs.waivers : null;
+  const audit = auditPortfolio(policy, facts, { waivers: waivers ? waivers.list : [], now });
   const audited = audit.rows.map((row, i) => auditTarget(row, facts[i], { t: env.t, exportRow, evidenceText, checkedAt: now }, { prev: prevBy.get(row.domain) || null }));
   // CSC's eight measures, whatever the policy asks: each target's score, and the table after the run's summary.
   const scores = secscore.securityScores(facts);
   audited.forEach((x, i) => { x.security = secscore.securityExport(scores[i]); });
   // A rule that failed when last checked and could not be checked tonight still fails the run: a
-  // registry outage never closes the nightly issue (the carried status is the requirement's own).
-  const carried = audited.flatMap((x) => x.rules.filter((r) => r.status === 'unknown' && r.last && r.last.status === 'fail')
+  // registry outage never closes the nightly issue (the carried status is the requirement's own) —
+  // unless a waiver accepts it now.
+  const carried = audited.flatMap((x) => x.rules.filter((r) => r.status === 'unknown' && r.last && r.last.status === 'fail' && !r.waiver)
     .map((r) => ({ domain: x.target, id: r.id, required: r.required, from: r.last.from })));
   const carriedFails = carried.map((x) => `${x.id} of ${x.domain} could not be checked this run and failed when last checked (${isoDay(x.from) || 'an earlier run'}): it still counts as failed`);
   const [runDoc, ...domainDocs] = auditDocs(audit, { t: env.t, now, at: startedAt, policy, carried });
+  const docs = [runDoc, securityDoc(scores, { t: env.t }, secscore), ...domainDocs];
+  if (waivers) {
+    const what = (r) => [code(`${r.id} ${r.required}`)];
+    const use = {
+      checked: audited.map((x) => x.target),
+      applied: audited.flatMap((x) => x.rules.filter((r) => r.status === 'waived' && r.waiver).map((r) => ({ target: x.target, what: what(r), waiver: r.waiver }))),
+      expired: audited.flatMap((x) => x.rules.filter((r) => r.status === 'fail' && r.waiverExpired).map((r) => {
+        const w = waivers.list.find((y) => y.id === r.waiverExpired.id) || r.waiverExpired;
+        return { target: x.target, what: what(r), waiver: waiverOut({ reason: '', ...w }) };
+      }))
+    };
+    docs.push(waiversDoc('audit', waivers, use, { t: env.t, now }));
+  }
   return {
-    options: { policy: policyObject(policy), policyFile: policy.file || null, preset: options.preset, dkim: options.dkim, resolvers: [...options.chain] },
+    options: {
+      policy: policyObject(policy), policyFile: policy.file || null, preset: options.preset, dkim: options.dkim, resolvers: [...options.chain],
+      ...(waivers ? { waivers: waivers.file } : {})
+    },
     targets: audited,
-    docs: [runDoc, securityDoc(scores, { t: env.t }, secscore), ...domainDocs],
+    docs,
     warnings: [...auditWarnings(facts, { cellFailures, cells: PORTFOLIO_CELLS }), ...carriedFails],
     failed: audit.counts.failing > 0 || carriedFails.length > 0
   };

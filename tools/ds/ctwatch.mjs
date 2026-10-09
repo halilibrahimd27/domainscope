@@ -33,7 +33,7 @@ const time = (v) => (isStr(v) ? Date.parse(v) : NaN);
 export const OVERDUE_SHARE = 0.25;
 
 /** The fields {@link watchTarget} writes on a certificate (a carried one's are written again). */
-const WATCH_FIELDS = ['daysLeft', 'current', 'isNew', 'unexpected', 'wildcard', 'flags', 'radar'];
+const WATCH_FIELDS = ['daysLeft', 'current', 'isNew', 'unexpected', 'wildcard', 'flags', 'radar', 'known', 'knownExpired'];
 
 /**
  * The store of certificate ids a baseline's target kept: its `seen` (each id with its expiry day,
@@ -91,13 +91,17 @@ export function overdueDays(cert) {
  * `isNew` (not seen at the last run that read the domain; null when no run did), `unexpected` (null
  * without expected CAs), `wildcard`, `flags` (lib/ctwatch.js CT_WATCH_FLAGS) and, for a current one
  * within the radar, `radar` (the smallest threshold it is within); `revoked` and `precert` stay as
- * read (null: not known). A run that could not read the domain keeps the store as it was.
+ * read (null: not known). A known certificate (`--waivers`, lib/waivers.js kind 'cert': its public
+ * key's or its own SHA-256) carries its waiver (`known`) and is neither new nor unexpected; one whose
+ * waiver is over carries that (`knownExpired`). A run that could not read the domain keeps the
+ * store as it was.
  * @param {object} target a ct target (commands.mjs ctTarget, carried by carry.mjs carryCt)
- * @param {{ prev?: object|null, prevAt?: string|null, now: Date, radar: number[], expected?: string[] }} opts
- *   `prev`: the baseline's target of the domain; `radar`: largest first (lib/ctwatch.js parseRadarDays)
+ * @param {{ prev?: object|null, prevAt?: string|null, now: Date, radar: number[], expected?: string[], known?: object[] }} opts
+ *   `prev`: the baseline's target of the domain; `radar`: largest first (lib/ctwatch.js parseRadarDays);
+ *   `known`: lib/waivers.js waivers
  * @returns {object}
  */
-export function watchTarget(target, { prev = null, prevAt = null, now, radar, expected = [] }) {
+export function watchTarget(target, { prev = null, prevAt = null, now, radar, expected = [], known = [] }) {
   const domain = target.target;
   const base = seenOf(prev, prevAt);
   const valid = (target.certificates || []).filter((c) => Number.isFinite(time(c.notBefore)) && Number.isFinite(time(c.notAfter)));
@@ -112,8 +116,9 @@ export function watchTarget(target, { prev = null, prevAt = null, now, radar, ex
     wildcard: (c.names || []).some((n) => String(n).startsWith('*.'))
   }));
   const seen = { v: CT_SEEN_VERSION, domains: base ? { [domain]: base } : {} };
-  const { rows } = analyzeCt([{ domain, state: 'ok', certs }], { now, days: radar, expected, seen });
+  const { rows } = analyzeCt([{ domain, state: 'ok', certs }], { now, days: radar, expected, seen, known });
   const byId = new Map(rows.map((r) => [r.id, r]));
+  const waiverOf = (w) => ({ id: w.id, reason: w.reason || '', owner: w.owner || '', expires: w.expires });
   const certificates = (target.certificates || []).map((c) => {
     const r = byId.get(c.id);
     const rest = Object.fromEntries(Object.entries(c).filter(([k]) => !WATCH_FIELDS.includes(k)));
@@ -128,7 +133,9 @@ export function watchTarget(target, { prev = null, prevAt = null, now, radar, ex
       isNew: r.isNew,
       unexpected: r.unexpected,
       flags: [...r.flags],
-      ...(r.band !== null ? { radar: radar[r.band] } : {})
+      ...(r.band !== null ? { radar: radar[r.band] } : {}),
+      ...(r.known ? { known: waiverOf(r.known) } : {}),
+      ...(r.knownExpired ? { knownExpired: waiverOf(r.knownExpired) } : {})
     };
   });
   const counts = {
@@ -138,7 +145,8 @@ export function watchTarget(target, { prev = null, prevAt = null, now, radar, ex
     unexpected: rows.filter((r) => r.unexpected === true).length,
     wildcard: rows.filter((r) => r.wildcard).length,
     precert: rows.filter((r) => r.precert === true).length,
-    revoked: rows.filter((r) => r.revoked === true).length
+    revoked: rows.filter((r) => r.revoked === true).length,
+    ...(rows.some((r) => r.known) ? { known: rows.filter((r) => r.known).length } : {})
   };
   let next = base;
   if (target.answered && Number.isFinite(time(target.readAt))) {

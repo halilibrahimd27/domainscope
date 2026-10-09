@@ -6,8 +6,12 @@
  * A change is `{ tag, tone, counts, target, item, kind, before, after, parts }`:
  * - `tag`: render.mjs CHANGE_TAGS (NEW, GONE, WORSE, BETTER, CHANGED, FAILED, RECOVERED, FAILING,
  *   SCORE, ISSUER, NAME, CERT, CA, EXPIRING, REVOKED, EXPOSED, DANGLING; tls's RENEW-NOW, MOVED-UP and
- *   CA-NOTICE, tools/ds/tlsdiff.mjs; takeover's RISK, tools/ds/takeover.mjs diffTakeover); `tone`: 'bad' |
- *   'good' | 'info' | 'quiet';
+ *   CA-NOTICE, tools/ds/tlsdiff.mjs; takeover's RISK, tools/ds/takeover.mjs diffTakeover; the accepted
+ *   risks' WAIVED and WAIVER-EXPIRED); `tone`: 'bad' | 'good' | 'info' | 'quiet';
+ * - accepted risks (`--waivers`, lib/waivers.js): an item a waiver accepts in this run — a health
+ *   finding, an audit rule, a known certificate — is never counted: its changes are listed only, and
+ *   one newly accepted is WAIVED (listed only). An item accepted in the baseline run whose waiver is
+ *   over (or out of the file) and that is still a problem counts again: WAIVER-EXPIRED, bad;
  * - `counts`: false for what is listed but never counted by --fail-on-change (nor opens the
  *   nightly issue): a move from one failure state to another (FAILING: nothing was read either
  *   way), CT sources that could not be read (FAILED / RECOVERED: the source's outage, not the
@@ -118,13 +122,13 @@ const TARGET_CHECKS = Object.freeze({
     if (!isStrOrNull(x.serialHex)) return 'has a "serialHex" that is not text';
     return itemsProblem(x.endpoints, 'endpoints', (e) => (!isStr(e.key) ? 'has no "key"' : !isStr(e.status) ? 'has no "status"' : null));
   },
-  audit: (x) => itemsProblem(x.rules, 'rules', (r) => (!isStr(r.id) ? 'has no "id"' : !AUDIT_STATUSES.includes(r.status) ? 'has no "status" (pass, fail or unknown)' : null)),
+  audit: (x) => itemsProblem(x.rules, 'rules', (r) => (!isStr(r.id) ? 'has no "id"' : !AUDIT_STATUSES.includes(r.status) ? 'has no "status" (pass, fail, unknown or waived)' : null)),
   tls: tlsTargetProblem,
   takeover: takeoverTargetProblem
 });
 
 /** A cell's outcome in an audit report (lib/policy.js POLICY_STATUSES). */
-const AUDIT_STATUSES = Object.freeze(['pass', 'fail', 'unknown']);
+const AUDIT_STATUSES = Object.freeze(['pass', 'fail', 'unknown', 'waived']);
 
 /**
  * Why `doc` cannot be the baseline of a `command` run, or null: it must be a `--json` report of
@@ -171,10 +175,11 @@ export function baselineInfo(before, file) {
  * @param {string} target
  * @param {string|null} item
  * @param {Array} what the parts after "target: "
- * @param {{ tone?: string, counts?: boolean, kind?: string, before?: any, after?: any }} [opts]
+ * @param {{ tone?: string, counts?: boolean, kind?: string, before?: any, after?: any, accepted?: boolean }} [opts]
+ *   `accepted`: a change of an item a waiver accepts (listed only; the note under the changes says so)
  */
-function change(tag, target, item, what, { tone = 'info', counts = true, kind = 'changed', before = null, after = null } = {}) {
-  return { tag, tone, counts, target, item, kind, before, after, parts: [code(target), ': ', ...what] };
+function change(tag, target, item, what, { tone = 'info', counts = true, kind = 'changed', before = null, after = null, accepted = false } = {}) {
+  return { tag, tone, counts, target, item, kind, before, after, parts: [code(target), ': ', ...what], ...(accepted ? { accepted: true } : {}) };
 }
 
 /** Targets of a report by their `target`, in report order. */
@@ -202,6 +207,13 @@ function healthTitle(t, c) {
   return textParts(t, c.titleKey || `health.${c.id}.title`, localYesNo(t, c.params));
 }
 
+/** The check ids a health target's waivers accept (`waiver` on a check). */
+const waivedIdsOf = (x) => new Set((x.checks || []).filter((c) => c && isObj(c.waiver)).map((c) => c.id));
+/** Why an accepted item counts again: its waiver ended, or the waivers file no longer has it. */
+const endedText = (gone) => (gone && isStr(gone.expires) ? `its accepted risk ended (expired ${gone.expires}): it counts again` : 'no longer an accepted risk (not in the waivers file): it counts again');
+/** " (accepted until 2026-12-31)" after a change of an accepted item. */
+const acceptedNote = (w) => [` (accepted until ${isObj(w) && isStr(w.expires) ? w.expires : '?'}: not counted)`];
+
 function diffHealth(before, after, { t }) {
   const out = [];
   const old = byTarget(before);
@@ -212,6 +224,10 @@ function diffHealth(before, after, { t }) {
       out.push(change('NEW', domain, null, [`now checked: score ${a.score}`], { kind: 'appeared', after: { score: a.score } }));
       continue;
     }
+    // Accepted risks: the score leaves them out, so it moves when they change — that move is listed only.
+    const wa = waivedIdsOf(a);
+    const wb = waivedIdsOf(b);
+    const waiversMoved = wa.size !== wb.size || [...wa].some((id) => !wb.has(id));
     // A lookup that failed hides what it would have found, by area (carry.mjs failedAreas). This
     // run's failure: the findings of that area gone are listed, not counted, and the report
     // carries them to the next run. The baseline's: it carried the area as last read, and this
@@ -222,24 +238,38 @@ function diffHealth(before, after, { t }) {
     const unreadBefore = new Set([...carriedFrom(b)].filter(([, from]) => from === null).map(([area]) => area));
     const failedWhen = failedNow.size ? ' (a lookup failed this run)' : failedAreas(b).size ? ' (a lookup failed in the baseline run)' : '';
     if (Number.isFinite(b.score) && Number.isFinite(a.score) && b.score !== a.score) {
-      out.push(change('SCORE', domain, null, [`health score ${b.score} → ${a.score}`, ...(failedWhen ? [failedWhen] : [])],
-        { tone: failedWhen ? 'quiet' : a.score < b.score ? 'bad' : 'good', counts: !failedWhen, before: b.score, after: a.score }));
+      const why = failedWhen || (waiversMoved ? ' (the accepted risks changed)' : '');
+      out.push(change('SCORE', domain, null, [`health score ${b.score} → ${a.score}`, ...(why ? [why] : [])],
+        { tone: why ? 'quiet' : a.score < b.score ? 'bad' : 'good', counts: !why, before: b.score, after: a.score, accepted: !failedWhen && waiversMoved }));
     }
     const bc = checksById(knownChecks(b));
     const ac = checksById(a.checks);
     for (const [id, x] of ac) {
       const y = bc.get(id);
+      const accepted = isObj(x.waiver);
       if (!y) {
         if (!notable(x.severity)) continue;
         const unsure = checkAreas(id).some((area) => unreadBefore.has(area));
-        out.push(change('NEW', domain, id, [`${x.severity} `, code(id), ' — ', ...healthTitle(t, x), ...(unsure ? [' (its lookup failed in the baseline run: it may not be new)'] : [])],
-          { tone: unsure ? 'quiet' : 'bad', counts: !unsure, kind: 'appeared', after: x.severity }));
+        out.push(change('NEW', domain, id, [`${x.severity} `, code(id), ' — ', ...healthTitle(t, x), ...(unsure ? [' (its lookup failed in the baseline run: it may not be new)'] : []),
+          ...(accepted ? acceptedNote(x.waiver) : [])],
+        { tone: unsure || accepted ? 'quiet' : 'bad', counts: !unsure && !accepted, kind: 'appeared', after: x.severity, accepted }));
+        continue;
+      }
+      if (isObj(y.waiver) && !accepted && notable(x.severity)) {
+        // accepted in the baseline run, not any more: the problem counts again
+        out.push(change('WAIVER-EXPIRED', domain, id, [code(id), ` — ${endedText(x.waiverExpired)}: ${x.severity} — `, ...healthTitle(t, x)],
+          { tone: 'bad', before: y.severity, after: x.severity }));
+        continue;
+      }
+      if (accepted && !isObj(y.waiver) && notable(x.severity)) {
+        out.push(change('WAIVED', domain, id, [code(id), ` — ${x.severity} accepted until ${x.waiver.expires}: `, code(x.waiver.reason || ''), ' — ', ...healthTitle(t, x)],
+          { tone: 'quiet', counts: false, before: y.severity, after: x.severity, accepted: true }));
         continue;
       }
       if (y.severity === x.severity || !(notable(x.severity) || notable(y.severity))) continue;
       const worse = (SEVERITY_RANK[x.severity] ?? 0) > (SEVERITY_RANK[y.severity] ?? 0);
-      out.push(change(worse ? 'WORSE' : 'BETTER', domain, id, [code(id), `: ${y.severity} → ${x.severity} — `, ...healthTitle(t, x)],
-        { tone: worse ? 'bad' : 'good', before: y.severity, after: x.severity }));
+      out.push(change(worse ? 'WORSE' : 'BETTER', domain, id, [code(id), `: ${y.severity} → ${x.severity} — `, ...healthTitle(t, x), ...(accepted ? acceptedNote(x.waiver) : [])],
+        { tone: accepted ? 'quiet' : worse ? 'bad' : 'good', counts: !accepted, before: y.severity, after: x.severity, accepted }));
     }
     const readBefore = new Set((b.checks || []).map((c) => c.id));
     for (const [id, y] of bc) {
@@ -247,8 +277,10 @@ function diffHealth(before, after, { t }) {
       const hidden = !isLookupError(id) && checkAreas(id).some((area) => failedNow.has(area));
       // Carried by the baseline and carried again: nothing was read either night.
       if (hidden && !readBefore.has(id)) continue;
+      const was = isObj(y.waiver);
       out.push(change('GONE', domain, id, [`${y.severity} `, code(id), ' no longer reported — ', ...healthTitle(t, y),
-        ...(hidden ? [' (its lookup failed this run: it may still be there)'] : [])], { tone: hidden ? 'quiet' : 'good', counts: !hidden, kind: 'disappeared', before: y.severity }));
+        ...(hidden ? [' (its lookup failed this run: it may still be there)'] : []), ...(was ? [' (it was an accepted risk: its waiver can go)'] : [])],
+      { tone: hidden ? 'quiet' : 'good', counts: !hidden && !was, kind: 'disappeared', before: y.severity, accepted: was && !hidden }));
     }
   }
   for (const [domain, b] of old) {
@@ -432,26 +464,33 @@ function diffCt(before, after) {
     const certs = (a.certificates || []).filter((c) => !c.carried);
     const oldIssuers = new Set((b.issuers || []).map((g) => g.name));
     const newIssuers = new Set();
+    // A known certificate (--waivers: its key was accepted as ours) is never news by itself.
+    const knownNote = [' (known certificates: not counted)'];
     for (const g of a.issuers || []) {
       if (oldIssuers.has(g.name)) continue;
       newIssuers.add(g.name);
-      const sure = certs.some((c) => c.ca === g.name && isNew(c));
+      const own = certs.filter((c) => c.ca === g.name);
+      const allKnown = own.length > 0 && own.every((c) => isObj(c.known));
+      const sure = own.some((c) => isNew(c));
       // Not one of the expected CAs (--expected-ca): it counts even when it may only have been
       // missed before, since no earlier run said it.
-      const odd = certs.some((c) => c.ca === g.name && c.unexpected === true);
+      const odd = own.some((c) => c.unexpected === true);
+      const counted = (sure || odd) && !allKnown;
       out.push(change('ISSUER', domain, g.name, ['new issuer ', code(g.name),
         ...(g.intermediates && g.intermediates.length ? [' (', ...g.intermediates.slice(0, 3).flatMap((n, i) => (i ? [', ', code(n)] : [code(n)])), ')'] : []),
-        `: ${certCount(g.count)}, newest ${isoDay(g.newest)}`, ...(odd ? [', not one of the expected CAs'] : []), ...(sure ? [] : unsure)],
-      { tone: sure || odd ? 'bad' : 'quiet', counts: sure || odd, kind: 'appeared', after: g.count }));
+        `: ${certCount(g.count)}, newest ${isoDay(g.newest)}`, ...(odd ? [', not one of the expected CAs'] : []), ...(sure || allKnown ? [] : unsure), ...(allKnown ? knownNote : [])],
+      { tone: counted ? 'bad' : 'quiet', counts: counted, kind: 'appeared', after: g.count, accepted: allKnown }));
     }
     const oldNames = new Set(b.names || []);
     const newNames = new Set((a.names || []).filter((n) => !oldNames.has(n)));
     for (const name of newNames) {
       const holders = certs.filter((c) => c.names.includes(name));
       const first = holders.slice(-1)[0];
-      const sure = holders.some(isNew);
-      out.push(change('NAME', domain, name, ['first certificate for ', code(name), ...(first ? [' (', code(first.ca), `, ${isoDay(first.notBefore)})`] : []), ...(sure ? [] : unsure)],
-        { tone: sure ? 'info' : 'quiet', counts: sure, kind: 'appeared' }));
+      const allKnown = holders.length > 0 && holders.every((c) => isObj(c.known));
+      const sure = holders.some(isNew) && !allKnown;
+      out.push(change('NAME', domain, name, ['first certificate for ', code(name), ...(first ? [' (', code(first.ca), `, ${isoDay(first.notBefore)})`] : []),
+        ...(allKnown ? knownNote : sure ? [] : unsure)],
+      { tone: sure ? 'info' : 'quiet', counts: sure, kind: 'appeared', accepted: allKnown }));
     }
     // New since the baseline: not among the ids the last runs that read the domain saw (the store
     // its report keeps, ctwatch.mjs; a baseline written before it: its certificates).
@@ -485,6 +524,15 @@ function diffCt(before, after) {
       out.push(change('EXPIRING', domain, c.id, [...names(c), `: ${crossed.daysLeft} day${crossed.daysLeft === 1 ? '' : 's'} left (expires ${isoDay(c.notAfter)}), within the radar's ${crossed.threshold} days; `,
         code(c.ca), ...intermediate(c), crossed.overdue ? ' — its automatic renewal is overdue' : ' (an automatic renewal is not overdue yet)'],
       { tone: crossed.overdue ? 'bad' : 'quiet', counts: crossed.overdue, before: null, after: crossed.threshold }));
+    }
+    // A known certificate in the baseline run that is not any more (its waiver ended, or is out of
+    // the file), from a CA the run does not expect: it counts again.
+    for (const c of certs) {
+      const p = prevById.get(c.id);
+      if (!p || !isObj(p.known) || isObj(c.known) || c.unexpected !== true) continue;
+      out.push(change('WAIVER-EXPIRED', domain, c.id, ['certificate from ', code(c.ca), ...intermediate(c), ', not one of the expected CAs: ',
+        isObj(c.knownExpired) ? `no longer a known certificate (its waiver expired ${c.knownExpired.expires}): it counts again: ` : 'no longer a known certificate (not in the waivers file): it counts again: ',
+        ...names(c)], { tone: 'bad', before: 'known', after: 'unexpected' }));
     }
     // Revoked since the baseline: counted when it was the certificate in use for its names.
     for (const c of certs) {
@@ -676,13 +724,14 @@ function diffDane(before, after, { t }) {
  * else compared with the carried status, so a rule that failed before and after a night it could
  * not be checked is no change —, a rule new, gone or with another requirement (a policy changed:
  * the note says so), a domain new or gone. The evidence alone moving (one day fewer left) is no
- * change.
+ * change. A rule a waiver accepts (`waived`): WAIVED when it is newly accepted, its other moves
+ * listed only; accepted in the baseline run and failed now (its waiver ended): WAIVER-EXPIRED.
  */
 function diffAudit(before, after, { t }) {
   const out = [];
   const old = byTarget(before);
   const now = byTarget(after);
-  const word = (s) => (s === 'unknown' ? 'not known' : s);
+  const word = (s) => (s === 'unknown' ? 'not known' : s === 'waived' ? 'accepted' : s);
   const what = (r) => [code(`${r.id} ${r.required || ''}`.trim()), ': '];
   // The evidence quotes values from DNS and the registry (a registrar's name, CAA issuers): code parts.
   const evidence = (r) => (r.key ? [' — ', ...textParts(t, r.key, r.params)] : r.evidence ? [' — ', code(r.evidence)] : []);
@@ -703,6 +752,26 @@ function diffAudit(before, after, { t }) {
         // A rule new to the policy, or with another requirement: what it says now.
         out.push(change('NEW', domain, r.id, ['new rule ', ...what(r), word(r.status), ...evidence(r)],
           { tone: r.status === 'fail' ? 'bad' : 'info', counts: r.status === 'fail', kind: 'appeared', after: r.status }));
+        continue;
+      }
+      if (r.status === 'waived') {
+        // accepted now: said once when it begins, never counted
+        if (p.status !== 'waived') {
+          const w = isObj(r.waiver) ? r.waiver : {};
+          out.push(change('WAIVED', domain, r.id, [...what(r), `${word(p.status)} → accepted until ${w.expires || '?'}: `, code(w.reason || ''), ...evidence(r)],
+            { tone: 'quiet', counts: false, before: p.status, after: r.status, accepted: true }));
+        }
+        continue;
+      }
+      if (p.status === 'waived') {
+        // accepted in the baseline run, not any more: a fail counts again; a pass is no news to act on
+        if (r.status === 'fail') {
+          out.push(change('WAIVER-EXPIRED', domain, r.id, [...what(r), endedText(r.waiverExpired), ...evidence(r)], { tone: 'bad', before: p.status, after: r.status }));
+        } else if (r.status === 'pass') {
+          out.push(change('BETTER', domain, r.id, [...what(r), 'accepted → pass (its waiver can go)', ...evidence(r)], { tone: 'good', counts: false, before: p.status, after: r.status, accepted: true }));
+        } else {
+          out.push(change('FAILED', domain, r.id, [...what(r), 'accepted → not known', ...evidence(r)], { tone: 'quiet', counts: false, before: p.status, after: r.status }));
+        }
         continue;
       }
       if (r.status === 'unknown') {
@@ -776,6 +845,9 @@ export function baselineNotes(command, before, after) {
   }
   if (command === 'audit' && o.dkim !== undefined && o.dkim !== n.dkim) notes.push('DKIM was checked in one run and not in the other (--no-dkim): the dkim rule can move because of that.');
   if (command === 'dane' && differs('serialHex')) notes.push(`The certificate differs from the baseline's (serial ${listText(o.serialHex)} → ${listText(n.serialHex)}): statuses can move because of that rather than because of DNS.`);
+  if (['health', 'audit', 'ct'].includes(command) && (o.waivers || n.waivers) && o.waivers !== n.waivers) {
+    notes.push(`The waivers file differs from the baseline's (${o.waivers || 'none'} → ${n.waivers || 'none'}): items can be accepted or count again because of that.`);
+  }
   if (command === 'tls') notes.push(...tlsNotes(o, n));
   if (command === 'takeover') notes.push(...takeoverNotes(o, n));
   return notes;

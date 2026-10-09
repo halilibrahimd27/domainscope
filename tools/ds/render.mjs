@@ -110,15 +110,22 @@ const NOT_COUNTED_AUDIT = 'rules that could not be checked this run, a domain or
 const NOT_COUNTED_TLS = 'moves between failure states, a DNS lookup that failed, addresses a name gained or lost, renewed certificates';
 /** The takeover watch's (tools/ds/takeover.mjs diffTakeover): what stays below medium severity. */
 const NOT_COUNTED_TAKEOVER = 'risks of low severity and the ones only the page can tell (to check in the app), and their moves';
-const notCounted = (command) => (command === 'audit' ? NOT_COUNTED_AUDIT : command === 'tls' ? NOT_COUNTED_TLS
-  : command === 'takeover' ? NOT_COUNTED_TAKEOVER : NOT_COUNTED);
+/** What is listed but not counted, for the run's command; the accepted risks named when a change listed is about one. */
+const notCounted = (command, changes = []) => (command === 'audit' ? NOT_COUNTED_AUDIT : command === 'tls' ? NOT_COUNTED_TLS
+  : command === 'takeover' ? NOT_COUNTED_TAKEOVER : NOT_COUNTED)
+  + (changes.some((c) => c && !c.counts && c.accepted) ? ', accepted risks (--waivers)' : '');
 
 /** Change lines in the summary without --show-all (the CLI's MAX_SUMMARY_CHANGES). */
 export const MAX_SUMMARY_CHANGES = 50;
-/** Every tag a change can carry, widest first for the column. */
+/** Every tag a change can carry. */
 export const CHANGE_TAGS = Object.freeze(['NEW', 'GONE', 'WORSE', 'BETTER', 'CHANGED', 'FAILED', 'RECOVERED', 'FAILING', 'SCORE',
-  'ISSUER', 'NAME', 'CERT', 'CA', 'EXPIRING', 'REVOKED', 'EXPOSED', 'DANGLING', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'RISK']);
-const TAG_WIDTH = Math.max(...CHANGE_TAGS.map((tag) => tag.length));
+  'ISSUER', 'NAME', 'CERT', 'CA', 'EXPIRING', 'REVOKED', 'EXPOSED', 'DANGLING', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'RISK', 'WAIVED', 'WAIVER-EXPIRED']);
+/**
+ * The tag column's width: 9, every tag but WAIVER-EXPIRED fits it; a summary that shows that one
+ * widens its column (the others stay as they always were).
+ */
+export const TAG_WIDTH = 9;
+const tagWidth = (changes) => Math.max(TAG_WIDTH, ...changes.map((c) => String(c.tag).length));
 
 const ANSI = { red: '31', green: '32', yellow: '33', cyan: '36', dim: '2', bold: '1' };
 /** The colours of a change's tone (bad red, good green, info cyan, quiet dim). */
@@ -169,16 +176,17 @@ export function renderChangesText(run, { paint, showAll = false }) {
   const colors = !counted.length ? ['green', 'bold'] : counted.some((c) => c.tone === 'bad') ? ['red', 'bold'] : ['yellow', 'bold'];
   const lines = [paint(`Changes since the baseline (${source}, run of ${baselineWhen(info)}): ${changes.length || 'none'}`, ...colors)];
   const shown = showAll ? changes : changes.slice(0, MAX_SUMMARY_CHANGES);
+  const width = tagWidth(shown);
   for (const c of shown) {
     const style = c.counts ? TONE_STYLES[c.tone] || [] : TONE_STYLES.quiet;
-    lines.push(`  ${paint(c.tag.padEnd(TAG_WIDTH), ...style)}  ${changeText(c)}`);
+    lines.push(`  ${paint(c.tag.padEnd(width), ...style)}  ${changeText(c)}`);
   }
   if (shown.length < changes.length) {
     lines.push(paint(`  ... and ${changes.length - shown.length} more - use --show-all or the --json report to list them.`, 'dim'));
   }
   const quiet = changes.length - counted.length;
   if (quiet) {
-    lines.push(paint(`  Not counted: ${quiet} (${notCounted(run.command)}) - listed only, never counted by --fail-on-change.`, 'dim'));
+    lines.push(paint(`  Not counted: ${quiet} (${notCounted(run.command, changes)}) - listed only, never counted by --fail-on-change.`, 'dim'));
   }
   for (const note of run.notes || []) lines.push(paint(`  ${note}`, 'dim'));
   lines.push('');
@@ -203,7 +211,7 @@ export function renderChangesMarkdown(run) {
   const lines = changes.slice(0, MAX_MARKDOWN_CHANGES).map((c) => `- **${c.tag}**${c.counts ? '' : ' (not counted)'} ${renderParts(c.parts, 'markdown')}`);
   if (changes.length > MAX_MARKDOWN_CHANGES) lines.push(`- … and ${changes.length - MAX_MARKDOWN_CHANGES} more: the JSON report lists them all`);
   if (changes.length > counted) {
-    lines.push(`- ${changes.length - counted} listed only (${notCounted(run.command)}): never counted by --fail-on-change`);
+    lines.push(`- ${changes.length - counted} listed only (${notCounted(run.command, changes)}): never counted by --fail-on-change`);
   }
   for (const note of run.notes || []) lines.push(`- ${renderParts([note], 'markdown')}`);
   return `${[head, ...(lines.length ? ['', ...lines] : [])].join('\n')}\n`;

@@ -77,13 +77,17 @@ const takeoverRank = (severity) => {
 
 /** Per command: where the problem of an open key stands in this run's target `x`. */
 const STANDINGS = Object.freeze({
-  /** A finding by its worst severity, read or carried; one a failed lookup may hide is not known gone. The score: read with no lookup failed. */
+  /**
+   * A finding by its worst severity, read or carried; one a failed lookup may hide is not known gone; one a waiver accepts
+   * (`--waivers`) is over while it does. The score: read with no lookup failed.
+   */
   health(x, e) {
     const failed = failedAreas(x);
     if (e.item === null) {
       if (e.tag !== 'SCORE' || failed.size || !Number.isFinite(x.score) || !Number.isFinite(e.state)) return 'unknown';
       return x.score > e.state ? 'over' : 'bad';
     }
+    if ((x.checks || []).some((y) => y && y.id === e.item && y.waiver && typeof y.waiver === 'object')) return 'over';
     const c = checksById(knownChecks(x)).get(e.item);
     if (!c && !isLookupError(e.item) && checkAreas(e.item).some((area) => failed.has(area))) return 'unknown';
     return below(c ? SEVERITY_RANK[c.severity] ?? 0 : 0, rankIn(SEVERITY_RANK, e.state));
@@ -105,15 +109,21 @@ const STANDINGS = Object.freeze({
     }
   },
 
-  /** A certificate renewed (superseded for every name; one no longer listed proves nothing); an issuer gone from a complete read. */
+  /**
+   * A certificate renewed (superseded for every name; one no longer listed proves nothing) or made a known certificate
+   * (`--waivers`, while its waiver lasts); an issuer gone from a complete read, or whose certificates are all known.
+   */
   ct(x, e) {
     if (e.item === null) return 'unknown';
     if (e.tag === 'ISSUER') {
+      const own = (x.certificates || []).filter((c) => c && c.ca === e.item);
+      if (own.length && own.every((c) => c.known && typeof c.known === 'object')) return 'over';
       if ((x.issuers || []).some((g) => g && g.name === e.item)) return 'bad';
       return x.complete === true ? 'over' : 'unknown';
     }
     const cert = (x.certificates || []).find((c) => c && c.id === e.item);
     if (!cert) return 'unknown';
+    if (e.tag !== 'EXPIRING' && e.tag !== 'REVOKED' && cert.known && typeof cert.known === 'object') return 'over';
     return Array.isArray(cert.flags) && cert.flags.includes('superseded') ? 'over' : 'bad';
   },
 
@@ -156,9 +166,13 @@ const STANDINGS = Object.freeze({
     return below(daneRank(ep.status), daneRank(e.state));
   },
 
-  /** A rule's status, one not checked this run as last checked (`last`); a domain added that failed a rule, until none fails. */
+  /**
+   * A rule's status, one not checked this run as last checked (`last`), one a waiver accepts as over; a domain added that
+   * failed a rule, until none fails.
+   */
   audit(x, e) {
-    const status = (r) => (auditChecked(r.status) ? r.status : r.last && auditChecked(r.last.status) ? r.last.status : 'unknown');
+    const status = (r) => (r.status === 'waived' || (r.waiver && typeof r.waiver === 'object') ? 'pass'
+      : auditChecked(r.status) ? r.status : r.last && auditChecked(r.last.status) ? r.last.status : 'unknown');
     if (e.item === null) return (x.rules || []).some((r) => r && status(r) === 'fail') ? 'bad' : 'over';
     const rule = (x.rules || []).find((r) => r && r.id === e.item);
     if (!rule) return 'over';

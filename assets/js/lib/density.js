@@ -6,10 +6,31 @@
  *   line, and what every answer shares (the resolver that answered, its PoP / NSID and the header
  *   flags) is said once in the summary instead of on every card; a card repeats only what
  *   differs from that.
- * - IP Intel ({@link foldZeroStats}): stat cards whose count is zero fold into one sentence.
+ * - IP Intel ({@link foldZeroStats}): stat cards whose count is zero fold into one sentence; and
+ *   ({@link addressLines}) a long IPv6 address may break in two in its narrow column on a phone.
  *
  * Pure: no DOM, network, clock or i18n.
  */
+
+/**
+ * A long IPv6 address in two parts for a narrow cell (IP Intel's address column at 320 px): split
+ * after the colon nearest its middle — after a whole `::`, never inside one — so the column's least
+ * width is half the address, not all of it (a break opportunity goes between the parts). An
+ * address of at most `max` characters (every IPv4 one) or a value without a colon stays one part.
+ * @param {string} ip
+ * @param {{ max?: number }} [opts]
+ * @returns {string[]} one or two parts; joined they give the value back
+ */
+export function addressLines(ip, { max = 20 } = {}) {
+  const s = String(ip ?? '');
+  if (s.length <= max || !s.includes(':')) return [s];
+  let at = -1;
+  for (let i = 0; i < s.length - 1; i += 1) {
+    if (s[i] !== ':' || s[i + 1] === ':') continue;
+    if (at < 0 || Math.abs(i + 1 - s.length / 2) < Math.abs(at + 1 - s.length / 2)) at = i;
+  }
+  return at < 0 ? [s] : [s.slice(0, at + 1), s.slice(at + 1)];
+}
 
 /** DNS header flags shown by DNS Lookup, in display order. */
 export const LOOKUP_FLAGS = Object.freeze(['aa', 'tc', 'rd', 'ra', 'ad', 'cd']);

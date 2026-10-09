@@ -1992,6 +1992,10 @@ export function lookupLayout(types, responses /* DnsResponse|null per type */) -
   own: { [type]: { resolver, nsid, flags } }                        // per card with a DNS answer: what it shows itself because it differs
 }
 export function foldZeroStats(stats /* [{ id, value }] */, { foldable }) -> { shown: string[], folded: string[] }   // zero counts of `foldable` ids fold into one sentence
+export function addressLines(ip, { max = 20 }) -> string[]   // 2026-10-09: an address longer than `max` with a colon (a full IPv6 one) in two parts, split after
+                                                             // the colon nearest its middle (after a whole `::`, never inside it); else [ip]. IP Intel puts a
+                                                             // <wbr> between them, so its address column's least width is half the address: at 320 px a
+                                                             // full IPv6 address breaks in two inside the table's visible edge instead of past it
 ```
 
 ### 5.38 `lib/jobprogress.js` — a long job's progress outside its view

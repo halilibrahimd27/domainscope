@@ -17,7 +17,8 @@
  * summary says how many lookups failed when every source failed (EN + TR); the provider network
  * tier of the weekly range dataset names 1.1.1.1's and 8.8.8.8's operators ("Cloudflare network,
  * not necessarily proxied", "Google network") while the fake RIPEstat names another AS, in the
- * cell, its tooltip, the CSV and the JSON; 1440 and 375 px, light and dark, English and Turkish.
+ * cell, its tooltip, the CSV and the JSON; 1440 and 375 px, light and dark, English and Turkish; at
+ * 320 px a full IPv6 address breaks in two inside its column, never past the table's visible edge.
  *
  * OFFLINE enrichment group (always runs): a row's "Routing, RPKI and abuse contact" panel with
  * RIPEstat's routing calls and PeeringDB answered in the page: nothing is sent before Check
@@ -723,6 +724,34 @@ async function offlineGroup(browser, server) {
         }
         await assertNoHorizontalScroll(page, `${scheme} ${lang} ${width}`);
         await shot(page, `ip-offline-${width < 600 ? 'mobile' : 'desktop'}-${scheme}-${lang}-failed`);
+      });
+    }
+
+    for (const [scheme, lang] of [['light', 'en'], ['dark', 'tr']]) {
+      await step(`[${scheme}, ${lang.toUpperCase()}, 320 px] a full IPv6 address breaks in two inside its column, never past the table's edge`, async () => {
+        const ip = '2001:db8:1234:5678:9abc:def0:1234:5678';
+        await page.setViewport({ width: 320, height: 812, mobile: true });
+        await page.emulateMedia({ 'prefers-color-scheme': scheme });
+        await setLangUi(page, lang);
+        await gotoHash(page, '#/about', 'about');
+        await gotoHash(page, `#/ip?ips=${ip}`, 'ip');
+        await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'row looked up' });
+        const fit = await page.evaluate(() => {
+          const el = document.querySelector('.ipi-row .ipi-ip');
+          const box = el.closest('.dt-scroll').getBoundingClientRect();
+          const r = el.getBoundingClientRect();
+          return { text: el.textContent, right: Math.round(r.right), edge: Math.round(box.right), lines: Math.round(r.height / parseFloat(getComputedStyle(el).lineHeight)) };
+        });
+        assertEqual(fit.text, ip, 'the address whole (the break is a <wbr>)');
+        assert(fit.right <= fit.edge, `inside the table's visible edge: ${JSON.stringify(fit)}`);
+        assertEqual(fit.lines, 2, 'two lines');
+        await assertNoHorizontalScroll(page, `${scheme} ${lang} 320 ipv6`);
+        await shot(page, `ip-offline-320-${scheme}-${lang}-ipv6`);
+        // This group's PTR zone is in-addr.arpa only: the row's reverse lookup (ip6.arpa) was stopped in
+        // the page, never sent, as the zone script records; the check below is about every other request.
+        await page.evaluate(() => {
+          window.__zoneBlocked = window.__zoneBlocked.filter((x) => !/\.ip6\.arpa$/.test(x));
+        });
       });
     }
 

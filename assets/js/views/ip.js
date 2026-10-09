@@ -37,7 +37,7 @@ import {
 import { registerStrings, formatNumber, formatRegion, localeTag } from '../i18n.js';
 import { createIpIntel, networkHint } from '../lib/ipintel.js';
 import { ipFieldStatus, ipRetrySources, ipSourceChips, sourceStatus, IP_FIELDS, EXPORT_NA } from '../lib/sourcestatus.js';
-import { foldZeroStats } from '../lib/density.js';
+import { addressLines, foldZeroStats } from '../lib/density.js';
 import { NaMark, RetryButton, SourceChip, setRetryBusy, statusText } from '../ui/source-status.js';
 import { classifyResolution, ipVersion, isPrivateIP, loadRanges, normalizeIP, rangesInfo } from '../lib/netinfo.js';
 import { networkLabel } from '../lib/networklabel.js';
@@ -480,7 +480,8 @@ export function mount(container, ctx) {
         key: 'ip', label: t('ipi.col.ip'), sortable: true, sortValue: (r) => ipSortValue(r.ip),
         searchValue: (r) => [r.ip, ...r.hosts].join(' '), exportValue: (r) => r.ip,
         render: (r) => h('div', { class: 'ipi-ipcell' },
-          h('span', { class: 'mono ipi-ip' }, r.ip),
+          // A full IPv6 address may break in two on a phone (lib/density.js addressLines).
+          h('span', { class: 'mono ipi-ip' }, addressLines(r.ip).flatMap((part, i) => (i ? [h('wbr'), part] : [part]))),
           r.hosts.length ? h('span', { class: 'muted text-xs' }, t('ipi.fromHost', { host: r.hosts.slice(0, 2).join(', ') + (r.hosts.length > 2 ? ` +${r.hosts.length - 2}` : '') })) : null,
           rowRetry(r))
       },

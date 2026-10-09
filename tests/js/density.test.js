@@ -6,7 +6,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { isNoData, lookupLayout, foldZeroStats, LOOKUP_FLAGS } from '../../assets/js/lib/density.js';
+import { isNoData, lookupLayout, foldZeroStats, addressLines, LOOKUP_FLAGS } from '../../assets/js/lib/density.js';
 import { decodeMessage } from '../../assets/js/lib/dnswire.js';
 
 const FIX_DIR = new URL('../fixtures/dns/', import.meta.url);
@@ -125,5 +125,24 @@ describe('foldZeroStats', () => {
     assert.deepEqual(foldZeroStats(stats), { shown: ['ips', 'cdn', 'mine', 'priv', 'nets'], folded: [] });
     assert.deepEqual(foldZeroStats([{ id: 'cdn', value: null }, null, { value: 0 }], { foldable: ['cdn'] }), { shown: ['cdn'], folded: [] }, 'an unknown count is not zero');
     assert.deepEqual(foldZeroStats(undefined), { shown: [], folded: [] });
+  });
+});
+
+describe('addressLines', () => {
+  test('a full IPv6 address breaks after the colon nearest its middle; short ones and IPv4 stay whole', () => {
+    assert.deepEqual(addressLines('2001:db8:1234:5678:9abc:def0:1234:5678'), ['2001:db8:1234:5678:', '9abc:def0:1234:5678']);
+    assert.deepEqual(addressLines('2606:4700:4700:1111:2222:3333:4444:5555'), ['2606:4700:4700:1111:', '2222:3333:4444:5555']);
+    for (const ip of ['2001:db8::1', '2606:4700:4700::1111', '203.0.113.10', '', null, 'not-an-address-but-very-long-indeed']) {
+      assert.deepEqual(addressLines(ip), [String(ip ?? '')], String(ip));
+    }
+    // Never inside a `::`: after it, or at another colon.
+    assert.deepEqual(addressLines('2001:db8:abcd:12::fe:dc:ba98'), ['2001:db8:abcd:', '12::fe:dc:ba98']);
+    assert.deepEqual(addressLines('2001:db8:1::abcd:ef01:2345'), ['2001:db8:1::', 'abcd:ef01:2345'], 'after the `::` when it is the middle');
+    assert.deepEqual(addressLines('2001:db8:abcd:1234:5678::1'), ['2001:db8:abcd:', '1234:5678::1']);
+    for (const ip of ['2001:db8:1234:5678:9abc:def0:1234:5678', '2001:db8:abcd:12::fe:dc:ba98', '::ffff:198.51.100.200']) {
+      assert.equal(addressLines(ip, { max: 0 }).join(''), ip, `${ip}: the parts give it back`);
+      assert.ok(addressLines(ip, { max: 0 }).slice(1).every((p) => !p.startsWith(':')), `${ip}: the second part starts with no colon`);
+    }
+    assert.deepEqual(addressLines('2001:db8:1234:5678:9abc:def0:1234:5678', { max: 40 }), ['2001:db8:1234:5678:9abc:def0:1234:5678'], 'max');
   });
 });

@@ -47,6 +47,10 @@
 import { code, isoDay } from './render.mjs';
 import { windowState } from './ari.mjs';
 import { daysLeftAt, overdueDays } from './ctwatch.mjs';
+import { tlsTargetProblem } from '../../assets/js/lib/runreport.js';
+
+/** What a `tls` baseline must hold (lib/runreport.js, the rules the Monitoring view reads reports with too). */
+export { tlsTargetProblem };
 
 /**
  * The endpoint statuses of `tls`, best first: a certificate was read (the first six), or none.
@@ -69,7 +73,6 @@ const DEFAULT_WARN_DAYS = 21;
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const isStr = (v) => typeof v === 'string';
-const isStrOrNull = (v) => v === null || v === undefined || typeof v === 'string';
 
 /**
  * Does an endpoint record serve a chain this machine does not trust? Not for the leaf's dates
@@ -129,39 +132,6 @@ export function expiryState(cert, at, warnDays) {
 
 /** A report's --warn-days (the default for a report written before the option). */
 export const warnDaysOf = (doc) => (doc && isObj(doc.options) && Number.isInteger(doc.options.warnDays) ? doc.options.warnDays : DEFAULT_WARN_DAYS);
-
-/**
- * Why a `tls` baseline target is not what the comparison reads, or null.
- * @param {object} x
- * @returns {string|null}
- */
-export function tlsTargetProblem(x) {
-  if (!Array.isArray(x.endpoints)) return 'has no "endpoints" list';
-  if (x.carried !== undefined && !(isObj(x.carried) && isStrOrNull(x.carried.from))) return 'has a "carried" without a "from"';
-  if (x.ct !== undefined && !isObj(x.ct)) return 'has a "ct" that is not an object';
-  for (const [i, e] of x.endpoints.entries()) {
-    const where = `endpoints[${i}]`;
-    if (!isObj(e)) return `${where} is not an object`;
-    if (!isStr(e.address)) return `${where} has no "address"`;
-    if (!Number.isInteger(e.port)) return `${where} has no "port"`;
-    if (!isStr(e.status)) return `${where} has no "status"`;
-    for (const [key, v] of [['cert', e.cert], ['lastGood', e.lastGood], ['ari', e.ari], ['revocation', e.revocation], ['newer', e.newer], ['http', e.http]]) {
-      if (v !== undefined && v !== null && !isObj(v)) return `${where} has a "${key}" that is not an object`;
-    }
-    for (const c of [e.cert, e.lastGood && e.lastGood.cert]) {
-      if (c && !isStr(c.sha256)) return `${where} has a certificate without "sha256"`;
-      if (c && c.names !== undefined && !(Array.isArray(c.names) && c.names.every(isStr))) return `${where} has certificate names that are not a list of text`;
-    }
-    for (const a of [e.ari, e.lastGood && e.lastGood.ari]) {
-      if (a && !(isStrOrNull(a.start) && isStrOrNull(a.end) && isStrOrNull(a.explanationURL) && isStrOrNull(a.checkedAt))) return `${where} has an "ari" whose times are not text`;
-    }
-    for (const r of [e.revocation, e.lastGood && e.lastGood.revocation]) {
-      if (r && !isStr(r.status)) return `${where} has a "revocation" without "status"`;
-    }
-    if (e.http && e.http.plain !== undefined && e.http.plain !== null && !isObj(e.http.plain)) return `${where} has an "http.plain" that is not an object`;
-  }
-  return null;
-}
 
 function change(tag, target, item, what, { tone = 'info', counts = true, kind = 'changed', before = null, after = null } = {}) {
   return { tag, tone, counts, target, item, kind, before, after, parts: [code(target), ': ', ...what] };

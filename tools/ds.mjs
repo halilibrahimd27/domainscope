@@ -25,7 +25,9 @@
  * before the run. `--notify` / `--notify-bad` post the changes after the summary and before the
  * `--md` and `--json` reports (tools/ds/notify.mjs): when the report is also the baseline and a
  * message with changes was not delivered, the file keeps the previous report, as the CLI does —
- * with the PagerDuty incidents still open after this run noted in it.
+ * with the PagerDuty incidents still open after this run noted in it. `--history DIR` appends one
+ * line per target to DIR/YYYY-MM.jsonl after the reports (tools/ds/history.mjs), the history the
+ * Monitoring view reads.
  *
  * DNS goes through lib/doh.js's DohClient with the app's resolver chain (minus the resolvers
  * Node's fetch cannot read) and the app's concurrency; nothing goes to Globalping.
@@ -39,6 +41,7 @@ import { parseCommandLine, parseListText, samePath, UsageError, USAGE, EXIT, DS_
 import { setupStrings, renderRunText, renderRunMarkdown, changeText } from './ds/render.mjs';
 import { baselineProblem, baselineInfo, baselineNotes, diffReports, notableChanges } from './ds/diff.mjs';
 import { notifyRoutes, sendNotifications, openKeysOf, NotifyConfigError, PAGERDUTY_MAX_EVENTS } from './ds/notify.mjs';
+import { checkHistoryDir, appendHistory } from './ds/history.mjs';
 import { DohClient } from '../assets/js/lib/doh.js';
 import { parseHostList } from '../assets/js/lib/domain.js';
 import { toJson } from '../assets/js/lib/export.js';
@@ -344,6 +347,7 @@ export async function main(argv, io = {}) {
     }
     await checkOutputPath(options.json, '--json');
     await checkOutputPath(options.md, '--md');
+    await checkHistoryDir(options.history);
     if (options.baseline) baseline = await loadBaseline(options.baseline, command, { allowMissing: jsonIsBaseline });
   } catch (err) {
     return fail(err);
@@ -461,6 +465,18 @@ export async function main(argv, io = {}) {
   if (open.length) report.notify = { open };
   if (!heldBack) await write(options.json, `${toJson(report)}\n`, 'JSON report');
   else if (kept) await write(options.json, `${toJson(kept)}\n`, null);
+  // The history is a log of the runs, not a baseline: tonight's lines go in even when the JSON
+  // report kept the previous one (the changes then come again the next night).
+  if (options.history) {
+    try {
+      const added = await appendHistory(options.history, report, { now: now(), env });
+      if (!quiet) say(stderr, `${PROG}: history: ${added.lines} line${added.lines === 1 ? '' : 's'} added to ${added.file}`);
+      for (const old of added.pruned) if (!quiet) say(stderr, `${PROG}: history: ${old} deleted (older than 13 months)`);
+    } catch (err) {
+      writeFailed = true;
+      say(stderr, `${PROG}: error: cannot write the history in ${options.history}: ${(err && err.code) || err}`);
+    }
+  }
 
   if (writeFailed) return EXIT.WRITE;
   if (notifyFailed && options.failOnNotifyError) return EXIT.NOTIFY;

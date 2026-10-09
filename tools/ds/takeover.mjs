@@ -25,6 +25,7 @@ import { targetOf, carryRisks, riskRank } from './carry.mjs';
 import { DS_TOOL, DS_VERSION, UsageError } from './args.mjs';
 import { isSubdomainOf, normalizeHostname, parseHostList } from '../../assets/js/lib/domain.js';
 import { cleanText, textParts } from '../../assets/js/lib/summary.js';
+import { takeoverTargetProblem } from '../../assets/js/lib/runreport.js';
 
 /** Risk lines a target's summary lists before "N more". */
 const MAX_RISK_LINES = 10;
@@ -308,22 +309,8 @@ const LAPSED = new Set(['unregistered', 'unregistered-dns', 'pending-delete', 'e
  */
 const HELD = new Set(['registered', 'expiring', 'no-rdap', 'rdap-404-dns']);
 
-/**
- * Is a baseline target's list of risks what {@link diffTakeover} walks? Null when it is, else why not.
- * @param {object} x
- * @returns {string|null}
- */
-export function takeoverTargetProblem(x) {
-  if (!Array.isArray(x.risks)) return 'has no "risks" list';
-  for (const [i, r] of x.risks.entries()) {
-    if (!isObj(r)) return `risks[${i}] is not an object`;
-    for (const k of ['key', 'kind', 'host', 'target', 'severity']) if (!isStr(r[k])) return `risks[${i}] has no "${k}"`;
-    if (r.chain !== undefined && !(Array.isArray(r.chain) && r.chain.every(isStr))) return `risks[${i}] has a "chain" that is not a list of text`;
-    if (r.carried !== undefined && !(isObj(r.carried) && (r.carried.from === null || isStr(r.carried.from)))) return `risks[${i}] has a "carried" without a "from"`;
-  }
-  if (x.domains !== undefined && !(Array.isArray(x.domains) && x.domains.every((d) => isObj(d) && isStr(d.domain)))) return 'has a "domains" list that is not registrations';
-  return null;
-}
+/** Is a baseline target's list of risks what {@link diffTakeover} walks? (lib/runreport.js, the rules the Monitoring view reads reports with too.) */
+export { takeoverTargetProblem };
 
 /**
  * The takeover watch since the baseline: per domain and risk key, a risk new (RISK: bad and

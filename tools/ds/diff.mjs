@@ -30,134 +30,35 @@
  * Pure: no I/O. The previous report is checked by {@link baselineProblem} before it is used.
  */
 
-import { DS_TOOL, DS_VERSION } from './args.mjs';
 import { code, isoDay, localYesNo, sourceName, certCount } from './render.mjs';
 import { isLookupError, checkAreas, failedAreas, knownChecks, carriedFrom, lastFullTimes, lookupFailed } from './carry.mjs';
 import { seenOf, radarCrossing } from './ctwatch.mjs';
-import { diffTls, tlsTargetProblem, tlsNotes } from './tlsdiff.mjs';
-import { diffTakeover, takeoverTargetProblem, takeoverNotes } from './takeover.mjs';
-import { diffWatch, watchTargetProblem, watchNotes } from './watchdiff.mjs';
+import { diffTls, tlsNotes } from './tlsdiff.mjs';
+import { diffTakeover, takeoverNotes } from './takeover.mjs';
+import { diffWatch, watchNotes } from './watchdiff.mjs';
 import { SEVERITY_RANK, notable, checksById, resolves, DIRECT, driftSev } from './states.mjs';
 import { textParts } from '../../assets/js/lib/summary.js';
+import { reportProblem } from '../../assets/js/lib/runreport.js';
 import { DANE_SEVERITY } from '../../assets/js/lib/dane.js';
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const isStr = (v) => typeof v === 'string';
-const isStrOrNull = (v) => v === null || v === undefined || typeof v === 'string';
-const isStrList = (v) => Array.isArray(v) && v.every(isStr);
-const major = (v) => String(v).split('.')[0];
 
 /* ------------------------------------------------------------------------ */
 /* Baseline validation                                                      */
 /* ------------------------------------------------------------------------ */
 
-/** Why one item of a list is not what the comparison walks, or null. */
-function itemsProblem(list, name, check) {
-  if (!Array.isArray(list)) return `has no "${name}" list`;
-  for (const [i, item] of list.entries()) {
-    const p = isObj(item) ? check(item) : 'is not an object';
-    if (p) return `${name}[${i}] ${p}`;
-  }
-  return null;
-}
-
-const checkProblem = (c) => (!isStr(c.id) ? 'has no "id"' : !isStr(c.severity) ? 'has no "severity"' : null);
-
-/** Why a host (or the answer it carried, `lastGood`) is not what the comparison reads, or null. */
-function answerProblem(h) {
-  if (!isStrList(h.ipv4 || []) || !isStrList(h.ipv6 || [])) return 'has addresses that are not lists of text';
-  if (!isStrList(h.cnames || [])) return 'has "cnames" that are not a list of text';
-  if (!isStrOrNull(h.status) || !isStrOrNull(h.kind) || !isStrOrNull(h.provider)) return 'has a "status", "kind" or "provider" that is not text';
-  return null;
-}
-
-const TARGET_CHECKS = Object.freeze({
-  health: (x) => {
-    if (x.score !== undefined && !Number.isFinite(x.score)) return 'has a "score" that is not a number';
-    if (x.failedLookups !== undefined && !isStrList(x.failedLookups)) return 'has a "failedLookups" that is not a list of text';
-    if (x.carried !== undefined) {
-      const p = itemsProblem(x.carried, 'carried', (c) => (!isStr(c.area) ? 'has no "area"' : !isStrOrNull(c.from) ? 'has a "from" that is not text'
-        : itemsProblem(c.checks, 'checks', checkProblem)));
-      if (p) return p;
-    }
-    return itemsProblem(x.checks, 'checks', checkProblem);
-  },
-  subdomains: (x) => {
-    if (!isStr(x.mode)) return 'has no "mode"';
-    return itemsProblem(x.hosts, 'hosts', (h) => {
-      if (!isStr(h.name)) return 'has no "name"';
-      const p = answerProblem(h);
-      if (p) return p;
-      if (h.lastGood === undefined) return null;
-      if (!isObj(h.lastGood) || !isStrOrNull(h.lastGood.at)) return 'has a "lastGood" that is not an answer';
-      const q = answerProblem(h.lastGood);
-      return q ? `lastGood ${q}` : null;
-    });
-  },
-  ct: (x) => {
-    if (!isStrList(x.names)) return 'has no "names" list';
-    if (!isStrOrNull(x.readAt)) return 'has a "readAt" that is not text';
-    if (x.sources !== undefined) {
-      const p = itemsProblem(x.sources, 'sources', (s) => (!isStr(s.source) ? 'has no "source"' : !isStrOrNull(s.lastFullAt) ? 'has a "lastFullAt" that is not text' : null));
-      if (p) return p;
-    }
-    if (x.seen !== undefined && !(isObj(x.seen) && isStr(x.seen.at) && isObj(x.seen.ids))) return 'has a "seen" that is not a store of certificate ids ({ at, ids })';
-    const p = itemsProblem(x.issuers, 'issuers', (g) => (isStr(g.name) ? null : 'has no "name"'));
-    if (p) return p;
-    return itemsProblem(x.certificates, 'certificates', (c) => {
-      if (!isStr(c.id)) return 'has no "id"';
-      if (!isStr(c.ca)) return 'has no "ca"';
-      if (!isStrList(c.names)) return 'has no "names" list';
-      if (c.sources !== undefined && !isStrList(c.sources)) return 'has a "sources" that is not a list of text';
-      if (c.carried !== undefined && !(isObj(c.carried) && isStrOrNull(c.carried.from))) return 'has a "carried" without a "from"';
-      return null;
-    });
-  },
-  drift: (x) => {
-    if (x.preflight !== undefined && x.preflight !== null && !isObj(x.preflight)) return 'has a "preflight" that is not an object';
-    return itemsProblem(x.rows, 'rows', (r) => (!isStr(r.key) ? 'has no "key"' : !isStr(r.status) ? 'has no "status"' : !isStrList(r.reasons || []) ? 'has "reasons" that are not a list of text' : null));
-  },
-  renew: (x) => {
-    if (!isStr(x.verdict)) return 'has no "verdict"';
-    return itemsProblem(x.findings, 'findings', (f) => (!isStr(f.id) ? 'has no "id"' : !isStr(f.severity) ? 'has no "severity"' : null));
-  },
-  dane: (x) => {
-    if (!isStrOrNull(x.serialHex)) return 'has a "serialHex" that is not text';
-    return itemsProblem(x.endpoints, 'endpoints', (e) => (!isStr(e.key) ? 'has no "key"' : !isStr(e.status) ? 'has no "status"' : null));
-  },
-  audit: (x) => itemsProblem(x.rules, 'rules', (r) => (!isStr(r.id) ? 'has no "id"' : !AUDIT_STATUSES.includes(r.status) ? 'has no "status" (pass, fail, unknown or waived)' : null)),
-  tls: tlsTargetProblem,
-  takeover: takeoverTargetProblem,
-  watch: watchTargetProblem
-});
-
-/** A cell's outcome in an audit report (lib/policy.js POLICY_STATUSES). */
-const AUDIT_STATUSES = Object.freeze(['pass', 'fail', 'unknown', 'waived']);
-
 /**
  * Why `doc` cannot be the baseline of a `command` run, or null: it must be a `--json` report of
  * this runner, of the same subcommand, written by a version with the same major number, with
- * the lists the comparison walks well-formed.
+ * the lists the comparison walks well-formed. The rules are lib/runreport.js's, which the
+ * Monitoring view reads every report it opens with too.
  * @param {any} doc parsed JSON
  * @param {string} command
  * @returns {string|null}
  */
 export function baselineProblem(doc, command) {
-  if (!isObj(doc) || doc.tool !== DS_TOOL) return `it is not a --json report of ${DS_TOOL} (no "tool": "${DS_TOOL}")`;
-  if (!isStr(doc.version) || major(doc.version) !== major(DS_VERSION)) {
-    return `it was written by version ${JSON.stringify(doc.version ?? null)}, which this version (${DS_VERSION}) cannot compare`;
-  }
-  if (doc.command !== command) return `it is a report of "${doc.command}", not of "${command}"`;
-  if (doc.options !== undefined && !isObj(doc.options)) return 'its "options" is not an object';
-  if (!Array.isArray(doc.targets)) return 'it has no "targets" list';
-  const check = TARGET_CHECKS[command];
-  for (const [i, x] of doc.targets.entries()) {
-    if (!isObj(x)) return `targets[${i}] is not an object`;
-    if (!isStr(x.target)) return `targets[${i}] has no "target"`;
-    const p = check ? check(x) : null;
-    if (p) return `targets[${i}] ${p}`;
-  }
-  return null;
+  return reportProblem(doc, command);
 }
 
 /**

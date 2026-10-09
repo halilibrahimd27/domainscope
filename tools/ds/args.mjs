@@ -26,11 +26,13 @@ import { CT_WATCH_DEFAULT_DAYS, CT_WATCH_MAX_DAYS, CT_WATCH_MAX_THRESHOLDS, pars
 import { WORKSPACE_LIMITS, sanitizeExpectedCas } from '../../assets/js/lib/workspace.js';
 import { NOTIFY_FORMATS, NOTIFY_ENV, PAGERDUTY_MAX_EVENTS, NotifyConfigError, notifyRoutes } from './notify.mjs';
 import { isDkimSelector, TAKEOVER_DKIM_SELECTORS } from '../../assets/js/lib/takeover.js';
+import { DS_TOOL, DS_VERSION } from '../../assets/js/lib/runreport.js';
 
-/** The runner's name in reports and messages. */
-export const DS_TOOL = 'domainscope-ds';
-/** Version of the runner and of its `--json` report (a baseline must share the major number). */
-export const DS_VERSION = '1.0.0';
+/**
+ * The runner's name in reports and messages, and the version of the runner and of its `--json` report
+ * (a baseline must share the major number): lib/runreport.js, which the Monitoring view reads too.
+ */
+export { DS_TOOL, DS_VERSION };
 
 /**
  * Exit codes, numbered as the Python CLI's (cli/ssl_origin_scan.py); FAILED: an unexpected error
@@ -206,6 +208,7 @@ const OPTION_SPEC = Object.freeze({
   json: { type: 'string' },
   md: { type: 'string' },
   baseline: { type: 'string' },
+  history: { type: 'string' },
   'fail-on-change': { type: 'boolean' },
   resolver: { type: 'string' },
   concurrency: { type: 'string' },
@@ -251,7 +254,7 @@ const OPTION_SPEC = Object.freeze({
 });
 
 /** Options every subcommand takes. */
-const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'resolver', 'concurrency', 'quiet', 'no-color', 'show-all', 'help', 'version',
+const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'history', 'fail-on-change', 'resolver', 'concurrency', 'quiet', 'no-color', 'show-all', 'help', 'version',
   'notify', 'notify-bad', 'notify-format', 'notify-always', 'fail-on-notify-error']);
 
 /**
@@ -259,6 +262,7 @@ const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'res
  * @property {string|null} json report file (`--json`)
  * @property {string|null} md Markdown summary file (`--md`)
  * @property {string|null} baseline the previous `--json` report of the same subcommand
+ * @property {string|null} history a directory: one JSON line per target appended to its YYYY-MM.jsonl (tools/ds/history.mjs)
  * @property {boolean} failOnChange exit 4 when a change that counts was found
  * @property {string[]} chain DoH failover chain (resolver ids)
  * @property {boolean} chainGiven `--resolver` was given
@@ -529,6 +533,7 @@ export function parseCommandLine(argv) {
     if (v[name] === '-') throw new UsageError(`--${name} takes a file, not "-"`);
     if (v[name] !== undefined && !String(v[name]).trim()) throw new UsageError(`--${name} needs a file name`);
   }
+  if (v.history === '-' || (v.history !== undefined && !String(v.history).trim())) throw new UsageError('--history takes a directory (results/history)');
   for (const file of v.list || []) {
     if (file === '-' || !String(file).trim()) throw new UsageError('--list takes a file of targets');
   }
@@ -537,6 +542,7 @@ export function parseCommandLine(argv) {
   options.json = v.json ?? null;
   options.md = v.md ?? null;
   options.baseline = v.baseline ?? null;
+  options.history = v.history ?? null;
   options.failOnChange = v['fail-on-change'] === true;
   options.chain = resolverChain(v.resolver);
   options.chainGiven = v.resolver !== undefined;
@@ -564,6 +570,9 @@ export function parseCommandLine(argv) {
 
   if (options.failOnChange && !options.baseline) throw new UsageError('--fail-on-change needs --baseline');
   if (options.json && options.md && samePath(options.json, options.md)) throw new UsageError('--json and --md name the same file');
+  for (const [option, file] of [['--json', options.json], ['--md', options.md], ['--baseline', options.baseline]]) {
+    if (options.history && file && samePath(options.history, file)) throw new UsageError(`--history names a directory, not the same path as ${option}`);
+  }
   if (options.baseline && options.md && samePath(options.baseline, options.md)) {
     throw new UsageError('--baseline and --md name the same file: the Markdown summary would overwrite the baseline and cannot be compared');
   }
@@ -686,7 +695,7 @@ export function parseCommandLine(argv) {
 /** @returns {DsOptions} */
 function defaults() {
   return {
-    json: null, md: null, baseline: null, failOnChange: false, chain: [...NODE_CHAIN], chainGiven: false,
+    json: null, md: null, baseline: null, history: null, failOnChange: false, chain: [...NODE_CHAIN], chainGiven: false,
     concurrency: DEFAULT_SETTINGS.concurrency, lists: [], quiet: false, noColor: false, showAll: false,
     exact: null, level: DS_DEFAULT_LEVEL, sources: null, days: DS_DEFAULT_DAYS, radar: [...DS_DEFAULT_RADAR], expectedCas: [],
     origin: null, includeOrigins: false, maxQueries: DRIFT_DEFAULT_BUDGET, ca: null, challenge: 'unknown',
@@ -796,6 +805,10 @@ options:
                        not read (a failed lookup, a source that was down), its report carries
                        from the last run that read it: the next run compares with that read.
   --fail-on-change     exit 4 when anything that counts changed since --baseline
+  --history DIR        also append one JSON line per target to DIR/YYYY-MM.jsonl: whether the
+                       check completed, the health score and grade, the soonest certificate
+                       expiry and what changed (tags and items, never a record's value), for
+                       the Monitoring view; month files older than 13 months are deleted
   --resolver ID[,ID]   DoH resolvers in failover order (default ${NODE_CHAIN.join(',')}; ${Object.keys(NODE_UNREADABLE).join(', ')}
                        answer over HTTP/2 only, which Node's fetch does not speak)
   --concurrency N      parallel DoH requests, ${CONCURRENCY_RANGE.min}-${CONCURRENCY_RANGE.max} (default ${DEFAULT_SETTINGS.concurrency}, as in the app)
@@ -930,4 +943,5 @@ examples:
   node tools/ds.mjs takeover --list domains.txt --from-subdomains subs.json --baseline takeover.json --json takeover.json
   node tools/ds.mjs watch --list domains.txt --baseline watch.json --json watch.json --fail-on-change
   node tools/ds.mjs watch example.com --names hosts.txt --authoritative --ttl
+  node tools/ds.mjs health --list domains.txt --baseline health.json --json health.json --history history
 `;

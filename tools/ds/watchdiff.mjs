@@ -43,6 +43,7 @@
 import { createHash } from 'node:crypto';
 import { code } from './render.mjs';
 import { diffRegistration, TRANSFER_LOCK_STATUSES } from '../../assets/js/lib/regwatch.js';
+import { watchTargetProblem } from '../../assets/js/lib/runreport.js';
 import { matchProviderByIP } from '../../assets/js/lib/netinfo.js';
 import { TXT_VENDORS, txtVendorOf } from '../../assets/js/lib/passport.js';
 import { valueKey, canonicalName } from '../../assets/js/lib/zonediff.js';
@@ -337,46 +338,6 @@ const failedIn = (x, key) => Array.isArray(x.failures) && x.failures.some((f) =>
 /* ------------------------------------------------------------------------ */
 /* Baseline validation                                                      */
 /* ------------------------------------------------------------------------ */
-
-/**
- * Why a `watch` baseline target is not what the comparison reads, or null.
- * @param {object} x
- * @returns {string|null}
- */
-export function watchTargetProblem(x) {
-  if (!isStrList(x.names)) return 'has no "names" list';
-  if (!isStrList(x.types)) return 'has no "types" list';
-  if (x.runs !== undefined && !isStrList(x.runs)) return 'has "runs" that are not a list of text';
-  if (x.delegated !== undefined && !isStrList(x.delegated)) return 'has "delegated" that is not a list of text';
-  if (x.nxdomain !== undefined && !isStrList(x.nxdomain)) return 'has "nxdomain" that is not a list of text';
-  const r = x.registration;
-  if (!isObj(r) || !isStr(r.state)) return 'has no "registration" with a "state"';
-  for (const k of ['registrar', 'ianaId', 'expires', 'soon']) if (!isStrOrNull(r[k])) return `has a registration "${k}" that is not text`;
-  for (const k of ['statuses', 'nameservers']) if (r[k] !== undefined && r[k] !== null && !isStrList(r[k])) return `has a registration "${k}" that is not a list of text`;
-  if (r.carried !== undefined && !(isObj(r.carried) && isStrOrNull(r.carried.from))) return 'has a registration "carried" without a "from"';
-  const d = x.delegation;
-  if (!isObj(d)) return 'has no "delegation"';
-  for (const k of ['ns', 'ds']) if (d[k] !== null && d[k] !== undefined && !isStrList(d[k])) return `has a delegation "${k}" that is not a list of text`;
-  if (!Array.isArray(x.records)) return 'has no "records" list';
-  for (const [i, rec] of x.records.entries()) {
-    const where = `records[${i}]`;
-    if (!isObj(rec)) return `${where} is not an object`;
-    for (const k of ['key', 'name', 'type']) if (!isStr(rec[k])) return `${where} has no "${k}"`;
-    if (!isStrList(rec.values)) return `${where} has "values" that are not a list of text`;
-    if (rec.flips !== undefined && !isStrList(rec.flips)) return `${where} has "flips" that are not a list of text`;
-    if (rec.carried !== undefined && !(isObj(rec.carried) && isStrOrNull(rec.carried.from))) return `${where} has a "carried" without a "from"`;
-  }
-  if (x.classes !== undefined && !(isObj(x.classes) && Object.values(x.classes).every(isStr))) return 'has "classes" that are not text by name';
-  if (x.failures !== undefined && !(Array.isArray(x.failures) && x.failures.every((f) => isObj(f) && isStr(f.name) && isStr(f.type)))) return 'has "failures" that are not lookups';
-  const a = x.authoritative;
-  if (a !== undefined && a !== null) {
-    if (!isObj(a) || !isStr(a.view)) return 'has an "authoritative" without a "view"';
-    if (a.servers !== undefined && !(Array.isArray(a.servers) && a.servers.every((s) => isObj(s) && isStr(s.address) && isStr(s.status)))) return 'has "authoritative" servers without an address and a status';
-    if (a.mismatches !== undefined && !(Array.isArray(a.mismatches) && a.mismatches.every((m) => isObj(m) && isStr(m.key)))) return 'has "authoritative" mismatches without a key';
-    if (a.lagging !== undefined && !isStrList(a.lagging)) return 'has "authoritative" lagging servers that are not a list of text';
-  }
-  return null;
-}
 
 /* ------------------------------------------------------------------------ */
 /* Changes since the baseline                                               */

@@ -1756,10 +1756,10 @@ describe('the documented commands', () => {
     for (const [, name, command, rest] of lines) {
       assert.ok(COMMANDS.includes(command), command);
       const argv = [command, ...rest.trim().split(/\s+/).filter(Boolean).map(unquote), '--baseline', `results/${name}.json`,
-        '--json', `results/${name}.json`, '--md', `results/${name}.md`, '--fail-on-change', '--fail-on-notify-error', '--no-color'];
+        '--json', `results/${name}.json`, '--md', `results/${name}.md`, '--history', 'results/history', '--fail-on-change', '--fail-on-notify-error', '--no-color'];
       assert.doesNotThrow(() => parseCommandLine(argv), argv.join(' '));
     }
-    assert.match(yml, /timeout -s INT -k 60 "\$limit" node \.domainscope\/tools\/ds\.mjs "\$@" --baseline "results\/\$name\.json" --json "results\/\$name\.json" \\\n\s+--md "results\/\$name\.md" --fail-on-change --fail-on-notify-error --no-color/);
+    assert.match(yml, /timeout -s INT -k 60 "\$limit" node \.domainscope\/tools\/ds\.mjs "\$@" --baseline "results\/\$name\.json" --json "results\/\$name\.json" \\\n\s+--md "results\/\$name\.md" --history results\/history --fail-on-change --fail-on-notify-error --no-color/);
     assert.match(yml, /if \[ "\$code" -eq 4 \]; then changed\+=/);
     // 5: a notification was not delivered — the changes still open the issue, and the job fails
     assert.match(yml, /elif \[ "\$code" -eq 5 \]; then changed\+=\("\$name"\); failed\+=\("\$name:notify"\)\n/);

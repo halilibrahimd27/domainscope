@@ -8,7 +8,10 @@
 # commits the JSON reports and Markdown summaries under results/, and keeps ONE issue: opened or
 # updated when something changed since the night before, closed on a night with no change when
 # every check completed. The
-# results/*.json of one night are the next night's baseline; git history keeps every night.
+# results/*.json of one night are the next night's baseline; git history keeps every night, and
+# results/history/YYYY-MM.jsonl one line per domain and check a night (the score, the soonest
+# certificate expiry, the changes; 13 months kept): open the results folder, or this repository
+# with a read-only token, in DomainScope's Monitoring view to see the trends and the open problems.
 #
 # Read this before you switch it on:
 # - Use it in a PRIVATE repository. The results name your hosts, their addresses and your DNS
@@ -121,7 +124,7 @@ jobs:
             if [ "$left" -lt "$limit" ]; then limit=$left; fi
             if [ "$limit" -lt 60 ]; then failed+=("$name:no-time-left"); return; fi
             timeout -s INT -k 60 "$limit" node .domainscope/tools/ds.mjs "$@" --baseline "results/$name.json" --json "results/$name.json" \
-              --md "results/$name.md" --fail-on-change --fail-on-notify-error --no-color || code=$?
+              --md "results/$name.md" --history results/history --fail-on-change --fail-on-notify-error --no-color || code=$?
             if [ "$code" -eq 4 ]; then changed+=("$name")
             elif [ "$code" -eq 5 ]; then changed+=("$name"); failed+=("$name:notify")
             elif [ "$code" -ne 0 ]; then failed+=("$name:$code"); fi

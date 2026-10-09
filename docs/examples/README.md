@@ -33,7 +33,13 @@ Every night after that, each check compares itself with the night before (`resul
 both the baseline and the new report) and:
 
 - commits `results/*.json` (the reports) and `results/*.md` (the summaries), so git history
-  keeps every night;
+  keeps every night, and `results/history/YYYY-MM.jsonl` (`--history`): one line per domain and
+  check a night — whether it completed, the health score and grade, the soonest certificate
+  expiry and what changed (its tags and items, never a record's value) —, 13 months of it. Open the
+  `results` folder in DomainScope's **Monitoring** view (read in the browser, nothing uploaded), or
+  this repository there with a fine-grained token that can only read its contents: a row per
+  domain with its trend, the certificates under 21 days, the checks that did not complete and the
+  changes night by night;
 - opens **one** issue labelled `domainscope` when something that counts changed — or updates the
   open one and comments on it — with each changed check's "Changes since the baseline" and
   summary;

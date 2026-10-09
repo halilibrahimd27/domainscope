@@ -126,6 +126,12 @@ const JS = join(ASSETS, 'js');
  * by 335 (the ¶ button, and copy() for a menu item), app.js by 247 (the kept-result note in the result header's slot) and ui/components.js
  * by 166 (the ¶ icon, CopyButton's icon, MenuButton's visible label). ui/template.js and lib/template.js load with the four tools,
  * never with Home.
+ * Phase 3 (Deploy & renew certificates on the template, docs/DESIGN.md §8): ≈ 273 KB (280,031 bytes), 98,849 bytes under the budget.
+ * The one start-route file that grew is style.css, by 649 bytes: the template's phase 3 parts — the file input card, the findings list
+ * (its "n more" a 24 px target, 40 px on a touch screen), the run bar's grouped and sticky variants, Run in the input's footer.
+ * lib/certtools.js loads with SSL Targets and the Certificate view. The four tools' own sheets, off the route, shrank by 764 bytes
+ * together (scan.css 67, cert.css 832 — the old overview card's rules —, renew.css 178; estate.css grew by 313 with its figures band),
+ * though gzip takes 555 bytes more of them: what left them compressed better than what came.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

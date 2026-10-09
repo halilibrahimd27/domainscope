@@ -13,7 +13,7 @@ import {
   absoluteName, relativeName, zoneName, txtChunks, normalizeValue, valueKey, valueText, parseValueText, txtFamily, familyOf,
   rrset, rrsetPlan, changeRequest, readPlan, readCurrent, currentEntry, applyCurrent, validateChange, afterZoneText, countSpfLookups,
   renderFix, formatNotes, changeInstructions, editSpf, mergeSpf, editDmarc, buildChange, templateInput, changeTemplate, mailtoUri,
-  m365MxHost, healthFix, lintFix, caaFixFromIssuers, currentFromReport, textIn, hasErrors, unreadEdits, rrsetAction
+  m365MxHost, healthFix, lintFix, caaFixFromIssuers, currentFromReport, textIn, hasErrors, unreadEdits, rrsetAction, requestSummaryFacts
 } from '../../assets/js/lib/fixes.js';
 import { LINT_I18N } from '../../assets/js/lib/zonelint.js';
 import { HEALTH_CHECK_IDS, parseSpf, parseDmarc, parseCaa, checkCaaAllows } from '../../assets/js/lib/health.js';
@@ -555,6 +555,24 @@ describe('templates', () => {
     for (const f of FIX_FORMATS) assert.equal(formatNotes(add, f)[0].key, 'fix.fn.unread-edit', f);
     assert.deepEqual(unreadEdits(buildChange('spf', { domain: 'example.com', includes: 'mailgun.org' }, { current: none })), [], 'read: exact');
     assert.equal(rrsetAction(add.rrsets[0]), 'replace', 'the plan itself is unchanged');
+  });
+
+  test('requestSummaryFacts: each set by name, type and action (an unread family edit is "set"), the problems counted, no value', () => {
+    const add = buildChange('spf', { domain: 'example.com', includes: 'mailgun.org' });
+    assert.deepEqual(add.problems.map((p) => `${p.severity} ${p.key}`), ['warn fix.p.read-first'], 'its own problems');
+    const facts = requestSummaryFacts(add, { templateName: 'SPF include', at: new Date('2026-10-09T08:00:00Z') });
+    assert.deepEqual(facts, {
+      request: true, zone: 'example.com', template: 'spf', templateName: 'SPF include',
+      sets: [{ name: 'example.com', type: 'TXT', family: 'SPF', action: 'set' }],
+      errors: 0, warnings: 1, at: new Date('2026-10-09T08:00:00Z')
+    });
+    assert.ok(!JSON.stringify(facts).includes('mailgun'), 'no value');
+    const acme = buildChange('acme-txt', { name: '*.example.com', tokens: TOKEN });
+    assert.deepEqual(requestSummaryFacts(acme).sets, [{ name: '_acme-challenge.example.com', type: 'TXT', family: null, action: 'add' }]);
+    const problems = [{ severity: 'warn', key: 'fix.p.ttl' }, { severity: 'warn', key: 'fix.p.x' }, { severity: 'error', key: 'fix.p.y' }, { severity: 'info', key: 'fix.p.z' }];
+    assert.deepEqual([requestSummaryFacts(acme, { problems }).errors, requestSummaryFacts(acme, { problems }).warnings], [1, 2], 'the problems shown');
+    assert.deepEqual(requestSummaryFacts(acme, { problems: [] }).warnings, 0);
+    assert.equal(requestSummaryFacts(acme).templateName, null);
   });
 
   test('a DMARC step-up without a read: the tags it leaves out are named, and no policy it comes from', () => {

@@ -787,6 +787,7 @@ export const CHANGE_SET_STATES = Object.freeze(['done', 'pending', 'wrong', 'unk
  * @returns {SummaryDoc}
  */
 export function changeSummary(facts, opts) {
+  if (facts && facts.request) return changeRequestSummary(facts, opts);
   const k = kit(opts);
   const { t } = k;
   const head = facts.headline || { key: 'sum.change.state.unknown' };
@@ -801,6 +802,36 @@ export function changeSummary(facts, opts) {
   if (facts.stop && facts.stop.key) lines.push([t(facts.stop.key, facts.stop.params || {})]);
   return doc('change', k.title('change', [code(facts.zone)]), lines,
     { when: whenText(t, 'sum.at.checked', facts.at, opts.now || new Date()), url: opts.url });
+}
+
+/** What a change does to a record set (lib/fixes.js rrsetAction; `set`: a family edit without a read). */
+export const CHANGE_ACTIONS = Object.freeze(['add', 'replace', 'set', 'delete', 'ttl', 'rewrite', 'unchanged']);
+
+/**
+ * DNS change request › the form's result: the template, each record set by name and type with what
+ * the change does to it, and the problems to read before sending (or none). Names and types only:
+ * the values are in the change's check link, the summary's URL (none when the change makes no link).
+ * @param {{ request: true, zone: string|null, templateName?: string|null, sets: Array<{ name: string, type: string,
+ *   family?: string|null, action: string }>, errors?: number, warnings?: number, at?: Date|null }} facts
+ *   lib/fixes.js requestSummaryFacts
+ * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
+ * @returns {SummaryDoc}
+ */
+function changeRequestSummary(facts, opts) {
+  const k = kit(opts);
+  const { t } = k;
+  const lines = [];
+  if (facts.templateName) lines.push([cleanText(facts.templateName)]);
+  const sets = facts.sets || [];
+  for (const s of sets.slice(0, CHANGE_MAX_SETS)) {
+    const action = CHANGE_ACTIONS.includes(s.action) ? s.action : 'replace';
+    lines.push([t(`sum.change.act.${action}`), ': ', code(s.name), ` ${cleanText(s.type)}${s.family ? ` (${cleanText(s.family)})` : ''}`]);
+  }
+  if (sets.length > CHANGE_MAX_SETS) lines.push([t('sum.change.more', { count: sets.length - CHANGE_MAX_SETS })]);
+  const problems = k.counts([['sum.change.errors', facts.errors], ['sum.change.warnings', facts.warnings]]);
+  lines.push([problems ? t('sum.change.problems', { list: problems }) : t('sum.change.noProblems')]);
+  return doc('change', k.title('change', [code(facts.zone || '')]), lines,
+    { when: whenText(t, 'sum.at.asOf', facts.at, opts.now || new Date()), url: opts.url });
 }
 
 const BUILDERS = {
@@ -1117,7 +1148,18 @@ const STRINGS = [
   ['sum.change.state.unknown', ['no answer yet', 'henüz yanıt yok']],
   ['sum.change.resolvers', [{ one: 'seen on {done} of {count} resolver', other: 'seen on {done} of {count} resolvers' },
     '{count} çözümleyiciden {done} tanesinde görülüyor']],
-  ['sum.change.more', [{ one: '+{count} more record set', other: '+{count} more record sets' }, '+{count} kayıt kümesi daha']]
+  ['sum.change.more', [{ one: '+{count} more record set', other: '+{count} more record sets' }, '+{count} kayıt kümesi daha']],
+  ['sum.change.act.add', ['Add', 'Ekle']],
+  ['sum.change.act.replace', ['Replace', 'Değiştir']],
+  ['sum.change.act.set', ['Add or change', 'Ekle ya da değiştir']],
+  ['sum.change.act.delete', ['Delete', 'Sil']],
+  ['sum.change.act.ttl', ['Change the TTL', 'TTL’i değiştir']],
+  ['sum.change.act.rewrite', ['Rewrite', 'Yeniden yaz']],
+  ['sum.change.act.unchanged', ['No change', 'Değişiklik yok']],
+  ['sum.change.errors', [{ one: '{count} error', other: '{count} errors' }, '{count} hata']],
+  ['sum.change.warnings', [{ one: '{count} warning', other: '{count} warnings' }, '{count} uyarı']],
+  ['sum.change.problems', ['Before sending: {list}', 'Göndermeden önce: {list}']],
+  ['sum.change.noProblems', ['No problems found before sending', 'Göndermeden önce bir sorun bulunmadı']]
 ];
 
 function buildStrings(lang) {

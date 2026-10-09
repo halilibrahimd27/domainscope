@@ -1054,6 +1054,35 @@ export function rrsetAction(r, plan = rrsetPlan(r)) {
 }
 
 /**
+ * The Copy summary of a change request's result (lib/summary.js changeSummary, with `request`):
+ * the template's name as the view words it, each record set by name and type (a TXT family's
+ * name too) with what the change does to it — a family set a template edits without a read is
+ * "add or change" ({@link unreadEdits}) — and how many of the problems shown are errors and
+ * warnings. Never a value: the change's values travel in its check link, the summary's URL.
+ * @param {ChangeRequest} req
+ * @param {{ problems?: FixProblem[]|null, templateName?: string|null, at?: Date|null }} [opts] `problems`: the ones
+ *   shown with the result (validateChange), else the request's own
+ * @returns {{ request: true, zone: string|null, template: string|null, templateName: string|null,
+ *   sets: Array<{ name: string, type: string, family: string|null, action: string }>, errors: number, warnings: number, at: Date|null }}
+ */
+export function requestSummaryFacts(req, { problems = null, templateName = null, at = null } = {}) {
+  const unread = new Set(unreadEdits(req));
+  const list = arr(problems === null ? req && req.problems : problems);
+  return {
+    request: true,
+    zone: (req && req.zone) || null,
+    template: (req && req.template) || null,
+    templateName: templateName || null,
+    sets: arr(req && req.rrsets).map((r) => ({
+      name: r.name, type: r.type, family: r.family ? TXT_FAMILIES[r.family] || null : null, action: unread.has(r) ? 'set' : rrsetAction(r)
+    })),
+    errors: list.filter((p) => p && p.severity === 'error').length,
+    warnings: list.filter((p) => p && p.severity === 'warn').length,
+    at: at || null
+  };
+}
+
+/**
  * The admin's instructions in one language (either, whatever the UI language): one numbered step
  * per set (add / replace / delete / change the TTL), the template's notes and, when given, the
  * check link.

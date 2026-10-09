@@ -72,6 +72,12 @@
   display: none;
 }
 
+/* The result's Copy summary, above what the change writes. */
+.chg-result-actions {
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
 .chg-problems {
   display: grid;
   gap: 10px;

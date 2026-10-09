@@ -1531,6 +1531,40 @@ describe('change (DNS change request › is it live?)', () => {
     assert.equal(tr[0], '**DNS değişiklik talebi · `example.com`**');
     assert.equal(tr[2], '- `_acme-challenge.example.com` TXT: yayında · 4 çözümleyiciden 4 tanesinde görülüyor');
   });
+
+  test('the form\'s result: the template, each set and what is done to it, the problems; the check link, never a value', () => {
+    const request = (extra = {}) => ({
+      request: true, zone: 'example.com', template: 'spf', templateName: 'SPF include',
+      sets: [
+        { name: 'example.com', type: 'TXT', family: 'SPF', action: 'set' },
+        { name: '_acme-challenge.example.com', type: 'TXT', family: null, action: 'add' },
+        { name: 'old.example.com', type: 'A', family: null, action: 'delete' },
+        { name: 'www.example.com', type: 'CNAME', family: null, action: 'ttl' }
+      ],
+      errors: 0, warnings: 1, at: new Date('2026-10-09T08:00:00Z'), ...extra
+    });
+    const url = `${URL_BASE}#/change/check?z=example.com&r=has%20example.com%20TXT%20x`;
+    const doc = S.changeSummary(request(), opts('en', url));
+    assertShape(doc, { min: 5 });
+    assert.deepEqual(lines(md(doc)), [
+      '**DNS change request · `example.com`**',
+      '- SPF include',
+      '- Add or change: `example.com` TXT (SPF)',
+      '- Add: `_acme-challenge.example.com` TXT',
+      '- Delete: `old.example.com` A',
+      '- Change the TTL: `www.example.com` CNAME',
+      '- Before sending: 1 warning',
+      '',
+      `DomainScope · as of 2026-10-09 08:00 UTC · ${url}`
+    ]);
+    const clean = md(S.changeSummary(request({ warnings: 0, sets: Array.from({ length: 7 }, (_, i) => ({ name: `h${i}.example.com`, type: 'A', action: i ? 'replace' : 'bogus' })) }), opts('en', null)));
+    assert.match(clean, /- Replace: `h0\.example\.com` A\n/, 'an action it does not know reads as a replacement');
+    assert.match(clean, /- \+2 more record sets\n- No problems found before sending\n/);
+    assert.ok(!/#\/change/.test(clean), 'no check link: no URL');
+    const tr = lines(md(S.changeSummary(request({ errors: 2 }), opts('tr', url))));
+    assert.equal(tr[2], '- Ekle ya da değiştir: `example.com` TXT (SPF)');
+    assert.equal(tr[6], '- Göndermeden önce: 2 hata · 1 uyarı');
+  });
 });
 
 describe('rendering and dispatch', () => {
@@ -1636,6 +1670,7 @@ describe('i18n', () => {
     for (const w of S.CERT_SUMMARY_WARNINGS) used.add(`sum.cert.warn.${w}`);
     for (const r of S.RETIRE_BREAKING_SEVERITIES) used.add(`sum.retire.sev.${r}`);
     for (const s of S.CHANGE_SET_STATES) used.add(`sum.change.state.${s}`);
+    for (const a of S.CHANGE_ACTIONS) used.add(`sum.change.act.${a}`);
     // Zone File › Compare: sum.zcmp.opt.<option>, sum.zcmp.st.<status>, sum.zcmp.why.<reason>.
     for (const o of S.ZONE_COMPARE_OPTIONS) used.add(`sum.zcmp.opt.${o}`);
     for (const st of S.ZONE_COMPARE_STATUSES) used.add(`sum.zcmp.st.${st}`);

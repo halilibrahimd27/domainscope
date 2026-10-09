@@ -40,9 +40,9 @@ import { registerStrings, hasString, localeTag, formatDateTime, formatDuration, 
 import { state as stateSingleton } from '../state.js';
 import {
   CHANGE_TEMPLATES, FIX_FIELDS, FIX_CAS, TEMPLATE_IDS, TXT_FAMILIES, buildChange, changeTemplate, templateInput, validateChange, hasErrors,
-  readCurrent, countSpfLookups, valueText
+  readCurrent, countSpfLookups, valueText, requestSummaryFacts
 } from '../lib/fixes.js';
-import { CHECK_RESOLVERS, CHECK_LIMITS, decodeCheck, linkQuery, checkRound, checkState, nextCheck, pairKey } from '../lib/changecheck.js';
+import { CHECK_RESOLVERS, CHECK_LIMITS, decodeCheck, linkQuery, checkRound, checkState, nextCheck, pairKey, checkFromRequest, encodeCheck } from '../lib/changecheck.js';
 import { normalizeHostname, registrableDomain } from '../lib/domain.js';
 import { getResolver } from '../lib/resolvers.js';
 import { isFillOnly } from '../lib/session.js';
@@ -50,7 +50,7 @@ import { onceAsync } from '../lib/util.js';
 import { ChangeOutputs, ProblemList, builderParams, checkUrl } from '../ui/fix-panel.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { registerRunning } from '../ui/jobs.js';
-import '../ui/view-summaries.js'; // the check page's Copy summary: lib/summary.js changeSummary and its texts
+import '../ui/view-summaries.js'; // the Copy summaries of the form's result and the check page: lib/summary.js changeSummary and its texts
 
 /** The check page's cutover assistant: watch mode, the cache countdowns, the TTL planner (loaded with the page). */
 const loadCutover = onceAsync(() => import('../ui/cutover.js'));
@@ -500,7 +500,17 @@ function mountBuilder(container, ctx) {
       outputsEl.append(h('p', { class: 'muted text-sm chg-blocked' }, t('chg.blocked')));
       return;
     }
-    outputsEl.append(ChangeOutputs(req, { fileStem: `dns-change-${req.zone}`, choice: draft.choice }));
+    // Copy summary for the ticket: the template, each set and what is done to it, the problems; the
+    // change's check link as its URL (lib/summary.js changeSummary), never the form's.
+    const built = req;
+    const link = encodeCheck(checkFromRequest(built));
+    const summary = SummaryButton({
+      kind: 'change',
+      facts: () => requestSummaryFacts(built, { problems: shown, templateName: t(`fix.tpl.${built.template}`), at: new Date() }),
+      url: () => (link.ok ? checkUrl(link.query) : null)
+    });
+    outputsEl.append(h('div', { class: 'cluster chg-result-actions' }, summary.el),
+      ChangeOutputs(req, { fileStem: `dns-change-${req.zone}`, choice: draft.choice }));
   }
 
   function renderReadNote(read, spfStale = false) {

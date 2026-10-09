@@ -12,7 +12,8 @@
  * Covers: the nav entry (DNS tools, after Bulk Resolve) and the empty form (nothing sent); an ACME
  * DNS-01 TXT request typed in (the change as it is built, a token of the wrong shape flagged, the
  * admin's instructions in English and Turkish, BIND with its download, the route that reopens the
- * form; the format tab and the instructions' language picked stay while the form is edited; the
+ * form, the result's Copy summary (the template, the set and what is done to it, the problems, the
+ * check link as its URL, never a value); the format tab and the instructions' language picked stay while the form is edited; the
  * record name an ACME client prints taken for the certificate name); an SPF include with "Read the current records" from the keyboard (only names and types
  * asked; the include merged into the record there, the site verification kept by the Route 53
  * change batch, the lookups counted, then "read again" once the form changes the record); a CNAME
@@ -196,6 +197,20 @@ async function main() {
       checkQuery = await page.evaluate(() => document.querySelector('.fix-check a.btn').getAttribute('href').replace('#/change/check?', ''));
       assertEqual(checkQuery, `z=example.com&r=has+_acme-challenge+TXT+%22${TOKEN_A}%22%7C%22${TOKEN_B}%22`, 'check link');
       await shot(page, opts, 'change-acme-desktop-light-en');
+    });
+
+    await run.step('Copy summary of the form\'s result: the template, the set and what is done to it, the problems, the check link, never a value', async () => {
+      await stubClipboard(page);
+      await page.click('.chg-result-actions [data-summary="change"] [data-action="copy-summary"]');
+      await page.waitFor(() => window.__clip.length === 1, { message: 'copied' });
+      const [md] = await takeClipboard(page);
+      const lines = md.trim().split('\n');
+      assertEqual(lines.slice(0, 5), ['**DNS change request · `example.com`**', '- ACME DNS-01 TXT record', '- Add: `_acme-challenge.example.com` TXT',
+        '- No problems found before sending', ''], 'title, template, the set, no problem');
+      const foot = lines[lines.length - 1];
+      assert(foot.startsWith('DomainScope · as of ') && foot.endsWith(` UTC · ${origin}${BASE}#/change/check?${checkQuery}`), `footer: ${foot}`);
+      assert(!lines.slice(0, -1).some((l) => l.includes(TOKEN_A) || l.includes(TOKEN_B)), 'a value only inside the check link');
+      await shot(page, opts, 'change-result-summary-desktop-light-en');
     });
 
     await run.step('the format being watched and the instructions\' language stay while the form is edited', async () => {

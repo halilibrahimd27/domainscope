@@ -212,6 +212,17 @@ export function startChainRepair(load, { store = null, now = Date.now() } = {}) 
 }
 
 /**
+ * The repair job of a loaded file as it stands, or null — never started nor restarted here: a part
+ * that only reads its state (the Certificate view's header) must not retry a failed lookup each
+ * time it is drawn again.
+ * @param {object|null} load a CertLoad
+ * @returns {{ status: 'running'|'done'|'error', repair: object|null, error: any, watchers: Set<Function> }|null}
+ */
+export function chainRepairJob(load) {
+  return load && load.result ? jobs.get(load.result) || null : null;
+}
+
+/**
  * The finished repair of a loaded file, or null (not started, running or failed).
  * @param {object|null} load a CertLoad
  * @returns {import('../lib/chainfix.js').ChainRepair|null}
@@ -413,12 +424,13 @@ function lifecycleNote(repair) {
  * `lifecycle`, the root-store warnings. Returns its container at once and fills it when the job
  * ends (`data-chainfix` = running | done | error | none); a re-render reuses the finished job.
  * @param {object|null} load a CertLoad
- * @param {{ lifecycle?: boolean, onDownload: (certs: object[]) => void, store?: object, focus?: boolean }} opts
+ * @param {{ lifecycle?: boolean, onDownload: (certs: object[]) => void, store?: object, focus?: boolean, onRetry?: Function|null }} opts
  *   onDownload: saves fullchain.pem (the view names the file); focus: take the keyboard focus once
- *   there is something to say (Retry: its button goes with the note it was in)
+ *   there is something to say (Retry: its button goes with the note it was in); onRetry: called once
+ *   Retry has started the lookup again (a part that follows the job watches the new one)
  * @returns {HTMLElement}
  */
-export function ChainRepairNotes(load, { lifecycle = true, onDownload, store = null, focus = false }) {
+export function ChainRepairNotes(load, { lifecycle = true, onDownload, store = null, focus = false, onRetry = null }) {
   const el = h('div', { class: 'stack-sm chainfix', dataset: { chainfix: 'none' } });
   const job = startChainRepair(load, { store });
   if (!job) return el;
@@ -444,7 +456,10 @@ export function ChainRepairNotes(load, { lifecycle = true, onDownload, store = n
         actions: [Button({
           label: t('common.retry'), icon: 'refresh', size: 'sm', dataset: { action: 'chainfix-retry' },
           // The pressed button goes with the note: the keyboard focus moves to what replaces it.
-          onClick: () => el.replaceWith(ChainRepairNotes(load, { lifecycle, onDownload, store, focus: true }))
+          onClick: () => {
+            el.replaceWith(ChainRepairNotes(load, { lifecycle, onDownload, store, focus: true, onRetry }));
+            if (typeof onRetry === 'function') onRetry();
+          }
         })]
       });
       note.dataset.chainfixNote = 'failed';

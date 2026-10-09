@@ -44,7 +44,7 @@ import { parseCertificates } from '../../assets/js/lib/x509.js';
 import { seq, ctx, oid, octet, int } from '../fixtures/der-builder.mjs';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions,
-  createRunner, gotoRoute, installDownloadCapture, setLangUi, takeDownloads, waitReady
+  createRunner, gotoRoute, installDownloadCapture, resultAction, setLangUi, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const fixture = (name) => path.join(FIXTURES, name);
@@ -68,6 +68,8 @@ async function interceptDataset(page) {
   const offline = {
     shards: false,
     hold: false,
+    /** Shard requests failed as a lost connection would (a failed lookup must not ask again by itself). */
+    failed: 0,
     release() {
       offline.hold = false;
       for (const answer of held.splice(0)) answer();
@@ -98,6 +100,7 @@ async function interceptDataset(page) {
     const rel = m[1];
     const shard = /^(?:ski|dn)\//.test(rel);
     if (offline.shards && shard) {
+      offline.failed += 1;
       page.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'InternetDisconnected' }).catch(() => {});
       return;
     }
@@ -332,7 +335,9 @@ async function main() {
       const n = await notes(page, CERT);
       assertEqual([n.state, n.kind, n.life], ['done', null, null], 'nothing to say');
       await takeDownloads(page);
-      await page.click(`${CERT} [data-action="download-chain"]`);
+      // The overview's full chain is in the result header's Export ▾.
+      await resultAction(page, '[data-action="download-chain"]', '.cert-overview');
+      await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'the full chain' });
       const [file] = await takeDownloads(page);
       assertEqual(pemBodies(file.text), [LEAF, INTER], 'leaf first');
     });
@@ -344,6 +349,10 @@ async function main() {
       let n = await notes(page, CERT);
       assertEqual([n.state, n.kind], ['error', 'failed'], 'failed');
       assert(n.text.includes('could not be loaded (you may be offline)'), n.text);
+      // Nothing asks again by itself (the result header reads the failed lookup, it never retries it).
+      const failedOnce = net.offline.failed;
+      await new Promise((r) => setTimeout(r, 400));
+      assertEqual(net.offline.failed, failedOnce, 'no request after the failure until Retry');
       net.offline.shards = false;
       await page.click(`${CERT} [data-action="chainfix-retry"]`);
       await page.waitFor(() => document.querySelector('.cert-view .chainfix [data-chainfix-note="repaired"]'), { message: 'repaired after Retry' });

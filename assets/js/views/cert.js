@@ -75,7 +75,7 @@ import { DanePanel, cancelDane } from '../ui/dane-panel.js';
 // The PKCS#12 password dialog and the note about a bundle (shared with SSL Targets).
 import { PfxNote, askPfxPassword, isLockedPfx } from '../ui/pfx-import.js';
 // The missing intermediate from the bundled CCADB list, and the root-store warnings (shared with SSL Targets).
-import { ChainRepairNotes, ChainRepairChainPart, onChainRepairEnd, repairedFullchain, startChainRepair } from '../ui/chain-repair.js';
+import { ChainRepairNotes, ChainRepairChainPart, chainRepairJob, onChainRepairEnd, repairedFullchain, startChainRepair } from '../ui/chain-repair.js';
 // CT logs › Key continuity: other certificates with this public key (lib/keycontinuity.js).
 import { KeyContinuityCard, cancelKeyLookups } from '../ui/key-continuity.js';
 import { backToLastRun, fillReplaces, FILL_PARAM, FILL_VALUE } from '../lib/session.js';
@@ -1917,12 +1917,13 @@ export function downloadFullchain(leaf, certs) {
  * The notes of a loaded file's chain (ui/chain-repair.js ChainRepairNotes): the missing
  * intermediates found in the bundled CCADB list with Download fullchain.pem and, with
  * `lifecycle`, the root-store warnings. Filled when the lookup ends; empty for a complete chain.
+ * `onRetry`: the lookup was started again from the note's Retry (the result header follows it).
  * @param {CertLoad} load
- * @param {{ lifecycle?: boolean }} [opts]
+ * @param {{ lifecycle?: boolean, onRetry?: Function|null }} [opts]
  * @returns {HTMLElement}
  */
-export function CertChainNotes(load, { lifecycle = true } = {}) {
-  return ChainRepairNotes(load, { lifecycle, onDownload: (certs) => downloadFullchain(load.result.leaf, certs) });
+export function CertChainNotes(load, { lifecycle = true, onRetry = null } = {}) {
+  return ChainRepairNotes(load, { lifecycle, onRetry, onDownload: (certs) => downloadFullchain(load.result.leaf, certs) });
 }
 
 /**
@@ -2373,7 +2374,9 @@ export function mount(container, ctx) {
       })] : []
     });
     content.append(h('div', { class: 'stack-sm cert-notes' },
-      ...certWarningAlerts(result, { name: load.name }), sourceNote, CertPfxNote(load), CertChainNotes(load)));
+      ...certWarningAlerts(result, { name: load.name }), sourceNote, CertPfxNote(load),
+      // Retry starts the lookup again: the header's chain item follows the new one.
+      CertChainNotes(load, { onRetry: () => { if (refreshHeadStatus) refreshHeadStatus(); } })));
     const tabsHost = h('div', { class: 'cert-tabs-host' });
     content.append(tabsHost);
     let tabs = null;
@@ -2505,7 +2508,9 @@ export function mount(container, ctx) {
         if (refreshHeadStatus === renderStatus && head.el.isConnected) renderStatus();
       };
       function renderStatus() {
-        const job = startChainRepair(load);
+        // The lookup as it stands: started once if nothing started it yet, never retried from here
+        // (a redraw after a failed lookup would ask again and again; the note's Retry does that).
+        const job = chainRepairJob(load) || startChainRepair(load);
         const end = chainEndVerdict(job);
         const caaEntry = caaCache.get(certKey(leaf)) || null;
         const items = certStatus({

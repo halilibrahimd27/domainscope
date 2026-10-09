@@ -6667,13 +6667,18 @@ def topology_tag(servers: Sequence[Server], answered: Iterable[str] = ()) -> Cal
 # ORIGIN_CERT, PRIVATE_CERT): the inventory looks wrong, never "no certificate needed".
 _ANSWERS_TLS = (UPDATED,) + HOSTED_STATUSES
 _ANSWERS_ANYWAY = 'terminates_tls=no but answers TLS - check the inventory'
+# A load balancer passing TLS through with no server behind it terminating TLS.
+_PASSES_TO_NOWHERE = ('passes TLS through (terminates_tls=no), but no backend behind it '
+                      'terminates TLS: TLS terminates nowhere - check the inventory')
 
 
 def render_topology(report: ScanReport, summaries: Sequence[ServerSummary], style: Style,
                     width: int = 100) -> List[str]:
     """The summary's topology lines, grouped by load balancer: each load balancer with its
     status and the servers behind it (plain HTTP - no certificate, or re-encrypting - needs it
-    too), every VIP and the servers to install on, the NAT pairs, and the servers with
+    too; a load balancer of the next tier passing TLS on; behind one that passes TLS through to
+    no server terminating it, a plain backend flags the inventory as the load balancer's line
+    does), every VIP and the servers to install on, the NAT pairs, and the servers with
     terminates_tls=no that were not scanned. [] without a topology key in the targets."""
     servers = list(report.servers) + list(report.skipped_backends)
     if not any(server.has_topology() for server in servers):
@@ -6704,8 +6709,7 @@ def render_topology(report: ScanReport, summaries: Sequence[ServerSummary], styl
             elif ends:
                 role = 'passes TLS through (terminates_tls=no): no certificate here'
             else:
-                role = ('passes TLS through (terminates_tls=no), but no backend behind it '
-                        'terminates TLS: TLS terminates nowhere - check the inventory')
+                role = _PASSES_TO_NOWHERE
             vips = ['VIP %s' % vip for vip in lb.vips]
             plain = '  %s  %s  ' % (display_text(lb.name), _plain_state(lb, skipped, status))
             lines.extend(_wrap('  %s  %s  ' % (style.paint(display_text(lb.name), 'bold'), state(lb)),
@@ -6721,7 +6725,17 @@ def render_topology(report: ScanReport, summaries: Sequence[ServerSummary], styl
                     what = ('answers TLS for the names although the inventory says plain HTTP '
                             '(terminates_tls=no) - check the inventory')
                 else:
-                    what = 'plain HTTP, no certificate needed'
+                    if backend.backends:
+                        # a load balancer of the next tier, passing TLS on as well
+                        what = ('passes TLS through (terminates_tls=no): no certificate here'
+                                if _terminates_behind(backend, by_name) else _PASSES_TO_NOWHERE)
+                    elif not lb.gets_certificate and not ends:
+                        # TLS reaches it through the load balancer and ends nowhere: the same
+                        # warning as the load balancer's own line, never "no certificate needed"
+                        what = ('plain HTTP (terminates_tls=no), yet the load balancer passes TLS '
+                                'through to it: TLS terminates nowhere - check the inventory')
+                    else:
+                        what = 'plain HTTP, no certificate needed'
                     if backend.name in skipped:
                         what += ' (--include-backends scans it)'
                 prefix = '    -> %s  %s  ' % (display_text(backend.name), state(backend))

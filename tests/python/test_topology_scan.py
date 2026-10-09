@@ -182,6 +182,12 @@ class TopologySweep(unittest.TestCase):
         text = sos.render_summary(report, color=False, width=200)
         self.assertIn('  edge01  NEEDS_UPDATE  says terminates_tls=no, yet answers TLS for the names and no '
                       'backend terminates TLS: the inventory is wrong - check it', text)
+        # the plain backend's line flags the inventory as the load balancer's does
+        nowhere = ('    -> pool01  not scanned  plain HTTP (terminates_tls=no), yet the load balancer '
+                   'passes TLS through to it: TLS terminates nowhere - check the inventory '
+                   '(--include-backends scans it)')
+        self.assertIn(nowhere, text)
+        self.assertNotIn('no certificate needed', text)
         # nothing answers: it still says TLS terminates nowhere
         network = Network()
         report = sos.run_scan(inventory.servers, sos.build_probe_names([NAME]), [443], timeout=1,
@@ -190,6 +196,40 @@ class TopologySweep(unittest.TestCase):
         text = sos.render_summary(report, color=False, width=200)
         self.assertIn('  edge01  TLS_ERROR  passes TLS through (terminates_tls=no), but no backend '
                       'behind it terminates TLS: TLS terminates nowhere - check the inventory', text)
+        self.assertIn(nowhere, text)
+        self.assertNotIn('no certificate needed', text)
+
+    def test_a_load_balancer_of_the_next_tier_passes_tls_on_rather_than_serving_plain_http(self):
+        # edge01 and lb02 both pass TLS through; web01 terminates it: lb02 needs no certificate
+        def handshake_failed(ip, port, sni, timeout):
+            return sos.TlsResult(status=sos.TLS_ERROR, error='handshake failed')
+
+        inventory = sos.parse_inventory('edge01 203.0.113.60 terminates_tls=no backends=lb02\n'
+                                        'lb02 10.0.0.62 terminates_tls=no backends=web01\n'
+                                        'web01 10.0.0.1\n', 'x.txt')
+        self.assertEqual(inventory.warnings, [])
+        network = Network()
+        report = sos.run_scan(inventory.servers, sos.build_probe_names([NAME]), [443], timeout=1,
+                              workers=2, connect_fn=network.connect_fn, tls_fn=network.tls_fn)
+        text = sos.render_summary(report, color=False, width=200)
+        self.assertIn('    -> lb02  not scanned  passes TLS through (terminates_tls=no): no certificate '
+                      'here (--include-backends scans it)', text)
+        self.assertIn('    -> web01  NEEDS_UPDATE  re-encrypts: needs the certificate too', text)
+        self.assertNotIn('plain HTTP', text)
+        # web01 says terminates_tls=no too: TLS ends nowhere behind either load balancer
+        inventory = sos.parse_inventory('edge01 203.0.113.60 terminates_tls=no backends=lb02\n'
+                                        'lb02 10.0.0.62 terminates_tls=no backends=web01\n'
+                                        'web01 10.0.0.1 terminates_tls=no\n', 'x.txt')
+        network = Network()
+        report = sos.run_scan(inventory.servers, sos.build_probe_names([NAME]), [443], timeout=1,
+                              workers=2, connect_fn=network.connect_fn, tls_fn=handshake_failed)
+        text = sos.render_summary(report, color=False, width=220)
+        self.assertIn('    -> lb02  TLS_ERROR  passes TLS through (terminates_tls=no), but no backend behind '
+                      'it terminates TLS: TLS terminates nowhere - check the inventory', text)
+        self.assertIn('    -> web01  not scanned  plain HTTP (terminates_tls=no), yet the load balancer passes '
+                      'TLS through to it: TLS terminates nowhere - check the inventory (--include-backends '
+                      'scans it)', text)
+        self.assertNotIn('no certificate needed', text)
 
     def test_backends_that_loop_are_warned_and_the_summary_ends(self):
         inventory = sos.parse_inventory('lb03 203.0.113.4 backends=lb04\nlb04 203.0.113.5 backends=lb03\n',

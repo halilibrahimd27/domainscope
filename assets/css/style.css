@@ -1193,6 +1193,22 @@ hr {
   text-overflow: ellipsis;
 }
 
+/* "Runs entirely in your browser" is a label: it wraps (Linux fonts set wider), never cut. Only the
+   values above it are cut, the DoH chain with all of it in its title. */
+.nav-status-privacy {
+  align-items: flex-start;
+}
+
+.nav-status-privacy .icon {
+  margin-top: 1px;
+}
+
+.nav-status-privacy span {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .link-reset {
   width: 100%;
   border: 0;
@@ -2062,8 +2078,8 @@ button.nav-status:hover {
   }
 
   .header-actions .lang-toggle .seg-btn {
-    height: 34px;
-    min-width: 34px;
+    height: 36px;
+    min-width: 36px;
   }
 
   .app-main {

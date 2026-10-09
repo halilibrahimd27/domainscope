@@ -25,14 +25,18 @@ describe('Home', () => {
     }
   });
 
-  test('isEmptyWorkspace: no recent domain, CT baseline, registration snapshot, accepted risk or server', () => {
+  test('isEmptyWorkspace: no recent domain, CT baseline, registration snapshot, accepted risk, server, rollout, nightly digest or DMARC history', () => {
     assert.equal(isEmptyWorkspace({}), true);
-    assert.equal(isEmptyWorkspace({ recent: [], ctSeen: '', rdapSeen: '  ', waivers: '', servers: 0 }), true);
+    assert.equal(isEmptyWorkspace({ recent: [], ctSeen: '', rdapSeen: '  ', waivers: '', servers: 0, rollout: '', digests: ' ', reportHistory: '' }), true);
     assert.equal(isEmptyWorkspace({ recent: [{ value: 'example.com' }] }), false);
     assert.equal(isEmptyWorkspace({ ctSeen: '{"v":1,"domains":{}}' }), false);
     assert.equal(isEmptyWorkspace({ rdapSeen: '{"v":1}' }), false);
     assert.equal(isEmptyWorkspace({ waivers: '{"waivers":[]}' }), false);
     assert.equal(isEmptyWorkspace({ servers: 2 }), false);
+    // Monitoring and DMARC & TLS reports never add a recent domain: their parts alone are a workspace in use, whose counts Home shows.
+    assert.equal(isEmptyWorkspace({ digests: '{"monitor":{"at":"2026-10-09T06:00:00.000Z","bad":3}}' }), false, 'a Monitoring digest');
+    assert.equal(isEmptyWorkspace({ rollout: '{"v":1,"boards":[]}' }), false, 'a rollout board');
+    assert.equal(isEmptyWorkspace({ reportHistory: '{"v":1,"domains":{}}' }), false, 'a DMARC report history');
   });
 
   test('homeFacts: the servers, the recent domains and the last activity, each only when there is one', () => {

@@ -3,7 +3,7 @@
  * settings dialog and the per-view context object.
  *
  * Routes: `#/<view>?key=value` (shareable, e.g. `#/lookup?name=example.com&type=MX`).
- * Unknown views fall back to 'subdomains'. Hashes that do not start with '#/' are in-page
+ * Unknown views fall back to Home (DEFAULT_VIEW). Hashes that do not start with '#/' are in-page
  * anchors and never change the view.
  *
  * View modules (assets/js/views/<id>.js) are loaded lazily on first visit and must export
@@ -15,8 +15,9 @@
  * Navigation (docs/DESIGN.md §3): one header row at every width; from 1100 px a sidebar, below it
  * a Tools button in the header opening the same groups as a drawer (tablets) or as a full-screen
  * sheet that is also the palette (phones), all built from VIEWS (lib/shellnav.js groupViews). The
- * page header gives each tool one purpose line and an ⓘ for the rest. The start page shows a
- * first-visit task picker until it is dismissed or the visitor runs something.
+ * page header gives each tool one purpose line and an ⓘ for the rest. The start page is Home
+ * (views/home.js): its "Start a job" cards fold to a short list once the visitor folds them or runs
+ * something (noteRun).
  *
  * Keyboard shortcuts (one listener here, lib/shellnav.js shortcutFor): Ctrl/Cmd+Enter in a field
  * clicks the `data-shortcut="submit"` control of the field's form (the view's Run; inside a
@@ -58,7 +59,7 @@ import {
   t, setLang, getLang, detectLang, onLangChange, formatNumber, formatRegion, hasString
 } from './i18n.js';
 import { state, CONCURRENCY_RANGE } from './state.js';
-import { h, clear, uid } from './ui/dom.js';
+import { h, clear, uid, append } from './ui/dom.js';
 import {
   Icon, SegmentedControl, IconButton, Button, Alert, ErrorBanner, Spinner, Modal, toast,
   select, Badge, confirmDialog, announce, describeError, setButtonBusy
@@ -627,8 +628,9 @@ function keepResult(cur) {
  * @property {(section?: string|null) => void} openWorkspaces  the Workspaces dialog, on one of its parts
  *                                         (ui/workspace-panel.js PANEL_SECTIONS: 'new', 'expected', 'waivers')
  * @property {() => Promise<object|null>} loadPalette  ui/palette.js with palette.css (loaded on first use)
- * @property {(heading: { title: string, purpose?: string|null }) => void} setHeading  the page's own title (the <h1>
- *                                         and the tab's) and purpose line, in place of the tool's (Home: the workspace)
+ * @property {(heading: { title: string, purpose?: string|Node|Array<string|Node>|null }) => void} setHeading  the page's own
+ *                                         title (the <h1> and the tab's) and purpose line — text, or text and nodes
+ *                                         such as a <time> — in place of the tool's (Home: the workspace)
  * @property {string} repoUrl
  * @property {string} version
  */
@@ -697,8 +699,9 @@ function makeContext(id, params, searchParams, controller, restored, sub = '') {
       const text = String(title || t(`nav.${id}`));
       dom.pageTitle.textContent = text;
       if (dom.pagePurpose && purpose !== null) {
-        dom.pagePurpose.textContent = String(purpose);
-        dom.pagePurpose.hidden = !purpose;
+        clear(dom.pagePurpose);
+        append(dom.pagePurpose, purpose);
+        dom.pagePurpose.hidden = !dom.pagePurpose.textContent;
       }
       setBaseTitle(`${text} · ${t('app.name')}`);
     },
@@ -1806,14 +1809,8 @@ function renderSheetTarget() {
  * @param {object} menu the sheet's Modal
  */
 async function attachSheetSearch(host, tiles, menu) {
-  let mod;
-  try {
-    [mod] = await Promise.all([import('./ui/palette.js'), loadStylesheet('palette.css')]);
-  } catch {
-    noticeIfOutdated(pageIsOutdated);
-    return;
-  }
-  if (navMenu !== menu || !host.isConnected) return;
+  const mod = await loadPalette();
+  if (!mod || navMenu !== menu || !host.isConnected) return;
   const box = mod.PaletteBox({
     views: VIEWS,
     navigate,
@@ -1995,23 +1992,31 @@ function onShortcutKey(event) {
 
 let palette = null;
 
-/** The command palette (ui/palette.js with palette.css, on first use). */
-/** ui/palette.js with its stylesheet, loaded on first use (Ctrl/⌘+K, the Tools sheet, Home's quick start); null when it cannot load. */
-function loadPalette() {
-  return Promise.all([import('./ui/palette.js'), loadStylesheet('palette.css')]).then(([m]) => m, () => {
+/**
+ * ui/palette.js with its stylesheet, loaded on first use (Ctrl/⌘+K, the phone Tools sheet, Home's
+ * quick start); null when it cannot load — a page left open across a deploy is offered a reload,
+ * and `onError` gets the reason.
+ * @param {(err: unknown) => void} [onError]
+ * @returns {Promise<object|null>}
+ */
+function loadPalette(onError = null) {
+  return Promise.all([import('./ui/palette.js'), loadStylesheet('palette.css')]).then(([m]) => m, (err) => {
     noticeIfOutdated(pageIsOutdated);
+    if (onError) onError(err);
     return null;
   });
 }
 
+/** The command palette (Ctrl/⌘+K, the header's search), one at a time; one that cannot open says why in a toast. */
 function openPalette() {
-  palette = palette || Promise.all([import('./ui/palette.js'), loadStylesheet('palette.css')]).then(([m]) => m.openPalette({
-    views: VIEWS, navigate, href: navHref, state, session: pageSession, done: () => { palette = null; }
-  })).catch((err) => {
+  if (palette) return;
+  const fail = (err) => {
     palette = null;
-    noticeIfOutdated(pageIsOutdated);
     toast(errorText(err), { type: 'error' });
-  });
+  };
+  palette = loadPalette(fail).then((m) => {
+    if (m) m.openPalette({ views: VIEWS, navigate, href: navHref, state, session: pageSession, done: () => { palette = null; } });
+  }).catch(fail);
 }
 
 let shortcutHelp = null;

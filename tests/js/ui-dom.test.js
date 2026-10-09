@@ -18,7 +18,7 @@ import * as dom from '../../assets/js/ui/dom.js';
 import { sanitizeFilename, timestampedName, jsonReplacer } from '../../assets/js/ui/download.js';
 import {
   compareValues, ipSortValue, normalizeSearch, csvCell, rowsToCsv, decodeText, describeError, ICON_NAMES, KINDS, CliText,
-  folderOrder, Tag, Badge, Chip, Alert, TAG_VARIANTS, overflowEdges, MenuButton, menuPlacement, menuStep
+  folderOrder, Tag, Badge, Chip, Alert, TAG_VARIANTS, overflowEdges, MenuButton, menuPlacement, menuStep, menuTypeAhead, RelativeTime
 } from '../../assets/js/ui/components.js';
 import {
   parseRoute, buildRoute, sameParams, sameSearch, hasRepeatedKeys, VIEWS, REPO_URL, DEFAULT_VIEW
@@ -1214,6 +1214,50 @@ describe('components.js helpers', () => {
     assert.equal(menuStep(1, 3, 'End'), 2);
     assert.equal(menuStep(1, 3, 'Enter'), null);
     assert.equal(menuStep(0, 0, 'ArrowDown'), null, 'an empty menu');
+  });
+
+  test('menuTypeAhead: a printable key moves to the next item whose label starts with it, wrapping around, case aside; other keys do nothing', () => {
+    const labels = ['Domain Health', 'Domain overview', 'Subdomains', 'DNS Lookup'];
+    assert.equal(menuTypeAhead(labels, -1, 'd'), 0, 'none focused yet: the first');
+    assert.equal(menuTypeAhead(labels, 0, 'd'), 1, 'the next one');
+    assert.equal(menuTypeAhead(labels, 1, 'D'), 3, 'case aside');
+    assert.equal(menuTypeAhead(labels, 3, 'd'), 0, 'wraps around');
+    assert.equal(menuTypeAhead(labels, 0, 's'), 2);
+    assert.equal(menuTypeAhead(labels, 2, 's'), 2, 'the only one: it stays');
+    for (const key of ['x', 'Enter', 'ArrowDown', ' ', '', 'Dead', undefined]) assert.equal(menuTypeAhead(labels, 0, key), null, String(key));
+    assert.equal(menuTypeAhead(['İzleme', 'Işık'], -1, 'i', 'tr'), 0, 'Turkish: İ is the capital of i');
+    assert.equal(menuTypeAhead(['İzleme', 'Işık'], -1, 'ı', 'tr'), 1, 'Turkish: I is the capital of ı');
+    assert.equal(menuTypeAhead([], -1, 'a'), null, 'an empty menu');
+  });
+
+  test('RelativeTime: a <time> with its ISO datetime, the relative text, and the absolute local time with its UTC offset as its title', () => withFakeDocument(() => {
+    const prev = i18n.getLang();
+    i18n.setLang('en');
+    try {
+      const now = Date.parse('2026-10-09T16:00:00Z');
+      const el = RelativeTime('2026-10-09T10:00:00Z', { now, className: 'home-row-when' });
+      assert.equal(el.tagName, 'TIME');
+      assert.equal(el.getAttribute('datetime'), '2026-10-09T10:00:00.000Z');
+      assert.equal(el.getAttribute('class'), 'home-row-when');
+      assert.equal(el.textContent, '6 hours ago');
+      const offset = i18n.utcOffsetLabel(-new Date('2026-10-09T10:00:00Z').getTimezoneOffset());
+      assert.equal(el.getAttribute('title'), `${i18n.formatDateTime('2026-10-09T10:00:00Z')} ${offset}`, 'matched against a log');
+      assert.equal(i18n.formatDateTime(new Date('2026-10-09T10:00:00Z'), { offset: true }), el.getAttribute('title'));
+      assert.equal(RelativeTime(new Date(now - 60000), { now }).textContent, '1 minute ago', 'a Date');
+      assert.equal(RelativeTime(now, { text: 'Oct 9, 2026' }).textContent, 'Oct 9, 2026', 'its own text, the same title');
+      const none = RelativeTime('soon', { now });
+      assert.deepEqual([none.tagName, none.textContent, none.getAttribute('title')], ['SPAN', '—', null], 'no time: a dash');
+    } finally {
+      i18n.setLang(prev);
+    }
+  }));
+
+  test('utcOffsetLabel: minutes east of UTC as "UTC+03:00"', () => {
+    assert.equal(i18n.utcOffsetLabel(180), 'UTC+03:00');
+    assert.equal(i18n.utcOffsetLabel(0), 'UTC+00:00');
+    assert.equal(i18n.utcOffsetLabel(-330), 'UTC-05:30');
+    assert.equal(i18n.utcOffsetLabel(345), 'UTC+05:45');
+    assert.equal(i18n.utcOffsetLabel(NaN), 'UTC+00:00');
   });
 
   test('Alert: a privacy note (ok + lock) is neutral, not good news; the other variants keep their class and role', () => withFakeDocument(() => {

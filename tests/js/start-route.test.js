@@ -116,6 +116,10 @@ const JS = join(ASSETS, 'js');
  * strings in both languages), views/home.css (2,896), MenuButton in ui/components.js (2,442), ui/jobs.js's jobList / onJobs (495)
  * and a result's status in lib/session.js (383); ui/start-tasks.js is now Home's, no longer app.js's. Home's counts
  * (lib/homedigest.js with the owners' readers), the DMARC history and the palette load after its first paint or on first use.
+ * Phase 1's review fixes: ≈ 269 KB (275,412 bytes), 103,468 bytes under the budget. ui/components.js grew by 811 bytes (RelativeTime, Home's
+ * relative times as a <time> with the absolute local time and its UTC offset in the title, and MenuButton's type-ahead), views/home.js by 467,
+ * i18n.js by 228 (formatDateTime's `offset`, utcOffsetLabel), app.js by 193 (a purpose line of text and nodes) and style.css by 119 (the
+ * sidebar's privacy line wraps).
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

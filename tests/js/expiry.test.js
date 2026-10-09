@@ -30,9 +30,13 @@ describe('the expiry bands', () => {
     }
   });
 
-  test('daysUntil: whole days, rounded down; a day (YYYY-MM-DD) counts from its start, UTC', () => {
-    assert.equal(daysUntil('2026-10-12', NOW), 2, '2.5 days: 2');
-    assert.equal(daysUntil('2026-10-09', NOW), -1, 'today, after noon: past its start');
+  test('daysUntil: a time in whole days, rounded down; a day (YYYY-MM-DD) in whole UTC calendar days — today is 0, past from the day after', () => {
+    assert.equal(daysUntil('2026-10-12', NOW), 3, 'three days from today');
+    assert.equal(daysUntil('2026-10-09', NOW), 0, 'today, after noon: it ends today, it has not ended');
+    assert.equal(daysUntil('2026-10-08', NOW), -1, 'yesterday: past');
+    assert.equal(daysUntil('2026-10-10', Date.parse('2026-10-09T23:59:59Z')), 1, 'tomorrow, a second before midnight');
+    assert.equal(daysUntil('2026-10-09', Date.parse('2026-10-09T00:00:00Z')), 0, 'today, at midnight');
+    assert.equal(daysUntil('2027-10-09', NOW), 365);
     assert.equal(daysUntil(new Date('2026-10-19T12:00:00Z'), NOW), 10);
     assert.equal(daysUntil(Date.parse('2026-10-09T11:00:00Z'), NOW), -1, 'an hour ago');
     assert.equal(daysUntil('2026-11-08T12:00:00Z', new Date(NOW)), 30);
@@ -40,10 +44,20 @@ describe('the expiry bands', () => {
     assert.equal(daysUntil('2026-10-12', 'now'), null);
   });
 
+  test('daysUntil on the last day (now 10:00 UTC): a day ending at 20:00 is 0 days left, as its time says — never expired before it is', () => {
+    const now = Date.parse('2026-10-09T10:00:00Z');
+    const ends = Date.parse('2026-10-09T20:00:00Z');
+    assert.equal(daysUntil(ends, now), 0, 'the time: 10 hours left');
+    assert.equal(daysUntil('2026-10-09', now), daysUntil(ends, now), 'its day says the same');
+    assert.equal(daysUntil('2026-10-10', now), daysUntil(Date.parse('2026-10-10T23:00:00Z'), now), 'in 37 hours: 1 day, by its day as by its time');
+    assert.deepEqual(expiryOf('certificate', '2026-10-09', now), { daysLeft: 0, severity: 'error' });
+    assert.deepEqual(expiryOf('registration', '2026-10-09', now + 86400000), { daysLeft: -1, severity: 'error' }, 'the day after: expired');
+  });
+
   test('expiryOf: the days left and their severity, or null when the end is not known', () => {
-    assert.deepEqual(expiryOf('certificate', '2026-10-12', NOW), { daysLeft: 2, severity: 'error' });
-    assert.deepEqual(expiryOf('registration', '2026-11-28', NOW), { daysLeft: 49, severity: 'warn' });
-    assert.deepEqual(expiryOf('registration', '2027-10-09', NOW), { daysLeft: 364, severity: 'ok' });
+    assert.deepEqual(expiryOf('certificate', '2026-10-12', NOW), { daysLeft: 3, severity: 'error' });
+    assert.deepEqual(expiryOf('registration', '2026-11-28', NOW), { daysLeft: 50, severity: 'warn' });
+    assert.deepEqual(expiryOf('registration', '2027-10-09', NOW), { daysLeft: 365, severity: 'ok' });
     assert.equal(expiryOf('registration', null, NOW), null);
     assert.equal(expiryOf('mailbox', '2026-11-28', NOW), null);
   });

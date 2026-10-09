@@ -1784,6 +1784,35 @@ async function main() {
       }
     });
 
+    await step('the sidebar\'s footer at 1440 and 1100 px, in English and Turkish: the privacy line is a label — it wraps, never cut; the DoH chain may be, with all of it in its title', async () => {
+      // Labels wrap and only values truncate (DESIGN §6.3): Linux fonts set wider, so the line is also made three times longer here.
+      const foot = () => page.evaluate(() => {
+        const span = document.querySelector('#app-nav .nav-status-privacy span');
+        const cut = () => span.scrollWidth > span.clientWidth + 1;
+        const text = span.textContent;
+        const out = { text, cut: cut(), height: span.getBoundingClientRect().height };
+        span.textContent = `${text} ${text} ${text}`;
+        Object.assign(out, { longCut: cut(), longHeight: span.getBoundingClientRect().height });
+        span.textContent = text;
+        out.dohTitle = document.querySelector('#app-nav [data-status="doh"]').title;
+        return out;
+      });
+      try {
+        for (const width of [1440, 1100]) {
+          await page.setViewport({ width, height: 900 });
+          for (const lang of ['en', 'tr']) {
+            await setLangUi(page, lang);
+            const f = await foot();
+            assert(!f.cut && !f.longCut && f.longHeight > f.height, `${width} px, ${lang}: the privacy line wraps: ${JSON.stringify(f)}`);
+            assert(f.dohTitle.startsWith('DoH'), `${width} px, ${lang}: the chain's title: ${JSON.stringify(f)}`);
+          }
+        }
+      } finally {
+        await setLangUi(page, 'en');
+        await page.setViewport({ width: 1440, height: 900 });
+      }
+    });
+
     await step('i18n: no missing keys, TR and EN key sets match', async () => {
       const info = await page.evaluate(async () => {
         const i = await import('./assets/js/i18n.js');
@@ -1850,6 +1879,7 @@ async function main() {
             .map((sel) => [sel, shown(document.querySelector(sel))]),
           button: box('[data-control="nav-menu"]'),
           lang: box('[data-control="lang"]'),
+          segments: [...document.querySelectorAll('[data-control="lang"] [data-value]')].map((b) => [Math.round(b.getBoundingClientRect().width), Math.round(b.getBoundingClientRect().height)]),
           settings: box('[data-control="settings"]'),
           name: btn.textContent.trim().replace(/\s+/g, ' '),
           label: btn.querySelector('.nav-menu-current-label').textContent,
@@ -1865,6 +1895,8 @@ async function main() {
       assertEqual(info.shown, [['.brand-logo', true], ['.brand-name', false], ['[data-control="palette"]', false], ['[data-control="theme"]', false],
         ['[data-control="theme-cycle"]', false], ['.header-workspace', false], ['[data-control="lang"]', true], ['[data-control="settings"]', true]], 'what the bar holds');
       assert(info.button.height >= 40 && info.settings.height >= 40 && info.lang.height >= 36, `touch targets: ${JSON.stringify(info)}`);
+      // TR|EN: two 36 px segments (DESIGN §3.4)
+      assert(info.segments.length === 2 && info.segments.every(([w, hgt]) => w >= 36 && hgt === 36), `two 36 px segments: ${JSON.stringify(info.segments)}`);
       assert(info.button.left > 28 && info.button.right <= info.lang.left && info.settings.right <= info.vw, `one row: ${JSON.stringify(info)}`);
       assertEqual([info.name, info.label, info.popup, info.expanded], [`Araçlar: ${title('about', 'tr')}`, title('about', 'tr'), 'dialog', 'false'],
         'the Tools button names the open tool ("Araçlar:" read out)');

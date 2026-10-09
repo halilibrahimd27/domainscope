@@ -70,7 +70,7 @@
 
 import { h, svg, clear, uid, debounce, isNode, scrollBehavior } from './dom.js';
 import {
-  t, formatNumber, formatBytes, formatPercent, getLang, localeTag
+  t, formatNumber, formatBytes, formatPercent, formatDateTime, formatRelative, getLang, localeTag
 } from '../i18n.js';
 import { errorKind } from '../lib/util.js';
 import { parseIP } from '../lib/ip.js';
@@ -337,6 +337,21 @@ export function SeverityBadge(severity, text) {
   return Badge(text ?? t(`severity.${sev}`), { variant: sev, icon: SEVERITY_ICONS[sev] });
 }
 
+/**
+ * A time as a `<time>` (docs/DESIGN.md §6.3): `datetime` the ISO time, the text relative ("6 hours
+ * ago", or `text`), the title the absolute local time with its offset from UTC ("Oct 9, 2026,
+ * 1:00 PM UTC+03:00"), so an engineer can match it against a log. Not a time: '—' in a span.
+ * @param {Date|number|string} when
+ * @param {{ now?: Date|number, text?: string|null, className?: string|null }} [opts]
+ * @returns {HTMLElement}
+ */
+export function RelativeTime(when, { now = Date.now(), text = null, className = null } = {}) {
+  const ms = when instanceof Date ? when.getTime() : typeof when === 'number' ? when : typeof when === 'string' ? Date.parse(when) : NaN;
+  if (!Number.isFinite(ms)) return h('span', { class: className }, '—');
+  return h('time', { class: className, attrs: { datetime: new Date(ms).toISOString() }, title: formatDateTime(ms, { offset: true }) },
+    text ?? formatRelative(ms, now));
+}
+
 /* ------------------------------------------------------------------------ */
 /* Buttons & links                                                          */
 /* ------------------------------------------------------------------------ */
@@ -416,6 +431,27 @@ export function menuStep(index, count, key) {
   return null;
 }
 
+/**
+ * Type-ahead in a menu: the item a printable key moves to, from item `index` (-1: none yet) — the
+ * next one whose label starts with that character, wrapping around, case aside (in the page's
+ * language: Turkish İ is the capital of i); null for any other key, or when no label starts with it.
+ * @param {string[]} labels the items' labels, in order
+ * @param {number} index
+ * @param {string} key KeyboardEvent.key
+ * @param {string} [lang]
+ * @returns {number|null}
+ */
+export function menuTypeAhead(labels, index, key, lang = getLang()) {
+  if (typeof key !== 'string' || [...key].length !== 1 || !key.trim()) return null;
+  const k = key.toLocaleLowerCase(lang);
+  const n = labels.length;
+  for (let i = 1; i <= n; i++) {
+    const at = (index + i + n) % n;
+    if (String(labels[at]).trim().toLocaleLowerCase(lang).startsWith(k)) return at;
+  }
+  return null;
+}
+
 /** Can this browser show a popover (the top layer, light dismiss)? */
 function popoverSupported() {
   const El = globalThis.HTMLElement;
@@ -426,8 +462,9 @@ function popoverSupported() {
  * A button that opens a short menu of actions (the WAI-ARIA menu button pattern), such as Home's
  * "⋯" on a phone. The menu is a popover — the top layer: nothing clips it, a click outside or Esc
  * closes it — placed under its button through CSSOM only ({@link menuPlacement}). Enter, Space or ↓
- * open it on its first item, ↑ on its last; ↓ ↑ Home End move ({@link menuStep}); Esc closes it
- * and the focus goes back to the button; Tab moves on and closes it. An item is a link (`href`,
+ * open it on its first item, ↑ on its last; ↓ ↑ Home End move ({@link menuStep}), and a letter to
+ * the next item that starts with it ({@link menuTypeAhead}); Esc closes it and the focus goes back
+ * to the button; Tab moves on and closes it. An item is a link (`href`,
  * followed as any link) or an action (`onSelect`). Without popover support the menu is shown and
  * hidden in place.
  * @param {{ label: string, icon?: string, items: Array<{ label: string, icon?: string, href?: string,
@@ -444,7 +481,9 @@ export function MenuButton({ label, icon = 'more', items = [], size = 'sm', clas
     attrs: { 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-controls': menuId }
   });
   let shown = false;
-  const entries = (items || []).filter((item) => item && item.label).map((item) => {
+  const listed = (items || []).filter((item) => item && item.label);
+  const labels = listed.map((item) => String(item.label));
+  const entries = listed.map((item) => {
     const content = [item.icon ? Icon(item.icon, { size: 16 }) : null, h('span', { class: 'menu-item-label' }, item.label)];
     const common = { class: 'menu-item', attrs: { role: 'menuitem', tabindex: -1 }, dataset: item.dataset || {}, on: { click: (event) => choose(item, event) } };
     return item.href ? h('a', { ...common, href: item.href }, ...content) : h('button', { ...common, type: 'button' }, ...content);
@@ -552,7 +591,8 @@ export function MenuButton({ label, icon = 'more', items = [], size = 'sm', clas
   });
   menu.addEventListener('keydown', (event) => {
     const at = entries.indexOf(globalThis.document.activeElement);
-    const next = menuStep(at, entries.length, event.key);
+    let next = menuStep(at, entries.length, event.key);
+    if (next === null && !event.ctrlKey && !event.metaKey && !event.altKey) next = menuTypeAhead(labels, at, event.key);
     if (next === null) return;
     event.preventDefault();
     entries[next].focus({ preventScroll: true });

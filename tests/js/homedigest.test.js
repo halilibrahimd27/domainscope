@@ -23,6 +23,9 @@ import { emptyRollout, setStep, setTotal, serializeRollout, boardId } from '../.
 import { withDigest } from '../../assets/js/lib/digests.js';
 import { readHistory, rollup } from '../../assets/js/lib/dmarchistory.js';
 import { EXPIRY_BANDS } from '../../assets/js/lib/expiry.js';
+// The tools with the details, which know the exact time (Home keeps the day): its days must be theirs on the last day.
+import { analyzeCt } from '../../assets/js/lib/ctwatch.js';
+import { portfolioFacts } from '../../assets/js/lib/portfolio.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const NOW = Date.parse('2026-10-09T12:00:00Z');
@@ -38,7 +41,7 @@ const cert = (id, names, notBefore, notAfter, extra = {}) => ({ id, names, notBe
 function ctText({ checkedDaysAgo = 2 } = {}) {
   const read = (domain, certs) => ({ domain, at: at(checkedDaysAgo), state: 'ok', certs });
   const seen = updateSeen(emptySeen(), [
-    // ends 2026-10-12 (a due day counts from its start, UTC: 2 days left): error
+    // ends 2026-10-12 (a due day counts in UTC calendar days: 3 days from today): error
     read('example.com', [cert('00000000000000a1', ['example.com', 'www.example.com'], '2026-07-14T00:00:00Z', '2026-10-12T12:00:00Z')]),
     // 16 days left: warn; the certificate its renewal replaced (2 days left) never counts
     read('example.org', [
@@ -71,7 +74,7 @@ function rdapText({ checkedDaysAgo = 1 } = {}) {
     { domain: 'mail.example.com', snapshot: snap({ expires: '2027-08-01T00:00:00Z', statuses: ['pendingTransfer', 'clientTransferProhibited'] }) },
     // a registry lock: server transfer, update and delete prohibited — never flagged
     { domain: 'lock.example.com', snapshot: snap({ expires: '2027-08-01T00:00:00Z', statuses: ['server transfer prohibited', 'server update prohibited', 'server delete prohibited'] }) },
-    // ended on 2026-10-01: 9 days ago, counted from the start of that day (UTC)
+    // ended on 2026-10-01: 8 days ago, in UTC calendar days
     { domain: 'old.example.com', snapshot: snap({ expires: '2026-10-01T00:00:00Z', statuses: ['client transfer prohibited'] }) }
   ];
   return rdapSeenText(updateRdapSeen(emptyRdapSeen(), reads, { now: at(checkedDaysAgo) }));
@@ -98,10 +101,10 @@ describe('certificate expiry (the CT baseline\'s `due`)', () => {
     assert.deepEqual(rows.map((r) => [r.kind, r.severity, r.params.count ?? null]),
       [['certExpired', 'error', 1], ['cert', 'error', 1], ['cert', 'warn', 1], ['ctFirst', 'info', null]]);
     assert.deepEqual(by('certExpired', 'error').names, ['example.net']);
-    assert.equal(by('certExpired', 'error').soonest, -5);
+    assert.equal(by('certExpired', 'error').soonest, -4, 'ended on 2026-10-05: 4 days ago');
     assert.deepEqual(by('cert', 'error').params, { count: 1, days: EXPIRY_BANDS.certificate.error });
     assert.deepEqual(by('cert', 'error').names, ['example.com']);
-    assert.equal(by('cert', 'error').soonest, 2);
+    assert.equal(by('cert', 'error').soonest, 3);
     assert.deepEqual(by('cert', 'warn').params, { count: 1, days: EXPIRY_BANDS.certificate.warn });
     assert.deepEqual(by('cert', 'warn').names, ['example.org'], 'its renewal (16 days) is due, the replaced certificate (2 days) is not');
     assert.deepEqual(by('ctFirst', 'info').names, ['shop.example.net'], 'a baseline from before `due`: check once');
@@ -131,11 +134,11 @@ describe('registrations (the registration watch\'s snapshot)', () => {
       ['reg', 'error'], ['reg', 'warn'], ['regExpired', 'error'], ['regGone', 'error'], ['regNoLock', 'warn'], ['regRisk', 'error'], ['regTransfer', 'error']
     ].sort());
     assert.deepEqual(by('regExpired', 'error'), {
-      kind: 'regExpired', severity: 'error', key: 'home.regExpired', params: { count: 9, days: 9 }, nameParam: null, names: ['old.example.com'],
-      soonest: -9, at: iso(at(1)), stale: false, link: { view: 'portfolio', params: { domains: 'old.example.com', run: '0' } }
+      kind: 'regExpired', severity: 'error', key: 'home.regExpired', params: { count: 8, days: 8 }, nameParam: null, names: ['old.example.com'],
+      soonest: -8, at: iso(at(1)), stale: false, link: { view: 'portfolio', params: { domains: 'old.example.com', run: '0' } }
     });
-    assert.deepEqual([by('reg', 'error').key, by('reg', 'error').params, by('reg', 'error').names], ['home.reg', { count: 19, days: 19 }, ['example.com']]);
-    assert.deepEqual([by('reg', 'warn').params, by('reg', 'warn').names], [{ count: 49, days: 49 }, ['example.org']]);
+    assert.deepEqual([by('reg', 'error').key, by('reg', 'error').params, by('reg', 'error').names], ['home.reg', { count: 20, days: 20 }, ['example.com']]);
+    assert.deepEqual([by('reg', 'warn').params, by('reg', 'warn').names], [{ count: 50, days: 50 }, ['example.org']]);
     assert.deepEqual(by('regGone', 'error').names, ['example.net']);
     assert.deepEqual([by('regRisk', 'error').params, by('regRisk', 'error').names], [{ status: 'server hold' }, ['shop.example.com']]);
     assert.deepEqual([by('regTransfer', 'error').nameParam, by('regTransfer', 'error').names], ['domain', ['mail.example.com']]);
@@ -150,6 +153,38 @@ describe('registrations (the registration watch\'s snapshot)', () => {
   });
 });
 
+describe('the last day: a day that ends today is 0 days left, expired only from the day after', () => {
+  // now 10:00 UTC; the CT baseline and the registration snapshot keep the day only, the CT tab and the Domain portfolio the time
+  const T = Date.parse('2026-10-09T10:00:00Z');
+  const hours = (n) => new Date(T + n * 3600000);
+
+  test('a certificate valid until 20:00 today: "expires within 7 days" with 0 days left, as the CT tab says — not "has expired"', () => {
+    const read = { domain: 'example.com', at: hours(-1), state: 'ok', certs: [cert('00000000000000a1', ['example.com'], '2026-07-11T20:00:00Z', iso(hours(10)))] };
+    const text = seenText(updateSeen(emptySeen(), [read], { now: hours(-1) }));
+    const tab = analyzeCt([read], { now: T }).rows[0];
+    assert.deepEqual([tab.current, tab.daysLeft], [true, 0], 'the CT tab: its current certificate, 0 days left');
+    const rows = ctAttention(text, T);
+    assert.deepEqual(rows.map((r) => [r.kind, r.severity, r.params.count, r.soonest]), [['cert', 'error', 1, tab.daysLeft]]);
+    // the day after (02:00): it has expired
+    assert.deepEqual(ctAttention(text, T + 16 * 3600000).map((r) => [r.kind, r.soonest]), [['certExpired', -1]]);
+  });
+
+  test('a registration ending at 18:00 today expires in 0 days, one ending in 37 hours in 1 day, as the Domain portfolio counts them', () => {
+    const rdap = (expires) => ({ ok: true, domain: 'example.com', expires, status: ['client transfer prohibited'], registrar: 'Example Registrar', registrarIanaId: '9999', nameservers: ['ns1.example.net'] });
+    for (const [label, expires, days] of [['today, 18:00', iso(hours(8)), 0], ['today, 20:00', iso(hours(10)), 0], ['in 37 hours', iso(hours(37)), 1]]) {
+      const facts = portfolioFacts({ domain: 'example.com', rdap: rdap(expires) }, { now: T });
+      assert.equal(facts.registration.daysLeft, days, `${label}: the Domain portfolio`);
+      const text = rdapSeenText(updateRdapSeen(emptyRdapSeen(), [{ domain: 'example.com', snapshot: registrationSnapshot(facts) }], { now: hours(-1) }));
+      const rows = regAttention(text, T);
+      assert.deepEqual(rows.map((r) => [r.kind, r.severity, r.params, r.soonest]), [['reg', 'error', { count: days, days }, days]], `${label}: Home`);
+    }
+    // the day after the 18:00 one: "expired 1 day ago"
+    const facts = portfolioFacts({ domain: 'example.com', rdap: rdap(iso(hours(8))) }, { now: T });
+    const text = rdapSeenText(updateRdapSeen(emptyRdapSeen(), [{ domain: 'example.com', snapshot: registrationSnapshot(facts) }], { now: hours(-1) }));
+    assert.deepEqual(regAttention(text, T + 86400000).map((r) => [r.kind, r.params]), [['regExpired', { count: 1, days: 1 }]]);
+  });
+});
+
 describe('accepted risks, rollouts, Monitoring, jobs, servers, DMARC', () => {
   test('accepted risks: ending within 14 days (warn), ended — counting again — (info); the link opens the Workspaces dialog', () => {
     const rows = waiverAttention(waiversText(), NOW);
@@ -158,7 +193,7 @@ describe('accepted risks, rollouts, Monitoring, jobs, servers, DMARC', () => {
       ['waiversEnded', 'info', { count: 1 }, ['example.org']]
     ]);
     assert.deepEqual(rows[0].link, { workspace: 'waivers' });
-    assert.equal(rows[0].soonest, 4);
+    assert.equal(rows[0].soonest, 5, 'its last day is 2026-10-14: 5 days from today');
   });
 
   test('rollout: "{done} of {total}" when every open board has its total, else what was ticked; finished and old boards are left out', () => {

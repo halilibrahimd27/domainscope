@@ -304,12 +304,13 @@ export function formatDate(value, { utc = false, ...opts } = {}) {
 }
 
 /**
- * Locale date + time ('23 Eyl 2026 14:05' / 'Sep 23, 2026, 2:05 PM'); `utc` appends ' UTC'.
+ * Locale date + time ('23 Eyl 2026 14:05' / 'Sep 23, 2026, 2:05 PM'); `utc` appends ' UTC';
+ * `offset` the local time's offset from UTC (' UTC+03:00'), so it can be matched against a log.
  * @param {Date|number|string} value
- * @param {{ utc?: boolean, seconds?: boolean }} [opts]
+ * @param {{ utc?: boolean, seconds?: boolean, offset?: boolean }} [opts]
  * @returns {string}
  */
-export function formatDateTime(value, { utc = false, seconds = false } = {}) {
+export function formatDateTime(value, { utc = false, seconds = false, offset = false } = {}) {
   const d = toDate(value);
   if (!d) return '—';
   const fmt = new Intl.DateTimeFormat(localeTag(), {
@@ -317,7 +318,20 @@ export function formatDateTime(value, { utc = false, seconds = false } = {}) {
     timeStyle: seconds ? 'medium' : 'short',
     ...(utc ? { timeZone: 'UTC' } : {})
   });
-  return utc ? `${fmt.format(d)} UTC` : fmt.format(d);
+  if (utc) return `${fmt.format(d)} UTC`;
+  return offset ? `${fmt.format(d)} ${utcOffsetLabel(-d.getTimezoneOffset())}` : fmt.format(d);
+}
+
+/**
+ * An offset from UTC, in minutes east of it, as 'UTC+03:00' / 'UTC-05:30'.
+ * @param {number} minutes
+ * @returns {string}
+ */
+export function utcOffsetLabel(minutes) {
+  const off = Number.isFinite(minutes) ? Math.round(minutes) : 0;
+  const abs = Math.abs(off);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `UTC${off < 0 ? '-' : '+'}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
 /**

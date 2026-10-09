@@ -455,7 +455,9 @@ from 1100 px; one column below. All cards use `Card` with `--card-pad`. Rows ins
 ### 4.4 Empty state: first run, or a new workspace
 
 Shown when the workspace has no recent domains, no CT baseline, no registration snapshot, no
-waivers and no servers.
+waivers, no servers, no rollout board, no nightly results' digest and no DMARC report history.
+Monitoring and DMARC & TLS reports never add a recent domain, so a workspace used only for the
+nightly results or for DMARC is not a new one: Home shows its *Needs attention* rows.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────────────────────┐

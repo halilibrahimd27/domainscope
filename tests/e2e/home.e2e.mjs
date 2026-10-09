@@ -24,8 +24,11 @@
  *   - Recent domains with their quick actions (a name makes it the current target), Results in
  *     this tab with a result's open risks, Start a job folded to a short list, This workspace, the
  *     setup checklist with its ✓ and "Hide this list" for good;
- *   - a workspace switch re-renders Home under the other workspace's name;
- *   - 375 px (Turkish, dark): the "⋯" menu of a recent domain (keyboard: ↓, Esc), 320 px: no
+ *   - every relative time (the last activity, "last checked", Recent domains, Results in this tab) is a
+ *     <time datetime> whose title is the absolute local time with its UTC offset;
+ *   - a workspace switch re-renders Home under the other workspace's name; a workspace whose only data
+ *     is the nightly results' digest is no new one: Home counts them;
+ *   - 375 px (Turkish, dark): the "⋯" menu of a recent domain (keyboard: ↓, a letter, Esc), 320 px: no
  *     horizontal scroll anywhere;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; no request sent.
  */
@@ -273,6 +276,14 @@ async function main() {
       assertEqual([info.rows[5].tag, info.rows[5].href], ['button', null], 'the accepted risks open a dialog');
       assert(!info.rows.some((r) => r.detail.includes('lock.example.com')), 'a registry lock is no risk');
       assert(await page.evaluate(() => performance.getEntriesByType('resource').some((e) => e.name.endsWith('/lib/homedigest.js'))), 'the counts loaded with lib/homedigest.js');
+      // Every relative time is a <time datetime>; its title, the absolute local time with its UTC offset, matches a log (DESIGN §6.3).
+      const times = await page.evaluate(() => [...document.querySelectorAll('.page-purpose time, .home time')].map((el) => ({
+        role: el.closest('[data-role="home-attention"], [data-role="home-recent"], [data-role="home-kept"]')?.dataset.role || 'purpose',
+        iso: el.getAttribute('datetime'), title: el.title, text: el.textContent
+      })));
+      assertEqual([...new Set(times.map((x) => x.role))], ['purpose', 'home-attention', 'home-recent'], `the times: ${JSON.stringify(times)}`);
+      assert(times.every((x) => Number.isFinite(Date.parse(x.iso)) && /\d.* UTC[+-]\d\d:\d\d$/.test(x.title) && x.text && x.text !== x.title),
+        `a datetime, the local time with its offset as the title: ${JSON.stringify(times)}`);
       await assertNoHorizontalScroll(page, 'seeded Home');
       await shot(page, 'home-desktop-light-en-seeded');
     });
@@ -360,9 +371,11 @@ async function main() {
       await remountHome(page);
       const kept = await page.evaluate(() => [...document.querySelectorAll('[data-role="home-kept"] .home-kept-row')].map((a) => ({
         view: a.dataset.view, tool: a.querySelector('.home-kept-tool').textContent, subject: a.querySelector('.home-kept-subject')?.textContent,
-        tags: [...a.querySelectorAll('.tag')].map((t) => t.textContent), href: a.getAttribute('href')
+        tags: [...a.querySelectorAll('.tag')].map((t) => t.textContent), href: a.getAttribute('href'),
+        time: /UTC[+-]\d\d:\d\d$/.test(a.querySelector('time.home-kept-when[datetime]')?.title || '')
       })));
-      assertEqual(kept, [{ view: 'health', tool: 'Domain Health', subject: 'example.com', tags: ['1 error', '2 warnings'], href: '#/health?domain=example.com&run=0' }], 'kept result');
+      assertEqual(kept, [{ view: 'health', tool: 'Domain Health', subject: 'example.com', tags: ['1 error', '2 warnings'], href: '#/health?domain=example.com&run=0', time: true }],
+        'kept result');
     });
 
     await run.step('Start a job is a short list now; This workspace counts what it holds; the checklist ticks what is done and hides for good', async () => {
@@ -402,6 +415,17 @@ async function main() {
       await page.waitFor(() => document.querySelector('h1.page-title')?.textContent === 'Acme', { message: 'Acme', timeout: 15000 });
       const info = await homeInfo(page);
       assertEqual([info.h1, info.docTitle, info.empty], ['Acme', 'Acme · DomainScope', true], 'the new workspace\'s Home');
+      // Monitoring never adds a recent domain: a workspace that holds only its nightly results' digest is in use, and Home counts them.
+      await page.evaluate(async () => {
+        const [{ state }, dg] = await Promise.all([import('./assets/js/state.js'), import('./assets/js/lib/digests.js')]);
+        await state.setWorkspaceData('digests', dg.withDigest('', 'monitor', { at: new Date(), imported: new Date(), targets: 6, bad: 3, expiring: 2, incomplete: 1 }));
+        await state.whenSaved();
+      });
+      await remountHome(page);
+      const digest = await homeInfo(page);
+      assertEqual([digest.h1, digest.empty, digest.rows.map((r) => `${r.severity}:${r.kind}`)], ['Acme', false, ['error:monitorBad', 'warn:monitorExpiring', 'warn:monitorIncomplete']],
+        'a digest alone: no first-run page, its counts');
+      assertEqual(digest.rows[0].text, 'Monitoring: 3 targets had a bad change in the last 7 days', 'the nightly results');
       await page.evaluate(async (wid) => {
         const { state } = await import('./assets/js/state.js');
         await state.switchWorkspace('default');
@@ -462,6 +486,11 @@ async function main() {
       await shot(page, 'home-phone-dark-tr-menu', { full: false });
       await page.press('ArrowDown');
       assertEqual(await page.evaluate(() => document.activeElement.textContent), 'Alan adı özeti', '↓ moves');
+      // Type-ahead: a letter moves to the next item that starts with it, wrapping around.
+      await page.press('d');
+      assertEqual(await page.evaluate(() => document.activeElement.textContent), 'DNS Sorgulama', '"d": the next item starting with it');
+      await page.press('a');
+      assertEqual(await page.evaluate(() => document.activeElement.textContent), 'Alan Adı Sağlığı', '"a": around to the first');
       await page.press('Escape');
       await page.waitFor((sel) => document.activeElement === document.querySelector(sel) && document.querySelector(sel).getAttribute('aria-expanded') === 'false',
         { args: [btn], message: 'Esc closes, the focus back on "⋯"' });

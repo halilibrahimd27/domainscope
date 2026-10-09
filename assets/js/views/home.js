@@ -14,18 +14,21 @@
  *   the DMARC history last, in an idle callback (lib/dmarchistory.js, its own import). Each row is
  *   one link to the tool with the details, filled in, nothing run.
  * - A workspace with nothing in it (no recent domains, CT baseline, registration snapshot, accepted
- *   risks or servers) gets the empty state: the quick start, the job cards and the setup checklist.
+ *   risks, servers, rollout board, nightly results' digest or DMARC report history) gets the empty
+ *   state: the quick start, the job cards and the setup checklist.
+ * - Every relative time is a <time datetime> whose title is the absolute local time with its UTC
+ *   offset (ui/components.js RelativeTime, docs/DESIGN.md §6.3).
  * - Cards with nothing to show are left out. A workspace switch re-mounts the view (app.js).
  *
  * The pure parts are exported for tests/js/home-view.test.js; the module is DOM-free at import time.
  */
 
 import { h, clear, uid, svg } from '../ui/dom.js';
-import { Button, Icon, MenuButton, SeverityIcon, Tag, announce } from '../ui/components.js';
+import { Button, Icon, MenuButton, RelativeTime, SeverityIcon, Tag, announce } from '../ui/components.js';
 import { StartTaskList } from '../ui/start-tasks.js';
 import { jobList, onJobs } from '../ui/jobs.js';
 import { workspaceLabel } from '../ui/workspace-ui.js';
-import { t, registerStrings, formatDate, formatNumber, formatPercent, formatRelative } from '../i18n.js';
+import { t, registerStrings, formatDate, formatNumber, formatPercent } from '../i18n.js';
 import { parseTarget, fillRoute } from '../lib/session.js';
 
 /** Route id (`#/home`). */
@@ -205,13 +208,16 @@ registerStrings('tr', {
 
 /**
  * Does the workspace hold nothing Home builds on? No recent domain, CT baseline, registration
- * snapshot, accepted risk or server: Home shows its empty state.
- * @param {{ recent?: any[], ctSeen?: string, rdapSeen?: string, waivers?: string, servers?: number }} ws
+ * snapshot, accepted risk, server, rollout board, nightly results' digest or DMARC report history:
+ * Home shows its empty state. (Monitoring and DMARC & TLS reports add no recent domain: their parts
+ * alone are a workspace in use, whose counts Home shows.)
+ * @param {{ recent?: any[], ctSeen?: string, rdapSeen?: string, waivers?: string, servers?: number, rollout?: string,
+ *   digests?: string, reportHistory?: string }} ws
  * @returns {boolean}
  */
-export function isEmptyWorkspace({ recent = [], ctSeen = '', rdapSeen = '', waivers = '', servers = 0 } = {}) {
+export function isEmptyWorkspace({ recent = [], ctSeen = '', rdapSeen = '', waivers = '', servers = 0, rollout = '', digests = '', reportHistory = '' } = {}) {
   const has = (text) => typeof text === 'string' && text.trim() !== '';
-  return !(Array.isArray(recent) && recent.length) && !has(ctSeen) && !has(rdapSeen) && !has(waivers) && !(servers > 0);
+  return !(Array.isArray(recent) && recent.length) && !(servers > 0) && ![ctSeen, rdapSeen, waivers, rollout, digests, reportHistory].some(has);
 }
 
 /**
@@ -306,6 +312,23 @@ export function firstNoteLine(notes) {
 /* View                                                                     */
 /* ------------------------------------------------------------------------ */
 
+/**
+ * The text of `key` with its `{name}` as the element `el` (a <time>): the text before it, the
+ * element, the text after it.
+ * @param {string} key
+ * @param {string} name
+ * @param {Node} el
+ * @returns {Array<string|Node>}
+ */
+function textWith(key, name, el) {
+  const mark = '\u0001';
+  const [before, after = ''] = t(key, { [name]: mark }).split(mark);
+  return [before, el, after].filter((part) => part !== '');
+}
+
+/** Bits of a line (each a list of text and nodes) joined with " · ". */
+const joinBits = (bits) => bits.flatMap((bit, i) => (i ? [' · ', ...bit] : bit));
+
 /** A card with its heading (an h2: the page's h1 is the workspace's name). */
 function card({ role, title, className = '', actions = null }, ...children) {
   const headingId = uid('home-card');
@@ -346,14 +369,16 @@ export function mount(container, ctx) {
     notes: state.workspaceData('notes') || '',
     origins: state.workspaceData('origins')
   };
+  // The DMARC report history (up to 4 MB): read by lib/dmarchistory.js last, in an idle moment.
+  const history = state.workspaceData('reportHistory') || '';
   const servers = inv.servers.length;
-  const empty = isEmptyWorkspace({ ...parts, servers });
+  const empty = isEmptyWorkspace({ ...parts, servers, reportHistory: history });
 
   // The title: the workspace's name (Default's "Default workspace"), its facts under it.
   const title = ws.isDefault ? t('home.titleDefault') : workspaceLabel(ws);
   const facts = homeFacts({ servers, recent: parts.recent.length, updatedAt: ws.updatedAt })
-    .map((f) => (f.key === 'home.factActivity' ? t(f.key, { when: formatRelative(f.params.at, now) }) : t(f.key, f.params)));
-  ctx.setHeading({ title, purpose: empty ? t('home.emptyLead') : facts.join(' · ') || t('nav.home.purpose') });
+    .map((f) => (f.key === 'home.factActivity' ? textWith(f.key, 'when', RelativeTime(f.params.at, { now })) : [t(f.key, f.params)]));
+  ctx.setHeading({ title, purpose: empty ? t('home.emptyLead') : facts.length ? joinBits(facts) : t('nav.home.purpose') });
   ctx.setActions(Button({ label: t('home.manage'), icon: 'briefcase', size: 'sm', dataset: { action: 'home-manage' }, onClick: () => ctx.openWorkspaces() }));
 
   const root = h('div', { class: ['home', { 'home-empty': empty }], dataset: { role: 'home' } });
@@ -426,8 +451,8 @@ export function mount(container, ctx) {
   function rowDetail(r) {
     const bits = [];
     if (!r.nameParam && r.names.length) bits.push(h('span', { class: 'home-row-names' }, namesText(r.names)));
-    if (r.at && r.stale) bits.push(h('span', { class: 'home-row-stale' }, t('home.asOf', { date: formatDate(r.at) })));
-    else if (r.at && r.kind !== 'job') bits.push(h('span', { class: 'home-row-when' }, t('home.stale', { when: formatRelative(r.at, Date.now()) })));
+    if (r.at && r.stale) bits.push(h('span', { class: 'home-row-stale' }, textWith('home.asOf', 'date', RelativeTime(r.at, { text: formatDate(r.at) }))));
+    else if (r.at && r.kind !== 'job') bits.push(h('span', { class: 'home-row-when' }, textWith('home.stale', 'when', RelativeTime(r.at))));
     return bits.flatMap((b, i) => (i ? [h('span', { class: 'home-row-sep', attrs: { 'aria-hidden': 'true' } }, ' · '), b] : [b]));
   }
 
@@ -451,11 +476,11 @@ export function mount(container, ctx) {
   }
 
   function okRow(result) {
-    const bits = [t('home.attentionNone')];
-    if (result.facts.ctAt) bits.push(t('home.okCt', { when: formatRelative(result.facts.ctAt, Date.now()) }));
-    if (result.facts.regAt) bits.push(t('home.okReg', { when: formatRelative(result.facts.regAt, Date.now()) }));
+    const bits = [[t('home.attentionNone')]];
+    if (result.facts.ctAt) bits.push(textWith('home.okCt', 'when', RelativeTime(result.facts.ctAt)));
+    if (result.facts.regAt) bits.push(textWith('home.okReg', 'when', RelativeTime(result.facts.regAt)));
     return h('li', null, h('div', { class: 'home-row home-row-ok', dataset: { kind: 'ok', severity: 'ok' } },
-      SeverityIcon('ok'), h('span', { class: 'home-row-main' }, h('span', { class: 'home-row-text' }, bits.join(' · ')))));
+      SeverityIcon('ok'), h('span', { class: 'home-row-main' }, h('span', { class: 'home-row-text' }, joinBits(bits)))));
   }
 
   /** Draw the rows (the jobs read now); the keyboard focus stays on the row it was on. */
@@ -495,7 +520,6 @@ export function mount(container, ctx) {
 
   /** Count with lib/homedigest.js (after the first paint), then the DMARC history in an idle moment. */
   function loadAttention() {
-    const history = state.workspaceData('reportHistory') || '';
     import('../lib/homedigest.js').then((mod) => {
       if (ctx.signal.aborted) return;
       digest = mod;
@@ -544,7 +568,7 @@ export function mount(container, ctx) {
             }
           }
         }, e.value),
-        e.at ? h('span', { class: 'home-recent-when muted' }, formatRelative(e.at, now)) : h('span', { class: 'home-recent-when' }),
+        e.at ? RelativeTime(e.at, { now, className: 'home-recent-when muted' }) : h('span', { class: 'home-recent-when' }),
         h('span', { class: 'home-recent-actions' }, links.map((l) => h('a', {
           class: 'home-recent-action', href: l.href, dataset: { view: l.view }, attrs: { 'aria-label': `${l.full}: ${e.value}` }
         }, l.label))),
@@ -571,7 +595,7 @@ export function mount(container, ctx) {
           h('span', { class: 'home-kept-tool' }, t(`nav.${k.view}`)),
           k.subject ? h('span', { class: 'home-kept-subject mono' }, k.subject) : null,
           tags.length ? h('span', { class: 'home-kept-tags' }, tags) : null,
-          h('span', { class: 'home-kept-when muted' }, formatRelative(k.at, now))));
+          RelativeTime(k.at, { now, className: 'home-kept-when muted' })));
       })));
   }
 

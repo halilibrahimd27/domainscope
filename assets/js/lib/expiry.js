@@ -54,9 +54,12 @@ function timeOf(when) {
 }
 
 /**
- * Whole days from `now` until `when` (rounded down; negative once it is past), as the views count
- * a countdown. A day (YYYY-MM-DD) counts from its start, UTC: a registration that ends on a day
- * says one day fewer rather than one too many.
+ * Whole days from `now` until `when`, as the views count a countdown: a time in whole days, rounded
+ * down (negative once it is past); a day (YYYY-MM-DD, UTC: the CT baseline's `due`, a registration
+ * snapshot's `expires`) in whole UTC calendar days from today. Its own day is 0 and it is past
+ * (negative) only from the day after: a day carries no time, so it is never called expired before
+ * it is — on that day the CT tab and the Domain portfolio, which know the time, say 0 too until it
+ * has passed.
  * @param {Date|number|string} when
  * @param {Date|number} now
  * @returns {number|null}
@@ -65,6 +68,7 @@ export function daysUntil(when, now) {
   const t = timeOf(when);
   const n = now instanceof Date ? now.getTime() : Number(now);
   if (t === null || !Number.isFinite(n)) return null;
+  if (typeof when === 'string' && DAY_RE.test(when)) return Math.round((t - Math.floor(n / DAY_MS) * DAY_MS) / DAY_MS);
   return Math.floor((t - n) / DAY_MS);
 }
 

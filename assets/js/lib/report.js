@@ -364,7 +364,9 @@ const hasValue = (r) => r && r.value !== null && r.value !== undefined && r.valu
  * The Domain overview's report: its seven cards as sections (what each card shows, in its words),
  * the health card's problems with their advice first, its score as the verdict. A card not looked
  * up (a stopped build) says so; a failed lookup is "⚠ n/a" with the reason. The CT issuers appear
- * when they were asked for. Never a TXT token.
+ * when they were asked for. Never a TXT token. The accepted risks the health card leaves out
+ * (lib/passport.js healthCard `waived`, lib/waivers.js) leave the problems and the counts too: the
+ * verdict says "N accepted risks excluded" and the Health section names each with its waiver.
  * @param {{ cards: Record<string, object>, domain: string, host?: string|null, at?: Date|null }} input
  *   lib/passport.js passportCards() and the overview's domain, its host when reduced, its time
  * @param {{ t: Function, has?: (key: string) => boolean, statusText?: (status: object) => string }} opts
@@ -562,13 +564,29 @@ export function domainReport(input, opts) {
     health(card) {
       if ((card.failures || []).length) return { notes: [note('error', t('dov.health.failed')), ...card.failures.map((f) => note('warn', na(f)))] };
       if (!card.summary) return {};
-      const v = verdictOf(card.summary, w, { body: false });
+      const v = healthVerdict(card, { body: false });
+      // each accepted risk the card leaves out, with its reason, owner and end date
+      const accepted = (card.waived ? card.waived.checks : []).map((x) => note('info', `${w.say(x.titleKey, w.params(x.params), x.id)} — ${
+        t(x.owner ? 'crep.waivedLineOwner' : 'crep.waivedLine', { date: String(x.expires || ''), owner: String(x.owner || ''), reason: String(x.reason || '') })}`));
       return {
         rows: [row(t('crep.verdict'), `${v.label} · ${t('dov.health.score', { score: v.score })}`, { severity: v.light }),
-          v.counts.length ? row(t('crep.counts'), v.counts.map((c) => c.text).join(' · ')) : null]
+          v.counts.length ? row(t('crep.counts'), v.counts.map((c) => c.text).join(' · ')) : null],
+        notes: accepted
       };
     }
   };
+
+  /**
+   * The health card's verdict: the counts of the report as checked, less the accepted risks the
+   * card leaves out (lib/passport.js healthCard `waived`), which are said as their own count.
+   */
+  function healthVerdict(card, opts = {}) {
+    if (!card.report || !card.report.summary) return verdictOf(card.summary, w, opts);
+    return verdictOf(card.report.summary, w, { ...opts, waived: card.waived ? { error: card.waived.error, warn: card.waived.warn } : null });
+  }
+  /** Is a check of the health card's report one of the accepted risks it leaves out? */
+  const acceptedIds = new Set(cards.health && cards.health.waived ? cards.health.waived.checks.map((x) => x.id) : []);
+  const isAccepted = (c) => acceptedIds.has(c.id) && (c.severity === 'error' || c.severity === 'warn');
 
   const sections = DOMAIN_CARDS.map((id) => {
     const card = cards[id];
@@ -588,8 +606,8 @@ export function domainReport(input, opts) {
     subject: d,
     subtitle: host ? t('dov.reduced', { domain: d, host }) : null,
     at: asDate(input && input.at),
-    verdict: health && health.summary ? verdictOf(health.summary, w) : null,
-    problems: health && health.report ? problemsOf(health.report.checks, w) : [],
+    verdict: health && health.summary ? healthVerdict(health) : null,
+    problems: health && health.report ? problemsOf(health.report.checks.filter((c) => !isAccepted(c)), w) : [],
     problemsKnown: !!(health && health.report),
     sections,
     method: ['crep.method.domain.dns', 'crep.method.domain.rdap', 'crep.method.domain.ct', 'crep.method.domain.health', 'crep.method.when', 'crep.method.private'].map((k) => t(k))

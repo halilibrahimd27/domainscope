@@ -400,13 +400,19 @@
   outline-offset: 2px;
 }
 
-/* the CT tab's "Known certificate…" and a known certificate's line, under the flags as the revocation line */
-.pf-known {
+/* the CT tab's "Known certificate…" and a known certificate's line (or the line that says its
+   acceptance is over), under the flags as the revocation line */
+.pf-known,
+.pf-known-expired {
   flex-basis: 100%;
   min-width: 0;
   color: var(--text-2);
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+.pf-known-expired .icon {
+  vertical-align: -2px;
 }
 
 /* ---- a phone: every row a card of labelled lines (the headers come from data-label) ------- */
@@ -527,7 +533,8 @@
 
   .pf-evidence,
   .pf-waiver,
-  .pf-known {
+  .pf-known,
+  .pf-known-expired {
     max-width: none;
   }
 

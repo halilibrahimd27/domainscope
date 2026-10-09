@@ -507,13 +507,15 @@ describe('mergeCerts', () => {
     assert.equal(a.sha256, null, 'inputs are not mutated');
   });
 
-  test('a cross-source twin also takes Cert Spotter\'s revocation flag and DER', () => {
+  test('a cross-source twin also takes Cert Spotter\'s revocation flag, DER and public key hash', () => {
     const d = (s) => new Date(s);
+    const key = 'b2'.repeat(32);
     const a = { key: 'crtsh:1:0a', source: 'crtsh', sources: ['crtsh'], serialHex: '0a', sha256: null, names: ['a.example'], notBefore: d('2026-01-01'), notAfter: d('2026-04-01') };
-    const b = { key: 'sha256:ff', source: 'certspotter', sources: ['certspotter'], serialHex: null, sha256: 'ff', names: ['a.example'], notBefore: d('2026-01-01'), notAfter: d('2026-04-01'), revoked: true, der: 'MIIB' };
+    const b = { key: 'sha256:ff', source: 'certspotter', sources: ['certspotter'], serialHex: null, sha256: 'ff', names: ['a.example'], notBefore: d('2026-01-01'), notAfter: d('2026-04-01'),
+      revoked: true, der: 'MIIB', pubkeySha256: key };
     const [merged] = mergeCerts([a, b]);
-    assert.deepEqual([merged.revoked, merged.der, merged.serialHex], [true, 'MIIB', '0a']);
+    assert.deepEqual([merged.revoked, merged.der, merged.serialHex, merged.pubkeySha256], [true, 'MIIB', '0a', key]);
     const [other] = mergeCerts([b, a]);
-    assert.deepEqual([other.revoked, other.der, other.serialHex], [true, 'MIIB', '0a']);
+    assert.deepEqual([other.revoked, other.der, other.serialHex, other.pubkeySha256], [true, 'MIIB', '0a', key]);
   });
 });

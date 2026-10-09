@@ -18,6 +18,8 @@
  *   offers "Known certificate…" (ui/waivers.js: a reason, an owner and an end date): its public
  *   key (Cert Spotter's SHA-256 of it, else the certificate's) is then expected, and its rows are
  *   "Known" — never new nor unexpected — until that day; their expiry and revocation still count.
+ *   The waivers are matched when the rows are drawn: the day after, a row is flagged again and says
+ *   its acceptance is over.
  *
  * The last check belongs to the module, so a language switch (a re-mount) shows it again; leaving
  * the view stops a check that runs (what was read is kept), and another workspace or "Delete all
@@ -25,7 +27,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, Button, DataTable, Disclosure, EmptyState, ExternalLink, ProgressBar, StatCard, announce, select, textInput, toast } from './components.js';
+import { Alert, Badge, Button, DataTable, Disclosure, EmptyState, ExternalLink, Icon, ProgressBar, StatCard, announce, select, textInput, toast } from './components.js';
 import { registerStrings, formatDate, formatDateTime, formatNumber, formatRelative } from '../i18n.js';
 import {
   CT_WATCH_DEFAULT_DAYS, CT_WATCH_FILTERS, CT_WATCH_FLAGS, CT_WATCH_NOTES, CT_WATCH_MAX_DOMAINS, CT_WATCH_MAX_DAYS, CT_WATCH_MAX_THRESHOLDS,
@@ -396,18 +398,25 @@ export function mountCtWatch(host, { ctx, domains }) {
   const keyOf = (r) => r.spkiSha256 || r.sha256 || null;
   /** Where the focus goes once the table is drawn again: the row a click marked known. */
   let knownFocus = null;
-  /** A known certificate's line (its waiver), or "Known certificate…" on a row flagged new or unexpected that has a key. */
+  /**
+   * A known certificate's line (its waiver), or, on a row flagged new or unexpected that has a key,
+   * "Known certificate…" — after the line that says its acceptance is over, when it was known.
+   */
   const knownPart = (r) => {
     if (r.known) {
       const w = r.known;
       return h('span', { class: 'text-xs pf-known', dataset: { role: 'ct-known-line', cert: r.id }, attrs: { tabindex: '-1' } },
         t(w.owner ? 'wvr.lineOwner' : 'wvr.line', { date: w.expires, owner: w.owner, reason: w.reason }));
     }
-    if (!(r.isNew || r.unexpected) || !keyOf(r)) return null;
-    return Button({
+    if (!(r.isNew || r.unexpected)) return null;
+    const ended = r.knownExpired
+      ? h('span', { class: 'text-xs pf-known-expired', dataset: { role: 'ct-known-expired', cert: r.id } }, Icon('clock', { size: 12 }), ' ', t('wvr.knownExpiredLine', { date: r.knownExpired.expires }))
+      : null;
+    const button = keyOf(r) ? Button({
       label: t('wvr.known'), icon: 'shield', size: 'sm', variant: 'ghost', title: t('wvr.knownTitle'), className: 'pf-known-btn',
       dataset: { action: 'ct-known', cert: r.id, domain: r.domain }, onClick: () => markKnown(r)
-    });
+    }) : null;
+    return ended || button ? [ended, button] : null;
   };
   const expiryBadge = (r) => {
     if (!r.current) return null;
@@ -567,9 +576,11 @@ export function mountCtWatch(host, { ctx, domains }) {
 
   function recompute() {
     const reads = S.order.map((d) => S.reads.get(d)).filter(Boolean);
-    // the known certificates are read now: one whose end date is over is flagged again
-    const known = readWaivers(stateSingleton.workspaceData('waivers'), { now: Date.now() });
-    analysis = analyzeCt(reads, { now: S.at || new Date(), days, expected: stateSingleton.workspaceData('expectedCas') || [], seen: S.seenBefore || readSeen(''), known });
+    // the known certificates are read and matched now, not at the read: one whose end date is over
+    // since is flagged again (the days left stay those of the read)
+    const knownAt = Date.now();
+    const known = readWaivers(stateSingleton.workspaceData('waivers'), { now: knownAt });
+    analysis = analyzeCt(reads, { now: S.at || new Date(), knownAt, days, expected: stateSingleton.workspaceData('expectedCas') || [], seen: S.seenBefore || readSeen(''), known });
   }
 
   /** "Known certificate…": the dialog, then the waiver into the workspace (the subscription below draws the rows again). */

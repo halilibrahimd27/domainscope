@@ -110,8 +110,10 @@ export function openWaiverDialog({ kind, domain, ref, subject, existing = null }
     hint: t('wvr.dialog.expiresHint', { days: WAIVER_MAX_DAYS }),
     attrs: { min: utcDay(now), max: maxExpiry(now), 'data-role': 'wvr-expires' }
   });
+  // what accepting does: a finding leaves the score, a rule's cell reads "Accepted", a key is expected
+  const intro = cert ? 'wvr.dialog.introCert' : kind === 'rule' ? 'wvr.dialog.introRule' : 'wvr.dialog.intro';
   const content = h('div', { class: 'stack wvr-dialog', dataset: { kind } },
-    h('p', { class: 'muted text-sm' }, t(cert ? 'wvr.dialog.introCert' : 'wvr.dialog.intro')),
+    h('p', { class: 'muted text-sm', dataset: { role: 'wvr-intro' } }, t(intro)),
     KeyValueList([
       { key: t('wvr.dialog.what'), value: h('div', { class: 'stack-sm' }, h('div', null, subject), h('div', { class: 'mono text-xs muted', dataset: { role: 'wvr-ref' } }, ref)) },
       { key: t('wvr.dialog.domain'), value: domain, mono: true }

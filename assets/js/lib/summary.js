@@ -549,6 +549,7 @@ export function retireSummary(facts, opts) {
  * issuers read from CT as code spans), never a verification token, a record value or an address.
  * A part whose lookup failed says so, one that was not looked up (a stopped build) too: a line
  * never reads as complete without the lookup that failed (SPF, DMARC, a host's HTTPS record, CAA).
+ * The health line says how many accepted risks (lib/waivers.js) its score leaves out.
  * @param {object} facts passportSummaryFacts() output (`at`: when the overview was built)
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {SummaryDoc}
@@ -708,10 +709,12 @@ export function domainSummary(facts, opts) {
     : t('sum.domain.saasNone')];
   lines.push([...label('sum.domain.saasLabel'), ...saasLine]);
 
-  // Health
+  // Health: the accepted risks the card leaves out are said, as Domain Health's own summary says them
   const health = f.health || { pending: true };
+  const waived = health.waived && health.waived.count > 0 ? health.waived : null;
   const healthLine = state(health, health.score === null || health.score === undefined)
-    || [t('sum.health.verdict', { verdict: t(`sum.health.light.${health.light || 'ok'}`), score: health.score })];
+    || join([[t('sum.health.verdict', { verdict: t(`sum.health.light.${health.light || 'ok'}`), score: health.score })],
+      waived ? [t(waived.until ? 'sum.health.waivedUntil' : 'sum.health.waived', { count: waived.count, date: waived.until || '' })] : null]);
   lines.push([...label('sum.domain.health'), ...healthLine]);
 
   return doc('domain', k.title('domain', [code(f.domain)]), lines, { when: whenText(t, 'sum.at.checked', f.at, opts.now || new Date()), url: opts.url });

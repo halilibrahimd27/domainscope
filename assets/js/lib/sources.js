@@ -971,7 +971,8 @@ function certSignature(c) {
 /**
  * Merge certificates from several results: exact key duplicates are dropped
  * and a Cert Spotter issuance matching a crt.sh certificate (same validity and
- * names) is folded into it (adding its SHA-256 and source).
+ * names) is folded into it (adding what crt.sh lacks — its SHA-256, serial,
+ * revocation flag, DER and public key's SHA-256 — and its source).
  * @param {CtCert[]} list
  * @returns {CtCert[]} newest first
  */
@@ -992,6 +993,8 @@ export function mergeCerts(list) {
       if (!twin.serialHex && cert.serialHex) twin.serialHex = cert.serialHex;
       if (typeof twin.revoked !== 'boolean' && typeof cert.revoked === 'boolean') twin.revoked = cert.revoked;
       if (!twin.der && cert.der) twin.der = cert.der;
+      // the public key's SHA-256 Cert Spotter reports: a known certificate's ref even without a readable DER
+      if (!twin.pubkeySha256 && cert.pubkeySha256) twin.pubkeySha256 = cert.pubkeySha256;
       for (const s of cert.sources || [cert.source]) if (!twin.sources.includes(s)) twin.sources.push(s);
       byKey.set(cert.key, twin);
       continue;

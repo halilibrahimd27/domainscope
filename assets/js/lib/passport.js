@@ -49,7 +49,8 @@ import {
 import { CERTSPOTTER_ISSUANCES, CRTSH_BASE, CT_TIMEOUT_MS, CRTSH_TIMEOUT_MS, ctCooldown, noteCertspotterLimit } from './ctcert.js';
 import { sourceStatus, dohStatus, rdapStatus } from './sourcestatus.js';
 import { trafficLight } from './summarycore.js';
-import { scoreHealth } from './healthscore.js';
+import { scoreHealth, countSeverities } from './healthscore.js';
+import { healthWaivers } from './waivers.js';
 import { serviceBySpf, passportKind } from './senders.js';
 
 /** The cards of a passport, in display order. */
@@ -986,14 +987,18 @@ export function saasCard(raw, { now } = {}) {
 }
 
 /**
- * Health: the Domain Health score of the domain (lib/health.js checks, lib/summary.js scoring)
+ * Health: the Domain Health score of the domain (lib/health.js checks, lib/healthscore.js scoring)
  * with the registration checks of the passport's RDAP result applied (health.applyRdap), so it
- * matches what Domain Health shows; the worst problems first (three at most).
+ * matches what Domain Health shows; the worst problems first (three at most). The workspace's
+ * accepted risks (`waivers`, lib/waivers.js healthWaivers) are left out of the score, the grade,
+ * the light, the counts (`summary`) and the problems, as Domain Health leaves them out: `waived`
+ * says how many, the first day one ends, the score with them and each with its waiver; `expired`
+ * how many count again because their waiver is over. `report` stays the report as checked.
  * @param {object} raw
- * @param {{ now?: Date|number, max?: number }} [opts]
+ * @param {{ now?: Date|number, max?: number, waivers?: object[]|null }} [opts]
  * @returns {object}
  */
-export function healthCard(raw, { now, max = 3 } = {}) {
+export function healthCard(raw, { now, max = 3, waivers = null } = {}) {
   const t = clock(now);
   const card = frame('health', raw, ['health'], { now: t });
   // The score waits for the registration lookup too, so it never changes under the reader.
@@ -1001,17 +1006,35 @@ export function healthCard(raw, { now, max = 3 } = {}) {
   card.report = null;
   if (card.state !== 'ready' || !raw.health || raw.health.failed) return card;
   const report = applyRdap(raw.health, raw.rdap && !raw.rdap.failed ? raw.rdap : null, { now: t });
+  const hw = healthWaivers(report, Array.isArray(waivers) ? waivers : [], { now: t });
+  const graded = scoreHealth(report.checks, { waived: hw.ids });
+  const accepted = (c) => (c.severity === 'error' || c.severity === 'warn') && hw.ids.has(c.id);
+  const summary = hw.ids.size ? countSeverities(report.checks, { waived: hw.ids }) : report.summary;
   const rank = { error: 0, warn: 1 };
-  const problems = report.checks.filter((c) => c.severity === 'error' || c.severity === 'warn')
+  const problems = report.checks.filter((c) => (c.severity === 'error' || c.severity === 'warn') && !accepted(c))
     .map((c, i) => ({ c, i })).sort((a, b) => rank[a.c.severity] - rank[b.c.severity] || a.i - b.i).map((x) => x.c);
+  const bySeverity = (sev) => hw.applied.filter((a) => a.check.severity === sev).length;
   return {
     ...card,
     report,
-    summary: report.summary,
-    score: scoreHealth(report.checks).score,
-    light: trafficLight(report.summary),
+    summary,
+    score: graded.score,
+    grade: graded.grade,
+    light: trafficLight(summary),
     problems: problems.slice(0, max).map((c) => ({ id: c.id, severity: c.severity, titleKey: c.titleKey, params: c.params })),
-    moreProblems: Math.max(0, problems.length - max)
+    moreProblems: Math.max(0, problems.length - max),
+    waived: hw.applied.length ? {
+      count: hw.applied.length,
+      until: hw.until,
+      error: bySeverity('error'),
+      warn: bySeverity('warn'),
+      score: graded.full ? graded.full.score : graded.score,
+      grade: graded.full ? graded.full.grade : graded.grade,
+      checks: hw.applied.map(({ check, waiver }) => ({
+        id: check.id, severity: check.severity, titleKey: check.titleKey, params: check.params, reason: waiver.reason, owner: waiver.owner || '', expires: waiver.expires
+      }))
+    } : null,
+    expired: new Set(hw.expired.map((e) => e.check.id)).size
   };
 }
 
@@ -1020,12 +1043,13 @@ const BUILDERS = { registration: registrationCard, dns: dnsCard, mail: mailCard,
 /**
  * Every card of a passport from its raw results (a lookup still running is `undefined`).
  * @param {object} raw lookup id → result, plus `domain`
- * @param {{ now?: Date|number }} [opts]
+ * @param {{ now?: Date|number, waivers?: object[]|null }} [opts] `waivers`: the workspace's accepted
+ *   risks (lib/waivers.js), which the health card leaves out ({@link healthCard})
  * @returns {Record<string, object>} card id → card
  */
-export function passportCards(raw, { now } = {}) {
+export function passportCards(raw, { now, waivers = null } = {}) {
   const r = raw || {};
-  return Object.fromEntries(PASSPORT_CARDS.map((id) => [id, BUILDERS[id](r, { now })]));
+  return Object.fromEntries(PASSPORT_CARDS.map((id) => [id, id === 'health' ? healthCard(r, { now, waivers }) : BUILDERS[id](r, { now })]));
 }
 
 /** The cards that say when the domain does not exist, which they read from the NS and SOA lookups. */
@@ -1440,7 +1464,9 @@ export function passportSummaryFacts(cards, { domain, at = null, host = null }) 
       pending: !health || health.state !== 'ready',
       failed: !!(health && health.failures && health.failures.length),
       score: health.score ?? null,
-      light: health.light || null
+      light: health.light || null,
+      // the accepted risks the score leaves out (lib/waivers.js): how many, and the first day one ends
+      waived: health.waived ? { count: health.waived.count, until: health.waived.until } : null
     }
   };
 }

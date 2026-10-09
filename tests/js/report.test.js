@@ -355,6 +355,28 @@ describe('healthReport: the checks with their problems and advice first', () => 
     assert.ok(!buildReport('health', healthInput, words('en')).doc.sections.some((x) => x.id === 'accepted'), 'none without waivers');
   });
 
+  test('the Domain overview\'s accepted risks (its health card, lib/waivers.js): out of the problems and the counts, "N accepted risks excluded", each named on the Health card', async () => {
+    clearRdapCache();
+    const raw = await buildPassport('example.com', { dns: fakeDns(ZONE), fetchImpl: fakeFetch(), now: NOW });
+    const waiver = { id: 'w-1', kind: 'finding', domain: 'example.com', ref: 'dmarc.policy-none', reason: 'Moving in Q1 <b>', owner: 'Mail team', created: null, expires: '2026-12-31' };
+    const input = (waivers) => ({ cards: passportCards(raw, { now: NOW, waivers }), domain: 'example.com', at: NOW });
+    const title = words('en').t('health.dmarc.policy-none.title');
+    const plain = buildReport('domain', input([]), words('en')).doc;
+    assert.ok(plain.problems.some((p) => p.title === title), 'a problem without its waiver');
+    const { doc, html } = buildReport('domain', input([waiver]), words('en'));
+    assert.equal(doc.problems.length, plain.problems.length - 1);
+    assert.ok(!doc.problems.some((p) => p.title === title), 'out of the problems');
+    assert.deepEqual(doc.verdict.counts.at(-1), { severity: 'info', text: '1 accepted risk excluded' });
+    const health = doc.sections.find((s) => s.id === 'health');
+    assert.match(health.rows.find((r) => r.label === 'Checks').value, / · 1 accepted risk excluded$/);
+    assert.deepEqual(health.notes.map((n) => [n.severity, n.text]), [['info', `${title} — Accepted until 2026-12-31 by Mail team: Moving in Q1 <b>`]]);
+    assert.ok(html.includes('Accepted until 2026-12-31 by Mail team: Moving in Q1 &lt;b&gt;'), 'escaped');
+    assertInert(html);
+    const tr = buildReport('domain', input([waiver]), words('tr')).html;
+    assert.ok(tr.includes('1 kabul edilen risk hariç tutuldu') && tr.includes('2026-12-31 tarihine kadar Mail team tarafından kabul edildi'), 'Turkish');
+    assert.deepEqual(plain.sections.find((s) => s.id === 'health').notes, [], 'nothing said without waivers');
+  });
+
   test('a lookup that failed reads as one, not as "none"', () => {
     const report = { ...healthInput.report, failedLookups: ['mx', 'txt'] };
     const doc = healthReport({ report }, words('en'));

@@ -332,6 +332,25 @@
   margin-top: 1px;
 }
 
+/* The accepted risks the health score leaves out (lib/waivers.js), as Domain Health's hero says them. */
+.dov-waived {
+  display: grid;
+  gap: 2px;
+}
+
+.dov-waived p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.dov-waived .icon {
+  vertical-align: -2px;
+}
+
+.dov-waived [data-role="dov-waived-expired"] {
+  color: var(--warn);
+}
+
 /* ---- phones ------------------------------------------------------------------ */
 
 @media (max-width: 600px) {

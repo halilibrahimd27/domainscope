@@ -762,7 +762,7 @@ export function mount(container, ctx) {
     const waivedEl = hw.applied.length || expiredCount ? h('div', { class: 'hlt-waived text-sm', dataset: { role: 'hero-waived', count: String(hw.applied.length) } },
       hw.applied.length ? h('p', { class: 'hlt-waived-line' }, Icon('shield', { size: 14 }), ' ', t('wvr.count', { count: hw.applied.length, date: hw.until }), ' ',
         graded.full ? h('span', { class: 'muted', dataset: { role: 'hero-with-waived', score: String(graded.full.score), grade: graded.full.grade } },
-          t('wvr.withThem', { score: graded.full.score, grade: graded.full.grade })) : null) : null,
+          t('wvr.withThem', { count: hw.applied.length, score: graded.full.score, grade: graded.full.grade })) : null) : null,
       expiredCount ? h('p', { class: 'hlt-waived-expired', dataset: { role: 'hero-waived-expired' } }, Icon('clock', { size: 14 }), ' ', t('wvr.expiredCount', { count: expiredCount })) : null) : null;
     const lightEl = h('div', { class: ['hlt-light', `hlt-light-${light}`], attrs: { role: 'img', 'aria-label': t(`hlt.light.${light}`) } },
       ['error', 'warn', 'ok'].map((k) => h('span', { class: ['hlt-lamp', `hlt-lamp-${k}`, { 'is-on': k === light }] })));
@@ -904,13 +904,18 @@ export function mount(container, ctx) {
 
   function renderChecks(report, hw = reportWaivers(report)) {
     clear(checksEl);
+    // an accepted risk is counted apart, as in the hero and the problems card: not as an error or a warning
+    const isAccepted = (c) => (c.severity === 'error' || c.severity === 'warn') && hw.ids.has(c.id);
     for (const group of HEALTH_GROUPS) {
       const all = groupChecks(report.checks, group);
       if (!all.length) continue;
       const shown = filter === 'problems' ? all.filter((c) => c.severity === 'error' || c.severity === 'warn') : all;
-      const counts = SEVERITY_ORDER.filter((sev) => sev !== 'ok' && all.some((c) => c.severity === sev))
-        .map((sev) => Badge(formatNumber(all.filter((c) => c.severity === sev).length), { variant: sev, icon: sev === 'error' ? 'x-circle' : sev === 'warn' ? 'alert' : 'info', title: t(`hlt.count.${sev}`, { count: all.filter((c) => c.severity === sev).length }) }));
-      const worst = all[0].severity;
+      const open = all.filter((c) => !isAccepted(c));
+      const accepted = all.length - open.length;
+      const counts = SEVERITY_ORDER.filter((sev) => sev !== 'ok' && open.some((c) => c.severity === sev))
+        .map((sev) => Badge(formatNumber(open.filter((c) => c.severity === sev).length), { variant: sev, icon: sev === 'error' ? 'x-circle' : sev === 'warn' ? 'alert' : 'info', title: t(`hlt.count.${sev}`, { count: open.filter((c) => c.severity === sev).length }) }));
+      if (accepted) counts.push(Badge(formatNumber(accepted), { variant: 'neutral', icon: 'shield', className: 'hlt-group-waived', title: t('wvr.section', { count: accepted }) }));
+      const worst = open.length ? open[0].severity : 'ok';
       checksEl.append(Card({
         title: t(`health.group.${group}`),
         icon: { dns: 'globe', email: 'mail', security: 'shield', registration: 'calendar', web: 'lock' }[group],
@@ -1610,6 +1615,7 @@ export function mount(container, ctx) {
           onRemove: (waiver, c) => { if (current && !current.controller) removeWaiverOf(waiver, c); }
         }),
         v2.WebPanel(report, { ctx, state: current, onReport }));
+      syncWaiverButtons();
       if (pendingFocus) {
         const { action, check } = pendingFocus;
         pendingFocus = null;
@@ -1643,7 +1649,14 @@ export function mount(container, ctx) {
     domainField.input.readOnly = on;
     // The report on screen belongs to the previous check until this one finishes.
     if (heroSummary) heroSummary.setDisabled(on);
+    syncWaiverButtons();
     ctx.setBusy(on);
+  }
+
+  /** While a check runs, the report on screen is the previous one: its "Accept this risk…" and Remove wait for the new one. */
+  function syncWaiverButtons() {
+    const busy = !!(current && current.controller);
+    for (const btn of v2El.querySelectorAll('[data-action="hv2-accept"], [data-action="hv2-waiver-remove"]')) btn.disabled = busy;
   }
 
   /** The route params of a check: its domain and extra selectors (what a shared link runs). */

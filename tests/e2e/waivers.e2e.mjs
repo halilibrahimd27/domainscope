@@ -12,19 +12,23 @@
  * What is checked:
  *   - Domain Health: "Accept this risk…" (opened from the keyboard) asks for a reason, an owner and an
  *     end date (a reason is required); the finding leaves the problems, the counts and the score, the
- *     hero says "1 accepted risk (until …)" with the score including it, the check row is marked, the
- *     focus lands on its Remove, Copy summary says "1 accepted risk excluded"; the what-if planner
- *     projects the score of the ticked problems; the waiver is kept across a reload (IndexedDB) and a
- *     language switch (Turkish); Remove makes it count again; then the clock passes its end date and
- *     the finding counts again, saying its acceptance expired;
+ *     hero says "1 accepted risk (until …)" with the score including it, the check row is marked and
+ *     its "All checks" card counts it apart, the focus lands on its Remove, Copy summary says "1
+ *     accepted risk excluded"; while a check runs the old report's Accept and Remove are disabled;
+ *     the what-if planner projects the score of the ticked problems; the waiver is kept across a
+ *     reload (IndexedDB) and a language switch (Turkish); Remove makes it count again; then the clock
+ *     passes its end date and the finding counts again, saying its acceptance expired;
+ *   - the Domain overview: its health card leaves the accepted risk out too — the same score and light
+ *     as Domain Health, the problems without it, the line that says so, Copy summary — at 375 px;
  *   - the Workspaces dialog: the waiver listed as expired, waivers.json exported (the runner reads it
  *     back with lib/waivers.js), the expired ones removed, an import merged with the entry it could
  *     not read said;
  *   - the Domain portfolio's policy matrix: an imported rule waiver makes its failed cell "Accepted",
- *     "Accept…" on another failed cell, the counts, the CSV's WAIVED;
+ *     "Accept…" on another failed cell (its dialog says what accepting a rule does), the counts, the
+ *     CSV's WAIVED;
  *   - the CT tab: an imported known certificate is flagged "Known"; a certificate from an unexpected CA
  *     logged since the last check offers "Known certificate…", and once known it is neither new nor
- *     unexpected;
+ *     unexpected; once that acceptance is over it is flagged again and says so;
  *   - 375 and 320 px in Turkish and English, light and dark, without horizontal scroll; no missing
  *     i18n keys; zero console errors, exceptions and CSP violations; nothing sent outside the page.
  *
@@ -316,7 +320,14 @@ async function main() {
       assert(!after.problems.includes('dmarc.policy-none'), 'out of the problems');
       assertEqual(after.accepted, [['dmarc.policy-none', 'Accepted until 2026-10-20 by Mail team: Moving to quarantine after the vendor audit']], 'the accepted section');
       assert(after.score > before.score, `the score rises without it: ${before.score} → ${after.score} (problems before: ${before.problems.join(', ')})`);
-      assertEqual(after.waived, `1 accepted risk (until 2026-10-20) With them the score would be ${before.score}/100 (${before.grade}).`, 'the hero says it, with the score including it');
+      assertEqual(after.waived, `1 accepted risk (until 2026-10-20). With it, the score would be ${before.score}/100 (${before.grade}).`, 'the hero says it, with the score including it');
+      // "All checks": the Email card counts it apart, as the hero does — not as a warning
+      const email = await page.evaluate(() => {
+        const card = document.querySelector('.hlt-group[data-group="email"]');
+        return { warn: card.classList.contains('hlt-group-warn'), badges: [...card.querySelectorAll('.card-actions .badge')].map((b) => [b.className.match(/badge-(\w+)/)[1], b.textContent.trim(), b.title]) };
+      });
+      assert(!email.warn && !email.badges.some(([variant]) => variant === 'warn') && email.badges.some((b) => b.join('|') === 'neutral|1|1 accepted risk'),
+        `the Email card: no warning, one accepted risk: ${JSON.stringify(email)}`);
       const row = await page.evaluate(() => {
         const li = document.querySelector('.hlt-check[data-id="dmarc.policy-none"]');
         return [li.classList.contains('is-waived'), li.querySelector('.hlt-waived-badge')?.textContent];
@@ -338,6 +349,58 @@ async function main() {
       await assertClean(page, 'accepted', server.url);
     });
 
+    await run.step('a check running: the report on screen is the previous one, so its "Accept this risk…" and Remove are disabled until the new one lands', async () => {
+      const during = await page.evaluate(() => {
+        document.querySelector('[data-action="run"]').click();
+        return [...document.querySelectorAll('[data-action="hv2-accept"], [data-action="hv2-waiver-remove"]')].map((b) => [b.dataset.action, b.dataset.check, b.disabled]);
+      });
+      assert(during.some(([action, check]) => action === 'hv2-waiver-remove' && check === 'dmarc.policy-none') && during.every(([, , disabled]) => disabled),
+        `disabled while it runs: ${JSON.stringify(during)}`);
+      await page.waitFor(HEALTH_DONE, { timeout: 30000, message: 'the check again' });
+      await page.waitFor(() => {
+        const btns = [...document.querySelectorAll('[data-action="hv2-accept"], [data-action="hv2-waiver-remove"]')];
+        return btns.length > 0 && btns.every((b) => !b.disabled) && !!document.querySelector('.hv2-section-accepted [data-id="dmarc.policy-none"]');
+      }, { message: 'enabled again on the new report' });
+    });
+
+    await run.step('the Domain overview\'s health card leaves it out too: the same score as Domain Health, the problems without it, the line that says so, Copy summary', async () => {
+      const hero = await healthInfo(page);
+      await gotoRoute(page, '#/domain?name=example.com');
+      await page.waitFor(() => !!document.querySelector('[data-action="dov-run"]') && !document.querySelector('[data-action="dov-run"]').hidden, { message: 'the overview' });
+      await page.click('[data-action="dov-run"]');
+      await page.waitFor(() => !!document.querySelector('.dov-head') && !!document.querySelector('.dov-score[data-score]') && !document.querySelector('[data-action="dov-run"]').hidden
+        && [...document.querySelectorAll('.dov-card')].every((c) => c.dataset.state !== 'pending'), { timeout: 30000, message: 'the overview built' });
+      const card = await page.evaluate(() => {
+        const s = document.querySelector('.dov-score[data-score]');
+        return {
+          score: Number(s.dataset.score), light: s.dataset.light, problems: [...document.querySelectorAll('.dov-problem')].map((li) => li.dataset.id),
+          waived: document.querySelector('[data-role="dov-waived"]')?.textContent.replace(/\s+/g, ' ').trim() || null
+        };
+      });
+      assertEqual([card.score, card.light], [hero.score, hero.light], 'the score and the light Domain Health shows');
+      assert(!card.problems.includes('dmarc.policy-none'), `not among the problems: ${card.problems.join(', ')}`);
+      assertEqual(card.waived, `1 accepted risk (until 2026-10-20). With it, the score would be ${before.score}/100 (${before.grade}).`, 'said on the card');
+      await stubClipboard(page);
+      await page.click('.dov-head [data-action="copy-summary"]');
+      await page.waitFor(() => (window.__clip || []).length > 0, { message: 'copied' });
+      const [md] = await takeClipboard(page);
+      assert(md.includes(`score ${hero.score}/100 · 1 accepted risk excluded (until 2026-10-20)`), md);
+      await page.setViewport({ width: 375, height: 800, mobile: true });
+      await frames(page);
+      await assertNoHorizontalScroll(page, 'the overview at 375 px');
+      assertEqual(await overflowingIn(page, '.dov-card-health'), [], 'the health card inside 375 px');
+      await page.setViewport({ width: 1440, height: 900 });
+      assertEqual(await blocked(page), [], 'nothing else left the page');
+      await assertClean(page, 'overview', server.url);
+      // Coming back shows the kept report with `run=0` in the URL (a reload would only fill the form):
+      // checked again, the URL is the check's own, as the reload of the next step needs.
+      await gotoRoute(page, '#/health?domain=example.com');
+      await page.waitFor(HEALTH_DONE, { timeout: 30000, message: 'back to Domain Health' });
+      await page.evaluate(() => document.querySelector('[data-action="run"]').click());
+      await page.waitFor(HEALTH_DONE, { timeout: 30000, message: 'checked again' });
+      assertEqual(await page.evaluate(() => location.hash), '#/health?domain=example.com', 'the check\'s own URL');
+    });
+
     await run.step('kept: a reload shows it accepted; Turkish words it; 375 and 320 px in light and dark fit', async () => {
       await page.reload();
       await waitReady(page);
@@ -347,7 +410,7 @@ async function main() {
       await page.waitFor(() => !!document.querySelector('.hv2-section-accepted [data-id="dmarc.policy-none"]'), { message: 'after the re-mount' });
       const tr = await healthInfo(page);
       assertEqual(tr.accepted[0][1], '2026-10-20 tarihine kadar Mail team tarafından kabul edildi: Moving to quarantine after the vendor audit', 'Turkish');
-      assert(/^1 kabul edilen risk \(2026-10-20 tarihine kadar\) Onlarla birlikte puan \d+\/100 \([A-F]\) olurdu\.$/.test(tr.waived), tr.waived);
+      assert(/^1 kabul edilen risk \(2026-10-20 tarihine kadar\)\. O da sayılsaydı puan \d+\/100 \([A-F]\) olurdu\.$/.test(tr.waived), tr.waived);
       await assertNoMissingKeys(page);
       for (const width of [375, 320]) {
         await page.setViewport({ width, height: 800, mobile: true });
@@ -478,7 +541,7 @@ async function main() {
     });
 
     run.group('Domain portfolio: the policy matrix and the CT tab');
-    await run.step('the imported rule waiver makes its failed cell "Accepted"; "Accept…" on another failed cell; the counts; the CSV says WAIVED', async () => {
+    await run.step('the imported rule waiver makes its failed cell "Accepted"; "Accept…" on another failed cell, its dialog worded for a rule; the counts; the CSV says WAIVED', async () => {
       await gotoRoute(page, 'portfolio');
       await page.type('[data-role="pf-domains"]', 'example.com');
       await page.click('[data-action="pf-run"]');
@@ -508,6 +571,9 @@ async function main() {
       await page.click('.pf-matrix [data-action="pf-accept"][data-waive="mtaSts"]');
       await page.waitFor(() => !!document.querySelector('dialog.wvr-modal[open]'), { message: 'the dialog' });
       assert(/MTA-STS record \(mtaSts true\)/.test(await text(page, 'dialog.wvr-modal')), 'the rule it accepts');
+      assertEqual(await text(page, 'dialog.wvr-modal [data-role="wvr-intro"]'),
+        'Until the end date its cell reads “Accepted”: neither a pass nor a fail. Then it counts again and is listed as expired. Kept in this workspace and in its hand-over file.',
+        'what accepting a rule does (a rule has no score)');
       await fillDialog(page, { reason: 'No inbound mail on this domain', owner: 'Mail team' });
       await page.waitFor(() => !!document.querySelector('.pf-matrix .pf-cell[data-rule="mtaSts"][data-status="waived"]'), { message: 'accepted', timeout: 10000 });
       assertEqual(await text(page, '.pf-matrix-counts'), 'The domain meets every rule · 2 failed rules are accepted risks', 'both accepted');
@@ -523,7 +589,7 @@ async function main() {
       await assertClean(page, 'matrix', server.url);
     });
 
-    await run.step('the CT tab: the imported key is "Known"; a certificate from an unexpected CA logged since the last check offers "Known certificate…", and once known is neither new nor unexpected', async () => {
+    await run.step('the CT tab: the imported key is "Known"; a certificate from an unexpected CA logged since the last check offers "Known certificate…", once known is neither new nor unexpected, and is flagged again once that is over', async () => {
       await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.setWorkspaceData('expectedCas', ["Let's Encrypt"])));
       await page.click('.pf-results .tab[data-tab="ct"]');
       await page.waitFor(() => !!document.querySelector('[data-action="ct-run"]'), { message: 'the CT panel', timeout: 15000 });
@@ -566,6 +632,16 @@ async function main() {
       // the focus scrolled the table to the row's line: back to its start for the picture
       await page.evaluate(() => document.querySelectorAll('.pf-ct-table .dt-scroll').forEach((el) => { el.scrollLeft = 0; }));
       await shotEl(page, 'waivers-ct-1440-en', '.pf-ct-table');
+      // the CDN key's acceptance ends on 2026-10-20, before the page's clock: its row is flagged again, and says why
+      await page.evaluate((key) => import('./assets/js/state.js').then(({ state }) => {
+        const doc = JSON.parse(state.workspaceData('waivers'));
+        doc.waivers = doc.waivers.map((w) => (w.ref === key ? { ...w, expires: '2026-10-20' } : w));
+        return state.setWorkspaceData('waivers', JSON.stringify(doc));
+      }), OTHER_KEY);
+      await page.waitFor(() => !!document.querySelector('.pf-ct-table [data-role="ct-known-expired"]'), { message: 'flagged again', timeout: 10000 });
+      const ended = (await rows()).find((r) => r.names === 'cdn.example.com');
+      assertEqual([ended.flags, ended.button, await text(page, '.pf-ct-table [data-role="ct-known-expired"]')],
+        [['new', 'unexpected'], true, 'Accepted as known until 2026-10-20, expired: flagged again'], 'its acceptance over');
       assertEqual(await page.evaluate(() => window.__ww.ct.slice()), ['example.com', 'example.com next', 'example.com', 'example.com next'], 'Cert Spotter: two checks, nothing more');
       assertEqual(await blocked(page), [], 'nothing else left the page');
       assertEqual(netHits, [], 'nothing reached the network');

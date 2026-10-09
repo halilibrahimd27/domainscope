@@ -16,7 +16,8 @@ import { domainHealth } from '../../assets/js/lib/health.js';
 import { ctNoteKey } from '../../assets/js/views/domain.js';
 import { clearRdapCache } from '../../assets/js/lib/rdap.js';
 import { createCtCooldown, CT_COOLDOWN_MS } from '../../assets/js/lib/ctcert.js';
-import { scoreHealth } from '../../assets/js/lib/healthscore.js';
+import { scoreHealth, countSeverities } from '../../assets/js/lib/healthscore.js';
+import { healthWaivers } from '../../assets/js/lib/waivers.js';
 import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
 import { throwIfAborted } from '../../assets/js/lib/util.js';
 
@@ -430,6 +431,44 @@ describe('buildPassport', () => {
     // Without the registration lookup the score is not shown yet: it would change under the reader.
     const early = healthCard({ ...raw, rdap: undefined }, { now: NOW });
     assert.deepEqual([early.state, early.score], ['pending', undefined]);
+  });
+
+  test('the workspace\'s accepted risks leave the health card as they leave Domain Health: the score, the light, the counts, the problems', async () => {
+    const zone = zoneOf();
+    zone['_dmarc.example.com'] = { TXT: ['v=DMARC1; p=none; rua=mailto:dmarc@example.com'] };
+    const raw = await buildPassport('example.com', { dns: fakeDns(zone, { signed: ['example.com'] }), fetchImpl: mockFetch(), now: NOW });
+    // every problem listed (not the three worst): where DMARC at p=none is
+    const plain = healthCard(raw, { now: NOW, max: 50 });
+    assert.ok(plain.problems.some((p) => p.id === 'dmarc.policy-none'), `DMARC at p=none is a problem: ${plain.problems.map((p) => p.id)}`);
+    assert.deepEqual([plain.waived, plain.expired], [null, 0]);
+    const waiver = { id: 'w-1', kind: 'finding', domain: 'example.com', ref: 'dmarc.policy-none', reason: 'Quarantine after the vendor audit', owner: 'Mail team', created: null, expires: '2026-12-15' };
+    const card = healthCard(raw, { now: NOW, max: 50, waivers: [waiver] });
+    // what views/health.js shows for the same report and waivers
+    const hw = healthWaivers(card.report, [waiver], { now: NOW });
+    const graded = scoreHealth(card.report.checks, { waived: hw.ids });
+    const counts = countSeverities(card.report.checks, { waived: hw.ids });
+    assert.deepEqual([card.score, card.grade, card.summary, card.light], [graded.score, graded.grade, counts, counts.error ? 'error' : counts.warn ? 'warn' : 'ok']);
+    assert.ok(card.score > plain.score, `${plain.score} → ${card.score}`);
+    assert.ok(!card.problems.some((p) => p.id === 'dmarc.policy-none'), 'out of the problems');
+    assert.equal(card.problems.length + card.moreProblems, plain.problems.length + plain.moreProblems - 1);
+    const policyNone = card.report.checks.find((c) => c.id === 'dmarc.policy-none');
+    assert.deepEqual(card.waived, {
+      count: 1, until: '2026-12-15', error: 0, warn: 1, score: plain.score, grade: plain.grade,
+      checks: [{ id: 'dmarc.policy-none', severity: 'warn', titleKey: policyNone.titleKey, params: policyNone.params, reason: 'Quarantine after the vendor audit', owner: 'Mail team', expires: '2026-12-15' }]
+    });
+    assert.equal(card.expired, 0);
+    assert.deepEqual(card.report, plain.report, 'the report itself is not changed');
+    // passportCards hands them to the health card; Copy summary's facts say how many
+    const facts = passportSummaryFacts(passportCards(raw, { now: NOW, waivers: [waiver] }), { domain: 'example.com', at: NOW });
+    assert.deepEqual([facts.health.score, facts.health.light, facts.health.waived], [card.score, card.light, { count: 1, until: '2026-12-15' }]);
+    assert.equal(passportSummaryFacts(passportCards(raw, { now: NOW }), { domain: 'example.com', at: NOW }).health.waived, null);
+    // another domain's waiver changes nothing
+    assert.equal(healthCard(raw, { now: NOW, waivers: [{ ...waiver, id: 'w-2', domain: 'example.net' }] }).score, plain.score);
+    // the day after its end date it counts again, and the card says so
+    const later = new Date('2026-12-16T12:00:00Z');
+    const after = healthCard(raw, { now: later, max: 50, waivers: [waiver] });
+    assert.deepEqual([after.score, after.waived, after.expired], [healthCard(raw, { now: later }).score, null, 1]);
+    assert.ok(after.problems.some((p) => p.id === 'dmarc.policy-none'), 'a problem again');
   });
 
   test('a failed MX query: n/a on the mail card with its reason, Retry asks MX alone past the cache', async () => {

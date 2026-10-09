@@ -1251,6 +1251,15 @@ describe('domain (overview)', () => {
     assert.match(tr, /- \*\*Hizmetler:\*\* 4 hizmet alan adını TXT ile doğrulamış: Google, Microsoft 365, Atlassian \+1 tane daha/);
   });
 
+  test('the health card\'s accepted risks: the line says how many are excluded, as Domain Health\'s summary does', () => {
+    const health = { pending: false, failed: false, score: 100, light: 'ok', waived: { count: 1, until: '2026-12-15' } };
+    const line = (h, lang = 'en') => lines(md(S.domainSummary(facts({ health: h }), opts(lang, url)))).find((l) => /^- \*\*(Health|Sağlık):\*\*/.test(l));
+    assert.equal(line(health), '- **Health:** Healthy · score 100/100 · 1 accepted risk excluded (until 2026-12-15)');
+    assert.equal(line({ ...health, waived: { count: 2, until: '2026-12-15' } }), '- **Health:** Healthy · score 100/100 · 2 accepted risks excluded (the first ends 2026-12-15)');
+    assert.equal(line(health, 'tr'), '- **Sağlık:** Sağlıklı · puan 100/100 · 1 kabul edilen risk hariç tutuldu (2026-12-15 tarihine kadar)');
+    assert.equal(line({ ...health, waived: null }), '- **Health:** Healthy · score 100/100');
+  });
+
   test('the CT issuers and what CAA does not allow; no transfer lock; several providers and an unknown name server', () => {
     const doc = S.domainSummary(facts({
       registration: { ...facts().registration, transferLock: false },

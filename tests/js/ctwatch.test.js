@@ -416,6 +416,14 @@ describe('the analysis', () => {
     // crt.sh says no key: such a row has none to match
     const [crt] = fromCrtshCerts([{ key: 'crtsh:1:1', id: 1, serialHex: '01', issuer: ISSUER, notBefore: new Date('2026-08-01T00:00:00Z'), notAfter: new Date('2026-10-30T00:00:00Z'), names: ['www.example.com'] }], 'example.com', { now: NOW });
     assert.equal(crt.spkiSha256, null);
+    // a check read before the waiver's end and shown after it: the waivers are matched when the rows are drawn (`knownAt`), the days left at the read
+    const ending = [{ ...known[0], expires: '2026-10-09' }];
+    const shown = analyzeCt([read(certs)], { now: NOW, knownAt: new Date('2026-10-10T12:00:00Z'), seen, expected: ['Example Trust'], known: ending });
+    const cdn = shown.rows.find((r) => r.names[0] === 'cdn.example.com');
+    assert.deepEqual([cdn.known, cdn.knownExpired.expires, cdn.flags], [null, '2026-10-09', ['new', 'unexpected']]);
+    assert.equal(cdn.daysLeft, by('cdn.example.com').daysLeft, 'the days left as at the read');
+    assert.deepEqual(analyzeCt([read(certs)], { now: NOW, seen, expected: ['Example Trust'], known: ending }).rows.find((r) => r.names[0] === 'cdn.example.com').flags, ['known'],
+      'without knownAt, matched at the read');
   });
 
   test('the filters', () => {

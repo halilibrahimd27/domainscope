@@ -62,10 +62,11 @@ const REF_RES = Object.freeze({
   rule: /^[A-Za-z][A-Za-z0-9._-]{0,39}$/,
   cert: /^[0-9a-f]{64}$/
 });
-// C0 / C1 controls, zero-width characters, line / paragraph separators and bidi overrides: never
-// part of a reason or an owner shown on a page or in a report.
+// C0 / C1 controls, zero-width characters, line / paragraph separators and every bidi control (the
+// marks, the embeddings and overrides, the isolates, the Arabic letter mark): never part of a
+// reason or an owner shown on a page, in the Workspaces dialog, a CSV or a report.
 // eslint-disable-next-line no-control-regex
-const JUNK_RE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]/g;
+const JUNK_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
 
 /** A refused waiver or waivers file; `code` is one of {@link WAIVER_ERRORS}. */
 export class WaiverError extends Error {
@@ -549,6 +550,8 @@ const STRINGS = [
   ['wvr.dialog.domain', ['Domain', 'Alan adı']],
   ['wvr.dialog.intro', ['It is left out of the score, the counts, the summary and the report until the end date; then it counts again and is listed as expired. Kept in this workspace and in its hand-over file.',
     'Bitiş tarihine kadar puana, sayılara, özete ve rapora katılmaz; sonra yeniden hesaba katılır ve süresi dolmuş olarak listelenir. Bu çalışma alanında ve devir dosyasında tutulur.']],
+  ['wvr.dialog.introRule', ['Until the end date its cell reads “Accepted”: neither a pass nor a fail. Then it counts again and is listed as expired. Kept in this workspace and in its hand-over file.',
+    'Bitiş tarihine kadar hücresinde “Kabul edildi” yazar: ne geçmiş ne de kalmış sayılır. Sonra yeniden hesaba katılır ve süresi dolmuş olarak listelenir. Bu çalışma alanında ve devir dosyasında tutulur.']],
   ['wvr.dialog.introCert', ['The CT watch no longer flags this key’s certificates as new or from an unexpected CA until the end date. Its expiry and revocation are still watched.',
     'CT izlemesi, bitiş tarihine kadar bu anahtarın sertifikalarını artık yeni ya da beklenmeyen bir CA’dan diye işaretlemez. Bitiş tarihi ve iptal durumu izlenmeye devam eder.']],
   ['wvr.dialog.reason', ['Reason', 'Gerekçe']],
@@ -579,12 +582,14 @@ const STRINGS = [
   ['wvr.line', ['Accepted until {date}: {reason}', '{date} tarihine kadar kabul edildi: {reason}']],
   ['wvr.lineOwner', ['Accepted until {date} by {owner}: {reason}', '{date} tarihine kadar {owner} tarafından kabul edildi: {reason}']],
   ['wvr.expiredLine', ['Accepted risk expired on {date}: it counts again', 'Kabul edilen riskin süresi {date} tarihinde doldu: yeniden hesaba katılıyor']],
+  ['wvr.knownExpiredLine', ['Accepted as known until {date}, expired: flagged again', '{date} tarihine kadar bilinen olarak kabul edilmişti, süresi doldu: yeniden işaretleniyor']],
   ['wvr.badge', ['Accepted', 'Kabul edildi']],
   ['wvr.badgeUntil', ['Accepted until {date}', '{date} tarihine kadar kabul edildi']],
   ['wvr.badgeExpired', ['Acceptance expired', 'Kabulün süresi doldu']],
-  ['wvr.count', [{ one: '{count} accepted risk (until {date})', other: '{count} accepted risks (the first ends {date})' },
-    { one: '{count} kabul edilen risk ({date} tarihine kadar)', other: '{count} kabul edilen risk (ilki {date} tarihinde bitiyor)' }]],
-  ['wvr.withThem', ['With them the score would be {score}/100 ({grade}).', 'Onlarla birlikte puan {score}/100 ({grade}) olurdu.']],
+  ['wvr.count', [{ one: '{count} accepted risk (until {date}).', other: '{count} accepted risks (the first ends {date}).' },
+    { one: '{count} kabul edilen risk ({date} tarihine kadar).', other: '{count} kabul edilen risk (ilki {date} tarihinde bitiyor).' }]],
+  ['wvr.withThem', [{ one: 'With it, the score would be {score}/100 ({grade}).', other: 'With them, the score would be {score}/100 ({grade}).' },
+    { one: 'O da sayılsaydı puan {score}/100 ({grade}) olurdu.', other: 'Onlar da sayılsaydı puan {score}/100 ({grade}) olurdu.' }]],
   ['wvr.expiredCount', [{ one: '{count} accepted risk has expired and counts again.', other: '{count} accepted risks have expired and count again.' },
     { one: '{count} kabul edilen riskin süresi doldu; yeniden hesaba katılıyor.', other: '{count} kabul edilen riskin süresi doldu; yeniden hesaba katılıyor.' }]],
   ['wvr.section', [{ one: '{count} accepted risk', other: '{count} accepted risks' }, '{count} kabul edilen risk']],

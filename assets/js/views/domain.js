@@ -10,7 +10,8 @@
  *   platform / direct, HTTPS records); Certificates (the CAs CAA allows, and on a click the
  *   issuers of the current certificates in Certificate Transparency compared with CAA);
  *   SaaS verifications (services named by TXT tokens, never the tokens); Health (Domain Health's
- *   score and worst problems).
+ *   score and worst problems, the workspace's accepted risks left out as Domain Health leaves them
+ *   out — lib/waivers.js — and said, so both pages show the same number).
  * - Each card links to the tool that goes deeper, carrying the name.
  *
  * Nothing is sent until "Build overview" is pressed: a route (a shared link, a carried target,
@@ -39,6 +40,7 @@ import {
   lookupCtIssuers, passportSummaryFacts
 } from '../lib/passport.js';
 import { HEALTH_I18N, LOOKUP_FAILED_PARAM } from '../lib/health.js';
+import { WAIVERS_I18N, readWaivers } from '../lib/waivers.js';
 import { NaMark, RetryButton, setRetryBusy, statusText } from '../ui/source-status.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { ReportButton } from '../ui/report-button.js';
@@ -61,9 +63,12 @@ export const CARD_ICONS = Object.freeze({
   registration: 'calendar', dns: 'server', mail: 'mail', web: 'globe', certs: 'shield', saas: 'key', health: 'activity'
 });
 
-// The health card shows Domain Health's check titles (health.<id>.title).
+// The health card shows Domain Health's check titles (health.<id>.title), and its accepted risks
+// in Domain Health's words (wvr.*, lib/waivers.js).
 registerStrings('en', HEALTH_I18N.en);
 registerStrings('tr', HEALTH_I18N.tr);
+registerStrings('en', WAIVERS_I18N.en);
+registerStrings('tr', WAIVERS_I18N.tr);
 
 registerStrings('en', {
   'dov.domain': 'Domain',
@@ -524,7 +529,11 @@ export function mount(container, ctx) {
   let summary = null;
 
   /* --- rendering ---------------------------------------------------------------------- */
-  const cardsOf = () => passportCards(current ? current.raw : {}, { now: new Date() });
+  // The health card leaves the workspace's accepted risks out, read now (lib/waivers.js), as Domain Health does.
+  const cardsOf = () => {
+    const now = new Date();
+    return passportCards(current ? current.raw : {}, { now, waivers: readWaivers(ctx.state.workspaceData('waivers'), { now }) });
+  };
 
   function renderHead() {
     // The head redrawn under the keyboard focus (a Retry landed after the build) keeps it on the
@@ -980,11 +989,22 @@ export function mount(container, ctx) {
         h('span', { class: 'dov-score-verdict' }, t(`dov.health.light.${card.light}`)),
         h('span', { class: 'dov-score-value num' }, t('dov.health.score', { score: card.score }))),
       counts.length ? h('div', { class: 'cluster text-sm' }, counts) : null,
+      waivedLines(card),
       card.problems.length
         ? h('ul', { class: 'dov-problems' }, card.problems.map((p) => h('li', { class: ['dov-problem', `dov-sev-${p.severity}`], dataset: { id: p.id } },
           SeverityIcon(p.severity, { size: 15 }), h('span', null, tr(p.titleKey, localParams(p.params), p.id)))))
-        : h('p', { class: 'text-sm muted' }, t('dov.health.noProblems')),
+        : h('p', { class: 'text-sm muted' }, t(card.waived ? 'wvr.noneOpen' : 'dov.health.noProblems')),
       card.moreProblems ? h('p', { class: 'text-xs muted' }, t('dov.health.more', { count: card.moreProblems })) : null);
+  }
+
+  /** The accepted risks the score leaves out and the score with them, and those whose waiver is over, in Domain Health's words. */
+  function waivedLines(card) {
+    const w = card.waived;
+    if (!w && !card.expired) return null;
+    return h('div', { class: 'dov-waived text-sm', dataset: { role: 'dov-waived', count: String(w ? w.count : 0) } },
+      w ? h('p', null, Icon('shield', { size: 14 }), ' ', t('wvr.count', { count: w.count, date: w.until }), ' ',
+        h('span', { class: 'muted', dataset: { role: 'dov-with-waived', score: String(w.score) } }, t('wvr.withThem', { count: w.count, score: w.score, grade: w.grade }))) : null,
+      card.expired ? h('p', { dataset: { role: 'dov-waived-expired' } }, Icon('clock', { size: 14 }), ' ', t('wvr.expiredCount', { count: card.expired })) : null);
   }
 
   const BODIES = { registration: registrationBody, dns: dnsBody, mail: mailBody, web: webBody, certs: certsBody, saas: saasBody, health: healthBody };
@@ -1272,6 +1292,13 @@ export function mount(container, ctx) {
   else if (routeName && isFillOnly(ctx.params)) takeName(routeName, { fillOnly: true });
   renderAll();
   renderPrompt();
+
+  // The health card follows the workspace's accepted risks (Domain Health, the Workspaces dialog, another tab).
+  ctx.onCleanup(ctx.state.subscribe((change) => {
+    const workspace = change.key === 'workspace' || change.key === 'cleared';
+    const waivers = change.key === 'workspaceData' && !!(change.value && Array.isArray(change.value.parts) && change.value.parts.includes('waivers'));
+    if ((workspace || waivers) && current) renderCard('health');
+  }));
 
   active = {
     teardown() {

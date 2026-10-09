@@ -68,6 +68,11 @@ describe('one entry', () => {
     const { waiver } = valid({ reason: `ok${String.fromCharCode(0x202e)}gnirts\u0007 here`, owner: `a${String.fromCharCode(0x200b)}b` });
     assert.equal(waiver.reason, 'ok gnirts here');
     assert.equal(waiver.owner, 'a b');
+    // the bidi isolates (U+2066–U+2069) and the Arabic letter mark (U+061C) reorder text too
+    const isolates = valid({ reason: ['a', 'b', 'c', 'd', 'e', 'f'].join(String.fromCharCode(0x2066)), owner: `x${String.fromCharCode(0x061c)}y${String.fromCharCode(0x2069)}z` }).waiver;
+    assert.equal(isolates.reason, 'a b c d e f');
+    assert.equal(isolates.owner, 'x y z');
+    for (const cp of [0x2067, 0x2068, 0x2069]) assert.equal(valid({ reason: `p${String.fromCharCode(cp)}q` }).waiver.reason, 'p q', cp.toString(16));
   });
 
   test('refs by kind: a check id in lower case, a rule id as written, a SHA-256 as 64 lower-case hex digits', () => {
@@ -291,4 +296,12 @@ test('every text in English and Turkish, the same placeholders', () => {
   const ph = (v) => [...new Set([...String(typeof v === 'string' ? v : v.other).matchAll(/\{(\w+)\}/g)].map((m) => m[1]))].sort().join(',');
   for (const k of keys) assert.equal(ph(WAIVERS_I18N.tr[k]), ph(WAIVERS_I18N.en[k]), k);
   for (const c of WAIVER_ERRORS) assert.ok(keys.includes(`wvr.err.${c}`), c);
+  // the hero's line: a sentence each, the score with one accepted risk or several
+  assert.equal(WAIVERS_I18N.en['wvr.count'].one, '{count} accepted risk (until {date}).');
+  assert.deepEqual(WAIVERS_I18N.en['wvr.withThem'], { one: 'With it, the score would be {score}/100 ({grade}).', other: 'With them, the score would be {score}/100 ({grade}).' });
+  assert.deepEqual(WAIVERS_I18N.tr['wvr.withThem'], { one: 'O da sayılsaydı puan {score}/100 ({grade}) olurdu.', other: 'Onlar da sayılsaydı puan {score}/100 ({grade}) olurdu.' });
+  // a policy rule has no score: its dialog says what accepting it does
+  assert.match(WAIVERS_I18N.en['wvr.dialog.introRule'], /“Accepted”: neither a pass nor a fail/);
+  assert.ok(!/score/.test(WAIVERS_I18N.en['wvr.dialog.introRule']) && !/puan/.test(WAIVERS_I18N.tr['wvr.dialog.introRule']));
+  assert.equal(WAIVERS_I18N.en['wvr.knownExpiredLine'], 'Accepted as known until {date}, expired: flagged again');
 });

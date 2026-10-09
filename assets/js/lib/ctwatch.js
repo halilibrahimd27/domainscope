@@ -652,13 +652,17 @@ function coveredBy(name, names) {
 /**
  * The rows of the table and what the tiles count, from the domains' reads.
  * @param {DomainRead[]} reads
- * @param {{ now?: Date|number, days?: number[], expected?: string[], seen?: ReturnType<typeof readSeen>, known?: object[] }} [opts]
- *   `known`: lib/waivers.js waivers (kind 'cert'): the known certificates, never new nor unexpected
+ * @param {{ now?: Date|number, days?: number[], expected?: string[], seen?: ReturnType<typeof readSeen>, known?: object[],
+ *   knownAt?: Date|number }} [opts]
+ *   `known`: lib/waivers.js waivers (kind 'cert'): the known certificates, never new nor unexpected;
+ *   `knownAt`: when they are matched (default `now`) — a panel drawing an earlier read matches them
+ *   at the time it draws, so a waiver over since the read no longer applies
  * @returns {{ rows: WatchRow[], counts: Record<string, number>, first: string[] }} rows sorted by domain,
  *   then the soonest expiry; `first`: domains read without an earlier check; `counts.known`: the known rows
  */
-export function analyzeCt(reads, { now = Date.now(), days = CT_WATCH_DEFAULT_DAYS, expected = [], seen = emptySeen(), known = [] } = {}) {
+export function analyzeCt(reads, { now = Date.now(), days = CT_WATCH_DEFAULT_DAYS, expected = [], seen = emptySeen(), known = [], knownAt = now } = {}) {
   const t = ms(now);
+  const tKnown = ms(knownAt);
   const rows = [];
   const first = [];
   const radar = days.length ? days[0] : 0;
@@ -685,7 +689,7 @@ export function analyzeCt(reads, { now = Date.now(), days = CT_WATCH_DEFAULT_DAY
       const newest = newestIds.has(c.id) && c.revoked !== true;
       const current = newest && !superseded;
       const status = expectedCaStatus(c.issuer, expected);
-      const k = knownOf(known, { ...c, domain: c.domain || read.domain }, t);
+      const k = knownOf(known, { ...c, domain: c.domain || read.domain }, tKnown);
       const isKnown = !!(k && k.active);
       const row = {
         ...c,

@@ -348,6 +348,17 @@ export const CHECK_HEADLINE_SEVERITY = Object.freeze({
 export const CHECK_STATUS_KEYS = Object.freeze(['wrong', 'pending', 'done', 'noanswer', 'waiting']);
 
 /**
+ * The status item that counts a record set (one of CHECK_STATUS_KEYS): its state, and for a set no
+ * resolver has given a usable answer for, whether one is still being asked (`waiting`) or none
+ * answered (`noanswer`).
+ * @param {{ state: string, counts: { waiting: number } }} set one of checkState's sets
+ * @returns {string}
+ */
+export function checkSetKey(set) {
+  return set.state === 'unknown' ? (set.counts.waiting ? 'waiting' : 'noanswer') : set.state;
+}
+
+/**
  * The status summary of a check page (docs/DESIGN.md §5.4): its record sets by state — ✕ a wrong
  * value somewhere, ⚠ not live everywhere yet, ✓ live on every resolver that answered, · no
  * resolver answered, · still asking — and the key metric, the sets done of all.
@@ -359,10 +370,7 @@ export const CHECK_STATUS_KEYS = Object.freeze(['wrong', 'pending', 'done', 'noa
 export function checkStatus(check, latest, resolvers = CHECK_RESOLVERS) {
   const st = checkState(check, latest, resolvers);
   const n = Object.fromEntries(CHECK_STATUS_KEYS.map((k) => [k, 0]));
-  for (const s of st.sets) {
-    if (s.state === 'unknown') n[s.counts.waiting ? 'waiting' : 'noanswer'] += 1;
-    else n[s.state] += 1;
-  }
+  for (const s of st.sets) n[checkSetKey(s)] += 1;
   const severity = { wrong: 'error', pending: 'warn', done: 'ok', noanswer: 'neutral', waiting: 'neutral' };
   return {
     items: CHECK_STATUS_KEYS.map((key) => ({ key, severity: severity[key], count: n[key] })),

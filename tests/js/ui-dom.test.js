@@ -3414,6 +3414,36 @@ describe('ui/template.js — the page template', () => {
       bar.dispose();
     });
 
+    test('on a phone, out of view: the floating copy shows, steps aside while another primary leads (a link\'s Start), and carries Stop', () => {
+      const observers = [];
+      globalThis.IntersectionObserver = class {
+        constructor(callback) {
+          this.callback = callback;
+          observers.push(this);
+        }
+
+        observe() {}
+
+        disconnect() {}
+      };
+      try {
+        const bar = tplOnPhone(() => RunBar({ label: 'Check references' }));
+        observers[0].callback([{ isIntersecting: false }]);
+        bar.setState('ready');
+        assert.equal(bar.float.hidden, false, 'the inline Run is out of view');
+        bar.setPrimary(false);
+        assert.equal(bar.float.hidden, true, 'one primary at a time: the prompt\'s Start leads');
+        bar.setRunning(true);
+        assert.equal(bar.float.hidden, false, 'Stop floats');
+        bar.setRunning(false);
+        bar.setPrimary(true);
+        assert.equal(bar.float.hidden, false, 'Run leads again');
+        bar.dispose();
+      } finally {
+        delete globalThis.IntersectionObserver;
+      }
+    });
+
     test('info lines (a wizard\'s estimate and summary) group the bar: the buttons, then the lines; the view\'s classes and hooks kept', () => {
       const plan = new TplElement('div');
       const summary = new TplElement('div');
@@ -3801,9 +3831,29 @@ describe('ui/template.js — the page template', () => {
       const lone = ResultActions({ summary: summary(), tail: tail.slice(0, 1) });
       assert.deepEqual(row(lone), ['summary+plain', 'cert-remove']);
       assert.equal(lone.el.querySelector('[data-action="cert-remove"]').dataset.tail, '');
+      lone.setExportsDisabled(true);
+      assert.equal(lone.el.querySelector('[data-action="cert-remove"]').disabled, false, 'no file to export: a lone Remove stays');
       const phone = tplOnPhone(() => ResultActions({ summary: summary(), exports: files(1), print: true, tail, link: () => 'x' }));
       assert.deepEqual(phone.el.querySelectorAll('.menu-item').map((i) => i.dataset.export || i.dataset.action), ['copy-summary-text', 'names', 'print', 'copy-link', 'cert-remove']);
       assert.equal(phone.el.querySelectorAll('.menu-item').at(-1).dataset.tail, '', 'the destructive one last');
+    });
+
+    test('one file under a data-action of its own (the comparison\'s JSON) waits for a run too; Print alone waits only for a run', () => {
+      const a = ResultActions({ exports: [{ label: 'Export', dataset: { action: 'oc-json' }, onSelect: () => {} }] });
+      const btn = a.el.querySelector('[data-action="oc-json"]');
+      a.setDisabled(true);
+      assert.equal(btn.disabled, true, 'the previous comparison\'s file waits while a run goes on');
+      a.setDisabled(false);
+      assert.equal(btn.disabled, false);
+      a.setExportsDisabled(true);
+      assert.equal(btn.disabled, true, 'nothing to export yet');
+      a.dispose();
+      const printOnly = ResultActions({ print: true });
+      printOnly.setExportsDisabled(true);
+      assert.equal(printOnly.el.querySelector('[data-action="print"]').disabled, false, 'Print stays');
+      printOnly.setDisabled(true);
+      assert.equal(printOnly.el.querySelector('[data-action="print"]').disabled, true);
+      printOnly.dispose();
     });
 
     test('dispose removes the phone-layout listener (it would keep the page it drew alive): the actions\' and the run bar\'s', () => {

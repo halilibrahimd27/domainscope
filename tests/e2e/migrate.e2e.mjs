@@ -22,9 +22,12 @@
  *     summary line with Edit, Run) while the change request's editor stays whole; a shared link's
  *     ready prompt leads (Retire: Run steps back until Start);
  *   - the status summaries: Global DNS's failed queries filter the tables on the Resolvers &
- *     locations tab (a second press shows every source); Zone File's errors open the Problems tab
- *     filtered, its names the Records tab; Retire's "breaks mail" filters the change list; the
+ *     locations tab (a second press shows every source), and so does an answer group's chip;
+ *     Zone File's errors open the Problems tab filtered, its names the Records tab, the keyboard
+ *     focus staying on the item pressed; Retire's "breaks mail" filters the change list; the
  *     change request's warnings bring its problems into view;
+ *   - the comparison page takes a later check's link (`?old=`, `?host=`) over what was typed, and
+ *     keeps what was typed when the same link is mounted again (a language switch);
  *   - the standard actions in order: Global DNS and Retire an IP: Copy summary with ¶, Export ▾,
  *     Copy link; Zone File: Copy summary with ¶ and Export ▾ (Convert, Print, Forget last); the
  *     change request and its check page: Copy summary with ¶ and Copy link (the check link);
@@ -32,8 +35,8 @@
  *     other panels hide; the kept result's note sits in its result header once it is opened again;
  *   - a page that is left takes back its phone-layout listeners (its run bar's and its actions');
  *   - phones: at 375×812 (Turkish, dark) only Copy summary stays in the row and the rest is behind
- *     "⋯" (Zone File's Forget last); 320 px: no horizontal scroll on the six pages, empty or with
- *     a result;
+ *     "⋯" (Zone File's Forget last), and no floating run bar covers a result (the editor's
+ *     outputs included); 320 px: no horizontal scroll on the six pages, empty or with a result;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; nothing sent.
  */
 
@@ -187,6 +190,16 @@ const statusOf = (page, head) => page.evaluate((sel) => [...document.querySelect
 /** Every source row the Global DNS tables show (resolvers, locations, mainland China). */
 const globalRows = (page) => page.evaluate(() => [...document.querySelectorAll('.glb-resolvers tbody tr.dt-row, .glb-geo tbody tr.dt-row')].map((tr) => !!tr.querySelector('.glb-fail')));
 
+/** Whether the phone's floating run bar shows once the page is scrolled to its end (the inline Run then out of view). */
+async function floatsAtEnd(page) {
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  // The run bar hears of it from an IntersectionObserver, a frame or two later.
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 150)))));
+  const shown = await page.evaluate(() => [...document.querySelectorAll('.run-bar-float')].some((f) => f.checkVisibility()));
+  await page.evaluate(() => window.scrollTo(0, 0));
+  return shown;
+}
+
 async function main() {
   const opts = cliOptions();
   opts.shotsDir = path.resolve(opts.value('--shots-dir', SHOTS));
@@ -284,6 +297,24 @@ async function main() {
       assertEqual((await globalRows(page)).length, all, 'every row back');
     });
 
+    await run.step('Global DNS: an answer group\'s chip shows its rows on the Resolvers & locations tab, the keyboard on that tab; Show all brings every row back', async () => {
+      await page.click('.glb-tabs .tab[data-tab="groups"]');
+      const all = (await globalRows(page)).length;
+      await page.click('.glb-legend .glb-chip[data-group="A"]');
+      await page.waitFor(() => document.querySelector('.glb-tabs .tab[aria-selected="true"]')?.dataset.tab === 'resolvers' && !document.querySelector('.glb-filter-note').hidden,
+        { message: 'the Resolvers & locations tab, filtered to group A' });
+      const shown = await page.evaluate(() => ({
+        marks: [...document.querySelectorAll('.glb-resolvers tbody tr.dt-row, .glb-geo tbody tr.dt-row')].filter((tr) => tr.checkVisibility())
+          .map((tr) => tr.querySelector('.glb-mark')?.textContent),
+        focus: document.activeElement?.dataset?.tab || document.activeElement?.tagName || null
+      }));
+      assert(shown.marks.length > 0 && shown.marks.every((m) => m === 'A'), `only group A's rows, on screen: ${JSON.stringify(shown.marks)}`);
+      assertEqual(shown.focus, 'resolvers', 'the keyboard goes with the rows: to the tab that shows them');
+      await page.click('.glb-filter-note button');
+      await page.waitFor(() => document.querySelector('.glb-filter-note').hidden, { message: 'every row again' });
+      assertEqual((await globalRows(page)).length, all, 'every row back');
+    });
+
     await run.step('Global DNS: Copy summary with ¶, Export ▾ (the IP addresses), Copy link (the check\'s own link)', async () => {
       assertEqual(await actionsRow(page, '.glb-summary'), ['summary+plain', 'menu:export', 'copy-link'], 'the actions, in order');
       assertEqual(await menuKeys(page, 'export', '.glb-summary'), ['ips-csv', 'ips-json'], 'Export ▾');
@@ -362,6 +393,21 @@ async function main() {
       await page.type('[data-role="oc-newIp"]', '');
     });
 
+    await run.step('the comparison page: a later check\'s link fills its boxes over what was typed; the same link again (a language switch) keeps what was typed since', async () => {
+      const boxes = () => page.evaluate(() => ['oc-host', 'oc-oldIp', 'oc-newIp'].map((r) => document.querySelector(`[data-role="${r}"]`).value));
+      await open(page, `#/retire/compare?old=${OLD_IP}&host=www.${APEX}`);
+      assertEqual((await boxes()).slice(0, 2), [`www.${APEX}`, OLD_IP], 'the link\'s pair, though the boxes were typed in');
+      await page.type('[data-role="oc-newIp"]', '198.51.100.20');
+      await gotoRoute(page, '#/about');
+      await open(page, '#/retire/compare?old=192.0.2.7&host=shop.example.org');
+      assertEqual(await boxes(), ['shop.example.org', '192.0.2.7', '198.51.100.20'], 'the next link\'s pair; the new address stays');
+      await page.type('[data-role="oc-host"]', `api.${APEX}`);
+      await setLangUi(page, 'tr');
+      assertEqual((await boxes())[0], `api.${APEX}`, 'the same link, mounted again: what was typed stays');
+      await setLangUi(page, 'en');
+      await page.type('[data-role="oc-newIp"]', '');
+    });
+
     await run.step('Zone File: a sample; the import card one row; the zone\'s result header above 300 px; errors open the Problems tab filtered, names the Records tab', async () => {
       await open(page, '#/zone');
       await page.click('[data-sample="bind"]');
@@ -386,6 +432,17 @@ async function main() {
       await page.click('.zone-summary .status-item[data-status="names"]');
       await page.waitFor(() => document.querySelector('.zone-tabs .tab[aria-selected="true"]')?.dataset.tab === 'records', { message: 'the Records tab' });
       await shot(page, 'migrate-zone-result-desktop-light-en');
+    });
+
+    await run.step('Zone File: a status item pressed with the keyboard keeps the keyboard focus while its tab is drawn', async () => {
+      for (const [key, tab] of [['warn', 'problems'], ['names', 'records'], ['error', 'problems'], ['error', 'problems']]) {
+        await page.evaluate((k) => document.querySelector(`.zone-summary .status-item[data-status="${k}"]`).focus(), key);
+        await page.press('Enter');
+        await page.waitFor((t) => document.querySelector('.zone-tabs .tab[aria-selected="true"]')?.dataset.tab === t, { args: [tab], message: `${key}: the ${tab} tab` });
+        assertEqual(await page.evaluate(() => (document.activeElement?.closest('.zone-summary') ? document.activeElement.dataset.status : document.activeElement?.tagName)), key,
+          `${key}: the focus stays on the item`);
+      }
+      assertEqual(await page.evaluate(() => document.querySelector('.zone-summary .status-item[data-status="error"]').getAttribute('aria-pressed')), 'false', 'a second press: every problem');
     });
 
     await run.step('Zone File: Copy summary with ¶ and Export ▾ — Convert, Print, then Forget, last', async () => {
@@ -461,6 +518,8 @@ async function main() {
         await page.waitFor((sel) => !!document.querySelector(`${sel} .result-actions`), { args: [head], timeout: 10000, message: `${route}: its result` });
         assertEqual(await actionsRow(page, head), ['summary', 'menu:more'], `${route}: Copy summary, ⋯`);
         await assertNoHorizontalScroll(page, `${route} 375 tr dark`);
+        // Done (DESIGN §5.2): no floating run bar over the result, Read the current records under the editor's outputs included.
+        if (route !== CHECK_LINK) assertEqual(await floatsAtEnd(page), false, `${route}: no floating run bar once the result stands`);
       }
       await open(page, '#/zone');
       await page.waitFor(() => !!document.querySelector('.zone-summary .result-actions'), { message: 'the zone' });

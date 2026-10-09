@@ -1313,7 +1313,7 @@ export function mount(container, ctx) {
   // The page template (DESIGN §5.5, File): the import card (what is kept and sent in its footer,
   // compact once a zone is loaded), then the zone's result header, kept for the life of the view —
   // the shell's kept-result note ("Live check from …") sits in it — and the tabs.
-  const root = h('div', { class: 'zone-page' });
+  const root = h('div', { class: 'zone-page tool-stack' });
   container.append(root);
   const head = ResultHeader({ className: 'zone-summary' });
   /** The result header's actions (Copy summary, Export ▾ with Forget last), drawn with the zone. */
@@ -1422,7 +1422,25 @@ export function mount(container, ctx) {
   }
 
   /* --- render ------------------------------------------------------------ */
+  /**
+   * Draw the page again. The result header is the same element from one drawing to the next: a
+   * control of it under the keyboard focus (a status item pressed with Enter, which opens its tab)
+   * keeps the focus — the same control, else the one with its hook, else the title — instead of
+   * dropping it on the page's body while the page is drawn around it.
+   */
   function render() {
+    const doc = globalThis.document;
+    const was = doc && doc.activeElement && head.el.contains(doc.activeElement) ? doc.activeElement : null;
+    draw();
+    if (!was || !head.el.isConnected || head.el.contains(doc.activeElement)) return;
+    const escape = (v) => (globalThis.CSS && CSS.escape ? CSS.escape(v) : v);
+    const hook = ['status', 'action', 'menu'].filter((k) => was.dataset && was.dataset[k]).map((k) => `[data-${k}="${escape(was.dataset[k])}"]`)[0];
+    const again = was.isConnected ? was : hook ? head.el.querySelector(hook) : null;
+    if (again) again.focus({ preventScroll: true });
+    if (doc.activeElement !== again) head.focusTitle();
+  }
+
+  function draw() {
     clear(root);
     const loaded = !!(S.zone && !S.zone.fatal && !S.busy);
     root.append(importInput(loaded));
@@ -1735,7 +1753,7 @@ export function mount(container, ctx) {
     const exact = S.origins.filter((r) => r.kind === 'ip' || r.kind === 'host').length;
     // Region 6 of the Overview tab: the zone's figures, read-only (the status summary filters).
     const stats = MetricStrip({
-      className: 'zone-stats',
+      className: 'zone-stats metric-surface',
       label: t('zone.metricsLabel'),
       metrics: [
         { id: 'names', label: t('zone.stat.names'), value: c.names },

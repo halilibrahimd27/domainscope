@@ -136,15 +136,16 @@ export function inputCompact(state) {
 
 /**
  * Whether the phone's floating run bar shows (DESIGN §3.4): on a phone, when the inline Run is out
- * of view while the input holds a value — not once a result is on screen (it would cover it), and
- * while a run goes on it carries Stop.
- * @param {{ phone?: boolean, inlineVisible?: boolean, hasValue?: boolean, state?: string }} facts
+ * of view while the input holds a value — not once a result is on screen (it would cover it), nor
+ * while another primary button leads (`primary` false: a shared link's Start; one primary at a
+ * time) — and while a run goes on it carries Stop.
+ * @param {{ phone?: boolean, inlineVisible?: boolean, hasValue?: boolean, state?: string, primary?: boolean }} facts
  * @returns {boolean}
  */
-export function runBarFloats({ phone = false, inlineVisible = true, hasValue = false, state = 'empty' } = {}) {
+export function runBarFloats({ phone = false, inlineVisible = true, hasValue = false, state = 'empty', primary = true } = {}) {
   if (!phone || inlineVisible) return false;
   if (state === 'running') return true;
-  if (state === 'done') return false;
+  if (state === 'done' || !primary) return false;
   return !!hasValue;
 }
 

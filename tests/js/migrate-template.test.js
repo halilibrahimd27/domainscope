@@ -8,12 +8,15 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { statusItems, STATUS_SEVERITIES } from '../../assets/js/lib/template.js';
 import {
   buildChange, templateInput, requestSummaryFacts, changeStatus, changeHeadline, CHANGE_STATUS_OF, CHANGE_SIGNS, FIX_ACTIONS
 } from '../../assets/js/lib/fixes.js';
 import {
-  CHECK_HEADLINES, CHECK_RESOLVERS, CHECK_HEADLINE_SEVERITY, CHECK_STATUS_KEYS, checkStatus, checkState, pairKey
+  CHECK_HEADLINES, CHECK_RESOLVERS, CHECK_HEADLINE_SEVERITY, CHECK_STATUS_KEYS, checkStatus, checkState, checkSetKey, pairKey
 } from '../../assets/js/lib/changecheck.js';
 import {
   VERDICT_STATES, OUTCOME_SEVERITY, OUTCOME_STATUS_KEYS, propagationOutcome, propagationStatus, propagationStatusMatch, rowRcode
@@ -99,6 +102,14 @@ describe('the "is it live?" page (lib/changecheck.js)', () => {
     const st = checkStatus(check, all);
     assert.deepEqual([st.done, st.total], [3, 3]);
     assert.deepEqual(shown(st.items), ['done:3']);
+  });
+
+  test('the item that counts each set (a press brings that set into view): a set without a usable answer is "no answer" or still "being asked", never both', () => {
+    const map = latest({ 0: ['done', 'done', 'done', 'done'], 1: ['error', 'error', 'error', 'error'] });
+    const st = checkState(check, map);
+    assert.deepEqual(st.sets.map((s) => s.state), ['done', 'unknown', 'unknown'], 'the fixture: two sets without a usable answer');
+    assert.deepEqual(st.sets.map(checkSetKey), ['done', 'noanswer', 'waiting']);
+    assert.deepEqual(shown(checkStatus(check, map).items), ['done:1', 'noanswer:1', 'waiting:1'], 'the counts agree');
   });
 });
 
@@ -232,5 +243,58 @@ describe('the old and the new server (lib/origincompare.js)', () => {
     assert.deepEqual(Object.keys(COMPARE_SEVERITY).sort(), [...COMPARE_VERDICTS].sort());
     assert.ok(Object.values(COMPARE_SEVERITY).every((s) => STATUS_SEVERITIES.includes(s)));
     assert.deepEqual([COMPARE_SEVERITY.same, COMPARE_SEVERITY.broken], ['ok', 'error']);
+  });
+});
+
+describe('the stylesheets of the four tools (DESIGN §8: per-view CSS shrinks as views move to shared components)', () => {
+  const CSS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'assets', 'css');
+  /** Their sizes in bytes before phase 4 (a5d3fcd3), as served (no build step). */
+  const BEFORE = { 'change.css': 5608, 'global.css': 12994, 'retire.css': 10217, 'zone.css': 9985 };
+  const sheet = (file) => readFileSync(join(CSS_DIR, 'views', file), 'utf8');
+
+  /** The rules of a stylesheet, @media blocks opened: the selector and the sorted declarations. */
+  function rules(css) {
+    const out = [];
+    const walk = (text) => {
+      let at = 0;
+      while (at < text.length) {
+        const open = text.indexOf('{', at);
+        if (open === -1) break;
+        let depth = 1;
+        let end = open + 1;
+        for (; end < text.length && depth; end += 1) depth += text[end] === '{' ? 1 : text[end] === '}' ? -1 : 0;
+        const head = text.slice(at, open).trim().replace(/\s+/g, ' ');
+        const body = text.slice(open + 1, end - 1);
+        if (head.startsWith('@')) walk(body);
+        else out.push({ selector: head, decls: body.split(';').map((d) => d.trim().replace(/\s+/g, ' ')).filter(Boolean).sort() });
+        at = end;
+      }
+    };
+    walk(css.replace(/\/\*[\s\S]*?\*\//g, ''));
+    return out;
+  }
+  const holds = (rule, decls) => decls.every((d) => rule.decls.includes(d));
+
+  test('each is smaller than before the phase', () => {
+    for (const [file, before] of Object.entries(BEFORE)) {
+      const now = Buffer.byteLength(sheet(file));
+      assert.ok(now < before, `${file}: ${now} bytes, ${before} before phase 4`);
+    }
+  });
+
+  test('none repeats what style.css gives every view: [hidden], the focus ring, the template stack, the metric strip\'s surface, the note line', () => {
+    const found = [];
+    for (const file of Object.keys(BEFORE)) {
+      for (const r of rules(sheet(file))) {
+        const where = `${file}: ${r.selector}`;
+        if (r.decls.join(';') === 'display: none' && r.selector.split(',').some((s) => /\[hidden\]$/.test(s.trim()))) found.push(`${where} (style.css hides every [hidden])`);
+        if (/:focus$/.test(r.selector) && r.decls.join(';') === 'outline: none') found.push(`${where} (it hides style.css's :focus-visible ring)`);
+        if (/:focus-visible$/.test(r.selector) && r.decls.join(';') === 'outline-offset: var(--focus-offset);outline: var(--focus-w) solid var(--focus)') found.push(`${where} (style.css's ring)`);
+        if (holds(r, ['display: flex', 'flex-direction: column', 'gap: var(--stack-gap)'])) found.push(`${where} (.tool-stack)`);
+        if (holds(r, ['background: var(--surface)', 'border-radius: var(--radius-lg)', 'border: 1px solid var(--border)', 'padding: var(--space-2) var(--card-pad)'])) found.push(`${where} (.metric-surface)`);
+        if (holds(r, ['align-items: baseline', 'display: flex', 'gap: var(--space-2)', 'margin: 0'])) found.push(`${where} (.result-note)`);
+      }
+    }
+    assert.deepEqual(found, []);
   });
 });

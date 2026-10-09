@@ -15,14 +15,6 @@
   display: none;
 }
 
-/* The category scores (region 6): a band of figures under the header. */
-.hlt-metrics {
-  padding: var(--space-2) var(--card-pad);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-}
-
 .hlt-waived p {
   margin: 0;
 }

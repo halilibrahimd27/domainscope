@@ -135,6 +135,14 @@ describe('templateState, inputCompact and runBarFloats', () => {
     assert.equal(runBarFloats({ ...base, phone: false }), false, 'not on a wide screen');
     assert.equal(runBarFloats(), false);
   });
+
+  test('the floating run bar steps aside while another primary button leads (a link\'s Start): one primary at a time; Stop still floats', () => {
+    const base = { phone: true, inlineVisible: false, hasValue: true, primary: false };
+    assert.equal(runBarFloats({ ...base, state: 'ready' }), false, 'the prompt\'s Start leads');
+    assert.equal(runBarFloats({ ...base, state: 'empty' }), false);
+    assert.equal(runBarFloats({ ...base, state: 'running' }), true, 'it carries Stop');
+    assert.equal(runBarFloats({ ...base, primary: true, state: 'ready' }), true, 'primary by default');
+  });
 });
 
 describe('splitAtSubject', () => {

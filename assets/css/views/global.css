@@ -8,17 +8,6 @@
 
 /* ---- regions: the input card, the result header, the expected value, the tabs ------------- */
 
-.glb-view,
-.glb-results {
-  display: flex;
-  flex-direction: column;
-  gap: var(--stack-gap);
-}
-
-.glb-results[hidden] {
-  display: none;
-}
-
 /* The record type beside the name box is a short select. */
 .glb-form .tool-input-inline > .field {
   min-width: 8rem;
@@ -134,8 +123,7 @@
   overflow-wrap: anywhere;
 }
 
-.glb-exp-actions:empty,
-.glb-exp-soa[hidden] {
+.glb-exp-actions:empty {
   display: none;
 }
 
@@ -282,15 +270,6 @@
   white-space: nowrap;
 }
 
-.glb-filter-note {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text-2);
-}
-
 /* ---- tables ------------------------------------------------------------------ */
 
 .glb-row > td:first-child {
@@ -322,7 +301,6 @@
 }
 
 .glb-ipval,
-.glb-alias,
 .glb-mx {
   display: inline-flex;
   flex-wrap: wrap;
@@ -594,74 +572,7 @@
   color: var(--text-2);
 }
 
-.glb-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--stack-gap);
-}
-
-/* Region 6: the figures, flat on their own surface. */
-.glb-stats {
-  padding: var(--space-2) var(--card-pad);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-}
-
-/* Region 7: why the answers differ — one card, one row per finding (icon, group marks, text). */
-.glb-findings-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--card-pad);
-}
-
-.glb-findings-title {
-  margin: 0;
-  font-size: var(--fs-md);
-  font-weight: var(--fw-semibold);
-}
-
-.glb-findings {
-  display: grid;
-  gap: var(--space-2);
-  align-self: stretch;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.glb-finding {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  min-width: 0;
-  font-size: var(--fs-sm);
-  line-height: var(--lh-sm);
-  overflow-wrap: anywhere;
-}
-
-.glb-finding:focus {
-  outline: none;
-}
-
-.glb-finding:focus-visible {
-  outline: var(--focus-w) solid var(--focus);
-  outline-offset: var(--focus-offset);
-}
-
-.glb-finding-icon {
-  display: inline-flex;
-  flex: none;
-  height: var(--lh-sm);
-  align-items: center;
-}
-
-.glb-finding-text {
-  min-width: 0;
-}
-
+/* Region 7 (style.css .finding-list): a finding's group marks. */
 .glb-finding-marks {
   display: inline-flex;
   flex: none;
@@ -679,10 +590,6 @@
   color: var(--text-3);
   font-size: var(--fs-2xs);
   white-space: nowrap;
-}
-
-.glb-filter-note[hidden] {
-  display: none;
 }
 
 /* Make table scrollers the containing block of absolutely positioned descendants (.sr-only
@@ -740,8 +647,7 @@
   .glb-exp-flush,
   .glb-exp-soa .btn,
   .glb-tabs .tablist-scroll,
-  .glb-tabs .tablist-more,
-  .glb-filter-note {
+  .glb-tabs .tablist-more {
     display: none;
   }
 

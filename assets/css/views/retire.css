@@ -6,17 +6,6 @@
  * .oc-*). Uses the design tokens from style.css only.
  */
 
-.retire-view {
-  display: flex;
-  flex-direction: column;
-  gap: var(--stack-gap);
-}
-
-.retire-results-host:empty,
-.retire-prompt-slot[hidden] {
-  display: none;
-}
-
 /* ---- region 2: the form ------------------------------------------------------- */
 
 /* The addresses next to the domains on wide screens (the domains box as wide as its column, not the
@@ -38,14 +27,6 @@
   min-height: 84px;
   font-size: var(--fs-sm);
   line-height: 1.6;
-}
-
-/* Compact (a check ran): the address box is one line high and stays a box; the domains wait behind Edit. */
-.retire-form-card.is-compact:not(.is-editing) .retire-ips .textarea {
-  height: var(--field-h);
-  min-height: var(--field-h);
-  padding-block: 6px;
-  resize: none;
 }
 
 .retire-parsed {
@@ -132,26 +113,6 @@
 
 /* ---- region 4: the result header ------------------------------------------------ */
 
-/* What could not be checked, the stop and what is never covered: quiet lines with their icon. */
-.retire-note {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  margin: 0;
-  font-size: var(--fs-sm);
-  line-height: var(--lh-sm);
-}
-
-.retire-note > .icon {
-  flex: none;
-  transform: translateY(2px);
-  color: var(--text-3);
-}
-
-.retire-note-warn > .icon {
-  color: var(--warn);
-}
-
 .retire-chips .src-chip-value {
   overflow-wrap: anywhere;
 }
@@ -208,25 +169,6 @@
 .retire-owner-name {
   color: var(--text);
   font-weight: var(--fw-semibold);
-}
-
-/* A status item pressed: the change list shows the records it counts, and says so. */
-.retire-filter-note {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-2);
-  color: var(--text-2);
-}
-
-.retire-filter-note[hidden] {
-  display: none;
-}
-
-.retire-job {
-  display: flex;
-  flex-direction: column;
-  gap: var(--stack-gap);
 }
 
 /* ---- region 8: the change list, one card per group --------------------------- */
@@ -381,31 +323,26 @@
 
 /* ---- #/retire/compare: the old and the new server (ui/origin-compare.js) --------- */
 
-.oc-page {
-  display: flex;
-  flex-direction: column;
-  gap: var(--stack-gap);
-}
-
-.oc-results-host:empty {
-  display: none;
-}
-
 .oc-card p {
   margin: 0;
-}
-
-/* The addresses beside the host name hold an IPv6 address; the path and the port under them. */
-.oc-form .tool-input-inline > .field {
-  min-width: 11rem;
-  max-width: 16rem;
 }
 
 .oc-more {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(0, 1fr);
   gap: var(--space-2) var(--space-3);
-  max-width: 30rem;
+}
+
+/* The addresses beside the host name hold an IPv6 address; the path and the port under them. */
+@media (min-width: 720px) {
+  .oc-form .tool-input-inline > .field {
+    min-width: 11rem;
+    max-width: 16rem;
+  }
+
+  .oc-more {
+    max-width: 30rem;
+  }
 }
 
 .oc-issues {
@@ -416,19 +353,6 @@
   padding: 0;
   list-style: none;
   overflow-wrap: anywhere;
-}
-
-.oc-shared {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  color: var(--text-2);
-}
-
-.oc-shared > .icon {
-  flex: none;
-  transform: translateY(2px);
-  color: var(--warn);
 }
 
 .oc-measurements::before {
@@ -515,16 +439,6 @@
   gap: var(--space-1);
 }
 
-@media (max-width: 719px) {
-  .oc-form .tool-input-inline > .field {
-    max-width: none;
-  }
-
-  .oc-more {
-    max-width: none;
-  }
-}
-
 /* A phone: each field is a small card, the old and the new value labelled under its name. */
 @media (max-width: 600px) {
   .oc-table thead {
@@ -581,7 +495,6 @@
 
   .retire-discover,
   .retire-next,
-  .retire-filter-note,
   .retire-compare-back,
   .retire-empty {
     display: none;

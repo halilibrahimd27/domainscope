@@ -2,7 +2,7 @@
 // and back, the field a carried domain fills. DOM-free at import; no network.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { routeForm, subjectField, errorLabel, checkInProgress } from '../../assets/js/views/change.js';
+import { routeForm, subjectField, errorLabel, checkInProgress, globalCheckSet } from '../../assets/js/views/change.js';
 import { builderParams, checkHash, problemText } from '../../assets/js/ui/fix-panel.js';
 import { TEMPLATE_IDS, templateInput, buildChange } from '../../assets/js/lib/fixes.js';
 import { t, setLang, hasString } from '../../assets/js/i18n.js';
@@ -41,6 +41,21 @@ describe('the form in the route', () => {
     assert.equal(subjectField('acme-txt'), 'name');
     assert.equal(subjectField('record'), 'name');
     assert.equal(subjectField('nope'), null);
+  });
+
+  test('"Check propagation (Global DNS)" names the first record set Global DNS can ask for: never a wildcard, which it cannot', () => {
+    const pick = (list) => {
+      const set = globalCheckSet(list.map(([name, type]) => ({ name, type })));
+      return set ? `${set.name} ${set.type}` : null;
+    };
+    assert.equal(pick([['*.example.com', 'A'], ['www.example.com', 'AAAA']]), 'www.example.com AAAA');
+    assert.equal(pick([['example.com', 'NS'], ['_acme-challenge.example.com', 'TXT']]), '_acme-challenge.example.com TXT', 'a type Global DNS asks for');
+    assert.equal(pick([['*.example.com', 'A']]), null);
+    assert.equal(pick([]), null);
+    const wildcard = buildChange('record', templateInput('record', { name: '*.example.com', type: 'A', values: '192.0.2.10' }));
+    assert.ok(wildcard.rrsets.length && wildcard.rrsets.every((r) => r.name.startsWith('*.')), 'the fixture builds a wildcard set');
+    assert.equal(globalCheckSet(wildcard.rrsets), null, 'no step that opens an error page');
+    assert.equal(globalCheckSet(buildChange('acme-txt', templateInput('acme-txt', { name: '*.example.com', tokens: 'x' })).rrsets).name, '_acme-challenge.example.com');
   });
 
   test('the views that load the fix panel on first use list exactly the fixable checks and findings', async () => {

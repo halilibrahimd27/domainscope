@@ -371,6 +371,29 @@ test('the card says why a certificate is not trusted, as the CLI does ("no: <rea
   assert.equal(displayValue('certCovers', false, null), 'no');
 });
 
+test('the boxes a mount of the compare page fills: a link\'s host and old address, typed-in boxes too, once per link; Retire\'s guess only where nobody typed', async () => {
+  const { compareFill } = await import('../../assets/js/ui/origin-compare.js');
+  const typed = { host: 'api.example.org', oldIp: '192.0.2.99', touched: true, link: null };
+  const guess = { ip: '192.0.2.1', host: 'example.net' };
+  const withLink = (ip, host) => ({ ...guess, link: { ip, host } });
+  // A later Retire check's next step names the pair to compare: it fills its boxes, typed or not.
+  const first = compareFill(typed, withLink('192.0.2.10', 'www.example.com'));
+  assert.deepEqual([first.host, first.oldIp], ['www.example.com', '192.0.2.10']);
+  assert.ok(first.link, 'the link filled in is remembered');
+  const again = compareFill({ ...typed, link: first.link }, withLink('192.0.2.10', 'www.example.com'));
+  assert.deepEqual([again.host, again.oldIp, again.link], ['api.example.org', '192.0.2.99', first.link], 'the same link again (a language switch, Back): what was typed since stays');
+  const next = compareFill({ ...typed, link: first.link }, withLink('203.0.113.7', 'shop.example.org'));
+  assert.deepEqual([next.host, next.oldIp], ['shop.example.org', '203.0.113.7'], 'another link: its pair');
+  assert.notEqual(next.link, first.link);
+  // Without a link: Retire's one address and first domain, only in boxes nobody has typed in.
+  assert.deepEqual(compareFill(typed, { ...guess, link: null }), { host: 'api.example.org', oldIp: '192.0.2.99', link: null });
+  assert.deepEqual(compareFill({ host: '', oldIp: '', touched: false, link: first.link }, { ...guess, link: null }), { host: 'example.net', oldIp: '192.0.2.1', link: null });
+  // A link that names the host only: the old address is guessed while nobody typed there.
+  const hostOnly = compareFill({ host: '', oldIp: '', touched: false, link: null }, withLink(null, 'www.example.com'));
+  assert.deepEqual([hostOnly.host, hostOnly.oldIp], ['www.example.com', '192.0.2.1']);
+  assert.deepEqual([compareFill(typed, withLink(null, 'www.example.com')).oldIp, compareFill(typed, {}).host], ['192.0.2.99', 'api.example.org']);
+});
+
 describe('runCompare', () => {
   function fakeClient({ failSecond = null } = {}) {
     const calls = [];

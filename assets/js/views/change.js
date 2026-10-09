@@ -50,12 +50,13 @@ import { state as stateSingleton } from '../state.js';
 import {
   EmptyState, NextSteps, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput
 } from '../ui/template.js';
+import { templateState } from '../lib/template.js';
 import {
   CHANGE_TEMPLATES, FIX_FIELDS, FIX_CAS, TEMPLATE_IDS, TXT_FAMILIES, buildChange, changeTemplate, templateInput, validateChange, hasErrors,
   readCurrent, countSpfLookups, valueText, requestSummaryFacts, changeStatus, changeHeadline
 } from '../lib/fixes.js';
 import {
-  CHECK_RESOLVERS, CHECK_LIMITS, CHECK_HEADLINE_SEVERITY, decodeCheck, linkQuery, checkRound, checkState, checkStatus, nextCheck, pairKey,
+  CHECK_RESOLVERS, CHECK_LIMITS, CHECK_HEADLINE_SEVERITY, decodeCheck, linkQuery, checkRound, checkState, checkStatus, checkSetKey, nextCheck, pairKey,
   checkFromRequest, encodeCheck
 } from '../lib/changecheck.js';
 import { normalizeHostname, registrableDomain } from '../lib/domain.js';
@@ -327,6 +328,17 @@ export function errorLabel(reason, t) {
   return t('chg.check.v.noAnswer');
 }
 
+/**
+ * The record set the next step "Check propagation (Global DNS)" names: the first of a type Global
+ * DNS asks for whose name it takes (`*.example.com` is no name a resolver can be asked about), or
+ * null — then the change offers no such step.
+ * @param {Array<{ name: string, type: string }>} rrsets the change's record sets (lib/fixes.js buildChange)
+ * @returns {{ name: string, type: string }|null}
+ */
+export function globalCheckSet(rrsets) {
+  return (rrsets || []).find((r) => GLOBAL_CHECK_TYPES.includes(r.type) && !!normalizeHostname(r.name, { allowSingleLabel: true })) || null;
+}
+
 /** The field a carried domain fills in a template: its domain, else its name. */
 export function subjectField(template) {
   const tpl = changeTemplate(template);
@@ -404,7 +416,11 @@ function mountBuilder(container, ctx) {
   const fieldsEl = h('div', { class: 'chg-fields' });
   // The editor's run bar (DESIGN §5.5, Editor): "Read the current records" — the one thing the form
   // sends — with Ctrl/Cmd+Enter; the outputs are built as you type. It is the primary button while
-  // the change still needs a read, and steps back once the outputs stand without one.
+  // the change still needs a read, and steps back once the outputs stand without one. Its phone copy
+  // floats only while a read runs (it carries Stop): from the moment the form names its subject the
+  // outputs stand, and a floating Read would cover them (DESIGN §5.2, Done).
+  /** Whether the form names its subject: the change and its outputs stand. */
+  let started = false;
   const runBar = RunBar({
     label: t('chg.read'),
     icon: 'search',
@@ -412,8 +428,10 @@ function mountBuilder(container, ctx) {
     stopDataset: { action: 'change-read-stop', shortcut: 'cancel' },
     onRun: () => readNow(),
     onStop: () => { if (reading) reading.abort(); },
+    hasValue: () => started,
     className: 'chg-run'
   });
+  const syncRunState = () => runBar.setState(templateState({ running: !!reading, result: started }));
   const readNote = h('div', { class: 'chg-read-note text-sm', attrs: { 'aria-live': 'polite' } });
   // Region 2: one card — the template and what it does, its fields, what was read and Read, what is
   // sent. An editor's form stays whole: it is the input of a result built live.
@@ -437,8 +455,8 @@ function mountBuilder(container, ctx) {
     message: t('chg.emptyLine'),
     checks: [t('fixp.admin'), 'BIND', 'Route 53', 'Cloudflare API', 'octoDNS', 'Terraform']
   }));
-  const resultEl = h('div', { class: 'chg-result-wrap', hidden: true }, head.el, problemsEl, outputsEl);
-  container.append(h('div', { class: 'chg-view', dataset: { page: 'builder' } }, input.el, emptyEl, resultEl, runBar.float));
+  const resultEl = h('div', { class: 'chg-result-wrap tool-stack', hidden: true }, head.el, problemsEl, outputsEl);
+  container.append(h('div', { class: 'chg-view tool-stack', dataset: { page: 'builder' } }, input.el, emptyEl, resultEl, runBar.float));
   ctx.onCleanup(() => {
     runBar.dispose();
     if (actions) actions.dispose();
@@ -580,11 +598,12 @@ function mountBuilder(container, ctx) {
     const tpl = changeTemplate(draft.template);
     const unread = tpl.needsCurrent && !read && first.zone;
     const shown = problems.filter((p) => !(unread && p.key === 'fix.p.read-first'));
-    const started = !first.problems.some((p) => p.key === 'fix.p.domain-missing' || p.key === 'fix.p.name-missing');
+    started = !first.problems.some((p) => p.key === 'fix.p.domain-missing' || p.key === 'fix.p.name-missing');
     emptyEl.hidden = started;
     resultEl.hidden = !started;
     // While the change needs a read, Read leads; once its outputs stand, it steps back.
     runBar.setPrimary(!started || !!unread || hasErrors({ problems }));
+    syncRunState();
     if (!started) return;
     const built = req;
     const facts = requestSummaryFacts(built, { problems: shown, templateName: t(`fix.tpl.${built.template}`), at: new Date() });
@@ -596,7 +615,7 @@ function mountBuilder(container, ctx) {
       h('span', { class: 'chg-head-zone' }, t('chg.check.zone', { zone: built.zone || '—' })),
       h('span', { class: 'chg-head-template' }, t(`fix.tpl.${built.template}`))
     ]);
-    head.set('notes', unread ? h('p', { class: 'chg-head-note', dataset: { role: 'needs-read' } }, Icon('info', { size: 14 }), h('span', null, t('chg.needsRead'))) : null);
+    head.set('notes', unread ? h('p', { class: 'result-note chg-head-note', dataset: { role: 'needs-read' } }, Icon('info', { size: 14 }), h('span', null, t('chg.needsRead'))) : null);
     // The counts: a press of the errors or the warnings brings the problems into view.
     head.set('status', StatusSummary({
       items: changeStatus(facts).map((item) => ({
@@ -633,7 +652,7 @@ function mountBuilder(container, ctx) {
       className: 'chg-result-actions'
     });
     head.set('actions', actions.el);
-    const firstSet = built.rrsets.find((r) => GLOBAL_CHECK_TYPES.includes(r.type));
+    const firstSet = globalCheckSet(built.rrsets);
     head.set('next', firstSet ? NextSteps({
       steps: [{
         label: t('chg.next.global'), icon: 'globe', title: t('chg.next.globalTitle', { name: firstSet.name, type: firstSet.type }),
@@ -679,6 +698,7 @@ function mountBuilder(container, ctx) {
     const controller = new AbortController();
     reading = controller;
     runBar.setRunning(true);
+    syncRunState();
     ctx.setBusy(t('chg.read'));
     try {
       const dns = await ctx.getDns();
@@ -701,7 +721,10 @@ function mountBuilder(container, ctx) {
       readNote.append(Alert({ variant: 'warn', compact: true, message: t('chg.readError', { reason: err && err.message ? err.message : String(err) }) }));
     } finally {
       if (reading === controller) reading = null;
-      if (!ctx.signal.aborted) runBar.setRunning(false);
+      if (!ctx.signal.aborted) {
+        runBar.setRunning(false);
+        syncRunState();
+      }
       ctx.setBusy(false);
     }
   }
@@ -764,7 +787,7 @@ function mountCheck(container, ctx) {
   const hash = String(globalThis.location ? globalThis.location.hash : '');
   const query = hash.startsWith('#/change/check?') ? hash.slice('#/change/check?'.length) : linkQuery(ctx.searchParams);
   const decoded = decodeCheck(query);
-  const view = h('div', { class: 'chg-view chg-check', dataset: { page: 'check' } });
+  const view = h('div', { class: 'chg-view chg-check tool-stack', dataset: { page: 'check' } });
   container.append(view);
   if (!decoded.ok) {
     view.dataset.state = 'bad';
@@ -797,7 +820,8 @@ function mountCheck(container, ctx) {
   const stopBtn = Button({ label: t('chg.check.stop'), icon: 'stop', size: 'sm', dataset: { action: 'check-stop', shortcut: 'cancel' }, onClick: () => stop() });
   const againBtn = Button({ label: t('chg.check.again'), icon: 'refresh', size: 'sm', variant: 'primary', dataset: { action: 'check-again' }, onClick: () => again() });
   const actionBtns = [nowBtn, stopBtn, againBtn];
-  const runRow = h('div', { class: 'cluster chg-hero-actions', attrs: { role: 'group', 'aria-label': t('result.nextLabel') } }, nowBtn, stopBtn, againBtn);
+  // The check's own run controls, not next steps: no group label of the template's.
+  const runRow = h('div', { class: 'cluster chg-hero-actions' }, nowBtn, stopBtn, againBtn);
   const status = StatusSummary({ className: 'chg-check-status' });
   // Copy summary for the ticket: the headline and each set's answers, with this check's link (also Copy link's).
   const actions = ResultActions({
@@ -873,12 +897,13 @@ function mountCheck(container, ctx) {
     }
     const st = checkState({ sets: [exp] }, new Map(CHECK_RESOLVERS.map((rid) => [pairKey(0, rid), memo.latest.get(pairKey(i, rid))]).filter(([, x]) => x)));
     cards[i].dataset.state = st.sets[0].state;
+    // The status item that counts it: a set with no answer is not one still being asked.
+    cards[i].dataset.item = checkSetKey(st.sets[0]);
   }
 
   /** A status item pressed: the first record set it counts, in view with the keyboard on it. */
   function focusSet(key) {
-    const state = key === 'noanswer' || key === 'waiting' ? 'unknown' : key;
-    const card = cards.find((c) => c.dataset.state === state);
+    const card = cards.find((c) => c.dataset.item === key);
     if (!card) return;
     card.setAttribute('tabindex', '-1');
     card.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
@@ -915,7 +940,7 @@ function mountCheck(container, ctx) {
     })));
     clear(stopHost);
     if (memo.stop && memo.stop !== 'done') {
-      stopHost.append(h('p', { class: 'text-sm chg-stopped', dataset: { stop: memo.stop } }, Icon('stop', { size: 14 }),
+      stopHost.append(h('p', { class: 'result-note chg-stopped', dataset: { stop: memo.stop } }, Icon('stop', { size: 14 }),
         h('span', null, t(`chg.check.stop.${memo.stop}`, { time: memo.cachedUntil ? formatDateTime(memo.cachedUntil) : '' }))));
     }
     // The headline is said when it changes (the header is no live region).

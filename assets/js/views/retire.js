@@ -199,7 +199,7 @@ registerStrings('en', {
   'retire.count.file': { one: '{count} record only in the zone file', other: '{count} records only in the zone file' },
   'retire.count.breaking': { one: '{count} record must change', other: '{count} records must change' },
   'retire.count.unverified': { one: '{count} name unverified', other: '{count} names unverified' },
-  'retire.filterOn': 'Only these records: {what}',
+  'retire.filterOn': 'Filter: {what}',
   'retire.filterAll': 'Show all',
   'retire.compare.open': 'Compare the old and the new server',
   'retire.compare.title': 'Before the names move: the same HTTPS request to the old and the new address, side by side (2 Globalping probes, only on a click there).',
@@ -429,7 +429,7 @@ registerStrings('tr', {
   'retire.count.file': '{count} kayıt yalnızca zone dosyasında',
   'retire.count.breaking': '{count} kayıt değişmeli',
   'retire.count.unverified': '{count} ad doğrulanmadı',
-  'retire.filterOn': 'Yalnızca şu kayıtlar: {what}',
+  'retire.filterOn': 'Filtre: {what}',
   'retire.filterAll': 'Tümünü göster',
   'retire.compare.open': 'Eski ve yeni sunucuyu karşılaştır',
   'retire.compare.title': 'Adlar taşınmadan önce: eski ve yeni adrese aynı HTTPS isteği, yan yana (2 Globalping ölçümü, yalnızca oradaki bir tıklamayla).',
@@ -973,19 +973,21 @@ function buildFor(job) {
 /* ------------------------------------------------------------------------ */
 
 /**
- * What the compare page fills its boxes with while nobody has typed in them: the link's host and
- * old address (`#/retire/compare?host=…&old=…`, the result's next step), else the form's one
- * address and first domain.
- * @param {Record<string, string>} params
- * @returns {{ ip: string|null, host: string|null }}
+ * What the compare page fills its boxes with (ui/origin-compare.js compareFill): the link's host and
+ * old address (`#/retire/compare?host=…&old=…`, the result's next step), which fill their boxes on a
+ * link the page has not filled in yet, typed in or not; and what it only guesses — the form's one
+ * address and first domain —, which fills boxes nobody has typed in.
+ * @param {Record<string, string>} [params]
+ * @returns {{ link: { ip: string|null, host: string|null }|null, ip: string|null, host: string|null }}
  */
 export function compareDefaults(params = {}) {
   const old = typeof params.old === 'string' ? normalizeIP(params.old.trim()) : null;
   const host = typeof params.host === 'string' ? normalizeHostname(params.host.trim()) : null;
   const single = parseRetireTargets(session.ips || '').blocks.filter((b) => b.single);
   return {
-    ip: old || (single.length === 1 ? single[0].first : null),
-    host: host || parseDomainList(session.domains || '').domains[0] || null
+    link: old || host ? { ip: old, host } : null,
+    ip: single.length === 1 ? single[0].first : null,
+    host: parseDomainList(session.domains || '').domains[0] || null
   };
 }
 
@@ -1012,7 +1014,7 @@ export function mount(container, ctx) {
 function mountCompare(container, ctx) {
   ctx.setHeading({ title: t('oc.title'), purpose: t('oc.purpose') });
   const page = OriginComparePage({ ctx, defaults: () => compareDefaults(ctx.params) });
-  container.append(h('div', { class: 'retire-view retire-compare', dataset: { page: 'compare' } },
+  container.append(h('div', { class: 'retire-view retire-compare tool-stack', dataset: { page: 'compare' } },
     page.el,
     h('p', { class: 'retire-compare-back text-sm' },
       h('a', { href: ctx.href('retire'), dataset: { role: 'compare-back' } }, Icon('chevron-left', { size: 14 }), h('span', null, t('oc.back'))))));
@@ -1110,7 +1112,7 @@ function mountCheck(container, ctx) {
     action: h('a', { class: 'retire-compare-link', href: ctx.href('retire/compare'), dataset: { role: 'compare-open' } },
       Icon('swap', { size: 14 }), ' ', t('retire.compare.open'))
   }));
-  container.append(h('div', { class: 'retire-view' }, input.el, promptSlot, emptyEl, resultsHost, runBar.float));
+  container.append(h('div', { class: 'retire-view tool-stack' }, input.el, promptSlot, emptyEl, resultsHost, runBar.float));
   // The run bar's phone-layout listener would keep this page alive once it is left.
   ctx.onCleanup(() => runBar.dispose());
 
@@ -1606,7 +1608,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onDiscover, onFinish }) {
   progress.el.classList.add('retire-progress');
   const groupsEl = h('div', { class: 'stack retire-groups' });
   const goneEl = h('div', { class: 'retire-gone' });
-  const filterNote = h('div', { class: 'retire-filter-note text-sm', hidden: true });
+  const filterNote = h('div', { class: 'retire-filter-note filter-note', hidden: true });
   const expanded = new Set();
   /** The status item whose rows the change list shows (null: every row). */
   let filter = null;
@@ -1632,7 +1634,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onDiscover, onFinish }) {
   head.set('status', status.el);
   head.set('actions', actions.el);
   head.set('sources', chipsEl);
-  const el = h('div', { class: 'retire-job', dataset: { job: String(job.id) } }, head.el, filterNote, groupsEl, goneEl);
+  const el = h('div', { class: 'retire-job tool-stack', dataset: { job: String(job.id) } }, head.el, filterNote, groupsEl, goneEl);
 
   function ownersCount() {
     const servers = state.inventory.servers;
@@ -1816,7 +1818,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onDiscover, onFinish }) {
   }
 
   /** A quiet line of the header's notes, with its icon. */
-  const noteLine = (role, text, iconName, className = '') => h('p', { class: ['retire-note', className], dataset: { role } },
+  const noteLine = (role, text, iconName, className = '') => h('p', { class: ['result-note', 'retire-note', className], dataset: { role } },
     iconName ? Icon(iconName, { size: 14 }) : null, h('span', null, text));
 
   /** The verdict's words: its key in `retire.head.*` (or "The check failed"), the label as the subject. */
@@ -1860,7 +1862,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onDiscover, onFinish }) {
     if (job.status === 'error') notes.push(ErrorBanner(job.error, { title: t('retire.failed'), compact: true }));
     if (!running && v.incomplete) {
       const open = gapTexts(gaps);
-      if (open.length) notes.push(noteLine('retire-incomplete', t('retire.head.incomplete', { list: open.join(' · ') }), 'alert', 'retire-note-warn'));
+      if (open.length) notes.push(noteLine('retire-incomplete', t('retire.head.incomplete', { list: open.join(' · ') }), 'alert', 'result-note-warn retire-note-warn'));
     }
     if (job.status === 'cancelled') notes.push(noteLine('retire-stopped', t('retire.stopped'), 'stop'));
     // A discovery the result offered failed: said here too (the form's offer may be folded away).

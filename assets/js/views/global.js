@@ -128,7 +128,7 @@ registerStrings('en', {
   'glb.count.design': '{count} answers, different by design',
   'glb.count.blocked': { one: '{count} answer blocked', other: '{count} answers blocked' },
   'glb.count.answered': '{count} of {total} answered',
-  'glb.statusFilterOn': 'Showing only the sources counted in “{what}”',
+  'glb.statusFilterOn': 'Filter: {what}',
   'glb.tab.groups': 'Answer groups',
   'glb.tab.ips': 'IP addresses',
   'glb.tab.resolvers': 'Resolvers & locations',
@@ -349,7 +349,7 @@ registerStrings('tr', {
   'glb.count.design': '{count} yanıt, tasarım gereği farklı',
   'glb.count.blocked': '{count} yanıt engellendi',
   'glb.count.answered': '{total} kaynaktan {count} tanesi yanıtladı',
-  'glb.statusFilterOn': 'Yalnızca “{what}” içinde sayılan kaynaklar gösteriliyor',
+  'glb.statusFilterOn': 'Filtre: {what}',
   'glb.tab.groups': 'Yanıt grupları',
   'glb.tab.ips': 'IP adresleri',
   'glb.tab.resolvers': 'Çözümleyiciler ve konumlar',
@@ -852,13 +852,13 @@ export function mount(container, ctx) {
   /** The status item whose sources the tables show (rcode, failed, blocked), or null. */
   let statusFilter = null;
   /** Region 6 of the Answer groups tab: the figures, read-only. */
-  const metrics = MetricStrip({ className: 'glb-stats', label: t('glb.metricsLabel') });
+  const metrics = MetricStrip({ className: 'glb-stats metric-surface', label: t('glb.metricsLabel') });
   /** Region 7 of the Answer groups tab: why the answers differ, one row per finding (the stacked alert's list before). */
   const findingsEl = h('div', { class: 'glb-findings-host' });
   /** The findings list shows them all once "Show n more" was pressed (until the next check). */
   let findingsOpen = false;
   const legendEl = h('div', { class: 'glb-legend', attrs: { role: 'group', 'aria-label': t('glb.groups.title') } });
-  const filterNote = h('div', { class: 'glb-filter-note', hidden: true });
+  const filterNote = h('div', { class: 'glb-filter-note filter-note', hidden: true });
 
   /* --- the expected value's card (lib/expected.js; the name server probe: ui/soa-probe.js) ---- */
   const expValueEl = h('p', { class: 'glb-exp-value' });
@@ -1466,13 +1466,13 @@ export function mount(container, ctx) {
     { id: 'ips', label: t('glb.tab.ips') },
     { id: 'resolvers', label: t('glb.tab.resolvers') }
   ], { selected: tabNow, label: t('nav.global'), className: 'glb-tabs', onChange: (tabId) => { tabNow = tabId; } });
-  tabs.panel('groups').append(h('div', { class: 'glb-panel' }, metrics.el, findingsEl, legendCard));
-  tabs.panel('ips').append(h('div', { class: 'glb-panel' }, ipSection));
-  tabs.panel('resolvers').append(h('div', { class: 'glb-panel' }, resSection, geoSection, ispSection));
-  const results = h('div', { class: 'glb-results', hidden: true, dataset: { shortcutScope: 'results' } },
+  tabs.panel('groups').append(h('div', { class: 'glb-panel tool-stack' }, metrics.el, findingsEl, legendCard));
+  tabs.panel('ips').append(h('div', { class: 'glb-panel tool-stack' }, ipSection));
+  tabs.panel('resolvers').append(h('div', { class: 'glb-panel tool-stack' }, resSection, geoSection, ispSection));
+  const results = h('div', { class: 'glb-results tool-stack', hidden: true, dataset: { shortcutScope: 'results' } },
     head.el, expectCard, filterNote, tabs.el);
 
-  container.append(h('div', { class: 'glb-view' }, input.el, emptyWrap, results, runBar.float));
+  container.append(h('div', { class: 'glb-view tool-stack' }, input.el, emptyWrap, results, runBar.float));
   // Their phone-layout listeners would keep this page alive once it is left.
   ctx.onCleanup(() => {
     runBar.dispose();
@@ -1648,15 +1648,27 @@ export function mount(container, ctx) {
     renderAll();
   }
 
-  /** Show only the rows that do not serve the expected value yet (or every row again). */
+  /** Show only the rows that do not serve the expected value yet (or every row again), on the Resolvers & locations tab. */
   function setMissingOnly(on) {
     missingOnly = !!on && !!expectedNow;
     if (missingOnly) {
       filterKey = null;
       statusFilter = null;
+      showFiltered();
     }
     applyFilters();
     if (current) renderExpected();
+  }
+
+  /**
+   * A filter turned on: the tab of the rows it filters (Resolvers & locations), as a status item
+   * opens it. The keyboard goes with them when the control pressed sat on a panel that now hides
+   * (an answer group's chip): to that tab, never to the page's body.
+   */
+  function showFiltered() {
+    const doc = globalThis.document;
+    const fromPanel = !!(doc && doc.activeElement && tabs.el.contains(doc.activeElement));
+    tabs.select('resolvers', { focus: fromPanel });
   }
 
   /**
@@ -1770,12 +1782,13 @@ export function mount(container, ctx) {
     }
   }
 
-  /** Show only the rows of one answer group (or every row again): the other filters go. */
+  /** Show only the rows of one answer group (or every row again), on the Resolvers & locations tab: the other filters go. */
   function setFilter(key) {
     filterKey = key;
     if (key) {
       missingOnly = false;
       statusFilter = null;
+      showFiltered();
     }
     applyFilters();
     if (key && current) renderExpected();
@@ -2071,8 +2084,8 @@ export function mount(container, ctx) {
     clear(findingsEl);
     const rows = [
       ...findings.map((f) => renderFinding(f, findingSeverity(f))),
-      ...ispLines.map((text) => h('li', { class: 'glb-finding', dataset: { finding: 'isp-stale' } },
-        h('span', { class: 'glb-finding-icon' }, SeverityIcon('warn')), h('span', { class: 'glb-finding-text' }, text)))
+      ...ispLines.map((text) => h('li', { class: 'finding glb-finding', dataset: { finding: 'isp-stale' } },
+        h('span', { class: 'finding-icon glb-finding-icon' }, SeverityIcon('warn')), h('span', { class: 'finding-text glb-finding-text' }, text)))
     ];
     if (!rows.length) return;
     const limit = findingsOpen ? rows.length : 3;
@@ -2089,8 +2102,8 @@ export function mount(container, ctx) {
         }
       }
     }) : null;
-    findingsEl.append(h('section', { class: 'card glb-findings-card', attrs: { 'aria-labelledby': titleId } },
-      h('h3', { class: 'glb-findings-title', id: titleId }, t('glb.findings.label')),
+    findingsEl.append(h('section', { class: 'card finding-card glb-findings-card', attrs: { 'aria-labelledby': titleId } },
+      h('h3', { class: 'finding-title glb-findings-title', id: titleId }, t('glb.findings.label')),
       h('ul', { class: 'glb-findings finding-list' }, rows.slice(0, limit)),
       more));
   }
@@ -2203,10 +2216,10 @@ export function mount(container, ctx) {
     const everyGroup = f.code === 'direct' || f.code === 'records' || keys.length === groups.filter((g) => g.letter).length;
     const marks = everyGroup ? [] : keys.slice(0, 4).map((key) => groupMark(groupByKey.get(key)));
     if (!everyGroup && keys.length > 4) marks.push(h('span', { class: 'glb-finding-more' }, `+${keys.length - 4}`));
-    return h('li', { class: 'glb-finding', dataset: f.partner ? { finding: f.code, partner: 'true', severity } : { finding: f.code, severity } },
-      h('span', { class: 'glb-finding-icon' }, SeverityIcon(severity)),
+    return h('li', { class: 'finding glb-finding', dataset: f.partner ? { finding: f.code, partner: 'true', severity } : { finding: f.code, severity } },
+      h('span', { class: 'finding-icon glb-finding-icon' }, SeverityIcon(severity)),
       marks.length ? h('span', { class: 'glb-finding-marks' }, marks) : null,
-      h('span', { class: 'glb-finding-text' }, text));
+      h('span', { class: 'finding-text glb-finding-text' }, text));
   }
 
   /** A check starts (true) or ends: Stop takes Run's slot (the keyboard focus goes with it); the form waits. */

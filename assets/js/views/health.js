@@ -753,7 +753,7 @@ export function mount(container, ctx) {
   const head = ResultHeader({ className: 'hlt-hero' });
   const heroEl = h('div', { class: 'hlt-hero-wrap' });
   /** The score of each category (region 6), under the header. */
-  const metrics = MetricStrip({ className: 'hlt-metrics', label: t('hlt.metricsLabel') });
+  const metrics = MetricStrip({ className: 'hlt-metrics metric-surface', label: t('hlt.metricsLabel') });
   /** Problems first and the Web card (ui/health-v2.js). */
   const v2El = h('div', { class: 'stack-lg hv2' });
   const checksEl = h('div', { class: 'hlt-groups' });

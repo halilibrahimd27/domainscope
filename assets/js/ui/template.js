@@ -227,8 +227,9 @@ export function OptionsDisclosure({ label, summary = '', children = null, open =
  * to the bottom of the screen while the inline Run is out of view and the input holds a value
  * (lib/template.js runBarFloats); its height goes to `--run-bar-h`, which keeps a focused field
  * clear of it (scroll-padding-bottom, style.css). It carries Stop while a run goes on and hides
- * once a result is on screen. It has no hook of its own but `data-role="run-bar-float"`: it clicks
- * the real buttons, whose data-action and data-shortcut stay the view's.
+ * once a result is on screen (`setState`) and while another primary button leads (`setPrimary(false)`).
+ * It has no hook of its own but `data-role="run-bar-float"`: it clicks the real buttons, whose
+ * data-action and data-shortcut stay the view's.
  *
  * `info` puts lines next to the buttons (a wizard's query estimate, its summary, an error): the
  * bar becomes `.run-bar-buttons` + `.run-bar-info`. `sticky` (DESIGN §5.5, the wizard: SSL
@@ -299,7 +300,7 @@ export function RunBar({
   function syncFloat() {
     // A sticky bar is its own floating bar: --run-bar-h is its height (measureSticky).
     if (sticky) return;
-    const show = runBarFloats({ phone: !!(phone && phone.matches), inlineVisible, hasValue: !!hasValue(), state: running ? 'running' : state });
+    const show = runBarFloats({ phone: !!(phone && phone.matches), inlineVisible, hasValue: !!hasValue(), state: running ? 'running' : state, primary });
     float.hidden = !show;
     floatRunIcon.hidden = running;
     floatStopIcon.hidden = !running;
@@ -385,10 +386,11 @@ export function RunBar({
       syncRun();
       syncFloat();
     },
-    /** Another primary button leads (a shared link's Start): Run steps back to secondary. */
+    /** Another primary button leads (a shared link's Start): Run steps back to secondary, and its phone copy steps aside. */
     setPrimary(on) {
       primary = !!on;
       syncRun();
+      syncFloat();
     },
     /** The verb (a mode that names the run differently). */
     setLabel(text) {
@@ -742,6 +744,8 @@ export function ResultActions({ summary = null, report = null, exports = [], pri
   const hasLink = typeof link === 'function';
   let disabled = false;
   let exportsOff = false;
+  /** The one file's plain button, drawn in the row (its hook may be a data-action of the view's, not a data-export). */
+  let fileButton = null;
   const phone = phoneQuery();
 
   /** The buttons drawn now follow the two switches (Copy summary and Report keep their own state). */
@@ -750,6 +754,7 @@ export function ResultActions({ summary = null, report = null, exports = [], pri
     for (const btn of el.querySelectorAll('[data-menu="more"], [data-action="print"], [data-tail]')) btn.disabled = disabled;
     for (const btn of el.querySelectorAll('[data-export]')) btn.disabled = disabled || exportsOff;
     for (const btn of el.querySelectorAll('[data-menu="export"]')) btn.disabled = disabled || (exportsOff && !printItem && !tailItems.length);
+    if (fileButton) fileButton.disabled = disabled || (exportsOff && fileItems[0] !== printItem && !tailItems.includes(fileItems[0]));
   }
 
   async function copyLinkFromMenu() {
@@ -774,16 +779,18 @@ export function ResultActions({ summary = null, report = null, exports = [], pri
       summary: !!summary, report: !!report, files: files.length + tailItems.length, print: !!printItem, link: hasLink, phone: !!(phone && phone.matches)
     });
     clear(el);
+    fileButton = null;
     if (summary && summary.plain) summary.plain.hidden = !plan.row.includes('plain');
     for (const id of plan.row) {
       if (id === 'summary') append(el, summary.el);
       else if (id === 'report') append(el, report);
       else if (id === 'export' && plan.exportAs === 'file') {
         const only = fileItems[0];
-        append(el, Button({
+        fileButton = Button({
           label: only.label, icon: only.icon || 'download', size: 'sm', variant: 'secondary', title: only.title || null,
           dataset: only.dataset || {}, onClick: (e) => only.onSelect(e)
-        }));
+        });
+        append(el, fileButton);
       } else if (id === 'export') {
         const menu = MenuButton({
           label: t('result.export'), icon: 'download', showLabel: true, variant: 'secondary', dataset: { menu: 'export' },

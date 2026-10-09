@@ -4413,6 +4413,25 @@ button.nav-status:hover {
 
 /* ---- Page template (ui/template.js; docs/DESIGN.md §5): the regions every tool shares --------- */
 
+/* The regions one under the other: a tool's page, its result, a tab's panel. An empty one takes no room. */
+.tool-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
+}
+
+.tool-stack > div:empty {
+  display: none;
+}
+
+/* A batch tool's list as the primary field (a textarea): one line high in the compact card, still a box. */
+.tool-input.is-compact:not(.is-editing) .tool-input-primary .textarea {
+  height: var(--field-h);
+  min-height: var(--field-h);
+  padding-block: 6px;
+  resize: none;
+}
+
 /* Region 2: the tool's input. One card; compact from the moment a run starts (one row: the field,
    the summary line with Edit, Run); the privacy note stays. */
 .tool-input {
@@ -4587,10 +4606,6 @@ button.nav-status:hover {
 .run-bar {
   display: flex;
   gap: var(--space-2);
-}
-
-.run-bar[hidden] {
-  display: none;
 }
 
 /* The phone's floating copy (RunBar): at the bottom while the inline Run is out of view. */
@@ -4797,6 +4812,27 @@ button.nav-status:hover {
   display: none;
 }
 
+/* A note: one quiet line and its icon (a stop, what could not be checked, a problem both servers share). */
+.result-note {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
+}
+
+.result-note > .icon {
+  flex: none;
+  transform: translateY(2px);
+  color: var(--text-3);
+}
+
+.result-note-warn > .icon {
+  color: var(--warn);
+}
+
 .result-bar {
   display: flex;
   flex-wrap: wrap;
@@ -4837,10 +4873,12 @@ button.nav-status:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* Words that wrap (a long item on a 320 px phone) start at the icon, not centred as a button's. */
 button.status-item {
   background: none;
   font: inherit;
   font-size: var(--fs-sm);
+  text-align: start;
   cursor: pointer;
 }
 
@@ -4854,11 +4892,6 @@ button.status-item[aria-pressed="true"] {
   border-color: var(--border-control);
   background: var(--surface-selected);
   color: var(--text);
-}
-
-/* Words that wrap (a long item on a 320 px phone) start at the icon, not centred as a button's. */
-button.status-item {
-  text-align: start;
 }
 
 .status-icon {
@@ -4885,6 +4918,16 @@ button.status-item {
 .status-dot {
   color: var(--text-3);
   font-weight: var(--fw-bold);
+}
+
+/* A filter on (a status item pressed, an answer group): what the rows show now, and Show all. */
+.filter-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
 }
 
 .next-steps {
@@ -4977,6 +5020,59 @@ button.status-item {
   margin: 0;
   color: var(--text-3);
   font-size: var(--fs-xs);
+}
+
+/* A metric strip on a surface of its own: a band of figures under the header or atop a tab's panel. */
+.metric-surface {
+  padding: var(--space-2) var(--card-pad);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+/* Region 7: the findings, one card with a row each (icon, text, an optional action). */
+.finding-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--card-pad);
+}
+
+.finding-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.finding-list {
+  display: grid;
+  gap: var(--space-2);
+  align-self: stretch;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.finding {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
+  overflow-wrap: anywhere;
+}
+
+.finding-icon {
+  display: inline-flex;
+  flex: none;
+  height: var(--lh-sm);
+  align-items: center;
+}
+
+.finding-text {
+  min-width: 0;
 }
 
 /* The empty result region: no card, a small icon, one line and the chips of what it checks. */

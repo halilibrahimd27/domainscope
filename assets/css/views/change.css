@@ -3,19 +3,6 @@
  * The outputs are ui/fix-panel.js (views/fix.css, loaded with this view).
  */
 
-/* ---- the page ---------------------------------------------------------------- */
-
-.chg-view,
-.chg-result-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: var(--stack-gap);
-}
-
-.chg-result-wrap[hidden] {
-  display: none;
-}
-
 /* ---- region 2: the form (whole: the output is built as you type) ---------------- */
 
 .chg-template {
@@ -60,8 +47,7 @@
   min-width: 0;
 }
 
-.chg-read-note .icon,
-.chg-head-note .icon {
+.chg-read-note .icon {
   vertical-align: -2px;
 }
 
@@ -86,36 +72,13 @@
   font-weight: var(--fw-regular);
 }
 
-.chg-head-note {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  margin: 0;
-  color: var(--text-2);
-  font-size: var(--fs-sm);
-}
-
 .chg-problems:empty,
 .chg-outputs:empty {
   display: none;
 }
 
-.chg-problems {
-  display: grid;
-  gap: var(--space-2);
-}
-
 .chg-problems-card {
   padding: var(--card-pad);
-}
-
-.chg-problems-card:focus {
-  outline: none;
-}
-
-.chg-problems-card:focus-visible {
-  outline: var(--focus-w) solid var(--focus);
-  outline-offset: var(--focus-offset);
 }
 
 .chg-problems-card .section-title {
@@ -145,30 +108,8 @@
   overflow-wrap: anywhere;
 }
 
-.chg-check-meta,
-.chg-stopped,
 .chg-own {
   margin: 0;
-}
-
-.chg-stopped {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-
-.chg-stopped > .icon {
-  flex: none;
-  transform: translateY(2px);
-}
-
-.chg-set:focus {
-  outline: none;
-}
-
-.chg-set:focus-visible {
-  outline: var(--focus-w) solid var(--focus);
-  outline-offset: var(--focus-offset);
 }
 
 .chg-set {
@@ -317,10 +258,6 @@
   border: 1px solid var(--info-border);
   border-radius: 8px;
   background: var(--info-bg);
-}
-
-.chg-cut-strip[hidden] {
-  display: none;
 }
 
 .chg-cut-strip-text {

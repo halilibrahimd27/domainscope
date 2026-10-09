@@ -103,7 +103,6 @@ registerStrings('en', {
   'oc.at': { one: 'Compared {time} from {where} · {count} probe', other: 'Compared {time} from {where} · {count} probes' },
   'oc.oldAt': 'The old server, asked {time} from {where}',
   'oc.measurement': 'measurement {n}',
-  'oc.json': 'Download JSON',
   'oc.col.field': 'Field',
   'oc.col.old': 'Old · {ip}',
   'oc.col.new': 'New · {ip}',
@@ -213,7 +212,6 @@ registerStrings('tr', {
   'oc.at': '{where} üzerinden {time} tarihinde karşılaştırıldı · {count} ölçüm',
   'oc.oldAt': 'Eski sunucu, {time} tarihinde {where} üzerinden soruldu',
   'oc.measurement': 'ölçüm {n}',
-  'oc.json': 'JSON indir',
   'oc.col.field': 'Alan',
   'oc.col.old': 'Eski · {ip}',
   'oc.col.new': 'Yeni · {ip}',
@@ -298,7 +296,7 @@ export function generatedKeys() {
 
 const fresh = () => ({
   host: '', oldIp: '', newIp: '', path: '/', port: '443', shell: 'posix', status: 'idle', result: null, error: null, resetAt: null,
-  partial: null, controller: null, touched: false
+  partial: null, controller: null, touched: false, link: null
 });
 let S = fresh();
 /** The card on screen: a return to Retire an IP (or a language switch) during a run mounts a new one, and the run renders there. */
@@ -346,6 +344,33 @@ export function displayValue(key, value, side) {
   return String(value);
 }
 
+/**
+ * What a mount of the page puts into the host name and old address boxes. A link's values
+ * (`?host=`, `?old=`: a Retire check's next step names the pair to compare) fill their boxes, typed
+ * in or not, the first time the page opens on that link; the same link mounted again (a language
+ * switch, Back to it) keeps what was typed since. What the page only guesses — Retire's one address
+ * and first domain — fills only the boxes nobody has typed in and no link names.
+ * @param {{ host: string, oldIp: string, touched: boolean, link: string|null }} form the boxes, and the link filled in last
+ * @param {{ link?: { ip?: string|null, host?: string|null }|null, ip?: string|null, host?: string|null }} [defaults] the link's
+ *   normalized values, and the guesses (views/retire.js compareDefaults)
+ * @returns {{ host: string, oldIp: string, link: string|null }} `link`: the link of this mount, null without one
+ */
+export function compareFill(form, { link = null, ip = null, host = null } = {}) {
+  const linkIp = (link && link.ip) || null;
+  const linkHost = (link && link.host) || null;
+  const key = linkIp || linkHost ? `${linkIp || ''} ${linkHost || ''}` : null;
+  const out = { host: form.host, oldIp: form.oldIp, link: key };
+  if (key && key !== form.link) {
+    if (linkIp) out.oldIp = linkIp;
+    if (linkHost) out.host = linkHost;
+  }
+  if (!form.touched) {
+    if (ip && !linkIp) out.oldIp = ip;
+    if (host && !linkHost) out.host = host;
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------------ */
 /* The page (#/retire/compare)                                              */
 /* ------------------------------------------------------------------------ */
@@ -358,17 +383,14 @@ export function displayValue(key, value, side) {
  * sent in its footer —, then the result header (the verdict, when and from where, a certificate
  * problem both servers share, the JSON file, "Remember …") and the table. Compare and Stop take
  * turns in the run bar, the keyboard focus going with them.
- * @param {{ ctx: object, defaults?: () => { ip?: string|null, host?: string|null } }} opts
- *   `defaults`: what the page knows (the link's host and old address, else Retire an IP's single
- *   address and first domain), filled into boxes nobody has typed in
+ * @param {{ ctx: object, defaults?: () => { link?: { ip?: string|null, host?: string|null }|null, ip?: string|null, host?: string|null } }} opts
+ *   `defaults`: what the page knows — the link's host and old address, which fill their boxes on a
+ *   link not filled in yet, and Retire an IP's single address and first domain, which fill boxes
+ *   nobody has typed in ({@link compareFill})
  * @returns {{ el: HTMLElement, render(): void, dispose(): void }}
  */
 export function OriginComparePage({ ctx, defaults = () => ({}) }) {
-  if (!S.touched) {
-    const d = defaults() || {};
-    if (d.ip) S.oldIp = d.ip;
-    if (d.host) S.host = d.host;
-  }
+  Object.assign(S, compareFill(S, defaults() || {}));
 
   const field = (key, label, opts = {}) => textInput({
     label,
@@ -424,7 +446,7 @@ export function OriginComparePage({ ctx, defaults = () => ({}) }) {
     details: Disclosure({ summary: t('oc.how'), className: 'oc-how', children: h('p', { class: 'text-sm' }, t('oc.lead')) })
   }));
   const resultsEl = h('div', { class: 'oc-results-host' });
-  const el = h('div', { class: 'oc-page' }, input.el, emptyEl, resultsEl, runBar.float);
+  const el = h('div', { class: 'oc-page tool-stack' }, input.el, emptyEl, resultsEl, runBar.float);
   /** The result header's actions (the JSON file), disposed with the header they belong to. */
   let actions = null;
   /** The form as the result on screen was compared: Compare reads "Run again" while the boxes still ask for it. */
@@ -587,7 +609,7 @@ export function OriginComparePage({ ctx, defaults = () => ({}) }) {
       head.set('meta', [h('span', { class: 'oc-at' }, t('oc.at', { time: formatDateTime(r.at), where: probeWhere(r.old.probe || r.new.probe), count: r.spent })),
         measurementLinks(r.ids)]);
       // A certificate problem both servers share: no difference, but worth knowing before the move.
-      head.set('notes', (c.shared || []).map((note) => h('p', { class: 'oc-shared text-sm', dataset: { shared: note } },
+      head.set('notes', (c.shared || []).map((note) => h('p', { class: 'result-note result-note-warn oc-shared', dataset: { shared: note } },
         Icon('lock', { size: 14 }), ' ', t(`oc.shared.${note}`))));
       actions = ResultActions({
         exports: [{

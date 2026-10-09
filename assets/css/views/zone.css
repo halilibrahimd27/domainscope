@@ -4,9 +4,6 @@
  */
 
 .zone-page {
-  display: flex;
-  flex-direction: column;
-  gap: var(--stack-gap);
   min-width: 0;
 }
 
@@ -106,14 +103,6 @@
 .zone-guessed > span {
   flex: 1 1 16rem;
   min-width: 0;
-}
-
-/* Region 6 of the Overview tab: the figures, flat on their own surface. */
-.zone-stats {
-  padding: var(--space-2) var(--card-pad);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
 }
 
 /* The compact import: the drop zone is its title (the formats it reads are in the open card). */

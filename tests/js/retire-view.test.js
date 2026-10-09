@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { setLang, t, hasString } from '../../assets/js/i18n.js';
 import {
   shareParams, linkText, prefillDomains, hostsForDomains, zoneInternalNames, checkTooPlan, changeText, summaryFacts, jobGaps, gapTexts, failureList,
-  LINK_MAX_CHARS
+  compareDefaults, LINK_MAX_CHARS
 } from '../../assets/js/views/retire.js';
 import { sessionZone, parseFiles } from '../../assets/js/views/zone.js';
 import { buildChanges, parseRetireTargets, passiveNewNames, CHANGE_ACTIONS, UNKNOWN_REASONS, RETIRE_MAX_HOSTS, RETIRE_MAX_DOMAINS } from '../../assets/js/lib/retire.js';
@@ -309,5 +309,13 @@ describe('Retire an IP view helpers', () => {
     assert.deepEqual(gapTexts(gaps), ['1 alan adı mevcut değil']);
     assert.match(renderMarkdown(buildSummary('retire', summaryFacts(job, built, { owners: null }), { t, lang: 'tr', url: null })), /mevcut olmayan 1 alan adı \(yazım hatası mı\?\)/);
     setLang('en');
+  });
+
+  test('compareDefaults: the link\'s host and old address apart from what the page only guesses (the form\'s one address and first domain)', () => {
+    assert.deepEqual(compareDefaults({ old: ' 192.0.2.10 ', host: 'WWW.Example.com' }), { link: { ip: '192.0.2.10', host: 'www.example.com' }, ip: null, host: null },
+      'normalized; nothing guessed while the form is empty');
+    assert.deepEqual(compareDefaults({ host: 'shop.example.org' }).link, { ip: null, host: 'shop.example.org' });
+    assert.equal(compareDefaults({ old: 'not-an-ip', host: '*.example.com' }).link, null, 'nothing a box could take');
+    assert.equal(compareDefaults().link, null);
   });
 });

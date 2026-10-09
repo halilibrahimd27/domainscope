@@ -1080,7 +1080,7 @@ async function liveChecks(browser, server) {
     await shot(page, 'global-desktop-light-en-amazon');
   });
 
-  await step('group chips carry letters; clicking one filters both tables and the IP list', async () => {
+  await step('group chips carry letters; clicking one filters both tables and the IP list, and opens the Resolvers & locations tab', async () => {
     const before = await page.evaluate(() => ({
       rows: document.querySelectorAll('.glb-resolvers tbody tr.dt-row, .glb-geo tbody tr.dt-row').length,
       ips: document.querySelectorAll('.glb-ips tbody tr.dt-row').length,
@@ -1092,11 +1092,14 @@ async function liveChecks(browser, server) {
       rows: document.querySelectorAll('.glb-resolvers tbody tr.dt-row, .glb-geo tbody tr.dt-row').length,
       ips: document.querySelectorAll('.glb-ips tbody tr.dt-row').length,
       note: !document.querySelector('.glb-filter-note').hidden,
+      tab: document.querySelector('.glb-tabs .tab[aria-selected="true"]')?.dataset.tab,
       onlyA: [...document.querySelectorAll('.glb-resolvers tbody tr.dt-row .glb-mark, .glb-geo tbody tr.dt-row .glb-mark')].every((m) => m.textContent === 'A')
     }));
     assertEqual(after.rows, before.members, 'filtered rows = group members');
     assert(after.onlyA && after.note, `only group A rows + note: ${JSON.stringify(after)}`);
+    assertEqual(after.tab, 'resolvers', 'the rows on screen');
     assert(after.ips >= 1 && after.ips <= before.ips, `IP list filtered (${after.ips} of ${before.ips})`);
+    await selectTab(page, 'groups');
     await page.click('.glb-legend .glb-chip[data-group="A"]');
     await page.waitFor((n) => document.querySelectorAll('.glb-resolvers tbody tr.dt-row, .glb-geo tbody tr.dt-row').length === n, { args: [before.rows] });
   });

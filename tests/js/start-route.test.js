@@ -120,11 +120,12 @@ const JS = join(ASSETS, 'js');
  * relative times as a <time> with the absolute local time and its UTC offset in the title, and MenuButton's type-ahead), views/home.js by 467,
  * i18n.js by 228 (formatDateTime's `offset`, utcOffsetLabel), app.js by 193 (a purpose line of text and nodes) and style.css by 119 (the
  * sidebar's privacy line wraps).
- * Phase 2 (the page template and Investigate a domain, docs/DESIGN.md §8): ≈ 272 KB (278,870 bytes), 100,010 bytes under the budget.
- * style.css grew by 2,733 bytes (the template's regions: the input card, the run bar and its phone copy, the result header, the status
- * summary, the metric strip, the empty state), ui/summary-button.js by 335 (the ¶ button, and copy() for a menu item), app.js by 224
- * (the kept-result note in the result header's slot) and ui/components.js by 166 (the ¶ icon, CopyButton's icon, MenuButton's visible
- * label). ui/template.js and lib/template.js load with the four tools, never with Home.
+ * Phase 2 (the page template and Investigate a domain, docs/DESIGN.md §8): ≈ 273 KB (279,382 bytes), 99,498 bytes under the budget.
+ * style.css grew by 2,829 bytes (the template's regions: the input card, the run bar and its phone copy, the result header, the status
+ * summary, the metric strip, the empty state), ui/session-ui.js by 393 (keptSlotOf, where the kept-result note goes), ui/summary-button.js
+ * by 335 (the ¶ button, and copy() for a menu item), app.js by 247 (the kept-result note in the result header's slot) and ui/components.js
+ * by 166 (the ¶ icon, CopyButton's icon, MenuButton's visible label). ui/template.js and lib/template.js load with the four tools,
+ * never with Home.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

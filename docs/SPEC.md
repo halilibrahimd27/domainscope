@@ -960,7 +960,8 @@ config.knownOrigins: null | Array<{ name, ip, port = 443, source?, lastConfirmed
   // - no resolver-leak pass (its origin is exact), like a zone-mapped host;
   // - its inventory server as ServerGroup.hosts[].via 'known' with `port` (one entry per port it was remembered on; sorted dns,
   //   known, zone, hint; counts toward needsCert), so its Verify pair is built on that port (lib/verify.js; the CLI card scans
-  //   ip:port), the Servers tab shows ip:port and targets.txt (lib/export.js targetsForCli) writes it there;
+  //   ip:port, or the bare address on 443 — never the other ports its server wrote the address with: `web06 10.0.0.7:9443`),
+  //   the Servers tab shows ip:port and targets.txt (lib/export.js targetsForCli) writes it there (on 443 too: below);
   // - its targets in the CLI command exactly: the address on 443, `ip:port` / `[v6]:port` on another port (cmdline allowPorts,
   //   on only then), IP order, after the networks; never a /24 and never in originNetworks.
 HOST_SPECIFIC_HINT_KINDS += 'known'
@@ -1129,6 +1130,11 @@ export function scanHostRows(scan) -> object[] ; export function scanServerRows(
 export function namesForCli(scan, { onlyCovered = false } = {}) -> string    // newline list
 export function targetsForCli(servers, { keys = null } = {}) -> string      // "name ip" lines; an inventory address written with a port keeps it ("web01 203.0.113.10:8443", inventory.addressTargets);
                                                                              // de-duplicated per endpoint: a server sharing an address still writes the ip:port no earlier line has;
+                                                                             // a remembered origin (a hint reason of kind 'known') on another port is written as ip:port,
+                                                                             // and one on 443 gets the address scanned on 443 unless a line already does: the bare
+                                                                             // address under its server's name ("web06 10.0.0.7" after "web06 10.0.0.7:9443"; the CLI
+                                                                             // merges them), or ip:443 when that server has ports= (the CLI applies them to a bare one);
+                                                                             // any other hint is left out when a line has its address;
                                                                              // an Ansible host pattern's port is its SSH port, never kept (§5.5), so that address is written bare;
                                                                              // keys(server): the key=value tokens after a server's addresses (lib/topology topologyTokens,
                                                                              // or scanTargetsKeys for a scan: no terminates_tls=no for a server DNS reaches directly), so
@@ -1286,7 +1292,9 @@ export function verifyExportRows(rows, { now }), verifyExportJson(rows, { expect
 export function cliPlan(rows) -> { targets, names, rows }   // private / reserved / bad-name / bad-port / over-cap skips + TIMEOUT / CLOSED verdicts (not cdn-edge);
                                                             // a row on another port than 443 is the target ip:port ([v6]:port; cmdline allowPorts); a row on 443
                                                             // whose inventory server wrote the address with a port gives its cliTargets (buildVerifyPairs:
-                                                            // inventory.addressTargets of the address, unioned over the servers sharing it)
+                                                            // inventory.addressTargets of the address, unioned over the servers sharing it);
+                                                            // a remembered origin's pair (`via` known) has none: its own port only, on 443 the
+                                                            // bare address (2026-10-09; before, one on 443 took the inventory's ip:port and lost 443)
 ```
 Rules that are easy to get wrong:
 - **Identity is `fingerprint256`** (= `computeFingerprints(der).sha256`, 12/12 live). Name **coverage** comes from `certCovers(served.hostnames, name).covered` over `subject.alt` (the CN only when there is no DNS SAN, the x509 rule), **never from `tls.error`**, which holds one code in which chain errors mask name errors. Serials: no `00` sign byte is re-added (neither side has one).

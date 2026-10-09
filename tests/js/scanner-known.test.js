@@ -288,6 +288,32 @@ describe('the command the views build (views/subdomains.js) and the Verify pairs
     assert.ok(text.includes('198.51.100.30:8443') && !text.includes('198.51.100.30'), `only on its port: ${text.join(' / ')}`);
   });
 
+  test('a remembered origin on 443 at an address the inventory wrote only with another port keeps 443: Verify pair, CLI card, targets.txt', async () => {
+    const LIST = [{ name: 'shop.example.com', ip: '10.0.0.7', port: 443, source: 'cli-json', lastConfirmed: LAST }];
+    const inventory = 'web01 203.0.113.10\nweb06 10.0.0.7:9443';
+    const { result } = await scan({ knownOrigins: LIST }, { inventory });
+    const web06 = result.servers.find((g) => g.server.name === 'web06');
+    assert.deepEqual(web06.hosts.map((x) => [x.name, x.ip, x.port, x.via]), [['shop.example.com', '10.0.0.7', 443, 'known']]);
+    const { pairs } = buildVerifyPairs(result);
+    const pair = pairs.find((p) => p.name === 'shop.example.com' && p.via === 'known');
+    // Its own port, never the inventory's 9443: the CLI card scans the bare address on 443.
+    assert.deepEqual([pair.ip, pair.port, pair.cliTargets, pair.skip], ['10.0.0.7', 443, null, 'private']);
+    assert.deepEqual(cliPlan([{ ...pair, state: 'skipped' }]).targets, ['10.0.0.7']);
+    const lines = (text) => text.split('\n').filter(Boolean);
+    const text = lines(targetsForCli([...parseInventory(inventory).servers, ...result.originHints, ...result.unmatchedIps]));
+    assert.deepEqual(text.filter((l) => l.includes('10.0.0.7')), ['web06 10.0.0.7:9443', 'web06 10.0.0.7'], 'the CLI merges both lines of web06');
+    // A DNS pair at the same address and port keeps the inventory's targets beside the bare address.
+    const both = buildVerifyPairs({
+      hosts: [{ name: 'shop.example.com', classification: { hidesOrigin: true }, cert: { covered: true } }],
+      servers: [{
+        server: { id: 'web06', name: 'web06', ips: ['10.0.0.7'], ports: { '10.0.0.7': [9443] } }, needsCert: true,
+        hosts: [{ name: 'shop.example.com', ip: '10.0.0.7', covered: true, via: 'dns' }, { name: 'shop.example.com', ip: '10.0.0.7', port: 443, covered: true, via: 'known' }]
+      }],
+      unmatchedIps: []
+    }).pairs;
+    assert.deepEqual(both.map((p) => [p.key, p.via, p.cliTargets]), [['10.0.0.7|443|shop.example.com', 'dns', ['10.0.0.7:9443', '10.0.0.7']]]);
+  });
+
   test('a remembered origin on an inventory server is an origin pair (opt-in), checked like the zone\'s', async () => {
     const { result } = await scan({ knownOrigins: KNOWN });
     const { pairs } = buildVerifyPairs(result);

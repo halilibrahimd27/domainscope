@@ -359,7 +359,11 @@ function isIpRangeToken(token) {
  * written after a server's addresses (lib/topology.topologyTokens, which stays off the start
  * route: `terminates_tls=no`, `backends=`, `vip=`, `nat=`), so the CLI skips a plain-HTTP
  * backend and groups by load balancer; none without it. An origin-map hint on another port
- * is written there ("web04 198.51.100.30:8443").
+ * is written there ("web04 198.51.100.30:8443"), and one on 443 gets its address scanned on 443
+ * even where the inventory wrote it only with another port: after "web06 10.0.0.7:9443" comes
+ * "web06 10.0.0.7" (the CLI merges the lines of one name), or "web06 10.0.0.7:443" when web06
+ * has `ports=` of its own, which the CLI would apply to the bare address; nothing when a line
+ * already scans the address on 443.
  * @param {Array<object|string>} servers
  * @param {{ keys?: ((server: object) => string[])|null }} [opts]
  * @returns {string}
@@ -367,20 +371,34 @@ function isIpRangeToken(token) {
 export function targetsForCli(servers, { keys = null } = {}) {
   const seenIps = new Set();
   const seenTargets = new Set();
+  // The addresses some line already has scanned on 443, and the `ports=` of each server name
+  // written (the CLI merges the lines of one name, so they apply to a bare address of either).
+  const on443 = new Set();
+  const ownPorts = new Map();
+  const nameKey = (name) => cliServerName(name).toLowerCase();
+  const portsOf = (name) => (nameKey(name) && ownPorts.get(nameKey(name))) || [];
   const lines = [];
-  const add = (name, rawIp, server = null, keys = [], { bare = true, ports = [] } = {}) => {
+  const add = (name, rawIp, server = null, keys = [], { bare = true, ports = [], known443 = false } = {}) => {
     const ip = normalizeIP(String(rawIp ?? ''));
     if (!ip) return;
-    const targets = server
-      ? addressTargets(server, ip).filter((target) => !seenTargets.has(target))
-      : seenIps.has(ip) || !bare ? [] : [ip];
+    let targets;
+    if (server) targets = addressTargets(server, ip).filter((target) => !seenTargets.has(target));
+    else if (known443) {
+      const target = portsOf(name).length ? formatEndpoint(ip, 443) : ip;
+      targets = on443.has(ip) || seenTargets.has(target) ? [] : [target];
+    } else targets = seenIps.has(ip) || !bare ? [] : [ip];
     for (const port of ports) {
       const target = formatEndpoint(ip, port);
       if (target && !seenTargets.has(target) && !targets.includes(target)) targets.push(target);
     }
     if (!targets.length) return;
     seenIps.add(ip);
-    for (const target of targets) seenTargets.add(target);
+    for (const target of targets) {
+      seenTargets.add(target);
+      // A bare address is scanned on the ports= of its name (addressTargets writes a server's own
+      // as ip:port), else on -p: 443 unless told otherwise.
+      if (target === formatEndpoint(ip, 443) || (target === ip && !portsOf(name).length)) on443.add(ip);
+    }
     lines.push([cliServerName(name), ...targets, ...keys].filter(Boolean).join(' '));
   };
   for (const item of Array.isArray(servers) ? servers : []) {
@@ -392,7 +410,10 @@ export function targetsForCli(servers, { keys = null } = {}) {
     const server = item.server && typeof item.server === 'object' ? item.server : item;
     if (Array.isArray(server.ips) && server.ips.length) {
       const tokens = keys ? keys(server) : [];
-      for (const ip of server.ips) add(server.name ?? server.id, ip, server, tokens);
+      const name = server.name ?? server.id;
+      const own = Array.isArray(server.tlsPorts) ? server.tlsPorts.filter((p) => Number.isInteger(p) && p >= 1 && p <= 65535) : [];
+      if (own.length && nameKey(name)) ownPorts.set(nameKey(name), [...portsOf(name), ...own]);
+      for (const ip of server.ips) add(name, ip, server, tokens);
       continue;
     }
     if (item.ip) {
@@ -400,8 +421,10 @@ export function targetsForCli(servers, { keys = null } = {}) {
       const reasons = Array.isArray(item.reasons) ? item.reasons : [];
       const portOf = (r) => Number(r.port) || 443;
       const ports = [...new Set(reasons.filter((r) => r && r.kind === 'known' && portOf(r) !== 443).map(portOf))].sort((a, b) => a - b);
-      const bare = !reasons.length || reasons.some((r) => !r || r.kind !== 'known' || portOf(r) === 443);
-      add(named, item.ip, null, [], { bare, ports });
+      // A remembered origin on 443 is written on 443 (above); any other reason only when no line has the address.
+      const known443 = reasons.some((r) => r && r.kind === 'known' && portOf(r) === 443);
+      const bare = !reasons.length || reasons.some((r) => !r || r.kind !== 'known');
+      add(named, item.ip, null, [], { bare, ports, known443 });
     }
   }
   return lines.length ? `${lines.join('\n')}\n` : '';

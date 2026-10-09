@@ -20,7 +20,8 @@
  *   2025-08-06), ALPN http/1.1 (the `--http` GET goes over the same connection), {@link TLS_TIMEOUT_MS}
  *   per endpoint, {@link TLS_CONCURRENCY} at once. The status, worst first: EXPIRED (by the run's
  *   clock), UNTRUSTED (Node's root store says why, its code kept: UNABLE_TO_VERIFY_LEAF_SIGNATURE is a
- *   missing intermediate, named from the CCADB list the site ships, lib/chainfix.js), NAME_MISMATCH
+ *   missing intermediate, named from the CCADB list the site ships, lib/chainfix.js; a dates error on
+ *   a leaf in its dates is a certificate above it out of its dates, named: {@link statusOf}), NAME_MISMATCH
  *   (tls.checkServerIdentity, called whatever the chain, since Node checks the name only of a trusted
  *   one), NOT_DEPLOYED (`--ct`: an older certificate than the renewal CT logged), EXPIRING (at most
  *   `--warn-days` days left with its automatic renewal overdue, tools/ds/tlsdiff.mjs expiryState), OK;
@@ -228,21 +229,47 @@ export function certRecord(leaf, sha256, at) {
   };
 }
 
-/** Node's verify errors that are the certificate's dates, not its chain. */
+/** Node's verify errors that are a certificate's dates, not the make-up of the chain. */
 const TIME_ONLY = Object.freeze(['CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID']);
 
 /**
- * The status of a completed handshake at `at`, worst first.
+ * The first certificate above the leaf of a chain that is out of its dates at `at`, as the report
+ * keeps it (`outOfDateIssuer`), or null.
+ * @param {object[]} chain lib/x509.js Certificates as Node built the chain, the leaf first
+ * @param {number} at
+ * @returns {{ name: string|null, subjectDN: string|null, notBefore: string|null, notAfter: string|null, expired: boolean }|null}
+ */
+function outOfDate(chain, at) {
+  for (const c of (Array.isArray(chain) ? chain.slice(1) : [])) {
+    const from = new Date(c.notBefore).getTime();
+    const to = new Date(c.notAfter).getTime();
+    if (!(to < at) && !(from > at)) continue;
+    return { name: c.subjectCN || c.subjectDN || null, subjectDN: c.subjectDN || null, notBefore: isoTime(c.notBefore), notAfter: isoTime(c.notAfter), expired: to < at };
+  }
+  return null;
+}
+
+/**
+ * The status of a completed handshake at `at`, worst first. The dates are the run's clock's: a
+ * dates error of Node's (CERT_HAS_EXPIRED, CERT_NOT_YET_VALID) on a leaf in its dates is a
+ * certificate above it out of its dates — UNTRUSTED, Node's code kept, that certificate named
+ * (`outOfDateIssuer`: clients refuse the chain, as with the AddTrust root in 2020) — and no error
+ * only when every certificate of the chain is in its dates at `at` (a test's clock).
  * @param {object} h {@link handshake}'s result
  * @param {object} cert {@link certRecord}
  * @param {number} at
- * @param {{ warnDays: number, newer: object|null }} opts `newer`: the renewal CT logged ({@link renewalNotDeployed})
- * @returns {{ status: string, trustError: string|null }}
+ * @param {{ warnDays: number, newer?: object|null, chain?: object[] }} opts `newer`: the renewal CT logged ({@link renewalNotDeployed});
+ *   `chain`: the certificates as Node built the chain (lib/x509.js, the leaf first)
+ * @returns {{ status: string, trustError: string|null, outOfDateIssuer?: object }}
  */
-export function statusOf(h, cert, at, { warnDays, newer = null }) {
+export function statusOf(h, cert, at, { warnDays, newer = null, chain = [] }) {
   if (Date.parse(cert.notAfter) < at) return { status: 'EXPIRED', trustError: h.authorizationError || 'CERT_HAS_EXPIRED' };
   if (Date.parse(cert.notBefore) > at) return { status: 'UNTRUSTED', trustError: 'CERT_NOT_YET_VALID' };
-  if (!h.authorized && h.authorizationError && !TIME_ONLY.includes(h.authorizationError)) return { status: 'UNTRUSTED', trustError: h.authorizationError };
+  if (!h.authorized && h.authorizationError) {
+    if (!TIME_ONLY.includes(h.authorizationError)) return { status: 'UNTRUSTED', trustError: h.authorizationError };
+    const issuer = outOfDate(chain, at);
+    if (issuer) return { status: 'UNTRUSTED', trustError: h.authorizationError, outOfDateIssuer: issuer };
+  }
   if (h.nameMatch === false) return { status: 'NAME_MISMATCH', trustError: null };
   if (newer) return { status: 'NOT_DEPLOYED', trustError: null };
   if (expiryState(cert, at, warnDays) === 'expiring') return { status: 'EXPIRING', trustError: null };
@@ -492,23 +519,26 @@ export function connectionParts(endpoints) {
   return text ? [text] : null;
 }
 
-/** One endpoint's `GET /` in words: the status, HSTS, and the redirect of http:// (port 443). */
-export function httpText(http) {
+/**
+ * One endpoint's `GET /` in words (parts): the status, HSTS, and the redirect of http:// (port
+ * 443). The Location a server chose is an untrusted value: a code part, never running text.
+ */
+export function httpParts(http) {
   if (!http) return null;
   const out = [];
   if (Number.isInteger(http.status)) {
     const hsts = !http.hsts ? 'no HSTS' : http.hsts.valid ? `HSTS max-age=${http.hsts.maxAge}${http.hsts.includeSubDomains ? '; includeSubDomains' : ''}${http.hsts.preload ? '; preload' : ''}` : 'HSTS header not valid (browsers ignore it)';
-    out.push(`GET / ${http.status}`, hsts);
+    out.push(`GET / ${http.status} · ${hsts}`);
   } else {
     out.push(`GET / failed: ${http.error || 'no answer'}`);
   }
   const p = http.plain;
   if (p) {
-    if (!Number.isInteger(p.status)) out.push(`http:// failed: ${p.error || 'no answer'}`);
-    else if (p.toHttps) out.push(`http:// redirects to https:// (${p.status})`);
-    else out.push(`http:// answers ${p.status}${p.location ? ` → ${p.location}` : ''}, no redirect to https://`);
+    if (!Number.isInteger(p.status)) out.push(` · http:// failed: ${p.error || 'no answer'}`);
+    else if (p.toHttps) out.push(` · http:// redirects to https:// (${p.status})`);
+    else out.push(` · http:// answers ${p.status}`, ...(p.location ? [' → ', code(p.location)] : []), ', no redirect to https://');
   }
-  return out.join(' · ');
+  return out;
 }
 
 /** The problems of an endpoint, after its address in the certificate line. */
@@ -554,6 +584,13 @@ export function tlsDoc(target, { t, now, warnDays = 21 }) {
       lines.push(['The intermediate ', code(m.name), ...(m.owner ? [' (', code(m.owner), ')'] : []), ` is not sent${m.added > 1 ? ` (nor ${m.added - 1} more above it)` : ''} by `,
         ...missing.slice(0, 4).flatMap((e, i) => (i ? [', ', code(e.address)] : [code(e.address)])), ': named from the CCADB list; add it to the certificate file']);
     }
+    const outdated = g.endpoints.filter((e) => e.outOfDateIssuer);
+    if (outdated.length) {
+      const o = outdated[0].outOfDateIssuer;
+      lines.push(['The chain served by ', ...outdated.slice(0, 4).flatMap((e, i) => (i ? [', ', code(e.address)] : [code(e.address)])), ...(outdated.length > 4 ? [` +${outdated.length - 4}`] : []),
+        ' holds ', code(o.name || '?'), o.expired ? `, which expired on ${isoDay(o.notAfter)}` : `, which is not valid before ${isoDay(o.notBefore)}`,
+        ': clients refuse it; replace it with the CA\'s current certificate']);
+    }
     const stale = g.endpoints.filter((e) => e.newer);
     if (stale.length) {
       const n = stale[0].newer;
@@ -562,15 +599,16 @@ export function tlsDoc(target, { t, now, warnDays = 21 }) {
     }
     const conn = connectionParts(g.endpoints);
     if (conn) lines.push(conn);
-    const byText = new Map();
+    const byAnswer = new Map();
     for (const e of g.endpoints) {
-      const text = httpText(e.http);
-      if (!text) continue;
-      if (!byText.has(text)) byText.set(text, []);
-      byText.get(text).push(e.address);
+      const parts = httpParts(e.http);
+      if (!parts) continue;
+      const k = JSON.stringify(parts);
+      if (!byAnswer.has(k)) byAnswer.set(k, { parts, addresses: [] });
+      byAnswer.get(k).addresses.push(e.address);
     }
-    for (const [text, addresses] of byText) {
-      lines.push(byText.size > 1 ? [...addresses.slice(0, 4).flatMap((a, i) => (i ? [', ', code(a)] : [code(a)])), `: ${text}`] : [text]);
+    for (const { parts, addresses } of byAnswer.values()) {
+      lines.push(byAnswer.size > 1 ? [...addresses.slice(0, 4).flatMap((a, i) => (i ? [', ', code(a)] : [code(a)])), ': ', ...parts] : parts);
     }
     const a = ariParts(g.ari, at);
     if (a) lines.push(a);
@@ -676,11 +714,12 @@ export async function runTls(targets, options, env) {
         const sha256 = createHash('sha256').update(h.chain[0]).digest('hex');
         const cert = certRecord(leaf, sha256, at);
         const newer = inputs.ct && plan.host ? renewalNotDeployed(inputs.ct, plan.host, cert, at) : null;
-        const s = statusOf(h, cert, at, { warnDays, newer });
+        const s = statusOf(h, cert, at, { warnDays, newer, chain });
         Object.assign(e, {
           status: s.status, protocol: h.protocol, cipher: h.cipher, ephemeralKey: h.ephemeralKey ?? null, ocspStapled: h.ocspStapled ?? null,
           trusted: h.authorized && !s.trustError, trustError: s.trustError, nameMatch: h.nameMatch,
-          chainLength: chain.length, chainSent: sent ? sent.length : null, cert, ...(newer ? { newer } : {})
+          chainLength: chain.length, chainSent: sent ? sent.length : null, cert, ...(newer ? { newer } : {}),
+          ...(s.outOfDateIssuer ? { outOfDateIssuer: s.outOfDateIssuer } : {})
         });
         if (options.http) e.http = httpRecord(h.https, h.plain, hostHeader(plan.host, address, 80, 80));
         if (e.trustError === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') {

@@ -14,13 +14,16 @@
  *   counted: nothing was compared) and the next run is compared with the endpoints it carried;
  *   NXDOMAIN (the name went) is GONE, counted.
  * Per target, the problems of its addresses ({@link TLS_PROBLEMS}), counted: UNTRUSTED (a chain this
- * machine's root store does not trust), MISMATCH (a certificate without the name), NOT-LIVE (with
- * --ct in both runs: an older certificate than the renewal CT logged), and with --http in both runs
- * HTTP (GET / answers 5xx) and REDIRECT (http:// no longer redirects to https://) — said when an
- * address read in both runs gets the problem, or a new address has it while none of the target's
- * had it before (a pool's rotating addresses repeat nothing); BETTER (good) once no address has it
- * and every one that had it was read again. The item is null: one PagerDuty incident per host and
- * problem, however many of its addresses share it. A weaker HSTS header is listed only (HSTS).
+ * machine's root store does not trust, an expired intermediate too), MISMATCH (a certificate without
+ * the name), NOT-LIVE (with --ct in both runs: an older certificate than the renewal CT logged), and
+ * with --http in both runs HTTP (GET / answers 5xx) and REDIRECT (http:// no longer redirects to
+ * https://) — said when an address read in both runs gets the problem, or a new address has it while
+ * none of the target's had it before (a pool's rotating addresses repeat nothing); BETTER (good) once
+ * no address has it and every one that had it was read again for it (a handshake — for UNTRUSTED with
+ * a leaf that has not expired —, and for HTTP a GET / that answered, for REDIRECT a port 80 that
+ * answered: no answer is no news), NOT-LIVE's saying whether the address serves another certificate
+ * or CT no longer lists the renewal. The item is null: one PagerDuty incident per host and problem,
+ * however many of its addresses share it. A weaker HSTS header is listed only (HSTS).
  * Per certificate (the item is its SHA-256), counted, tone bad, also for a target new to the list
  * (compared with nothing):
  * - EXPIRING: it entered --warn-days with its automatic renewal overdue (less than a quarter of its
@@ -68,9 +71,13 @@ const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const isStr = (v) => typeof v === 'string';
 const isStrOrNull = (v) => v === null || v === undefined || typeof v === 'string';
 
-/** Does an endpoint record serve a chain this machine does not trust (not its dates, not the name)? */
+/**
+ * Does an endpoint record serve a chain this machine does not trust? Not for the leaf's dates
+ * (EXPIRED says that) nor for Node's name error (MISMATCH); CERT_HAS_EXPIRED on an endpoint that is
+ * not EXPIRED is a certificate above the leaf that expired (tools/ds/tls.mjs statusOf), so it is.
+ */
 export const isUntrusted = (e) => !!(e && e.cert) && e.trusted === false && isStr(e.trustError)
-  && !EXPIRY_ERRORS.includes(e.trustError) && !NAME_ERRORS.includes(e.trustError);
+  && (!EXPIRY_ERRORS.includes(e.trustError) || e.status !== 'EXPIRED') && !NAME_ERRORS.includes(e.trustError);
 /** Does it serve a certificate without the name asked? */
 export const isMismatch = (e) => !!(e && e.cert) && e.nameMatch === false;
 /** Does it serve an older certificate than the renewal CT logged (--ct)? */
@@ -79,18 +86,27 @@ export const isNotDeployed = (e) => !!(e && e.cert) && isObj(e.newer);
 export const isHttpError = (e) => !!(e && e.cert) && isObj(e.http) && Number.isInteger(e.http.status) && e.http.status >= 500;
 /** Does http:// answer without a redirect to https:// (--http, port 443)? */
 export const isNoRedirect = (e) => !!(e && e.cert) && isObj(e.http) && isObj(e.http.plain) && Number.isInteger(e.http.plain.status) && e.http.plain.toHttps !== true;
+/** A certificate read: the handshake completed. */
+const certRead = (e) => !!(e && e.cert);
+/** A chain whose trust was told: not an expired leaf, whose CERT_HAS_EXPIRED (Node's last error) hides the chain's. */
+const trustRead = (e) => certRead(e) && e.status !== 'EXPIRED';
+/** GET / answered (--http): a 5xx, or none, is known. */
+const httpAnswered = (e) => certRead(e) && isObj(e.http) && Number.isInteger(e.http.status);
+/** Port 80 answered (--http, port 443): a redirect to https://, or none, is known. */
+const plainAnswered = (e) => certRead(e) && isObj(e.http) && isObj(e.http.plain) && Number.isInteger(e.http.plain.status);
 
 /**
  * The problems of an endpoint the target-level changes are about: the tag, the endpoint status it
- * stands for, its test, and what a run must have read for a comparison (`needs`: the target's CT
- * lookup, an endpoint's HTTP answer).
+ * stands for, its test, what a run must have read for a comparison (`needs`: the target's CT
+ * lookup, an endpoint's HTTP answer), and whether an endpoint was read for it this run (`read`: a
+ * GET / or a port 80 that did not answer says nothing of a 5xx or a redirect).
  */
 export const TLS_PROBLEMS = Object.freeze([
-  Object.freeze({ tag: 'UNTRUSTED', status: 'UNTRUSTED', has: isUntrusted, needs: null }),
-  Object.freeze({ tag: 'MISMATCH', status: 'NAME_MISMATCH', has: isMismatch, needs: null }),
-  Object.freeze({ tag: 'NOT-LIVE', status: 'NOT_DEPLOYED', has: isNotDeployed, needs: 'ct' }),
-  Object.freeze({ tag: 'HTTP', status: 'HTTP_ERROR', has: isHttpError, needs: 'http' }),
-  Object.freeze({ tag: 'REDIRECT', status: 'NO_REDIRECT', has: isNoRedirect, needs: 'redirect' })
+  Object.freeze({ tag: 'UNTRUSTED', status: 'UNTRUSTED', has: isUntrusted, needs: null, read: trustRead }),
+  Object.freeze({ tag: 'MISMATCH', status: 'NAME_MISMATCH', has: isMismatch, needs: null, read: certRead }),
+  Object.freeze({ tag: 'NOT-LIVE', status: 'NOT_DEPLOYED', has: isNotDeployed, needs: 'ct', read: certRead }),
+  Object.freeze({ tag: 'HTTP', status: 'HTTP_ERROR', has: isHttpError, needs: 'http', read: httpAnswered }),
+  Object.freeze({ tag: 'REDIRECT', status: 'NO_REDIRECT', has: isNoRedirect, needs: 'redirect', read: plainAnswered })
 ]);
 
 /**
@@ -289,8 +305,10 @@ function problemText(problem, list) {
   switch (problem.tag) {
     case 'UNTRUSTED': {
       const missing = list.map((e) => e.missingIntermediate).find(Boolean);
+      const outdated = list.map((e) => e.outOfDateIssuer).find(isObj);
       return [...addressParts(list), ` serve${list.length === 1 ? 's' : ''} a chain this machine does not trust (`, code(first.trustError), ')',
-        ...(missing ? ['; the intermediate ', code(missing.name), ...(missing.owner ? [' (', code(missing.owner), ')'] : []), ' is not sent'] : [])];
+        ...(missing ? ['; the intermediate ', code(missing.name), ...(missing.owner ? [' (', code(missing.owner), ')'] : []), ' is not sent'] : []),
+        ...(outdated ? ['; ', code(outdated.name || '?'), outdated.expired === false ? ` in it is not valid before ${isoDay(outdated.notBefore)}` : ` in it expired on ${isoDay(outdated.notAfter)}`] : [])];
     }
     case 'MISMATCH':
       return [...addressParts(list), ` serve${list.length === 1 ? 's' : ''} `, ...certLabel(first.cert), ', which does not cover the name'];
@@ -313,6 +331,8 @@ const GOOD_TEXT = Object.freeze({
   HTTP: 'GET / no longer answers 5xx',
   REDIRECT: 'http:// redirects to https:// again'
 });
+/** NOT-LIVE over while an address still serves the certificate it had: CT no longer lists the renewal (revoked, say). */
+const NOT_LIVE_UNLISTED = 'CT no longer lists a newer certificate than the one still served';
 
 /**
  * The target-level problems ({@link TLS_PROBLEMS}) one run has and the other had not, and a weaker
@@ -343,9 +363,14 @@ function diffProblems(target, a, b, { http }) {
       out.push(change(problem.tag, target, null, problemText(problem, newly), { tone: 'bad', after: problem.status }));
     } else if (had.length && !has.length && had.every((e) => {
       const n = present.get(key(e));
-      return !n || !!n.cert; // read again, or gone from DNS; one that failed this run may have it still
+      // read again for the problem, or gone from DNS: a handshake that failed, a GET / or a port 80 that did not answer may have it still
+      return !n || problem.read(n);
     })) {
-      out.push(change('BETTER', target, null, [GOOD_TEXT[problem.tag]], { tone: 'good', before: problem.status }));
+      const unlisted = problem.tag === 'NOT-LIVE' && had.some((e) => {
+        const n = present.get(key(e));
+        return !!n && n.cert.sha256 === e.cert.sha256;
+      });
+      out.push(change('BETTER', target, null, [unlisted ? NOT_LIVE_UNLISTED : GOOD_TEXT[problem.tag]], { tone: 'good', before: problem.status }));
     }
   }
   if (http) {

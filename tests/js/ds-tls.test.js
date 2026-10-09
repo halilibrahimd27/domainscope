@@ -10,12 +10,13 @@
  * (RENEW-NOW, MOVED-UP, CA-NOTICE, REVOKED, CERT, FAILED / RECOVERED / FAILING, a DNS outage carried,
  * NXDOMAIN) and three nights of `main()` over the local server and the fakes.
  * The served-certificate monitor: its command line, handshakes with fixture certificates (the
- * cross_* PKI — a chain as built and as sent, a missing intermediate, an unknown root —, a
- * self-signed certificate, a name not covered, an OCSP staple and none), statuses by the run's clock
- * (EXPIRING, EXPIRED), --http over the handshake's connection and port 80, the missing intermediate
- * named from the fixture CCADB dataset, --ct (tools/ds/tlsct.mjs), --from-subdomains, every new
- * change and its PagerDuty standing, --max-endpoints, and three nights over a local HTTPS server. No
- * request leaves the machine; documentation names only.
+ * cross_* PKI — a chain as built and as sent, a missing intermediate, an unknown root, an expired
+ * intermediate under a valid leaf —, a self-signed certificate, a name not covered, an OCSP staple
+ * and none), statuses by the run's clock (EXPIRING, EXPIRED), --http over the handshake's connection
+ * and port 80 (the Location a code span), the missing intermediate named from the fixture CCADB
+ * dataset, --ct (tools/ds/tlsct.mjs), --from-subdomains, every new change and its PagerDuty standing
+ * (BETTER and a resolve waiting for a GET / or a port 80 that answers), --max-endpoints, and three
+ * nights over a local HTTPS server. No request leaves the machine; documentation names only.
  */
 
 import { test, describe, before, after } from 'node:test';
@@ -31,10 +32,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { main } from '../../tools/ds.mjs';
 import { parseCommandLine, parseTlsTarget, parseTargets, UsageError, EXIT, COMMANDS, USAGE, DS_TOOL, DS_VERSION } from '../../tools/ds/args.mjs';
-import { handshake, runTls, ariParts, revocationParts, tlsDoc, statusOf, nameMissingIntermediates, subdomainTlsHosts, tlsInputs, connectionParts, httpText } from '../../tools/ds/tls.mjs';
+import { handshake, runTls, ariParts, revocationParts, tlsDoc, statusOf, nameMissingIntermediates, subdomainTlsHosts, tlsInputs, connectionParts, httpParts } from '../../tools/ds/tls.mjs';
 import { ARI_SERVER_DIRECTORIES, ariDirectoryFor, createAriClient, windowState, ARI_MAX_RETRY_MS } from '../../tools/ds/ari.mjs';
 import { createRevocationChecker, verifyCrlSignature, issuerFromChain, fetchCrl } from '../../tools/ds/revocation.mjs';
-import { diffTls, tlsTargetProblem, tlsNotes, MOVED_UP_MS, expiryState, TLS_STATUSES } from '../../tools/ds/tlsdiff.mjs';
+import { diffTls, tlsTargetProblem, tlsNotes, MOVED_UP_MS, expiryState, TLS_STATUSES, isUntrusted } from '../../tools/ds/tlsdiff.mjs';
 import { ctReportProblem, ctLookup, newestInCt, renewalNotDeployed, NOT_DEPLOYED_MS } from '../../tools/ds/tlsct.mjs';
 import { getHead, httpRecord, redirectsToHttps, hostHeader } from '../../tools/ds/tlshttp.mjs';
 import { problemStanding } from '../../tools/ds/states.mjs';
@@ -45,7 +46,7 @@ import { parseCertificates } from '../../assets/js/lib/x509.js';
 import { parseCrl } from '../../assets/js/lib/crl.js';
 import { ariCertId } from '../../assets/js/lib/renewalplan.js';
 import { createIntermediateStore, rootTable } from '../../assets/js/lib/chainfix.js';
-import { renderMarkdown } from '../../assets/js/lib/summary.js';
+import { renderMarkdown, renderParts } from '../../assets/js/lib/summary.js';
 import { createFakeFetch } from './ds-fake-doh.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -69,6 +70,9 @@ const CROSS_LEAF_PEM = read('cross_leaf.pem');
 const CROSS_LEAF_KEY = read('cross_leaf.key');
 const CROSS_ROOT = certOf('cross_root.pem');
 const CROSS_INTER = certOf('cross_inter.pem');
+// the Issuing CA's name and key as first issued, expired on 2024-09-30: a leaf valid to 2060 under an expired intermediate
+const CROSS_INTER_OLD_PEM = read('cross_inter_old.pem');
+const CROSS_INTER_OLD = certOf('cross_inter_old.pem');
 // a self-signed certificate for www.example.com and example.com, with its key (gen_starttls_fixtures.sh)
 const SELF_PEM = read('starttls_ec_leaf.pem');
 const SELF_KEY = read('starttls_ec_leaf.key');
@@ -752,6 +756,9 @@ test('the monitor\'s command line: --warn-days, --ct, --http, --max-endpoints, -
   ];
   for (const [argv, re] of refused) assert.throws(() => parseCommandLine(argv), (err) => err instanceof UsageError && re.test(err.message), argv.join(' '));
   for (const option of ['--from-subdomains FILE', '--skip-cdn', '--warn-days N', '--ct FILE', '--http', '--max-endpoints N']) assert.ok(USAGE.includes(`[${option}]`), option);
+  const usage = USAGE.replace(/\s+/g, ' ');
+  assert.match(usage, /\[--warn-days N\] EXPIRING with N days left or fewer once its automatic renewal is overdue \(less than a quarter of its lifetime left; default 21\)/);
+  assert.match(usage, /CT gives no key type: an address serving one of two lineages of the names \(RSA and ECDSA, or a CDN's and the origin's\) is NOT_DEPLOYED when the other was renewed later/);
   assert.ok(['EXPIRED', 'UNTRUSTED', 'MISMATCH', 'NOT-LIVE', 'HTTP', 'REDIRECT', 'HSTS'].every((tag) => CHANGE_TAGS.includes(tag) && tag.length <= 9));
 });
 
@@ -762,6 +769,7 @@ describe('the monitor\'s handshakes: fixture certificates on a local server', ()
     servers.self = await tlsServer({ cert: SELF_PEM, key: SELF_KEY });
     servers.lone = await tlsServer({ cert: CROSS_LEAF_PEM, key: CROSS_LEAF_KEY });
     servers.withInter = await tlsServer({ cert: Buffer.concat([CROSS_LEAF_PEM, CROSS_INTER_PEM]), key: CROSS_LEAF_KEY });
+    servers.expiredInter = await tlsServer({ cert: Buffer.concat([CROSS_LEAF_PEM, CROSS_INTER_OLD_PEM]), key: CROSS_LEAF_KEY });
     servers.stapled = await tlsServer({ staple: Buffer.from('a stapled OCSP response') });
     servers.noStaple = await tlsServer({ staple: null });
   });
@@ -794,6 +802,38 @@ describe('the monitor\'s handshakes: fixture certificates on a local server', ()
     assert.deepEqual([other.authorized, other.authorizationError, other.nameMatch], [true, null, false]);
     const address = await handshake({ address: '127.0.0.1', port: servers.trusted.port, servername: null, ca: [CA_PEM] });
     assert.deepEqual([address.authorized, address.authorizationError, address.nameMatch], [true, null, null]);
+  });
+
+  test('an expired intermediate under a valid leaf: Node says CERT_HAS_EXPIRED, the run says UNTRUSTED and names it', async () => {
+    const h = await handshake({ address: '127.0.0.1', port: servers.expiredInter.port, servername: 'www.example.com', ca: [CROSS_ROOT_PEM] });
+    assert.deepEqual([h.status, h.authorized, h.authorizationError, h.chain.length, h.nameMatch], ['OK', false, 'CERT_HAS_EXPIRED', 3, true]);
+    assert.deepEqual(Buffer.from(h.chain[1]), Buffer.from(CROSS_INTER_OLD.der), 'built through the expired copy the server sent');
+    const t = await setupStrings();
+    const fetchImpl = createFakeFetch({ 'www.example.com': { A: ['127.0.0.1'] } }, { apex: 'example.com' });
+    const { DohClient } = await import('../../assets/js/lib/doh.js');
+    const target = `www.example.com:${servers.expiredInter.port}`;
+    const res = await runTls([target], { ari: false, revocation: false, chain: ['cloudflare'], warnDays: 21 }, {
+      dns: new DohClient({ chain: ['cloudflare'], fetchImpl }), fetchImpl, now: () => NOW, t, progress: () => {}, baseline: null, inputs: {}, tls: { ca: [CROSS_ROOT_PEM] }
+    });
+    const e = res.targets[0].endpoints[0];
+    assert.deepEqual([e.status, e.trusted, e.trustError, e.nameMatch, e.cert.notAfter], ['UNTRUSTED', false, 'CERT_HAS_EXPIRED', true, '2060-01-01T00:00:00.000Z']);
+    assert.deepEqual(e.outOfDateIssuer, {
+      name: 'Example Test Cross Issuing CA', subjectDN: 'CN=Example Test Cross Issuing CA,O=Example Test PKI',
+      notBefore: '2020-01-01T00:00:00.000Z', notAfter: '2024-09-30T00:00:00.000Z', expired: true
+    });
+    assert.ok(isUntrusted(e), 'a dates error above a leaf in its dates is a chain clients refuse');
+    const md = renderMarkdown(tlsDoc(res.targets[0], { t, now: NOW, warnDays: 21 }));
+    assert.match(md, /`127\.0\.0\.1 UNTRUSTED \(CERT_HAS_EXPIRED\)`/);
+    assert.match(md, /- The chain served by `127\.0\.0\.1` holds `Example Test Cross Issuing CA`, which expired on 2024-09-30: clients refuse it; replace it with the CA's current certificate\n/);
+    // against a night it was trusted: UNTRUSTED, said with the certificate that expired, paged until fixed
+    const trusted = { ...e, status: 'OK', trusted: true, trustError: null };
+    delete trusted.outOfDateIssuer;
+    const baseline = { ...report([{ ...res.targets[0], checkedAt: '2026-10-08T03:00:00.000Z', endpoints: [trusted] }], '2026-10-08T03:00:00.000Z'), options: res.options };
+    const changes = diffTls(baseline, { ...report(res.targets), options: res.options });
+    assert.deepEqual(changes.map((x) => [x.tag, x.tone, x.counts, x.after]), [['UNTRUSTED', 'bad', true, 'UNTRUSTED']]);
+    assert.equal(changeText(changes[0]), `${target}: 127.0.0.1:${servers.expiredInter.port} serves a chain this machine does not trust (CERT_HAS_EXPIRED); Example Test Cross Issuing CA in it expired on 2024-09-30`);
+    assert.equal(problemStanding('tls', res.targets[0], { tag: 'UNTRUSTED', item: null }), 'bad');
+    assert.equal(problemStanding('tls', { ...res.targets[0], endpoints: [trusted] }, { tag: 'UNTRUSTED', item: null }), 'over');
   });
 
   test('--http: GET / over the handshake\'s connection, and over HTTP to port 80; the answers as the report keeps them', async () => {
@@ -863,13 +903,22 @@ test('the HTTP answers in words: a redirect to https://, the Host header, HSTS, 
   assert.equal(hostHeader('www.example.com', '192.0.2.10', 443, 443), 'www.example.com');
   assert.equal(hostHeader('www.example.com', '192.0.2.10', 8443, 443), 'www.example.com:8443');
   assert.equal(hostHeader(null, '2001:db8::10', 443, 443), '[2001:db8::10]');
-  assert.equal(httpText({ status: 200, error: null, hsts: { maxAge: 31536000, includeSubDomains: true, preload: true, valid: true }, plain: { status: 301, location: 'https://www.example.com/', toHttps: true, error: null } }),
+  const words = (http) => renderParts(httpParts(http), 'text');
+  assert.equal(words({ status: 200, error: null, hsts: { maxAge: 31536000, includeSubDomains: true, preload: true, valid: true }, plain: { status: 301, location: 'https://www.example.com/', toHttps: true, error: null } }),
     'GET / 200 · HSTS max-age=31536000; includeSubDomains; preload · http:// redirects to https:// (301)');
-  assert.equal(httpText({ status: 503, error: null, hsts: null, plain: { status: 200, location: null, toHttps: false, error: null } }), 'GET / 503 · no HSTS · http:// answers 200, no redirect to https://');
-  assert.equal(httpText({ status: null, error: 'no answer within 10 s', hsts: null, plain: { status: null, location: null, toHttps: false, error: 'connection refused' } }),
+  assert.equal(words({ status: 503, error: null, hsts: null, plain: { status: 200, location: null, toHttps: false, error: null } }), 'GET / 503 · no HSTS · http:// answers 200, no redirect to https://');
+  assert.equal(words({ status: null, error: 'no answer within 10 s', hsts: null, plain: { status: null, location: null, toHttps: false, error: 'connection refused' } }),
     'GET / failed: no answer within 10 s · http:// failed: connection refused');
-  assert.equal(httpText({ status: 200, error: null, hsts: { maxAge: null, includeSubDomains: false, preload: false, valid: false }, plain: null }), 'GET / 200 · HSTS header not valid (browsers ignore it)');
-  assert.equal(httpText(undefined), null);
+  assert.equal(words({ status: 200, error: null, hsts: { maxAge: null, includeSubDomains: false, preload: false, valid: false }, plain: null }), 'GET / 200 · HSTS header not valid (browsers ignore it)');
+  assert.equal(httpParts(undefined), null);
+  // the Location the server chose is an untrusted value: a code span in Markdown, never a link or a mention
+  const located = { status: 200, error: null, hsts: null, plain: { status: 302, location: 'http://login.example.net/reset?next=www.example.org @admin', toHttps: false, error: null } };
+  assert.equal(words(located), 'GET / 200 · no HSTS · http:// answers 302 → http://login.example.net/reset?next=www.example.org @admin, no redirect to https://');
+  assert.equal(renderParts(httpParts(located), 'markdown'), 'GET / 200 · no HSTS · http:// answers 302 → `http://login.example.net/reset?next=www.example.org @admin`, no redirect to https://');
+  const page = renderMarkdown(tlsDoc(tgt([ep('192.0.2.10', 'OK', { cert: cert('a'), trusted: true, trustError: null, nameMatch: true, http: located }),
+    ep('192.0.2.11', 'OK', { cert: cert('a'), trusted: true, trustError: null, nameMatch: true, http: { ...located, status: 503 } })]), { t: (key) => key, now: NOW }));
+  assert.match(page, /\n- `192\.0\.2\.10`: GET \/ 200 · no HSTS · http:\/\/ answers 302 → `http:\/\/login\.example\.net\/reset\?next=www\.example\.org @admin`, no redirect to https:\/\/\n/);
+  assert.ok(!/[^`]www\.example\.org @admin[^`]/.test(page), page);
   assert.deepEqual(connectionParts([
     { protocol: 'TLSv1.3', cipher: 'TLS_AES_256_GCM_SHA384', ephemeralKey: { type: 'TLSGroup', name: 'X25519MLKEM768', size: null }, chainSent: 2, ocspStapled: false },
     { protocol: 'TLSv1.2', cipher: 'ECDHE-ECDSA-AES128-GCM-SHA256', ephemeralKey: { type: 'ECDH', name: 'X25519', size: 253 }, chainSent: 2, ocspStapled: true }
@@ -890,6 +939,23 @@ test('the status, worst first: expired, untrusted, the name, not deployed, expir
   assert.deepEqual(s(missing, '2026-11-09T00:00:00Z'), { status: 'UNTRUSTED', trustError: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' }, 'worse than expiring');
   assert.deepEqual(s(missing, '2026-12-01T00:00:00Z'), { status: 'EXPIRED', trustError: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' }, 'expired, the trust error kept');
   assert.deepEqual(s({ ...missing, authorizationError: 'CERT_HAS_EXPIRED' }, '2026-10-09T03:00:00Z'), { status: 'OK', trustError: null }, 'the dates are the run\'s clock\'s');
+  // a dates error of Node's on a leaf in its dates: a certificate above it out of its dates by the run's clock, or none (a test's clock)
+  const dated = (cn, from, to) => ({ subjectCN: cn, subjectDN: `CN=${cn}`, notBefore: new Date(from), notAfter: new Date(to) });
+  const leaf = dated('www.example.com', c.notBefore, c.notAfter);
+  const expiredError = { authorized: false, authorizationError: 'CERT_HAS_EXPIRED', nameMatch: true };
+  const stale = [leaf, dated('Example R1', '2020-01-01T00:00:00Z', '2026-10-01T00:00:00Z'), dated('Example Root', '2020-01-01T00:00:00Z', '2040-01-01T00:00:00Z')];
+  assert.deepEqual(s(expiredError, '2026-10-09T03:00:00Z', { chain: stale }), { status: 'UNTRUSTED', trustError: 'CERT_HAS_EXPIRED',
+    outOfDateIssuer: { name: 'Example R1', subjectDN: 'CN=Example R1', notBefore: '2020-01-01T00:00:00.000Z', notAfter: '2026-10-01T00:00:00.000Z', expired: true } });
+  assert.deepEqual(s(expiredError, '2026-09-20T03:00:00Z', { chain: stale }), { status: 'OK', trustError: null }, 'every certificate in its dates by the run\'s clock');
+  const early = [leaf, dated('Example R2', '2026-10-20T00:00:00Z', '2029-01-01T00:00:00Z')];
+  assert.deepEqual(s({ ...expiredError, authorizationError: 'CERT_NOT_YET_VALID' }, '2026-10-09T03:00:00Z', { chain: early }), { status: 'UNTRUSTED', trustError: 'CERT_NOT_YET_VALID',
+    outOfDateIssuer: { name: 'Example R2', subjectDN: 'CN=Example R2', notBefore: '2026-10-20T00:00:00.000Z', notAfter: '2029-01-01T00:00:00.000Z', expired: false } });
+  assert.deepEqual(s(expiredError, '2026-12-01T00:00:00Z', { chain: stale }), { status: 'EXPIRED', trustError: 'CERT_HAS_EXPIRED' }, 'the leaf expired: EXPIRED says it');
+  assert.deepEqual(s(ok, '2026-10-09T03:00:00Z', { chain: stale }), { status: 'OK', trustError: null }, 'Node trusted the chain: its dates are not read again');
+  // UNTRUSTED counts a dates error only where the leaf is in its dates (EXPIRED says the leaf's)
+  const record = (status, trustError) => ({ address: '192.0.2.10', port: 443, status, cert: c, trusted: false, trustError, nameMatch: true });
+  assert.deepEqual([record('UNTRUSTED', 'CERT_HAS_EXPIRED'), record('EXPIRED', 'CERT_HAS_EXPIRED'), record('UNTRUSTED', 'CERT_NOT_YET_VALID'), record('EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE')].map(isUntrusted),
+    [true, false, true, true]);
   assert.deepEqual(s({ ...ok, nameMatch: false }, '2026-11-09T00:00:00Z'), { status: 'NAME_MISMATCH', trustError: null });
   const newer = { id: 'r1', notBefore: '2026-10-05T00:00:00.000Z' };
   assert.deepEqual(s(ok, '2026-11-09T00:00:00Z', { newer }), { status: 'NOT_DEPLOYED', trustError: null }, 'the renewal not installed says more than the expiry');
@@ -1138,6 +1204,41 @@ describe('the monitor\'s changes', () => {
     // port 80 refused is no lost redirect; a GET that failed is no 5xx
     const h3 = night('2026-10-09T03:00:00.000Z', [live('192.0.2.10', { http: { status: null, error: 'connection reset', hsts: null, plain: { status: null, location: null, toHttps: false, error: 'connection refused' } } })], {}, web);
     assert.deepEqual(diffTls(h1, h3), []);
+  });
+
+  test('BETTER waits for an answer: a 5xx then no answer to GET /, no redirect then port 80 refused; a renewal CT no longer lists is said as such', () => {
+    const c = cert('a');
+    const web = { ari: false, revocation: false, warnDays: 21, http: true };
+    const live = (address, http) => ep(address, 'OK', { cert: c, trusted: true, trustError: null, nameMatch: true, http });
+    const answered = (status, plainStatus) => ({ status, error: null, hsts: null, plain: { status: plainStatus, location: null, toHttps: plainStatus === 301, error: null } });
+    const silent = { status: null, error: 'no answer within 10 s', hsts: null, plain: { status: null, location: null, toHttps: false, error: 'connection refused' } };
+    const h1 = night('2026-10-08T03:00:00.000Z', [live('192.0.2.10', answered(503, 200))], {}, web);
+    const h2 = night('2026-10-09T03:00:00.000Z', [live('192.0.2.10', silent)], {}, web);
+    assert.deepEqual(diffTls(h1, h2), [], 'nothing read: no 5xx and no lost redirect, nor their end');
+    for (const tag of ['HTTP', 'REDIRECT']) assert.equal(problemStanding('tls', h2.targets[0], { tag, item: null }), 'unknown', `${tag}: the incident stays open`);
+    // GET / answers again, port 80 not yet: the 5xx is over, the redirect is not known
+    const h3 = night('2026-10-10T03:00:00.000Z', [live('192.0.2.10', { ...answered(200, null), plain: silent.plain })], {}, web);
+    assert.deepEqual(diffTls(h1, h3).map((x) => [x.tag, changeText(x)]), [['BETTER', 'www.example.com: GET / no longer answers 5xx']]);
+    assert.deepEqual(['HTTP', 'REDIRECT'].map((tag) => problemStanding('tls', h3.targets[0], { tag, item: null })), ['over', 'unknown']);
+    // a pool: one address answers fine, the other did not answer: BETTER waits for it, the incident does not
+    const p1 = night('2026-10-08T03:00:00.000Z', [live('192.0.2.10', answered(503, 200)), live('192.0.2.11', answered(503, 200))], {}, web);
+    const p2 = night('2026-10-09T03:00:00.000Z', [live('192.0.2.10', answered(200, 301)), live('192.0.2.11', silent)], {}, web);
+    assert.deepEqual(diffTls(p1, p2), []);
+    assert.deepEqual(['HTTP', 'REDIRECT'].map((tag) => problemStanding('tls', p2.targets[0], { tag, item: null })), ['over', 'over'], 'an address that did not answer is not waited for');
+    assert.deepEqual(diffTls(p1, night('2026-10-10T03:00:00.000Z', [live('192.0.2.10', answered(200, 301)), live('192.0.2.11', answered(200, 301))], {}, web)).map((x) => x.tag), ['BETTER', 'BETTER']);
+    // NOT-LIVE: CT no longer lists the renewal (revoked, say) while the same certificate is served — not "the renewed certificate"
+    const newer = { id: 'a2', ca: 'Example CA', intermediate: 'Example R1', notBefore: '2026-10-05T00:00:00.000Z', notAfter: '2027-01-03T00:00:00.000Z', serialHex: '0a2' };
+    const n1 = night('2026-10-08T03:00:00.000Z', [ep('192.0.2.10', 'NOT_DEPLOYED', { cert: c, trusted: true, trustError: null, nameMatch: true, newer })], { ct: { newest: newer } });
+    const n2 = night('2026-10-09T03:00:00.000Z', [ep('192.0.2.10', 'OK', { cert: c, trusted: true, trustError: null, nameMatch: true })], { ct: { newest: null } });
+    assert.deepEqual(diffTls(n1, n2).map((x) => [x.tag, x.tone, changeText(x)]), [['BETTER', 'good', 'www.example.com: CT no longer lists a newer certificate than the one still served']]);
+    const renewed = night('2026-10-09T03:00:00.000Z', [ep('192.0.2.10', 'OK', { cert: cert('b', { notBefore: '2026-10-05T00:00:00.000Z' }), trusted: true, nameMatch: true })], { ct: { newest: newer } });
+    assert.equal(changeText(diffTls(n1, renewed).find((x) => x.tag === 'BETTER')), 'www.example.com: every address serves the renewed certificate now');
+    // an untrusted chain whose leaf then expires: Node's CERT_HAS_EXPIRED hides the chain's trust — EXPIRED, not "trusted again"
+    const short = cert('s', { notBefore: '2026-09-01T00:00:00.000Z', notAfter: '2026-10-08T12:00:00.000Z' });
+    const u1 = night('2026-10-08T03:00:00.000Z', [ep('192.0.2.10', 'UNTRUSTED', { cert: short, trusted: false, trustError: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', nameMatch: true })]);
+    const u2 = night('2026-10-09T03:00:00.000Z', [ep('192.0.2.10', 'EXPIRED', { cert: short, trusted: false, trustError: 'CERT_HAS_EXPIRED', nameMatch: true })]);
+    assert.deepEqual(diffTls(u1, u2).map((x) => x.tag), ['EXPIRED']);
+    assert.equal(problemStanding('tls', u2.targets[0], { tag: 'UNTRUSTED', item: null }), 'unknown', 'the UNTRUSTED incident stays open');
   });
 
   test('a host --max-endpoints left out is carried like a DNS outage, said once; the notes; the baseline\'s new fields are checked', () => {

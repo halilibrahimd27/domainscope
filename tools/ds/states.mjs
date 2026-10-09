@@ -187,13 +187,13 @@ const STANDINGS = Object.freeze({
    * its SHA-256) is over once no endpoint serves that certificate any more (renewed or replaced) —
    * never while one does, and not known while an endpoint that served it last time could not be read.
    * A host's (item null): UNTRUSTED, MISMATCH, NOT-LIVE, HTTP and REDIRECT are over once none of the
-   * addresses read has the problem (NOT-LIVE: only in a run that read CT, HTTP and REDIRECT: in one that
-   * asked; an address that failed is not waited for); the name no longer resolving (GONE) once it
-   * resolves again. An endpoint's (item
-   * `address|port`): FAILED is over once a handshake completes there, WORSE and RECOVERED once its
-   * status is OK, an endpoint no longer asked is over; a CERT (another certificate) is never known fixed.
-   * A DNS lookup that failed, or a host --max-endpoints left out (`carried`: the last check's
-   * endpoints), says nothing.
+   * addresses read for it has the problem (UNTRUSTED: where the leaf has not expired; NOT-LIVE: only in
+   * a run that read CT; HTTP: where GET / answered, REDIRECT where port 80 did, so a run none answered
+   * says nothing; an address that failed is not waited for); the name no longer resolving (GONE) once
+   * it resolves again. An endpoint's (item `address|port`): FAILED is over once a handshake completes
+   * there, WORSE and RECOVERED once its status is OK, an endpoint no longer asked is over; a CERT
+   * (another certificate) is never known fixed. A DNS lookup that failed, or a host --max-endpoints
+   * left out (`carried`: the last check's endpoints), says nothing.
    */
   tls(x, e) {
     if (x.carried) return 'unknown';
@@ -201,10 +201,10 @@ const STANDINGS = Object.freeze({
     if (e.item === null) {
       const problem = TLS_TARGET_PROBLEMS.get(e.tag);
       if (problem) {
-        const read = endpoints.filter((p) => p.cert);
+        // the addresses read for the problem (TLS_PROBLEMS read): a handshake, an unexpired leaf for UNTRUSTED, a GET / or a port 80 that answered
+        const read = endpoints.filter((p) => problem.read(p));
         if (!read.length) return 'unknown';
         if (problem.needs === 'ct' && !(x.ct && typeof x.ct === 'object')) return 'unknown';
-        if ((problem.needs === 'http' || problem.needs === 'redirect') && !read.some((p) => p.http && typeof p.http === 'object')) return 'unknown';
         // an address that failed this run is not waited for (a dead pool member would keep the incident open
         // for ever): back with the problem, it is RECOVERED with a bad status, paged on its own
         return read.some((p) => problem.has(p)) ? 'bad' : 'over';

@@ -702,10 +702,14 @@ commands:
                                  its own (default port ${TLS_DEFAULT_PORT}; [2001:db8::1]:8443 for IPv6)
       [--from-subdomains FILE]   also the hosts with an address in a subdomains --json report
       [--skip-cdn]               but not the ones behind a CDN (its edge serves the CDN's certificate)
-      [--warn-days N]            EXPIRING with N days left or fewer (default ${TLS_DEFAULT_WARN_DAYS})
+      [--warn-days N]            EXPIRING with N days left or fewer once its automatic renewal is
+                                 overdue (less than a quarter of its lifetime left; default ${TLS_DEFAULT_WARN_DAYS})
       [--ct FILE]                the same night's ct --json report (no CT query): an address still
                                  serving a certificate more than 48 hours older than the newest one
-                                 CT logged for the name is NOT_DEPLOYED (the renewal is not installed)
+                                 CT logged for the name is NOT_DEPLOYED (the renewal is not
+                                 installed). CT gives no key type: an address serving one of two
+                                 lineages of the names (RSA and ECDSA, or a CDN's and the origin's)
+                                 is NOT_DEPLOYED when the other was renewed later
       [--http]                   GET / over HTTPS on each address (the status, HSTS) and, for port
                                  443, over HTTP on port 80 (does it redirect to HTTPS?)
       [--max-endpoints N]        at most N handshakes a run (default ${TLS_DEFAULT_MAX_ENDPOINTS}); the hosts past it
@@ -780,15 +784,16 @@ what is sent: names and record types to the DoH resolvers (renew also asks Cloud
 
 tls changes: a served certificate entering --warn-days (EXPIRING) or expiring (EXPIRED); a host
   some address of which now serves an untrusted chain (UNTRUSTED: a missing intermediate is named
-  from the CCADB list the app ships), a certificate without the name (MISMATCH) or, with --ct, an
-  older certificate than the renewed one CT logged (NOT-LIVE), and BETTER once none does; another
-  certificate on an address (CERT: counted when it drops a name, changes the key type or the CA), a
-  handshake that stops completing (FAILED); with --http, GET / answering 5xx (HTTP) and http://
-  no longer redirecting to https:// (REDIRECT); and with --ari / --revocation: RENEW-NOW (the CA's
-  renewal window has opened, or ended), MOVED-UP (it now starts more than a day earlier: CAs do
-  that before a mass revocation), CA-NOTICE (an explanation URL the CA did not give before) and
-  REVOKED (the CRL lists a served certificate). A CA is not asked again before the Retry-After of
-  its last answer. An IPv6 address this machine cannot reach is SKIPPED (GitHub's hosted runners
+  from the CCADB list the app ships, an expired one from the chain), a certificate without the name
+  (MISMATCH) or, with --ct, an older certificate than the renewed one CT logged (NOT-LIVE), and
+  BETTER once none does; another certificate on an address (CERT: counted when it drops a name,
+  changes the key type or the CA), a handshake that stops completing (FAILED); with --http, GET /
+  answering 5xx (HTTP) and http:// no longer redirecting to https:// (REDIRECT; a GET / or a port
+  80 that does not answer says neither, nor their end); and with --ari / --revocation: RENEW-NOW
+  (the CA's renewal window has opened, or ended), MOVED-UP (it now starts more than a day earlier:
+  CAs do that before a mass revocation), CA-NOTICE (an explanation URL the CA did not give before)
+  and REVOKED (the CRL lists a served certificate). A CA is not asked again before the Retry-After
+  of its last answer. An IPv6 address this machine cannot reach is SKIPPED (GitHub's hosted runners
   have no IPv6 route), never a change.
 
 ct watch: each domain's report keeps the ids of the certificates seen (the next run's baseline,

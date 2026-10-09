@@ -809,6 +809,19 @@ describe('lookup (one line)', () => {
     assert.equal(lines(md(S.lookupSummary({ ...facts, at: new Date('2026-09-27T10:00:00Z') }, opts('en', null))))[2], 'DomainScope · checked 2026-09-27 10:00 UTC');
     assert.equal(lines(txt(S.lookupSummary(facts, opts('tr', null))))[1], 'DomainScope · kontrol edildi: 2026-09-27 14:03 UTC');
   });
+
+  test('a stopped lookup: the types never answered say so, the others as usual; still asking is "no answer yet"', () => {
+    const facts = { name: 'example.com', types: ['A', 'TXT', 'MX'], responses: [resp('A', ['192.0.2.1']), null, null], at: new Date('2026-09-27T10:00:00Z') };
+    assert.equal(lines(md(S.lookupSummary({ ...facts, stopped: true }, opts('en', null))))[0],
+      '**DNS Lookup · `example.com`**: A: `192.0.2.1` · TXT: stopped before an answer · MX: stopped before an answer');
+    assert.equal(lines(txt(S.lookupSummary({ ...facts, stopped: true }, opts('tr', null))))[0],
+      'DNS Sorgulama · example.com: A: 192.0.2.1 · TXT: yanıt gelmeden durduruldu · MX: yanıt gelmeden durduruldu');
+    assert.equal(lines(md(S.lookupSummary({ ...facts, stopped: true }, opts('en', null))))[2], 'DomainScope · checked 2026-09-27 10:00 UTC', 'the time of the Stop');
+    assert.ok(lines(md(S.lookupSummary(facts, opts('en', null))))[0].endsWith('TXT: no answer yet · MX: no answer yet'));
+    // Every type answered (a Retry after the Stop filled them in): nothing reads stopped.
+    const done = S.lookupSummary({ ...facts, stopped: true, responses: [resp('A', ['192.0.2.1']), resp('TXT', []), resp('MX', [])] }, opts('en', null));
+    assert.equal(lines(md(done))[0], '**DNS Lookup · `example.com`**: A: `192.0.2.1` · TXT: none · MX: none');
+  });
 });
 
 describe('ip (one line)', () => {

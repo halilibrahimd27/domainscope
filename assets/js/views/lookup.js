@@ -1428,6 +1428,8 @@ export function mount(container, ctx) {
     const failed = responses.filter((r) => r && !r.ok).length;
     const done = responses.filter(Boolean).length;
     const resolverLabel = q.resolver ? resolverName(q.resolver) : t('lkp.resolverAuto', { chain: chainNames });
+    // A stopped lookup with types still unanswered: said here, and its Copy summary says which.
+    const stopped = !!(current && current.q === q && current.stopped) && done < q.types.length;
     // Said once for every answer (lib/density.js): who answered, its PoP and the header flags.
     const shared = layout.shared;
     const main = h('div', { class: 'lkp-sum-main' },
@@ -1441,7 +1443,7 @@ export function mount(container, ctx) {
           : h('span', null, t('lkp.sum.via', { resolver: resolverLabel })),
         shared.nsid ? h('span', { class: 'mono lkp-pop', title: shared.nsid }, t('lkp.card.pop', { id: shared.nsid })) : null,
         Number.isFinite(elapsed) && done === q.types.length ? h('span', null, t('lkp.sum.time', { time: formatDuration(elapsed) })) : null,
-        current && current.q === q && current.stopped && done < q.types.length
+        stopped
           ? h('span', { class: 'lkp-sum-stopped', dataset: { role: 'lkp-stopped' } }, Icon('stop', { size: 13 }), ' ', t('lkp.sum.stopped', { count: q.types.length - done })) : null,
         q.dnssec ? Badge('DO', { variant: 'accent', title: t('lkp.dnssec') }) : null,
         q.cd ? Badge('CD', { variant: 'warn', title: t('lkp.cd') }) : null),
@@ -1452,11 +1454,14 @@ export function mount(container, ctx) {
     if (!prev) {
       // A new lookup: everything drawn anew, its "No records" line closed.
       const allText = () => responses.filter(Boolean).map(responseText).join('\n\n');
-      // Reads the facts at click time: the answers, and the time the last one arrived.
+      // Reads the facts at click time: the answers, and the time the last one arrived (or the Stop).
       const summary = SummaryButton({
         kind: 'lookup',
-        disabled: done !== q.types.length,
-        facts: () => ({ name: q.name, ptrFor: q.ptrFor, types: q.types, responses, dnssec: q.dnssec, at: summaryParts ? summaryParts.at : at }),
+        disabled: done !== q.types.length && !stopped,
+        facts: () => ({
+          name: q.name, ptrFor: q.ptrFor, types: q.types, responses, dnssec: q.dnssec, at: summaryParts ? summaryParts.at : at,
+          stopped: !!(current && current.q === q && current.stopped)
+        }),
         url: () => ctx.shareUrl(permalinkParams('lookup', { name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : null, cd: q.cd ? '1' : null }))
       });
       const actions = h('div', { class: 'lkp-sum-actions cluster' },
@@ -1477,7 +1482,7 @@ export function mount(container, ctx) {
     prev.main.replaceWith(main);
     prev.main = main;
     prev.at = at;
-    prev.summary.setDisabled(done !== q.types.length);
+    prev.summary.setDisabled(done !== q.types.length && !stopped);
     if (prev.types === types) return;
     const old = prev.line;
     const doc = globalThis.document;
@@ -1585,6 +1590,8 @@ export function mount(container, ctx) {
     const cards = q.types.map((type, i) => makeCard(type, { onRetry: () => retry(i) }));
     cardsEl.append(...cards.map((c) => c.el));
     renderSummary(q, state.responses, null, null);
+    // True while `preset` fills the cards in (its kept times apply), never for a later Retry.
+    let filling = !!preset;
 
     const finish = (i, response) => {
       if (current !== state) return;
@@ -1597,10 +1604,11 @@ export function mount(container, ctx) {
         else if (j !== i) cards[j].setOwn(layout.own[type] || null);
       });
       if (state.responses.every(Boolean) && state.elapsed === null) {
-        state.elapsed = preset ? elapsed : performance.now() - state.startedAt;
-        state.finishedAt = preset && at ? new Date(at) : new Date();
+        // The kept times while the preset fills in; a stopped lookup its Retries complete: now, and no duration.
+        state.elapsed = filling ? elapsed : preset || state.stopped ? null : performance.now() - state.startedAt;
+        state.finishedAt = filling && at ? new Date(at) : new Date();
       }
-      renderSummary(q, state.responses, state.elapsed, state.finishedAt, layout);
+      renderSummary(q, state.responses, state.elapsed, state.finishedAt || state.stoppedAt, layout);
       if (state.responses.every(Boolean)) pinColumns();
       else unpinColumns();
     };
@@ -1631,7 +1639,10 @@ export function mount(container, ctx) {
 
     if (preset) {
       state.stopped = preset.some((resp) => !resp);
+      // A stopped lookup kept the time of its Stop (snapshot `at`).
+      if (state.stopped && at) state.stoppedAt = new Date(at);
       preset.forEach((resp, i) => { if (resp) finish(i, resp); });
+      filling = false;
       state.controller = null;
       markStopped();
       return;
@@ -1661,7 +1672,7 @@ export function mount(container, ctx) {
     function markStopped() {
       if (!state.stopped || current !== state) return;
       state.responses.forEach((resp, i) => { if (!resp) cards[i].setStopped(); });
-      renderSummary(q, state.responses, state.elapsed, state.finishedAt);
+      renderSummary(q, state.responses, state.elapsed, state.finishedAt || state.stoppedAt);
     }
   }
 
@@ -1669,6 +1680,7 @@ export function mount(container, ctx) {
   function stop() {
     if (!current || !current.controller) return;
     current.stopped = true;
+    current.stoppedAt = new Date();
     current.controller.abort();
   }
 
@@ -1725,7 +1737,7 @@ export function mount(container, ctx) {
         cd: cdField.checked
       };
       if (!current || current.controller) return { form, carried };
-      return { form, carried, q: current.q, responses: current.responses, at: current.finishedAt, elapsed: current.elapsed };
+      return { form, carried, q: current.q, responses: current.responses, at: current.finishedAt || current.stoppedAt || null, elapsed: current.elapsed };
     },
     result() {
       if (!current || current.controller || !current.finishedAt) return null;

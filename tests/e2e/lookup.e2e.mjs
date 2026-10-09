@@ -11,7 +11,8 @@
  * query that got no answer (HTTP 429 from every resolver) keeps its card with the reason and a
  * Retry that asks that type alone again, also while a slower type of the same lookup still runs;
  * Stop (Esc) during a lookup keeps what came in, each type still asked says it was stopped, with a
- * Retry of its own, and the summary counts them; 1440 and 375 px, light and dark, English and Turkish.
+ * Retry of its own, the summary counts them and Copy summary says which; 1440 and 375 px, light and
+ * dark, English and Turkish.
  *
  * OFFLINE group "DNSSEC chain" (always runs): the summary's "DNSSEC chain" button validates the
  * chain of trust in the page (ui/dnssec-panel.js, lib/dnssec.js) against zones signed with
@@ -33,7 +34,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
-import { zoneHandoffScript } from './scan.e2e.mjs';
+import { stubClipboard, takeClipboard, zoneHandoffScript } from './scan.e2e.mjs';
 import { buildZones, answerTable } from '../fixtures/dnssec/signed-zones.mjs';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import {
@@ -426,16 +427,30 @@ async function offlineGroup(browser, server) {
       assertEqual([info.run, info.stop, info.a, info.retry, info.busy], [true, false, 'noerror', true, false], 'Look up back, the A answer kept, a Retry for TXT, not busy');
       assert(/Stopped before an answer came\./.test(info.txt), info.txt);
       assertEqual(info.sum, 'Stopped: 1 type not answered', 'the summary says so');
+      // Copy summary works at once: the type never answered says it was stopped.
+      await stubClipboard(page);
+      await page.click('[data-summary="lookup"] [data-action="copy-summary"]');
+      await page.waitFor(() => window.__clip.length === 1, { message: 'summary copied' });
+      const [copied] = await takeClipboard(page);
+      assertEqual(copied.split('\n')[0], '**DNS Lookup · `example.com`**: A: `203.0.113.10` · TXT: stopped before an answer', 'Copy summary of a stopped lookup');
       await shot(page, 'lookup-offline-desktop-light-en-stopped');
+      await page.setViewport({ width: 375, height: 812, mobile: true });
+      await shot(page, 'lookup-offline-mobile-light-en-stopped');
+      await page.setViewport({ width: 1440, height: 900 });
       // A language re-mount shows the stopped lookup again, nothing asked.
       const asked = await page.evaluate(() => window.__dohFail.asked.length);
       await setLangUi(page, 'tr');
       const tr = await page.waitFor(() => {
         const txt = document.querySelector('.lkp-card[data-type="TXT"]');
-        return txt && txt.dataset.state === 'stopped' ? { card: txt.textContent, sum: (document.querySelector('[data-role="lkp-stopped"]')?.textContent || '').trim() } : false;
+        return txt && txt.dataset.state === 'stopped' ? {
+          card: txt.textContent,
+          sum: (document.querySelector('[data-role="lkp-stopped"]')?.textContent || '').trim(),
+          copy: !document.querySelector('[data-summary="lookup"] [data-action="copy-summary"]')?.disabled
+        } : false;
       }, { message: 'TR re-mount' });
       assert(/Yanıt gelmeden durduruldu\./.test(tr.card), tr.card);
       assertEqual(tr.sum, 'Durduruldu: 1 tür yanıtlanmadı', 'TR summary');
+      assert(tr.copy, 'Copy summary still there after the re-mount');
       assertEqual(await page.evaluate(() => window.__dohFail.asked.length), asked, 'nothing asked by the re-mount');
       await setLangUi(page, 'en');
       await page.waitFor(() => document.querySelector('.lkp-card[data-type="TXT"]')?.dataset.state === 'stopped', { message: 'EN again' });

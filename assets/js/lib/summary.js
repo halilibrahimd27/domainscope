@@ -376,9 +376,11 @@ function recordValue(rr) {
 
 /**
  * DNS Lookup (one line): per type the number of records (or the rcode), the values when there
- * are three or fewer, and the DNSSEC AD bit when it was asked for and every answer has it.
- * @param {{ name: string, ptrFor?: string|null, types: string[], responses: Array<object|null>, dnssec?: boolean, at?: Date }} facts
- *   `responses`: DohClient responses in `types` order; `at`: when the last one arrived
+ * are three or fewer, and the DNSSEC AD bit when it was asked for and every answer has it. A type
+ * a stopped lookup never got an answer for says it was stopped.
+ * @param {{ name: string, ptrFor?: string|null, types: string[], responses: Array<object|null>, dnssec?: boolean, at?: Date,
+ *   stopped?: boolean }} facts `responses`: DohClient responses in `types` order; `at`: when the last one arrived (a
+ *   stopped lookup's: the Stop); `stopped`: the user stopped the lookup
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {SummaryDoc}
  */
@@ -398,7 +400,7 @@ export function lookupSummary(facts, opts) {
     records.forEach((x, i) => {
       if (i) parts.push(' · ');
       parts.push(`${x.type}: `);
-      if (!x.r) parts.push(t('sum.lookup.pending'));
+      if (!x.r) parts.push(t(facts.stopped ? 'sum.lookup.stopped' : 'sum.lookup.pending'));
       else if (!x.r.ok) parts.push(t('sum.lookup.failed'));
       else if (x.r.rcode !== 'NOERROR') parts.push(cleanText(x.r.rcode));
       else if (!x.rrs.length) parts.push(t('sum.lookup.noRecords'));
@@ -1066,6 +1068,7 @@ const STRINGS = [
   ['sum.lookup.noRecords', ['none', 'yok']],
   ['sum.lookup.failed', ['lookup failed', 'sorgu başarısız']],
   ['sum.lookup.pending', ['no answer yet', 'henüz yanıt yok']],
+  ['sum.lookup.stopped', ['stopped before an answer', 'yanıt gelmeden durduruldu']],
   ['sum.lookup.nxdomain', ['the name does not exist (NXDOMAIN)', 'ad mevcut değil (NXDOMAIN)']],
   ['sum.lookup.ad', ['DNSSEC validated (AD)', 'DNSSEC doğrulandı (AD)']],
 

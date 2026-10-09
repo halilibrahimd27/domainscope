@@ -839,3 +839,38 @@ describe('app.js getGlobalping()', () => {
     assert.equal(made, 1);
   });
 });
+
+describe('the origin map read again (lib/originnow.js markStaleOrigins)', () => {
+  test('a map change while no Verify panel was on screen: the job read again (a panel mounting) and its JSON follow the map now', async () => {
+    await state.ready;
+    const prev = state.workspaceData('origins');
+    const day = (n) => new Date(Date.now() - n * 864e5).toISOString();
+    const entry = { name: 'shop.example.com', ip: '192.0.2.40', port: 443, source: 'cli-json', firstSeen: day(3), lastConfirmed: day(3), server: 'web03', stale: null };
+    const stale = { reason: 'cli-elsewhere', at: day(1), ip: '192.0.2.41', port: 443 };
+    const setMap = (entries) => state.setWorkspaceData('origins', { v: 1, remember: true, entries });
+    try {
+      assert.equal(await setMap([entry]), true);
+      const run = scanRun({
+        hosts: [{ name: 'shop.example.com', classification: { hidesOrigin: true }, cert: { covered: true } }],
+        servers: [{
+          server: { id: 'web03', name: 'web03', ips: ['192.0.2.40'] }, needsCert: true,
+          hosts: [{ name: 'shop.example.com', ip: '192.0.2.40', port: 443, covered: true, via: 'known' }]
+        }]
+      });
+      const job = verifyJob(run);
+      const row = job.rows.find((r) => r.via === 'known');
+      assert.equal(row.originStale, null, 'the map has it active');
+      // A CLI report imported in Servers › Origin map (SSL Targets not on screen) marks it stale.
+      await setMap([{ ...entry, stale }]);
+      assert.equal(verifyJob(run), job, 'the same job');
+      assert.deepEqual(row.originStale, stale, 'read again as the panel reads it when it mounts');
+      // A newer confirmation clears the mark again: the JSON export reads the map now too.
+      await setMap([{ ...entry, lastConfirmed: day(0) }]);
+      job.runs = 1;
+      const doc = verifyExport(run, '1.0.0');
+      assert.equal('originStale' in doc.rows.find((r) => r.via === 'known'), false, 'no mark in the export');
+    } finally {
+      await state.setWorkspaceData('origins', prev);
+    }
+  });
+});

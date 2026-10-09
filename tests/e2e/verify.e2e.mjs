@@ -1183,6 +1183,27 @@ async function main() {
       }, { args: [`${N('shop')}|1.2.3.4:8443`], message: 'the map gone: no stale mark' });
     });
 
+    await run.step('a map change while SSL Targets is not on screen (a CLI report imported elsewhere): back on Verify, the row says stale', async () => {
+      await gotoRoute(page, 'about');
+      await page.evaluate(async (name) => {
+        const { state } = await import('./assets/js/state.js');
+        await state.setWorkspaceData('origins', { v: 1, remember: true, entries: [{
+          name, ip: '1.2.3.4', port: 8443, source: 'cli-json', firstSeen: '2026-09-29T08:00:00.000Z', lastConfirmed: '2026-09-29T08:00:00.000Z', server: 'web01',
+          stale: { reason: 'cli-elsewhere', at: '2026-09-30T08:00:00.000Z', ip: '1.2.3.5', port: 443 }
+        }] });
+      }, N('shop'));
+      await gotoRoute(page, 'scan');
+      await page.waitFor(() => document.querySelector('.scan-run-ui .scan-run')?.dataset.status === 'done', { message: 'the run on screen' });
+      await openTab(page, 'verify');
+      const shop = await page.waitFor((k) => {
+        const tr = [...document.querySelectorAll('.scan-tab-verify .vfy-table tbody tr.dt-row')]
+          .find((x) => `${x.querySelector('.vfy-name')?.textContent}|${x.querySelector('.vfy-ip')?.textContent}` === k);
+        return tr ? tr.querySelector('.vfy-ip')?.parentElement?.querySelector('.vfy-sub')?.textContent || '' : false;
+      }, { args: [`${N('shop')}|1.2.3.4:8443`], message: 'the row' });
+      assertEqual(shop, 'web01 · origin map · Stale', 'the mark the map got while the view was away');
+      await page.evaluate(async () => (await import('./assets/js/state.js')).state.setWorkspaceData('origins', null));
+    });
+
     run.group('Quality');
     await run.step('nothing left the page: no real Globalping request, no external fetch; totals', async () => {
       const calls = await gpCalls(page);

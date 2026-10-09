@@ -1162,7 +1162,22 @@ function emitJob(job, type, payload) {
 function setScope(job, scope) {
   job.scope = scope === 'perIp' ? 'perIp' : 'all';
   job.rows = createVerifyRows(scopePairs(job.pairs, job.scope), { origins: job.origins });
+  readOrigins(job);
+}
+
+/**
+ * Mark the job's rows of remembered origins with the workspace's origin map as it is now
+ * (lib/originnow.js markStaleOrigins). The map may have changed while no panel was on screen (a
+ * CLI report imported in Servers › Origin map, another tab), so the job is read again whenever it
+ * is picked up, exported or started.
+ * @param {object} job
+ * @returns {boolean} whether a row's mark changed
+ */
+function readOrigins(job) {
+  const marks = () => job.rows.map((r) => (r.via === 'known' ? JSON.stringify(r.originStale || null) : '')).join('\n');
+  const before = marks();
   markStaleOrigins(job.rows, state.workspaceData('origins'));
+  return marks() !== before;
 }
 
 /**
@@ -1172,7 +1187,10 @@ function setScope(job, scope) {
  * @returns {object|null}
  */
 function ensureJob(run) {
-  if (run.verify) return run.verify;
+  if (run.verify) {
+    readOrigins(run.verify);
+    return run.verify;
+  }
   if (!run.result || !run.config || !run.config.cert) return null;
   // Several certificate sets (lib/certsets.js): one queue for every set; each pair carries the set
   // planned for its name, and its verdict compares with that set's certificates.
@@ -1272,7 +1290,7 @@ function execute(job, client, targets, { maxProbes, now = undefined }) {
     const expect = await job.expect;
     const bySet = job.setExpect ? await job.setExpect : null;
     // A remembered origin the map marked stale since the rows were made waits behind the others.
-    markStaleOrigins(job.rows, state.workspaceData('origins'));
+    readOrigins(job);
     return runVerify(runOrder(job.rows, batch), {
       client,
       expect,
@@ -1558,7 +1576,8 @@ export function verifyTabBadge(run) {
 }
 
 /**
- * The verification block of the scan's full JSON export (null until something was checked).
+ * The verification block of the scan's full JSON export (null until something was checked); its
+ * rows of remembered origins read the workspace's origin map as it is now (`originStale`).
  * @param {object|null} run
  * @param {string} version app version
  * @returns {object|null}
@@ -1566,6 +1585,7 @@ export function verifyTabBadge(run) {
 export function verifyExport(run, version) {
   const job = run && run.verify;
   if (!job || !job.runs) return null;
+  readOrigins(job);
   return verifyExportJson(job.rows, { expect: job.expectValue, sets: job.setExpectValue, summary: summarizeVerify(job.rows), version });
 }
 
@@ -2129,10 +2149,12 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
     refreshShell() {
       if (!disposed) renderCli();
     },
-    /** The workspace's origin map changed: the rows of remembered origins say whether it now marks them stale. */
+    /**
+     * The workspace's origin map changed: the rows of remembered origins say whether it now marks
+     * them stale, drawn again only when a mark changed (a batch's confirmations leave the table as it is).
+     */
     refreshOrigins() {
-      markStaleOrigins(job.rows, state.workspaceData('origins'));
-      if (disposed) return;
+      if (!readOrigins(job) || disposed) return;
       if (table) table.refresh();
       render();
     },

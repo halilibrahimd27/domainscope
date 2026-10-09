@@ -307,7 +307,7 @@ describe('CLI helpers', () => {
   test('targetsForCli: a remembered origin on 443 is scanned on 443, also where the inventory wrote the address only with another port', () => {
     const { servers } = parseInventory([
       'web06 10.0.0.7:9443', // only another port: a line of its own on 443 follows
-      'web07 10.0.0.8 ports=8443', // ports= would apply to a bare address of web07: 10.0.0.8:443
+      'web07 10.0.0.8 ports=8443', // written 10.0.0.8:8443 (targets.txt has no ports=): a bare line of web07 is on -p
       'web08 10.0.0.9', // already on -p
       'web09 10.0.0.10:9443 10.0.0.10', // already on -p beside its own port
       'web10 10.0.0.11:443' // exactly that target
@@ -331,7 +331,7 @@ describe('CLI helpers', () => {
       'web09 10.0.0.10:9443 10.0.0.10',
       'web10 10.0.0.11:443',
       'web06 10.0.0.7 10.0.0.7:8443',
-      'web07 10.0.0.8:443',
+      'web07 10.0.0.8',
       '203.0.113.50',
       ''
     ].join('\n'));

@@ -361,10 +361,10 @@ function isIpRangeToken(token) {
  * backend and groups by load balancer; none without it. An origin-map hint on another port
  * is written there ("web04 198.51.100.30:8443"), and one on 443 gets its address scanned on 443
  * even where the inventory wrote it only with another port: after "web06 10.0.0.7:9443" comes
- * "web06 10.0.0.7" (the CLI merges the lines of one name), or "web06 10.0.0.7:443" when web06
- * has `ports=` of its own, which the CLI would apply to the bare address; nothing when a line
- * already scans the address on 443. A remembered origin marked `stale` (the origin map read now,
- * lib/originnow.js hintsNow) is left out like the sweep command leaves it out.
+ * "web06 10.0.0.7" (the CLI merges the lines of one name, and targets.txt has no `ports=`: a
+ * server's own TLS ports are written as ip:port, so a bare address is scanned on -p, 443);
+ * nothing when a line already scans the address on 443. A remembered origin marked `stale` (the
+ * origin map read now, lib/originnow.js hintsNow) is left out like the sweep command leaves it out.
  * @param {Array<object|string>} servers
  * @param {{ keys?: ((server: object) => string[])|null }} [opts]
  * @returns {string}
@@ -372,22 +372,17 @@ function isIpRangeToken(token) {
 export function targetsForCli(servers, { keys = null } = {}) {
   const seenIps = new Set();
   const seenTargets = new Set();
-  // The addresses some line already has scanned on 443, and the `ports=` of each server name
-  // written (the CLI merges the lines of one name, so they apply to a bare address of either).
+  // The addresses some line already has scanned on 443: as ip:443, or bare (no line carries
+  // `ports=`, so the CLI scans a bare address on -p, 443 unless told otherwise).
   const on443 = new Set();
-  const ownPorts = new Map();
-  const nameKey = (name) => cliServerName(name).toLowerCase();
-  const portsOf = (name) => (nameKey(name) && ownPorts.get(nameKey(name))) || [];
   const lines = [];
   const add = (name, rawIp, server = null, keys = [], { bare = true, ports = [], known443 = false } = {}) => {
     const ip = normalizeIP(String(rawIp ?? ''));
     if (!ip) return;
     let targets;
     if (server) targets = addressTargets(server, ip).filter((target) => !seenTargets.has(target));
-    else if (known443) {
-      const target = portsOf(name).length ? formatEndpoint(ip, 443) : ip;
-      targets = on443.has(ip) || seenTargets.has(target) ? [] : [target];
-    } else targets = seenIps.has(ip) || !bare ? [] : [ip];
+    else if (known443) targets = on443.has(ip) ? [] : [ip];
+    else targets = seenIps.has(ip) || !bare ? [] : [ip];
     for (const port of ports) {
       const target = formatEndpoint(ip, port);
       if (target && !seenTargets.has(target) && !targets.includes(target)) targets.push(target);
@@ -396,9 +391,7 @@ export function targetsForCli(servers, { keys = null } = {}) {
     seenIps.add(ip);
     for (const target of targets) {
       seenTargets.add(target);
-      // A bare address is scanned on the ports= of its name (addressTargets writes a server's own
-      // as ip:port), else on -p: 443 unless told otherwise.
-      if (target === formatEndpoint(ip, 443) || (target === ip && !portsOf(name).length)) on443.add(ip);
+      if (target === ip || target === formatEndpoint(ip, 443)) on443.add(ip);
     }
     lines.push([cliServerName(name), ...targets, ...keys].filter(Boolean).join(' '));
   };
@@ -411,10 +404,7 @@ export function targetsForCli(servers, { keys = null } = {}) {
     const server = item.server && typeof item.server === 'object' ? item.server : item;
     if (Array.isArray(server.ips) && server.ips.length) {
       const tokens = keys ? keys(server) : [];
-      const name = server.name ?? server.id;
-      const own = Array.isArray(server.tlsPorts) ? server.tlsPorts.filter((p) => Number.isInteger(p) && p >= 1 && p <= 65535) : [];
-      if (own.length && nameKey(name)) ownPorts.set(nameKey(name), [...portsOf(name), ...own]);
-      for (const ip of server.ips) add(name, ip, server, tokens);
+      for (const ip of server.ips) add(server.name ?? server.id, ip, server, tokens);
       continue;
     }
     if (item.ip) {

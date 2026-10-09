@@ -7154,6 +7154,8 @@ _TAG_STYLES = {'FAILED': ('red', 'bold'), 'REGRESSED': ('red', 'bold'), 'UNHOSTE
 _BAD_TAGS = ('FAILED', 'REGRESSED', 'UNHOSTED', 'GONE', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE',
              'REVOKED')
 _GOOD_TAGS = ('RECOVERED', 'UPDATED', 'HOSTED')
+# --ari / --revocation: each is about one certificate an endpoint serves
+_CERTIFICATE_TAGS = ('RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'REVOKED')
 _TAG_WIDTH = max(len(tag) for tag in _TAG_STYLES)
 
 
@@ -7446,7 +7448,8 @@ NTFY_MAX_BYTES = 4000         # a longer ntfy message is turned into an attachme
 _PAGERDUTY_HOSTS = ('events.pagerduty.com', 'events.eu.pagerduty.com')
 _NTFY_HOSTS = ('ntfy.sh',)
 # PagerDuty severity critical (else error); the headless runner's tags of registration,
-# delegation and trust changes, and an expired certificate here.
+# delegation and trust changes, an expired certificate here and, with --revocation, a revoked
+# one still served (REVOKED).
 PAGERDUTY_CRITICAL_TAGS = ('REGISTRAR', 'NS', 'DS', 'LOCK', 'EXPIRED', 'UNTRUSTED')
 _DEDUP_KEY_RE = re.compile(r'^[0-9a-f]{32}$')
 _EVENT_TAG_RE = re.compile(r'^[A-Z][A-Z0-9_-]{0,23}$')
@@ -7939,13 +7942,17 @@ def pagerduty_dedup_key(command: str, target: str, item: Optional[str], tag: str
 
 def _change_where(change: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     """A change's ``(target, item)`` for PagerDuty: the name (scope ``name``), else the
-    ip:port endpoint and, for a row, its name (``(no SNI)`` for the probe without one)."""
+    ip:port endpoint and, for a row, its name (``(no SNI)`` for the probe without one), for a
+    certificate (``--ari`` / ``--revocation``) its SHA-256."""
     if change.get('scope') == 'name':
         return str(change.get('name')), None
     target = _endpoint_label(str(change.get('ip')), change.get('port') or 0)
     if change.get('scope') == 'row':
         name = change.get('name')
         return target, str(name) if name is not None else '(no SNI)'
+    if change.get('scope') == 'certificate':
+        sha = (change.get('after') or {}).get('sha256')
+        return target, str(sha) if sha else None
     return target, None
 
 
@@ -7988,9 +7995,11 @@ def _problem_over(entry: Dict[str, Any], monitor: MonitorResult,
     the report shows it better - FAILED once it answers again, REGRESSED once the name is
     served with the new certificate (UPDATED), UNHOSTED once a certificate covering the name is
     served again, GONE once it is back - or out of what the run checks: its name no longer
-    probed, its endpoint no longer scanned. Never because another change came by: a handshake
-    or a port that fails says nothing of the certificate a name is served with, and the key
-    stays open. Without the report nothing but an expiry is decided."""
+    probed, its endpoint no longer scanned. A certificate's (RENEW-NOW, MOVED-UP, CA-NOTICE,
+    REVOKED: the item is its SHA-256) when the endpoint serves no more of it (renewed or
+    replaced) or is no longer scanned, never while it is served. Never because another change
+    came by: a handshake or a port that fails says nothing of the certificate a name is served
+    with, and the key stays open. Without the report nothing but an expiry is decided."""
     tag, target, item = entry['tag'], entry['target'], entry['item']
     if tag in ('EXPIRES', 'EXPIRED'):
         return monitor.expiring is not None
@@ -7998,6 +8007,14 @@ def _problem_over(entry: Dict[str, Any], monitor: MonitorResult,
         return False
     endpoints, names = where
     endpoint = endpoints.get(target)
+    if tag in _CERTIFICATE_TAGS:
+        if endpoint is None:
+            return True
+        if item is None or endpoint['status'] != OPEN:  # nothing known of the certificate, or read
+            return False
+        served = {entry['view'].get('certSha256') for entry in endpoint['rows'].values()}
+        served.discard(None)
+        return bool(served) and item not in served
     if item is None:
         if tag == 'GONE':  # an endpoint no longer scanned, a name no longer probed: back again
             return endpoint is not None or target in names
@@ -8120,8 +8137,8 @@ def pagerduty_events(url: str, plan: Dict[str, Any]) -> Tuple[str, List[Dict[str
                'payload': {'summary': _clip(display_text(t['summary']),
                                             _PAGERDUTY_SUMMARY_LIMIT),
                            'source': 'domainscope:scan',
-                           'severity': 'critical' if t['tag'] in PAGERDUTY_CRITICAL_TAGS
-                           else 'error',
+                           'severity': 'critical' if (t['tag'] in PAGERDUTY_CRITICAL_TAGS
+                                                      or t['tag'] == 'REVOKED') else 'error',
                            'component': t['target'], 'group': 'scan',
                            'custom_details': t['details']},
                'client': 'DomainScope'} for t in plan['triggers']]

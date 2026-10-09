@@ -4291,6 +4291,65 @@ class NotifyChannelTests(unittest.TestCase):
         self.assertTrue(sos._problem_over(dict(entry, tag='EXPIRES'),
                                           sos.MonitorResult(expiring=[])))
 
+    def test_a_certificate_problem_lasts_while_it_is_served(self):
+        """--ari / --revocation: a RENEW-NOW, MOVED-UP, CA-NOTICE or REVOKED key is about one
+        certificate (its SHA-256) an endpoint serves: it stays open while the endpoint serves it
+        and is resolved once the endpoint serves another, or is no longer scanned - never because
+        a night went by with the certificate unchanged, nor while nothing was read."""
+        sha, other = 'a1' * 32, 'b2' * 32
+
+        def doc(*shas, status='OPEN', ip='10.0.0.2'):
+            rows = [{'probe': 'connect', 'ip': ip, 'port': 443, 'status': status}]
+            rows += [{'probe': 'sni', 'name': 'n%d.example.net' % i, 'ip': ip, 'port': 443,
+                      'status': 'UPDATED', 'certSha256': value} for i, value in enumerate(shas)]
+            return {'results': rows, 'names': []}
+
+        def change(kind):
+            return sos._change(kind, 'certificate', ['upd'], '10.0.0.2', 443, before=None,
+                               after={'sha256': sha, 'subjectCN': 'a.example.net',
+                                      'notAfter': '2034-06-01T00:00:00Z', 'state': 'open',
+                                      'reason': 'keyCompromise'})
+
+        for kind, tag in (('renew-now', 'RENEW-NOW'), ('moved-up', 'MOVED-UP'),
+                          ('ca-notice', 'CA-NOTICE'), ('revoked', 'REVOKED')):
+            first = sos.pagerduty_plan(sos.MonitorResult(changes=[change(kind)]), None, 'night 1',
+                                       doc=doc(sha))
+            self.assertEqual([(t['tag'], t['target'], t['item']) for t in first['triggers']],
+                             [(tag, '10.0.0.2:443', sha)])
+            self.assertEqual(first['triggers'][0]['key'],
+                             sos.pagerduty_dedup_key('scan', '10.0.0.2:443', sha, tag))
+            baseline = {'notify': {'open': first['open']}}
+
+            def night(report, status='OPEN', ip='10.0.0.2', shas=()):
+                return sos.pagerduty_plan(sos.MonitorResult(changes=[]), baseline, 'later',
+                                          doc=doc(*shas, status=status, ip=ip))
+
+            # served again with nothing new: still open; another certificate beside it too
+            for shas in ((sha,), (other, sha)):
+                again = night(None, shas=shas)
+                self.assertEqual((again['triggers'], again['resolves'], again['open']),
+                                 ([], [], first['open']), (tag, shas))
+            # the endpoint serves another certificate now: renewed, resolved
+            done = night(None, shas=(other,))
+            self.assertEqual([entry['key'] for entry in done['resolves']],
+                             [first['triggers'][0]['key']], tag)
+            self.assertEqual(done['open'], [])
+            # the endpoint is no longer scanned: resolved; it did not answer, or read nothing: open
+            self.assertEqual(len(night(None, ip='10.0.0.3', shas=(sha,))['resolves']), 1, tag)
+            for status, shas in (('CLOSED', ()), ('TIMEOUT', ()), ('OPEN', ())):
+                self.assertEqual(night(None, status=status, shas=shas)['resolves'], [], (tag, status))
+
+        # without the report nothing but an expiry is decided
+        entry = {'key': 'c' * 32, 'target': '10.0.0.2:443', 'item': sha, 'tag': 'REVOKED',
+                 'since': None}
+        self.assertFalse(sos._problem_over(entry, sos.MonitorResult(changes=[])))
+        # a revoked certificate still served pages as critical, the others as errors
+        severities = {}
+        for kind, tag in (('renew-now', 'RENEW-NOW'), ('revoked', 'REVOKED')):
+            plan = sos.pagerduty_plan(sos.MonitorResult(changes=[change(kind)]), None, 'now')
+            severities[tag] = sos.pagerduty_events(PAGERDUTY_URL, plan)[1][0]['payload']['severity']
+        self.assertEqual(severities, {'RENEW-NOW': 'error', 'REVOKED': 'critical'})
+
     def test_open_keys_after_delivery(self):
         """The keys a report keeps are what PagerDuty got: a trigger not delivered opens nothing,
         a resolve not delivered leaves its key as it was."""

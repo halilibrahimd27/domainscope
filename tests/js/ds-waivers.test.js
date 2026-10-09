@@ -1,7 +1,7 @@
 /**
  * The headless runner's accepted risks (`--waivers waivers.json`, tools/ds/waivers.mjs over
  * lib/waivers.js): the option and the file, the changes of an accepted item (WAIVED, listed only;
- * WAIVER-EXPIRED once its end date is over, counted), the summary of what was accepted, the exit
+ * LAPSED once its end date is over, counted), the summary of what was accepted, the exit
  * codes (--fail-on-change, audit's 4) and where a PagerDuty problem stands. Offline runs of the
  * program on a moved clock, over the fake DoH and RDAP of tests/js/ds-fake-doh.mjs.
  */
@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCommandLine, UsageError, EXIT, DS_TOOL, DS_VERSION } from '../../tools/ds/args.mjs';
 import { diffReports, baselineNotes } from '../../tools/ds/diff.mjs';
-import { setupStrings, renderChangesText, renderChangesMarkdown, painter, changeText, TAG_WIDTH } from '../../tools/ds/render.mjs';
+import { setupStrings, renderChangesText, renderChangesMarkdown, painter, changeText, CHANGE_TAGS } from '../../tools/ds/render.mjs';
 import { readWaiversFile, waiversDoc, entryProblem } from '../../tools/ds/waivers.mjs';
 import { watchTarget } from '../../tools/ds/ctwatch.mjs';
 import { problemStanding } from '../../tools/ds/states.mjs';
@@ -67,7 +67,7 @@ describe('the option and the file', () => {
 });
 
 describe('health over four nights', () => {
-  test('accepted: left out of the score and counted for nothing; its end date over: WAIVER-EXPIRED counts (exit 4), said once', async () => {
+  test('accepted: left out of the score and counted for nothing; its end date over: LAPSED counts (exit 4), said once', async () => {
     const dir = tmp();
     try {
       const json = join(dir, 'health.json');
@@ -93,13 +93,13 @@ describe('health over four nights', () => {
       const third = await runMain(argv, { fetchImpl, now: NIGHT(21) });
       assert.equal(third.code, EXIT.CHANGED, third.out);
       const doc3 = JSON.parse(readFileSync(json, 'utf8'));
-      assert.deepEqual(tags(doc3.changes), ['WAIVER-EXPIRED example.com mx.unresolvable', 'SCORE? example.com']);
+      assert.deepEqual(tags(doc3.changes), ['LAPSED example.com mx.unresolvable', 'SCORE? example.com']);
       assert.equal(doc3.changes[0].text, 'example.com: mx.unresolvable — its accepted risk ended (expired 2026-10-20): it counts again: error — MX host does not resolve');
       assert.equal(doc3.changes[0].tone, 'bad');
       assert.match(doc3.changes[1].text, /\(the accepted risks changed\)$/);
       assert.deepEqual(doc3.targets[0].checks.find((c) => c.id === 'mx.unresolvable').waiverExpired.expires, '2026-10-20');
-      assert.match(third.out, /\n {2}WAIVER-EXPIRED {2}example\.com: mx\.unresolvable — its accepted risk ended/, 'the tag column widens for it');
-      assert.match(third.out, /\n {2}SCORE {11}example\.com:/);
+      assert.match(third.out, /\n {2}LAPSED {5}example\.com: mx\.unresolvable — its accepted risk ended/, 'the tag fits the column');
+      assert.match(third.out, /\n {2}SCORE {6}example\.com:/);
       assert.match(third.out, /- Expired, counting again:\n- example\.com: mx\.unresolvable — MX host does not resolve — expired 2026-10-20 — Mail team: Old MX host goes in November\n/);
 
       const fourth = await runMain(argv, { fetchImpl, now: NIGHT(22) });
@@ -157,7 +157,7 @@ describe('health over four nights', () => {
 });
 
 describe('audit: exit 4 and the status "waived"', () => {
-  test('a failed rule a waiver accepts fails nothing (exit 0); its end date over: WAIVER-EXPIRED and exit 4', async () => {
+  test('a failed rule a waiver accepts fails nothing (exit 0); its end date over: LAPSED and exit 4', async () => {
     const dir = tmp();
     try {
       const zone = portfolioZone({ now: NIGHT(9).getTime() });
@@ -179,7 +179,7 @@ describe('audit: exit 4 and the status "waived"', () => {
       const second = await runMain(argv, { fetchImpl: createPortfolioFetch(zone), now: NIGHT(16) });
       assert.equal(second.code, EXIT.CHANGED, second.out);
       const doc = JSON.parse(readFileSync(json, 'utf8'));
-      assert.deepEqual(tags(doc.changes), ['WAIVER-EXPIRED example.org expiryDays']);
+      assert.deepEqual(tags(doc.changes), ['LAPSED example.org expiryDays']);
       assert.match(doc.changes[0].text, /^example\.org: expiryDays >= 30: its accepted risk ended \(expired 2026-10-15\): it counts again — \d+ days left/);
       assert.deepEqual(doc.targets[0].rules[0].waiverExpired, { id: doc.targets[0].rules[0].waiverExpired.id, expires: '2026-10-15' });
       assert.match(second.out, /FAIL expiryDays >= 30: .* — its waiver expired on 2026-10-15: it counts again/);
@@ -231,7 +231,7 @@ describe('audit: exit 4 and the status "waived"', () => {
     assert.deepEqual(tags(run(accepted, rule('unknown'))), ['FAILED? example.org expiryDays']);
     assert.deepEqual(tags(run(accepted, accepted)), []);
     const ended = run(accepted, rule('fail'));
-    assert.deepEqual(tags(ended), ['WAIVER-EXPIRED example.org expiryDays']);
+    assert.deepEqual(tags(ended), ['LAPSED example.org expiryDays']);
     assert.match(changeText(ended[0]), /no longer an accepted risk \(not in the waivers file\): it counts again/);
   });
 });
@@ -282,14 +282,14 @@ describe('health and ct diffs', () => {
     assert.match(changeText(hidden), /^example\.com: error mx\.unresolvable no longer reported — .+ \(its lookup failed this run: it may still be there\)$/);
   });
 
-  test('a known certificate in the baseline run that is not any more, from an unexpected CA: WAIVER-EXPIRED; a new issuer whose certificates are all known is listed only', () => {
+  test('a known certificate in the baseline run that is not any more, from an unexpected CA: LAPSED; a new issuer whose certificates are all known is listed only', () => {
     const cert = (extra = {}) => ({ id: 'aaaaaaaaaaaaaaaa', ca: 'Other CA', intermediate: 'Other CA 1', names: ['cdn.example.com'], sources: ['certspotter'], notBefore: '2026-09-01T00:00:00.000Z',
       notAfter: '2026-12-01T00:00:00.000Z', current: true, unexpected: false, ...extra });
     const target = (certs, issuers) => ({ target: 'example.com', names: ['cdn.example.com'], issuers, readAt: '2026-10-08T03:00:00.000Z', answered: true, complete: true, sources: [{ source: 'certspotter', ok: true, state: 'ok' }], certificates: certs });
     const b = report('ct', [target([cert({ known: W })], [{ name: 'Other CA', count: 1 }])]);
     const a = report('ct', [target([cert({ unexpected: true, knownExpired: { ...W, expires: '2026-10-01' } })], [{ name: 'Other CA', count: 1 }])]);
     const changes = diffReports('ct', b, a, { t });
-    assert.deepEqual(tags(changes), ['WAIVER-EXPIRED example.com aaaaaaaaaaaaaaaa']);
+    assert.deepEqual(tags(changes), ['LAPSED example.com aaaaaaaaaaaaaaaa']);
     assert.match(changeText(changes[0]), /no longer a known certificate \(its waiver expired 2026-10-01\): it counts again: cdn\.example\.com$/);
     const fresh = diffReports('ct', report('ct', [target([], [])]), report('ct', [target([cert({ known: W })], [{ name: 'Other CA', count: 1 }])]), { t });
     assert.deepEqual(tags(fresh).filter((x) => x.startsWith('ISSUER')), ['ISSUER? example.com Other CA']);
@@ -344,13 +344,13 @@ describe('the summary, the tag column and PagerDuty', () => {
     assert.match(renderPlainText(doc), /, 1 not checked this run \(kept\)\n- Not checked this run \(kept: its item could not be read\):\n- example\.com: mx\.unresolvable until 2026-12-31\n- Matched nothing this run \(fixed, or no longer reported: the waiver can go\):\n- example\.com: caa\.missing until 2026-12-31\n/);
   });
 
-  test('the tag column: 9 wide, wider only in a summary that shows WAIVER-EXPIRED; the note names the accepted risks only when one is listed', () => {
-    assert.equal(TAG_WIDTH, 9);
+  test('the accepted risks tags fit the 9-character column; the note names the accepted risks only when one is listed', () => {
+    assert.ok(['WAIVED', 'LAPSED'].every((tag) => CHANGE_TAGS.includes(tag) && tag.length <= 9));
     const base = { command: 'health', baseline: { file: 'h.json' } };
     const plain = renderChangesText({ ...base, changes: [{ tag: 'SCORE', tone: 'bad', counts: true, parts: ['x'] }] }, { paint: painter(false) });
     assert.equal(plain[1], '  SCORE      x');
-    const wide = renderChangesText({ ...base, changes: [{ tag: 'SCORE', tone: 'bad', counts: true, parts: ['x'] }, { tag: 'WAIVER-EXPIRED', tone: 'bad', counts: true, parts: ['y'] }] }, { paint: painter(false) });
-    assert.deepEqual(wide.slice(1, 3), ['  SCORE           x', '  WAIVER-EXPIRED  y']);
+    const lapsed = renderChangesText({ ...base, changes: [{ tag: 'SCORE', tone: 'bad', counts: true, parts: ['x'] }, { tag: 'LAPSED', tone: 'bad', counts: true, parts: ['y'] }] }, { paint: painter(false) });
+    assert.deepEqual(lapsed.slice(1, 3), ['  SCORE      x', '  LAPSED     y']);
     const quiet = { ...base, changes: [{ tag: 'WAIVED', tone: 'quiet', counts: false, accepted: true, parts: ['z'] }] };
     assert.ok(renderChangesText(quiet, { paint: painter(false) }).some((l) => /Not counted: 1 \(.*, accepted risks \(--waivers\)\)/.test(l)));
     assert.match(renderChangesMarkdown(quiet), /listed only \(.*, accepted risks \(--waivers\)\)/);

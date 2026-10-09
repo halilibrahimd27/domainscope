@@ -932,8 +932,7 @@ describe('render', () => {
     assert.equal(lines.at(-1), '');
     assert.ok(!lines.join('\n').includes('\u001b['));
     assert.ok(renderChangesText(run, { paint: painter(true) }).join('\n').includes('\u001b[31;1m'), 'red for a bad change');
-    // every tag fits the 9-character column but WAIVER-EXPIRED, which widens it in a summary that shows it
-    assert.deepEqual(CHANGE_TAGS.filter((tag) => tag.length > 9), ['WAIVER-EXPIRED']);
+    assert.ok(CHANGE_TAGS.every((tag) => tag.length <= 9));
   });
 
   test('a first run says so; nothing changed says none; the cap and the not-counted note', () => {

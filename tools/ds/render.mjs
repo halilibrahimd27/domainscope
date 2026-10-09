@@ -117,15 +117,10 @@ const notCounted = (command, changes = []) => (command === 'audit' ? NOT_COUNTED
 
 /** Change lines in the summary without --show-all (the CLI's MAX_SUMMARY_CHANGES). */
 export const MAX_SUMMARY_CHANGES = 50;
-/** Every tag a change can carry. */
+/** Every tag a change can carry, widest first for the column. */
 export const CHANGE_TAGS = Object.freeze(['NEW', 'GONE', 'WORSE', 'BETTER', 'CHANGED', 'FAILED', 'RECOVERED', 'FAILING', 'SCORE',
-  'ISSUER', 'NAME', 'CERT', 'CA', 'EXPIRING', 'REVOKED', 'EXPOSED', 'DANGLING', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'RISK', 'WAIVED', 'WAIVER-EXPIRED']);
-/**
- * The tag column's width: 9, every tag but WAIVER-EXPIRED fits it; a summary that shows that one
- * widens its column (the others stay as they always were).
- */
-export const TAG_WIDTH = 9;
-const tagWidth = (changes) => Math.max(TAG_WIDTH, ...changes.map((c) => String(c.tag).length));
+  'ISSUER', 'NAME', 'CERT', 'CA', 'EXPIRING', 'REVOKED', 'EXPOSED', 'DANGLING', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'RISK', 'WAIVED', 'LAPSED']);
+const TAG_WIDTH = Math.max(...CHANGE_TAGS.map((tag) => tag.length));
 
 const ANSI = { red: '31', green: '32', yellow: '33', cyan: '36', dim: '2', bold: '1' };
 /** The colours of a change's tone (bad red, good green, info cyan, quiet dim). */
@@ -176,10 +171,9 @@ export function renderChangesText(run, { paint, showAll = false }) {
   const colors = !counted.length ? ['green', 'bold'] : counted.some((c) => c.tone === 'bad') ? ['red', 'bold'] : ['yellow', 'bold'];
   const lines = [paint(`Changes since the baseline (${source}, run of ${baselineWhen(info)}): ${changes.length || 'none'}`, ...colors)];
   const shown = showAll ? changes : changes.slice(0, MAX_SUMMARY_CHANGES);
-  const width = tagWidth(shown);
   for (const c of shown) {
     const style = c.counts ? TONE_STYLES[c.tone] || [] : TONE_STYLES.quiet;
-    lines.push(`  ${paint(c.tag.padEnd(width), ...style)}  ${changeText(c)}`);
+    lines.push(`  ${paint(c.tag.padEnd(TAG_WIDTH), ...style)}  ${changeText(c)}`);
   }
   if (shown.length < changes.length) {
     lines.push(paint(`  ... and ${changes.length - shown.length} more - use --show-all or the --json report to list them.`, 'dim'));

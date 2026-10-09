@@ -761,7 +761,7 @@ waivers: --waivers FILE (health, audit, ct) reads the accepted risks the app's W
   a waiver accepts - a Domain Health finding, a policy rule of a domain, a certificate's public key
   (a known certificate) - does not count for --fail-on-change nor for audit's exit 4, and its
   changes are listed only; the summary lists what was accepted and what ends within 14 days. From
-  the day after its end date it counts again, and a change says so (WAIVER-EXPIRED). An entry
+  the day after its end date it counts again, and a change says so (LAPSED). An entry
   that cannot be read is left out with a warning (its item counts).
 
 takeover watch: a new risk (RISK) counts at medium severity or above - a domain the records

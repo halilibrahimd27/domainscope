@@ -8,7 +8,7 @@
  * - {@link waiversDoc}: one summary per run of `health`, `audit` or `ct` with --waivers: the items
  *   a waiver accepted (they do not count for --fail-on-change nor for audit's exit 4), those whose
  *   waiver ends within {@link WAIVER_SOON_DAYS} days, those whose waiver is over (they count again:
- *   WAIVER-EXPIRED in the changes), the waivers whose item this run could not read (a failed
+ *   LAPSED in the changes), the waivers whose item this run could not read (a failed
  *   lookup, a registry or CT source that did not answer: kept, never "can go"), and the waivers of
  *   a domain the run checked that matched nothing (the item is fixed, or no longer reported: the
  *   waiver can go).

@@ -7,11 +7,11 @@
  * - `tag`: render.mjs CHANGE_TAGS (NEW, GONE, WORSE, BETTER, CHANGED, FAILED, RECOVERED, FAILING,
  *   SCORE, ISSUER, NAME, CERT, CA, EXPIRING, REVOKED, EXPOSED, DANGLING; tls's RENEW-NOW, MOVED-UP and
  *   CA-NOTICE, tools/ds/tlsdiff.mjs; takeover's RISK, tools/ds/takeover.mjs diffTakeover; the accepted
- *   risks' WAIVED and WAIVER-EXPIRED); `tone`: 'bad' | 'good' | 'info' | 'quiet';
+ *   risks' WAIVED and LAPSED); `tone`: 'bad' | 'good' | 'info' | 'quiet';
  * - accepted risks (`--waivers`, lib/waivers.js): an item a waiver accepts in this run — a health
  *   finding, an audit rule, a known certificate — is never counted: its changes are listed only, and
  *   one newly accepted is WAIVED (listed only). An item accepted in the baseline run whose waiver is
- *   over (or out of the file) and that is still a problem counts again: WAIVER-EXPIRED, bad;
+ *   over (or out of the file) and that is still a problem counts again: LAPSED, bad;
  * - `counts`: false for what is listed but never counted by --fail-on-change (nor opens the
  *   nightly issue): a move from one failure state to another (FAILING: nothing was read either
  *   way), CT sources that could not be read (FAILED / RECOVERED: the source's outage, not the
@@ -257,7 +257,7 @@ function diffHealth(before, after, { t }) {
       }
       if (isObj(y.waiver) && !accepted && notable(x.severity)) {
         // accepted in the baseline run, not any more: the problem counts again
-        out.push(change('WAIVER-EXPIRED', domain, id, [code(id), ` — ${endedText(x.waiverExpired)}: ${x.severity} — `, ...healthTitle(t, x)],
+        out.push(change('LAPSED', domain, id, [code(id), ` — ${endedText(x.waiverExpired)}: ${x.severity} — `, ...healthTitle(t, x)],
           { tone: 'bad', before: y.severity, after: x.severity }));
         continue;
       }
@@ -531,7 +531,7 @@ function diffCt(before, after) {
     for (const c of certs) {
       const p = prevById.get(c.id);
       if (!p || !isObj(p.known) || isObj(c.known) || c.unexpected !== true) continue;
-      out.push(change('WAIVER-EXPIRED', domain, c.id, ['certificate from ', code(c.ca), ...intermediate(c), ', not one of the expected CAs: ',
+      out.push(change('LAPSED', domain, c.id, ['certificate from ', code(c.ca), ...intermediate(c), ', not one of the expected CAs: ',
         isObj(c.knownExpired) ? `no longer a known certificate (its waiver expired ${c.knownExpired.expires}): it counts again: ` : 'no longer a known certificate (not in the waivers file): it counts again: ',
         ...names(c)], { tone: 'bad', before: 'known', after: 'unexpected' }));
     }
@@ -726,7 +726,7 @@ function diffDane(before, after, { t }) {
  * not be checked is no change —, a rule new, gone or with another requirement (a policy changed:
  * the note says so), a domain new or gone. The evidence alone moving (one day fewer left) is no
  * change. A rule a waiver accepts (`waived`): WAIVED when it is newly accepted, its other moves
- * listed only; accepted in the baseline run and failed now (its waiver ended): WAIVER-EXPIRED.
+ * listed only; accepted in the baseline run and failed now (its waiver ended): LAPSED.
  */
 function diffAudit(before, after, { t }) {
   const out = [];
@@ -767,7 +767,7 @@ function diffAudit(before, after, { t }) {
       if (p.status === 'waived') {
         // accepted in the baseline run, not any more: a fail counts again; a pass is no news to act on
         if (r.status === 'fail') {
-          out.push(change('WAIVER-EXPIRED', domain, r.id, [...what(r), endedText(r.waiverExpired), ...evidence(r)], { tone: 'bad', before: p.status, after: r.status }));
+          out.push(change('LAPSED', domain, r.id, [...what(r), endedText(r.waiverExpired), ...evidence(r)], { tone: 'bad', before: p.status, after: r.status }));
         } else if (r.status === 'pass') {
           out.push(change('BETTER', domain, r.id, [...what(r), 'accepted → pass (its waiver can go)', ...evidence(r)], { tone: 'good', counts: false, before: p.status, after: r.status, accepted: true }));
         } else {

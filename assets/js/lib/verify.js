@@ -885,7 +885,9 @@ function skipReason(ip, name, port) {
  * pointing at it directly (`topology.suspect`). A remembered
  * origin (`via` known) is a pair on the port it was remembered on, whatever its server wrote:
  * its CLI target is that endpoint alone, so one on 443 stays the bare address even where the
- * inventory has the address only with another port (`web06 10.0.0.7:9443`).
+ * inventory has the address only with another port (`web06 10.0.0.7:9443`); one on 443 at its
+ * server's nat= address carries the server's own addresses like a DNS pair there, and one a
+ * load balancer passed on to a backend (no `port` of its own) the backend's targets.
  * @param {object} result ScanResult
  * @param {{ port?: number, setOf?: ((name: string) => string|null)|null }} [opts] `setOf` (several
  *   certificate sets, lib/certsets.js setOfName): every pair gets the `setId` planned for its name
@@ -916,9 +918,13 @@ export function buildVerifyPairs(result, { port = VERIFY_PORT, setOf = null } = 
     const cls = host?.classification ?? {};
     // A remembered origin is checked on the port it was remembered on, and the CLI card scans it
     // there only (cliPlan: ip:port, or the bare address on 443, never the inventory's other ports
-    // of that address); every other pair on the check's port.
+    // of that address); every other pair on the check's port. A pair on the check's port at its
+    // server's nat= address, a remembered origin's too, is scanned from inside (the server's own
+    // addresses); one on another port there is scanned where it was remembered.
     const at = ownPort ?? port;
-    const targets = !inventoryServer || ownPort ? [] : through === 'nat' ? serverTargets(inventoryServer) : addressTargets(inventoryServer, ip);
+    const targets = !inventoryServer ? []
+      : through === 'nat' ? (at === port ? serverTargets(inventoryServer) : [])
+        : ownPort ? [] : addressTargets(inventoryServer, ip);
     const pair = {
       key: `${ip}|${at}|${name}`, ip, port: at, name, server, alsoServers: [], via,
       proxied: !!cls.hidesOrigin, provider: cls.provider?.name ?? null,
@@ -944,7 +950,9 @@ export function buildVerifyPairs(result, { port = VERIFY_PORT, setOf = null } = 
     for (const e of entries) {
       add(pairFor({ ip: e.ip, name: e.name, server, via: ORIGIN_VIAS.has(e.via) ? e.via : 'dns',
         needsCert: g.needsCert, covered: e.covered ?? null, host: byName.get(e.name), inventoryServer: g.server, through: e.through ?? null,
-        ownPort: e.via === 'known' ? (Number.isInteger(e.port) ? e.port : port) : null }));
+        // the scanner gives a remembered origin it matched its port; one a load balancer passed on
+        // to a backend has none (lib/topology.js applyTopology): the backend's own ports then
+        ownPort: e.via === 'known' && Number.isInteger(e.port) ? e.port : null }));
     }
   }
   const unmatched = (Array.isArray(r.unmatchedIps) ? r.unmatchedIps : []).slice().sort((a, b) => compareIp(a.ip, b.ip));

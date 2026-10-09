@@ -349,6 +349,27 @@ describe('the command the views build (views/subdomains.js) and the Verify pairs
     assert.deepEqual(both.map((p) => [p.key, p.via, p.cliTargets]), [['10.0.0.7|443|shop.example.com', 'dns', ['10.0.0.7:9443', '10.0.0.7']]]);
   });
 
+  test('a remembered origin at its server\'s nat= address: on 443 the CLI card scans the server from inside, as for a DNS pair there; on another port that endpoint', async () => {
+    const LIST = [443, 8443].map((port) => ({ name: 'shop.example.com', ip: '203.0.113.60', port, source: 'cli-json', lastConfirmed: LAST }));
+    const { result } = await scan({ knownOrigins: LIST }, { inventory: 'web01 203.0.113.10\nweb07 10.0.0.8 nat=203.0.113.60' });
+    const web07 = result.servers.find((g) => g.server.name === 'web07');
+    assert.deepEqual(web07.hosts.map((x) => [x.ip, x.port, x.via, x.through]), [['203.0.113.60', 443, 'known', 'nat'], ['203.0.113.60', 8443, 'known', 'nat']]);
+    const pairs = buildVerifyPairs(result).pairs.filter((p) => p.name === 'shop.example.com' && p.server.name === 'web07');
+    assert.deepEqual(pairs.map((p) => [p.key, p.cliTargets]), [['203.0.113.60|443|shop.example.com', ['10.0.0.8']], ['203.0.113.60|8443|shop.example.com', null]]);
+    // Documentation addresses are never sent: both go to the CLI card.
+    assert.deepEqual(cliPlan(pairs.map((p) => ({ ...p, state: 'skipped' }))).targets, ['10.0.0.8', '203.0.113.60:8443']);
+  });
+
+  test('a remembered origin a load balancer passed on: its backend is checked on its own ports, as the inventory wrote them', async () => {
+    const LIST = [{ name: 'shop.example.com', ip: '203.0.113.61', port: 443, source: 'cli-json', lastConfirmed: LAST }];
+    const { result } = await scan({ knownOrigins: LIST }, { inventory: 'web01 203.0.113.10\nlb01 203.0.113.61 terminates_tls=no backends=app01\napp01 10.0.0.21:8443' });
+    const app01 = result.servers.find((g) => g.server.name === 'app01');
+    assert.deepEqual(app01.hosts.map((x) => [x.ip, x.port ?? null, x.via, x.lbs]), [['10.0.0.21', null, 'known', ['lb01']]]);
+    const pairs = buildVerifyPairs(result).pairs.filter((p) => p.name === 'shop.example.com' && p.server.name === 'app01');
+    assert.deepEqual(pairs.map((p) => [p.key, p.server.name, p.cliTargets, p.skip]), [['10.0.0.21|443|shop.example.com', 'app01', ['10.0.0.21:8443'], 'private']]);
+    assert.deepEqual(cliPlan(pairs.map((p) => ({ ...p, state: 'skipped' }))).targets, ['10.0.0.21:8443']);
+  });
+
   test('a remembered origin on an inventory server is an origin pair (opt-in), checked like the zone\'s', async () => {
     const { result } = await scan({ knownOrigins: KNOWN });
     const { pairs } = buildVerifyPairs(result);

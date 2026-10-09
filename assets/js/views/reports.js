@@ -1294,6 +1294,8 @@ let intelDns = null;
 let active = null;
 /** ui/report-history.js once the History tab loaded it (its choices are reset with the reports). */
 let historyModule = null;
+/** The report history text this view wrote last: a change of the part that is not it redraws the switch and the History tab. */
+let historyWritten = null;
 
 /** Forget every report (Forget, another workspace, "Delete all local data"). */
 function resetReports() {
@@ -1313,7 +1315,7 @@ export function mount(container, ctx) {
   const { t, state } = ctx;
   if (!subscribed) {
     subscribed = true;
-    state.subscribe(({ key, value, origin }) => {
+    state.subscribe(({ key, value }) => {
       // The reports are a customer's: another workspace forgets them like "Delete all local data".
       if (key === 'cleared' || key === 'workspace') {
         resetReports();
@@ -1321,8 +1323,9 @@ export function mount(container, ctx) {
         if (rerender) rerender();
       } else if (key === 'inventory' && rerender && S.dmarc) {
         rerender({ keep: true });
-      } else if (key === 'workspaceData' && origin === 'external' && rerender && value && Array.isArray(value.parts) && value.parts.includes('reportHistory')) {
-        // Another tab kept, forgot or switched off the report history: the switch and the History tab follow.
+      } else if (key === 'workspaceData' && rerender && value && Array.isArray(value.parts) && value.parts.includes('reportHistory')
+        && (state.workspaceData('reportHistory') || '') !== historyWritten) {
+        // Another tab kept, forgot or switched off the report history, or a workspace file replaced it: the switch and the History tab follow.
         rerender({ history: true });
       }
     });
@@ -1383,6 +1386,7 @@ export function mount(container, ctx) {
   async function saveHistory(next) {
     const text = historyText(next);
     if (text === (state.workspaceData('reportHistory') || '')) return true;
+    historyWritten = text;
     const done = state.setWorkspaceData('reportHistory', text);
     historyCache = state.workspaceData('reportHistory') === text ? { text, value: next } : { text: null, value: null };
     const ok = await done;

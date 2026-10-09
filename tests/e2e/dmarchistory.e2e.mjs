@@ -566,7 +566,11 @@ async function main() {
       await page.waitFor(() => !!document.querySelector('dialog.modal[open]'), { message: 'the confirmation' });
       assert(/New reports are no longer added/.test(await text(page, 'dialog.modal[open]')), await text(page, 'dialog.modal[open]'));
       await confirmWith(page, 'Stop keeping');
-      await page.waitFor(() => document.querySelector('[data-role="rpt-keep"]')?.checked === false, { message: 'off' });
+      // The switch is unchecked by the click itself: wait for the workspace to say so too (the confirmed save runs a task later).
+      await page.waitFor(async () => {
+        const text = (await import('./assets/js/state.js')).state.workspaceData('reportHistory');
+        return document.querySelector('[data-role="rpt-keep"]')?.checked === false && !!text && JSON.parse(text).keep === false;
+      }, { message: 'off, in the workspace too' });
       assertEqual(await page.evaluate(() => document.activeElement?.dataset.role), 'rpt-keep', 'the focus on the switch');
       const off = JSON.parse(await storedText(page));
       assertEqual([off.keep, JSON.stringify(off.domains) === JSON.stringify(JSON.parse(before).domains)], [false, true], 'off, what is kept stays');

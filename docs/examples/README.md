@@ -148,30 +148,33 @@ yours"). A risk whose lookup gave no answer is carried from the last night that 
 gone. Hosts on a service only its page can tell (S3, GitHub Pages …) are listed "to check": the
 page check stays in the app, behind a click.
 
-**The registration and record change watch.** `watch` is a hijack watch: for each domain of the
-list it reads what the registry says (over RDAP, paced per registry as the audit is) — the
-registrar and its IANA ID, the statuses, the expiry, the name servers — and the DS records at the
-parent, the zone's own NS records, and the record sets of the domain, its `www` and `_dmarc`
-(and with `--names watch-hosts.txt` up to 200 more host names under the domains) of each of
-`--types` (A, AAAA, CNAME, MX, NS, TXT, CAA, SOA, DS, DNSKEY and HTTPS by default). Another
-registrar (`REGISTRAR`), a client or server transfer prohibition removed (`LOCK`), a hold, a
-pending delete, a redemption period or a pending transfer arriving (`STATUS`), other name servers
-(`NS`, the registry's or the zone's), a DS record removed or changed (`DS`), an expiry not renewed
-with less than 30 days left (`EXPIRY`, said once; renewed is good news) and an MX, NS, CAA, SPF or
-DMARC record that changed (`RECORD`) count as bad. An A, AAAA or CNAME change counts as info,
-unless the name moved to another kind of provider — off its CDN to a direct address, or to a
-CNAME that ends nowhere — which is bad. A verification token (`google-site-verification=` …) is
-named by its service, never printed. Not counted: a CDN's edge addresses rotating, a new SOA
-serial (`SERIAL`), a zone-signing key rolling, and a record set that changed 3 times or more in the
-last 7 nights (`FLAPPING`, said once; its later changes are not listed while it keeps changing,
-unless one is bad). With `--authoritative` every name server is asked directly over UDP (and TCP
-when an answer is truncated) on port 53: servers that answer the same SOA serial differently
-(`SYNC`) and servers that answer without authority, REFUSED or SERVFAIL, or not at all (`LAME`)
-count; a secondary still on an older serial is listed. When port 53 is blocked on the runner's
-network the report says so and the record sets come from DoH alone; an IPv6 address the runner
-cannot reach is skipped. `--ttl` compares the TTLs the name servers give too (with
-`--authoritative`: a resolver's cache counts TTLs down). The app's Domain portfolio says the same
-of the registration on its next **Check portfolio**: "Changed since your last check".
+**The registration and record change watch.** `watch` is a hijack watch: for each domain of the list
+it reads what the registry says (over RDAP, paced per registry as the audit is) — the registrar and
+its IANA ID, the statuses, the expiry, the name servers — and the DS records at the parent, the
+zone's own NS records, and the record sets of the domain, its `www` and `_dmarc` (and with `--names
+watch-hosts.txt` up to 200 more host names under the domains) of each of `--types` (A, AAAA, CNAME,
+MX, NS, TXT, CAA, SOA, DS, DNSKEY and HTTPS by default). Another registrar (`REGISTRAR`), a client
+or server transfer prohibition removed (`LOCK`; while another one still blocks transfers it counts
+as info), a hold, a pending delete, a redemption period or a pending transfer arriving (`STATUS`),
+other name servers (`NS`, the registry's or the zone's), a DS record removed or changed (`DS`), an
+expiry not renewed with less than 30 days left (`EXPIRY`, said once; renewed is good news) and an
+MX, NS, CAA, SPF or DMARC record that changed (`RECORD`; a hosted DMARC record too: the policy its
+`_dmarc` CNAME leads to, and that CNAME) count as bad. An A, AAAA or CNAME change counts as info,
+unless the name moved to another kind of provider — off its CDN to a direct address, or to a CNAME
+that ends nowhere — which is bad. A verification token (`google-site-verification=` …) is named by
+its service, never printed. Not counted: a CDN's edge addresses rotating, a new SOA serial
+(`SERIAL`), a zone-signing key rolling, and a record set that changed 3 times or more in the last 7
+nights (`FLAPPING`, said once; its later changes are not listed while it keeps changing, unless one
+is bad). With `--authoritative` every name server is asked directly over UDP (and TCP when an answer
+is truncated) on port 53: servers that answer the same SOA serial differently two nights in a row
+(`SYNC`; other edges of one CDN, or an answer a provider picks per query, as weighted records give,
+are not) and servers that answer without authority, REFUSED or SERVFAIL, or not at all — or stop
+answering after the SOA, then not asked further that night — (`LAME`) count; a secondary still on an
+older serial is listed. When port 53 is blocked on the runner's network the report says so and the
+record sets come from DoH alone; an IPv6 address the runner cannot reach is skipped. `--ttl`
+compares the TTLs the name servers give too (with `--authoritative`: a resolver's cache counts TTLs
+down). The app's Domain portfolio says the same of the registration on its next **Check portfolio**:
+"Changed since your last check".
 
 **Served certificates: the monitor.** `tls` runs when the repository has a `tls-hosts.txt` (a host
 or `host:port` per line). It connects to every address of each host and reads the certificate it

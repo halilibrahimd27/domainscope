@@ -5,13 +5,15 @@
  *   paced per registry as `audit` is): the registrar and its IANA Registrar ID, the statuses, the
  *   expiry, the name servers the registry delegates to, the DS records at the parent (DoH) and the
  *   zone's own NS records;
- * - a snapshot of its records over DoH: the apex, `www`, `_dmarc` (TXT) and the names of `--names`
- *   under it, each of `--types` (SOA, DS and DNSKEY at the apex and at a delegated name only; the
- *   apex's NS and DS are the delegation's), each record set normalised by tools/ds/watchdiff.mjs
- *   rrsetOf (lib/zonediff.js valueKey; a verification token kept as a digest), the SOA as its primary
- *   name server and serial, each address name's provider class (lib/netinfo.js classifyResolution);
+ * - a snapshot of its records over DoH: the apex, `www`, `_dmarc` (its TXT, read where its CNAME chain
+ *   ends — a hosted DMARC record —, and that CNAME) and the names of `--names` under it, each of
+ *   `--types` (SOA, DS and DNSKEY at the apex and at a delegated name only; the apex's NS and DS are
+ *   the delegation's), each record set normalised by tools/ds/watchdiff.mjs rrsetOf (lib/zonediff.js
+ *   valueKey; a verification token kept as a digest), the SOA as its primary name server and serial,
+ *   each address name's provider class (lib/netinfo.js classifyResolution);
  * - with `--authoritative`, every name server asked directly (tools/ds/authoritative.mjs): lame
- *   servers, lagging secondaries, servers out of sync; with `--ttl`, the TTLs they agree on.
+ *   servers, lagging secondaries, servers out of sync — a mismatch confirmed once the next run finds
+ *   it again ({@link syncState}) —; with `--ttl`, the TTLs they agree on.
  * A lookup that failed is carried from the last run that read it (`carried: { from }`), never a
  * change. Each record set keeps the times of its last {@link FLIPS_KEPT} value changes (`flips`) and
  * whether it keeps changing (`flapping`: {@link FLAP_CHANGES} or more in the last {@link FLAP_RUNS}
@@ -24,7 +26,7 @@ import { code, strong, isoDay, isoTime, summaryDoc } from './render.mjs';
 import { targetOf } from './carry.mjs';
 import { UsageError, WATCH_MAX_NAMES } from './args.mjs';
 import {
-  rrsetOf, sameRecord, cdnRotation, recentFlips, recordKey, displayValue, lameWhy, asked as askedIn,
+  rrsetOf, sameRecord, cdnRotation, recentFlips, recordKey, displayValue, lameWhy, asked as askedIn, isDmarcName,
   ZONE_TYPES, FLIPS_KEPT, FLAP_CHANGES, FLAP_RUNS, EXPIRY_SOON_DAYS
 } from './watchdiff.mjs';
 import { isSubdomainOf, parseHostList } from '../../assets/js/lib/domain.js';
@@ -72,7 +74,8 @@ export async function watchInputs(options, { read, warn, skipped }) {
 }
 
 /**
- * The names watched under a domain: the apex, `www`, `_dmarc` (TXT only) and the names given under it.
+ * The names watched under a domain: the apex, `www`, `_dmarc` (its TXT and CNAME only) and the names
+ * given under it.
  * @param {string} domain
  * @param {string[]} extra
  * @returns {string[]}
@@ -113,7 +116,8 @@ const failureOf = (r) => (r && r.ok !== false && r.rcode ? r.rcode : String((r &
 /**
  * Read the record sets of a domain over DoH: each name's types (SOA, DS and DNSKEY at the apex, and
  * at another name once it answers NS records of its own — a delegation), the apex's NS and DS left to
- * the delegation.
+ * the delegation; `_dmarc.<domain>` its TXT and CNAME, with TXT among the types. A DMARC name's TXT
+ * set is the one where its CNAME chain ends (a hosted DMARC record: the policy at the vendor's).
  * @param {string} domain
  * @param {string[]} names {@link watchNames}
  * @param {string[]} types `--types`
@@ -145,12 +149,13 @@ export async function readRecords(domain, names, types, { dns, signal }) {
     }
     if (!nx.has(name)) nx.set(name, true);
     if (r.rcode !== 'NXDOMAIN') nx.set(name, false);
-    const set = rrsetOf(name, type, r.answers);
+    const set = rrsetOf(name, type, r.answers, { follow: type === 'TXT' && isDmarcName(name) });
     if (set.values.length) sets.set(recordKey(name, type), { name, type, values: set.values, ...(type === 'SOA' ? { serial: set.serial } : {}) });
   };
   const delegated = [];
   await Promise.all(names.map(async (name) => {
-    const own = name === `_dmarc.${domain}` ? types.filter((t) => t === 'TXT')
+    // _dmarc: the TXT, and the CNAME a hosted DMARC record is reached by (asked with it, whatever --types)
+    const own = name === `_dmarc.${domain}` ? (types.includes('TXT') ? ['TXT', 'CNAME'] : [])
       : types.filter((t) => (name === domain ? t !== 'NS' && t !== 'DS' : !ZONE_TYPES.includes(t)));
     // a name with NS records of its own is a delegation: its SOA, DS and DNSKEY are asked too
     await Promise.all(own.map((t) => ask(name, t)));
@@ -242,6 +247,40 @@ export function delegationPart(facts, prev, prevFrom) {
   return out;
 }
 
+/** A mismatch's shape: each server's values, in one order. */
+const shapeOf = (servers) => JSON.stringify(Object.entries(isObj(servers) ? servers : {})
+  .map(([address, values]) => [address, (Array.isArray(values) ? values : []).map(String).sort()]).sort(([x], [y]) => x.localeCompare(y)));
+
+/**
+ * The name servers asked directly, with the record sets out of sync followed from run to run (SYNC):
+ * each mismatch has `since`, the run that first found every server answering it as now, and is
+ * `confirmed` once the next run finds it so again — an answer a provider picks per query (weighted or
+ * multivalue records) is rarely found twice in a row, a server out of sync always is — or when it was
+ * confirmed in the last run and the servers still disagree (tools/ds/watchdiff.mjs says SYNC once,
+ * when it is confirmed). A mismatch this run did not compare — over the budget, fewer than two
+ * servers answering it, the name servers not asked at all — is carried from the last run.
+ * @param {object} auth tools/ds/authoritative.mjs checkAuthoritative's result
+ * @param {object|null} prev the baseline's target
+ * @param {{ at: string, prevFrom: string|null }} opts `at`: this run's time; `prevFrom`: when the baseline was read
+ * @returns {object} `auth` with its mismatches so marked
+ */
+export function syncState(auth, prev, { at, prevFrom }) {
+  const p = prev && isObj(prev.authoritative) ? prev.authoritative : null;
+  const before = new Map((p && Array.isArray(p.mismatches) ? p.mismatches : []).filter((m) => isObj(m) && isStr(m.key)).map((m) => [m.key, m]));
+  const compared = new Set(auth.view === 'authoritative' && Array.isArray(auth.compared) ? auth.compared : []);
+  const mismatches = (Array.isArray(auth.mismatches) ? auth.mismatches : []).map((m) => {
+    const was = before.get(m.key);
+    const same = !!was && shapeOf(was.servers) === shapeOf(m.servers);
+    return { ...m, since: same && isStr(was.since) ? was.since : at, ...(same || (was && was.confirmed === true) ? { confirmed: true } : {}) };
+  });
+  const now = new Set(mismatches.map((m) => m.key));
+  for (const [key, was] of before) {
+    if (now.has(key) || compared.has(key)) continue;
+    mismatches.push({ ...was, carried: { from: isObj(was.carried) ? was.carried.from ?? null : prevFrom } });
+  }
+  return { ...auth, mismatches };
+}
+
 /**
  * One domain's report target: the registration and delegation, the record sets — with what a failed
  * lookup hides carried from the baseline, each set's flips and flapping marker —, the names' provider
@@ -307,7 +346,7 @@ export function watchTarget(domain, { facts, read, auth = null, names, types }, 
       ...(recent >= FLAP_CHANGES ? { flapping: true } : {})
     });
   }
-  if (auth) x.authoritative = auth;
+  if (auth) x.authoritative = syncState(auth, prev, { at, prevFrom });
   return x;
 }
 
@@ -385,21 +424,27 @@ export function authoritativeLines(a) {
   const ok = servers.filter((s) => s.status === 'ok');
   const skipped = servers.filter((s) => s.status === 'skipped');
   const lagging = new Set(Array.isArray(a.lagging) ? a.lagging : []);
-  const mismatches = Array.isArray(a.mismatches) ? a.mismatches : [];
-  const state = mismatches.length ? `${plural(mismatches.length, 'record set')} answered differently` : lagging.size ? `${lagging.size} behind` : 'in sync';
+  const mismatches = (Array.isArray(a.mismatches) ? a.mismatches : []).filter((m) => isObj(m) && isStr(m.key));
+  const compared = Array.isArray(a.compared) ? a.compared : [];
+  const state = mismatches.length ? `${plural(mismatches.length, 'record set')} answered differently` : lagging.size ? `${lagging.size} behind`
+    : compared.length ? 'in sync' : ok.length < 2 ? 'nothing to compare (fewer than two servers answer)' : 'no record set compared';
   lines.push([`Name servers asked directly: ${plural(ok.length, 'server')} answer${ok.length === 1 ? 's' : ''} for the zone`, Number.isFinite(a.serial) ? `, serial ${a.serial}` : '', `, ${state}`,
     skipped.length ? ` (${plural(skipped.length, 'IPv6 address', 'IPv6 addresses')} skipped: no IPv6 route from this machine)` : '']);
   for (const s of servers.filter((x) => x.status === 'lame' || x.status === 'unreachable').slice(0, MAX_NAMES)) {
-    lines.push([strong('Lame:'), ' ', code(s.hosts && s.hosts[0] ? `${s.hosts[0]} (${s.address})` : s.address), `: ${lameWhy(s.reason)}`]);
+    lines.push([strong('Lame:'), ' ', code(s.hosts && s.hosts[0] ? `${s.hosts[0]} (${s.address})` : s.address), `: ${lameWhy(s.reason)}`,
+      s.reason === 'unanswered' && isStr(s.error) ? ` (${cleanText(s.error)})` : '']);
   }
   for (const s of servers.filter((x) => lagging.has(x.address)).slice(0, MAX_NAMES)) {
     lines.push([strong('Lagging secondary:'), ' ', code(s.hosts && s.hosts[0] ? `${s.hosts[0]} (${s.address})` : s.address), `: serial ${s.serial ?? '?'}`]);
   }
   for (const m of mismatches.slice(0, MAX_NAMES)) {
     const [name, type] = m.key.split('|');
-    const groups = Object.entries(m.servers || {});
+    const groups = Object.entries(isObj(m.servers) ? m.servers : {});
+    // said (SYNC) once the next run finds the same: an answer a provider picks per query rarely is
+    const note = m.carried ? ` (carried from ${isoDay(m.carried.from) || 'an earlier run'}: not compared this run)`
+      : !m.confirmed ? ' (new this run: counted if the next run finds the same)' : '';
     lines.push([strong('Out of sync:'), ' ', code(`${name} ${type}`), ': ', ...groups.slice(0, 3).flatMap(([address, values], i) => [i ? '; ' : '', code(address), ' ',
-      ...namesParts((values || []).map((v) => displayValue(type, v)), 3)])]);
+      ...namesParts((Array.isArray(values) ? values : []).map((v) => displayValue(type, v)), 3)]), note]);
   }
   if (a.cut) lines.push([`${plural(a.cut, 'record set')} not asked of the name servers: over the query budget (--max-queries)`]);
   return lines;

@@ -7,16 +7,18 @@
  * reports, never over a registration a run could not read — it was carried):
  * - REGISTRAR (bad): another registrar by its IANA ID (its name alone without one); the same ID under
  *   another name is info;
- * - LOCK: a client or server transfer prohibition removed (bad), added (good);
+ * - LOCK: a client or server transfer prohibition removed (bad; info while another one still blocks
+ *   transfers, which it names), added (good);
  * - STATUS: a hold, a pending delete, a redemption period or a pending transfer arriving (bad), the
  *   registry no longer holding the domain (bad); any other status added or removed (info);
  * - NS (bad): the registry's name servers (RDAP) or the zone's (its NS records) changed;
  * - DS: removed or changed (bad), added (info);
  * - EXPIRY: moved later (good: renewed), earlier (info); not moved with fewer than
  *   {@link EXPIRY_SOON_DAYS} days left (bad), said once (the report's `registration.soon`).
- * Per record set (apex, www, `_dmarc` and `--names`, each of `--types`; the apex's NS and DS are the
- * delegation's), RECORD:
- * - MX, NS, CAA, the SPF TXT (v=spf1) and the DMARC TXT (v=DMARC1 at `_dmarc.`): bad;
+ * Per record set (apex, www, `_dmarc` — its TXT and its CNAME — and `--names`, each of `--types`; the
+ * apex's NS and DS are the delegation's), RECORD:
+ * - MX, NS, CAA, the SPF TXT (v=spf1), the DMARC TXT (v=DMARC1 at `_dmarc.`, read where its CNAME
+ *   chain ends: a hosted DMARC record) and the CNAME at `_dmarc.` (who publishes the policy): bad;
  * - A, AAAA and CNAME: info, unless the name's provider class (lib/netinfo.js classifyResolution:
  *   Cloudflare, a CDN, a platform, a direct address, a CNAME left dangling) changed: bad; an A / AAAA
  *   set whose old and new addresses are all edges of one CDN is quiet (listed, not counted);
@@ -28,16 +30,19 @@
  *   {@link FLAP_RUNS} runs (its `flips`) is said once (quiet) and its info changes are not listed while
  *   it keeps changing — a bad one always is.
  * With `--authoritative` (tools/ds/authoritative.mjs), both runs having asked the name servers:
- * - SYNC: servers at the same SOA serial answer a record set differently (bad), and agree again
- *   (good); a server behind the others' serial, a lagging secondary (info, listed only);
- * - LAME: a server that answers without authority, REFUSED, SERVFAIL or not at all (bad), and that
- *   answers with authority again (good).
+ * - SYNC: servers at the same SOA serial answer a record set differently (bad) — said once two runs
+ *   in a row found every server answering it as before (the report's `confirmed`, tools/ds/watch.mjs
+ *   syncState: an answer a provider picks per query is rarely found twice), and while they disagree
+ *   not again —, and agree again (good; only where this run compared the set); a server behind the
+ *   others' serial, a lagging secondary (info, listed only);
+ * - LAME: a server that answers without authority, REFUSED, SERVFAIL or not at all, or that stopped
+ *   answering after its SOA (bad), and that answers with authority again (good).
  * A lookup that failed is never a change: the report carries its last read (tools/ds/watch.mjs).
  */
 
 import { createHash } from 'node:crypto';
 import { code } from './render.mjs';
-import { diffRegistration } from '../../assets/js/lib/regwatch.js';
+import { diffRegistration, TRANSFER_LOCK_STATUSES } from '../../assets/js/lib/regwatch.js';
 import { matchProviderByIP } from '../../assets/js/lib/netinfo.js';
 import { TXT_VENDORS, txtVendorOf } from '../../assets/js/lib/passport.js';
 import { valueKey, canonicalName } from '../../assets/js/lib/zonediff.js';
@@ -72,6 +77,10 @@ const isStrList = (v) => Array.isArray(v) && v.every(isStr);
 
 /** A record set's key: 'name|TYPE'. */
 export const recordKey = (name, type) => `${name}|${type}`;
+/** Is a name a DMARC record's (`_dmarc.`)? Its TXT is read where its CNAME chain ends, its CNAME said as DMARC. */
+export const isDmarcName = (name) => /^_dmarc\./.test(String(name));
+/** CNAME hops followed in an answer before a chain counts as ending nowhere (a loop). */
+const MAX_CHAIN = 8;
 
 /**
  * One record's value as the report keeps it: lib/zonediff.js valueKey (TXT joined and compared by
@@ -98,16 +107,36 @@ export function recordValue(type, rr) {
 }
 
 /**
+ * Where the CNAME chain from `name` ends in an answer, or null for a loop.
+ * @param {string} name canonical
+ * @param {object[]} answers lib/dnswire.js RRs
+ * @returns {string|null}
+ */
+function chainEnd(name, answers) {
+  const next = new Map(answers.filter((rr) => rr && rr.type === 'CNAME').map((rr) => [canonicalName(rr.name), canonicalName(String(rr.data ?? ''))]));
+  let at = name;
+  for (let hop = 0; hop <= MAX_CHAIN; hop += 1) {
+    if (!next.has(at)) return at;
+    at = next.get(at);
+  }
+  return null;
+}
+
+/**
  * The record set of `name` and `type` in an answer: its own records only (a CNAME's target's are
  * another name's), each value once, sorted ({@link recordValue}); the SOA as its primary name server,
- * its serial apart; the smallest TTL.
+ * its serial apart; the smallest TTL. With `follow` (a DMARC TXT: {@link isDmarcName}), the records
+ * of `type` where the name's CNAME chain ends in the answer — a hosted DMARC record's policy.
  * @param {string} name canonical
  * @param {string} type
  * @param {object[]} answers lib/dnswire.js RRs
+ * @param {{ follow?: boolean }} [opts]
  * @returns {{ values: string[], serial?: number, ttl: number|null }}
  */
-export function rrsetOf(name, type, answers) {
-  const own = (Array.isArray(answers) ? answers : []).filter((rr) => rr && rr.type === type && canonicalName(rr.name) === name);
+export function rrsetOf(name, type, answers, { follow = false } = {}) {
+  const list = Array.isArray(answers) ? answers : [];
+  const owner = follow && type !== 'CNAME' ? chainEnd(name, list) : name;
+  const own = list.filter((rr) => rr && rr.type === type && owner !== null && canonicalName(rr.name) === owner);
   const ttls = own.map((rr) => rr.ttl).filter(Number.isFinite);
   const ttl = ttls.length ? Math.min(...ttls) : null;
   if (!own.length) return { values: [], ttl };
@@ -153,7 +182,7 @@ export function txtKind(name, value) {
   if (token) return `token:${token[1]}`;
   const text = (txtText(value) || '').trim();
   if (/^v=spf1(?:\s|$)/i.test(text)) return 'spf';
-  if (/^v=DMARC1\b/i.test(text) && /^_dmarc\./.test(name)) return 'dmarc';
+  if (/^v=DMARC1\b/i.test(text) && isDmarcName(name)) return 'dmarc';
   return 'other';
 }
 
@@ -243,14 +272,14 @@ function classText(c) {
 
 /**
  * Is a record set's change bad, info or quiet (before the flapping rule)? `kind` is a TXT value
- * group's ({@link txtKind}).
+ * group's ({@link txtKind}), or 'dmarc' for the CNAME at a `_dmarc.` name (where the policy is read).
  * @param {{ type: string, kind?: string|null, before: string[], after: string[],
  *   classBefore?: string|null, classAfter?: string|null }} c
  * @returns {{ tone: 'bad'|'info'|'quiet', why: string|null }} `why`: 'class' | 'cdn' | 'zsk' | 'ds' | null
  */
 export function recordTone({ type, kind = null, before, after, classBefore = null, classAfter = null }) {
-  if (BAD_TYPES.has(type)) return { tone: 'bad', why: null };
-  if (type === 'TXT') return { tone: kind === 'spf' || kind === 'dmarc' ? 'bad' : 'info', why: null };
+  if (BAD_TYPES.has(type) || kind === 'dmarc') return { tone: 'bad', why: null };
+  if (type === 'TXT') return { tone: kind === 'spf' ? 'bad' : 'info', why: null };
   if (type === 'DS') {
     const a = new Set(after);
     return before.some((v) => !a.has(v)) ? { tone: 'bad', why: 'ds' } : { tone: 'info', why: null };
@@ -286,17 +315,19 @@ export function recentFlips(flips, runs) {
 }
 
 /**
- * Was a record set asked in a report: its name and type among those asked, `_dmarc.` for TXT only,
- * the apex's NS and DS never (the delegation's), SOA, DS and DNSKEY at the apex and at a delegation.
+ * Was a record set asked in a report: its name and type among those asked, `_dmarc.` for its TXT and
+ * the CNAME a hosted DMARC record is reached by (asked with the TXT, whatever the types), the apex's
+ * NS and DS never (the delegation's), SOA, DS and DNSKEY at the apex and at a delegation.
  * @param {object} x a watch target
  * @param {string} name
  * @param {string} type
  * @returns {boolean}
  */
 export function asked(x, name, type) {
-  if (!isStrList(x.names) || !isStrList(x.types) || !x.names.includes(name) || !x.types.includes(type)) return false;
+  if (!isStrList(x.names) || !isStrList(x.types) || !x.names.includes(name)) return false;
+  if (name === `_dmarc.${x.target}`) return x.types.includes('TXT') && (type === 'TXT' || type === 'CNAME');
+  if (!x.types.includes(type)) return false;
   if (name === x.target) return type !== 'NS' && type !== 'DS';
-  if (name === `_dmarc.${x.target}`) return type === 'TXT';
   return !ZONE_TYPES.includes(type) || (isStrList(x.delegated) && x.delegated.includes(name));
 }
 
@@ -424,10 +455,13 @@ function diffRegistrationPart(domain, b, a) {
       { tone: 'quiet', counts: false }));
   }
   // the DS records come from DNS: compared on a night the registry could not be read too
+  const statusesA = ra && isStrList(ra.statuses) ? ra.statuses : [];
   for (const c of diffRegistration(regSnapshot(b), regSnapshot(a, { current: true }))) {
     const registrar = c.code === 'registrar' || c.code === 'registrar-name';
-    out.push(change(REG_TAGS[c.code] || 'STATUS', domain, regItem(c), regWords(c), {
-      tone: c.tone, kind: c.code === 'unregistered' ? 'disappeared' : 'changed',
+    // a transfer prohibition removed while another still blocks transfers: info, naming that one
+    const still = c.code === 'lock-removed' ? TRANSFER_LOCK_STATUSES.filter((s) => statusesA.includes(s)) : [];
+    out.push(change(REG_TAGS[c.code] || 'STATUS', domain, regItem(c), still.length ? [code(c.item), ' removed; ', code(still[0]), ' still blocks transfers'] : regWords(c), {
+      tone: still.length ? 'info' : c.tone, kind: c.code === 'unregistered' ? 'disappeared' : 'changed',
       before: registrar ? c.before.name : c.before, after: registrar ? c.after.name : c.after
     }));
   }
@@ -456,7 +490,8 @@ const recordsOf = (x) => new Map((Array.isArray(x.records) ? x.records : []).fil
  * @returns {Array<{ kind: string|null, b: string[], a: string[] }>}
  */
 function valueGroups(name, type, before, after) {
-  if (type !== 'TXT') return [{ kind: null, b: before, a: after }];
+  // the CNAME a hosted DMARC record is reached by: said as DMARC
+  if (type !== 'TXT') return [{ kind: type === 'CNAME' && isDmarcName(name) ? 'dmarc' : null, b: before, a: after }];
   return [...new Set([...before, ...after].map((v) => txtKind(name, v)))].sort().map((kind) => ({
     kind, b: before.filter((v) => txtKind(name, v) === kind), a: after.filter((v) => txtKind(name, v) === kind)
   })).filter((g) => g.b.join('\n') !== g.a.join('\n'));
@@ -472,7 +507,7 @@ function recordLines(domain, rec, y, x, { classBefore, classAfter, flapping }) {
   for (const g of valueGroups(name, type, (y && y.values) || [], (x && x.values) || [])) {
     const { tone, why } = recordTone({ type, kind: g.kind, before: g.b, after: g.a, classBefore, classAfter });
     if (flapping && tone !== 'bad') continue;
-    const item = g.kind && g.kind !== 'other' ? `${rec.key}|${g.kind}` : rec.key;
+    const item = type === 'TXT' && g.kind && g.kind !== 'other' ? `${rec.key}|${g.kind}` : rec.key;
     const label = g.kind === 'spf' ? ' (SPF)' : g.kind === 'dmarc' ? ' (DMARC)' : '';
     const words = !g.b.length ? ['added ', ...valuesParts(type, g.a)]
       : !g.a.length ? ['removed ', ...valuesParts(type, g.b)]
@@ -540,7 +575,7 @@ const serverParts = (s) => [...((s.hosts || []).length ? [code(s.hosts[0]), ' ('
 /** Why a server is lame, in words. */
 const LAME_WHY = Object.freeze({
   'no-aa': 'it answers without authority for the zone', refused: 'it answers REFUSED', servfail: 'it answers SERVFAIL', 'no-answer': 'no answer over UDP or TCP',
-  'no-soa': 'it has no SOA for the zone'
+  'no-soa': 'it has no SOA for the zone', unanswered: 'it leaves questions without an answer over UDP and TCP: not asked further this run'
 });
 export const lameWhy = (reason) => LAME_WHY[reason] || (isStr(reason) ? `it answers ${reason}` : 'it does not answer for the zone');
 
@@ -558,10 +593,10 @@ function diffAuthoritativePart(domain, b, a) {
     }
     return out;
   }
-  if (pb.view !== 'authoritative') return out;
-  const serversB = new Map((pb.servers || []).filter(isObj).map((s) => [s.address, s]));
+  const both = pb.view === 'authoritative';
+  const serversB = new Map((both ? pb.servers || [] : []).filter(isObj).map((s) => [s.address, s]));
   const lame = (s) => s && (s.status === 'lame' || s.status === 'unreachable');
-  for (const s of (pa.servers || []).filter(isObj)) {
+  for (const s of (both ? pa.servers || [] : []).filter(isObj)) {
     const p = serversB.get(s.address);
     if (s.status === 'skipped' || (p && p.status === 'skipped')) continue;
     if (lame(s) && !lame(p)) {
@@ -570,25 +605,28 @@ function diffAuthoritativePart(domain, b, a) {
       out.push(change('LAME', domain, s.address, [...serverParts(s), ': answers with authority again'], { tone: 'good', before: p.reason || p.status, after: 'ok' }));
     }
   }
-  const mismatched = (p) => new Map((p.mismatches || []).filter(isObj).map((m) => [m.key, m]));
+  // SYNC from the mismatches' states (tools/ds/watch.mjs syncState), which a run that could not ask
+  // the name servers carried: said when confirmed, its end when this run compared the set again
+  const mismatched = (p) => new Map((Array.isArray(p.mismatches) ? p.mismatches : []).filter((m) => isObj(m) && isStr(m.key)).map((m) => [m.key, m]));
   const mb = mismatched(pb);
   const ma = mismatched(pa);
   for (const [key, m] of ma) {
-    if (mb.has(key)) continue;
+    if (!m.confirmed || (mb.has(key) && mb.get(key).confirmed)) continue;
     const [name, type] = key.split('|');
     const groups = Object.entries(isObj(m.servers) ? m.servers : {});
     const shown = groups.slice(0, 3).flatMap(([address, values], i) => [i ? '; ' : '', code(address), ' ', ...valuesParts(type, Array.isArray(values) ? values : [])]);
     out.push(change('SYNC', domain, key, [code(`${name} ${type}`), `: the name servers answer it differently at serial ${pa.serial ?? '?'}: `, ...shown],
       { tone: 'bad', after: groups.length }));
   }
+  // only where this run compared the set: nothing compared (the budget, lame servers) is not "agree"
   const comparedA = new Set(isStrList(pa.compared) ? pa.compared : []);
-  for (const [key] of mb) {
-    if (ma.has(key) || (comparedA.size && !comparedA.has(key))) continue;
+  for (const [key, m] of mb) {
+    if (!m.confirmed || ma.has(key) || !comparedA.has(key)) continue;
     const [name, type] = key.split('|');
     out.push(change('SYNC', domain, key, [code(`${name} ${type}`), ': the name servers agree again'], { tone: 'good', before: 'mismatch', after: 'ok' }));
   }
-  const lagB = new Set(isStrList(pb.lagging) ? pb.lagging : []);
-  for (const address of isStrList(pa.lagging) ? pa.lagging : []) {
+  const lagB = new Set(both && isStrList(pb.lagging) ? pb.lagging : []);
+  for (const address of both && isStrList(pa.lagging) ? pa.lagging : []) {
     if (lagB.has(address)) continue;
     const s = (pa.servers || []).find((x) => isObj(x) && x.address === address) || { address };
     out.push(change('SYNC', domain, address, [...serverParts(s), `: a lagging secondary (serial ${s.serial ?? '?'}, the others ${pa.serial ?? '?'})`],

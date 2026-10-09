@@ -10,15 +10,23 @@
  * - Each question goes over UDP (node:dgram, EDNS0 with a 1,232-byte payload, the DO bit for DS and
  *   DNSKEY, recursion not desired), and over TCP (node:net, the 2-byte length prefix) when the answer
  *   is truncated (TC=1) or UDP got no answer: {@link AUTH_TIMEOUT_MS} per attempt, {@link AUTH_TRIES}
- *   attempts per transport, {@link AUTH_CONCURRENCY} servers in flight. The wire format is
- *   lib/dnswire.js encodeQuery / decodeMessage; an answer counts only with the query's id and question.
+ *   attempt per transport (TCP retransmits on its own), {@link AUTH_CONCURRENCY} servers in flight.
+ *   The wire format is lib/dnswire.js encodeQuery / decodeMessage; an answer counts only with the
+ *   query's id and question.
  * - Each server is asked the zone's SOA first: no AA, REFUSED or SERVFAIL is lame, no answer over UDP
  *   and TCP unreachable; then the record sets of the DoH snapshot (the apex's DS is the parent's, a
- *   delegated name's are the child's: neither is asked), within `maxQueries` per domain.
+ *   delegated name's are the child's: neither is asked), within `maxQueries` per domain. A server
+ *   that leaves {@link AUTH_GIVE_UP} of them without an answer over UDP and TCP (an outage mid-run, a
+ *   firewall dropping a type) is not asked further this run: unreachable (`unanswered`), so a server
+ *   gone silent costs seconds, not hours; one whose UDP goes unanswered {@link AUTH_GIVE_UP} times in
+ *   a row while TCP answers is asked over TCP alone.
  * - When neither of the first two servers answers over UDP or TCP (port 53 blocked on this network),
  *   nothing more is asked: the view is 'recursive' (the DoH snapshot alone).
- * - The servers at the highest serial are compared record set by record set (the values, and the TTL
- *   with --ttl): a set they answer differently is a mismatch; a server below that serial lags.
+ * - The servers at the highest serial are compared record set by record set where two of them or more
+ *   answered it (the values, and the TTL with --ttl): a set they answer differently is a mismatch —
+ *   but an A / AAAA set whose addresses are all edges of one CDN (tools/ds/watchdiff.mjs cdnRotation
+ *   over every server's), which a CDN or a provider picking answers per query hands out; a server
+ *   below that serial lags.
  */
 
 import dgram from 'node:dgram';
@@ -26,12 +34,17 @@ import net from 'node:net';
 import { randomInt } from 'node:crypto';
 import { encodeQuery, decodeMessage } from '../../assets/js/lib/dnswire.js';
 import { createLimiter, throwIfAborted, AbortError } from '../../assets/js/lib/util.js';
-import { rrsetOf, recordKey } from './watchdiff.mjs';
+import { rrsetOf, recordKey, cdnRotation } from './watchdiff.mjs';
 
 /** Time for one attempt over UDP or TCP. */
 export const AUTH_TIMEOUT_MS = 3000;
-/** Attempts per transport. */
-export const AUTH_TRIES = 2;
+/** Attempts per transport: one over UDP, then one over TCP. */
+export const AUTH_TRIES = 1;
+/**
+ * Questions a server may leave without an answer over UDP and TCP before it is not asked further this
+ * run; as many UDP losses in a row (TCP answering) and it is asked over TCP alone.
+ */
+export const AUTH_GIVE_UP = 3;
 /** Servers asked at once. */
 export const AUTH_CONCURRENCY = 4;
 /** The EDNS UDP payload size asked for (the DNS Flag Day 2020 value). */
@@ -148,12 +161,12 @@ function tcpOnce({ address, port, query, id, name, type, timeoutMs, connect, sig
 /**
  * Ask one server one question: UDP, then TCP when the answer is truncated or UDP got none.
  * @param {{ address: string, port?: number, name: string, type: string, timeoutMs?: number, tries?: number,
- *   transport?: { createSocket?: Function, connect?: Function }, signal?: AbortSignal }} opts `transport`:
- *   node:dgram's createSocket and node:net's connect (tests)
- * @returns {Promise<{ ok: true, message: object, transport: 'udp'|'tcp' } | { ok: false, skipped?: 'no-ipv6-route', error: string }>}
- *   rejects only on an abort
+ *   udp?: boolean, transport?: { createSocket?: Function, connect?: Function }, signal?: AbortSignal }} opts
+ *   `udp: false`: TCP alone; `transport`: node:dgram's createSocket and node:net's connect (tests)
+ * @returns {Promise<{ ok: true, message: object, transport: 'udp'|'tcp', udpLost?: true } | { ok: false, skipped?: 'no-ipv6-route', error: string }>}
+ *   `udpLost`: TCP answered what UDP did not (no answer, not a truncated one); rejects only on an abort
  */
-export async function askServer({ address, port = DNS_PORT, name, type, timeoutMs = AUTH_TIMEOUT_MS, tries = AUTH_TRIES, transport = {}, signal }) {
+export async function askServer({ address, port = DNS_PORT, name, type, timeoutMs = AUTH_TIMEOUT_MS, tries = AUTH_TRIES, udp = true, transport = {}, signal }) {
   throwIfAborted(signal);
   const family = net.isIP(address);
   const id = randomInt(0, 0x10000);
@@ -163,7 +176,7 @@ export async function askServer({ address, port = DNS_PORT, name, type, timeoutM
   const base = { address, port, family, query, id, name, type, timeoutMs, signal };
   let why = 'no answer over UDP';
   let truncated = false;
-  for (let i = 0; i < tries && !truncated; i += 1) {
+  for (let i = 0; udp && i < tries && !truncated; i += 1) {
     const r = await udpOnce({ ...base, createSocket });
     if (r.message) {
       if (!r.message.flags.tc) return { ok: true, message: r.message, transport: 'udp' };
@@ -176,9 +189,9 @@ export async function askServer({ address, port = DNS_PORT, name, type, timeoutM
   }
   for (let i = 0; i < tries; i += 1) {
     const r = await tcpOnce({ ...base, connect });
-    if (r.message) return { ok: true, message: r.message, transport: 'tcp' };
+    if (r.message) return { ok: true, message: r.message, transport: 'tcp', ...(udp && !truncated ? { udpLost: true } : {}) };
     if (r.code && NO_ROUTE.has(r.code) && family === 6) return { ok: false, skipped: 'no-ipv6-route', error: 'no IPv6 route from this machine' };
-    why = `${truncated ? 'truncated over UDP; ' : `${why}; `}TCP: ${r.timeout ? 'no answer' : r.error}`;
+    why = `${truncated ? 'truncated over UDP; ' : udp ? `${why}; ` : ''}TCP: ${r.timeout ? 'no answer' : r.error}`;
   }
   return { ok: false, error: why };
 }
@@ -241,12 +254,13 @@ export function askedOfServers(zone, keys, delegated = []) {
  * @property {'authoritative'|'recursive'|'none'} view 'recursive': the first two servers did not answer
  *   over UDP or TCP (port 53 blocked here): nothing else was asked; 'none': no server address
  * @property {Array<{ address: string, family: number, hosts: string[], status: 'ok'|'lame'|'unreachable'|'skipped',
- *   reason: string|null, serial: number|null, transport: 'udp'|'tcp'|null }>} servers
+ *   reason: string|null, serial: number|null, transport: 'udp'|'tcp'|null, error?: string }>} servers `reason`
+ *   'unanswered': it answered its SOA, then left {@link AUTH_GIVE_UP} questions without an answer (`error` names them)
  * @property {number|null} serial the highest serial a server answered
  * @property {string[]} lagging the servers below it
  * @property {Array<{ key: string, servers: Record<string, string[]> }>} mismatches the record sets the servers at that
  *   serial answer differently, each server's values
- * @property {string[]} compared the record sets compared
+ * @property {string[]} compared the record sets compared: two servers or more at that serial answered them
  * @property {Record<string, number>} ttls the TTL the servers at that serial agree on, per record set (--ttl)
  * @property {number} queries questions sent
  * @property {number} cut record sets not asked: past the budget
@@ -269,9 +283,9 @@ export async function checkAuthoritative(zone, {
   const result = { view: 'none', servers: [], serial: null, lagging: [], mismatches: [], compared: [], ttls: {}, queries: 0, cut: 0, unresolved };
   if (!found.length) return result;
   const portOf = (address) => (typeof port === 'function' ? port(address) : port);
-  const ask = (s, name, type) => {
+  const ask = (s, name, type, { udp = true } = {}) => {
     result.queries += 1;
-    return askServer({ address: s.address, port: portOf(s.address), name, type, timeoutMs, tries, transport, signal });
+    return askServer({ address: s.address, port: portOf(s.address), name, type, timeoutMs, tries, udp, transport, signal });
   };
   const servers = found.map((s) => ({ ...s, status: 'pending', reason: null, serial: null, transport: null }));
   /** The zone's SOA from one server: ok with its serial, lame, unreachable, or skipped (no IPv6 route). */
@@ -307,9 +321,23 @@ export async function checkAuthoritative(zone, {
   result.cut = sets.length - asked.length;
   const answersOf = new Map(live.map((s) => [s.address, new Map()]));
   await Promise.all(live.map((s) => limit.run(async () => {
+    const unanswered = [];
+    let udpLost = 0;
     for (const k of asked) {
-      const r = await ask(s, k.name, k.type);
-      if (!r.ok || (r.message.rcodeName !== 'NOERROR' && r.message.rcodeName !== 'NXDOMAIN')) continue;
+      const r = await ask(s, k.name, k.type, { udp: udpLost < AUTH_GIVE_UP });
+      if (!r.ok) {
+        // silent after its SOA (an outage mid-run, a firewall dropping a type): not asked further
+        unanswered.push(`${k.name} ${k.type}`);
+        if (unanswered.length >= AUTH_GIVE_UP) {
+          Object.assign(s, { status: 'unreachable', reason: 'unanswered', error: `no answer over UDP or TCP to ${unanswered.join(', ')}` });
+          break;
+        }
+        continue;
+      }
+      // UDP lost again and again, TCP answering (UDP 53 filtered on the way): TCP alone from then on
+      if (r.udpLost) udpLost += 1;
+      else if (r.transport === 'udp') udpLost = 0;
+      if (r.message.rcodeName !== 'NOERROR' && r.message.rcodeName !== 'NXDOMAIN') continue;
       const set = rrsetOf(k.name, k.type, r.message.answers);
       answersOf.get(s.address).set(recordKey(k.name, k.type), set);
     }
@@ -322,14 +350,19 @@ export async function checkAuthoritative(zone, {
   const current = live.filter((s) => s.serial === top);
   result.serial = top;
   result.lagging = live.filter((s) => Number.isFinite(s.serial) && s.serial < top).map((s) => s.address);
-  result.compared = asked.map((k) => recordKey(k.name, k.type));
-  for (const key of result.compared) {
+  for (const k of asked) {
+    const key = recordKey(k.name, k.type);
     const seen = current.map((s) => [s.address, answersOf.get(s.address).get(key)]).filter(([, set]) => set);
     if (!seen.length) continue;
-    const sig = (set) => `${set.values.join('\n')}${ttl ? `|${set.ttl}` : ''}`;
-    if (new Set(seen.map(([, set]) => sig(set))).size > 1) {
-      // a server's TTL is said only where the TTLs differ (--ttl)
-      const ttlsDiffer = ttl && new Set(seen.map(([, set]) => set.ttl)).size > 1;
+    // one server's answer is compared with nothing (its TTL is still the one the servers give)
+    if (seen.length > 1) result.compared.push(key);
+    // the edges of one CDN, handed out per query or per server: the same set
+    const union = [...new Set(seen.flatMap(([, set]) => set.values))];
+    const edges = seen.every(([, set]) => set.values.length) && !!cdnRotation(k.type, union, union);
+    const valuesDiffer = !edges && new Set(seen.map(([, set]) => set.values.join('\n'))).size > 1;
+    // a server's TTL is said only where the TTLs differ (--ttl)
+    const ttlsDiffer = ttl && new Set(seen.map(([, set]) => set.ttl)).size > 1;
+    if (valuesDiffer || ttlsDiffer) {
       result.mismatches.push({ key, servers: Object.fromEntries(seen.map(([address, set]) => [address, ttlsDiffer ? [...set.values, `TTL ${set.ttl}`] : set.values])) });
     } else if (ttl && Number.isFinite(seen[0][1].ttl)) {
       result.ttls[key] = seen[0][1].ttl;

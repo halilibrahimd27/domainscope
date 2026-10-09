@@ -875,17 +875,19 @@ takeover watch: a new risk (RISK) counts at medium severity or above - a domain 
   when its lapsed domain is registered again), worse or better (WORSE, BETTER). A risk whose lookup
   gave no answer is carried from the last run that read it, never gone.
 
-watch changes: REGISTRAR (another registrar), LOCK (a transfer prohibition removed: bad; added:
-  good), STATUS (a hold, pending delete, redemption or pending transfer arriving: bad; others
-  listed), NS (the registry's or the zone's name servers), DS (removed or changed: bad), EXPIRY
-  (renewed: good; not renewed with less than 30 days left: bad, said once) and RECORD: MX, NS, CAA,
-  the SPF and DMARC records count as bad; A, AAAA and CNAME as info unless the name moves to another
-  kind of provider (a CDN, a direct address, a dangling CNAME: bad). Not counted: a CDN's edge
-  addresses rotating, a new SOA serial (SERIAL) and a record set that changed 3 times or more in
-  the last 7 runs (FLAPPING, said once). With --authoritative: SYNC (servers answer one serial
-  differently: bad; a lagging secondary is listed) and LAME (no authority, REFUSED, SERVFAIL, no
-  answer). A verification token (google-site-verification= ...) is named by its service, never
-  printed. A lookup that failed is carried from the last run that read it, never a change.
+watch changes: REGISTRAR (another registrar), LOCK (a transfer prohibition removed: bad, info while
+  another still blocks transfers; added: good), STATUS (a hold, pending delete, redemption or
+  pending transfer arriving: bad; others listed), NS (the registry's or the zone's name servers),
+  DS (removed or changed: bad), EXPIRY (renewed: good; not renewed with less than 30 days left: bad,
+  said once) and RECORD: MX, NS, CAA, the SPF and DMARC records count as bad (a hosted DMARC record:
+  the policy its _dmarc CNAME leads to, and that CNAME); A, AAAA and CNAME as info unless the name
+  moves to another kind of provider (a CDN, a direct address, a dangling CNAME: bad). Not counted: a
+  CDN's edge addresses rotating, a new SOA serial (SERIAL) and a record set that changed 3 times or
+  more in the last 7 runs (FLAPPING, said once). With --authoritative: SYNC (servers answer one
+  serial differently two runs in a row: bad; a lagging secondary is listed) and LAME (no authority,
+  REFUSED, SERVFAIL, no answer, or no more answers after the SOA). A verification token
+  (google-site-verification= ...) is named by its service, never printed. A lookup that failed is
+  carried from the last run that read it, never a change.
 
 notifications: a webhook URL works as a password (whoever has it can post), so it is never
   printed or written: messages name its host only. Keep it in the environment (the nightly

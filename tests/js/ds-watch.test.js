@@ -194,6 +194,27 @@ describe('watch: what a value is and how a change is weighed', () => {
     assert.equal(displayValue('DNSKEY', '257 3 13 AAAA'), '257 3 13 (key-signing key)');
   });
 
+  test('a hosted DMARC record: _dmarc a CNAME to the vendor, its TXT read at the end of the chain (its own records: none)', () => {
+    const msg = decodeMessage(encodeMessage({
+      answers: [
+        { name: '_dmarc.example.com', type: 'CNAME', ttl: 300, data: '_dmarc.vendor.example.net' },
+        { name: '_dmarc.vendor.example.net', type: 'CNAME', ttl: 300, data: 'example-com.dmarc.vendor.example.net' },
+        { name: 'example-com.dmarc.vendor.example.net', type: 'TXT', ttl: 120, data: ['v=DMARC1; p=none'] }
+      ]
+    }));
+    assert.deepEqual(rrsetOf('_dmarc.example.com', 'TXT', msg.answers).values, [], 'its own records only: none');
+    assert.deepEqual(rrsetOf('_dmarc.example.com', 'TXT', msg.answers, { follow: true }), { values: ['txt "v=DMARC1; p=none"'], ttl: 120 }, 'the TXT where the chain ends');
+    assert.deepEqual(rrsetOf('_dmarc.example.com', 'CNAME', msg.answers, { follow: true }).values, ['_dmarc.vendor.example.net'], 'a CNAME set is its own');
+    const loop = decodeMessage(encodeMessage({
+      answers: [
+        { name: '_dmarc.example.com', type: 'CNAME', ttl: 1, data: 'loop.example.net' },
+        { name: 'loop.example.net', type: 'CNAME', ttl: 1, data: '_dmarc.example.com' }
+      ]
+    }));
+    assert.deepEqual(rrsetOf('_dmarc.example.com', 'TXT', loop.answers, { follow: true }).values, [], 'a loop ends nowhere');
+    assert.equal(recordTone({ type: 'CNAME', kind: 'dmarc', before: ['_dmarc.vendor.example.net'], after: ['_dmarc.example.org'] }).tone, 'bad', 'where the DMARC record is read');
+  });
+
   test('the tone of a change, by type, by the name\'s provider class, a CDN\'s rotating edges, a zone-signing key rolling', () => {
     const tone = (c) => recordTone({ before: ['a'], after: ['b'], ...c });
     for (const type of ['MX', 'NS', 'CAA']) assert.equal(tone({ type }).tone, 'bad', type);
@@ -237,7 +258,7 @@ describe('watch: changes since the baseline', () => {
     }));
     assert.deepEqual(tags(c), [
       'REGISTRAR example.com registrar bad',
-      'LOCK example.com client transfer prohibited bad',
+      'LOCK example.com client transfer prohibited info',
       'LOCK example.com server transfer prohibited good',
       'STATUS example.com client hold bad',
       'STATUS example.com client delete prohibited info',
@@ -248,7 +269,7 @@ describe('watch: changes since the baseline', () => {
     ]);
     const words = c.map(text);
     assert.equal(words[0], 'example.com: registrar Example Registrar, Inc. (IANA 9999) → Other Registrar LLC (IANA 1068)');
-    assert.equal(words[1], 'example.com: client transfer prohibited removed: whoever has the transfer code can move the domain to another registrar');
+    assert.equal(words[1], 'example.com: client transfer prohibited removed; server transfer prohibited still blocks transfers', 'the registry\'s lock came in its place');
     assert.equal(words[3], 'example.com: client hold added');
     assert.equal(words[4], 'example.com: client delete prohibited removed');
     assert.equal(words[5], 'example.com: the registry\'s name servers (RDAP) ns1.example.net, ns2.example.net → ns1.example.org');
@@ -256,9 +277,20 @@ describe('watch: changes since the baseline', () => {
     assert.equal(words[7], 'example.com: renewed: expires 2028-11-13 (was 2027-11-13)');
     assert.equal(words[8], 'example.com: the zone\'s name servers (NS at the apex) ns1.example.net, ns2.example.net → ns1.example.org');
     assert.equal(notableChanges(c).length, c.length, 'every one counts');
-    // PagerDuty: registrar, lock, name servers and DS are critical by tag; a hold by its item
-    assert.deepEqual(c.filter((x) => x.tone === 'bad').map((x) => eventSeverity(x, 'watch')), ['critical', 'critical', 'critical', 'critical', 'critical', 'critical']);
+    // PagerDuty: registrar, name servers and DS are critical by tag (a lock too: below); a hold by its item
+    assert.deepEqual(c.filter((x) => x.tone === 'bad').map((x) => eventSeverity(x, 'watch')), ['critical', 'critical', 'critical', 'critical', 'critical']);
     assert.equal(eventSeverity({ tag: 'RECORD', item: 'example.com|MX' }, 'watch'), 'error');
+  });
+
+  test('LOCK: a transfer prohibition removed while another still blocks transfers is info and names it (never paged)', () => {
+    const locked = target({ registration: { ...target().registration, statuses: ['client delete prohibited', 'client transfer prohibited', 'server transfer prohibited'] } });
+    const c = diff(locked, next((x) => { x.registration.statuses = ['client delete prohibited', 'server transfer prohibited']; }, locked));
+    assert.deepEqual(tags(c), ['LOCK example.com client transfer prohibited info']);
+    assert.equal(text(c[0]), 'example.com: client transfer prohibited removed; server transfer prohibited still blocks transfers');
+    const open = diff(locked, next((x) => { x.registration.statuses = ['client delete prohibited']; }, locked));
+    assert.deepEqual(tags(open), ['LOCK example.com client transfer prohibited bad', 'LOCK example.com server transfer prohibited bad'], 'none left: bad');
+    assert.deepEqual(open.map((x) => eventSeverity(x, 'watch')), ['critical', 'critical']);
+    assert.match(text(open[1]), /server transfer prohibited removed: whoever has the transfer code can move the domain to another registrar$/);
   });
 
   test('the registrar\'s name under the same IANA ID is info; an expiry earlier is info; DS added is info, replaced bad', () => {
@@ -326,6 +358,23 @@ describe('watch: changes since the baseline', () => {
     assert.equal(by['shop.example.com|A'], 'example.com: shop.example.com A: 192.0.2.10 → 192.0.2.20');
     for (const x of c) assert.ok(!text(x).includes('0123456789ab') && !text(x).includes('fedcba'), 'no digest printed either');
     assert.equal(notableChanges(c).length, 9, 'every one counts');
+  });
+
+  test('a hosted DMARC record: the _dmarc CNAME added, pointed elsewhere or removed is bad, said as DMARC; the policy where it ends is the DMARC TXT', () => {
+    const hosted = next((x) => setRec(x, '_dmarc.example.com', 'CNAME', ['_dmarc.vendor.example.net']));
+    const c = diff(target(), hosted);
+    assert.deepEqual(tags(c), ['RECORD example.com _dmarc.example.com|CNAME bad'], 'the same policy, now hosted: the DMARC record is not removed');
+    assert.equal(text(c[0]), 'example.com: _dmarc.example.com CNAME (DMARC): added _dmarc.vendor.example.net');
+    const weaker = next((x) => setRec(x, '_dmarc.example.com', 'TXT', ['txt "v=DMARC1; p=none"']), hosted);
+    assert.deepEqual(tags(diff(hosted, weaker)), ['RECORD example.com _dmarc.example.com|TXT|dmarc bad']);
+    const elsewhere = next((x) => setRec(x, '_dmarc.example.com', 'CNAME', ['_dmarc.example.org']), weaker);
+    const moved = diff(weaker, elsewhere);
+    assert.deepEqual(tags(moved), ['RECORD example.com _dmarc.example.com|CNAME bad']);
+    assert.equal(text(moved[0]), 'example.com: _dmarc.example.com CNAME (DMARC): _dmarc.vendor.example.net → _dmarc.example.org');
+    assert.deepEqual(tags(diff(elsewhere, next((x) => setRec(x, '_dmarc.example.com', 'CNAME', null), elsewhere))), ['RECORD example.com _dmarc.example.com|CNAME bad'], 'a TXT of its own again');
+    // --types without CNAME: the _dmarc CNAME is asked with its TXT, and compared
+    const mail = (x) => Object.assign(x, { types: ['MX', 'TXT'], records: x.records.filter((r) => ['MX', 'TXT'].includes(r.type) || r.key === '_dmarc.example.com|CNAME') });
+    assert.deepEqual(tags(diff(mail(target()), mail(next((x) => setRec(x, '_dmarc.example.com', 'CNAME', ['_dmarc.vendor.example.net']))))), ['RECORD example.com _dmarc.example.com|CNAME bad']);
   });
 
   test('not counted: a CDN\'s edges rotating, a new SOA serial, a zone-signing key rolling; TTLs ignored without --ttl', () => {
@@ -406,26 +455,40 @@ describe('watch: changes since the baseline', () => {
     ]);
   });
 
-  test('SYNC and LAME, when both runs asked the name servers', () => {
+  test('SYNC and LAME, when both runs asked the name servers: a mismatch said once a second run in a row found it, its end once compared again', () => {
     const server = (address, status, extra = {}) => ({ address, family: 4, hosts: [address === '198.51.100.53' ? 'ns1.example.net' : 'ns2.example.net'], status, reason: null, serial: 5, transport: 'udp', ...extra });
     const auth = (extra = {}) => ({ view: 'authoritative', servers: [server('198.51.100.53', 'ok'), server('198.51.100.54', 'ok')], serial: 5, lagging: [], mismatches: [],
       compared: ['example.com|MX', 'example.com|A'], ttls: {}, queries: 6, cut: 0, unresolved: [], ...extra });
+    const mx = (extra = {}) => ({ key: 'example.com|MX', servers: { '198.51.100.54': ['10 mx.example.com'], '198.51.100.56': ['10 mx.example.org'] }, since: '2026-10-09T03:00:00.000Z', ...extra });
     const b = target({ authoritative: auth() });
     const a = next((x) => {
       x.authoritative = auth({
         servers: [server('198.51.100.53', 'lame', { reason: 'refused', serial: null }), server('198.51.100.54', 'ok', { serial: 6 }), server('198.51.100.55', 'ok', { serial: 5 })],
-        serial: 6, lagging: ['198.51.100.55'], mismatches: [{ key: 'example.com|MX', servers: { '198.51.100.54': ['10 mx.example.com'], '198.51.100.56': ['10 mx.example.org'] } }]
+        serial: 6, lagging: ['198.51.100.55'], mismatches: [mx()]
       });
     }, b);
     const c = diff(b, a);
-    assert.deepEqual(tags(c), ['LAME example.com 198.51.100.53 bad', 'SYNC example.com example.com|MX bad', 'SYNC? example.com 198.51.100.55 info']);
+    assert.deepEqual(tags(c), ['LAME example.com 198.51.100.53 bad', 'SYNC? example.com 198.51.100.55 info'], 'out of sync in one run: not said yet');
     assert.equal(text(c[0]), 'example.com: ns1.example.net (198.51.100.53): it answers REFUSED');
-    assert.equal(text(c[1]), 'example.com: example.com MX: the name servers answer it differently at serial 6: 198.51.100.54 10 mx.example.com; 198.51.100.56 10 mx.example.org');
-    assert.match(text(c[2]), /: a lagging secondary \(serial 5, the others 6\)$/);
-    const fixed = next((x) => { x.authoritative = auth({ serial: 6 }); }, a);
-    assert.deepEqual(tags(diff(a, fixed)), ['LAME example.com 198.51.100.53 good', 'SYNC example.com example.com|MX good']);
+    assert.match(text(c[1]), /: a lagging secondary \(serial 5, the others 6\)$/);
+    const a2 = next((x) => { x.authoritative.mismatches = [mx({ confirmed: true })]; }, a);
+    const c2 = diff(a, a2);
+    assert.deepEqual(tags(c2), ['SYNC example.com example.com|MX bad'], 'found the same the next run: said');
+    assert.equal(text(c2[0]), 'example.com: example.com MX: the name servers answer it differently at serial 6: 198.51.100.54 10 mx.example.com; 198.51.100.56 10 mx.example.org');
+    assert.deepEqual(diff(a2, next(() => {}, a2)), [], 'said once');
+    const fixed = next((x) => { x.authoritative = auth({ serial: 6 }); }, a2);
+    assert.deepEqual(tags(diff(a2, fixed)), ['LAME example.com 198.51.100.53 good', 'SYNC example.com example.com|MX good']);
+    const sync = (b1, a1) => tags(diff(b1, a1)).filter((s) => s.startsWith('SYNC'));
+    assert.deepEqual(sync(a, next((x) => { x.authoritative = auth({ serial: 6 }); }, a)), [], 'a mismatch never said: its end is not said either');
+    // nothing compared this run (the budget spent on the SOA questions, every server lame): no "agree again"
+    assert.deepEqual(sync(a2, next((x) => { x.authoritative = auth({ serial: 6, compared: [] }); }, a2)), [], 'nothing compared');
+    assert.deepEqual(sync(a2, next((x) => { x.authoritative = auth({ serial: 6, compared: ['example.com|A'] }); }, a2)), [], 'the MX not compared');
+    assert.deepEqual(sync(a2, next((x) => { x.authoritative = auth({ serial: 6 }); delete x.authoritative.compared; }, a2)), [], 'no list: not known');
     assert.deepEqual(tags(diff(b, next((x) => { x.authoritative = { view: 'recursive', servers: [] }; }, b))), ['FAILED? example.com authoritative quiet']);
-    assert.deepEqual(diff(target(), next((x) => { x.authoritative = auth({ mismatches: [{ key: 'example.com|MX', servers: {} }] }); })), [], 'no earlier direct look: nothing to compare');
+    assert.deepEqual(diff(target(), next((x) => { x.authoritative = auth({ mismatches: [mx({ confirmed: true })] }); })), [], 'no earlier direct look: nothing to compare');
+    // a night port 53 was blocked carried the mismatch: said when the next run confirms it
+    const blocked = next((x) => { x.authoritative = { view: 'recursive', servers: [], mismatches: [mx({ carried: { from: '2026-10-09T03:00:00.000Z' } })] }; }, a);
+    assert.deepEqual(sync(blocked, next((x) => { x.authoritative = auth({ serial: 6, mismatches: [mx({ confirmed: true })] }); }, blocked)), ['SYNC example.com example.com|MX bad']);
   });
 
   test('a baseline the comparison cannot walk is refused, naming what', () => {
@@ -505,6 +568,37 @@ describe('watch: the report target', () => {
     assert.deepEqual(unsupported.registration, { state: 'unsupported', error: 'no RDAP for .tr' });
   });
 
+  test('SYNC: a mismatch confirmed once the next run finds every server answering the same again; said while they disagree; a set not compared carries it', () => {
+    const auth = (mismatches, compared = ['example.com|MX']) => ({ view: 'authoritative', servers: [], serial: 5, lagging: [], mismatches, compared, ttls: {}, queries: 4, cut: 0, unresolved: [] });
+    const mx = (other) => ({ key: 'example.com|MX', servers: { '192.0.2.53': ['10 mx.example.com'], '192.0.2.54': [other] } });
+    const at = (i) => new Date(NOW.getTime() + i * DAY).toISOString();
+    const run = (prev, a, i) => watchTarget('example.com', { facts, read: read([]), auth: a, names, types: APEX_TYPES }, { prev, runAt: new Date(NOW.getTime() + i * DAY), now: new Date(NOW.getTime() + i * DAY) });
+    const x0 = run(null, auth([]), 0);
+    const x1 = run(x0, auth([mx('20 mx.example.org')]), 1);
+    assert.deepEqual(x1.authoritative.mismatches, [{ ...mx('20 mx.example.org'), since: at(1) }], 'found once: not confirmed');
+    const x2 = run(x1, auth([mx('20 mx.example.org')]), 2);
+    assert.deepEqual(x2.authoritative.mismatches, [{ ...mx('20 mx.example.org'), since: at(1), confirmed: true }], 'the same the next run: confirmed');
+    const x3 = run(x2, auth([mx('30 mx.example.net')]), 3);
+    assert.deepEqual(x3.authoritative.mismatches, [{ ...mx('30 mx.example.net'), since: at(3), confirmed: true }], 'out of sync another way: still confirmed');
+    const x4 = run(x3, auth([], []), 4);
+    assert.deepEqual(x4.authoritative.mismatches, [{ ...mx('30 mx.example.net'), since: at(3), confirmed: true, carried: { from: x3.checkedAt } }], 'not compared: carried');
+    const x5 = run(x4, auth([]), 5);
+    assert.deepEqual(x5.authoritative.mismatches, [], 'compared, and the servers agree');
+    const syncLines = (b, a) => tags(diffReports('watch', report([b]), report([a]), { t })).filter((s) => s.startsWith('SYNC'));
+    assert.deepEqual([[x0, x1], [x1, x2], [x2, x3], [x3, x4], [x4, x5]].map(([b, a]) => syncLines(b, a)), [[], ['SYNC example.com example.com|MX bad'], [], [], ['SYNC example.com example.com|MX good']]);
+    // an answer the provider picks per query (weighted, multivalue records): never found the same twice in a row, never said
+    let y = run(null, auth([]), 0);
+    const said = [];
+    ['20 mx.example.org', '30 mx.example.net', '20 mx.example.org', '30 mx.example.net'].forEach((v, i) => {
+      const z = run(y, auth([mx(v)]), i + 1);
+      said.push(...syncLines(y, z));
+      y = z;
+    });
+    assert.deepEqual(said, []);
+    const blocked = run(x2, { view: 'recursive', servers: [], serial: null, lagging: [], mismatches: [], compared: [], ttls: {}, queries: 2, cut: 0, unresolved: [] }, 3);
+    assert.deepEqual(blocked.authoritative.mismatches, [{ ...mx('20 mx.example.org'), since: at(1), confirmed: true, carried: { from: x2.checkedAt } }], 'port 53 blocked: carried');
+  });
+
   test('a name\'s provider class from its A and AAAA answers', () => {
     const res = (name, type, answers, rcode = 'NOERROR') => ({ ok: true, rcode, answers, name, type });
     const a = (name, ip, chain = []) => res(name, 'A', [...chain.map(([n, d]) => ({ name: n, type: 'CNAME', ttl: 1, data: d })), ...(ip ? [{ name: chain.length ? chain.at(-1)[1] : name, type: 'A', ttl: 1, data: ip }] : [])]);
@@ -559,7 +653,7 @@ test('watch over five nights: a registrar change and a lock removed, an MX and a
       assert.ok(log.some((x) => `${x.name}|${x.type}` === q), q);
     }
     assert.ok(!log.some((x) => x.name === 'www.example.com' && x.type === 'SOA'), 'SOA, DS and DNSKEY at the apex (and a delegation) only');
-    assert.ok(!log.some((x) => x.name === '_dmarc.example.com' && x.type !== 'TXT'), '_dmarc: TXT only');
+    assert.deepEqual([...new Set(log.filter((x) => x.name === '_dmarc.example.com').map((x) => x.type))].sort(), ['CNAME', 'TXT'], '_dmarc: its TXT, and the CNAME a hosted record is reached by');
     const doc1 = JSON.parse(readFileSync(json, 'utf8'));
     assert.deepEqual(doc1.options, { types: [...WATCH_TYPES], names: { file: 'hosts.txt', count: 2 }, ttl: false, authoritative: false, resolvers: ['cloudflare', 'google', 'dnssb'] });
     const x1 = doc1.targets[0];
@@ -608,6 +702,42 @@ test('watch over five nights: a registrar change and a lock removed, an MX and a
     assert.equal(fifth.code, EXIT.CHANGED, fifth.out + fifth.err);
     assert.match(fifth.out, /^Changes since the baseline \(watch\.json, run of 2026-10-12 03:00 UTC\): 2\n {2}DS {9}example\.com: DS removed at the parent \(\d+ 13 2\): DNSSEC is off for the domain\n {2}RECORD {5}example\.com: shop\.example\.com A: 192\.0\.2\.10 → 192\.0\.2\.99\n/);
     assert.ok(!JSON.parse(readFileSync(json, 'utf8')).targets[0].registration.carried, 'read again: nothing carried');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a hosted DMARC record over four nights: moved behind a CNAME with the same policy, weakened there, the CNAME pointed elsewhere', async () => {
+  const dir = tmp();
+  try {
+    const zone = watchZone({ now: NOW.getTime() });
+    const log = [];
+    const fetchImpl = createWatchFetch(zone, { log });
+    const json = join(dir, 'watch.json');
+    const argv = ['watch', 'example.com', '--types', 'TXT,MX', '--baseline', json, '--json', json, '--fail-on-change', '--no-color'];
+    const night = (n) => runMain(argv, { fetchImpl, now: new Date(NOW.getTime() + n * DAY) });
+    const said = (out) => out.split('\n').filter((l) => /^ {2}[A-Z]/.test(l) && !/^ {2}Not counted/.test(l));
+    assert.equal((await night(0)).code, EXIT.OK);
+    assert.ok(log.some((q) => q.name === '_dmarc.example.com' && q.type === 'CNAME'), 'the CNAME at _dmarc asked with its TXT, CNAME not among --types');
+    // Night 2: the same policy, now at the vendor's: the DMARC record is not removed, the CNAME is the change
+    zone.table['_dmarc.example.com'] = { CNAME: '_dmarc.vendor.example.net' };
+    zone.table['_dmarc.vendor.example.net'] = { TXT: [['v=DMARC1; p=reject; rua=mailto:dmarc@example.com']] };
+    const moved = await night(1);
+    assert.equal(moved.code, EXIT.CHANGED, moved.out + moved.err);
+    assert.deepEqual(said(moved.out), ['  RECORD     example.com: _dmarc.example.com CNAME (DMARC): added _dmarc.vendor.example.net']);
+    // Night 3: the policy at the vendor's weakened to p=none
+    zone.table['_dmarc.vendor.example.net'] = { TXT: [['v=DMARC1; p=none']] };
+    const weaker = await night(2);
+    assert.equal(weaker.code, EXIT.CHANGED, weaker.out + weaker.err);
+    assert.deepEqual(said(weaker.out), ['  RECORD     example.com: _dmarc.example.com TXT (DMARC): v=DMARC1; p=reject; rua=mailto:dmarc@example.com → v=DMARC1; p=none']);
+    // Night 4: the CNAME pointed at another domain's name, the same policy there
+    zone.table['_dmarc.example.com'] = { CNAME: '_dmarc.other.example.org' };
+    zone.table['_dmarc.other.example.org'] = { TXT: [['v=DMARC1; p=none']] };
+    const elsewhere = await night(3);
+    assert.equal(elsewhere.code, EXIT.CHANGED, elsewhere.out + elsewhere.err);
+    assert.deepEqual(said(elsewhere.out), ['  RECORD     example.com: _dmarc.example.com CNAME (DMARC): _dmarc.vendor.example.net → _dmarc.other.example.org']);
+    const kept = JSON.parse(readFileSync(json, 'utf8')).targets[0].records.filter((r) => r.name === '_dmarc.example.com').map((r) => [r.type, r.values]);
+    assert.deepEqual(kept, [['CNAME', ['_dmarc.other.example.org']], ['TXT', ['txt "v=DMARC1; p=none"']]]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -758,10 +888,20 @@ describe('watch --authoritative: the name servers asked directly', () => {
     b.behave.table['example.com'].MX = [{ preference: 20, exchange: 'mx.example.org' }];
     const split = await check();
     assert.deepEqual(split.mismatches, [{ key: 'example.com|MX', servers: { '127.0.0.1': ['10 mx.example.com'], '127.0.0.2': ['20 mx.example.org'] } }]);
+    // the apex on a CDN, each server handing out other edges of it (weighted or per-query answers): in sync
+    b.behave.table = structuredClone(zone.table);
+    b.behave.table['example.com'].A = [CF_EDGES_V4[1], CF_EDGES_V4[2]];
+    const edges = await check();
+    assert.deepEqual([edges.mismatches, edges.compared], [[], ['example.com|MX', 'example.com|A']], 'other edges of one CDN: in sync');
+    b.behave.table['example.com'].A = [CF_EDGES_V4[1], '192.0.2.1'];
+    assert.deepEqual((await check()).mismatches.map((m) => m.key), ['example.com|A'], 'an edge and a direct address: out of sync');
+    b.behave.table['example.com'].A = [];
+    assert.deepEqual((await check()).mismatches.map((m) => m.key), ['example.com|A'], 'a server without the set: out of sync');
     delete b.behave.table;
     a.behave.rcode = 'SERVFAIL';
     const lame = await check();
     assert.deepEqual(lame.servers.map((s) => [s.status, s.reason]), [['lame', 'servfail'], ['ok', null]]);
+    assert.deepEqual(lame.compared, [], 'one server left answering: nothing to compare it with');
     delete a.behave.rcode;
     const cut = await check({ maxQueries: 4 });
     assert.deepEqual([cut.compared, cut.cut], [['example.com|MX'], 1], 'two SOA questions, then one record set each');
@@ -772,6 +912,33 @@ describe('watch --authoritative: the name servers asked directly', () => {
     a.behave.silent = false;
     b.behave.silent = false;
     assert.equal((await checkAuthoritative('example.com', { nsHosts: ['nowhere.example.org'], keys, dns, maxQueries: 10 })).view, 'none');
+  });
+
+  test('a server that answers its SOA, then nothing: given up after 3 questions (one try over UDP, one over TCP each); one whose UDP never answers: TCP alone after 3', async () => {
+    const zone = watchZone({ now: NOW.getTime() });
+    const a = await start({ address: '127.0.0.1', table: zone.table });
+    const b = await start({ address: '127.0.0.2', table: zone.table, behave: { drop: WATCH_TYPES.filter((x) => x !== 'SOA') } });
+    const ports = { [a.address]: a.port, [b.address]: b.port };
+    const dns = new DohClient({ chain: ['cloudflare'], fetchImpl: createWatchFetch(zone) });
+    const keys = ['example.com', 'www.example.com', 'shop.example.com'].flatMap((name) => ['A', 'AAAA', 'MX', 'TXT', 'CAA', 'HTTPS'].map((type) => ({ name, type })));
+    const check = () => checkAuthoritative('example.com', { nsHosts: ['ns1.example.net', 'ns2.example.net'], keys, dns, maxQueries: 2000, port: (x) => ports[x], timeoutMs: 150 });
+    const silent = await check();
+    assert.deepEqual(silent.servers.map((s) => [s.address, s.status, s.reason]), [['127.0.0.1', 'ok', null], ['127.0.0.2', 'unreachable', 'unanswered']]);
+    assert.equal(silent.servers[1].error, 'no answer over UDP or TCP to example.com A, example.com AAAA, example.com MX');
+    assert.deepEqual(b.log.filter((q) => q.type !== 'SOA').map((q) => `${q.name} ${q.type} ${q.transport}`), [
+      'example.com A udp', 'example.com A tcp', 'example.com AAAA udp', 'example.com AAAA tcp', 'example.com MX udp', 'example.com MX tcp'
+    ], 'three questions, each once over UDP and once over TCP, then no more');
+    assert.deepEqual([silent.compared, silent.mismatches], [[], []], 'one server answering: nothing compared');
+    assert.match(renderPlainText(watchDoc(target({ authoritative: silent }), { t, now: NOW })),
+      /- Lame: ns2\.example\.net \(127\.0\.0\.2\): it leaves questions without an answer over UDP and TCP: not asked further this run \(no answer over UDP or TCP to example\.com A, example\.com AAAA, example\.com MX\)\n/);
+    b.log.length = 0;
+    delete b.behave.drop;
+    b.behave.udp = false;
+    const tcp = await check();
+    assert.deepEqual(tcp.servers.map((s) => s.status), ['ok', 'ok']);
+    assert.equal(b.log.filter((q) => q.transport === 'udp').length, 4, 'its SOA and 3 questions over UDP, then TCP alone');
+    assert.equal(b.log.filter((q) => q.transport === 'tcp').length, keys.length + 1);
+    assert.deepEqual([tcp.compared.length, tcp.mismatches], [keys.length, []]);
   });
 
   test('main(): a lame server and servers out of sync counted, back in sync the night after; --ttl compares their TTLs', async () => {
@@ -809,16 +976,21 @@ describe('watch --authoritative: the name servers asked directly', () => {
       delete b.behave.table;
       const third = await night(2);
       assert.match(third.out, /\n {2}LAME {7}example\.com: ns1\.example\.net \(127\.0\.0\.1\): answers with authority again\n/);
-      // Night 4: the two disagree at one serial: SYNC.
+      // Night 4: the two disagree at one serial: listed, not counted until the next run finds the same.
       b.behave.table = structuredClone(zone.table);
       b.behave.table['example.com'].MX = [{ preference: 20, exchange: 'mx.example.org' }];
       const fourth = await night(3);
-      assert.equal(fourth.code, EXIT.CHANGED, fourth.err);
-      assert.match(fourth.out, /\n {2}SYNC {7}example\.com: example\.com MX: the name servers answer it differently at serial 2026100901: 127\.0\.0\.1 10 mx\.example\.com; 127\.0\.0\.2 20 mx\.example\.org\n/);
-      assert.match(fourth.out, /- Out of sync: example\.com MX: 127\.0\.0\.1 10 mx\.example\.com; 127\.0\.0\.2 20 mx\.example\.org\n/);
-      delete b.behave.table;
+      assert.equal(fourth.code, EXIT.OK, fourth.out + fourth.err);
+      assert.match(fourth.out, /^Changes since the baseline \(watch\.json, run of 2026-10-11 03:00 UTC\): none\n/);
+      assert.match(fourth.out, /- Out of sync: example\.com MX: 127\.0\.0\.1 10 mx\.example\.com; 127\.0\.0\.2 20 mx\.example\.org \(new this run: counted if the next run finds the same\)\n/);
+      // Night 5: the same again: SYNC.
       const fifth = await night(4);
-      assert.match(fifth.out, /\n {2}SYNC {7}example\.com: example\.com MX: the name servers agree again\n/);
+      assert.equal(fifth.code, EXIT.CHANGED, fifth.err);
+      assert.match(fifth.out, /\n {2}SYNC {7}example\.com: example\.com MX: the name servers answer it differently at serial 2026100901: 127\.0\.0\.1 10 mx\.example\.com; 127\.0\.0\.2 20 mx\.example\.org\n/);
+      assert.match(fifth.out, /- Out of sync: example\.com MX: 127\.0\.0\.1 10 mx\.example\.com; 127\.0\.0\.2 20 mx\.example\.org\n/);
+      delete b.behave.table;
+      const sixth = await night(5);
+      assert.match(sixth.out, /\n {2}SYNC {7}example\.com: example\.com MX: the name servers agree again\n/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -852,7 +1024,7 @@ test('the program itself: a spawned watch whose fetch is the fake DoH and RDAP (
     assert.match(res.stdout, /^Domain watch · example\.com\n- Registrar: Example Registrar, Inc\. \(IANA 9999\)/);
     const requests = JSON.parse(readFileSync(logFile, 'utf8'));
     assert.deepEqual(requests.rdap, ['example.com']);
-    assert.deepEqual([...new Set(requests.dns.map((q) => q.type))].sort(), ['A', 'DNSKEY', 'DS', 'MX', 'NS', 'TXT'], 'the types asked, and the delegation\'s NS, DS and DNSKEY');
+    assert.deepEqual([...new Set(requests.dns.map((q) => q.type))].sort(), ['A', 'CNAME', 'DNSKEY', 'DS', 'MX', 'NS', 'TXT'], 'the types asked, the _dmarc CNAME, and the delegation\'s NS, DS and DNSKEY');
     assert.equal(JSON.parse(readFileSync(join(dir, 'w.json'), 'utf8')).command, 'watch');
   } finally {
     rmSync(dir, { recursive: true, force: true });

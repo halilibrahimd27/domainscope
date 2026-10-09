@@ -253,8 +253,9 @@ const STANDINGS = Object.freeze({
    * redemption or transfer (STATUS, the item the status) once it is gone; the registry losing the
    * domain (STATUS `registration`) once it holds it again; an expiry not renewed (EXPIRY) once it is
    * renewed (the report no longer marks it); a lame server (LAME, its address) once it answers with
-   * authority or is no longer asked; a record set out of sync (SYNC, its key) once the servers agree.
-   * A registration not read this run (carried) or name servers not asked say nothing. The events —
+   * authority or is no longer asked; a record set out of sync (SYNC, its key) once the servers are
+   * compared on it again and agree (a mismatch carried, not compared this run, is still bad). A
+   * registration not read this run (carried) or name servers not asked say nothing. The events —
    * another registrar, other name servers, other DS records, a record changed — stay open until
    * someone resolves them in PagerDuty: nothing in a later report says the change was wanted.
    */

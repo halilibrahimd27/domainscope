@@ -446,7 +446,9 @@ export function createWatchFetch(zone, { log = [], rdapLog = [], rcodes = {}, rd
  * AA set, NXDOMAIN outside the table, a CNAME as itself. `behave` changes how it answers (read on
  * every question): `rcode` (REFUSED, SERVFAIL …), `aa: false` (a lame server), `udpLimit` (answers
  * larger than that many bytes go out over UDP truncated, TC=1: the client must ask over TCP),
- * `silent` (never answers), `serial` (its SOA serial), `table` (another zone: out of sync).
+ * `silent` (never answers), `drop` (the query types it never answers: every type but SOA is a server
+ * that answers its SOA and then nothing, one type a firewall dropping it), `udp: false` (nothing over
+ * UDP: TCP alone answers), `serial` (its SOA serial), `table` (another zone: out of sync).
  * @param {{ address?: string, apex?: string, table: object, behave?: object }} opts
  * @returns {Promise<{ address: string, port: number, log: Array<{ transport: string, name: string, type: string, do: boolean }>, behave: object, close: () => Promise<void> }>}
  */
@@ -457,7 +459,7 @@ export async function startAuthServer({ address = '127.0.0.1', apex = 'example.c
     const q = query.questions[0];
     const name = String(q.name).toLowerCase().replace(/[.]$/, '');
     log.push({ transport, name, type: q.type, do: !!(query.edns && query.edns.dnssecOk) });
-    if (behave.silent) return null;
+    if (behave.silent || (Array.isArray(behave.drop) && behave.drop.includes(q.type)) || (transport === 'udp' && behave.udp === false)) return null;
     const zoneTable = behave.table || table;
     const node = zoneTable[name];
     const inZone = name === apex || name.endsWith(`.${apex}`);
@@ -509,15 +511,22 @@ export async function startAuthServer({ address = '127.0.0.1', apex = 'example.c
     });
     socket.on('error', () => {});
   };
-  // One port for both transports, as a name server has: TCP takes a free one, UDP the same. Windows
-  // keeps ranges of ports out of reach of one transport or the other (excluded port ranges): try again.
+  // One port for both transports, as a name server has. Windows keeps blocks of ports out of reach of
+  // one transport or the other (excluded port ranges, hundreds of ports in the dynamic range that
+  // Hyper-V, WSL or Docker reserve) and hands out TCP's free ports in order, so the next free one is
+  // often in the same block: a random port below the dynamic range each try.
   for (let attempt = 0; ; attempt += 1) {
+    const port = 20000 + Math.floor(Math.random() * 25000);
     const tcp = net.createServer(onConnection);
-    await new Promise((resolve, reject) => {
-      tcp.once('error', reject);
-      tcp.listen(0, address, () => resolve());
-    });
-    const port = tcp.address().port;
+    try {
+      await new Promise((resolve, reject) => {
+        tcp.once('error', reject);
+        tcp.listen(port, address, () => resolve());
+      });
+    } catch (err) {
+      if (attempt >= 50) throw err;
+      continue;
+    }
     const udp = dgram.createSocket('udp4');
     udp.on('message', onDatagram(udp));
     try {
@@ -532,7 +541,7 @@ export async function startAuthServer({ address = '127.0.0.1', apex = 'example.c
         /* never bound */
       }
       await new Promise((resolve) => tcp.close(() => resolve()));
-      if (attempt >= 20) throw err;
+      if (attempt >= 50) throw err;
       continue;
     }
     return {

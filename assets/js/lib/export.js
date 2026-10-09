@@ -363,7 +363,8 @@ function isIpRangeToken(token) {
  * even where the inventory wrote it only with another port: after "web06 10.0.0.7:9443" comes
  * "web06 10.0.0.7" (the CLI merges the lines of one name), or "web06 10.0.0.7:443" when web06
  * has `ports=` of its own, which the CLI would apply to the bare address; nothing when a line
- * already scans the address on 443.
+ * already scans the address on 443. A remembered origin marked `stale` (the origin map read now,
+ * lib/originnow.js hintsNow) is left out like the sweep command leaves it out.
  * @param {Array<object|string>} servers
  * @param {{ keys?: ((server: object) => string[])|null }} [opts]
  * @returns {string}
@@ -418,7 +419,10 @@ export function targetsForCli(servers, { keys = null } = {}) {
     }
     if (item.ip) {
       const named = Array.isArray(item.servers) && item.servers.length ? item.servers[0].name : '';
-      const reasons = Array.isArray(item.reasons) ? item.reasons : [];
+      // A remembered origin the map has since marked stale (`stale`, lib/originnow.js hintsNow) is no reason any more.
+      const given = Array.isArray(item.reasons) ? item.reasons : [];
+      const reasons = given.filter((r) => !(r && r.kind === 'known' && r.stale));
+      if (given.length && !reasons.length) continue;
       const portOf = (r) => Number(r.port) || 443;
       const ports = [...new Set(reasons.filter((r) => r && r.kind === 'known' && portOf(r) !== 443).map(portOf))].sort((a, b) => a - b);
       // A remembered origin on 443 is written on 443 (above); any other reason only when no line has the address.

@@ -531,6 +531,9 @@ describe('launch: only the confirmed batch is sent', () => {
     const rows = [r('a', { via: 'hint' }), r('b', { needsCert: false }), r('c'), r('d'), r('e')];
     const order = runOrder(rows, [rows[0], rows[1], rows[2], rows[4]]).map((x) => x.name);
     assert.deepEqual(order, ['c', 'e', 'b', 'a', 'd']);
+    // A remembered origin the workspace's origin map has since marked stale waits with the other DNS rows.
+    const known = [r('k', { via: 'known', originStale: { reason: 'cli-not-hosted', at: '2026-10-01T00:00:00.000Z' } }), r('h', { via: 'hint' }), r('f')];
+    assert.deepEqual(runOrder(known, known).map((x) => x.name), ['f', 'k', 'h']);
   });
 
   test('a paid measurement about to lapse is priced as a new probe, so no confirmed row ends "not in this batch" (GP-6)', async () => {

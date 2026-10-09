@@ -21,6 +21,9 @@
  *     marked stale with the reason ("the CLI found this name on another server … on <date>");
  *     a file that is not a report is named; the next scan shows the stale entry but leaves it out
  *     of the command; Remove the stale entry;
+ *   - SSL Targets › Servers with an inventory: a remembered origin the map then marks stale (as a
+ *     Verify batch would) reads "Origin map · Stale" with the reason, and its server no longer
+ *     serves the names nor ranks first — at once, and back when the map is;
  *   - an origin added and changed by hand from the keyboard (Enter), one deleted; a write from
  *     elsewhere keeps the focus on the same row's Edit button; switching remembering off asks first
  *     and keeps the entries, one written while it asks too; "Delete all local data" removes the map;
@@ -351,6 +354,55 @@ async function main() {
       const panel = await originPanel(page);
       assertEqual(panel.known, [`known shop.${APEX} 192.0.2.20`, `known-stale www.${APEX} 192.0.2.10`], 'block');
       assertEqual(panel.command, `python3 ssl_origin_scan.py -t 203.0.113.0/24 192.0.2.20 -n shop.${APEX} www.${APEX}`, 'command');
+    });
+
+    await run.step('SSL Targets › Servers: a remembered origin the map marks stale says so, and its server no longer needs the certificate', async () => {
+      const setMap = (map) => page.evaluate(async (m) => { await (await import('./assets/js/state.js')).state.setWorkspaceData('origins', m); }, map);
+      const setInventory = (text) => page.evaluate(async (x) => { await (await import('./assets/js/state.js')).state.setInventory(x).done; }, text);
+      const before = await mapOf(page);
+      const servers = () => page.evaluate(() => [...document.querySelectorAll('.scan-servers-table tbody tr.dt-row')].map((tr) => ({
+        server: tr.querySelector('.scan-srv')?.dataset.server,
+        status: tr.querySelector('[data-status]')?.dataset.status,
+        hosts: [...tr.querySelectorAll('.scan-srv-host')].map((x) => `${x.textContent}${x.dataset.stale ? ` [${x.dataset.stale}]` : ''}`)
+      })));
+      await setInventory('web03 192.0.2.10\nweb04 192.0.2.20\nweb05 198.51.100.30');
+      try {
+        await gotoRoute(page, 'scan');
+        const prev = await page.evaluate(() => document.querySelector('.scan-run-ui')?.dataset.run || '');
+        await page.type('[data-role="scan-domains"]', APEX);
+        await page.click('[data-action="scan-run"]');
+        await page.waitFor((p) => {
+          const ui = document.querySelector('.scan-run-ui');
+          return ui && ui.dataset.run !== p && ui.querySelector('.scan-run')?.dataset.status === 'done';
+        }, { args: [prev], timeout: 60000, message: 'scan done' });
+        await page.click('.scan-tabs [data-tab="servers"]');
+        const fresh = await page.waitFor(() => {
+          const rows = [...document.querySelectorAll('.scan-servers-table tbody tr.dt-row')];
+          return rows.length === 2 ? rows.map((tr) => tr.querySelector('.scan-srv')?.dataset.server) : false;
+        }, { message: 'servers tab' });
+        assertEqual(fresh, ['web04', 'web05'], 'the two servers the map ties (www\'s stale entry is no scan origin)');
+        assertEqual((await servers()).map((r) => `${r.server} ${r.status} ${r.hosts.join(', ')}`),
+          [`web04 serves shop.${APEX} · Origin map`, `web05 serves www.${APEX} · Origin map`], 'both serve the names');
+        // A Verify batch elsewhere finds shop no longer at 192.0.2.20: the tab follows at once.
+        const at = new Date().toISOString();
+        await setMap({ ...before, entries: before.entries.map((e) => (e.ip === '192.0.2.20' ? { ...e, stale: { reason: 'verify-not-hosted', at } } : e)) });
+        await page.waitFor(() => {
+          const trs = [...document.querySelectorAll('.scan-servers-table tbody tr.dt-row')];
+          return trs.length === 2 && trs[0].querySelector('.scan-srv')?.dataset.server === 'web05';
+        }, { message: 'the Servers tab follows the map' });
+        const rows = await servers();
+        assertEqual(rows.map((r) => `${r.server} ${r.status} ${r.hosts.join(', ')}`),
+          [`web05 serves www.${APEX} · Origin map`, `web04 none shop.${APEX} · Origin map · Stale [verify-not-hosted]`], 'web04 flagged, no longer serving, ranked after');
+        const title = await page.evaluate(() => document.querySelector('.scan-srv-host[data-stale] .muted[title]')?.title || '');
+        assert(/^Verify found that this server no longer serves the name on /.test(title), `why: ${title}`);
+        await page.evaluate(() => document.querySelector('.scan-servers-table')?.scrollIntoView());
+        await shotPage(page, opts, 'origins-scan-servers-stale-desktop-light-en');
+        await setMap(before);
+        await page.waitFor(() => document.querySelector('.scan-servers-table tbody tr.dt-row .scan-srv')?.dataset.server === 'web04'
+          && !document.querySelector('.scan-srv-host[data-stale]'), { message: 'back as the map is again' });
+      } finally {
+        await setInventory('');
+      }
     });
 
     await run.step('the next scan shows the stale entry but leaves it out of the ranking and the command', async () => {

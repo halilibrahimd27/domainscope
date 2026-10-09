@@ -1162,7 +1162,25 @@ async function main() {
       assertEqual(map.entries.map((e) => `${e.name} ${e.ip}:${e.port} ${e.source} ${e.stale}`), [`${N('shop')} 1.2.3.4:8443 verify null`], 'confirmed by Verify');
       const note = await page.evaluate(() => document.querySelector('.scan-tab-verify [data-vfy="origin-map"]')?.textContent || '');
       assert(/Origin map: 0 added, 1 confirmed, 0 marked stale\./.test(note), `origin map note: ${note}`);
+      // A later CLI report finds shop on another server: its row says the map now marks it stale, at once.
+      await page.evaluate(async () => {
+        const { state } = await import('./assets/js/state.js');
+        const m = state.workspaceData('origins');
+        await state.setWorkspaceData('origins', { ...m, entries: m.entries.map((e) => ({ ...e, stale: { reason: 'cli-elsewhere', at: new Date().toISOString(), ip: '1.2.3.5', port: 443 } })) });
+      });
+      const sub = await page.waitFor((k) => {
+        const tr = [...document.querySelectorAll('.scan-tab-verify .vfy-table tbody tr.dt-row')]
+          .find((x) => `${x.querySelector('.vfy-name')?.textContent}|${x.querySelector('.vfy-ip')?.textContent}` === k);
+        const text = tr ? tr.querySelector('.vfy-ip')?.parentElement?.querySelector('.vfy-sub')?.textContent || '' : '';
+        return /Stale/.test(text) ? text : false;
+      }, { args: [`${N('shop')}|1.2.3.4:8443`], message: 'the row follows the map' });
+      assertEqual(sub, 'web01 · origin map · Stale', 'labelled stale');
       await page.evaluate(async () => (await import('./assets/js/state.js')).state.setWorkspaceData('origins', null));
+      await page.waitFor((k) => {
+        const tr = [...document.querySelectorAll('.scan-tab-verify .vfy-table tbody tr.dt-row')]
+          .find((x) => `${x.querySelector('.vfy-name')?.textContent}|${x.querySelector('.vfy-ip')?.textContent}` === k);
+        return tr && !/Stale/.test(tr.querySelector('.vfy-ip')?.parentElement?.querySelector('.vfy-sub')?.textContent || '');
+      }, { args: [`${N('shop')}|1.2.3.4:8443`], message: 'the map gone: no stale mark' });
     });
 
     run.group('Quality');

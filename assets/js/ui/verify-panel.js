@@ -57,7 +57,8 @@ import { formatEndpoint } from '../lib/inventory.js';
 import { setOfName, cliCertFiles } from '../lib/certsets.js';
 import { SetBadge, CertFileButtons } from './renewal-panel.js';
 import { verifyObservations } from '../lib/originfill.js';
-import { OriginMapOffNote, recordOrigins, recordText } from './origin-map.js';
+import { OriginMapOffNote, recordOrigins, recordText, staleText } from './origin-map.js';
+import { markStaleOrigins } from '../lib/originnow.js';
 
 /* ------------------------------------------------------------------------ */
 /* Strings                                                                  */
@@ -734,7 +735,8 @@ export function verifyRowClass(r) {
 
 /**
  * The order a confirmed batch is queued in: the batch's rows first — DNS / zone rows of servers
- * that need the certificate, then the other DNS rows, then origin-hint checks (so a partial batch
+ * that need the certificate, then the other DNS rows and the remembered origins the workspace's
+ * origin map now marks stale (`originStale`), then origin-hint checks (so a partial batch
  * spends the quota where vfy.confirm.partial says) — each in table order, then every other row
  * (the runner only sends 'pending' rows; the rest are there for the per-address works rule).
  * @param {object[]} rows every row of the job
@@ -744,7 +746,7 @@ export function verifyRowClass(r) {
 export function runOrder(rows, batch) {
   const list = Array.isArray(rows) ? rows : [];
   const inBatch = new Set(batch || []);
-  const rank = (r) => (isHintRow(r) ? 2 : r.needsCert === false ? 1 : 0);
+  const rank = (r) => (isHintRow(r) ? 2 : r.needsCert === false || r.originStale ? 1 : 0);
   const first = list.filter((r) => inBatch.has(r)).map((r, i) => ({ r, i }))
     .sort((a, b) => rank(a.r) - rank(b.r) || a.i - b.i).map((x) => x.r);
   return [...first, ...list.filter((r) => !inBatch.has(r))];
@@ -1043,7 +1045,7 @@ function resultSearchText(row) {
 }
 
 function ipCell(row) {
-  const sub = [serverLabel(row), isOriginPair(row) ? t(`vfy.via.${row.via}`) : null].filter(Boolean).join(' · ');
+  const sub = [serverLabel(row), isOriginPair(row) ? t(`vfy.via.${row.via}`) : null, row.originStale ? t('om.stale') : null].filter(Boolean).join(' · ');
   // A check on another port (a remembered origin's) shows it: 198.51.100.30:8443.
   const where = Number.isInteger(row.port) && row.port !== VERIFY_PORT ? formatEndpoint(row.ip, row.port) ?? row.ip : row.ip;
   return h('div', { class: 'vfy-cell-2' },
@@ -1130,7 +1132,9 @@ export function verifyDetails(row) {
   if (link) items.push({ key: t('vfy.det.measurement'), value: ExternalLink(link, row.measurementId, { className: 'mono' }) });
   if (row.checkedAt) items.push({ key: t('vfy.det.checkedAt'), value: formatDateTime(row.checkedAt, { utc: true }) });
   if (serverLabel(row)) items.push({ key: t('vfy.det.server'), value: serverLabel(row) });
-  items.push({ key: t('vfy.det.via'), value: t(`vfy.via.${VIA_KINDS.includes(row.via) ? row.via : 'dns'}`) });
+  const via = t(`vfy.via.${VIA_KINDS.includes(row.via) ? row.via : 'dns'}`);
+  // A remembered origin the workspace's origin map has since marked stale: why.
+  items.push({ key: t('vfy.det.via'), value: row.originStale ? `${via} · ${t('om.stale')}: ${staleText({ stale: row.originStale })}` : via });
   // Several certificate sets: the set planned for the name, and the one served when another.
   if (row.setId) items.push({ key: t('vfy.det.set'), value: t('rw.set', { id: row.setId }) });
   const servedSet = row.state === 'done' && row.verdict ? row.verdict.matchedSet : null;
@@ -1158,6 +1162,7 @@ function emitJob(job, type, payload) {
 function setScope(job, scope) {
   job.scope = scope === 'perIp' ? 'perIp' : 'all';
   job.rows = createVerifyRows(scopePairs(job.pairs, job.scope), { origins: job.origins });
+  markStaleOrigins(job.rows, state.workspaceData('origins'));
 }
 
 /**
@@ -1266,6 +1271,8 @@ function execute(job, client, targets, { maxProbes, now = undefined }) {
   (async () => {
     const expect = await job.expect;
     const bySet = job.setExpect ? await job.setExpect : null;
+    // A remembered origin the map marked stale since the rows were made waits behind the others.
+    markStaleOrigins(job.rows, state.workspaceData('origins'));
     return runVerify(runOrder(job.rows, batch), {
       client,
       expect,
@@ -2121,6 +2128,13 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
     /** The shared shell (`cli.getShell`) was changed by another card: redraw the CLI card. */
     refreshShell() {
       if (!disposed) renderCli();
+    },
+    /** The workspace's origin map changed: the rows of remembered origins say whether it now marks them stale. */
+    refreshOrigins() {
+      markStaleOrigins(job.rows, state.workspaceData('origins'));
+      if (disposed) return;
+      if (table) table.refresh();
+      render();
     },
     dispose() {
       disposed = true;

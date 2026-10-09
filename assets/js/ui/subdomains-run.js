@@ -35,6 +35,7 @@ import { NotifyButton } from './jobs.js';
 import { scanHostRows, toCsv, toJson } from '../lib/export.js';
 import { downloadText, timestampedName } from './download.js';
 import { originIndex } from '../lib/originmap.js';
+import { hintsNow } from '../lib/originnow.js';
 import { state as stateSingleton } from '../state.js';
 import { registrableDomain } from '../lib/domain.js';
 import { errorKind } from '../lib/util.js';
@@ -107,7 +108,8 @@ function originTitle(origin) {
 /**
  * The `origin` block of the JSON export: the networks and the POSIX command the ORIGIN panel shows
  * (no wildcard suspects, no IPv6 /48), with the panel's exclusions applied — whoever runs the
- * exported command never probes an address the user excluded — and what they did (`exclude`).
+ * exported command never probes an address the user excluded — and what they did (`exclude`);
+ * the hints with `stale` on a remembered origin the map (read now) has since marked stale.
  * @param {object|null} result ScanResult
  * @param {string[]} [exclude] the tokens typed into the panel's Exclude box
  * @param {object|null} [origins] the origin map read now
@@ -120,7 +122,8 @@ export function originExport(result, exclude = [], origins = null) {
   const sweep = originSweepFor(r, { shell: 'posix', exclude: tokens, origins });
   return {
     networks: realOriginNetworks(r.originNetworks, r.hosts).networks,
-    hints: r.originHints || [],
+    // a remembered origin the map now marks stale carries the mark (lib/originnow.js)
+    hints: origins ? hintsNow(r, origins) : r.originHints || [],
     cliSuggestion: sweep.command,
     exclude: tokens
       ? { requested: tokens, emitted: sweep.emitted, excluded: sweep.excluded, unused: sweep.excludeUnused, invalid: sweep.excludeDropped }

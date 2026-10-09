@@ -1767,6 +1767,8 @@ export function verifyExportJson(rows, { expect = null, summary = null, app = 'D
         warnings: [...(r.warnings || [])],
         exposure: r.exposure ?? null,
         via: r.via,
+        // a remembered origin the workspace's origin map has since marked stale (lib/originnow.js markStaleOrigins)
+        ...(r.originStale ? { originStale: { ...r.originStale } } : {}),
         httpStatus: Number.isFinite(r.httpStatus) ? r.httpStatus : null,
         alsoServers: (r.alsoServers || []).map((x) => x.name),
         vantage: probesOf(r).map(vantageOf).filter(Boolean),

@@ -26,7 +26,7 @@ import {
   isSharedProvider
 } from './netinfo.js';
 import { buildIpIndex, lookupServers } from './inventory.js';
-import { applyTopology, orderByLoadBalancer, terminatesTls, tlsNowhere } from './topology.js';
+import { applyTopology, rankServerGroups, terminatesTls, tlsNowhere } from './topology.js';
 import {
   getWordlist, loadWordlist, WORDLIST_SMALL, parseCustomWordlist, localesForDomain, LOCALE_PACK_CODES, loadLocaleVocabulary
 } from './wordlist.js';
@@ -2214,11 +2214,7 @@ export async function runScan(config = {}, hooks = {}) {
     g.needsCert = tls && g.hosts.some((e) => (e.via === 'dns' || e.via === 'zone' || e.via === 'known') && e.covered !== false);
     g.maybeNeedsCert = tls && !g.needsCert && g.hosts.some((e) => e.via === 'hint' && e.covered !== false);
   }
-  serverGroups.sort((a, b) => Number(b.needsCert) - Number(a.needsCert)
-    || Number(b.maybeNeedsCert) - Number(a.maybeNeedsCert)
-    || String(a.server.name ?? '').localeCompare(String(b.server.name ?? ''), undefined, { numeric: true, sensitivity: 'base' })
-    || String(a.server.id ?? '').localeCompare(String(b.server.id ?? '')));
-  serverGroups = orderByLoadBalancer(serverGroups);
+  serverGroups = rankServerGroups(serverGroups);
   const nowhereNames = tlsNowhere(serverGroups);
 
   /* ---- unmatched direct IPs --------------------------------------------- */

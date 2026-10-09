@@ -337,6 +337,11 @@ describe('CLI helpers', () => {
     ].join('\n'));
     // A candidate (no remembered origin) at an address a line has is still left out.
     assert.equal(targetsForCli([...servers.slice(0, 1), { ip: '10.0.0.7', servers: [{ name: 'web06' }], reasons: [{ kind: 'mx', detail: 'mx' }] }]), 'web06 10.0.0.7:9443\n');
+    // One the origin map has since marked stale (lib/originnow.js hintsNow) is no reason to scan there.
+    const stale = { reason: 'verify-not-hosted', at: '2026-10-01T00:00:00.000Z' };
+    const staleHint = (ip, port, extra = []) => ({ ip, servers: [], reasons: [{ kind: 'known', host: 'shop.example.com', port, stale }, ...extra] });
+    assert.equal(targetsForCli([...servers.slice(0, 1), staleHint('10.0.0.7', 443), staleHint('203.0.113.51', 8443), staleHint('203.0.113.52', 443)]), 'web06 10.0.0.7:9443\n');
+    assert.equal(targetsForCli([staleHint('203.0.113.53', 8443, [{ kind: 'spf', detail: 'spf' }])]), '203.0.113.53\n', 'another reason still counts');
   });
 
   test('targetsForCli: the port on an Ansible host pattern is its SSH port, so the address goes to -p', () => {

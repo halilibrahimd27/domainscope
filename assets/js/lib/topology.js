@@ -6,7 +6,8 @@
  *     pairs, the servers that never get the certificate (the Servers view's topology card);
  *   - {@link applyTopology}: a scan's server groups (lib/scanner ServerGroup) with the names of
  *     a load balancer reaching its backends, and what each group's topology says;
- *   - {@link orderByLoadBalancer}: each load balancer followed by what is behind it.
+ *   - {@link orderByLoadBalancer}: each load balancer followed by what is behind it, and
+ *     {@link rankServerGroups}: a scan's order of its server groups.
  *
  * DOM-free and pure; kept apart from lib/inventory.js, which the start route loads.
  */
@@ -298,6 +299,22 @@ export function scanTargetsKeys(result, cliName) {
   const direct = new Set((result && Array.isArray(result.servers) ? result.servers : [])
     .filter((g) => g && g.server && g.topology && g.topology.suspect).map((g) => id(g.server)));
   return (server) => topologyTokens(direct.has(id(server)) ? { ...server, terminatesTls: undefined } : server, cliName);
+}
+
+/**
+ * The order a scan lists its server groups in: those that need the certificate first, then those
+ * only an origin hint ties ("maybe"), then by server name (numbers in order) and id; then each
+ * load balancer followed by what is behind it ({@link orderByLoadBalancer}). lib/scanner.js ranks
+ * with it, and lib/originnow.js again once the origin map has changed what a server needs.
+ * @param {Array<{ server: { name?: string, id?: string }, needsCert?: boolean, maybeNeedsCert?: boolean }>} groups
+ * @returns {Array<object>} a new array
+ */
+export function rankServerGroups(groups) {
+  const list = (Array.isArray(groups) ? groups : []).slice().sort((a, b) => Number(!!b.needsCert) - Number(!!a.needsCert)
+    || Number(!!b.maybeNeedsCert) - Number(!!a.maybeNeedsCert)
+    || String(a.server.name ?? '').localeCompare(String(b.server.name ?? ''), undefined, { numeric: true, sensitivity: 'base' })
+    || String(a.server.id ?? '').localeCompare(String(b.server.id ?? '')));
+  return orderByLoadBalancer(list);
 }
 
 /**

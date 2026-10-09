@@ -21,6 +21,7 @@ import { targetsForCli } from '../../assets/js/lib/export.js';
 import { knownForScan, originIndex } from '../../assets/js/lib/originmap.js';
 import { applyObservations, setRemember, verifyObservations } from '../../assets/js/lib/originfill.js';
 import { originOverview, originSweep, originSweepTokens, knownOfResult } from '../../assets/js/views/subdomains.js';
+import { resultNow, markStaleOrigins } from '../../assets/js/lib/originnow.js';
 
 const SOA = { mname: 'ns.dns-infra.invalid', rname: 'hostmaster.dns-infra.invalid', serial: 1, refresh: 900, retry: 900, expire: 1800, minimum: 60 };
 const WORLD = {
@@ -267,6 +268,40 @@ describe('the command the views build (views/subdomains.js) and the Verify pairs
     }
     assert.match(originOverview(result).commands.posix, /192\.0\.2\.40/, 'without the map: the command as the scan built it');
     assert.ok(!/192\.0\.2\.40/.test(originSweep(result, { names: o.proxied.map((p) => p.name), origins: originIndex(map) }).command));
+  });
+
+  test('a used origin the map has since marked stale: flagged on its server, in the hints and on its Verify row; out of needsCert and targets.txt', async () => {
+    let map = setRemember(null, true);
+    ({ map } = applyObservations(map, [
+      { name: 'www.example.com', ip: '192.0.2.40', port: 443, outcome: 'hosted' },
+      { name: 'shop.example.com', ip: '198.51.100.30', port: 8443, outcome: 'hosted' }
+    ], { source: 'cli-json', at: LAST }));
+    const inventory = 'web03 192.0.2.40\nweb01 203.0.113.10\nweb04 198.51.100.30';
+    const { result } = await scan({ knownOrigins: knownForScan(map) }, { inventory });
+    assert.deepEqual(result.servers.map((g) => [g.server.name, g.needsCert]), [['web01', true], ['web03', true], ['web04', true]]);
+    assert.equal(resultNow(result, map), result, 'nothing stale yet: the result itself');
+    // Verify: www no longer at 192.0.2.40 (another server answered for it).
+    ({ map } = applyObservations(map, [
+      { name: 'www.example.com', ip: '192.0.2.40', port: 443, outcome: 'not-hosted' },
+      { name: 'www.example.com', ip: '198.51.100.40', port: 443, outcome: 'hosted' }
+    ], { source: 'verify', at: '2026-10-01T00:00:00.000Z' }));
+    const now = resultNow(result, originIndex(map));
+    assert.deepEqual(now.servers.map((g) => [g.server.name, g.needsCert]), [['web01', true], ['web04', true], ['web03', false]], 'out of the servers to update, ranked after them');
+    assert.deepEqual([now.stats.needsCert, result.stats.needsCert], [2, 3]);
+    const web03 = now.servers.find((g) => g.server.name === 'web03');
+    assert.deepEqual(web03.hosts.map((x) => [x.name, x.via, x.stale && x.stale.reason]), [['www.example.com', 'known', 'verify-elsewhere']]);
+    const hint = now.originHints.find((x) => x.ip === '192.0.2.40');
+    assert.deepEqual(hint.reasons.map((x) => [x.host, x.stale && x.stale.reason]), [['www.example.com', 'verify-elsewhere']]);
+    // Verify's row of it says so (and is queued after the others); targets.txt leaves the stale origin out.
+    const { pairs } = buildVerifyPairs(result);
+    const rows = pairs.map((p) => ({ ...p }));
+    assert.equal(markStaleOrigins(rows, map), 1);
+    assert.deepEqual(rows.filter((x) => x.originStale).map((x) => [x.name, x.ip, x.originStale.reason]), [['www.example.com', '192.0.2.40', 'verify-elsewhere']]);
+    const lines = (text) => text.split('\n').filter(Boolean);
+    const before = lines(targetsForCli([...parseInventory(inventory).servers, ...result.originHints]));
+    const after = lines(targetsForCli([...parseInventory(inventory).servers, ...now.originHints]));
+    assert.deepEqual(before.filter((l) => !after.includes(l)), [], 'the inventory lines stay');
+    assert.ok(after.includes('web04 198.51.100.30:8443'), 'the active origin on its port stays');
   });
 
   test('a remembered origin on another port keeps it: its server entry, its Verify pair, the CLI fallback and targets.txt', async () => {

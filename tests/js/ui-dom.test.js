@@ -2481,6 +2481,13 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
       { name: 'old.example.com', ip: '192.0.2.10', via: 'hint' }
     ]), ['www.example.com:dns', 'api.example.com:dns', 'shop.example.com:zone', 'old.example.com:hint']);
     assert.deepEqual(C.strongestPerName([]), []);
+    // A remembered origin the map has since marked stale gives way to the name's other match.
+    const stale = { reason: 'verify-not-hosted', at: '2026-10-01T00:00:00.000Z' };
+    assert.deepEqual(C.strongestPerName([
+      { name: 'www.example.com', ip: '192.0.2.10', via: 'known', stale },
+      { name: 'shop.example.com', ip: '192.0.2.10', via: 'known', stale },
+      { name: 'www.example.com', ip: '192.0.2.10', via: 'zone' }
+    ]).map((x) => `${x.name}:${x.via}:${!!x.stale}`), ['www.example.com:zone:false', 'shop.example.com:known:true']);
     const src = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
     assert.match(src, /render: \(g\) => TruncatedList\(strongestPerName\(g\.hosts\), \{/);
   });

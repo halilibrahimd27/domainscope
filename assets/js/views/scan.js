@@ -74,6 +74,7 @@ import { startJob, NotifyButton } from '../ui/jobs.js';
 import { expectedCasChanged } from '../ui/expected-ca.js';
 import { knownForScan, originIndex, originTarget } from '../lib/originmap.js';
 import { StaleBadge, staleText } from '../ui/origin-map.js';
+import { resultNow } from '../lib/originnow.js';
 import {
   CertAlternatives, CertChainNotes, CertLoader, CertPfxNote, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad, pfxFocusTarget,
   certDisplayName, issuerDisplayName, openCertInputs, certFileInputs, ValidityBadge, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS, CERT_ACCEPT, CERT_MAX_BYTES
@@ -1229,14 +1230,19 @@ export function partialScanRecord(partial, cert) {
 
 /**
  * One entry per name for a server's Hostnames cell: the first, i.e. the strongest match —
- * lib/scanner orders a server's hosts DNS, then zone file, then origin hint, and a name can
- * have several (a DNS match on one address and a hint on another).
- * @param {Array<{ name: string, via: string }>} hosts
+ * lib/scanner orders a server's hosts DNS, then the origin map, then zone file, then origin
+ * hint, and a name can have several (a DNS match on one address and a hint on another) — unless
+ * it is a remembered origin the map has since marked stale (`stale`, lib/originnow.js) and the
+ * name has another match.
+ * @param {Array<{ name: string, via: string, stale?: object }>} hosts
  * @returns {Array<{ name: string, via: string }>}
  */
 export function strongestPerName(hosts) {
   const byName = new Map();
-  for (const x of hosts) if (!byName.has(x.name)) byName.set(x.name, x);
+  for (const x of hosts) {
+    const prev = byName.get(x.name);
+    if (!prev || (prev.stale && !x.stale)) byName.set(x.name, x);
+  }
   return [...byName.values()];
 }
 
@@ -2684,6 +2690,17 @@ function buildRunUI(run, ctx, { onFinish }) {
   // Behind-CDN origin-panel state: the exclude tokens and an on-demand network-owner cache.
   const cdnExclude = { raw: '', tokens: [] };
   const cdnOwnerCache = new Map();
+  // The finished result as the workspace's origin map reads now (lib/originnow.js): a remembered
+  // origin it has since marked stale is flagged, and no longer makes its server need the
+  // certificate. What the Servers tab, the summary, the counts and the exports show; read again
+  // once the map changes (the subscription at the end).
+  let shownMemo = null;
+  const shown = () => {
+    const r = run.result;
+    if (!r) return null;
+    if (!shownMemo || shownMemo.r !== r) shownMemo = { r, value: resultNow(r, state.workspaceData('origins')) };
+    return shownMemo.value;
+  };
   const cdnOwnerCtl = new AbortController();
   // The shell of the Behind CDN commands (the quick sweep and step 3 of the CLI card), shared with
   // the Verify tab's CLI card through session.cdnShell. renderCdnTab builds the one toggle and
@@ -2855,7 +2872,7 @@ function buildRunUI(run, ctx, { onFinish }) {
   // headline (lib/summary.js). Only a finished scan has a result (a cancelled one keeps none).
   const VERIFY_MAIN = new Set(['vfy.head.all', 'vfy.head.some', 'vfy.head.none', 'vfy.head.partial', 'vfy.head.noAnswer']);
   const summaryFacts = () => {
-    const r = run.result;
+    const r = shown();
     if (!r) return null;
     const job = run.verify && run.verify.runs > 0 ? run.verify : null;
     const head = job ? verifyHeadline(summarizeVerify(job.rows)).find((x) => VERIFY_MAIN.has(x.key)) : null;
@@ -2924,7 +2941,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     stat.direct.set({ value: c.direct + c.private, hint: state.inventory.servers.length || run.config.inventoryServers ? t('scan.stat.directHint', { count: c.onServers }) : null });
     if (stat.covered) stat.covered.set({ value: c.covered, hint: t('scan.stat.coveredHint', { total: formatNumber(c.total) }) });
     if (run.result) {
-      const st = run.result.stats;
+      const st = shown().stats;
       const inv = run.config.inventoryServers > 0;
       stat.servers.set({
         value: inv ? (cert ? st.needsCert : st.matchedServers) : '—',
@@ -3233,7 +3250,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     hosts: Button({ label: t('scan.export.hosts'), icon: 'download', size: 'sm', dataset: { export: 'hosts-csv' }, onClick: () => exportHosts('csv') }),
     servers: Button({
       label: t('scan.export.servers'), icon: 'download', size: 'sm', dataset: { export: 'servers-csv' },
-      onClick: () => saveFile('servers', 'csv', toCsv(scanServerRows(run.result), serverCsvColumns(run.result.servers)), 'text/csv;charset=utf-8')
+      onClick: () => saveFile('servers', 'csv', toCsv(scanServerRows(shown()), serverCsvColumns(shown().servers)), 'text/csv;charset=utf-8')
     }),
     json: Button({
       label: t('scan.export.json'), icon: 'download', size: 'sm', dataset: { export: 'json' },
@@ -3268,7 +3285,8 @@ function buildRunUI(run, ctx, { onFinish }) {
         certificateSets: certSetsJson(sets),
         renewal: plan ? { assigned: Object.fromEntries(plan.assigned), rows: plan.rows, uncovered: plan.uncovered } : null
       } : {}),
-      scan: run.result,
+      // the result as the origin map reads now: a remembered origin since marked stale is flagged
+      scan: shown(),
       verification: verifyExport(run, ctx.version),
       dane: sets ? daneExportAll() : daneExport(run, ctx.version)
     };
@@ -3278,7 +3296,7 @@ function buildRunUI(run, ctx, { onFinish }) {
   const namesText = () => namesForCli(run.result || { hosts: liveHosts(run) }, { onlyCovered });
   const targetsText = () => targetsForCli([
     ...state.inventory.servers,
-    ...(run.result ? run.result.originHints : []),
+    ...(run.result ? shown().originHints : []),
     ...(run.result ? run.result.unmatchedIps : [])
   // a server the scan found DNS pointing at directly keeps no terminates_tls=no: the CLI scans it
   ], { keys: run.result ? scanTargetsKeys(run.result, cliServerName) : (s) => topologyTokens(s, cliServerName) });
@@ -3306,7 +3324,7 @@ function buildRunUI(run, ctx, { onFinish }) {
   /* --- finish: servers / CDN / CT tabs ---------------------------------------------- */
   function renderSummary() {
     clear(summaryHost);
-    const r = run.result;
+    const r = shown();
     if (!r) return;
     const st = r.stats;
     const inv = run.config.inventoryServers > 0;
@@ -3373,7 +3391,7 @@ function buildRunUI(run, ctx, { onFinish }) {
 
   function renderServersTab() {
     clear(serversPanel);
-    const r = run.result;
+    const r = shown();
     if (!r) {
       serversPanel.append(run.status === 'running' ? pendingState() : unavailableState());
       return;
@@ -3457,8 +3475,9 @@ function buildRunUI(run, ctx, { onFinish }) {
             exportValue: (g) => [...new Set(g.hosts.map((x) => x.name))].join(' '),
             render: (g) => TruncatedList(strongestPerName(g.hosts), {
               max: 3,
-              render: (x) => h('span', { class: ['scan-srv-host', { 'is-hint': x.via === 'hint', 'is-zone': x.via === 'zone' || x.via === 'known' }] }, x.name,
+              render: (x) => h('span', { class: ['scan-srv-host', { 'is-hint': x.via === 'hint' || !!x.stale, 'is-zone': (x.via === 'zone' || x.via === 'known') && !x.stale }], dataset: x.stale ? { stale: x.stale.reason } : {} }, x.name,
                 x.via === 'hint' || x.via === 'zone' || x.via === 'known' ? h('span', { class: 'muted' }, ` · ${t(`scan.srv.via.${x.via}`)}`) : null,
+                x.stale ? h('span', { class: 'muted', title: staleText(x) }, ` · ${t('om.stale')}`) : null,
                 x.lbs ? h('span', { class: 'muted' }, ` · ${t('topo.via.lb', { lb: x.lbs.join(', ') })}`) : null)
             })
           },
@@ -3516,7 +3535,9 @@ function buildRunUI(run, ctx, { onFinish }) {
         {
           key: 'via', label: t('scan.srv.col.via'),
           render: (x) => h('span', { class: 'cluster scan-srv-via' },
-            Badge(t(`scan.srv.via.${x.via}`), { variant: x.via === 'dns' ? 'direct' : x.via === 'zone' || x.via === 'known' ? 'ok' : 'info' }),
+            Badge(t(`scan.srv.via.${x.via}`), { variant: x.via === 'dns' ? 'direct' : (x.via === 'zone' || x.via === 'known') && !x.stale ? 'ok' : 'info' }),
+            // A remembered origin the map has since marked stale: why, in its tooltip.
+            x.stale ? StaleBadge(x) : null,
             x.lbs ? Badge(t('topo.via.lb', { lb: x.lbs.join(', ') }), { variant: 'neutral', icon: 'git-branch' }) : null,
             x.through ? Badge(x.through === 'vip' ? 'VIP' : 'NAT', { variant: 'neutral', icon: x.through === 'vip' ? 'share' : 'swap' }) : null)
         },
@@ -4227,7 +4248,7 @@ function buildRunUI(run, ctx, { onFinish }) {
   }
 
   function renderTabBadges() {
-    const r = run.result;
+    const r = shown();
     const hostsCount = r ? r.hosts.length : liveHosts(run).length;
     tabs.setBadge('hosts', hostsCount);
     if (r) {
@@ -4396,10 +4417,17 @@ function buildRunUI(run, ctx, { onFinish }) {
     finish();
   }
 
-  // The origin map changed (a Verify batch here, another tab, "Delete all local data"): Behind CDN
-  // follows at once.
+  // The origin map changed (a Verify batch here, another tab, "Delete all local data"): Behind CDN,
+  // the Servers tab, the summary, the counts and Verify's rows of remembered origins follow at once.
   const offOrigins = state.subscribe(({ key, value }) => {
-    if (run.result && key === 'workspaceData' && value && (value.parts || []).includes('origins')) renderCdnTab();
+    if (!run.result || key !== 'workspaceData' || !value || !(value.parts || []).includes('origins')) return;
+    shownMemo = null;
+    renderStats();
+    renderSummary();
+    renderServersTab();
+    renderTabBadges();
+    renderCdnTab();
+    if (verifyUi && verifyUi.refreshOrigins) verifyUi.refreshOrigins();
   });
 
   return {

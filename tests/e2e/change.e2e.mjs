@@ -211,6 +211,9 @@ async function main() {
       assert(foot.startsWith('DomainScope · as of ') && foot.endsWith(` UTC · ${origin}${BASE}#/change/check?${checkQuery}`), `footer: ${foot}`);
       assert(!lines.slice(0, -1).some((l) => l.includes(TOKEN_A) || l.includes(TOKEN_B)), 'a value only inside the check link');
       await shot(page, opts, 'change-result-summary-desktop-light-en');
+      await page.setViewport({ width: 375, height: 740, mobile: true });
+      await shot(page, opts, 'change-result-summary-phone-light-en');
+      await page.setViewport({ width: 1440, height: 900 });
     });
 
     await run.step('the format being watched and the instructions\' language stay while the form is edited', async () => {

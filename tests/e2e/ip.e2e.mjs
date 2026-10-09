@@ -747,6 +747,12 @@ async function offlineGroup(browser, server) {
         assertEqual(fit.lines, 2, 'two lines');
         await assertNoHorizontalScroll(page, `${scheme} ${lang} 320 ipv6`);
         await shot(page, `ip-offline-320-${scheme}-${lang}-ipv6`);
+        await page.setViewport({ width: 375, height: 812, mobile: true });
+        await shot(page, `ip-offline-375-${scheme}-${lang}-ipv6`);
+        if (scheme === 'light') {
+          await page.setViewport({ width: 1440, height: 900 });
+          await shot(page, `ip-offline-desktop-${scheme}-${lang}-ipv6`);
+        }
         // This group's PTR zone is in-addr.arpa only: the row's reverse lookup (ip6.arpa) was stopped in
         // the page, never sent, as the zone script records; the check below is about every other request.
         await page.evaluate(() => {

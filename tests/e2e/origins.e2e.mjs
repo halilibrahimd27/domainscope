@@ -433,6 +433,9 @@ async function main() {
         assert(/^Verify found that this server no longer serves the name on /.test(title), `why: ${title}`);
         await page.evaluate(() => document.querySelector('.scan-servers-table')?.scrollIntoView());
         await shotPage(page, opts, 'origins-scan-servers-stale-desktop-light-en');
+        await page.setViewport({ width: 375, height: 800, mobile: true });
+        await shotPage(page, opts, 'origins-scan-servers-stale-phone375-light-en');
+        await page.setViewport({ width: 1440, height: 900 });
         await setMap(before);
         await page.waitFor(() => document.querySelector('.scan-servers-table tbody tr.dt-row .scan-srv')?.dataset.server === 'web04'
           && !document.querySelector('.scan-srv-host[data-stale]'), { message: 'back as the map is again' });

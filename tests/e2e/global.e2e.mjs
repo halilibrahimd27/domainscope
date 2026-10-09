@@ -697,6 +697,9 @@ async function offlineVerdicts(browser, server) {
     const copied = (await takeClipboard(page))[0];
     assert(copied.includes('\n- The China answer ends at a cache name not recognised, maybe the CDN’s partner (3 sources)\n'), `Copy summary: ${copied}`);
     await shot(page, 'global-offline-desktop-light-en-china-partner');
+    await page.setViewport({ width: 375, height: 812, mobile: true });
+    await shot(page, 'global-offline-mobile-light-en-china-partner');
+    await page.setViewport({ width: 1440, height: 900 });
     await setLangUi(page, 'tr');
     const tr = await page.waitFor(() => {
       const text = document.querySelector('.glb-summary .glb-finding[data-partner="true"]')?.lastElementChild.textContent || '';

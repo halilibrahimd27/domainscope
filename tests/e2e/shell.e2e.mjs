@@ -10,6 +10,10 @@
  *     page never scrolls horizontally, and saves full-page screenshots to tests/e2e/screenshots/
  *   - exercises the router (default/unknown/anchor hashes), skip link, language + theme toggles,
  *     the settings dialog, the Servers view (typing, file import, warnings, save → reload, clear)
+ *   - the shell at each width (docs/DESIGN.md §3): the page header's purpose line and ⓘ; the phone
+ *     bar (the logo, the Tools button naming the open tool, TR|EN, Settings) and its full-screen
+ *     Tools sheet, which is the palette too (its box, the tiles, the footer with the workspace,
+ *     the current target and the theme); the tablet drawer at 800 px; one header row at 720 px
  *   - builds a component gallery (badges, kinds, stats, alerts, progress, tabs, fields, DataTable)
  *     and tests DataTable paging/sorting/search/streaming and Tabs keyboard navigation, CopyButton's
  *     own toast text, its onFail hand-over (Copy summary's dialog) and, without the Clipboard API,
@@ -51,7 +55,7 @@ import { zoneHandoffScript } from './scan.e2e.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
 const BASE = '/domainscope/';
-const ROUTES = ['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'reports', 'portfolio', 'monitor', 'inventory', 'about'];
+const ROUTES = ['domain', 'health', 'subdomains', 'lookup', 'scan', 'cert', 'renew', 'estate', 'change', 'global', 'zone', 'retire', 'ip', 'bulk', 'ptr', 'portfolio', 'monitor', 'reports', 'inventory', 'about'];
 
 const argv = process.argv.slice(2);
 const opt = (name) => argv.includes(name);
@@ -420,16 +424,24 @@ async function jobsGroup(browser, server) {
       assertEqual((await jobs.evaluate(() => window.__notes.slice())).length, 1, 'opt-in kept for the page session');
     });
 
-    await step('on a phone the ring sits in the horizontal nav and the page does not scroll sideways', async () => {
+    await step('on a phone the ring sits on the job\'s tile of the Tools sheet and the page does not scroll sideways', async () => {
       await jobs.setViewport({ width: 375, height: 812, mobile: true });
       await jobs.emulateMedia({ 'prefers-color-scheme': 'light' });
       await jobs.evaluate(() => { window.__dnsDelay = 150; });
       await startBulk('c');
       await gotoRoute(jobs, 'ip');
-      await jobs.waitFor(() => !!document.querySelector('#app-nav .nav-link[data-view="bulk"] .nav-job'), { message: 'ring' });
       await assertNoHorizontalScroll(jobs, 'phone with a job');
-      await jobs.evaluate(() => { document.querySelector('#app-nav .nav-link[data-view="bulk"]').scrollIntoView({ inline: 'center' }); });
+      await jobs.click('[data-control="nav-menu"]');
+      await jobs.waitFor(() => !!document.querySelector('dialog.navmenu-modal[open] .navmenu-link[data-view="bulk"] .nav-job'), { message: 'ring on the tile' });
+      const tile = await jobs.evaluate(() => {
+        const ring = document.querySelector('dialog.navmenu-modal .navmenu-link[data-view="bulk"] .nav-job');
+        return { sr: ring.querySelector('.sr-only').textContent, shown: ring.getClientRects().length > 0 };
+      });
+      assert(tile.shown && /^, çalışıyor/.test(tile.sr), `the ring says it runs: ${JSON.stringify(tile)}`);
+      await jobs.evaluate(() => { document.querySelector('dialog.navmenu-modal .navmenu-link[data-view="bulk"]').scrollIntoView({ block: 'center' }); });
       await shot(jobs, 'mobile-light-tr-job-elsewhere');
+      await jobs.press('Escape');
+      await jobs.waitFor(() => !document.querySelector('dialog.navmenu-modal'), { message: 'sheet closed' });
       await jobs.evaluate(() => { window.__dnsDelay = 0; });
       await jobs.waitFor(() => !document.querySelector('#app-nav .nav-job'), { timeout: 30000, message: 'job finished' });
       await jobs.setViewport({ width: 1440, height: 900 });
@@ -678,17 +690,25 @@ async function paletteGroup(browser, server) {
     assert(!await isOpen(), 'closed');
   });
 
-  await step('Ctrl+K in the open palette closes it, and the focus goes back; the header button opens it too', async () => {
+  await step('Ctrl+K in the open palette closes it, and the focus goes back; the header\'s search opens it too', async () => {
     await pal.evaluate(() => document.getElementById('page-title').focus());
     await openWith();
     await pal.press('k', { ctrl: true });
     await pal.waitFor(() => !document.querySelector('dialog.pal-modal'), { message: 'toggled closed' });
     assertEqual(await focused(), 'page-title', 'focus back');
+    // A button styled as a field: its name is the words on it, the keys are said by aria-keyshortcuts.
     const btn = await pal.evaluate(() => {
       const b = document.querySelector('#header-actions [data-control="palette"]');
-      return b && { label: b.getAttribute('aria-label'), popup: b.getAttribute('aria-haspopup') };
+      return b && {
+        tag: b.tagName, text: b.querySelector('.header-search-text').textContent, key: b.querySelector('kbd').textContent,
+        keys: b.getAttribute('aria-keyshortcuts'), popup: b.getAttribute('aria-haspopup'), label: b.getAttribute('aria-label'), title: b.title,
+        wide: b.getBoundingClientRect().width >= 280
+      };
     });
-    assertEqual(btn, { label: 'Search the tools, or act on a domain or an IP address', popup: 'dialog' }, 'the header button');
+    assertEqual(btn, {
+      tag: 'BUTTON', text: 'Search tools, domains, IPs…', key: 'Ctrl K', keys: 'Control+K Meta+K', popup: 'dialog', label: null,
+      title: 'Search the tools, or act on a domain or an IP address', wide: true
+    }, 'the header\'s search');
     await pal.click('#header-actions [data-control="palette"]');
     await pal.waitFor(() => document.activeElement?.dataset.role === 'palette-input', { message: 'opened from the header' });
     await pal.press('Escape');
@@ -1080,6 +1100,39 @@ async function main() {
       await shot(page, 'desktop-light-tr-inventory-empty');
       await setLangUi(page, 'en');
       assertEqual(await page.evaluate(() => document.querySelector('h1.page-title').textContent), title('inventory', 'en'), 'EN h1');
+    });
+
+    await step('page header: a 28 px icon, the title, one purpose line; ⓘ opens what the tool does with a link to its About section', async () => {
+      setNodeLang('en');
+      const head = async () => page.evaluate(() => {
+        const btn = document.querySelector('.page-header [data-action="page-about"]');
+        const panel = btn && document.getElementById(btn.getAttribute('aria-controls'));
+        return {
+          icon: Math.round(document.querySelector('.page-icon').getBoundingClientRect().height),
+          purpose: document.querySelector('.page-header .page-purpose')?.textContent,
+          button: btn && { expanded: btn.getAttribute('aria-expanded'), name: btn.getAttribute('aria-label') },
+          panel: panel && { hidden: panel.hidden, desc: panel.querySelector('.page-about-desc')?.textContent || null, link: panel.querySelector('a')?.getAttribute('href'), text: panel.querySelector('a')?.textContent }
+        };
+      });
+      await gotoRoute(page, 'zone');
+      const closed = await head();
+      assertEqual(closed, {
+        icon: 28, purpose: translate('nav.zone.purpose'), button: { expanded: 'false', name: 'About this tool' },
+        panel: { hidden: true, desc: translate('nav.zone.desc'), link: '#/about?section=privacy', text: 'About › Privacy' }
+      }, 'Zone File, an offline tool');
+      await page.click('.page-header [data-action="page-about"]');
+      assertEqual(await page.evaluate(() => [document.querySelector('[data-action="page-about"]').getAttribute('aria-expanded'), document.querySelector('.page-about-panel').hidden]),
+        ['true', false], 'ⓘ opens the description');
+      await shot(page, 'desktop-light-en-page-about');
+      await page.click('.page-about-panel a');
+      await page.waitFor(() => document.documentElement.dataset.view === 'about' && document.activeElement?.closest('#about-privacy'),
+        { message: 'About › Privacy, its heading focused' });
+      assertEqual((await head()).button, null, 'About has no ⓘ of its own');
+      await gotoRoute(page, 'lookup');
+      assertEqual((await head()).panel.link, '#/about?section=sources', 'a network tool: About › Data sources & quotas');
+      // Domain Health's purpose line already says all of its description: the ⓘ keeps the link alone.
+      await gotoRoute(page, 'health');
+      assertEqual((await head()).panel, { hidden: true, desc: null, link: '#/about?section=sources', text: 'About › Data sources & quotas' }, 'no repeat');
     });
 
     await step('About › CLI examples are labelled in both languages, the cron monitoring one included', async () => {
@@ -1772,71 +1825,145 @@ async function main() {
     }
     await phone.emulateMedia({ 'prefers-color-scheme': 'light' });
 
-    await step('phone header: brand name not clipped, one-button theme cycle works', async () => {
-      const brand = await phone.evaluate(() => {
-        const el = document.querySelector('.brand-name');
-        return { scroll: el.scrollWidth, client: el.clientWidth, cycleVisible: getComputedStyle(document.querySelector('.theme-cycle')).display !== 'none' };
-      });
-      assert(brand.scroll <= brand.client + 1, `brand name clipped (${brand.scroll} > ${brand.client})`);
-      assert(brand.cycleVisible, 'theme cycle button visible on phones');
-      await phone.click('[data-control="theme-cycle"]');
-      await phone.waitFor(() => document.documentElement.dataset.theme === 'light');
-      await phone.click('[data-control="theme-cycle"]');
-      await phone.waitFor(() => document.documentElement.dataset.theme === 'dark');
-      await shot(phone, 'mobile-forced-dark-tr-header');
-      await phone.click('[data-control="theme-cycle"]');
-      await phone.waitFor(() => !document.documentElement.dataset.theme);
-    });
-
-    await step('phone nav is a sticky bar: the Tools button and the current tool, no strip of three', async () => {
+    await step('phone bar: one 52 px row — the logo, the Tools button with the open tool, TR|EN and Settings; no sidebar, no search, no theme', async () => {
       await gotoRoute(phone, 'about');
       const info = await phone.evaluate(async () => {
         window.scrollTo(0, 900);
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-        const nav = document.getElementById('app-nav');
-        const btn = nav.querySelector('[data-control="nav-menu"]').getBoundingClientRect();
+        const header = document.getElementById('app-header');
+        const shown = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+        const box = (sel) => {
+          const r = document.querySelector(sel).getBoundingClientRect();
+          return { left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height) };
+        };
+        const btn = document.querySelector('[data-control="nav-menu"]');
         const footerBtn = document.querySelector('.app-footer [data-control="shortcuts"]');
         return {
-          top: Math.round(nav.getBoundingClientRect().top),
-          button: btn.width > 0 && btn.left >= 0 && btn.right <= window.innerWidth,
-          buttonHeight: Math.round(btn.height),
-          links: [...nav.querySelectorAll('.nav-link')].filter((a) => a.getClientRects().length).length,
-          current: nav.querySelector('.nav-menu-current').textContent,
+          top: Math.round(header.getBoundingClientRect().top),
+          height: Math.round(header.getBoundingClientRect().height),
+          nav: shown(document.getElementById('app-nav')),
+          shown: ['.brand-logo', '.brand-name', '[data-control="palette"]', '[data-control="theme"]', '[data-control="theme-cycle"]', '.header-workspace', '[data-control="lang"]', '[data-control="settings"]']
+            .map((sel) => [sel, shown(document.querySelector(sel))]),
+          button: box('[data-control="nav-menu"]'),
+          lang: box('[data-control="lang"]'),
+          settings: box('[data-control="settings"]'),
+          name: btn.textContent.trim().replace(/\s+/g, ' '),
+          label: btn.querySelector('.nav-menu-current-label').textContent,
+          popup: btn.getAttribute('aria-haspopup'),
+          expanded: btn.getAttribute('aria-expanded'),
+          vw: document.documentElement.clientWidth,
           touchOnly: matchMedia('(hover: none) and (pointer: coarse)').matches,
           footerShortcuts: !!footerBtn && footerBtn.getClientRects().length > 0
         };
       });
-      assertEqual(info.top, 0, 'nav sticks to the top');
-      assert(info.button, `Tools button in view: ${JSON.stringify(info)}`);
-      assert(info.buttonHeight >= 44, `the Tools button is a full touch target: ${info.buttonHeight} px`);
-      assertEqual(info.links, 0, 'no strip of links');
-      assertEqual(info.current, title('about', 'tr'), 'current tool');
+      assertEqual([info.top, info.height], [0, 52], 'the header sticks to the top, 52 px');
+      assertEqual(info.nav, false, 'no sidebar or strip of links');
+      assertEqual(info.shown, [['.brand-logo', true], ['.brand-name', false], ['[data-control="palette"]', false], ['[data-control="theme"]', false],
+        ['[data-control="theme-cycle"]', false], ['.header-workspace', false], ['[data-control="lang"]', true], ['[data-control="settings"]', true]], 'what the bar holds');
+      assert(info.button.height >= 40 && info.settings.height >= 40 && info.lang.height >= 36, `touch targets: ${JSON.stringify(info)}`);
+      assert(info.button.left > 28 && info.button.right <= info.lang.left && info.settings.right <= info.vw, `one row: ${JSON.stringify(info)}`);
+      assertEqual([info.name, info.label, info.popup, info.expanded], [`Araçlar: ${title('about', 'tr')}`, title('about', 'tr'), 'dialog', 'false'],
+        'the Tools button names the open tool ("Araçlar:" read out)');
       // The footer's "Keyboard shortcuts" button: not on a touch-only device (no keyboard to use them with).
       assertEqual(info.footerShortcuts, !info.touchOnly, `footer shortcuts button (touch only: ${info.touchOnly})`);
       await phone.evaluate(() => window.scrollTo(0, 0));
     });
 
-    await step('turned to 800 px: the Tools bar gives way to the sticky strip of links, scrolled to the active one', async () => {
-      // Still on About, the strip's last link: in view only once the strip has scrolled.
+    await step('phone: the theme is in the Tools sheet\'s footer (Auto / Light / Dark), with the workspace', async () => {
+      await phone.click('[data-control="nav-menu"]');
+      await phone.waitFor(() => document.querySelector('dialog.navmenu-modal[open] [data-control="sheet-theme"]'), { message: 'sheet open' });
+      const foot = await phone.evaluate(() => {
+        const d = document.querySelector('dialog.navmenu-modal[open]');
+        const seg = d.querySelector('[data-control="sheet-theme"]');
+        return {
+          workspace: !!d.querySelector('.navmenu-foot [data-control="workspace-menu"]'),
+          options: [...seg.querySelectorAll('[data-value]')].map((b) => [b.dataset.value, b.getAttribute('aria-pressed')]),
+          label: document.getElementById(seg.getAttribute('aria-labelledby'))?.textContent
+        };
+      });
+      assertEqual(foot, { workspace: true, options: [['auto', 'true'], ['light', 'false'], ['dark', 'false']], label: 'Tema' }, 'the sheet\'s footer');
+      await phone.click('dialog.navmenu-modal [data-control="sheet-theme"] [data-value="dark"]');
+      await phone.waitFor(() => document.documentElement.dataset.theme === 'dark', { message: 'dark from the sheet' });
+      assertEqual(await phone.evaluate(() => JSON.parse(localStorage.getItem('ssds.settings')).theme), 'dark', 'persisted');
+      await shot(phone, 'mobile-forced-dark-tr-sheet');
+      await phone.click('dialog.navmenu-modal [data-control="sheet-theme"] [data-value="auto"]');
+      await phone.waitFor(() => !document.documentElement.dataset.theme, { message: 'auto again' });
+      await phone.press('Escape');
+      await phone.waitFor(() => !document.querySelector('dialog.navmenu-modal'), { message: 'sheet closed' });
+    });
+
+    await step('turned to 800 px: no sidebar; the Tools button opens the groups as a drawer on the left; at 1280 px the sidebar is back', async () => {
       await phone.setViewport({ width: 800, height: 900 });
       try {
         await gotoRoute(phone, 'about');
-        const info = await phone.evaluate(async () => {
-          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-          const nav = document.getElementById('app-nav');
-          const link = nav.querySelector('.nav-link[aria-current="page"]').getBoundingClientRect();
-          const box = nav.getBoundingClientRect();
+        const bar = await phone.evaluate(() => ({
+          nav: document.getElementById('app-nav').getClientRects().length > 0,
+          tools: document.querySelector('[data-control="nav-menu"]').getClientRects().length > 0,
+          search: getComputedStyle(document.querySelector('[data-control="palette"] .header-search-text')).position,
+          cycle: getComputedStyle(document.querySelector('[data-control="theme-cycle"]')).display !== 'none',
+          header: Math.round(document.getElementById('app-header').getBoundingClientRect().height)
+        }));
+        assertEqual(bar, { nav: false, tools: true, search: 'absolute', cycle: true, header: 52 },
+          'one header row: the Tools button, the search as an icon (its words for screen readers), the theme as one button');
+        await phone.click('[data-control="nav-menu"]');
+        await phone.waitFor(() => document.querySelector('dialog.navmenu-modal[open]'), { message: 'drawer open' });
+        // Measured once the opening animation is over (the infinite ones never finish).
+        await phone.evaluate(() => Promise.all(document.getAnimations().filter((a) => a.effect && a.effect.getComputedTiming().iterations !== Infinity)
+          .map((a) => a.finished.catch(() => null))));
+        const drawer = await phone.evaluate(() => {
+          const d = document.querySelector('dialog.navmenu-modal');
+          const r = d.querySelector('.modal-box').getBoundingClientRect();
           return {
-            links: [...nav.querySelectorAll('.nav-link')].filter((a) => a.getClientRects().length).length,
-            scrollable: nav.scrollWidth > nav.clientWidth,
-            scrolled: nav.scrollLeft > 0,
-            activeVisible: link.left >= box.left && link.right <= box.right,
-            toolsBar: nav.querySelector('.nav-menu-bar').getClientRects().length > 0
+            drawer: d.classList.contains('modal-drawer'),
+            left: Math.round(r.left), width: Math.round(r.width), height: Math.round(r.height), vh: innerHeight,
+            search: !!d.querySelector('[data-role="palette-input"]'),
+            links: d.querySelectorAll('.navmenu-link').length,
+            current: [...d.querySelectorAll('.navmenu-link[aria-current="page"]')].map((a) => a.dataset.view),
+            focused: document.activeElement?.dataset.view
           };
         });
-        assert(info.links > 3 && info.scrollable && info.scrolled && info.activeVisible, `nav strip: ${JSON.stringify(info)}`);
-        assert(!info.toolsBar, 'no Tools button above 720 px');
-        await assertNoHorizontalScroll(phone, 'nav strip at 800 px');
+        assertEqual([drawer.drawer, drawer.left, drawer.width, drawer.height, drawer.search, drawer.links, drawer.current, drawer.focused],
+          [true, 0, 280, drawer.vh, false, ROUTES.length, ['about'], 'about'], `the drawer: ${JSON.stringify(drawer)}`);
+        await assertNoHorizontalScroll(phone, 'drawer at 800 px');
+        await shot(phone, 'tablet-light-tr-drawer');
+        // Widened to 1280 px, the sidebar is back: the drawer closes and the page title takes the focus.
+        await phone.setViewport({ width: 1280, height: 900 });
+        await phone.waitFor(() => !document.querySelector('dialog.navmenu-modal'), { message: 'the drawer closes at 1100 px' });
+        await phone.waitFor(() => document.activeElement?.id === 'page-title', { message: 'focus on the page title' });
+        assert(await phone.evaluate(() => document.getElementById('app-nav').getClientRects().length > 0), 'the sidebar is back');
+      } finally {
+        await phone.setViewport({ width: 390, height: 844, mobile: true });
+      }
+    });
+
+    await step('720 px with a long current target: one header row — the brand name gives way, the target\'s value stops at 160 px', async () => {
+      await phone.setViewport({ width: 720, height: 900 });
+      try {
+        await gotoRoute(phone, 'lookup');
+        await phone.evaluate(async () => (await import('./assets/js/app.js')).pageSession.setTarget('a-rather-long-host-name.shop.example.com'));
+        await phone.waitFor(() => !!document.querySelector('.header-target:not([hidden]) [data-role="target-chip"]'), { message: 'chip in the header' });
+        const row = await phone.evaluate(() => {
+          const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+          const header = r('#app-header');
+          const items = ['.brand-logo', '[data-control="nav-menu"]', '[data-control="workspace"]', '[data-role="target-chip"]', '[data-control="palette"]',
+            '[data-control="lang"]', '[data-control="theme-cycle"]', '[data-control="settings"]'].map((sel) => {
+            const b = r(sel);
+            return { sel, top: Math.round(b.top), bottom: Math.round(b.bottom), left: Math.round(b.left), right: Math.round(b.right) };
+          });
+          return {
+            height: Math.round(header.height),
+            brandText: getComputedStyle(document.querySelector('.brand-text')).display,
+            value: Math.round(r('.target-chip-value').width),
+            inside: items.every((b) => b.top >= header.top && b.bottom <= header.bottom && b.left >= 0 && b.right <= document.documentElement.clientWidth),
+            ordered: items.every((b, i) => i === 0 || b.left >= items[i - 1].right - 1),
+            items
+          };
+        });
+        assertEqual([row.height, row.brandText], [52, 'none'], 'one 52 px row, the logo alone');
+        assert(row.value <= 160 && row.inside && row.ordered, `every control in view, in order: ${JSON.stringify(row)}`);
+        await assertNoHorizontalScroll(phone, 'header at 720 px with a target');
+        await shot(phone, 'tablet-720-light-tr-header-target');
+        await phone.evaluate(() => document.querySelector('[data-action="target-clear"]').click());
       } finally {
         await phone.setViewport({ width: 390, height: 844, mobile: true });
       }
@@ -2056,46 +2183,53 @@ async function main() {
       await shot(sm, 'mobile-light-tr-start-picker');
     });
 
-    await step('375 px: the Tools menu lists every tool by group, marks the current one; Esc closes it, focus returns', async () => {
+    await step('375 px: the Tools sheet lists every tool by group, marks the current one, the palette\'s box on top (not focused); Esc closes it, focus returns', async () => {
       await setLangUi(sm, 'en');
       await gotoRoute(sm, 'lookup');
       const bar = await sm.evaluate(() => {
         const btn = document.querySelector('[data-control="nav-menu"]');
-        return { expanded: btn.getAttribute('aria-expanded'), popup: btn.getAttribute('aria-haspopup'), name: btn.textContent.trim() };
+        return { expanded: btn.getAttribute('aria-expanded'), popup: btn.getAttribute('aria-haspopup'), name: btn.textContent.trim().replace(/\s+/g, ' ') };
       });
-      assertEqual(bar, { expanded: 'false', popup: 'dialog', name: 'Tools' }, 'Tools button');
+      assertEqual(bar, { expanded: 'false', popup: 'dialog', name: 'Tools: DNS Lookup' }, 'Tools button');
       await sm.click('[data-control="nav-menu"]');
-      await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open]'), { message: 'menu open' });
+      await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open] [data-role="palette-input"]'), { message: 'sheet open with its box' });
       const menu = await sm.evaluate(() => {
         const d = document.querySelector('dialog.navmenu-modal');
+        const box = d.querySelector('.modal-box').getBoundingClientRect();
+        const input = d.querySelector('[data-role="palette-input"]');
         return {
           modal: d.matches(':modal'),
+          sheet: d.classList.contains('modal-sheet'),
+          full: Math.round(box.left) === 0 && Math.round(box.width) === window.innerWidth && Math.round(box.height) === window.innerHeight,
           title: document.getElementById(d.getAttribute('aria-labelledby'))?.textContent,
           groups: [...d.querySelectorAll('.navmenu-group')].map((g) => [g.querySelector('.navmenu-label').textContent,
             [...g.querySelectorAll('.navmenu-link')].map((a) => a.dataset.view)]),
           current: [...d.querySelectorAll('.navmenu-link[aria-current="page"]')].map((a) => a.dataset.view),
           focused: document.activeElement?.dataset.view,
           expanded: document.querySelector('[data-control="nav-menu"]').getAttribute('aria-expanded'),
-          fits: d.getBoundingClientRect().right <= window.innerWidth && d.getBoundingClientRect().left >= 0
+          box: { role: input.getAttribute('role'), expanded: input.getAttribute('aria-expanded'), first: d.querySelector('.modal-body').firstElementChild.contains(input) },
+          foot: [...d.querySelectorAll('.navmenu-foot > *')].map((el) => el.className.split(' ')[0])
         };
       });
-      assert(menu.modal, 'a modal dialog (focus trap, the page inert)');
+      assert(menu.modal && menu.sheet && menu.full, `a modal sheet over the whole screen (focus trap, the page inert): ${JSON.stringify(menu)}`);
       assertEqual(menu.title, 'Tools', 'dialog title');
       assertEqual(menu.groups, [
-        ['Discover', ['subdomains', 'domain', 'zone']], ['Certificates', ['scan', 'cert', 'renew', 'estate']], ['DNS tools', ['global', 'lookup', 'bulk', 'change']],
-        ['IP addresses', ['ip', 'ptr', 'retire']], ['Mail & domain', ['health', 'reports', 'portfolio']], ['Setup & info', ['monitor', 'inventory', 'about']]
+        ['Investigate a domain', ['domain', 'health', 'subdomains', 'lookup']], ['Deploy & renew certificates', ['scan', 'cert', 'renew', 'estate']],
+        ['Change & migrate DNS', ['change', 'global', 'zone', 'retire']], ['Map IPs to servers', ['ip', 'bulk', 'ptr']],
+        ['Watch & report', ['portfolio', 'monitor', 'reports']], ['Setup & help', ['inventory', 'about']]
       ], 'groups');
       assertEqual(menu.current, ['lookup'], 'current tool marked');
-      assertEqual(menu.focused, 'lookup', 'focus starts on the current tool');
+      assertEqual(menu.focused, 'lookup', 'focus starts on the current tool, not in the box (no keyboard over the tiles)');
       assertEqual(menu.expanded, 'true', 'aria-expanded while open');
-      assert(menu.fits, 'menu fits 375 px');
-      await assertNoHorizontalScroll(sm, 'Tools menu');
+      assertEqual(menu.box, { role: 'combobox', expanded: 'false', first: true }, 'the palette\'s box on top, collapsed while empty');
+      assertEqual(menu.foot, ['navmenu-workspace', 'navmenu-row', 'navmenu-row'], 'the footer: workspace, current target (hidden without one), theme');
+      await assertNoHorizontalScroll(sm, 'Tools sheet');
       await shot(sm, 'mobile-light-en-tools-menu');
       await sm.emulateMedia({ 'prefers-color-scheme': 'dark' });
       await shot(sm, 'mobile-dark-en-tools-menu');
       await sm.emulateMedia({ 'prefers-color-scheme': 'light' });
       for (let i = 0; i < 4; i += 1) await sm.press('Tab');
-      assert(await sm.evaluate(() => !!document.activeElement?.closest('dialog.navmenu-modal')), 'Tab stays in the menu');
+      assert(await sm.evaluate(() => !!document.activeElement?.closest('dialog.navmenu-modal')), 'Tab stays in the sheet');
       await sm.press('Escape');
       await sm.waitFor(() => !document.querySelector('dialog.navmenu-modal'), { message: 'menu closed' });
       await sm.waitFor(() => document.activeElement?.dataset.control === 'nav-menu', { message: 'focus back on the Tools button' });
@@ -2103,14 +2237,47 @@ async function main() {
       assertEqual(await sm.evaluate(() => document.documentElement.dataset.view), 'lookup', 'no navigation');
     });
 
+    await step('375 px: the sheet is the palette — a domain\'s actions replace the tiles, Esc empties the box, a tap opens the tool filled in and sends nothing', async () => {
+      await sm.click('[data-control="nav-menu"]');
+      await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open] [data-role="palette-input"]'), { message: 'sheet open with its box' });
+      await sm.type('dialog.navmenu-modal [data-role="palette-input"]', 'mx example.org');
+      await sm.waitFor(() => document.querySelector('dialog.navmenu-modal .pal-list [role="option"]'), { message: 'results' });
+      const typed = await sm.evaluate(() => {
+        const d = document.querySelector('dialog.navmenu-modal');
+        const input = d.querySelector('[data-role="palette-input"]');
+        return {
+          tiles: d.querySelector('.navmenu-groups').hidden,
+          entries: [...d.querySelectorAll('.pal-list [role="option"]')].map((o) => o.dataset.entry),
+          expanded: input.getAttribute('aria-expanded'),
+          active: document.getElementById(input.getAttribute('aria-activedescendant'))?.dataset.entry
+        };
+      });
+      assertEqual([typed.tiles, typed.entries[0], typed.entries.length > 4, typed.expanded, typed.active], [true, 'action:lookupMx', true, 'true', 'action:lookupMx'],
+        `the actions instead of the tiles: ${JSON.stringify(typed)}`);
+      await assertNoHorizontalScroll(sm, 'sheet with results');
+      await shot(sm, 'mobile-light-en-tools-sheet-search');
+      await sm.press('Escape');
+      await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open]') && !document.querySelector('dialog.navmenu-modal .navmenu-groups').hidden,
+        { message: 'Esc empties the box first; the tiles come back' });
+      assertEqual(await sm.evaluate(() => document.querySelector('dialog.navmenu-modal [data-role="palette-input"]').value), '', 'the box is empty');
+      await sm.type('dialog.navmenu-modal [data-role="palette-input"]', 'example.org');
+      await sm.waitFor(() => document.querySelector('dialog.navmenu-modal .pal-option[data-entry="action:health"]'), { message: 'the domain\'s actions' });
+      await sm.click('dialog.navmenu-modal .pal-option[data-entry="action:health"]');
+      await sm.waitFor(() => document.documentElement.dataset.view === 'health' && !document.querySelector('dialog.navmenu-modal'),
+        { message: 'Domain Health opened, the sheet closed' });
+      assertEqual(await sm.evaluate(() => location.hash), '#/health?domain=example.org&run=0', 'filled in, not run');
+      await sm.waitFor(() => document.activeElement?.id === 'page-title', { message: 'focus on the new page title' });
+    });
+
     await step('375 px: a tool picked in the menu opens and its title takes the focus', async () => {
+      await gotoRoute(sm, 'lookup');
       await sm.click('[data-control="nav-menu"]');
       await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open]'));
       await sm.click('.navmenu-link[data-view="health"]');
       await sm.waitFor(() => document.documentElement.dataset.view === 'health' && !document.querySelector('dialog.navmenu-modal'),
         { message: 'Domain Health opened, menu closed' });
       await sm.waitFor(() => document.activeElement?.id === 'page-title', { message: 'focus on the new page title' });
-      assertEqual(await sm.evaluate(() => document.querySelector('.nav-menu-current').textContent), 'Domain Health', 'current tool in the bar');
+      assertEqual(await sm.evaluate(() => document.querySelector('.nav-menu-current-label').textContent), 'Domain Health', 'current tool on the Tools button');
       // The open tool's own entry only closes the menu: the route (and its params) stays.
       await sm.evaluate(() => window.history.replaceState(null, '', '#/health?keep=1'));
       await sm.click('[data-control="nav-menu"]');
@@ -2121,12 +2288,13 @@ async function main() {
       assertEqual(await sm.evaluate(() => window.location.hash), '#/health?keep=1', 'route kept');
     });
 
-    await step('375 px: the running tool pulses in the Tools menu; a Ctrl+click is the browser\'s; turned past 720 px the menu closes', async () => {
+    await step('375 px: the running tool pulses on the Tools button and in the sheet; a Ctrl+click is the browser\'s; turned to 800 px the sheet closes', async () => {
       await gotoRoute(sm, 'bulk');
       await holdFetches(sm);
       await sm.type('[data-role="bulk-input"]', 'www.example.com');
       await sm.click('[data-action="bulk-run"]');
       await sm.waitFor(() => document.getElementById('app-header').classList.contains('is-busy') && window.__heldFetches > 0, { message: 'running' });
+      assert(await sm.evaluate(() => document.querySelector('[data-control="nav-menu"]').classList.contains('is-busy')), 'the Tools button pulses');
       await sm.click('[data-control="nav-menu"]');
       await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open]'), { message: 'menu open' });
       const dots = await sm.evaluate(() => [...document.querySelectorAll('.navmenu-link')].filter((a) => a.classList.contains('is-busy')
@@ -2138,17 +2306,19 @@ async function main() {
         'the menu stays open, no navigation');
       await sm.setViewport({ width: 800, height: 740, mobile: true });
       try {
-        await sm.waitFor(() => !document.querySelector('dialog.navmenu-modal'), { message: 'the menu closes past 720 px' });
+        // A phone turned to landscape: the sheet closes (the Tools button opens the drawer there) and the focus goes back to the button.
+        await sm.waitFor(() => !document.querySelector('dialog.navmenu-modal'), { message: 'the sheet closes past 720 px' });
         const after = await sm.evaluate(() => ({
-          focus: document.activeElement?.id,
+          focus: document.activeElement?.dataset.control,
           expanded: document.querySelector('[data-control="nav-menu"]').getAttribute('aria-expanded')
         }));
-        assertEqual(after, { focus: 'page-title', expanded: 'false' }, 'the focus goes to the page title');
+        assertEqual(after, { focus: 'nav-menu', expanded: 'false' }, 'the focus goes back to the Tools button');
       } finally {
         await sm.setViewport({ width: 375, height: 740, mobile: true });
       }
       await sm.press('Escape');
       await sm.waitFor(() => !document.getElementById('app-header').classList.contains('is-busy'), { message: 'cancelled with Esc' });
+      assert(await sm.evaluate(() => !document.querySelector('[data-control="nav-menu"]').classList.contains('is-busy')), 'no dot on the button once it stopped');
       await sm.click('[data-control="nav-menu"]');
       await sm.waitFor(() => document.querySelector('dialog.navmenu-modal[open]'));
       assertEqual(await sm.evaluate(() => document.querySelectorAll('.navmenu-link.is-busy').length), 0, 'no dot once it stopped');
@@ -2601,7 +2771,7 @@ async function main() {
           title: document.querySelector('#page-offline .alert-title')?.textContent,
           tools: [...document.querySelectorAll('#page-offline a[data-view]')].map((a) => a.dataset.view)
         }));
-        assertEqual(note, { hidden: false, title: translate('shell.offlineTitle'), tools: ['zone', 'cert', 'estate', 'change', 'reports', 'monitor', 'inventory', 'about'] }, 'offline note');
+        assertEqual(note, { hidden: false, title: translate('shell.offlineTitle'), tools: ['cert', 'estate', 'change', 'zone', 'monitor', 'reports', 'inventory', 'about'] }, 'offline note');
         await pwa.type('[data-role="lookup-name"]', 'example.com');
         await pwa.click('[data-action="run"]');
         await pwa.waitFor((text) => [...document.querySelectorAll('.toast')].some((el) => el.textContent.includes(text)),

@@ -10,7 +10,7 @@
  *   node tests/e2e/monitor.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots] [--shots-dir <dir>]
  *
  * What is checked:
- *   - navigation: Monitoring is the first tool of Setup & info; the empty page offers the drop
+ *   - navigation: Monitoring is in Watch & report, after Domain portfolio; the empty page offers the drop
  *     zone (focused by '/'), the folder picker and where the results come from;
  *   - the folder: five reports, three months of history (two bad lines skipped and said), the
  *     Markdown summaries left alone, a stray file named; the tiles (5 targets, 3 with bad changes
@@ -243,9 +243,9 @@ async function main() {
     await gotoRoute(page, 'monitor');
 
     run.group('Monitoring (desktop 1440×900, English, light)');
-    await run.step('the first tool of Setup & info; the empty page offers the drop zone, the folder picker and where the results come from', async () => {
+    await run.step('in Watch & report after Domain portfolio; the empty page offers the drop zone, the folder picker and where the results come from', async () => {
       const info = await page.evaluate(() => {
-        const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/about"]'));
+        const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/reports"]'));
         return {
           nav: group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '')) : [],
           title: document.querySelector('h1')?.textContent,
@@ -256,7 +256,7 @@ async function main() {
           empty: document.querySelector('.mon-page .empty')?.textContent || ''
         };
       });
-      assertEqual(info.nav, ['monitor', 'inventory', 'about'], 'Setup & info group');
+      assertEqual(info.nav, ['portfolio', 'monitor', 'reports'], 'Watch & report group');
       assertEqual(info.title, 'Monitoring', 'title');
       assert(info.drop && info.folder, 'drop zone and folder picker');
       assert(info.how, 'where the results come from, open while nothing is');

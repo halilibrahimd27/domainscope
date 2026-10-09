@@ -8,7 +8,7 @@
  *
  *   node tests/e2e/portfolio.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
- * Covers: the nav entry (Mail & domain, after DMARC & TLS reports), the box filled in from the
+ * Covers: the nav entry (the first of Watch & report), the box filled in from the
  * workspace's recent domains, a shared link that only fills it ("Nothing has been sent yet");
  * Check portfolio over three domains (example.com, example.org, example-test.com.tr): rows fill as
  * the lookups land; the expiry countdown coloured by the days left, a missing transfer lock, the
@@ -273,7 +273,7 @@ async function main() {
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
     run.group('Desktop 1440×900 (English)');
-    await run.step('the nav entry in Mail & domain; the box filled in from the workspace\'s recent domains; nothing sent', async () => {
+    await run.step('the first nav entry of Watch & report; the box filled in from the workspace\'s recent domains; nothing sent', async () => {
       await page.goto(`${server.url}#/about`);
       await waitReady(page);
       if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
@@ -287,7 +287,7 @@ async function main() {
         const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/reports"]'));
         return group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '').split('?')[0]) : [];
       });
-      assertEqual(nav, ['health', 'reports', 'portfolio'], 'Mail & domain group');
+      assertEqual(nav, ['portfolio', 'monitor', 'reports'], 'Watch & report group');
       assertEqual(await text(page, 'h1'), 'Domain portfolio', 'title');
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="pf-domains"]').value), DOMAINS.join('\n'), 'recent domains, most recent first');
       assert(await page.evaluate(() => !!document.querySelector('[data-note="prefilled"]')), 'says where the list came from');

@@ -161,7 +161,7 @@ describe('i18n coverage', () => {
     ]);
     const keys = new Set();
     const add = (k) => keys.add(k);
-    for (const v of app.VIEWS) { add(`nav.${v.id}`); add(`nav.${v.id}.desc`); }
+    for (const v of app.VIEWS) { add(`nav.${v.id}`); add(`nav.${v.id}.desc`); add(`nav.${v.id}.purpose`); }
     for (const id of VIEW_IDS) {
       const m = views[id].default?.mount ? views[id].default : views[id];
       add(m.titleKey);
@@ -326,6 +326,8 @@ describe('i18n coverage', () => {
     for (const g of shellnav.groupViews(app.VIEWS)) add(g.labelKey);
     for (const task of shellnav.START_TASKS) add(`start.task.${task.id}`);
     for (const s of shellnav.SHORTCUTS) add(`keys.${s.id}`);
+    // The page header's ⓘ: the link to each tool's About section.
+    for (const v of app.VIEWS) if (shellnav.aboutSectionOf(v)) add(`shell.aboutLink.${shellnav.aboutSectionOf(v)}`);
     // Copy summary (lib/summary.js): every sum.* text, registered with the views by ui/summary-button.js.
     const summary = await imp('assets/js/lib/summary.js');
     for (const k of Object.keys(summary.SUMMARY_I18N.en)) add(k);

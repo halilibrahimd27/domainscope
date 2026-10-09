@@ -5,7 +5,8 @@
  * while the user works elsewhere; its only signal there used to be the final toast. While a job
  * runs:
  * - the tab title reads "(62%) <page> · DomainScope" (the least advanced job when several run);
- * - the running view's navigation entry carries a small progress ring;
+ * - the running view's navigation entry carries a small progress ring (the sidebar's, and the
+ *   Tools sheet's or drawer's while it is open);
  * - the favicon gets a progress badge (an SVG `data:` URL — the page CSP allows `img-src data:`);
  * - once a job has run 30 s (lib/jobprogress.js LONG_JOB_MS), its panel offers "Notify me when done"
  *   ({@link NotifyButton}): the browser asks for permission only on that click, the choice lasts
@@ -198,8 +199,9 @@ function render() {
   renderFavicon(doc, running.length ? combined.fraction : undefined);
 }
 
+/** The sidebar's links and, while it is open, the Tools sheet's or drawer's (below 1100 px). */
 function renderNav(doc, running) {
-  for (const link of doc.querySelectorAll('#app-nav .nav-link[data-view]')) {
+  for (const link of doc.querySelectorAll('#app-nav .nav-link[data-view], dialog.navmenu-modal .navmenu-link[data-view]')) {
     const job = running.find((j) => j.view === link.dataset.view);
     let ring = link.querySelector(':scope > .nav-job');
     if (!job) {

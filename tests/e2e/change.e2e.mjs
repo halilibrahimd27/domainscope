@@ -9,7 +9,7 @@
  *
  *   node tests/e2e/change.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
- * Covers: the nav entry (DNS tools, after Bulk Resolve) and the empty form (nothing sent); an ACME
+ * Covers: the nav entry (the first of Change & migrate DNS) and the empty form (nothing sent); an ACME
  * DNS-01 TXT request typed in (the change as it is built, a token of the wrong shape flagged, the
  * admin's instructions in English and Turkish, BIND with its download, the route that reopens the
  * form, the result's Copy summary (the template, the set and what is done to it, the problems, the
@@ -150,16 +150,16 @@ async function main() {
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
     run.group('Desktop 1440×900 (English)');
-    await run.step('boots on #/change: nav entry after Bulk Resolve in DNS tools, the empty form, nothing sent', async () => {
+    await run.step('boots on #/change: the first nav entry of Change & migrate DNS, the empty form, nothing sent', async () => {
       await page.goto(`${server.url}#/change`);
       await waitReady(page);
       if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
       await gotoRoute(page, 'change');
       const nav = await page.evaluate(() => {
-        const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/bulk"]'));
+        const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/global"]'));
         return group ? [...group.querySelectorAll('.nav-link')].map((a) => a.dataset.view) : [];
       });
-      assertEqual(nav, ['global', 'lookup', 'bulk', 'change'], 'DNS tools group');
+      assertEqual(nav, ['change', 'global', 'zone', 'retire'], 'Change & migrate DNS group');
       assertEqual(await text(page, 'h1'), 'DNS change request', 'title');
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="change-template"]').value), 'acme-txt', 'first template');
       assert(await page.evaluate(() => !!document.querySelector('.chg-empty .empty')), 'empty state');

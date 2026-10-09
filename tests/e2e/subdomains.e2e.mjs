@@ -558,7 +558,7 @@ async function main() {
     await browser.conn.send('Browser.grantPermissions', { origin, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] }).catch(() => {});
 
     run.group('Desktop 1440×900 (English)');
-    await run.step('the site root lands on #/subdomains: first nav item, Discover group, hero and intro', async () => {
+    await run.step('the site root lands on #/subdomains: in Investigate a domain, hero and intro', async () => {
       await page.goto(server.url);
       await waitReady(page);
       await setLangUi(page, 'en');
@@ -582,8 +582,8 @@ async function main() {
         wordlistOn: document.querySelector('[data-role="sub-wordlist"]').checked,
         advancedOpen: document.querySelector('.sub-advanced').open
       }));
-      assertEqual([info.view, info.firstNav, info.h1, info.firstGroup, info.brand], ['subdomains', 'subdomains', 'Subdomains', 'Discover', '#/subdomains'], 'default route');
-      assertEqual(info.firstGroupShown, 'uppercase', 'group labels are upper-cased by CSS');
+      assertEqual([info.view, info.firstNav, info.h1, info.firstGroup, info.brand], ['subdomains', 'domain', 'Subdomains', 'Investigate a domain', '#/subdomains'], 'default route');
+      assertEqual(info.firstGroupShown, 'none', 'group labels in sentence case');
       assert(info.input && info.label && info.placeholder === 'example.com', `search box: ${JSON.stringify(info)}`);
       // The box takes the focus only with a mouse (no on-screen keyboard popping up on a phone).
       assert(info.mouse, 'the desktop page has a mouse (hover, fine pointer): cdp.mjs pins one for headless Chrome');
@@ -1149,7 +1149,7 @@ async function main() {
         tabs: [...document.querySelectorAll('.sub-tabs .tab-label')].map((l) => l.textContent),
         tab: document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab
       }));
-      assertEqual([info.h1, info.group, info.run, info.title], ['Subdomain Tarama', 'Keşif', 'Tara', 'Hangi alan adını tarayalım?'], 'TR labels');
+      assertEqual([info.h1, info.group, info.run, info.title], ['Subdomain Tarama', 'Alan adını incele', 'Tara', 'Hangi alan adını tarayalım?'], 'TR labels');
       assertEqual(info.stat, 'Cloudflare arkasında', 'TR stat');
       assertEqual(info.segs, ['Tümü', 'Çözümlenen', 'Cloudflare', 'Doğrudan', 'Çözümlenmeyen'], 'TR filters');
       assertEqual(info.cta, 'SSL Hedefleri’nde aç', 'TR CTA');

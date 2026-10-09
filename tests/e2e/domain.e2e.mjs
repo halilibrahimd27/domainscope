@@ -8,7 +8,7 @@
  *
  *   node tests/e2e/domain.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
- * Covers: the nav entry (Discover, after Subdomains), the empty state, a shared link that only
+ * Covers: the nav entry (the first of Investigate a domain), the empty state, a shared link that only
  * fills the box (a host name reduced to its registrable domain, "Nothing has been sent yet") and
  * an IP refused; Build overview → the seven cards fill as their lookups land: an RDAP 503 and a
  * SERVFAIL for NS show "⚠ n/a" with the reason and a Retry that asks only that lookup again (the
@@ -261,16 +261,16 @@ async function main() {
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
     run.group('Desktop 1440×900 (English)');
-    await run.step('boots on #/domain: the nav entry in Discover after Subdomains, the empty state, nothing sent', async () => {
+    await run.step('boots on #/domain: the first nav entry of Investigate a domain, the empty state, nothing sent', async () => {
       await page.goto(`${server.url}#/domain`);
       await waitReady(page);
       if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
       await gotoRoute(page, 'domain');
       const nav = await page.evaluate(() => {
-        const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/zone"]'));
+        const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/health"]'));
         return group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '').split('?')[0]) : [];
       });
-      assertEqual(nav, ['subdomains', 'domain', 'zone'], 'Discover group');
+      assertEqual(nav, ['domain', 'health', 'subdomains', 'lookup'], 'Investigate a domain group');
       assertEqual(await text(page, 'h1'), 'Domain overview', 'title');
       assert(await page.evaluate(() => !!document.querySelector('.dov-empty .empty')), 'empty state');
       assertEqual(await counts(page), { dns: 0, rdap: 0, ct: 0 }, 'nothing sent');

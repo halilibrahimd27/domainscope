@@ -139,13 +139,16 @@ export function storageErrorText(err) {
 }
 
 /**
- * The header's switcher: the active workspace's name (cut with an ellipsis when long) on a button
- * that opens the Workspaces dialog.
- * @param {{ workspace: { id: string, name: string|null, isDefault: boolean }, onOpen: () => void }} opts
+ * The header's switcher: the active workspace's name (cut with an ellipsis when long) and, from
+ * 1280 px up (CSS), its server count ("Acme · 12 servers"), on a button that opens the Workspaces
+ * dialog. `.ws-switch-name` holds the name alone.
+ * @param {{ workspace: { id: string, name: string|null, isDefault: boolean }, servers?: number|null, onOpen: () => void }} opts
+ *   `servers`: how many servers the workspace's list has (null: not shown)
  * @returns {HTMLButtonElement}
  */
-export function WorkspaceSwitch({ workspace, onOpen }) {
+export function WorkspaceSwitch({ workspace, servers = null, onOpen }) {
   const name = workspaceLabel(workspace);
+  const count = Number.isInteger(servers) && servers >= 0 ? t('shell.serverCount', { count: servers }) : null;
   return h('button', {
     type: 'button',
     class: ['ws-switch', { 'is-default': !!workspace.isDefault }],
@@ -156,6 +159,7 @@ export function WorkspaceSwitch({ workspace, onOpen }) {
   },
   Icon('briefcase', { size: 15, className: 'ws-switch-icon' }),
   h('span', { class: 'ws-switch-name' }, name),
+  count ? h('span', { class: 'ws-switch-count', attrs: { 'aria-hidden': 'true' } }, ` · ${count}`) : null,
   Icon('chevron-down', { size: 14, className: 'ws-switch-chevron' }));
 }
 

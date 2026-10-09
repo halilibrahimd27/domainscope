@@ -196,8 +196,8 @@
   --header-bg: rgba(255, 255, 255, 0.86);
 
   /* Layout */
-  --header-h: 56px;
-  --sidebar-w: 244px;
+  --header-h: 52px;
+  --sidebar-w: 232px;
   --drawer-w: 280px;
   --content-max: 1360px;
   --page-x: 32px;
@@ -553,7 +553,13 @@ hr {
     "nav main";
 }
 
-/* Header */
+/* A field focused from the keyboard ('/', a start-page job) never lands under the sticky header. */
+:root {
+  scroll-padding-top: calc(var(--header-h) + 8px);
+}
+
+/* Header (docs/DESIGN.md §3.2), one row at every width: the brand, the Tools button (below
+   1100 px), the workspace switcher, the current target | the search | TR|EN, theme, Settings. */
 .app-header {
   grid-area: header;
   position: sticky;
@@ -561,7 +567,9 @@ hr {
   z-index: var(--z-header);
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-2);
+  min-width: 0;
+  height: var(--header-h);
   padding: 0 14px 0 18px;
   background: var(--surface);
   background: var(--header-bg);
@@ -572,17 +580,19 @@ hr {
 
 .brand {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 10px;
   min-width: 0;
+  margin-right: var(--space-1);
   color: inherit;
   text-decoration: none;
   border-radius: var(--radius);
 }
 
 .brand-logo {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   display: block;
   border-radius: 8px;
   box-shadow: var(--shadow-sm);
@@ -598,31 +608,118 @@ hr {
 .brand-name {
   overflow: hidden;
   font-size: 15px;
-  font-weight: 700;
+  font-weight: var(--fw-bold);
   letter-spacing: -0.012em;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
+/* The subtitle stays in the DOM; there is room for it from 1280 px up. */
 .brand-sub {
-  font-size: 12px;
+  display: none;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.header-actions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+@media (min-width: 1280px) {
+  .brand-sub {
+    display: block;
+  }
 }
 
-.header-sep {
-  width: 1px;
-  height: 22px;
-  background: var(--border);
+/* The Tools button (app.js renderNavButton): the open tool's name, below 1100 px only */
+.header-tools {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.btn.nav-menu-btn {
+  justify-content: flex-start;
+  gap: 6px;
+  min-width: 0;
+  max-width: 260px;
+  padding: 0 8px 0 10px;
+}
+
+.nav-menu-current {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.nav-menu-chevron {
+  color: var(--text-3);
+}
+
+.nav-menu-btn.is-busy::after {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.header-actions {
+  display: flex;
+  flex: 1 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* The search: the palette (Ctrl/⌘+K) as a button styled as a field, centred in the room between
+   the left group and the controls; an icon below 1100 px; none on a phone (the Tools sheet has
+   its box). Its name is the words on it; aria-keyshortcuts says the keys. */
+.header-search {
+  display: inline-flex;
+  flex: 0 1 320px;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  height: var(--btn-h);
+  margin: 0 auto;
+  padding: 0 6px 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-3);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur), color var(--dur);
+}
+
+.header-search:hover {
+  border-color: var(--border-control);
+  color: var(--text-2);
+}
+
+.header-search-icon {
+  flex: none;
+}
+
+.header-search-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.header-search-key {
+  flex: none;
+  border-bottom-width: 1px;
+  color: var(--text-3);
+  white-space: nowrap;
 }
 
 .header-actions .theme-cycle {
@@ -635,16 +732,12 @@ hr {
   letter-spacing: 0.02em;
 }
 
-/* Current target (lib/session.js): a chip after the brand, cleared with its × */
+/* Current target (lib/session.js): a chip after the workspace switcher, cleared with its × (in the
+   Tools sheet on a phone) */
 .header-target {
   display: flex;
+  flex: 0 1 auto;
   min-width: 0;
-  margin-left: 6px;
-}
-
-/* The chip shrinks (its value ellipsised) before the brand does. */
-.app-header.has-target .brand {
-  flex: none;
 }
 
 .target-chip {
@@ -659,7 +752,7 @@ hr {
   border-radius: var(--radius-pill);
   background: var(--surface-2);
   color: var(--text-2);
-  font-size: 12.5px;
+  font-size: var(--fs-xs);
   line-height: 1;
 }
 
@@ -670,7 +763,7 @@ hr {
 
 .target-chip-label {
   flex: none;
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
   color: var(--text-3);
 }
 
@@ -678,7 +771,7 @@ hr {
   display: inline-flex;
   min-width: 0;
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: var(--fs-xs);
   color: var(--text);
 }
 
@@ -721,12 +814,12 @@ hr {
   color: var(--text);
 }
 
-/* Workspace switcher (app.js, ui/workspace-ui.js): after the target chip; in the Tools menu below 720 px */
+/* Workspace switcher (app.js, ui/workspace-ui.js): after the brand, with its server count from
+   1280 px up; in the Tools sheet on a phone */
 .header-workspace {
   display: flex;
   flex: 0 1 auto;
   min-width: 0;
-  margin-left: 6px;
 }
 
 .ws-switch {
@@ -734,7 +827,7 @@ hr {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  max-width: 220px;
+  max-width: 280px;
   height: 30px;
   padding: 0 8px 0 9px;
   border: 1px solid var(--border);
@@ -742,8 +835,8 @@ hr {
   background: var(--surface);
   color: var(--text);
   font: inherit;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   line-height: 1;
   cursor: pointer;
   transition: background var(--dur), border-color var(--dur);
@@ -770,12 +863,26 @@ hr {
   color: var(--text-2);
 }
 
+.ws-switch-count {
+  display: none;
+  flex: none;
+  color: var(--text-3);
+  font-weight: var(--fw-regular);
+  white-space: nowrap;
+}
+
+@media (min-width: 1280px) {
+  .ws-switch-count {
+    display: inline;
+  }
+}
+
 .ws-switch-chevron {
   flex: none;
   color: var(--text-3);
 }
 
-/* The Tools menu's workspace row (phones) */
+/* The Tools sheet's workspace row (phones) */
 .navmenu-workspace {
   display: flex;
   align-items: center;
@@ -795,10 +902,8 @@ hr {
 }
 
 .navmenu-workspace-label {
-  font-size: 11px;
-  font-weight: 650;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
   color: var(--text-3);
 }
 
@@ -807,7 +912,7 @@ hr {
   align-items: center;
   gap: 7px;
   min-width: 0;
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
   overflow-wrap: anywhere;
 }
 
@@ -862,7 +967,9 @@ hr {
   }
 }
 
-/* Sidebar nav */
+/* Sidebar (from 1100 px; docs/DESIGN.md §3.2): the groups by job, each under a 1 px rule; links of
+   28 px with an 18 px icon; the open tool on a neutral fill with a 2 px accent bar (blue marks what
+   you can act on, not what is selected). */
 .app-nav {
   grid-area: nav;
   position: sticky;
@@ -871,21 +978,22 @@ hr {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  padding: 16px 12px 12px;
+  padding: var(--space-3) var(--space-3) var(--space-3);
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
 }
 
 .nav-group + .nav-group {
-  margin-top: 18px;
+  margin-top: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
 }
 
 .nav-group-label {
-  padding: 0 10px 6px;
-  font-size: 11px;
-  font-weight: 650;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
+  padding: 0 10px 4px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-xs);
   color: var(--text-3);
 }
 
@@ -895,7 +1003,7 @@ hr {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .nav-link {
@@ -903,10 +1011,13 @@ hr {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 10px;
-  border-radius: var(--radius);
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
   color: var(--text-2);
-  font-weight: 550;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  line-height: 20px;
   text-decoration: none;
   transition: background var(--dur), color var(--dur);
 }
@@ -927,12 +1038,23 @@ hr {
 }
 
 .nav-link[aria-current="page"] {
-  background: var(--accent-soft);
-  color: var(--accent-text);
+  background: var(--surface-selected);
+  color: var(--text);
 }
 
 .nav-link[aria-current="page"] .icon {
-  color: var(--accent);
+  color: var(--text);
+}
+
+.nav-link[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 .nav-link.is-busy::after {
@@ -963,7 +1085,8 @@ hr {
   line-height: 0;
 }
 
-.nav-link.has-job::after {
+.nav-link.has-job::after,
+.navmenu-link.has-job::after {
   display: none;
 }
 
@@ -1019,39 +1142,55 @@ hr {
   box-shadow: inset 0 0 0 1px var(--ok);
 }
 
+/* The sidebar's footer: one block of two lines — the saved servers and the DoH chain (the chain cut
+   short; all of it in the title), and where it all runs. */
 .nav-foot {
   margin-top: auto;
-  padding: 14px 6px 2px;
+  padding: var(--space-3) 4px 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
   border-top: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
+  color: var(--text-3);
+}
+
+.nav-foot-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+}
+
+.nav-foot-sep {
+  flex: none;
   color: var(--text-3);
 }
 
 .nav-status {
-  display: flex;
+  display: inline-flex;
+  flex: none;
   align-items: center;
-  gap: 8px;
-  padding: 4px;
-  border-radius: var(--radius-sm);
+  gap: 6px;
+  min-width: 0;
+  padding: 2px;
+  border-radius: var(--radius-xs);
   color: var(--text-2);
   text-decoration: none;
-  min-width: 0;
 }
 
 .nav-status .icon {
+  flex: none;
   color: var(--text-3);
 }
 
 .nav-status span {
-  display: -webkit-box;
+  min-width: 0;
   overflow: hidden;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .link-reset {
@@ -1063,53 +1202,56 @@ hr {
   cursor: pointer;
 }
 
+.nav-foot .nav-status-doh {
+  flex: 1 1 auto;
+  width: auto;
+}
+
 a.nav-status:hover,
 button.nav-status:hover {
   background: var(--surface-hover);
   color: var(--text);
 }
 
-.nav-status-privacy .icon {
-  color: var(--ok);
-}
-
 /* Desktop screens up to 1000 px high (a 1366 × 768 laptop leaves ~650 px, a 1440 × 900 one ~840): every tool
-   link of the six groups stays in view; from 760 px up with their headings, for 24 tools */
-@media (min-width: 900.02px) and (max-height: 1000px) {
+   link of the groups stays in view with its heading, links of 24 px */
+@media (min-width: 1100px) and (max-height: 1000px) {
   .app-nav {
     padding-top: 4px;
   }
 
   .nav-group + .nav-group {
     margin-top: 2px;
+    padding-top: 4px;
   }
 
   /* line heights in pixels: the same fit with any platform's fonts */
   .nav-group-label {
-    padding-bottom: 1px;
-    line-height: 13px;
+    padding-bottom: 0;
+    font-size: var(--fs-2xs);
+    line-height: 14px;
   }
 
   .nav-list {
-    gap: 1px;
+    gap: 0;
   }
 
   /* a link stays a 24 px target (20 + 2 × 2) */
   .nav-link {
+    min-height: 24px;
     padding-top: 2px;
     padding-bottom: 2px;
-    line-height: 20px;
   }
 
   .nav-foot {
-    padding-top: 10px;
-    gap: 4px;
+    padding-top: 8px;
   }
 }
 
-/* Shorter desktop screens (the 1366 × 768 laptop): 24 tools of 24 px take 576 of its ~600 px, so the
-   headings become the groups' names for screen readers only and a thin rule parts the groups */
-@media (min-width: 900.02px) and (max-height: 760px) {
+/* Shorter desktop screens (the 1366 × 768 laptop): 24 tools of 24 px take 576 of its ~605 px, so the
+   headings become the groups' names for screen readers only, a thin rule parts the groups and the
+   footer gives way */
+@media (min-width: 1100px) and (max-height: 760px) {
   .app-nav {
     padding-top: 2px;
   }
@@ -1128,56 +1270,23 @@ button.nav-status:hover {
   .nav-group + .nav-group {
     margin-top: 1px;
     padding-top: 2px;
-    border-top: 1px solid var(--border);
   }
 
-  .nav-list {
-    gap: 0;
+  .nav-foot {
+    display: none;
   }
 }
 
-/* Tools button bar: replaces the groups below 720 px (see the phone media query) */
-.nav-menu-bar {
-  display: none;
-}
-
-.nav-menu-btn {
-  flex: none;
-}
-
-.nav-menu-current {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  color: var(--text-2);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.nav-menu-current .icon {
-  color: var(--accent);
-}
-
-.nav-menu-current-label {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.nav-menu-bar.is-busy .nav-menu-current::after {
-  content: "";
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: pulse 1.2s ease-in-out infinite;
-}
-
-/* Tools menu (a Modal): the sidebar's groups as a grid of large targets */
+/* The Tools menu below 1100 px (a Modal; app.js openNavMenu): on a phone a full-height sheet —
+   the palette's box, every tool as two columns of tiles while the box is empty, a footer with the
+   workspace, the current target and the theme — on a tablet a drawer with the sidebar's groups. */
 .navmenu {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.navmenu-groups {
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -1185,10 +1294,8 @@ button.nav-status:hover {
 
 .navmenu-label {
   margin: 0 0 7px;
-  font-size: 11px;
-  font-weight: 650;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
   color: var(--text-3);
 }
 
@@ -1202,6 +1309,7 @@ button.nav-status:hover {
 }
 
 .navmenu-link {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1212,7 +1320,7 @@ button.nav-status:hover {
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
-  font-weight: 550;
+  font-weight: var(--fw-medium);
   line-height: 1.25;
   text-decoration: none;
   transition: background var(--dur), border-color var(--dur);
@@ -1228,13 +1336,24 @@ button.nav-status:hover {
 }
 
 .navmenu-link[aria-current="page"] {
-  border-color: var(--accent-soft-border);
-  background: var(--accent-soft);
-  color: var(--accent-text);
+  border-color: var(--border-control);
+  background: var(--surface-selected);
+  color: var(--text);
 }
 
 .navmenu-link[aria-current="page"] .icon {
-  color: var(--accent);
+  color: var(--text);
+}
+
+.navmenu-link[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: -1px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
 }
 
 .navmenu-name {
@@ -1254,22 +1373,61 @@ button.nav-status:hover {
   animation: pulse 1.2s ease-in-out infinite;
 }
 
-@media (max-width: 719.98px) {
-  /* A sheet hanging from the top edge, right under the Tools button. */
-  .navmenu-modal {
-    width: 100%;
-    max-width: calc(100vw - 16px);
-    margin: 8px auto auto;
-  }
+/* The drawer (tablets): the sidebar's look, a link per row */
+.navmenu-drawer .navmenu-list {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+}
 
-  .navmenu-modal .modal-box {
-    max-height: calc(100vh - 16px);
-    max-height: calc(100dvh - 16px);
-  }
+.navmenu-drawer .navmenu-link {
+  min-height: 40px;
+  padding: 6px 10px;
+  border-color: transparent;
+  background: none;
+  color: var(--text-2);
+}
 
-  .navmenu-modal .modal-body {
-    padding: 14px;
-  }
+.navmenu-drawer .navmenu-link:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.navmenu-drawer .navmenu-link[aria-current="page"] {
+  background: var(--surface-selected);
+  color: var(--text);
+}
+
+.navmenu-drawer .navmenu-group + .navmenu-group {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* The sheet's footer: the workspace, the current target and the theme */
+.navmenu-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.navmenu-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.navmenu-row-label {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-3);
+}
+
+.navmenu-target .target-chip {
+  max-width: 100%;
 }
 
 @media (max-width: 340px) {
@@ -1282,7 +1440,7 @@ button.nav-status:hover {
 .app-main {
   grid-area: main;
   min-width: 0;
-  padding: 28px 32px 40px;
+  padding: var(--page-top) var(--page-x) 40px;
   display: flex;
   flex-direction: column;
 }
@@ -1298,20 +1456,22 @@ button.nav-status:hover {
   flex: 1;
 }
 
+/* The page header (docs/DESIGN.md §5.1, region 1): a 28 px icon, the title, one purpose line and
+   the ⓘ that opens the tool's long description with a link to About */
 .page-header {
   display: flex;
   align-items: flex-start;
-  gap: 14px;
-  margin-bottom: 24px;
+  gap: var(--space-3);
+  margin-bottom: var(--stack-gap);
 }
 
 .page-icon {
-  width: 42px;
-  height: 42px;
+  width: 28px;
+  height: 28px;
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 11px;
+  border-radius: var(--radius);
   background: var(--accent-soft);
   border: 1px solid var(--accent-soft-border);
   color: var(--accent);
@@ -1322,22 +1482,79 @@ button.nav-status:hover {
   flex: 1;
 }
 
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
 .page-title {
+  min-width: 0;
   margin: 0;
-  font-size: 23px;
-  font-weight: 700;
-  letter-spacing: -0.018em;
-  line-height: 1.25;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--lh-xl);
+  overflow-wrap: anywhere;
 }
 
 .page-title:focus {
   outline: none;
 }
 
+.page-title:focus-visible {
+  border-radius: var(--radius-xs);
+  outline: var(--focus-w) solid var(--focus);
+  outline-offset: var(--focus-offset);
+}
+
+.page-about {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background var(--dur), color var(--dur);
+}
+
+.page-about:hover,
+.page-about[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 .page-desc {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
   max-width: 80ch;
   color: var(--text-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
+}
+
+.page-about-panel {
+  max-width: 80ch;
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+
+.page-about-panel p {
+  margin: 0;
+}
+
+.page-about-panel .page-about-more {
+  margin-top: 6px;
 }
 
 /* "Result from 14:02 · Run again": the tool shows the result kept from the last visit */
@@ -1827,143 +2044,91 @@ button.nav-status:hover {
   background: var(--error-bg);
 }
 
-/* Phones & small tablets: nav becomes a horizontal, sticky scroller */
-@media (max-width: 900px) {
-  /* A field focused from the keyboard ('/', a start-page job) never lands under the sticky nav. */
-  :root {
-    scroll-padding-top: 60px;
+/* From 1100 px up the sidebar is there: no Tools button. */
+@media (min-width: 1100px) {
+  .header-tools {
+    display: none;
   }
+}
 
+/* Tablets and phones (below 1100 px; lib/shellnav.js SHELL_WIDTHS): no sidebar. The header's Tools
+   button opens the groups as a drawer (720–1099 px) or a sheet (phones); the content takes the
+   whole width, which wide tables need. One header row at 720 px: the search becomes an icon, the
+   theme one cycling button, the current target's value stops at 160 px, and a long workspace name
+   or tool name gives way. */
+@media (max-width: 1099.98px) {
   .app {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto 1fr;
+    grid-template-rows: var(--header-h) 1fr;
     grid-template-areas:
       "header"
-      "nav"
       "main";
   }
 
-  .app-header {
-    position: relative;
-    height: 54px;
-    padding: 0 10px 0 14px;
-  }
-
   .app-nav {
-    position: sticky;
-    top: 0;
-    z-index: 35;
-    height: auto;
-    flex-direction: row;
-    align-items: center;
-    overflow-x: auto;
-    overflow-y: hidden;
-    padding: 6px 8px;
-    background: var(--surface);
-    background: var(--header-bg);
-    -webkit-backdrop-filter: saturate(1.5) blur(12px);
-    backdrop-filter: saturate(1.5) blur(12px);
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-    scrollbar-width: none;
-  }
-
-  .app-nav::-webkit-scrollbar {
     display: none;
   }
 
-  .nav-group {
-    display: flex;
+  .app-header {
+    padding: 0 var(--space-3) 0 var(--space-4);
+  }
+
+  .header-search {
     flex: none;
+    justify-content: center;
+    width: var(--btn-h);
+    margin: 0 0 0 auto;
+    padding: 0;
+    border-color: transparent;
+    background: none;
+    color: var(--text-2);
   }
 
-  .nav-group + .nav-group {
-    margin: 0 0 0 6px;
-    padding-left: 6px;
-    border-left: 1px solid var(--border);
+  .header-search:hover {
+    border-color: transparent;
+    background: var(--surface-hover);
+    color: var(--text);
   }
 
-  .nav-group-label,
-  .nav-foot {
+  /* Still its name: out of sight, not out of the accessibility tree */
+  .header-search-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .header-search-key,
+  .header-actions .theme-toggle {
     display: none;
   }
 
-  .nav-list {
-    flex-direction: row;
-  }
-
-  .nav-link {
-    padding: 6px 10px;
-    white-space: nowrap;
-    font-size: 13px;
-    gap: 7px;
-  }
-
-  .nav-link.is-busy::after {
-    position: static;
-    margin: 0;
+  .header-actions .theme-cycle {
+    display: inline-flex;
   }
 
   .target-chip-label {
     display: none;
   }
 
+  .target-chip-value {
+    max-width: 160px;
+  }
+
+  /* A current target takes the brand name's place; the logo stays the home link. */
+  .app-header.has-target .brand-text {
+    display: none;
+  }
+
   .app-main {
-    padding: 20px 16px 32px;
-  }
-
-  .page-header {
-    gap: 12px;
-    margin-bottom: 18px;
-  }
-
-  .page-icon {
-    width: 36px;
-    height: 36px;
-    border-radius: 9px;
-  }
-
-  .page-title {
-    font-size: 20px;
-  }
-}
-
-/* Below 720 px: one Tools button (a menu of every tool) instead of a strip showing three of them */
-@media (max-width: 719.98px) {
-  .app-nav {
-    overflow: visible;
-    padding-top: 5px;
-    padding-bottom: 5px;
-  }
-
-  /* The one navigation control on a phone: a full touch target */
-  .btn.nav-menu-btn {
-    --btn-h: 44px;
-    padding: 0 14px;
-    gap: 7px;
-    font-size: 14px;
-  }
-
-  .app-nav .nav-group {
-    display: none;
-  }
-
-  /* The Tools menu holds the workspace switcher here. */
-  .header-workspace {
-    display: none;
-  }
-
-  .nav-menu-bar {
-    display: flex;
-    flex: 1;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
+    padding: var(--page-top) var(--space-6) 32px;
   }
 }
 
 /* Up to 860 px a current target keeps the room: the workspace switcher shows its icon only (its
-   name is the button's label and title). Below 720 px the Tools menu holds the switcher. */
+   name is the button's label and title). */
 @media (max-width: 860px) {
   .app-header.has-target .header-workspace {
     flex: none;
@@ -1979,67 +2144,53 @@ button.nav-status:hover {
   }
 }
 
-/* Small tablets: a current target takes the brand's subtitle place. */
-@media (max-width: 760px) {
-  .app-header.has-target .brand-sub {
-    display: none;
-  }
-}
-
-@media (max-width: 600px) {
-  .brand-sub,
-  .hide-sm,
-  .header-actions .theme-toggle,
-  .header-actions .gh-link,
-  .header-actions .hide-sm,
-  .filedrop-accept {
-    display: none;
+/* Phones (below 720 px), one 52 px bar: the logo (a link to the start), the Tools button with the
+   open tool's name, TR|EN and Settings. The workspace, the current target and the theme are in
+   the Tools sheet, which is the palette too (there is no search button). */
+@media (max-width: 719.98px) {
+  .app-header {
+    gap: 6px;
+    padding: 0 var(--space-3);
   }
 
+  .brand {
+    margin-right: 0;
+  }
+
+  .brand-text,
+  .header-workspace,
+  .header-target,
+  .header-search,
   .header-actions .theme-cycle {
-    display: inline-flex;
-  }
-
-  /* A current target takes the brand name's place; the logo stays the home link. */
-  .app-header.has-target .brand-text {
     display: none;
   }
 
-  .app-header.has-target {
-    gap: 8px;
-  }
-
-  .header-target {
+  .header-tools {
     flex: 1 1 auto;
-    margin-left: 0;
   }
 
-  .target-chip {
-    gap: 4px;
-    max-width: 100%;
-    padding-left: 7px;
+  .btn.nav-menu-btn {
+    width: 100%;
+    max-width: none;
   }
 
-  .target-chip-value {
-    font-size: 12px;
-  }
-
-  .target-chip-clear {
-    width: 22px;
-    height: 22px;
-  }
-
-  .brand-logo {
-    width: 28px;
-    height: 28px;
+  .nav-menu-current {
+    flex: 1;
+    text-align: left;
   }
 
   .header-actions {
-    gap: 4px;
+    flex: none;
+    gap: 6px;
   }
 
-  .header-sep {
-    display: none;
+  .header-actions .lang-toggle .seg-btn {
+    height: 34px;
+    min-width: 34px;
+  }
+
+  .app-main {
+    padding: var(--page-top) var(--page-x-phone) 32px;
   }
 
   .page-header {
@@ -2050,11 +2201,31 @@ button.nav-status:hover {
     width: 100%;
   }
 
+  /* One purpose line, two at most on a phone: the whole of it is under ⓘ. */
   .page-desc {
-    font-size: 13.5px;
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
   }
 }
 
+/* Touch screens: the ⓘ is a 40 px target that does not make its row taller */
+@media (pointer: coarse) {
+  .page-about {
+    width: 40px;
+    height: 40px;
+    margin: -6px -6px -6px 0;
+  }
+}
+
+@media (max-width: 600px) {
+  .hide-sm,
+  .filedrop-accept {
+    display: none;
+  }
+}
 /* ------------------------------------------------------------------------ */
 /* 4. Components                                                            */
 /* ------------------------------------------------------------------------ */
@@ -3713,6 +3884,64 @@ button.nav-status:hover {
   width: 820px;
 }
 
+/* A drawer from the left edge (the tablet Tools menu) and a full-screen sheet (the phone's) */
+.modal-drawer,
+.modal-sheet {
+  height: 100%;
+  max-height: none;
+  margin: 0 auto 0 0;
+}
+
+.modal-drawer {
+  width: var(--drawer-w);
+  max-width: calc(100vw - 48px);
+}
+
+.modal-sheet {
+  width: 100%;
+  max-width: none;
+}
+
+.modal-drawer .modal-box,
+.modal-sheet .modal-box {
+  height: 100%;
+  max-height: none;
+  border-width: 0 1px 0 0;
+  border-radius: 0;
+}
+
+.modal-sheet .modal-box {
+  border: 0;
+}
+
+.modal.modal-drawer[open] {
+  animation: drawer-in 0.18s var(--ease);
+}
+
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+}
+
+.modal.modal-sheet[open] {
+  animation: sheet-in 0.16s var(--ease);
+}
+
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+.modal-sheet .modal-body,
+.modal-drawer .modal-body {
+  flex: 1;
+  padding: 14px;
+}
+
 .modal::backdrop {
   background: var(--backdrop);
   -webkit-backdrop-filter: blur(2px);
@@ -4374,7 +4603,7 @@ button.nav-status:hover {
   }
 
   .nav-link.is-busy::after,
-  .nav-menu-bar.is-busy .nav-menu-current::after,
+  .nav-menu-btn.is-busy::after,
   .navmenu-link.is-busy::after {
     animation: none !important;
   }

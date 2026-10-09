@@ -8,7 +8,7 @@
  *
  *   node tests/e2e/retire.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
- * Covers: the nav entry (IP addresses group, after Reverse DNS), the empty state, the address box's
+ * Covers: the nav entry (the last of Change & migrate DNS), the empty state, the address box's
  * issues (too wide, junk, private space), the domain box filled in from the page session (a zone
  * imported under Zone File, the last scan), the known host names per domain, a check of
  * 192.0.2.10 (MX and SPF break mail, an include at a provider, an in-bailiwick name server with its
@@ -284,7 +284,7 @@ async function main() {
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
     run.group('Desktop 1440×900 (English)');
-    await run.step('boots on #/retire: nav entry after Reverse DNS in the IP addresses group, empty state, nothing sent', async () => {
+    await run.step('boots on #/retire: the last nav entry of Change & migrate DNS, empty state, nothing sent', async () => {
       await page.goto(`${server.url}#/retire`);
       await waitReady(page);
       if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
@@ -293,7 +293,7 @@ async function main() {
         const group = [...document.querySelectorAll('#app-nav .nav-group')].find((g) => g.querySelector('.nav-link[data-view="retire"]'));
         return { links: [...group.querySelectorAll('.nav-link')].map((a) => a.dataset.view), title: document.querySelector('h1.page-title').textContent };
       });
-      assertEqual(nav, { links: ['ip', 'ptr', 'retire'], title: 'Retire an IP' }, 'nav');
+      assertEqual(nav, { links: ['change', 'global', 'zone', 'retire'], title: 'Retire an IP' }, 'nav');
       assert(await page.evaluate(() => !!document.querySelector('.retire-empty .empty-title')), 'empty state');
       assertEqual(await dnsCount(page), 0, 'nothing sent');
     });

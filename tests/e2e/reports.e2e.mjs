@@ -8,7 +8,7 @@
  *
  *   node tests/e2e/reports.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
- * Covers: the nav entry (Mail & domain, after Domain Health), the empty state and the privacy note;
+ * Covers: the nav entry (Watch & report, after Monitoring), the empty state and the privacy note;
  * a dropped zip of a mailbox folder (a Google-style .zip and a Microsoft-style .xml.gz of DMARC
  * reports, a DMARCbis report, two TLS-RPT .json.gz, a notes.txt that is no report) read in the
  * browser: the files line and what could not be used, the busiest domain as the current target,
@@ -243,16 +243,16 @@ async function main() {
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
     run.group('Desktop 1440×900 (English)');
-    await run.step('boots on #/reports: the nav entry after Domain Health, the empty state, the privacy note, nothing sent', async () => {
+    await run.step('boots on #/reports: the nav entry after Monitoring, the empty state, the privacy note, nothing sent', async () => {
       await page.goto(`${server.url}#/reports`);
       await waitReady(page);
       if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
       await gotoRoute(page, 'reports');
       const nav = await page.evaluate(() => {
-        const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/health"]'));
+        const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/monitor"]'));
         return group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '').split('?')[0]) : [];
       });
-      assertEqual(nav, ['health', 'reports', 'portfolio'], 'Mail & domain group');
+      assertEqual(nav, ['portfolio', 'monitor', 'reports'], 'Watch & report group');
       assertEqual(await text(page, 'h1'), 'DMARC & TLS reports', 'title');
       assert(await page.evaluate(() => !!document.querySelector('.rpt-page .empty')), 'empty state');
       assert(/never uploaded or saved/.test(await text(page, '#page-body .alert')), 'privacy note');

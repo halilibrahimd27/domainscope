@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import {
   NAV_GROUPS, OTHER_GROUP, groupViews, isPlainClick, START_TASKS, startTasks, RUN_SESSION_KEYS, isRunSignal, RUN_STORAGE_KEYS, hasUsedBefore,
   SHORTCUTS, SHORTCUT_COMMANDS, isApplePlatform, keyCaps, isTypingTarget, isFormField, escClearsField, isSearchClear,
-  shortcutFor, pickShortcutTarget
+  shortcutFor, pickShortcutTarget, SHELL_WIDTHS, navMenuMode, aboutSectionOf, paletteKeyHint, PALETTE_KEYSHORTCUTS
 } from '../../assets/js/lib/shellnav.js';
 import { VIEWS, DEFAULT_VIEW } from '../../assets/js/app.js';
 import { hasString } from '../../assets/js/i18n.js';
@@ -53,43 +53,49 @@ const el = (tagName, extra = {}) => ({ tagName: tagName.toUpperCase(), ...extra 
 const key = (k, extra = {}) => ({ key: k, target: el('body'), ...extra });
 
 describe('groupViews — the tool groups', () => {
-  test('NAV_GROUPS: Discover, SSL, DNS, IP, Mail & domain, Data, each translated', () => {
-    assert.deepEqual(ids(NAV_GROUPS), ['discover', 'ssl', 'dns', 'ip', 'mail', 'data']);
+  test('NAV_GROUPS: six jobs (investigate, certificates, change DNS, IPs, watch, setup), each translated', () => {
+    assert.deepEqual(ids(NAV_GROUPS), ['investigate', 'certs', 'change', 'network', 'watch', 'setup']);
     for (const g of [...NAV_GROUPS, OTHER_GROUP]) {
       assert.ok(hasString(g.labelKey, 'en') && hasString(g.labelKey, 'tr'), g.labelKey);
     }
     assert.ok(Object.isFrozen(NAV_GROUPS) && NAV_GROUPS.every(Object.isFrozen));
+    // The groups by object type are gone, their keys too.
+    for (const old of ['nav.groupDiscover', 'nav.groupSsl', 'nav.groupDns', 'nav.groupIp', 'nav.groupMail', 'nav.groupData']) {
+      assert.ok(!hasString(old, 'en') && !hasString(old, 'tr'), old);
+    }
   });
 
   test('the registry: every view listed exactly once, in group order, registry order inside a group', () => {
     const groups = groupViews(VIEWS);
-    assert.deepEqual(ids(groups), ['discover', 'ssl', 'dns', 'ip', 'mail', 'data']);
+    assert.deepEqual(ids(groups), ['investigate', 'certs', 'change', 'network', 'watch', 'setup']);
     assert.deepEqual(groups.map((g) => ids(g.views)), [
-      ['subdomains', 'domain', 'zone'], ['scan', 'cert', 'renew', 'estate'], ['global', 'lookup', 'bulk', 'change'], ['ip', 'ptr', 'retire'], ['health', 'reports', 'portfolio'], ['monitor', 'inventory', 'about']
+      ['domain', 'health', 'subdomains', 'lookup'], ['scan', 'cert', 'renew', 'estate'], ['change', 'global', 'zone', 'retire'],
+      ['ip', 'bulk', 'ptr'], ['portfolio', 'monitor', 'reports'], ['inventory', 'about']
     ]);
     assert.deepEqual(groups.flatMap((g) => ids(g.views)).sort(), ids(VIEWS).sort());
-    assert.equal(groups[0].labelKey, 'nav.groupDiscover');
+    assert.deepEqual(groups.flatMap((g) => ids(g.views)), ids(VIEWS), 'the registry is in navigation order');
+    assert.equal(groups[0].labelKey, 'nav.groupInvestigate');
   });
 
   test('a view added to the registry appears on its own (e.g. another tool in the IP group)', () => {
-    const at = VIEWS.findIndex((v) => v.id === 'retire') + 1;
-    const views = [...VIEWS.slice(0, at), { id: 'whois', group: 'ip', icon: 'network' }, ...VIEWS.slice(at)];
-    const ip = groupViews(views).find((g) => g.id === 'ip');
-    assert.deepEqual(ids(ip.views), ['ip', 'ptr', 'retire', 'whois']);
+    const at = VIEWS.findIndex((v) => v.id === 'ptr') + 1;
+    const views = [...VIEWS.slice(0, at), { id: 'whois', group: 'network', icon: 'network' }, ...VIEWS.slice(at)];
+    const ip = groupViews(views).find((g) => g.id === 'network');
+    assert.deepEqual(ids(ip.views), ['ip', 'bulk', 'ptr', 'whois']);
   });
 
   test('a missing or unknown group lands in a trailing "More tools" group, never dropped', () => {
     const groups = groupViews([
-      { id: 'a', group: 'nope' }, { id: 'b', group: 'dns' }, { id: 'c' }, { id: 'd', group: 'discover' }
+      { id: 'a', group: 'nope' }, { id: 'b', group: 'change' }, { id: 'c' }, { id: 'd', group: 'investigate' }
     ]);
-    assert.deepEqual(groups.map((g) => [g.id, ids(g.views)]), [['discover', ['d']], ['dns', ['b']], ['other', ['a', 'c']]]);
+    assert.deepEqual(groups.map((g) => [g.id, ids(g.views)]), [['investigate', ['d']], ['change', ['b']], ['other', ['a', 'c']]]);
     assert.equal(groups.at(-1).labelKey, OTHER_GROUP.labelKey);
   });
 
   test('empty groups are left out; junk entries are skipped; a custom group table is honoured', () => {
     assert.deepEqual(groupViews([]), []);
     assert.deepEqual(groupViews(null), []);
-    assert.deepEqual(ids(groupViews([null, { group: 'dns' }, { id: 'x', group: 'dns' }])), ['dns']);
+    assert.deepEqual(ids(groupViews([null, { group: 'change' }, { id: 'x', group: 'change' }])), ['change']);
     const custom = [{ id: 'b', labelKey: 'k.b' }, { id: 'a', labelKey: 'k.a' }];
     assert.deepEqual(groupViews([{ id: '1', group: 'a' }, { id: '2', group: 'b' }], custom).map((g) => [g.id, g.labelKey]),
       [['b', 'k.b'], ['a', 'k.a']]);
@@ -103,6 +109,68 @@ describe('groupViews — the tool groups', () => {
     }
     assert.equal(isPlainClick({ button: 1 }), false, 'middle button');
     assert.equal(isPlainClick(null), false);
+  });
+});
+
+describe('the shell at each width; the page header\'s ⓘ; the search button\'s key', () => {
+  test('navMenuMode: a sheet below 720 px, a drawer up to 1100 px, the sidebar (no Tools button) from there', () => {
+    assert.deepEqual(SHELL_WIDTHS, { phone: 720, sidebar: 1100 });
+    assert.equal(navMenuMode(320), 'sheet');
+    assert.equal(navMenuMode(375), 'sheet');
+    assert.equal(navMenuMode(719.5), 'sheet');
+    assert.equal(navMenuMode(720), 'drawer');
+    assert.equal(navMenuMode(1099), 'drawer');
+    assert.equal(navMenuMode(1100), null);
+    assert.equal(navMenuMode(1440), null);
+    assert.equal(navMenuMode(NaN), null);
+    assert.equal(navMenuMode(undefined), null);
+  });
+
+  test('style.css switches the shell at the same widths', () => {
+    const css = readFileSync(path.join(ROOT, 'assets', 'css', 'style.css'), 'utf8');
+    assert.match(css, /@media \(min-width: 1100px\) \{\s*\.header-tools \{\s*display: none;/, 'the Tools button goes at 1100 px');
+    assert.match(css, /@media \(max-width: 1099\.98px\) \{\s*\.app \{[^}]*\}\s*\.app-nav \{\s*display: none;/, 'the sidebar goes below 1100 px');
+    assert.match(css, /@media \(max-width: 719\.98px\) \{\s*\.app-header \{/, 'the phone bar below 720 px');
+    const app = readFileSync(path.join(ROOT, 'assets', 'js', 'app.js'), 'utf8');
+    assert.match(app, /for \(const width of \[SHELL_WIDTHS\.phone, SHELL_WIDTHS\.sidebar\]\)/, 'app.js follows the same widths');
+  });
+
+  test('aboutSectionOf: a network tool links to Data sources & quotas, an offline one to Privacy; About and Home to none', () => {
+    const of = (id) => aboutSectionOf(VIEWS.find((v) => v.id === id));
+    assert.equal(of('lookup'), 'sources');
+    assert.equal(of('subdomains'), 'sources');
+    assert.equal(of('zone'), 'privacy');
+    assert.equal(of('cert'), 'privacy');
+    assert.equal(of('about'), null);
+    assert.equal(aboutSectionOf({ id: 'home', offline: true }), null);
+    assert.equal(aboutSectionOf(null), null);
+    for (const v of VIEWS.filter((x) => x.id !== 'about')) {
+      assert.ok(hasString(`shell.aboutLink.${aboutSectionOf(v)}`, 'en') && hasString(`shell.aboutLink.${aboutSectionOf(v)}`, 'tr'), v.id);
+    }
+  });
+
+  test('every tool has a purpose line of 80 characters at most, in both languages', async () => {
+    const { setLang, t, getLang } = await import('../../assets/js/i18n.js');
+    const prev = getLang();
+    try {
+      for (const lang of ['en', 'tr']) {
+        setLang(lang);
+        for (const v of VIEWS) {
+          const key = `nav.${v.id}.purpose`;
+          assert.ok(hasString(key, lang), `${key} ${lang}`);
+          assert.ok(t(key).length <= 80, `${key} ${lang}: ${t(key).length} characters`);
+        }
+      }
+    } finally {
+      setLang(prev);
+    }
+  });
+
+  test('paletteKeyHint: ⌘K on Apple platforms, Ctrl K elsewhere; both keys open the palette everywhere', () => {
+    assert.equal(paletteKeyHint({ apple: true }), '⌘K');
+    assert.equal(paletteKeyHint({ apple: false }), 'Ctrl K');
+    assert.equal(paletteKeyHint(), 'Ctrl K');
+    assert.equal(PALETTE_KEYSHORTCUTS, 'Control+K Meta+K');
   });
 });
 

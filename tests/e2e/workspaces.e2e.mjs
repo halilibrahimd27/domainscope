@@ -756,7 +756,7 @@ async function phone(browser, server) {
       assertEqual(row, 'Müşteri Anonim Şirketi — İstanbul Bölge Müdürlüğü', 'the Tools menu names it');
       // One "Çalışma alanı" in the menu, the workspace row's: Servers and About have a heading of their own.
       const headings = await page.evaluate(() => [...document.querySelectorAll('dialog.navmenu-modal[open] .navmenu-label')].map((el) => el.textContent));
-      assertEqual(headings.at(-1), 'Kurulum ve bilgi', 'Servers and About');
+      assertEqual(headings.at(-1), 'Kurulum ve yardım', 'Servers and About');
       assert(!headings.includes('Çalışma alanı'), headings.join(' | '));
       await assertNoHorizontalScroll(page, 'tools menu');
       await page.evaluate(() => document.querySelector('dialog.navmenu-modal').close());

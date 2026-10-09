@@ -33,8 +33,9 @@
  *     the target and the kept results, Bulk Resolve's list and job too (also with Bulk Resolve
  *     on screen: the tool opens again, bare);
  *   - a carried link opened in a new tab only fills the form.
- * Then at 375 px (light / dark, English / Turkish): the chip in place of the brand name, the note
- * under the title, no horizontal scroll; a long host name in the chip is cut in the middle, its
+ * Then at 375 px (light / dark, English / Turkish): no chip in the phone bar, the chip in the Tools
+ * sheet's footer (its ✕ clears it, the sheet keeps the focus), the note under the title, no
+ * horizontal scroll; at 760 px a long host name in the header's chip is cut in the middle, its
  * registrable domain in full. Fails on console errors, exceptions, CSP violations and missing
  * i18n keys.
  */
@@ -607,7 +608,7 @@ async function desktop(browser, server) {
 }
 
 async function phone(browser, server) {
-  run.group('Phone (375 px): the chip, the note, no horizontal scroll');
+  run.group('Phone (375 px): the chip in the Tools sheet, the note, no horizontal scroll');
   const page = await browser.newPage('about:blank', { width: 375, height: 812, mobile: true });
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(APEX, ZONE) });
   try {
@@ -615,7 +616,7 @@ async function phone(browser, server) {
     await waitReady(page);
     for (const lang of ['en', 'tr']) {
       for (const scheme of ['light', 'dark']) {
-        await run.step(`${lang} ${scheme}: chip in place of the brand name, the kept note under the title`, async () => {
+        await run.step(`${lang} ${scheme}: the chip in the Tools sheet's footer (not the bar), the kept note under the title`, async () => {
           await page.emulateMedia({ 'prefers-color-scheme': scheme });
           await setLangUi(page, lang);
           await gotoRoute(page, `#/health?domain=${APEX}`);
@@ -626,58 +627,93 @@ async function phone(browser, server) {
           await page.waitFor(HEALTH_DONE, { timeout: 5000, message: 'kept report' });
           const layout = await page.evaluate(() => {
             const r = (sel) => document.querySelector(sel)?.getBoundingClientRect();
-            const chip = r('[data-role="target-chip"]');
-            const actions = r('#header-actions');
             return {
-              brandText: getComputedStyle(document.querySelector('.brand-text')).display,
-              chip: chip && { left: Math.round(chip.left), right: Math.round(chip.right), width: Math.round(chip.width) },
-              actionsLeft: Math.round(actions.left),
-              value: document.querySelector('.target-chip-value').textContent,
+              barChip: document.querySelector('.header-target').getClientRects().length > 0,
               note: !!document.querySelector('.page-kept:not([hidden]) .kept-note'),
               noteRight: Math.round(r('.page-kept .kept-note')?.right || 0),
               vw: document.documentElement.clientWidth
             };
           });
-          assertEqual(layout.brandText, 'none', 'brand name hidden while a target shows');
-          assert(layout.chip && layout.chip.width > 80 && layout.chip.right <= layout.actionsLeft, `chip fits before the controls: ${JSON.stringify(layout)}`);
-          assertEqual([layout.value, layout.note], [APEX, true], 'chip value + note');
+          assertEqual([layout.barChip, layout.note], [false, true], 'no chip in the phone bar; the note under the title');
           assert(layout.noteRight <= layout.vw, `the note fits: ${JSON.stringify(layout)}`);
           await assertNoHorizontalScroll(page, `phone ${lang} ${scheme}`);
           await page.evaluate(() => window.scrollTo(0, 0));
           await shot(page, opts, `carry-phone-${scheme}-${lang}-health-kept`);
+          await page.click('[data-control="nav-menu"]');
+          await page.waitFor(() => document.querySelector('dialog.navmenu-modal[open] .navmenu-target [data-role="target-chip"]'), { message: 'the chip in the sheet' });
+          const sheet = await page.evaluate(() => {
+            const row = document.querySelector('dialog.navmenu-modal .navmenu-target');
+            const chip = row.querySelector('[data-role="target-chip"]').getBoundingClientRect();
+            return {
+              label: row.querySelector('.navmenu-row-label').textContent,
+              value: row.querySelector('.target-chip-value').textContent,
+              fits: chip.left >= 0 && chip.right <= document.documentElement.clientWidth
+            };
+          });
+          assertEqual(sheet, { label: lang === 'en' ? 'Current target' : 'Geçerli hedef', value: APEX, fits: true }, 'the sheet names the target');
+          await page.evaluate(() => document.querySelector('dialog.navmenu-modal .navmenu-target').scrollIntoView({ block: 'center' }));
+          await shot(page, opts, `carry-phone-${scheme}-${lang}-sheet-target`);
+          await page.press('Escape');
+          await page.waitFor(() => !document.querySelector('dialog.navmenu-modal'), { message: 'sheet closed' });
         });
       }
     }
-    await run.step('a long host name in the chip is cut in the middle: its registrable domain stays whole', async () => {
+    await run.step('the ✕ in the sheet clears the target; the sheet stays open and keeps the focus', async () => {
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await setLangUi(page, 'en');
-      const long = `a-rather-long-host-name.shop.${APEX}`;
-      await gotoRoute(page, `#/lookup?name=${long}&type=A`);
-      await page.waitFor(LOOKUP_DONE, { timeout: 15000, message: 'lookup of the long name' });
-      const chip = await page.evaluate(() => {
-        // Clipped: narrower than the same text laid out unconstrained next to it (scrollWidth and
-        // clientWidth round away the fraction of a pixel that already brings the ellipsis).
-        const box = (sel) => {
-          const el = document.querySelector(sel);
-          if (!el) return null;
-          const free = el.cloneNode(true);
-          free.style.position = 'absolute';
-          free.style.visibility = 'hidden';
-          free.style.maxWidth = 'none';
-          free.style.flex = 'none';
-          el.parentNode.append(free);
-          const natural = free.getBoundingClientRect().width;
-          free.remove();
-          const width = el.getBoundingClientRect().width;
-          return { text: el.textContent, clipped: width + 0.01 < natural, width: Math.round(width * 10) / 10, natural: Math.round(natural * 10) / 10 };
-        };
-        return { value: document.querySelector('.target-chip-value').textContent, head: box('.target-chip-head'), tail: box('.target-chip-tail') };
-      });
-      assertEqual(chip.value, long, 'the full value in the text');
-      assertEqual([chip.tail.text, chip.tail.clipped], [APEX, false], `the registrable domain in full: ${JSON.stringify(chip)}`);
-      assert(chip.head.clipped, `the lower labels give way: ${JSON.stringify(chip)}`);
-      await assertNoHorizontalScroll(page, 'phone long chip');
-      await shot(page, opts, 'carry-phone-light-en-long-chip');
+      await page.click('[data-control="nav-menu"]');
+      await page.waitFor(() => document.querySelector('dialog.navmenu-modal[open] .navmenu-target [data-action="target-clear"]'), { message: 'the chip in the sheet' });
+      await page.click('dialog.navmenu-modal .navmenu-target [data-action="target-clear"]');
+      await page.waitFor(() => document.querySelector('dialog.navmenu-modal .navmenu-target').hidden, { message: 'the row goes' });
+      const after = await page.evaluate(() => ({
+        open: !!document.querySelector('dialog.navmenu-modal[open]'),
+        inside: !!document.activeElement?.closest('dialog.navmenu-modal'),
+        chips: document.querySelectorAll('[data-role="target-chip"]').length
+      }));
+      assertEqual(after, { open: true, inside: true, chips: 0 }, 'cleared everywhere, the sheet still open');
+      await page.press('Escape');
+      await page.waitFor(() => !document.querySelector('dialog.navmenu-modal'));
+    });
+
+    await run.step('a long host name in the chip is cut in the middle: its registrable domain stays whole (760 px, the chip in the header)', async () => {
+      await page.setViewport({ width: 760, height: 900 });
+      try {
+        const long = `a-rather-long-host-name.shop.${APEX}`;
+        await gotoRoute(page, `#/lookup?name=${long}&type=A`);
+        await page.waitFor(LOOKUP_DONE, { timeout: 15000, message: 'lookup of the long name' });
+        const chip = await page.evaluate(() => {
+          // Clipped: narrower than the same text laid out unconstrained next to it (scrollWidth and
+          // clientWidth round away the fraction of a pixel that already brings the ellipsis).
+          const box = (sel) => {
+            const el = document.querySelector(sel);
+            if (!el) return null;
+            const free = el.cloneNode(true);
+            free.style.position = 'absolute';
+            free.style.visibility = 'hidden';
+            free.style.maxWidth = 'none';
+            free.style.flex = 'none';
+            el.parentNode.append(free);
+            const natural = free.getBoundingClientRect().width;
+            free.remove();
+            const width = el.getBoundingClientRect().width;
+            return { text: el.textContent, clipped: width + 0.01 < natural, width: Math.round(width * 10) / 10, natural: Math.round(natural * 10) / 10 };
+          };
+          return {
+            value: document.querySelector('.target-chip-value').textContent,
+            valueWidth: Math.round(document.querySelector('.target-chip-value').getBoundingClientRect().width),
+            head: box('.target-chip-head'),
+            tail: box('.target-chip-tail')
+          };
+        });
+        assertEqual(chip.value, long, 'the full value in the text');
+        assert(chip.valueWidth <= 160, `the value stops at 160 px below 1100 px: ${JSON.stringify(chip)}`);
+        assertEqual([chip.tail.text, chip.tail.clipped], [APEX, false], `the registrable domain in full: ${JSON.stringify(chip)}`);
+        assert(chip.head.clipped, `the lower labels give way: ${JSON.stringify(chip)}`);
+        await assertNoHorizontalScroll(page, 'long chip at 760 px');
+        await shot(page, opts, 'carry-tablet-light-en-long-chip');
+      } finally {
+        await page.setViewport({ width: 375, height: 812, mobile: true });
+      }
     });
 
     await run.step('phone: no console errors, CSP violations or missing keys', async () => {

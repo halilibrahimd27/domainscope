@@ -235,7 +235,7 @@ async function main() {
     await gotoRoute(page, 'estate');
 
     run.group('Certificate estate (desktop 1440×900, English, light)');
-    await run.step('the last tool of the Certificates group; the empty page offers the drop zone and the command', async () => {
+    await run.step('the last tool of Deploy & renew certificates; the empty page offers the drop zone and the command', async () => {
       const info = await page.evaluate(() => {
         const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/scan"]'));
         return {
@@ -247,7 +247,7 @@ async function main() {
           empty: document.querySelector('.estate-page .empty')?.textContent || ''
         };
       });
-      assertEqual(info.nav, ['scan', 'cert', 'renew', 'estate'], 'Certificates group');
+      assertEqual(info.nav, ['scan', 'cert', 'renew', 'estate'], 'Deploy & renew certificates group');
       assertEqual(info.title, 'Certificate estate', 'title');
       assert(info.drop, 'drop zone');
       assert(info.how, 'the command is shown while nothing is open');

@@ -10,7 +10,8 @@
  * goes back where it was. Choosing an entry only fills the tool in: actions open it with
  * `run=0`, a tool opens like its navigation link (with the current target filled in), a recent
  * domain or the target goes into the box. Nothing is sent until the tool runs, and nothing typed
- * here is stored.
+ * here is stored. The same search inline ({@link PaletteBox}): the box on top of the phone Tools
+ * sheet (one search, not two), its results replacing the sheet's tiles while it holds text.
  */
 
 import { t, getLang, registerStrings, stringIn, interpolate } from '../i18n.js';
@@ -99,19 +100,37 @@ const QUERY_SHOWN = 60;
 let openApi = null;
 
 /**
- * Open the palette (once; a second call while it is open does nothing).
- * @param {{ views: ReadonlyArray<{ id: string, icon?: string }>,
- *   navigate: (view: string, params?: object, opts?: object) => void, href: (view: string) => string,
- *   state: { workspaceData: (part: string) => any, setSession: (name: string, value: any) => void },
- *   session: { target: { value: string, kind: string }|null }, done?: () => void }} api
- *   app.js: the view registry, its router, a navigation link's hash (the current target carried
- *   along), the app state and the page session
- * @returns {{ close: () => void }|null}
+ * The palette's box: a text field that owns the focus while the list under it is browsed
+ * (`aria-activedescendant`).
+ * @param {{ autofocus?: boolean }} [opts] `autofocus`: the dialog focuses it on opening
+ * @returns {HTMLInputElement}
  */
-export function openPalette({ views, navigate, href, state, session, done = () => {} }) {
-  if (openApi) return openApi;
-  const doc = globalThis.document;
-  const back = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null;
+function paletteInput({ autofocus = false } = {}) {
+  return h('input', {
+    type: 'text',
+    class: 'pal-input',
+    attrs: {
+      'aria-label': t('pal.label'), placeholder: t('pal.placeholder'), autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', enterkeyhint: 'go'
+    },
+    dataset: { role: 'palette-input', autofocus: autofocus ? '1' : null }
+  });
+}
+
+/**
+ * The search the dialog and the inline boxes share: `input` becomes a combobox over a listbox of
+ * entries (lib/palette.js paletteResults), ↓ and ↑ move, Enter opens the entry. Choosing an entry
+ * only fills a tool in (actions open it with `run=0`, a tool like its navigation link, a pasted
+ * certificate in the Certificate view, read in the browser); a recent domain or the current target
+ * goes into the box, and its actions follow.
+ * @param {{ input: HTMLInputElement, views: ReadonlyArray<{ id: string, icon?: string }>,
+ *   navigate: Function, href: (view: string) => string, state: object, session: object,
+ *   emptyEntries: boolean, onQuery?: (text: string) => void, leave: (moved: boolean) => void }} opts
+ *   `emptyEntries`: an empty box lists the current target, the recent domains and every tool (the
+ *   dialog) — else nothing (an inline box, whose host shows its own content then); `leave(moved)`:
+ *   an entry opened a tool (`moved`: the route changed)
+ * @returns {{ list: HTMLElement, status: HTMLElement, render: () => void, entries: () => object[] }}
+ */
+function paletteSearch({ input, views, navigate, href, state, session, emptyEntries, onQuery = () => {}, leave }) {
   const other = getLang() === 'en' ? 'tr' : 'en';
   const otherText = (key, params) => {
     const raw = stringIn(other, key);
@@ -129,27 +148,17 @@ export function openPalette({ views, navigate, href, state, session, done = () =
 
   const listId = uid('pal-list');
   const statusId = uid('pal-status');
-  const input = h('input', {
-    type: 'text',
-    class: 'pal-input',
-    attrs: {
-      role: 'combobox', 'aria-expanded': 'true', 'aria-controls': listId, 'aria-autocomplete': 'list', 'aria-describedby': statusId,
-      'aria-label': t('pal.label'), placeholder: t('pal.placeholder'), autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', enterkeyhint: 'go'
-    },
-    dataset: { role: 'palette-input', autofocus: '1' }
-  });
-  const list = h('div', { id: listId, class: 'pal-list', attrs: { role: 'listbox', 'aria-label': t('pal.results') } });
+  input.setAttribute('role', 'combobox');
+  input.setAttribute('aria-expanded', 'false');
+  input.setAttribute('aria-controls', listId);
+  input.setAttribute('aria-autocomplete', 'list');
+  input.setAttribute('aria-describedby', statusId);
+  const list = h('div', { id: listId, class: 'pal-list', hidden: true, attrs: { role: 'listbox', 'aria-label': t('pal.results') } });
   const status = h('p', { id: statusId, class: 'pal-status', attrs: { role: 'status', 'aria-live': 'polite' } });
-  const content = h('div', { class: 'pal' },
-    h('div', { class: 'pal-box' }, Icon('search', { size: 18, className: 'pal-search-icon' }), input),
-    status,
-    list,
-    h('p', { class: 'pal-hint' }, t('pal.hint'), h('span', { class: 'pal-keys', attrs: { 'aria-hidden': 'true' } }, t('pal.keys'))));
 
   let entries = [];
   let active = 0;
   let options = [];
-  let left = false; // an entry navigated away: the router moves the focus
 
   /** The label of a tool with the matched letters marked. */
   function titleNodes(text, positions) {
@@ -193,8 +202,21 @@ export function openPalette({ views, navigate, href, state, session, done = () =
 
   function render() {
     const query = input.value;
-    entries = paletteResults({ query, tools, actionLabels, recent: recent(), target: session.target }).entries;
     clear(list);
+    if (!emptyEntries && !query.trim()) {
+      // An inline box at rest: its host's own content shows.
+      entries = [];
+      options = [];
+      list.hidden = true;
+      status.textContent = '';
+      status.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      setActive(0);
+      onQuery('');
+      return;
+    }
+    status.hidden = false;
+    entries = paletteResults({ query, tools, actionLabels, recent: recent(), target: session.target }).entries;
     options = entries.map((entry, i) => {
       const { icon, label, sub } = entryParts(entry);
       return h('div', {
@@ -222,36 +244,15 @@ export function openPalette({ views, navigate, href, state, session, done = () =
       : t('pal.none', { query: shown.length > QUERY_SHOWN ? `${shown.slice(0, QUERY_SHOWN)}…` : shown });
     status.classList.toggle('pal-status-none', !options.length);
     setActive(0);
+    onQuery(query);
   }
 
-  /** Open a tool or an action's route; the palette closes. */
+  /** Open a tool or an action's route. */
   function go(view, params) {
     const before = globalThis.location.hash;
     if (params) navigate(view, params);
     else globalThis.location.hash = href(view);
-    left = globalThis.location.hash !== before;
-    close();
-  }
-
-  let settled = false;
-
-  /**
-   * The palette is done: the shell may open it again and the focus goes back. Run at once by
-   * {@link close}, and by the dialog's own close (Esc): the `close` event of a dialog closed by a
-   * tap can come late (under Chrome's touch emulation it waited for the next key press).
-   */
-  function settle() {
-    if (settled) return;
-    settled = true;
-    openApi = null;
-    done();
-    if (!left && back && back.isConnected) back.focus({ preventScroll: true });
-  }
-
-  /** Close the dialog and settle at once. */
-  function close() {
-    modal.close();
-    settle();
+    leave(globalThis.location.hash !== before);
   }
 
   let reading = false;
@@ -265,11 +266,11 @@ export function openPalette({ views, navigate, href, state, session, done = () =
       mod.setCurrentCert(state, mod.loadCertificateData(text, { name: t('file.pasted'), source: 'paste' }));
     } catch (err) {
       reading = false;
+      status.hidden = false;
       status.textContent = t('pal.certFailed', { message: err && err.message ? err.message : String(err) });
       return;
     }
-    left = true;
-    close();
+    leave(true);
     navigate('cert', {}, { force: true });
   }
 
@@ -292,12 +293,77 @@ export function openPalette({ views, navigate, href, state, session, done = () =
   input.addEventListener('keydown', (event) => {
     if (event.isComposing || event.keyCode === 229) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (!options.length) return;
       event.preventDefault();
       setActive(active + (event.key === 'ArrowDown' ? 1 : -1));
     } else if (event.key === 'Enter' && !event.shiftKey && !event.altKey) {
+      if (!options.length) return;
       event.preventDefault();
       choose(entries[active]);
-    } else if (/^k$/i.test(event.key) && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
+    } else if (event.key === 'Escape' && !emptyEntries && input.value) {
+      // An inline box: Esc empties it first (the sheet it sits in closes on the next one).
+      event.preventDefault();
+      event.stopPropagation();
+      input.value = '';
+      render();
+    }
+  });
+  return { list, status, render, entries: () => entries };
+}
+
+/**
+ * Open the palette (once; a second call while it is open does nothing): the box in a modal dialog,
+ * the focus in it; Esc or Ctrl/Cmd+K closes it and the focus goes back where it was.
+ * @param {{ views: ReadonlyArray<{ id: string, icon?: string }>,
+ *   navigate: (view: string, params?: object, opts?: object) => void, href: (view: string) => string,
+ *   state: { workspaceData: (part: string) => any, setSession: (name: string, value: any) => void },
+ *   session: { target: { value: string, kind: string }|null }, done?: () => void }} api
+ *   app.js: the view registry, its router, a navigation link's hash (the current target carried
+ *   along), the app state and the page session
+ * @returns {{ close: () => void }|null}
+ */
+export function openPalette({ views, navigate, href, state, session, done = () => {} }) {
+  if (openApi) return openApi;
+  const doc = globalThis.document;
+  const back = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null;
+  let left = false; // an entry navigated away: the router moves the focus
+  let settled = false;
+  const input = paletteInput({ autofocus: true });
+  const search = paletteSearch({
+    input, views, navigate, href, state, session, emptyEntries: true,
+    leave: (moved) => {
+      left = moved;
+      close();
+    }
+  });
+  const content = h('div', { class: 'pal' },
+    h('div', { class: 'pal-box' }, Icon('search', { size: 18, className: 'pal-search-icon' }), input),
+    search.status,
+    search.list,
+    h('p', { class: 'pal-hint' }, t('pal.hint'), h('span', { class: 'pal-keys', attrs: { 'aria-hidden': 'true' } }, t('pal.keys'))));
+
+  /**
+   * The palette is done: the shell may open it again and the focus goes back. Run at once by
+   * {@link close}, and by the dialog's own close (Esc): the `close` event of a dialog closed by a
+   * tap can come late (under Chrome's touch emulation it waited for the next key press).
+   */
+  function settle() {
+    if (settled) return;
+    settled = true;
+    openApi = null;
+    done();
+    if (!left && back && back.isConnected) back.focus({ preventScroll: true });
+  }
+
+  /** Close the dialog and settle at once. */
+  function close() {
+    modal.close();
+    settle();
+  }
+
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (/^k$/i.test(event.key) && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
       event.preventDefault();
       close();
     }
@@ -309,8 +375,37 @@ export function openPalette({ views, navigate, href, state, session, done = () =
     content,
     onClose: settle
   });
-  render();
+  search.render();
   modal.open();
   openApi = { close };
   return openApi;
+}
+
+/**
+ * The palette's search inline (the phone Tools sheet's box; Home's quick start): the same parser,
+ * actions and keys as the dialog, its results under the box while it holds text. An empty box
+ * lists nothing: the host shows its own content then (`onQuery('')`). Esc in a box with text
+ * empties it. Nothing typed is stored, and an entry only fills a tool in.
+ * @param {{ views: ReadonlyArray<{ id: string, icon?: string }>, navigate: Function, href: (view: string) => string,
+ *   state: object, session: object, input?: HTMLInputElement|null, onQuery?: (text: string) => void,
+ *   onLeave?: () => void }} opts
+ *   `input`: a box already on the page to take over (else one is made); `onQuery`: the box's text
+ *   after each change; `onLeave`: an entry opened a tool
+ * @returns {{ el: HTMLElement, input: HTMLInputElement, render: () => void }}
+ *   `el`: the box with its results — or, for a box already on the page, the results alone, to put
+ *   after it
+ */
+export function PaletteBox({ views, navigate, href, state, session, input = null, onQuery = () => {}, onLeave = () => {} }) {
+  const field = input || paletteInput();
+  const search = paletteSearch({
+    input: field, views, navigate, href, state, session, emptyEntries: false, onQuery, leave: () => onLeave()
+  });
+  const el = input
+    ? h('div', { class: 'pal pal-inline pal-results' }, search.status, search.list)
+    : h('div', { class: 'pal pal-inline' },
+      h('div', { class: 'pal-box' }, Icon('search', { size: 18, className: 'pal-search-icon' }), field),
+      search.status,
+      search.list);
+  search.render();
+  return { el, input: field, render: search.render };
 }

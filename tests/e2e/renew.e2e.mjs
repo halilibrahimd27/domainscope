@@ -9,7 +9,7 @@
  *
  *   node tests/e2e/renew.e2e.mjs [--browser chrome|edge] [--headed] [--no-shots]
  *
- * Covers: the nav entry (Certificates group, after Certificate), the empty state (nothing sent),
+ * Covers: the nav entry (Deploy & renew certificates, after Certificate), the empty state (nothing sent),
  * names that are not host names and a wildcard under a public suffix, a check of four names against Let's Encrypt with HTTP-01 started
  * from the keyboard (focus on Stop meanwhile, back on Check readiness after; a wildcard CAA forbids
  * and HTTP-01 cannot validate, a private address, a lagging resolver on a CNAME'd name, a ready
@@ -257,7 +257,7 @@ async function main() {
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
     run.group('Desktop 1440×900 (English)');
-    await run.step('boots on #/renew: nav entry after Certificate in the Certificates group, empty state, nothing sent', async () => {
+    await run.step('boots on #/renew: nav entry after Certificate in Deploy & renew certificates, empty state, nothing sent', async () => {
       await page.goto(`${server.url}#/renew`);
       await waitReady(page);
       if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
@@ -266,7 +266,7 @@ async function main() {
         const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/cert"]'));
         return group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '').split('?')[0]) : [];
       });
-      assertEqual(nav, ['scan', 'cert', 'renew', 'estate'], 'Certificates group');
+      assertEqual(nav, ['scan', 'cert', 'renew', 'estate'], 'Deploy & renew certificates group');
       assertEqual(await text(page, 'h1'), 'Renewal readiness', 'title');
       assert(await page.evaluate(() => !!document.querySelector('.rnw-empty .empty')), 'empty state');
       assertEqual(await page.evaluate(() => [document.querySelector('[data-role="renew-ca"]').value, document.querySelector('[data-role="renew-challenge"]').value]), ['', 'unknown'], 'defaults');

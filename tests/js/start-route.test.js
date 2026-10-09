@@ -107,13 +107,20 @@ const JS = join(ASSETS, 'js');
  * UI redesign phase 1a (docs/DESIGN.md §8: the tokens and the base components): ≈ 341 KB (348,984 bytes), 29,896 bytes under the budget.
  * style.css grew by 3,320 bytes (the type, spacing, density, layer and colour-role tokens in both themes, the compact and touch blocks,
  * tags, chips and the tabs' faded overflow) and ui/components.js by 1,510 (Tag, Chip, the tabs' "more" chevron, two icons).
+ * Phase 1b (the shell and its navigation by job: the header's search, the tablet drawer, the phone bar and its Tools sheet with
+ * the palette's box, the page header's purpose line and ⓘ): ≈ 346 KB (354,669 bytes), 24,211 bytes under the budget. app.js
+ * grew by 2,623 bytes, i18n.js by 894 (the purpose lines and the six group names in both languages), style.css by 1,148;
+ * ui/palette.js stays off the route (the sheet loads it on its first open, as Ctrl/⌘+K does).
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;
 
-/** Modules that must never be part of the start route (lib/summary.js: every view's Copy summary but the start view's; lib/netinfo.js: the provider tables, the shell needs only lib/ip.js). */
+/**
+ * Modules that must never be part of the start route (lib/summary.js: every view's Copy summary but the start view's; lib/netinfo.js:
+ * the provider tables, the shell needs only lib/ip.js; the palette: Ctrl/⌘+K and the phone Tools sheet load it on their first use).
+ */
 const HEAVY = ['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/zoneparse.js', 'lib/x509.js', 'lib/health.js',
-  'lib/propagation.js', 'lib/ipintel.js', 'lib/zonedrift.js', 'lib/summary.js', 'lib/topology.js', 'lib/netinfo.js'];
+  'lib/propagation.js', 'lib/ipintel.js', 'lib/zonedrift.js', 'lib/summary.js', 'lib/topology.js', 'lib/netinfo.js', 'ui/palette.js', 'lib/palette.js'];
 
 const rel = (file) => relative(ROOT, file).split(sep).join('/');
 const code = (file) => readFileSync(file, 'utf8')

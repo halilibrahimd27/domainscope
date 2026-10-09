@@ -12,9 +12,11 @@
  * description (`nav.<id>` / `nav.<id>.desc`); `mount` fills the page body. See the
  * `ViewContext` typedef below for everything a view receives.
  *
- * Navigation: the sidebar (a scrolling strip at ≤ 900 px) and, below 720 px, a Tools button
- * opening the same groups in a dialog, both built from VIEWS (lib/shellnav.js groupViews). The
- * start page shows a first-visit task picker until it is dismissed or the visitor runs something.
+ * Navigation (docs/DESIGN.md §3): one header row at every width; from 1100 px a sidebar, below it
+ * a Tools button in the header opening the same groups as a drawer (tablets) or as a full-screen
+ * sheet that is also the palette (phones), all built from VIEWS (lib/shellnav.js groupViews). The
+ * page header gives each tool one purpose line and an ⓘ for the rest. The start page shows a
+ * first-visit task picker until it is dismissed or the visitor runs something.
  *
  * Keyboard shortcuts (one listener here, lib/shellnav.js shortcutFor): Ctrl/Cmd+Enter in a field
  * clicks the `data-shortcut="submit"` control of the field's form (the view's Run; inside a
@@ -53,18 +55,18 @@
  */
 
 import {
-  t, setLang, getLang, detectLang, onLangChange, formatNumber, formatRegion
+  t, setLang, getLang, detectLang, onLangChange, formatNumber, formatRegion, hasString
 } from './i18n.js';
 import { state, CONCURRENCY_RANGE } from './state.js';
 import { h, clear, uid } from './ui/dom.js';
 import {
-  Icon, SegmentedControl, IconButton, ButtonLink, Button, Alert, ErrorBanner, Spinner, Modal, toast,
+  Icon, SegmentedControl, IconButton, Button, Alert, ErrorBanner, Spinner, Modal, toast,
   select, Badge, confirmDialog, announce, describeError, setButtonBusy
 } from './ui/components.js';
 import { RESOLVERS, getResolver } from './lib/resolvers.js';
 import {
   groupViews, isPlainClick, isRunSignal, hasUsedBefore, SHORTCUTS, keyCaps, isApplePlatform, shortcutFor, pickShortcutTarget,
-  isTypingTarget, isSearchClear
+  isTypingTarget, isSearchClear, navMenuMode, aboutSectionOf, paletteKeyHint, PALETTE_KEYSHORTCUTS, SHELL_WIDTHS
 } from './lib/shellnav.js';
 import { StartTaskList } from './ui/start-tasks.js';
 import {
@@ -112,8 +114,9 @@ export const ENGINE_MODULES = Object.freeze([
 ]);
 
 /**
- * Navigation table in spec §6 order. `group` is one of lib/shellnav.js NAV_GROUPS (the sidebar
- * and the phone Tools menu both list the views by it; an unknown group lands under "More tools").
+ * Navigation table, in navigation order (docs/DESIGN.md §3.1: six groups by job). `group` is one of
+ * lib/shellnav.js NAV_GROUPS (the sidebar, the tablet drawer and the phone Tools sheet all list the
+ * views by it; an unknown group lands under "More tools").
  * `load` is a lazy import so a view that fails to load (or is still being written) cannot break
  * the rest of the app. `css`: its stylesheets (paths
  * under assets/css/, loaded before it mounts); `preload`: modules it imports on first use
@@ -121,42 +124,48 @@ export const ENGINE_MODULES = Object.freeze([
  * network (the service worker keeps it working offline; the other views say they need one).
  */
 export const VIEWS = Object.freeze([
+  // Investigate a domain: "a customer asks about example.com"
+  { id: 'domain', group: 'investigate', icon: 'id-card', css: ['views/domain.css'], load: () => import('./views/domain.js') },
+  { id: 'health', group: 'investigate', icon: 'activity', css: ['views/fix.css', 'views/health.css'], load: () => import('./views/health.js') },
   // A scan's progress and results (ui/subdomains-run.js, with the evidence banner it shares with SSL
   // Targets, ui/locale-evidence.js) load with its first scan, after the engine.
-  { id: 'subdomains', group: 'discover', icon: 'layers', css: ['views/subdomains.css'], preload: [...ENGINE_MODULES, 'ui/subdomains-run.js', 'ui/locale-evidence.js', 'lib/export.js', 'lib/subtabs.js', 'lib/originnow.js'], load: () => import('./views/subdomains.js') },
-  { id: 'domain', group: 'discover', icon: 'id-card', css: ['views/domain.css'], load: () => import('./views/domain.js') },
-  // "Show the fix" (ui/fix-panel.js, loaded on first use) is styled by views/fix.css; Compare and Convert
-  // (ui/zone-tools.js, loaded on their first use, modulepreloaded when idle) by views/zonetools.css
+  { id: 'subdomains', group: 'investigate', icon: 'layers', css: ['views/subdomains.css'], preload: [...ENGINE_MODULES, 'ui/subdomains-run.js', 'ui/locale-evidence.js', 'lib/export.js', 'lib/subtabs.js', 'lib/originnow.js'], load: () => import('./views/subdomains.js') },
+  { id: 'lookup', group: 'investigate', icon: 'search', css: ['views/lookup.css'], load: () => import('./views/lookup.js') },
+  // Deploy & renew certificates: the certificate's lifecycle, from the file to every server
   {
-    id: 'zone', group: 'discover', icon: 'file-text', css: ['views/fix.css', 'views/zone.css', 'views/zonetools.css'], offline: true,
-    preload: ['ui/zone-tools.js', 'lib/zonediff.js', 'lib/zoneconvert.js', 'lib/zonetext.js'], load: () => import('./views/zone.js')
-  },
-  {
-    id: 'scan', group: 'ssl', icon: 'target', preload: ENGINE_MODULES, load: () => import('./views/scan.js'),
+    id: 'scan', group: 'certs', icon: 'target', preload: ENGINE_MODULES, load: () => import('./views/scan.js'),
     // the setup form reuses the Subdomains options and the Certificate loader; Verify and DANE are tabs
     css: ['views/subdomains.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css', 'views/topology.css']
   },
-  { id: 'cert', group: 'ssl', icon: 'shield', css: ['views/dane.css', 'views/cert.css'], offline: true, load: () => import('./views/cert.js') },
+  { id: 'cert', group: 'certs', icon: 'shield', css: ['views/dane.css', 'views/cert.css'], offline: true, load: () => import('./views/cert.js') },
   // the certificate block reuses the Certificate view's loader (its module graph brings the DANE panel's classes)
-  { id: 'renew', group: 'ssl', icon: 'refresh', css: ['views/dane.css', 'views/cert.css', 'views/renew.css'], load: () => import('./views/renew.js') },
+  { id: 'renew', group: 'certs', icon: 'refresh', css: ['views/dane.css', 'views/cert.css', 'views/renew.css'], load: () => import('./views/renew.js') },
   // the CLI's --json reports, read in the browser (nothing sent)
-  { id: 'estate', group: 'ssl', icon: 'certificate', css: ['views/estate.css'], offline: true, load: () => import('./views/estate.js') },
-  { id: 'global', group: 'dns', icon: 'globe', css: ['views/global.css'], load: () => import('./views/global.js') },
-  { id: 'lookup', group: 'dns', icon: 'search', css: ['views/lookup.css'], load: () => import('./views/lookup.js') },
-  { id: 'bulk', group: 'dns', icon: 'list', css: ['views/bulk.css'], load: () => import('./views/bulk.js') },
+  { id: 'estate', group: 'certs', icon: 'certificate', css: ['views/estate.css'], offline: true, load: () => import('./views/estate.js') },
+  // Change & migrate DNS: plan a change, check it propagated, move zones, retire addresses
   // the form, its validation and every output need no network; Read and the check page say so in place
-  { id: 'change', group: 'dns', icon: 'edit', css: ['views/fix.css', 'views/change.css'], offline: true, load: () => import('./views/change.js') },
-  { id: 'ip', group: 'ip', icon: 'network', css: ['views/ip.css'], load: () => import('./views/ip.js') },
-  { id: 'ptr', group: 'ip', icon: 'swap', css: ['views/ptr.css'], load: () => import('./views/ptr.js') },
-  { id: 'retire', group: 'ip', icon: 'unlink', css: ['views/retire.css'], load: () => import('./views/retire.js') },
-  { id: 'health', group: 'mail', icon: 'activity', css: ['views/fix.css', 'views/health.css'], load: () => import('./views/health.js') },
-  { id: 'reports', group: 'mail', icon: 'inbox', css: ['views/reports.css'], offline: true, load: () => import('./views/reports.js') },
+  { id: 'change', group: 'change', icon: 'edit', css: ['views/fix.css', 'views/change.css'], offline: true, load: () => import('./views/change.js') },
+  { id: 'global', group: 'change', icon: 'globe', css: ['views/global.css'], load: () => import('./views/global.js') },
+  // "Show the fix" (ui/fix-panel.js, loaded on first use) is styled by views/fix.css; Compare and Convert
+  // (ui/zone-tools.js, loaded on their first use, modulepreloaded when idle) by views/zonetools.css
+  {
+    id: 'zone', group: 'change', icon: 'file-text', css: ['views/fix.css', 'views/zone.css', 'views/zonetools.css'], offline: true,
+    preload: ['ui/zone-tools.js', 'lib/zonediff.js', 'lib/zoneconvert.js', 'lib/zonetext.js'], load: () => import('./views/zone.js')
+  },
+  { id: 'retire', group: 'change', icon: 'unlink', css: ['views/retire.css'], load: () => import('./views/retire.js') },
+  // Map IPs to servers: names → addresses → your machines
+  { id: 'ip', group: 'network', icon: 'network', css: ['views/ip.css'], load: () => import('./views/ip.js') },
+  { id: 'bulk', group: 'network', icon: 'list', css: ['views/bulk.css'], load: () => import('./views/bulk.js') },
+  { id: 'ptr', group: 'network', icon: 'swap', css: ['views/ptr.css'], load: () => import('./views/ptr.js') },
+  // Watch & report: many domains over time; customer-facing reports
   // many domains, one row each, and the workspace's policy audit (RDAP and DoH: needs the network)
-  { id: 'portfolio', group: 'mail', icon: 'box', css: ['views/portfolio.css'], load: () => import('./views/portfolio.js') },
+  { id: 'portfolio', group: 'watch', icon: 'box', css: ['views/portfolio.css'], load: () => import('./views/portfolio.js') },
   // the runner's results and history, read in the browser (GitHub on a click only)
-  { id: 'monitor', group: 'data', icon: 'eye', css: ['views/monitor.css'], offline: true, load: () => import('./views/monitor.js') },
-  { id: 'inventory', group: 'data', icon: 'server', css: ['views/inventory.css', 'views/topology.css'], offline: true, load: () => import('./views/inventory.js') },
-  { id: 'about', group: 'data', icon: 'info', css: ['views/about.css'], offline: true, load: () => import('./views/about.js') }
+  { id: 'monitor', group: 'watch', icon: 'eye', css: ['views/monitor.css'], offline: true, load: () => import('./views/monitor.js') },
+  { id: 'reports', group: 'watch', icon: 'inbox', css: ['views/reports.css'], offline: true, load: () => import('./views/reports.js') },
+  // Setup & help: the server list every tool uses; how the app works
+  { id: 'inventory', group: 'setup', icon: 'server', css: ['views/inventory.css', 'views/topology.css'], offline: true, load: () => import('./views/inventory.js') },
+  { id: 'about', group: 'setup', icon: 'info', css: ['views/about.css'], offline: true, load: () => import('./views/about.js') }
 ].map((v) => Object.freeze({
   offline: false, ...v, css: Object.freeze([...(v.css || [])]), preload: Object.freeze([...(v.preload || [])])
 })));
@@ -774,7 +783,7 @@ async function unmountCurrent() {
   dom.header.classList.remove('is-busy');
   dom.main.removeAttribute('aria-busy');
   dom.nav.querySelectorAll('.nav-link.is-busy').forEach((l) => l.classList.remove('is-busy'));
-  if (dom.navMenuBar) dom.navMenuBar.classList.remove('is-busy');
+  if (dom.navMenuBtn) dom.navMenuBtn.classList.remove('is-busy');
   if (navMenu) navMenu.el.querySelectorAll('.navmenu-link.is-busy').forEach((l) => l.classList.remove('is-busy'));
   if (dom.pageActions) clear(dom.pageActions);
 }
@@ -901,6 +910,12 @@ function titleKeyOf(def, view) {
   return (view && typeof view.titleKey === 'string' && view.titleKey) || `nav.${def.id}`;
 }
 
+/**
+ * The page header (docs/DESIGN.md §5.1, region 1): the tool's icon, its title (the page's <h1>) and
+ * one purpose line (`nav.<id>.purpose`). The ⓘ button next to the title opens what the tool does at
+ * length (`nav.<id>.desc`) with a link to its section of About (lib/shellnav.js aboutSectionOf).
+ * `.page-actions` holds the page's own actions; the kept-result note sits under the purpose line.
+ */
 function renderPageHeader(def, view = null) {
   const titleKey = titleKeyOf(def, view);
   dom.pageTitle = h('h1', { class: 'page-title', id: 'page-title', attrs: { tabindex: -1 } }, t(titleKey));
@@ -909,19 +924,61 @@ function renderPageHeader(def, view = null) {
   dom.keptNote = h('div', { class: 'page-kept', hidden: true });
   dom.offlineNote = h('div', { class: 'page-offline', id: 'page-offline', hidden: true });
   dom.pageDef = def;
-  const desc = t(`nav.${def.id}.desc`);
+  const purposeKey = `nav.${def.id}.purpose`;
+  const purpose = hasString(purposeKey) ? t(purposeKey) : t(`nav.${def.id}.desc`);
+  const about = pageAbout(def, purpose);
   clear(dom.page);
   // A first-time visitor on the start page gets the task picker above the tool.
   if (def.id === DEFAULT_VIEW && state.settings.startTasks) dom.page.append(startPicker());
   dom.page.append(
     h('header', { class: 'page-header' },
-      h('div', { class: 'page-icon', attrs: { 'aria-hidden': 'true' } }, Icon(def.icon, { size: 20 })),
-      h('div', { class: 'page-titles' }, dom.pageTitle, desc ? h('p', { class: 'page-desc' }, desc) : null, dom.keptNote),
+      h('div', { class: 'page-icon', attrs: { 'aria-hidden': 'true' } }, Icon(def.icon, { size: 16 })),
+      h('div', { class: 'page-titles' },
+        h('div', { class: 'page-title-row' }, dom.pageTitle, about),
+        purpose ? h('p', { class: 'page-desc page-purpose' }, purpose) : null,
+        dom.pageAboutPanel,
+        dom.keptNote),
       dom.pageActions),
     dom.offlineNote,
     dom.pageBody);
   setBaseTitle(`${t(titleKey)} · ${t('app.name')}`);
   renderOfflineNote();
+}
+
+/**
+ * The page header's ⓘ: a disclosure button (`aria-expanded`) for what the tool does at length
+ * (unless the purpose line already says all of it), with the link to its About section; none for
+ * About itself. Sets dom.pageAboutPanel (null without one).
+ * @param {{ id: string, offline?: boolean }} def
+ * @param {string} purpose the purpose line on screen
+ * @returns {HTMLButtonElement|null}
+ */
+function pageAbout(def, purpose) {
+  dom.pageAboutPanel = null;
+  const section = aboutSectionOf(def);
+  if (!section) return null;
+  const desc = t(`nav.${def.id}.desc`);
+  const panelId = uid('page-about');
+  const panel = h('div', { class: 'page-about-panel', id: panelId, hidden: true },
+    desc && desc !== purpose ? h('p', { class: 'page-about-desc' }, desc) : null,
+    h('p', { class: 'page-about-more' },
+      h('a', { href: buildRoute('about', { section }), dataset: { view: 'about', section } }, t(`shell.aboutLink.${section}`))));
+  const btn = h('button', {
+    type: 'button',
+    class: 'page-about',
+    title: t('shell.aboutTool'),
+    dataset: { action: 'page-about' },
+    attrs: { 'aria-expanded': 'false', 'aria-controls': panelId, 'aria-label': t('shell.aboutTool') },
+    on: {
+      click: () => {
+        const open = panel.hidden;
+        panel.hidden = !open;
+        btn.setAttribute('aria-expanded', String(open));
+      }
+    }
+  }, Icon('info', { size: 16 }));
+  dom.pageAboutPanel = panel;
+  return btn;
 }
 
 /** Is the browser offline? (`onLine` may claim a connection that does not work, never the reverse.) */
@@ -1200,9 +1257,10 @@ function chooseTheme(value) {
   syncTheme(value);
 }
 
-/** Apply a theme and bring both header theme controls in line with it. */
+/** Apply a theme and bring every theme control in line with it (the header's two, the phone sheet's). */
 function syncTheme(value) {
   applyTheme(value);
+  if (dom.sheetTheme) dom.sheetTheme.setValue(value);
   if (!dom.headerActions) return;
   // Through the control's API: its click handler ignores a click on the value it holds.
   if (dom.themeSeg) dom.themeSeg.setValue(value);
@@ -1227,6 +1285,32 @@ function themeCycleButton(theme) {
   return btn;
 }
 
+/** Is this an Apple platform (⌘ in the key hints)? */
+function onApple() {
+  const nav = globalThis.navigator || {};
+  return isApplePlatform((nav.userAgentData && nav.userAgentData.platform) || nav.platform || '');
+}
+
+/** The theme as a three-way switch (the header's from 1100 px up; the phone Tools sheet's). */
+function themeSwitch(control) {
+  const theme = SegmentedControl({
+    label: t('shell.theme'),
+    size: 'sm',
+    className: 'theme-toggle',
+    value: state.settings.theme,
+    options: THEME_ORDER.map((value) => ({ value, icon: THEME_ICONS[value], title: t(THEME_LABELS[value]) })),
+    onChange: chooseTheme
+  });
+  theme.el.dataset.control = control;
+  return theme;
+}
+
+/**
+ * The header's controls (docs/DESIGN.md §3.2): the search (the palette, Ctrl/⌘+K: a button styled as
+ * a field, an icon from 720 to 1100 px, none on a phone, where the Tools sheet holds its box), the
+ * language, the theme (three-way from 1100 px, one cycling button below, in the Tools sheet on a
+ * phone) and Settings. GitHub is in the footer and About.
+ */
 function renderHeaderActions() {
   const settings = state.settings;
   const lang = SegmentedControl({
@@ -1244,75 +1328,88 @@ function renderHeaderActions() {
     }
   });
   lang.el.dataset.control = 'lang';
-  const theme = SegmentedControl({
-    label: t('shell.theme'),
-    size: 'sm',
-    className: 'theme-toggle',
-    value: settings.theme,
-    options: THEME_ORDER.map((value) => ({ value, icon: THEME_ICONS[value], title: t(THEME_LABELS[value]) })),
-    onChange: chooseTheme
-  });
-  theme.el.dataset.control = 'theme';
+  const theme = themeSwitch('theme');
   dom.themeSeg = theme;
   const settingsBtn = IconButton({ icon: 'sliders', label: t('shell.settings'), onClick: openSettings });
   settingsBtn.dataset.control = 'settings';
-  const paletteBtn = IconButton({ icon: 'search', label: t('keys.palette'), onClick: openPalette, className: 'hide-sm' });
-  paletteBtn.dataset.control = 'palette';
-  paletteBtn.setAttribute('aria-haspopup', 'dialog');
-  const gh = ButtonLink({ href: REPO_URL, label: 'GitHub', icon: 'code', variant: 'ghost', size: 'sm', external: true, title: t('shell.github') });
-  gh.classList.add('gh-link');
+  // A button, not a field: its name is the words on it; the long description is its title.
+  const search = h('button', {
+    type: 'button',
+    class: 'header-search',
+    title: t('keys.palette'),
+    dataset: { control: 'palette' },
+    attrs: { 'aria-haspopup': 'dialog', 'aria-keyshortcuts': PALETTE_KEYSHORTCUTS },
+    on: { click: openPalette }
+  },
+  Icon('search', { size: 16, className: 'header-search-icon' }),
+  h('span', { class: 'header-search-text' }, t('shell.search')),
+  h('kbd', { class: 'header-search-key', attrs: { 'aria-hidden': 'true' } }, paletteKeyHint({ apple: onApple() })));
   clear(dom.headerActions);
-  dom.headerActions.append(lang.el, theme.el, themeCycleButton(settings.theme),
-    h('span', { class: 'header-sep', attrs: { 'aria-hidden': 'true' } }), paletteBtn, settingsBtn, gh);
+  dom.headerActions.append(search, lang.el, theme.el, themeCycleButton(settings.theme), settingsBtn);
+}
+
+/**
+ * The Tools button of phones and tablets (below 1100 px; the sidebar shows from there): the open
+ * tool's name (cut with an ellipsis), read out as "Tools: <tool>"; it opens the Tools sheet on a
+ * phone and the drawer on a tablet ({@link openNavMenu}). A pulsing dot while the open tool works.
+ */
+function renderNavButton() {
+  if (!dom.navMenuHost) return;
+  dom.navMenuLabel = h('span', { class: 'nav-menu-current-label' });
+  dom.navMenuBtn = h('button', {
+    type: 'button',
+    class: 'btn btn-secondary nav-menu-btn',
+    dataset: { control: 'nav-menu' },
+    attrs: { 'aria-haspopup': 'dialog', 'aria-expanded': String(!!navMenu) },
+    on: { click: openNavMenu }
+  },
+  Icon('menu', { size: 16 }),
+  h('span', { class: 'nav-menu-current' }, h('span', { class: 'sr-only' }, `${t('shell.toolsPrefix')} `), dom.navMenuLabel),
+  Icon('chevron-down', { size: 14, className: 'nav-menu-chevron' }));
+  clear(dom.navMenuHost);
+  dom.navMenuHost.append(dom.navMenuBtn);
+  dom.navMenuLabel.textContent = current ? t(`nav.${current.id}`) : t('nav.label');
 }
 
 function chainLabel(chain) {
   return chain.map((id) => getResolver(id)?.name || id).join(' → ');
 }
 
+/**
+ * The sidebar (from 1100 px; the drawer and the phone Tools sheet below): the groups by job, a
+ * link per tool (the current one marked with a neutral fill and an accent bar), and a footer of
+ * two lines — the saved servers and the DoH chain (each a way to its place), and where it runs.
+ */
 function renderNav() {
   const activeId = current ? current.id : null;
   const groups = groupViews(VIEWS).map((g) => {
-    const labelId = uid('navgroup');
-    return h('div', { class: 'nav-group', attrs: { role: 'group', 'aria-labelledby': labelId } },
-      h('div', { class: 'nav-group-label', id: labelId }, t(g.labelKey)),
+    const labelId = g.labelKey ? uid('navgroup') : null;
+    return h('div', { class: 'nav-group', dataset: { group: g.id }, attrs: { role: 'group', 'aria-labelledby': labelId } },
+      labelId ? h('div', { class: 'nav-group-label', id: labelId }, t(g.labelKey)) : null,
       h('ul', { class: 'nav-list' }, g.views.map((v) => h('li', null,
         h('a', {
           class: 'nav-link',
           href: navHref(v.id),
           dataset: { view: v.id },
           attrs: { 'aria-current': v.id === activeId ? 'page' : null }
-        }, Icon(v.icon, { size: 17 }), h('span', { class: 'nav-label' }, t(`nav.${v.id}`)))))));
+        }, Icon(v.icon, { size: 18 }), h('span', { class: 'nav-label' }, t(`nav.${v.id}`)))))));
   });
-  // Below 720 px (CSS) the groups give way to this bar: the Tools button and the current tool.
-  dom.navMenuBtn = Button({
-    label: t('nav.label'),
-    icon: 'menu',
-    iconRight: 'chevron-down',
-    size: 'sm',
-    className: 'nav-menu-btn',
-    attrs: { 'aria-haspopup': 'dialog', 'aria-expanded': String(!!navMenu) },
-    dataset: { control: 'nav-menu' },
-    onClick: openNavMenu
-  });
-  // The page's <h1> names the tool for assistive technology; this is the reminder on screen.
-  dom.navMenuCurrent = h('span', { class: 'nav-menu-current', attrs: { 'aria-hidden': 'true' } });
-  dom.navMenuBar = h('div', { class: 'nav-menu-bar' }, dom.navMenuBtn, dom.navMenuCurrent);
   dom.navInventory = h('span');
   dom.navDoh = h('span');
   const foot = h('div', { class: 'nav-foot' },
-    h('a', { class: 'nav-status', href: buildRoute('inventory'), dataset: { status: 'inventory' } }, Icon('server', { size: 14 }), dom.navInventory),
-    h('button', {
-      type: 'button',
-      class: 'nav-status link-reset',
-      dataset: { status: 'doh' },
-      title: t('settings.dohChain'),
-      on: { click: openSettings }
-    }, Icon('globe', { size: 14 }), dom.navDoh),
-    h('div', { class: 'nav-status nav-status-privacy' }, Icon('lock', { size: 14 }), h('span', null, t('shell.privacyShort'))));
+    h('p', { class: 'nav-foot-line' },
+      h('a', { class: 'nav-status', href: buildRoute('inventory'), dataset: { status: 'inventory' } }, Icon('server', { size: 14 }), dom.navInventory),
+      h('span', { class: 'nav-foot-sep', attrs: { 'aria-hidden': 'true' } }, '·'),
+      h('button', {
+        type: 'button',
+        class: 'nav-status nav-status-doh link-reset',
+        dataset: { status: 'doh' },
+        on: { click: openSettings }
+      }, dom.navDoh)),
+    h('p', { class: 'nav-foot-line nav-status nav-status-privacy' }, Icon('lock', { size: 14 }), h('span', null, t('shell.privacyShort'))));
   clear(dom.nav);
   dom.nav.setAttribute('aria-label', t('nav.label'));
-  dom.nav.append(dom.navMenuBar, ...groups, foot);
+  dom.nav.append(...groups, foot);
   updateNavStatus();
   // The progress rings of jobs running in other views (ui/jobs.js).
   refreshJobIndicators();
@@ -1343,13 +1440,13 @@ function updateNavHrefs() {
 /** The workspace store has opened: the switcher names the real active workspace (never a flash of Default). */
 let workspacesReady = false;
 
-/** The header's workspace switcher (CSS hides it below 720 px, where the Tools menu has it). */
+/** The header's workspace switcher with its server count (CSS hides it below 720 px, where the Tools sheet has it). */
 function renderWorkspaceSwitch() {
   if (!dom.workspaceHost || !workspacesReady) return;
   const doc = globalThis.document;
   const hadFocus = !!doc && dom.workspaceHost.contains(doc.activeElement);
   clear(dom.workspaceHost);
-  const btn = WorkspaceSwitch({ workspace: state.workspace, onOpen: openWorkspaces });
+  const btn = WorkspaceSwitch({ workspace: state.workspace, servers: state.inventory.servers.length, onOpen: openWorkspaces });
   dom.workspaceHost.append(btn);
   if (hadFocus) btn.focus({ preventScroll: true });
 }
@@ -1440,8 +1537,9 @@ async function switchWorkspace(id) {
   return true;
 }
 
-/** The header chip with the current target (hidden without one). */
+/** The header chip with the current target (hidden without one; in the Tools sheet on a phone). */
 function renderTargetChip() {
+  renderSheetTarget();
   if (!dom.targetHost) return;
   const target = pageSession.target;
   const doc = globalThis.document;
@@ -1465,8 +1563,11 @@ function renderTargetChip() {
 function updateNavStatus() {
   if (!dom.navInventory) return;
   const count = state.inventory.servers.length;
-  dom.navInventory.textContent = t('shell.inventoryStatus', { count });
-  dom.navDoh.textContent = t('shell.dohStatus', { chain: chainLabel(state.settings.chain) });
+  dom.navInventory.textContent = t('shell.serverCount', { count });
+  const doh = t('shell.dohStatus', { chain: chainLabel(state.settings.chain) });
+  dom.navDoh.textContent = doh;
+  // The line cuts the chain short: the whole of it, and where it is set, on hover.
+  if (dom.navDoh.parentElement) dom.navDoh.parentElement.title = `${doh} · ${t('settings.dohChain')}`;
 }
 
 function setNavActive(id) {
@@ -1475,45 +1576,35 @@ function setNavActive(id) {
     else a.removeAttribute('aria-current');
   });
   const def = VIEW_BY_ID.get(id);
-  if (dom.navMenuCurrent && def) {
-    clear(dom.navMenuCurrent);
-    dom.navMenuCurrent.append(Icon(def.icon, { size: 16 }), h('span', { class: 'nav-menu-current-label' }, t(`nav.${def.id}`)));
-  }
+  if (dom.navMenuLabel && def) dom.navMenuLabel.textContent = t(`nav.${def.id}`);
   // The nav is rebuilt on a language change, possibly while the view works: keep its busy dot.
   markBusy(id, !!(current && current.id === id && current.busy));
   scrollNavToActive(id);
 }
 
-/** The busy dot of tool `id`: its sidebar link, the Tools bar and, while the Tools menu is open, its entry there. */
+/** The busy dot of tool `id`: its sidebar link, the Tools button and, while the Tools menu is open, its entry there. */
 function markBusy(id, on) {
   const link = dom.nav.querySelector(`.nav-link[data-view="${id}"]`);
   if (link) link.classList.toggle('is-busy', on);
-  if (dom.navMenuBar) dom.navMenuBar.classList.toggle('is-busy', on);
+  if (dom.navMenuBtn) dom.navMenuBtn.classList.toggle('is-busy', on);
   const entry = navMenu ? navMenu.el.querySelector(`.navmenu-link[data-view="${id}"]`) : null;
   if (entry) entry.classList.toggle('is-busy', on);
 }
 
 /**
- * Bring the active link into view by scrolling the nav itself, never the page: 720–900 px, the
- * strip that scrolls sideways (the link centred); a desktop screen too short for the sidebar, the
- * sidebar (only as far as needed, so a click on a link in view moves nothing). Below 720 px the
- * links are hidden (the Tools bar shows the tool).
+ * Bring the active link into view by scrolling the sidebar itself, never the page, when the screen
+ * is too short for it — only as far as needed, so a click on a link in view moves nothing. Below
+ * 1100 px the sidebar is not shown (the Tools button names the tool).
  */
 function scrollNavToActive(id) {
   const nav = dom.nav;
   const link = nav.querySelector(`.nav-link[data-view="${id}"]`);
-  if (!link || !link.getClientRects().length) return;
-  const strip = globalThis.getComputedStyle(nav).flexDirection === 'row';
-  if (strip && nav.scrollWidth > nav.clientWidth + 1) {
-    const left = link.offsetLeft - (nav.clientWidth - link.offsetWidth) / 2;
-    nav.scrollLeft = Math.max(0, left);
-  } else if (!strip && nav.scrollHeight > nav.clientHeight + 1) {
-    const margin = 8;
-    const top = link.getBoundingClientRect().top - nav.getBoundingClientRect().top - nav.clientTop + nav.scrollTop;
-    const bottom = top + link.offsetHeight;
-    if (top - margin < nav.scrollTop) nav.scrollTop = Math.max(0, top - margin);
-    else if (bottom + margin > nav.scrollTop + nav.clientHeight) nav.scrollTop = bottom + margin - nav.clientHeight;
-  }
+  if (!link || !link.getClientRects().length || nav.scrollHeight <= nav.clientHeight + 1) return;
+  const margin = 8;
+  const top = link.getBoundingClientRect().top - nav.getBoundingClientRect().top - nav.clientTop + nav.scrollTop;
+  const bottom = top + link.offsetHeight;
+  if (top - margin < nav.scrollTop) nav.scrollTop = Math.max(0, top - margin);
+  else if (bottom + margin > nav.scrollTop + nav.clientHeight) nav.scrollTop = bottom + margin - nav.clientHeight;
 }
 
 function renderFooter() {
@@ -1554,33 +1645,34 @@ function scheduleSentCount() {
 }
 
 /* ------------------------------------------------------------------------ */
-/* Phone Tools menu                                                         */
+/* Tools menu (below 1100 px): the phone sheet and the tablet drawer        */
 /* ------------------------------------------------------------------------ */
 
 let navMenu = null;
 
 /**
- * The Tools menu of narrow screens: the active workspace with a way to the Workspaces dialog (the
- * header has no room for its switcher there), then every view in its group (the sidebar's table),
- * the current one marked (with the busy dot while it works), in a Modal (focus trap, Esc closes).
- * The focus goes back to the Tools button, unless a link opened another tool: its page title takes
- * the focus then. A Ctrl/⌘/Shift/Alt click is the browser's (a new tab): the menu stays open.
+ * The Tools menu below 1100 px (docs/DESIGN.md §3.3–3.4), in a Modal (focus trap; Esc and a click
+ * outside close it):
+ * - on a phone (below 720 px), a full-height sheet that is also the palette: the palette's box on
+ *   top (ui/palette.js, loaded on the first open, never focused on opening, so no keyboard covers
+ *   the tiles) finds a tool, or the actions on a domain, host name, address, network or AS number;
+ *   while it is empty every tool shows by group as two columns of tiles; a footer holds the
+ *   workspace (switch or manage), the current target (✕) and the theme;
+ * - on a tablet, a drawer on the left with the sidebar's groups.
+ * The open tool is marked (with the busy dot while it works, and a job's ring on any tool that runs
+ * one). The focus goes back to the Tools button, unless a link opened another tool: its page title
+ * takes the focus then. A Ctrl/⌘/Shift/Alt click is the browser's (a new tab): the menu stays open.
  */
 function openNavMenu() {
   if (navMenu) return;
+  const mode = navMenuMode(globalThis.innerWidth) || 'drawer';
+  const sheet = mode === 'sheet';
   const openedOn = current ? current.id : null;
   const busy = !!(current && current.busy);
-  const workspaceEntry = WorkspaceMenuEntry({
-    workspace: state.workspace,
-    onOpen: () => {
-      menu.close({ workspace: true });
-      openWorkspaces();
-    }
-  });
-  const content = h('div', { class: 'navmenu' }, workspaceEntry, groupViews(VIEWS).map((g) => {
-    const labelId = uid('navmenu-group');
-    return h('div', { class: 'navmenu-group' },
-      h('h3', { class: 'navmenu-label', id: labelId }, t(g.labelKey)),
+  const tiles = h('div', { class: 'navmenu-groups' }, groupViews(VIEWS).map((g) => {
+    const labelId = g.labelKey ? uid('navmenu-group') : null;
+    return h('div', { class: 'navmenu-group', dataset: { group: g.id } },
+      labelId ? h('h3', { class: 'navmenu-label', id: labelId }, t(g.labelKey)) : null,
       h('ul', { class: 'navmenu-list', attrs: { 'aria-labelledby': labelId } }, g.views.map((v) => {
         const here = v.id === openedOn;
         return h('li', null, h('a', {
@@ -1601,27 +1693,114 @@ function openNavMenu() {
         here ? Icon('check', { size: 16, className: 'navmenu-check' }) : null));
       })));
   }));
+  const search = sheet ? h('div', { class: 'navmenu-search' }) : null;
+  const content = h('div', { class: ['navmenu', `navmenu-${mode}`] }, search, tiles, sheet ? navMenuFoot(() => menu) : null);
   const menu = Modal({
     title: t('nav.label'),
+    size: mode,
     className: 'navmenu-modal',
     content,
     onClose: (value) => {
       navMenu = null;
+      dom.sheetTheme = null;
+      dom.sheetTarget = null;
       const btn = dom.navMenuBtn;
       if (btn) btn.setAttribute('aria-expanded', 'false');
-      // Widened past 720 px: the button is hidden, so the page title takes the focus.
+      // Widened to 1100 px: the button is hidden, so the page title takes the focus.
       if (value && value.wide) {
         if (dom.pageTitle && dom.pageTitle.isConnected) dom.pageTitle.focus({ preventScroll: true });
         return;
       }
-      // The Workspaces dialog opens next and takes the focus (and gives it back to this button).
-      if (value && value.workspace) return;
+      // The Workspaces dialog opens next and takes the focus (and gives it back to this button);
+      // a search result opened a tool, whose page title takes it.
+      if (value && (value.workspace || value.left)) return;
       if (btn && btn.isConnected && (!value || value.view === openedOn)) btn.focus({ preventScroll: true });
     }
   });
   navMenu = menu;
   if (dom.navMenuBtn) dom.navMenuBtn.setAttribute('aria-expanded', 'true');
   menu.open();
+  // The progress rings of running jobs, on the tiles too (ui/jobs.js).
+  refreshJobIndicators();
+  if (sheet) attachSheetSearch(search, tiles, menu);
+}
+
+/**
+ * The phone sheet's footer: the workspace with a way to the Workspaces dialog, the current target
+ * with its ✕ (the header has no room for either on a phone) and the theme.
+ * @param {() => object} menuOf the open menu (its Modal)
+ * @returns {HTMLElement}
+ */
+function navMenuFoot(menuOf) {
+  const workspace = WorkspaceMenuEntry({
+    workspace: state.workspace,
+    onOpen: () => {
+      menuOf().close({ workspace: true });
+      openWorkspaces();
+    }
+  });
+  dom.sheetTarget = h('div', { class: 'navmenu-row navmenu-target' });
+  renderSheetTarget();
+  const theme = themeSwitch('sheet-theme');
+  dom.sheetTheme = theme;
+  const themeLabel = uid('navmenu-theme');
+  theme.el.setAttribute('aria-labelledby', themeLabel);
+  return h('div', { class: 'navmenu-foot' },
+    workspace,
+    dom.sheetTarget,
+    h('div', { class: 'navmenu-row' }, h('span', { class: 'navmenu-row-label', id: themeLabel }, t('shell.theme')), theme.el));
+}
+
+/** The current target in the phone sheet's footer (hidden without one). */
+function renderSheetTarget() {
+  const host = dom.sheetTarget;
+  if (!host) return;
+  const target = pageSession.target;
+  const doc = globalThis.document;
+  const hadFocus = !!doc && host.contains(doc.activeElement);
+  clear(host);
+  host.hidden = !target;
+  if (target) {
+    host.append(h('span', { class: 'navmenu-row-label' }, t('session.target.group')),
+      TargetChip({ target, onClear: () => { if (pageSession.clearTarget()) announce(t('session.target.cleared')); } }));
+  } else if (hadFocus && navMenu) {
+    // The ✕ that had the focus is gone with its chip: the sheet keeps the focus.
+    const next = navMenu.el.querySelector('[data-control="sheet-theme"] [aria-pressed="true"]');
+    if (next) next.focus({ preventScroll: true });
+  }
+}
+
+/**
+ * The palette's box on top of the phone sheet (ui/palette.js and palette.css on the first open):
+ * while it holds text its results replace the tiles; a result that opens a tool closes the sheet.
+ * Offline before its first load, the tiles alone serve.
+ * @param {HTMLElement} host
+ * @param {HTMLElement} tiles
+ * @param {object} menu the sheet's Modal
+ */
+async function attachSheetSearch(host, tiles, menu) {
+  let mod;
+  try {
+    [mod] = await Promise.all([import('./ui/palette.js'), loadStylesheet('palette.css')]);
+  } catch {
+    noticeIfOutdated(pageIsOutdated);
+    return;
+  }
+  if (navMenu !== menu || !host.isConnected) return;
+  const box = mod.PaletteBox({
+    views: VIEWS,
+    navigate,
+    href: navHref,
+    state,
+    session: pageSession,
+    onQuery: (text) => {
+      tiles.hidden = !!text;
+    },
+    onLeave: () => {
+      if (navMenu === menu) menu.close({ left: true });
+    }
+  });
+  host.append(box.el);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1877,6 +2056,7 @@ function renderChrome() {
   dom.brandSub.textContent = t('app.subtitle');
   dom.skip.textContent = t('shell.skip');
   renderHeaderActions();
+  renderNavButton();
   renderTargetChip();
   renderWorkspaceSwitch();
   renderNav();
@@ -2161,10 +2341,14 @@ function boot() {
   if (brand) brand.setAttribute('href', buildRoute(DEFAULT_VIEW));
   // The current target sits between the brand and the header controls, the workspace switcher
   // right after it.
-  dom.targetHost = h('div', { class: 'header-target', hidden: true });
-  dom.header.insertBefore(dom.targetHost, dom.headerActions);
+  // After the brand: the Tools button (below 1100 px), the workspace switcher, the current target;
+  // then the header's controls (docs/DESIGN.md §3.2).
+  dom.navMenuHost = h('div', { class: 'header-tools' });
+  dom.header.insertBefore(dom.navMenuHost, dom.headerActions);
   dom.workspaceHost = h('div', { class: 'header-workspace' });
   dom.header.insertBefore(dom.workspaceHost, dom.headerActions);
+  dom.targetHost = h('div', { class: 'header-target', hidden: true });
+  dom.header.insertBefore(dom.targetHost, dom.headerActions);
   pageSession.subscribe(() => {
     renderTargetChip();
     updateNavHrefs();
@@ -2204,7 +2388,8 @@ function boot() {
   });
   state.subscribe(({ key, value, origin }) => {
     if (key === 'inventory') updateNavStatus();
-    if (key === 'workspace' || key === 'workspaces' || key === 'cleared') renderWorkspaceSwitch();
+    // The switcher counts the servers too.
+    if (key === 'workspace' || key === 'workspaces' || key === 'cleared' || key === 'inventory') renderWorkspaceSwitch();
     if (key === 'settings') {
       updateNavStatus();
       syncTheme(value.theme); // also covers "restore defaults" / "delete all local data" / other tabs
@@ -2218,16 +2403,15 @@ function boot() {
 
   globalThis.addEventListener('hashchange', handleRoute);
   document.addEventListener('keydown', onShortcutKey);
-  // A phone turned to landscape swaps the Tools bar (below 720 px) for the strip, a window resized across 900 px
-  // the strip and the sidebar: the active link comes into view. Past 720 px an open Tools menu closes (its
-  // button is gone: the focus goes to the page title).
-  const toolsBar = '(max-width: 719.98px)';
-  for (const query of [toolsBar, '(max-width: 900px)']) {
-    const list = typeof globalThis.matchMedia === 'function' ? globalThis.matchMedia(query) : null;
+  // Across 720 px the Tools button swaps the sheet for the drawer (a phone turned to landscape), across
+  // 1100 px the drawer for the sidebar: an open Tools menu closes — from 1100 px up its button is gone,
+  // so the focus goes to the page title — and the sidebar's active link comes into view.
+  for (const width of [SHELL_WIDTHS.phone, SHELL_WIDTHS.sidebar]) {
+    const list = typeof globalThis.matchMedia === 'function' ? globalThis.matchMedia(`(min-width: ${width}px)`) : null;
     if (!list || typeof list.addEventListener !== 'function') continue;
     list.addEventListener('change', (event) => {
       if (current) scrollNavToActive(current.id);
-      if (query === toolsBar && !event.matches && navMenu) navMenu.close({ wide: true });
+      if (navMenu) navMenu.close(width === SHELL_WIDTHS.sidebar && event.matches ? { wide: true } : null);
     });
   }
   globalThis.addEventListener('unhandledrejection', (event) => {

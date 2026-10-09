@@ -395,10 +395,10 @@ async function main() {
       if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
       await gotoRoute(page, 'zone');
       const nav = await page.evaluate(() => {
-        const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/subdomains"]'));
+        const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/zone"]'));
         return group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '')) : [];
       });
-      assertEqual(nav.slice(0, 3), ['subdomains', 'domain', 'zone'], 'Zone File in Discover, after Subdomains and Domain overview');
+      assertEqual(nav, ['change', 'global', 'zone', 'retire'], 'Zone File in Change & migrate DNS, after Global DNS');
       assert(/Zone File/.test(await text(page, 'h1')), 'title');
       const ui = await page.evaluate(() => ({
         drop: !!document.querySelector('.zone-drop'),

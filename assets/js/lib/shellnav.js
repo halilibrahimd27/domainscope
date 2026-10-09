@@ -1,25 +1,59 @@
 /**
  * shellnav.js — the app shell's navigation, first-visit task picker and keyboard shortcuts as
- * data: the tool groups (the desktop sidebar and the phone Tools menu read the same table), the
- * start-page jobs, what counts as "the visitor has run something", which command a key press
- * means and which marked control answers it.
+ * data: the tool groups by job (the desktop sidebar, the tablet drawer and the phone Tools sheet
+ * read the same table), the widths where the shell changes, the start-page jobs, what counts as
+ * "the visitor has run something", which command a key press means and which marked control
+ * answers it.
  *
  * Pure: no DOM, storage, network, clock or i18n. app.js feeds it the view registry, storage keys,
  * state changes, key events and element lists (duck-typed), and does the rendering and clicking.
  */
 
 /**
- * Tool groups in navigation order (spec §6). A view's `group` in app.js's VIEWS names one of them;
- * `labelKey` is the i18n key of the group heading.
+ * Tool groups in navigation order, by job (docs/DESIGN.md §3.1). A view's `group` in app.js's
+ * VIEWS names one of them; `labelKey` is the i18n key of the group heading.
  */
 export const NAV_GROUPS = Object.freeze([
-  { id: 'discover', labelKey: 'nav.groupDiscover' },
-  { id: 'ssl', labelKey: 'nav.groupSsl' },
-  { id: 'dns', labelKey: 'nav.groupDns' },
-  { id: 'ip', labelKey: 'nav.groupIp' },
-  { id: 'mail', labelKey: 'nav.groupMail' },
-  { id: 'data', labelKey: 'nav.groupData' }
+  { id: 'investigate', labelKey: 'nav.groupInvestigate' },
+  { id: 'certs', labelKey: 'nav.groupCerts' },
+  { id: 'change', labelKey: 'nav.groupChange' },
+  { id: 'network', labelKey: 'nav.groupNetwork' },
+  { id: 'watch', labelKey: 'nav.groupWatch' },
+  { id: 'setup', labelKey: 'nav.groupSetup' }
 ].map((g) => Object.freeze(g)));
+
+/**
+ * The widths (CSS px) where the shell changes: below `phone` one 52 px bar whose Tools button opens
+ * a full-height sheet (the palette's box on top); from `phone` to `sidebar` the Tools button opens
+ * the groups as a drawer; from `sidebar` up the sidebar is always there. style.css uses the same
+ * numbers (max-width: 719.98px / 1099.98px).
+ */
+export const SHELL_WIDTHS = Object.freeze({ phone: 720, sidebar: 1100 });
+
+/**
+ * What the Tools button opens at a viewport width: 'sheet' (a phone), 'drawer' (a tablet) or null
+ * (a desktop: the sidebar shows, there is no Tools button).
+ * @param {number} width the viewport's width in CSS px
+ * @returns {'sheet'|'drawer'|null}
+ */
+export function navMenuMode(width) {
+  const w = Number(width);
+  if (!Number.isFinite(w)) return null;
+  if (w < SHELL_WIDTHS.phone) return 'sheet';
+  return w < SHELL_WIDTHS.sidebar ? 'drawer' : null;
+}
+
+/**
+ * The About section the page header's ⓘ links to for a tool: what it sends and to whom (Data
+ * sources & quotas) for a tool that needs the network, what never leaves the browser (Privacy)
+ * for one that works offline; none for About itself or a view that is not a tool.
+ * @param {{ id: string, offline?: boolean }|null} view a VIEWS entry
+ * @returns {'sources'|'privacy'|null}
+ */
+export function aboutSectionOf(view) {
+  if (!view || typeof view.id !== 'string' || view.id === 'about' || view.id === 'home') return null;
+  return view.offline ? 'privacy' : 'sources';
+}
 
 /** Where a view whose group is missing or unknown is listed (last), so no tool ever drops out of the menu. */
 export const OTHER_GROUP = Object.freeze({ id: 'other', labelKey: 'nav.groupOther' });
@@ -166,6 +200,19 @@ export function isApplePlatform(platform) {
  */
 export function keyCaps(keys, { apple = false } = {}) {
   return (keys || []).map((k) => (k === 'Mod' ? (apple ? '⌘' : 'Ctrl') : k));
+}
+
+/** aria-keyshortcuts of what opens the palette: Ctrl+K and ⌘+K both do, on every platform. */
+export const PALETTE_KEYSHORTCUTS = 'Control+K Meta+K';
+
+/**
+ * The palette's key as the header's search button shows it: '⌘K' on Apple platforms, 'Ctrl K'
+ * elsewhere.
+ * @param {{ apple?: boolean }} [opts]
+ * @returns {string}
+ */
+export function paletteKeyHint({ apple = false } = {}) {
+  return keyCaps(['Mod', 'K'], { apple }).join(apple ? '' : ' ');
 }
 
 /** Input types that take no typed text (keys pressed on them are not "typing"). */

@@ -160,10 +160,10 @@ describe('the shell', () => {
   test('the Tools menu heading of Servers and About is not "Workspace" in either language', () => {
     for (const lang of LANGS) {
       setLang(lang);
-      assert.notEqual(t('nav.groupData').toLocaleLowerCase(lang), t('ws.label').toLocaleLowerCase(lang), lang);
+      assert.notEqual(t('nav.groupSetup').toLocaleLowerCase(lang), t('ws.label').toLocaleLowerCase(lang), lang);
     }
     setLang('en');
-    assert.equal(t('nav.groupData'), 'Setup & info');
+    assert.equal(t('nav.groupSetup'), 'Setup & help');
   });
 
   test('a switch names what it would stop: the long jobs and the registered work, each once', () => {

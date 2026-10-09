@@ -427,6 +427,18 @@ async function offlineGroup(browser, server) {
       assert(/Stopped before an answer came\./.test(info.txt), info.txt);
       assertEqual(info.sum, 'Stopped: 1 type not answered', 'the summary says so');
       await shot(page, 'lookup-offline-desktop-light-en-stopped');
+      // A language re-mount shows the stopped lookup again, nothing asked.
+      const asked = await page.evaluate(() => window.__dohFail.asked.length);
+      await setLangUi(page, 'tr');
+      const tr = await page.waitFor(() => {
+        const txt = document.querySelector('.lkp-card[data-type="TXT"]');
+        return txt && txt.dataset.state === 'stopped' ? { card: txt.textContent, sum: (document.querySelector('[data-role="lkp-stopped"]')?.textContent || '').trim() } : false;
+      }, { message: 'TR re-mount' });
+      assert(/Yanıt gelmeden durduruldu\./.test(tr.card), tr.card);
+      assertEqual(tr.sum, 'Durduruldu: 1 tür yanıtlanmadı', 'TR summary');
+      assertEqual(await page.evaluate(() => window.__dohFail.asked.length), asked, 'nothing asked by the re-mount');
+      await setLangUi(page, 'en');
+      await page.waitFor(() => document.querySelector('.lkp-card[data-type="TXT"]')?.dataset.state === 'stopped', { message: 'EN again' });
       // Its Retry asks TXT alone and fills it in: the lookup is complete again.
       await page.evaluate(() => { window.__dohFail.slow = {}; });
       const before = await page.evaluate(() => window.__dohFail.asked.length);

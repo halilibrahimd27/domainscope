@@ -22,8 +22,9 @@
 
 import { h, svg, clear } from './dom.js';
 import {
-  Alert, Badge, Button, Card, DataTable, Disclosure, EmptyState, SegmentedControl, StatCard, checkbox, confirmDialog, ipSortValue, select, toast
+  Alert, Badge, Button, Card, DataTable, Disclosure, EmptyState, SegmentedControl, checkbox, confirmDialog, ipSortValue, select, toast
 } from './components.js';
+import { MetricStrip } from './template.js';
 import { downloadText, timestampedName } from './download.js';
 import { registerStrings, formatNumber, formatPercent, formatDate, hasString } from '../i18n.js';
 import { toCsv } from '../lib/export.js';
@@ -517,13 +518,19 @@ export function mountHistory(host, { ctx, read, preferred, onForget, classStyle,
     const d = hist.domains[P.domain];
     const tot = tr.totals;
     const band = complianceBand(tot.compliance);
-    const stats = h('div', { class: 'stat-grid rpt-stats rh-stats' },
-      StatCard({ label: t('rpt.hist.stat.messages'), value: tot.msgs }).el,
-      StatCard({ label: t('rpt.hist.stat.compliance'), value: share(tot.compliance), variant: band || 'default',
-        hint: t('rpt.stat.complianceHint', { pass: num(tot.dmarcPass), total: num(tot.msgs) }) }).el,
-      StatCard({ label: t('rpt.hist.stat.unknown'), value: share(tot.unknownShare), hint: t('rpt.det.count', { count: tot.unknownMsgs }) }).el,
-      StatCard({ label: t('rpt.hist.stat.days'), value: t('rpt.hist.stat.daysValue', { count: tot.reportedDays, days: num(P.period) }) }).el);
-    stats.querySelectorAll('.stat .stat-value')[1].classList.add('rh-compliance');
+    // The period's figures (the page template's metric strip, read-only): colour only on a compliance that needs a look.
+    const strip = MetricStrip({ className: 'rpt-stats rh-stats', label: t('rpt.stat.label') });
+    strip.update([
+      { id: 'messages', label: t('rpt.hist.stat.messages'), value: tot.msgs },
+      {
+        id: 'compliance', label: t('rpt.hist.stat.compliance'), value: share(tot.compliance), severity: band === 'error' || band === 'warn' ? band : null,
+        hint: t('rpt.stat.complianceHint', { pass: num(tot.dmarcPass), total: num(tot.msgs) })
+      },
+      { id: 'unknown', label: t('rpt.hist.stat.unknown'), value: share(tot.unknownShare), hint: t('rpt.det.count', { count: tot.unknownMsgs }) },
+      { id: 'days', label: t('rpt.hist.stat.days'), value: t('rpt.hist.stat.daysValue', { count: tot.reportedDays, days: num(P.period) }) }
+    ], { foldable: [] });
+    strip.el.querySelector('[data-metric="compliance"] .metric-value').classList.add('rh-compliance');
+    const stats = strip.el;
     const body = h('div', { class: 'stack' }, stats);
     if (!tot.reportedDays && tr.last) {
       body.append(Alert({ variant: 'info', compact: true, message: t('rpt.hist.stale', { domain: P.domain, days: num(P.period), date: day(tr.last) }) }));

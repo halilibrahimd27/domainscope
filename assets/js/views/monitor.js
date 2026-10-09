@@ -2,7 +2,7 @@
  * views/monitor.js — "Monitoring": the headless runner's results (tools/ds.mjs) over time — the
  * `--json` reports a nightly repository commits (results/NAME.json) and the history it keeps with
  * `--history results/history` (one line per target and check a night, YYYY-MM.jsonl) — as one row
- * per target, three tiles, the change timeline and its CSV.
+ * per target, the counts that need a look, the change timeline and its CSV.
  *
  * - Sources: files or the results folder (a drop zone and a folder picker: read in the browser,
  *   never uploaded), or the repository itself on GitHub (lib/monitorfetch.js: the user's
@@ -12,11 +12,16 @@
  * - lib/monitor.js does the work: the reports are checked with the runner's own shape rules,
  *   the history lines parsed (a bad line skipped and counted), merged and read into the rows
  *   (monitorRows), the tiles (monitorTiles), the timeline (timelineEntries) and the sparklines.
- * - The page: the source card, the tiles (targets with bad changes in 7 days, certificates under
- *   21 days, checks that did not complete — each filters the table), the links to the nightly
- *   issue and the run, Copy summary (lib/monitorsummary.js: names only), the target table with a
- *   sparkline of the health score and of the soonest certificate expiry, and the timeline filtered
- *   by command, target and tone, with a CSV of what it shows.
+ * - The page, on the page template (docs/DESIGN.md §5; ui/template.js, a "File" tool): the source
+ *   card (region 2: the drop zone with its pickers and how-to while nothing is open, then one row —
+ *   what was read, Add files, the folder picker, Forget —, or the GitHub form; the privacy note),
+ *   then the result header (`.mon-summary`: the targets and the last check, the status summary —
+ *   lib/monitor.js monitorStatus: targets with bad changes in 7 days, certificates under 21 days,
+ *   checks that did not complete, each a filter of the targets —, Copy summary with ¶
+ *   (lib/monitorsummary.js: names only), the timeline's CSV, the links to the nightly issue and the
+ *   run) and two tabs: Targets (the counts as a read-only metric strip, the target table with a
+ *   sparkline of the health score and of the soonest certificate expiry, and its Show select) and
+ *   Changes (the timeline filtered by command, target and tone; the CSV is of what it shows).
  * - The results are kept in this module's memory only: a reload, Forget, another workspace or
  *   "Delete all local data" drops them; leaving the view stops a GitHub read. What Home counts of
  *   them — the tiles' numbers, when the newest check ran and the import time, never a target — goes
@@ -29,17 +34,18 @@
 
 import { h, append, clear, svg } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, DataTable, Disclosure, EmptyState, ExternalLink, FileDrop, IconButton, SegmentedControl, Spinner,
-  StatCard, announce, checkbox, select, textInput, toast
+  Alert, Badge, Button, CodeBlock, DataTable, Disclosure, ExternalLink, FileDrop, Icon, IconButton, RelativeTime, SegmentedControl, Spinner, Tabs,
+  announce, checkbox, select, textInput, toast
 } from '../ui/components.js';
+import { EmptyState, MetricStrip, PrivacyNote, ResultActions, ResultHeader, ResultTitle, StatusSummary } from '../ui/template.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { registerSummaryBuilder } from '../lib/summarycore.js';
 import { monitorSummary, MONITOR_SUMMARY_I18N } from '../lib/monitorsummary.js';
-import { formatDate, formatDateTime, formatNumber, registerStrings } from '../i18n.js';
+import { formatDate, formatDateTime, formatNumber, formatRelative, registerStrings } from '../i18n.js';
 import {
   MONITOR_COMMANDS, MONITOR_FILE_ERRORS, MONITOR_MAX_BYTES, MONITOR_RECENT_DAYS, MONITOR_WARN_DAYS, TIMELINE_TONES, TLS_WORST, commandOrder,
-  emptyMonitor, filterTimeline, latestRun, monitorRows, monitorSummaryFacts, monitorTiles, readMonitorFiles, repoOfRun, rowMatches,
+  emptyMonitor, filterTimeline, latestRun, monitorRows, monitorStatus, monitorSummaryFacts, monitorTiles, readMonitorFiles, repoOfRun, rowMatches,
   sparkPoints, timelineCsv, timelineEntries
 } from '../lib/monitor.js';
 import { monitorDigest, withDigest } from '../lib/digests.js';
@@ -81,7 +87,6 @@ registerStrings('tr', MONITOR_SUMMARY_I18N.tr);
 /* ------------------------------------------------------------------------ */
 
 registerStrings('en', {
-  'mon.privacyTitle': 'Read in your browser',
   'mon.privacy': 'The results are read here and kept only in this tab: nothing is uploaded or stored, and a reload, Forget, another workspace or “Delete all local data” clears them.',
   'mon.source.title': 'Results',
   'mon.source.label': 'Where the results come from',
@@ -111,8 +116,22 @@ registerStrings('en', {
   'mon.error.damaged': '{name}: a damaged report ({detail})',
   'mon.error.not-results': '{name}: neither a report (.json) nor a history file (.jsonl)',
   'mon.error.empty-history': '{name}: no line of it is a history line ({detail} skipped)',
-  'mon.emptyTitle': 'No results open yet',
-  'mon.emptyBody': 'Open the results folder of your nightly repository, or read it from GitHub: each domain gets a row with its trend, the certificates under 21 days and the checks that did not complete are counted at the top, and every night’s changes are listed below.',
+  'mon.emptyLine': 'A row per target with its trends, the counts that need a look and every night’s changes.',
+  'mon.addFiles': 'Add files',
+  'mon.addHint': 'or drop them here',
+  'mon.resultsTitle': { one: 'Nightly results · {count} target', other: 'Nightly results · {count} targets' },
+  'mon.lastCheck': 'Last check {time}',
+  'mon.tabs': 'The results',
+  'mon.tab.targets': 'Targets',
+  'mon.status.bad': { one: '{count} target with bad changes', other: '{count} targets with bad changes' },
+  'mon.status.expiring': { one: '{count} certificate under {days} days', other: '{count} certificates under {days} days' },
+  'mon.status.incomplete': { one: '{count} check did not complete', other: '{count} checks did not complete' },
+  'mon.status.targets': { one: '{count} target', other: '{count} targets' },
+  'mon.filter.label': 'Show',
+  'mon.filter.all': 'All targets ({count})',
+  'mon.filter.bad': 'With bad changes in {days} days ({count})',
+  'mon.filter.expiring': 'With a certificate under {days} days ({count})',
+  'mon.filter.incomplete': 'With a check that did not complete ({count})',
   'mon.gh.intro': 'Read the results straight from the repository the nightly template commits to, with a fine-grained token of yours. It only reads.',
   'mon.gh.repo': 'Repository',
   'mon.gh.token': 'Fine-grained token',
@@ -160,7 +179,7 @@ registerStrings('en', {
   'mon.stat.targets': 'Targets',
   'mon.stat.targetsHint': { one: 'from {count} report', other: 'from {count} reports' },
   'mon.stat.targetsHistory': 'from the history',
-  'mon.stat.filterTitle': 'Show these targets in the table',
+  'mon.stat.label': 'The targets in numbers',
   'mon.link.issue': 'Nightly issue #{number}',
   'mon.link.issues': 'Open nightly issues',
   'mon.link.run': 'Latest run',
@@ -210,7 +229,6 @@ registerStrings('en', {
   'mon.f.endpoints': { one: '{count} address', other: '{count} addresses' },
   'mon.f.verdict': 'verdict {verdict}',
   'mon.tl.title': 'Changes',
-  'mon.tl.count': { one: '{count} change', other: '{count} changes' },
   'mon.tl.command': 'Check',
   'mon.tl.target': 'Target',
   'mon.tl.tone': 'Show',
@@ -222,7 +240,6 @@ registerStrings('en', {
   'mon.tl.run': 'run',
   'mon.tl.counted': 'counted',
   'mon.tl.countedTitle': 'It counted: it opened or updated the nightly issue (--fail-on-change)',
-  'mon.csv': 'CSV',
   'mon.csvTitle': 'The changes this filter shows, one row each',
   'mon.csvDone': '{file} downloaded',
   'mon.tone.all': 'All',
@@ -293,7 +310,6 @@ registerStrings('en', {
 });
 
 registerStrings('tr', {
-  'mon.privacyTitle': 'Tarayıcınızda okunur',
   'mon.privacy': 'Sonuçlar burada okunur ve yalnızca bu sekmede tutulur: hiçbir yere yüklenmez ya da kaydedilmez; sayfayı yenilemek, Unut, başka bir çalışma alanı ya da “Tüm yerel verileri sil” onları siler.',
   'mon.source.title': 'Sonuçlar',
   'mon.source.label': 'Sonuçların kaynağı',
@@ -323,8 +339,22 @@ registerStrings('tr', {
   'mon.error.damaged': '{name}: bozuk bir rapor ({detail})',
   'mon.error.not-results': '{name}: ne bir rapor (.json) ne de bir geçmiş dosyası (.jsonl)',
   'mon.error.empty-history': '{name}: hiçbir satırı bir geçmiş satırı değil ({detail} satır atlandı)',
-  'mon.emptyTitle': 'Henüz açık sonuç yok',
-  'mon.emptyBody': 'Gece kontrollerini çalıştıran deponuzun results klasörünü açın ya da GitHub’dan okuyun: her alan adı eğilimiyle birlikte bir satır alır, 21 günden az kalan sertifikalar ve tamamlanmayan kontroller en üstte sayılır, her gecenin değişiklikleri aşağıda listelenir.',
+  'mon.emptyLine': 'Hedef başına eğilimleriyle bir satır, bakılması gereken sayılar ve her gecenin değişiklikleri.',
+  'mon.addFiles': 'Dosya ekle',
+  'mon.addHint': 'ya da buraya bırakın',
+  'mon.resultsTitle': 'Gece sonuçları · {count} hedef',
+  'mon.lastCheck': 'Son kontrol: {time}',
+  'mon.tabs': 'Sonuçlar',
+  'mon.tab.targets': 'Hedefler',
+  'mon.status.bad': '{count} hedefte kötü değişiklik',
+  'mon.status.expiring': '{days} günden az kalan {count} sertifika',
+  'mon.status.incomplete': '{count} kontrol tamamlanmadı',
+  'mon.status.targets': '{count} hedef',
+  'mon.filter.label': 'Göster',
+  'mon.filter.all': 'Bütün hedefler ({count})',
+  'mon.filter.bad': '{days} günde kötü değişikliği olanlar ({count})',
+  'mon.filter.expiring': '{days} günden az kalan sertifikası olanlar ({count})',
+  'mon.filter.incomplete': 'Tamamlanmayan kontrolü olanlar ({count})',
   'mon.gh.intro': 'Sonuçları, gece şablonunun commit’lediği depodan doğrudan, size ait ince ayarlı (fine-grained) bir anahtarla okuyun. Bu sayfa yalnızca okur.',
   'mon.gh.repo': 'Depo',
   'mon.gh.token': 'İnce ayarlı (fine-grained) anahtar',
@@ -372,7 +402,7 @@ registerStrings('tr', {
   'mon.stat.targets': 'Hedefler',
   'mon.stat.targetsHint': { other: '{count} rapordan' },
   'mon.stat.targetsHistory': 'geçmişten',
-  'mon.stat.filterTitle': 'Tabloda bu hedefleri göster',
+  'mon.stat.label': 'Sayılarla hedefler',
   'mon.link.issue': 'Gece issue’su #{number}',
   'mon.link.issues': 'Açık gece issue’ları',
   'mon.link.run': 'Son çalışma',
@@ -422,7 +452,6 @@ registerStrings('tr', {
   'mon.f.endpoints': { other: '{count} adres' },
   'mon.f.verdict': 'sonuç {verdict}',
   'mon.tl.title': 'Değişiklikler',
-  'mon.tl.count': { other: '{count} değişiklik' },
   'mon.tl.command': 'Kontrol',
   'mon.tl.target': 'Hedef',
   'mon.tl.tone': 'Göster',
@@ -434,7 +463,6 @@ registerStrings('tr', {
   'mon.tl.run': 'çalışma',
   'mon.tl.counted': 'sayıldı',
   'mon.tl.countedTitle': 'Sayıldı: gece issue’sunu açtı ya da güncelledi (--fail-on-change)',
-  'mon.csv': 'CSV',
   'mon.csvTitle': 'Bu süzgecin gösterdiği değişiklikler, her biri bir satır',
   'mon.csvDone': '{file} indirildi',
   'mon.tone.all': 'Tümü',
@@ -606,7 +634,7 @@ export function repoOf(source, data) {
  * (never the token), the months and issue choices, the running read and its outcome.
  */
 const S = {
-  data: null, problems: [], skippedLines: 0, source: 'files', filter: 'all', tl: { command: '', target: '', tone: 'all', shown: TIMELINE_PAGE },
+  data: null, problems: [], skippedLines: 0, source: 'files', filter: 'all', tab: 'targets', tl: { command: '', target: '', tone: 'all', shown: TIMELINE_PAGE },
   repo: null, issue: null, issueError: null,
   gh: { repo: '', months: GITHUB_HISTORY_MONTHS, issue: false, job: null, error: null, notice: null }
 };
@@ -636,6 +664,7 @@ function forgetAll() {
   S.problems = [];
   S.skippedLines = 0;
   S.filter = 'all';
+  S.tab = 'targets';
   S.tl = { command: '', target: '', tone: 'all', shown: TIMELINE_PAGE };
   S.repo = null;
   S.issue = null;
@@ -660,8 +689,13 @@ export function mount(container, ctx) {
       }
     });
   }
-  const root = h('div', { class: 'mon-page stack' });
-  container.append(Alert({ variant: 'ok', icon: 'lock', title: t('mon.privacyTitle'), message: t('mon.privacy'), compact: true }), root);
+  // Region 2 (the source card: files or GitHub) and the result (the empty state, or the result
+  // header and the tabs): drawn apart, so a source switch or a GitHub read in progress leaves the
+  // table as it is.
+  const sourceHost = h('div', { class: 'mon-source-host' });
+  const resultsHost = h('div', { class: 'mon-results-host' });
+  const root = h('div', { class: 'mon-page' }, sourceHost, resultsHost);
+  container.append(root);
   rerender = () => render();
   ctx.onCleanup(() => {
     rerender = null;
@@ -676,6 +710,21 @@ export function mount(container, ctx) {
   const when = (ms) => formatDateTime(new Date(ms), { utc: true });
   const day = (ms) => formatDate(new Date(ms), { utc: true });
   const daysText = (d) => (d < 0 ? t('mon.expiredAgo', { count: -d }) : t('mon.days', { count: d }));
+
+  /* --- region 4: the result header (one for the life of the view; `.mon-summary`) ---------- */
+  const head = ResultHeader({ className: 'mon-summary' });
+  // The counts as filters of the Targets table: a press shows that tab filtered; a second press shows every target.
+  const status = StatusSummary({ items: [] });
+  head.set('status', status.el);
+  /** The head's actions (Copy summary with ¶, the timeline's CSV): drawn with the result. */
+  let actions = null;
+  ctx.onCleanup(() => { if (actions) actions.dispose(); });
+  /** The result's tabs (Targets · Changes), the targets table and its Show select, while results are open. */
+  let tabs = null;
+  let table = null;
+  let filterSelect = null;
+  /** The Changes tab's panel: its filters, the timeline and "Show more" (drawn again on its own). */
+  const timelineHost = h('div', { class: 'mon-timeline', dataset: { role: 'mon-timeline' } });
 
   function importAndShow(files, { replace = false } = {}) {
     const result = importFiles(replace ? null : S.data, files);
@@ -692,8 +741,9 @@ export function mount(container, ctx) {
     }
     render();
     keepDigest();
-    const target = read ? root.querySelector('.mon-stats [data-filter="all"]') : root.querySelector('.mon-drop');
-    if (target) target.focus({ preventScroll: !read });
+    // The keyboard focus goes to the result (its title), or back to the drop zone when nothing was read.
+    if (read && head.el.isConnected) head.focusTitle();
+    else focus('.mon-drop');
   }
 
   /** Home's counts of the open results go to the workspace (none when nothing is open). */
@@ -713,39 +763,38 @@ export function mount(container, ctx) {
     if (target) target.focus({ preventScroll: true });
   }
 
+  /** The status item that stands for a filter (pressed while it applies): none for every target. */
+  const statusOfFilter = (f) => (f !== 'all' && MONITOR_FILTERS.includes(f) ? f : null);
+
+  /** The targets table follows the filter (the status summary and the Show select say it). */
   function setFilter(filter) {
-    S.filter = S.filter === filter && filter !== 'all' ? 'all' : filter;
-    render();
-    const tile = root.querySelector(`.mon-stats [data-filter="${filter}"]`);
-    if (tile) tile.focus({ preventScroll: true });
+    S.filter = MONITOR_FILTERS.includes(filter) ? filter : 'all';
+    if (table) table.setFilter((r) => rowMatches(r, S.filter));
+    status.setPressed(statusOfFilter(S.filter));
+    if (filterSelect) filterSelect.value = S.filter;
+  }
+
+  /** A status item pressed: the Targets tab with its filter (pressed again, or the targets: every target). */
+  function pressStatus(item) {
+    setFilter(item.filter === 'all' || S.filter === item.filter ? 'all' : item.filter);
+    if (tabs && tabs.getSelected() !== 'targets') tabs.select('targets');
   }
 
   /* --- render ------------------------------------------------------------ */
   function render() {
-    clear(root);
-    root.append(sourceCard());
-    const view = currentView();
-    if (!view) {
-      root.append(EmptyState({ icon: 'eye', title: t('mon.emptyTitle'), message: t('mon.emptyBody') }));
-      return;
-    }
-    const summary = SummaryButton({
-      kind: 'monitor',
-      facts: () => {
-        const v = currentView();
-        return v ? monitorSummaryFacts(v.rows, v.tiles, S.data) : null;
-      },
-      // the view's bare link: the results never go into a URL
-      url: () => ctx.shareUrl({})
-    });
-    root.append(h('div', { class: 'stack mon-results', dataset: { shortcutScope: 'results' } },
-      S.skippedLines ? Alert({ variant: 'info', compact: true, message: t('mon.skippedLines', { count: S.skippedLines }) }) : null,
-      h('div', { class: 'cluster mon-summary' }, summary.el, linksOf()),
-      statTiles(view), targetTable(view), timelineCard(view)));
+    renderSource();
+    renderResults();
   }
 
-  /* --- the source --------------------------------------------------------- */
-  function sourceCard() {
+  /* --- region 2: the source (DESIGN §5.5, a "File" tool) ---------------------------- */
+  /**
+   * One card: where the results come from (files or GitHub). While nothing is open the files
+   * source is a drop zone with its pickers and how-to; once results are open it is one row — what
+   * was read, Add files (a small drop zone: a click chooses, a drop reads), the folder picker and
+   * Forget. The privacy note closes the card.
+   */
+  function renderSource() {
+    clear(sourceHost);
     const has = !!S.data;
     const sourceControl = SegmentedControl({
       label: t('mon.source.label'),
@@ -755,7 +804,7 @@ export function mount(container, ctx) {
       options: MONITOR_SOURCES.map((s) => ({ value: s, label: t(`mon.source.${s}`), icon: s === 'files' ? 'folder' : 'git-branch' })),
       onChange: (v) => {
         S.source = v;
-        render();
+        renderSource();
       }
     });
     const errors = S.problems.length ? Alert({
@@ -765,46 +814,66 @@ export function mount(container, ctx) {
         name: p.name, detail: p.detail || '?', max: `${Math.round(MONITOR_MAX_BYTES / 1048576)} MB`
       }))))
     }) : null;
-    const read = has ? h('p', { class: 'text-sm muted mon-read', dataset: { role: 'mon-read' } }, t('mon.read', {
-      reports: t('mon.read.reports', { count: S.data.reports.length }),
-      months: t('mon.read.months', { count: S.data.files.filter((f) => f.kind === 'history').length }),
-      lines: t('mon.read.lines', { count: S.data.lines.length })
-    })) : null;
-    return Card({
-      title: t('mon.source.title'),
-      icon: 'folder',
-      className: 'mon-source-card',
-      actions: has ? Button({ label: t('mon.forget'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'mon-forget' }, onClick: forget }) : null,
-      children: h('div', { class: 'stack-sm' }, sourceControl.el, S.source === 'github' ? githubPanel() : filesPanel(), read, errors)
-    });
+    const compact = has && S.source === 'files';
+    sourceHost.append(h('div', {
+      class: ['tool-input', 'card', 'file-input', 'mon-source-card', { 'is-compact': compact }],
+      attrs: { role: 'group', 'aria-label': t('mon.source.title') }
+    },
+    sourceControl.el,
+    has ? readRow() : null,
+    S.source === 'github' ? githubPanel() : compact ? null : filesPanel(),
+    errors,
+    h('div', { class: 'tool-input-foot' }, PrivacyNote({ text: t('mon.privacy') }))));
   }
 
-  function filesPanel() {
-    const has = !!S.data;
+  /** The files read, with Add files and the folder picker (the files source) and Forget: the compact row. */
+  function readRow() {
+    const files = S.source === 'files';
+    const drop = files ? fileDrop({ compact: true }) : null;
+    return h('div', { class: 'file-input-row' },
+      h('p', { class: 'file-input-summary' }, Icon('folder', { size: 16 }), h('span', { class: 'mon-read', dataset: { role: 'mon-read' } }, t('mon.read', {
+        reports: t('mon.read.reports', { count: S.data.reports.length }),
+        months: t('mon.read.months', { count: S.data.files.filter((f) => f.kind === 'history').length }),
+        lines: t('mon.read.lines', { count: S.data.lines.length })
+      }))),
+      h('div', { class: 'file-input-actions' },
+        drop ? drop.el : null,
+        drop && drop.openFolder ? Button({ label: t('mon.folder'), icon: 'folder', size: 'sm', variant: 'secondary', dataset: { action: 'mon-folder' }, onClick: () => drop.openFolder() }) : null,
+        Button({ label: t('mon.forget'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'mon-forget' }, onClick: forget })));
+  }
+
+  /** The drop zone of the results folder: full while nothing is open, "Add files" in the compact row. */
+  function fileDrop({ compact = false } = {}) {
     const drop = FileDrop({
       accept: '.json,.jsonl',
       multiple: true,
       directory: true,
       maxFiles: MAX_FILES,
       maxBytes: MONITOR_MAX_BYTES,
-      compact: has,
-      icon: 'folder',
-      title: t('mon.drop.title'),
-      hint: t('mon.drop.hint'),
+      compact,
+      icon: compact ? 'upload' : 'folder',
+      title: compact ? t('mon.addFiles') : t('mon.drop.title'),
+      hint: compact ? t('mon.addHint') : t('mon.drop.hint'),
       className: 'mon-drop',
       paste: true,
       onFiles: (files) => importAndShow(files)
     });
+    // '/' focuses it (the shell's focus shortcut).
     drop.el.dataset.shortcut = 'focus';
-    const buttons = [Button({ label: t('mon.choose'), icon: 'upload', size: 'sm', variant: has ? 'secondary' : 'primary', dataset: { action: 'mon-choose' }, onClick: () => drop.open() })];
+    return drop;
+  }
+
+  function filesPanel() {
+    const drop = fileDrop();
+    const buttons = [Button({ label: t('mon.choose'), icon: 'upload', size: 'sm', variant: 'primary', dataset: { action: 'mon-choose' }, onClick: () => drop.open() })];
     if (drop.openFolder) buttons.push(Button({ label: t('mon.folder'), icon: 'folder', size: 'sm', variant: 'secondary', dataset: { action: 'mon-folder' }, onClick: () => drop.openFolder() }));
     const how = Disclosure({
       summary: t('mon.how.summary'),
       className: 'mon-how',
-      open: !has,
+      open: true,
       children: h('div', { class: 'stack-sm' }, h('p', { class: 'text-sm' }, t('mon.how.body')), CodeBlock(HISTORY_EXAMPLE, { label: 'ds', wrap: true }))
     });
-    return h('div', { class: 'stack-sm mon-files' }, drop.el, h('div', { class: 'cluster' }, buttons), how);
+    return h('div', { class: 'stack-sm mon-files' }, drop.el, h('div', { class: 'file-input-buttons' }, buttons), how);
   }
 
   function githubPanel() {
@@ -848,9 +917,8 @@ export function mount(container, ctx) {
       onClick: () => {
         stopRead();
         gh.notice = t('mon.gh.stopped');
-        render();
-        const again = root.querySelector('[data-action="mon-gh-load"]');
-        if (again) again.focus();
+        renderSource();
+        focus('[data-action="mon-gh-load"]');
       }
     }) : null;
 
@@ -868,21 +936,21 @@ export function mount(container, ctx) {
       gh.notice = null;
       if (!parseRepo(gh.repo)) {
         gh.error = { code: 'repo', params: {}, cleared };
-        render();
+        renderSource();
         focus('[data-role="mon-gh-repo"]');
         return;
       }
       // an empty or malformed token is said at once: no read starts, nothing is sent
       if (!cleanToken(raw)) {
         gh.error = { code: 'token', params: {}, cleared };
-        render();
+        renderSource();
         focus('[data-role="mon-gh-token"]');
         return;
       }
       const controller = new AbortController();
       const job = { controller, progress: null, repo: gh.repo };
       gh.job = job;
-      render();
+      renderSource();
       focus('[data-action="mon-gh-stop"]');
       announce(t('mon.gh.running', { repo: gh.repo }));
       fetchResults(gh.repo, raw, {
@@ -914,7 +982,7 @@ export function mount(container, ctx) {
         if (err && err.name === 'AbortError') return;
         gh.error = { code: err && err.code ? err.code : 'network', params: (err && err.params) || {}, cleared };
         if (rerender) {
-          render();
+          renderSource();
           focus('[data-role="mon-gh-token"]');
         }
         announce(t('mon.gh.err.title'));
@@ -963,7 +1031,8 @@ export function mount(container, ctx) {
       h('div', { class: 'cluster mon-gh-options' }, months.el, issue.el),
       h('p', { class: 'text-sm muted' }, t('mon.gh.how')),
       h('div', { class: 'cluster mon-gh-links' }, ExternalLink(GITHUB_TOKEN_URL, t('mon.gh.link.token')), ExternalLink(GITHUB_TOKEN_DOCS, t('mon.gh.link.docs'))),
-      Alert({ variant: 'info', icon: 'lock', compact: true, message: t('mon.gh.privacy', { max: GITHUB_MAX_FILES }) }),
+      // The token's own privacy note, next to its Load (DESIGN §5.5: a panel that sends something says so).
+      PrivacyNote({ text: t('mon.gh.privacy', { max: GITHUB_MAX_FILES }), className: 'mon-gh-privacy' }),
       h('div', { class: 'cluster' }, go, stop),
       statusEl);
     if (running) {
@@ -982,6 +1051,79 @@ export function mount(container, ctx) {
     if (el && !el.disabled) el.focus();
   }
 
+  /* --- the result: the empty state, or the result header (region 4) and the tabs ------------- */
+  function renderResults() {
+    const view = currentView();
+    clear(resultsHost);
+    if (actions) actions.dispose();
+    actions = null;
+    tabs = null;
+    table = null;
+    filterSelect = null;
+    if (!view) {
+      resultsHost.append(h('div', { class: 'mon-empty' }, EmptyState({
+        icon: 'eye',
+        message: t('mon.emptyLine'),
+        checks: ['health', 'ct', 'tls', 'takeover', 'audit', 'watch'].map(cmdName)
+      })));
+      return;
+    }
+    renderHead(view);
+    const targets = h('div', { class: 'mon-targets' }, metricStrip(view), targetTable(view));
+    tabs = Tabs([
+      { id: 'targets', label: t('mon.tab.targets'), badge: view.rows.length, content: () => targets },
+      { id: 'changes', label: t('mon.tl.title'), content: () => timelineHost }
+    ], { selected: S.tab, label: t('mon.tabs'), className: 'mon-tabs', onChange: (tab) => { S.tab = tab; } });
+    renderTimeline();
+    resultsHost.append(h('div', { class: 'mon-results', dataset: { shortcutScope: 'results' } }, head.el, tabs.el));
+    setFilter(S.filter);
+  }
+
+  /** The result header: what is open and when it was checked, the counts, the actions and the links. */
+  function renderHead(view) {
+    const facts = monitorSummaryFacts(view.rows, view.tiles, S.data);
+    head.setState('done');
+    head.set('title', ResultTitle({ text: t('mon.resultsTitle', { count: view.rows.length }) }));
+    head.set('meta', facts.at ? RelativeTime(facts.at, { className: 'mon-checked', text: t('mon.lastCheck', { time: formatRelative(facts.at) }) }) : null);
+    // what the read left out of the history: said with the result it is about
+    const skipped = S.skippedLines ? Alert({ variant: 'info', compact: true, message: t('mon.skippedLines', { count: S.skippedLines }) }) : null;
+    if (skipped) skipped.classList.add('mon-skipped');
+    head.set('notes', skipped);
+    status.update(monitorStatus(view.tiles).map((item) => ({
+      ...item,
+      text: t(`mon.status.${item.key}`, { count: item.count, days: MONITOR_WARN_DAYS }),
+      // the targets open the table with every target; the other three filter it
+      filter: item.filter !== 'all',
+      onPress: () => pressStatus(item)
+    })), { pressed: statusOfFilter(S.filter) });
+    const summary = SummaryButton({
+      kind: 'monitor',
+      plainLabel: t('result.plainTitle'),
+      facts: () => {
+        const v = currentView();
+        return v ? monitorSummaryFacts(v.rows, v.tiles, S.data) : null;
+      },
+      // the view's bare link: the results never go into a URL
+      url: () => ctx.shareUrl({})
+    });
+    actions = ResultActions({
+      summary,
+      // One file, no menu (DESIGN §5.3): the changes the Changes tab's filters show.
+      exports: [{ label: t('result.export'), title: t('mon.csvTitle'), dataset: { action: 'mon-csv' }, onSelect: () => exportCsv() }]
+    });
+    head.set('actions', actions.el);
+    head.set('next', linksOf());
+  }
+
+  /** The changes the Changes tab's filters show, as CSV. */
+  function exportCsv() {
+    const view = currentView();
+    const filtered = view ? filterTimeline(view.entries, S.tl) : [];
+    if (!filtered.length) return;
+    const file = downloadText(timestampedName('monitor-changes', 'csv'), timelineCsv(filtered), 'text/csv;charset=utf-8');
+    toast(t('mon.csvDone', { file }), { type: 'success', timeout: 2500 });
+  }
+
   /* --- links ------------------------------------------------------------- */
   function linksOf() {
     const links = [];
@@ -998,26 +1140,32 @@ export function mount(container, ctx) {
     return links.length ? h('div', { class: 'cluster mon-links' }, links) : null;
   }
 
-  /* --- tiles ------------------------------------------------------------- */
-  function statTiles(view) {
+  /* --- the Targets tab: the metric strip (region 6, read-only) and the table ----------- */
+  function metricStrip(view) {
     const { tiles, rows } = view;
-    const tile = (filter, label, value, hint, variant) => {
-      const card = StatCard({ label, value, hint, variant: value ? variant : 'default', pressed: S.filter === filter, onClick: () => setFilter(filter) });
-      card.el.dataset.filter = filter;
-      card.el.title = t('mon.stat.filterTitle');
-      return card.el;
-    };
     const first = tiles.expiring[0];
-    return h('div', { class: 'stat-grid mon-stats' },
-      tile('all', t('mon.stat.targets'), rows.length,
-        S.data.reports.length ? t('mon.stat.targetsHint', { count: S.data.reports.length }) : t('mon.stat.targetsHistory'), 'accent'),
-      tile('bad', t('mon.stat.bad'), tiles.bad.length, t('mon.stat.badHint', { count: tiles.bad.length, days: MONITOR_RECENT_DAYS }), 'error'),
-      tile('expiring', t('mon.stat.expiring', { days: MONITOR_WARN_DAYS }), tiles.expiring.length,
-        first ? t('mon.stat.expiringHint', { name: `${first.name} (${daysText(first.daysLeft)})` }) : t('mon.stat.expiringNone'), 'warn'),
-      tile('incomplete', t('mon.stat.incomplete'), tiles.incomplete.length, t('mon.stat.incompleteHint'), 'warn'));
+    const strip = MetricStrip({ className: 'mon-stats', label: t('mon.stat.label') });
+    strip.update([
+      {
+        id: 'all', label: t('mon.stat.targets'), value: rows.length,
+        hint: S.data.reports.length ? t('mon.stat.targetsHint', { count: S.data.reports.length }) : t('mon.stat.targetsHistory')
+      },
+      {
+        id: 'bad', label: t('mon.stat.bad'), value: tiles.bad.length, severity: tiles.bad.length ? 'error' : null,
+        hint: t('mon.stat.badHint', { count: tiles.bad.length, days: MONITOR_RECENT_DAYS })
+      },
+      {
+        id: 'expiring', label: t('mon.stat.expiring', { days: MONITOR_WARN_DAYS }), value: tiles.expiring.length, severity: tiles.expiring.length ? 'warn' : null,
+        hint: first ? t('mon.stat.expiringHint', { name: `${first.name} (${daysText(first.daysLeft)})` }) : t('mon.stat.expiringNone')
+      },
+      {
+        id: 'incomplete', label: t('mon.stat.incomplete'), value: tiles.incomplete.length, severity: tiles.incomplete.length ? 'warn' : null,
+        hint: t('mon.stat.incompleteHint')
+      }
+    ], { foldable: [] });
+    return strip.el;
   }
 
-  /* --- the targets --------------------------------------------------------- */
   function spark(points, kind) {
     if (!points.length) return null;
     const values = points.map((p) => p.value);
@@ -1115,11 +1263,25 @@ export function mount(container, ctx) {
   }
 
   function targetTable(view) {
-    const table = DataTable({
+    // The Show select: the same filters as the status summary, every target counted once.
+    filterSelect = select({
+      label: t('mon.filter.label'),
+      size: 'sm',
+      className: 'mon-filter',
+      value: S.filter,
+      options: MONITOR_FILTERS.map((f) => ({
+        value: f,
+        label: t(`mon.filter.${f}`, { count: view.rows.filter((r) => rowMatches(r, f)).length, days: f === 'bad' ? MONITOR_RECENT_DAYS : MONITOR_WARN_DAYS })
+      })),
+      onChange: (v) => setFilter(v)
+    });
+    filterSelect.input.dataset.role = 'mon-filter';
+    table = DataTable({
       caption: t('mon.table.caption'),
       rows: view.rows,
       rowKey: (r) => r.target,
       search: { placeholder: t('mon.search'), label: t('mon.search') },
+      toolbar: filterSelect.el,
       filter: (r) => rowMatches(r, S.filter),
       noMatch: t('mon.noMatch'),
       cellLabels: true,
@@ -1150,12 +1312,14 @@ export function mount(container, ctx) {
         { key: 'status', label: t('mon.col.status'), sortable: true, searchable: false, sortValue: (r) => -r.incomplete.length, render: statusCell }
       ]
     });
-    return h('div', { class: 'stack-sm mon-targets' }, table.el);
+    return table.el;
   }
 
+  /** A row's "Show the changes of …": the Changes tab, filtered by that target. */
   function showChangesOf(target) {
     S.tl = { ...S.tl, target, shown: TIMELINE_PAGE };
-    render();
+    if (tabs) tabs.select('changes');
+    renderTimeline();
     const el = root.querySelector('[data-role="mon-tl-target"]');
     if (el) {
       el.focus({ preventScroll: true });
@@ -1163,8 +1327,11 @@ export function mount(container, ctx) {
     }
   }
 
-  /* --- the timeline ------------------------------------------------------- */
-  function timelineCard(view) {
+  /* --- the Changes tab: the timeline ------------------------------------------------ */
+  function renderTimeline() {
+    const view = currentView();
+    clear(timelineHost);
+    if (!view) return;
     const all = view.entries;
     const filtered = filterTimeline(all, S.tl);
     const commands = [...new Set(all.map((e) => e.command))].sort(commandOrder);
@@ -1176,7 +1343,7 @@ export function mount(container, ctx) {
       options: [{ value: '', label: t('mon.tl.allCommands') }, ...commands.map((c) => ({ value: c, label: cmdName(c) }))],
       onChange: (v) => {
         S.tl = { ...S.tl, command: v, shown: TIMELINE_PAGE };
-        render();
+        renderTimeline();
         focus('[data-role="mon-tl-command"]');
       }
     });
@@ -1186,7 +1353,7 @@ export function mount(container, ctx) {
       options: [{ value: '', label: t('mon.tl.allTargets') }, ...targets.map((x) => ({ value: x, label: x }))],
       onChange: (v) => {
         S.tl = { ...S.tl, target: v, shown: TIMELINE_PAGE };
-        render();
+        renderTimeline();
         focus('[data-role="mon-tl-target"]');
       }
     });
@@ -1196,16 +1363,8 @@ export function mount(container, ctx) {
       options: TIMELINE_TONES.map((x) => ({ value: x, label: t(`mon.tone.${x}`) })),
       onChange: (v) => {
         S.tl = { ...S.tl, tone: v, shown: TIMELINE_PAGE };
-        render();
+        renderTimeline();
         focus(`.mon-tl-tone .seg-btn[data-value="${v}"]`);
-      }
-    });
-    const csv = Button({
-      label: t('mon.csv'), icon: 'download', size: 'sm', variant: 'secondary', title: t('mon.csvTitle'), disabled: !filtered.length,
-      dataset: { action: 'mon-csv' },
-      onClick: () => {
-        const file = downloadText(timestampedName('monitor-changes', 'csv'), timelineCsv(filtered), 'text/csv;charset=utf-8');
-        toast(t('mon.csvDone', { file }), { type: 'success', timeout: 2500 });
       }
     });
     const shown = filtered.slice(0, S.tl.shown);
@@ -1231,23 +1390,19 @@ export function mount(container, ctx) {
       label: t('mon.tl.more', { count: num(Math.min(TIMELINE_PAGE, filtered.length - shown.length)) }), size: 'sm', variant: 'secondary', dataset: { action: 'mon-tl-more' },
       onClick: () => {
         S.tl = { ...S.tl, shown: S.tl.shown + TIMELINE_PAGE };
-        render();
+        renderTimeline();
         focus('[data-action="mon-tl-more"]');
       }
     }) : null;
-    const empty = !all.length ? EmptyState({ compact: true, icon: 'clock', message: t('mon.tl.empty') })
-      : !filtered.length ? EmptyState({ compact: true, icon: 'filter', message: t('mon.tl.none') }) : null;
-    return Card({
-      title: t('mon.tl.title'),
-      subtitle: t('mon.tl.count', { count: filtered.length }),
-      icon: 'clock',
-      className: 'mon-timeline',
-      actions: csv,
-      children: h('div', { class: 'stack-sm' },
-        h('div', { class: 'cluster mon-tl-filters' }, commandSel.el, targetSel.el, tone.el),
-        empty || h('ol', { class: 'mon-tl-list' }, list),
-        more)
-    });
+    const empty = !all.length ? EmptyState({ icon: 'clock', message: t('mon.tl.empty') })
+      : !filtered.length ? EmptyState({ icon: 'filter', message: t('mon.tl.none') }) : null;
+    timelineHost.append(
+      h('div', { class: 'cluster mon-tl-filters' }, commandSel.el, targetSel.el, tone.el),
+      empty || h('ol', { class: 'mon-tl-list' }, list),
+      more);
+    // The tab says how many changes the filters show; the head's CSV waits while there are none.
+    if (tabs) tabs.setBadge('changes', filtered.length);
+    if (actions) actions.setExportsDisabled(!filtered.length);
   }
 
   render();

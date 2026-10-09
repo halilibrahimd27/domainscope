@@ -11,16 +11,18 @@
  *
  * What is checked:
  *   - navigation: Monitoring is in Watch & report, after Domain portfolio; the empty page offers the drop
- *     zone (focused by '/'), the folder picker and where the results come from;
- *   - the folder: five reports, three months of history (two bad lines skipped and said), the
- *     Markdown summaries left alone, a stray file named; the tiles (5 targets, 3 with bad changes
- *     in 7 days, 2 certificates under 21 days, 2 checks that did not complete), worst rows first,
- *     each row's sparklines, grade, certificates, takeover and audit, and its checks (a button to
- *     its changes only when it has some); a tile filters the table and keeps the focus; a row's
- *     details list every check;
- *   - the timeline newest first (times in UTC) with the runs' own words, filtered by tone and by a
- *     row's target, and its CSV; Copy summary (names only, a bare #/monitor link); the links to the
- *     nightly issues and the latest run;
+ *     zone (focused by '/'), the folder picker and where the results come from, and the empty state;
+ *   - the folder (the page template, docs/DESIGN.md §5: the source card folds to one row of what
+ *     was read, Add files and Forget): five reports, three months of history (two bad lines skipped
+ *     and said in the result header), the Markdown summaries left alone, a stray file named; the
+ *     focus on the result header's title; the status summary (3 targets with bad changes in 7 days,
+ *     2 certificates under 21 days, 2 checks that did not complete, 5 targets) and the Targets tab's
+ *     read-only figures, worst rows first, each row's sparklines, grade, certificates, takeover and
+ *     audit, and its checks (a button to its changes only when it has some); a status item filters
+ *     the table, keeps the focus and moves the Show select; a row's details list every check;
+ *   - the Changes tab: the timeline newest first (times in UTC) with the runs' own words, filtered by
+ *     tone and by a row's target (its button opens the tab), and the result header's CSV of it; Copy
+ *     summary (names only, a bare #/monitor link); the links to the nightly issues and the latest run;
  *   - GitHub: a missing token said before anything is sent; the token read once and emptied, sent
  *     only in the Authorization header to api.github.com (no cookies, no referrer, no redirects),
  *     kept nowhere (the DOM, storage, IndexedDB); the ledger names GitHub with the repository and
@@ -145,20 +147,25 @@ const overflowingIn = (page, selector) => page.evaluate((sel) => {
   return out.slice(0, 8);
 }, selector);
 
-/** What the view shows: the tiles, the rows, the timeline, the notes. */
+/** What the view shows: the figures, the pressed status items, the rows, the timeline, the notes. */
 const viewInfo = (page) => page.evaluate(() => {
-  const stat = (f) => document.querySelector(`.mon-stats [data-filter="${f}"] .stat-value`)?.textContent ?? null;
+  const stat = (f) => document.querySelector(`.mon-stats [data-metric="${f}"] .metric-value`)?.textContent ?? null;
   return {
     stats: Object.fromEntries(['all', 'bad', 'expiring', 'incomplete'].map((f) => [f, stat(f)])),
-    pressed: [...document.querySelectorAll('.mon-stats .stat-button[aria-pressed="true"]')].map((b) => b.dataset.filter),
+    pressed: [...document.querySelectorAll('.mon-summary .status-item[aria-pressed="true"]')].map((b) => b.dataset.status),
     rows: [...document.querySelectorAll('.mon-table tbody tr.dt-row .mon-target-name')].map((e) => e.textContent),
     read: document.querySelector('[data-role="mon-read"]')?.textContent || '',
     errors: [...document.querySelectorAll('.mon-errors li')].map((li) => li.textContent),
-    notes: [...document.querySelectorAll('.mon-results > .alert')].map((a) => a.textContent),
+    notes: [...document.querySelectorAll('.mon-summary .result-notes .alert')].map((a) => a.textContent),
     entries: [...document.querySelectorAll('.mon-tl-entry')].map((li) => `${li.dataset.tag} ${li.querySelector('.mon-tl-target')?.textContent}`),
-    empty: !!document.querySelector('.mon-page > .empty')
+    empty: !!document.querySelector('.mon-page .mon-empty .tool-empty')
   };
 });
+/** The result's tab (Targets or Changes), selected with a click. */
+const openTab = async (page, id) => {
+  await page.click(`.mon-tabs .tab[data-tab="${id}"]`);
+  await page.waitFor((t) => document.querySelector(`.mon-tabs .tab[data-tab="${t}"]`)?.getAttribute('aria-selected') === 'true', { args: [id], message: `the ${id} tab` });
+};
 
 const removeToasts = (page) => page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
 /** Wait for the DataTable's next frame: its rows render on requestAnimationFrame. */
@@ -255,7 +262,8 @@ async function main() {
           folder: !!document.querySelector('[data-action="mon-folder"]'),
           how: document.querySelector('.mon-how')?.open,
           cmd: document.querySelector('.mon-how pre, .mon-how code')?.textContent || '',
-          empty: document.querySelector('.mon-page .empty')?.textContent || ''
+          empty: document.querySelector('.mon-page .tool-empty')?.textContent || '',
+          privacy: document.querySelector('.mon-source-card .tool-input-foot .privacy-note')?.textContent || ''
         };
       });
       assertEqual(info.nav, ['portfolio', 'monitor', 'reports'], 'Watch & report group');
@@ -263,7 +271,8 @@ async function main() {
       assert(info.drop && info.folder, 'drop zone and folder picker');
       assert(info.how, 'where the results come from, open while nothing is');
       assert(info.cmd.includes('--history results/history'), `command: ${info.cmd}`);
-      assert(info.empty.includes('No results open yet'), 'empty state');
+      assert(info.empty.includes('A row per target with its trends'), `empty state: ${info.empty}`);
+      assert(/nothing is uploaded or stored/.test(info.privacy), `the privacy note: ${info.privacy}`);
       await page.evaluate(() => document.activeElement && document.activeElement.blur());
       await page.press('/');
       assert(await page.evaluate(() => document.activeElement?.classList.contains('mon-drop')), '/ focuses the drop zone');
@@ -276,12 +285,22 @@ async function main() {
       assertEqual(info.read, 'Read: 5 reports · 3 months of history · 415 lines', 'what was read');
       assertEqual(info.errors, ['notes.txt: neither a report (.json) nor a history file (.jsonl)'], 'the stray file');
       assertEqual(info.notes, ['2 lines of the history were not ones the runner writes and were skipped.'], 'the skipped lines');
-      assertEqual(info.stats, { all: '5', bad: '3', expiring: '2', incomplete: '2' }, 'tiles');
-      assertEqual(info.pressed, ['all'], 'All pressed');
+      assertEqual(info.stats, { all: '5', bad: '3', expiring: '2', incomplete: '2' }, 'the figures');
+      assertEqual(info.pressed, [], 'no filter: every target');
       assertEqual(info.rows, ['example.com', 'example.org', 'mail.example.net', 'www.example.com', 'example.net'], 'worst first');
-      assert(await page.evaluate(() => document.activeElement?.dataset.filter === 'all'), 'the focus on the Targets tile, not <body>');
-      const hint = await page.evaluate(() => document.querySelector('.mon-stats [data-filter="expiring"] .stat-hint')?.textContent);
+      assert(await page.evaluate(() => !!document.activeElement?.matches('.mon-summary .result-title')), 'the focus on the result\'s title, not <body>');
+      const hint = await page.evaluate(() => document.querySelector('.mon-stats [data-metric="expiring"] .metric-hint')?.textContent);
       assertEqual(hint, 'soonest: mail.example.net (expired 4 days ago)', 'the soonest certificate');
+      const head = await page.evaluate(() => ({
+        title: document.querySelector('.mon-summary .result-title')?.textContent,
+        status: [...document.querySelectorAll('.mon-summary .status-item')].map((b) => `${b.dataset.status} ${b.querySelector('.status-text').textContent}`),
+        compact: !!document.querySelector('.mon-source-card.is-compact .file-input-row [data-action="mon-forget"]')
+      }));
+      assertEqual(head, {
+        title: 'Nightly results · 5 targets',
+        status: ['bad 3 targets with bad changes', 'expiring 2 certificates under 21 days', 'incomplete 2 checks did not complete', 'targets 5 targets'],
+        compact: true
+      }, 'the result header; the source card as one row');
       await removeToasts(page);
       await shotPage(page, opts, 'monitor-results-desktop-light-en');
     });
@@ -320,20 +339,28 @@ async function main() {
       assertEqual(filters, [true, true, true, true, false], 'a button to its changes only on a row that has some (example.net has none)');
     });
 
-    await run.step('a tile filters the table and keeps the focus; pressed again it shows all', async () => {
-      await page.click('.mon-stats [data-filter="expiring"]');
+    await run.step('a status item filters the table, keeps the focus and moves the Show select; pressed again it shows every target', async () => {
+      await page.click('.mon-summary .status-item[data-status="expiring"]');
       await page.waitFor(() => document.querySelectorAll('.mon-table tbody tr.dt-row').length === 2, { message: 'expiring rows' });
       let info = await viewInfo(page);
       assertEqual([info.rows, info.pressed], [['example.com', 'mail.example.net'], ['expiring']], 'certificates under 21 days');
-      assert(await page.evaluate(() => document.activeElement?.dataset.filter === 'expiring'), 'focus stays on the tile');
-      await page.click('.mon-stats [data-filter="incomplete"]');
-      await page.waitFor(() => document.querySelector('.mon-stats [data-filter="incomplete"]')?.getAttribute('aria-pressed') === 'true', { message: 'incomplete pressed' });
+      assert(await page.evaluate(() => document.activeElement?.dataset.status === 'expiring'), 'focus stays on the item');
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="mon-filter"]').value), 'expiring', 'the Show select follows');
+      await page.click('.mon-summary .status-item[data-status="incomplete"]');
+      await page.waitFor(() => document.querySelector('.mon-summary .status-item[data-status="incomplete"]')?.getAttribute('aria-pressed') === 'true', { message: 'incomplete pressed' });
       await frames(page);
       info = await viewInfo(page);
       assertEqual(info.rows, ['example.com', 'example.org'], 'checks that did not complete');
-      await page.click('.mon-stats [data-filter="incomplete"]');
+      await page.click('.mon-summary .status-item[data-status="incomplete"]');
       await page.waitFor(() => document.querySelectorAll('.mon-table tbody tr.dt-row').length === 5, { message: 'all again' });
-      assertEqual((await viewInfo(page)).pressed, ['all'], 'the same tile again: all');
+      assertEqual((await viewInfo(page)).pressed, [], 'the same item again: every target');
+      // the Show select filters too, and the status summary follows it
+      await page.evaluate(() => { const s = document.querySelector('[data-role="mon-filter"]'); s.value = 'bad'; s.dispatchEvent(new Event('change', { bubbles: true })); });
+      await page.waitFor(() => document.querySelectorAll('.mon-table tbody tr.dt-row').length === 3, { message: 'bad rows' });
+      assertEqual((await viewInfo(page)).pressed, ['bad'], 'the item of the select\'s filter');
+      await page.click('.mon-summary .status-item[data-status="targets"]');
+      await page.waitFor(() => document.querySelectorAll('.mon-table tbody tr.dt-row').length === 5, { message: 'the targets: every target' });
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="mon-filter"]').value), 'all', 'the select back to all');
     });
 
     await run.step('a row\'s details: every check with its last run, its state and what it found', async () => {
@@ -349,7 +376,9 @@ async function main() {
       await page.click('.mon-table tbody tr.dt-row .dt-expand-btn');
     });
 
-    await run.step('the timeline: newest first with the runs\' words, filtered by tone and by a row\'s target; its CSV', async () => {
+    await run.step('the Changes tab: newest first with the runs\' words, filtered by tone and by a row\'s target; the CSV of what it shows', async () => {
+      assertEqual(await page.evaluate(() => document.querySelector('.mon-tabs .tab[data-tab="changes"] .tab-badge')?.textContent), '8', 'the tab counts the changes');
+      await openTab(page, 'changes');
       let info = await viewInfo(page);
       assertEqual(info.entries.slice(0, 3), ['ISSUER example.com', 'NEW example.org', 'SCORE example.org'], 'newest first');
       assertEqual(info.entries.length, 8, 'every change');
@@ -367,8 +396,11 @@ async function main() {
       }, 'the first entry');
       await page.click('.mon-tl-tone .seg-btn[data-value="bad"]');
       await page.waitFor(() => document.querySelectorAll('.mon-tl-entry').length === 5, { message: 'bad changes' });
+      // a row's button opens the Changes tab with its target
+      await openTab(page, 'targets');
       await page.click('.mon-table tbody tr.dt-row .mon-target-filter');
-      await page.waitFor(() => document.querySelectorAll('.mon-tl-entry').length === 3, { message: 'the bad changes of example.com' });
+      await page.waitFor(() => document.querySelector('.mon-tabs .tab[data-tab="changes"]')?.getAttribute('aria-selected') === 'true'
+        && document.querySelectorAll('.mon-tl-entry').length === 3, { message: 'the bad changes of example.com' });
       info = await viewInfo(page);
       assertEqual(info.entries, ['ISSUER example.com', 'WORSE example.com', 'RISK example.com'], 'filtered by the row');
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="mon-tl-target"]').value), 'example.com', 'the target filter follows');
@@ -388,6 +420,7 @@ async function main() {
         s.dispatchEvent(new Event('change', { bubbles: true }));
       });
       await page.waitFor(() => document.querySelectorAll('.mon-tl-entry').length === 8, { message: 'every change again' });
+      await openTab(page, 'targets');
     });
 
     await run.step('Copy summary: the tiles by name, never an address; a bare #/monitor link', async () => {
@@ -419,7 +452,7 @@ async function main() {
       await page.click('.mon-source .seg-btn[data-value="github"]');
       await page.waitForSelector('[data-role="mon-gh-repo"]');
       const ui = await page.evaluate(() => ({
-        privacy: document.querySelector('.mon-gh .alert')?.textContent || '',
+        privacy: document.querySelector('.mon-gh .privacy-note')?.textContent || '',
         links: [...document.querySelectorAll('.mon-gh-links a')].map((a) => a.getAttribute('href'))
       }));
       assert(/only to api\.github\.com/.test(ui.privacy) && /never saved/.test(ui.privacy) && /emptied/.test(ui.privacy), ui.privacy);
@@ -484,7 +517,9 @@ async function main() {
 
     await run.step('Forget, "Delete all local data" and another workspace forget the results', async () => {
       await page.click('[data-action="mon-forget"]');
-      await page.waitFor(() => document.querySelector('.mon-page > .empty') && !document.querySelector('.mon-stats'), { message: 'forgotten' });
+      await page.waitFor(() => document.querySelector('.mon-page .tool-empty') && !document.querySelector('.mon-stats'), { message: 'forgotten' });
+      assert(await page.evaluate(() => document.activeElement?.classList.contains('mon-drop') && !document.querySelector('.mon-source-card.is-compact')),
+        'the full drop zone again, with the focus');
       assertEqual(await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.workspaceData('digests'))), '', 'Forget removes Home\'s digest too');
       await removeToasts(page);
       await choose(page, paths);
@@ -501,12 +536,12 @@ async function main() {
         await state.switchWorkspace(meta.id);
         return meta.id;
       }));
-      await page.waitFor(() => document.querySelector('.mon-page > .empty') && !document.querySelector('.mon-stats'), { message: 'emptied by the switch' });
+      await page.waitFor(() => document.querySelector('.mon-page .tool-empty') && !document.querySelector('.mon-stats'), { message: 'emptied by the switch' });
       await page.evaluate((wsId) => import('./assets/js/state.js').then(async ({ state }) => {
         await state.switchWorkspace(state.workspaces.find((w) => w.isDefault).id);
         await state.deleteWorkspace(wsId);
       }), id);
-      await page.waitFor(() => document.querySelector('.mon-page > .empty'), { message: 'back in Default, still empty' });
+      await page.waitFor(() => document.querySelector('.mon-page .tool-empty'), { message: 'back in Default, still empty' });
     });
 
     run.group('Languages, themes, phones');

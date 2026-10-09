@@ -965,3 +965,33 @@ export function portfolioSummaryFacts(factsList, { at = null, stopped = false, n
     policy: audit ? { name: audit.name, counts: audit.counts, failing: audit.rows.filter((r) => r.fail > 0).map((r) => ({ domain: r.domain, rules: r.cells.filter((c) => c.status === 'fail').map((c) => c.id) })) } : null
   };
 }
+
+/** A count as a status item takes it: a whole number, 0 or more. */
+const statusCount = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+};
+
+/**
+ * The Domain portfolio's status summary (docs/DESIGN.md §5.4, §5.6; lib/template.js statusItems
+ * orders it and leaves the zeros out): the domains that expire within 30 days, those with a
+ * critical registry status and those a lookup failed for are errors; no transfer lock and name
+ * servers at risk are warnings; what changed since the workspace's last check is an error when a
+ * change is bad (another registrar, a lock removed: lib/regwatch.js worstTone), else a warning.
+ * Each item is the Domains table's filter of the same id (views/portfolio.js PORTFOLIO_FILTERS),
+ * in that tab.
+ * @param {{ expiring?: number, critical?: number, failed?: number, unlocked?: number, ns?: number, changed?: number,
+ *   changedBad?: boolean }} [counts] how many rows pass each filter; `changedBad`: a row's change is bad
+ * @returns {Array<{ key: string, severity: 'error'|'warn', count: number, filter: string, tab: 'domains' }>}
+ */
+export function portfolioStatus(counts = {}) {
+  const c = counts || {};
+  return [
+    ['expiring', 'error'],
+    ['critical', 'error'],
+    ['failed', 'error'],
+    ['unlocked', 'warn'],
+    ['ns', 'warn'],
+    ['changed', c.changedBad ? 'error' : 'warn']
+  ].map(([key, severity]) => ({ key, severity, count: statusCount(c[key]), filter: key, tab: 'domains' }));
+}

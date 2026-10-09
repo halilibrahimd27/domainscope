@@ -934,6 +934,27 @@ export function rowMatches(row, filter) {
   return true;
 }
 
+/**
+ * The Monitoring view's status summary (docs/DESIGN.md §5.4, §5.6; lib/template.js statusItems
+ * orders it and leaves the zeros out), from {@link monitorTiles}: the targets with a bad change in
+ * the last {@link MONITOR_RECENT_DAYS} days (an error), the certificates under
+ * {@link MONITOR_WARN_DAYS} days and the checks that did not complete (warnings), then the targets.
+ * Each item is the Targets table's filter of the same name ({@link rowMatches}; the targets: `all`).
+ * @param {{ targets?: number, bad?: string[], expiring?: object[], incomplete?: object[] }|null} tiles
+ * @returns {Array<{ key: string, severity: 'error'|'warn'|'neutral', count: number, filter: string, tab: 'targets' }>}
+ */
+export function monitorStatus(tiles) {
+  const t = tiles || {};
+  const len = (list) => (Array.isArray(list) ? list.length : 0);
+  const targets = Number(t.targets);
+  return [
+    { key: 'bad', severity: 'error', count: len(t.bad), filter: 'bad' },
+    { key: 'expiring', severity: 'warn', count: len(t.expiring), filter: 'expiring' },
+    { key: 'incomplete', severity: 'warn', count: len(t.incomplete), filter: 'incomplete' },
+    { key: 'targets', severity: 'neutral', count: Number.isFinite(targets) && targets > 0 ? Math.floor(targets) : 0, filter: 'all' }
+  ].map((x) => ({ ...x, tab: 'targets' }));
+}
+
 /* ------------------------------------------------------------------------ */
 /* The timeline                                                             */
 /* ------------------------------------------------------------------------ */

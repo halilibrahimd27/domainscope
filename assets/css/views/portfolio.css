@@ -1,18 +1,36 @@
 /*
- * views/portfolio.css — "Domain portfolio" view (.pf-*): the list, the head with its exports, the
- * tiles, the table of domains (labelled cards on a phone), the Domain security tab (.pf-sec-*,
+ * views/portfolio.css — "Domain portfolio" view (.pf-*) on the page template (style.css § 4,
+ * ui/template.js): the list in the input card, the result header, the Domains tab's metric strip
+ * and table of domains (labelled cards on a phone), the Domain security tab (.pf-sec-*,
  * ui/secscore-panel.js), the policy editor and the matrix, and the Certificates (CT) tab (.pf-ct-*,
- * ui/ctwatch-panel.js).
+ * ui/ctwatch-panel.js) with its own run row and result header.
  */
 
-.pf-view {
+.pf-view,
+.pf-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
   min-width: 0;
 }
 
-/* ---- the list ------------------------------------------------------------------- */
+.pf-prompt-slot:empty,
+.pf-head-wrap:empty {
+  display: none;
+}
+
+/* ---- the list (region 2) --------------------------------------------------------------- */
 
 .pf-box .textarea {
   min-height: 7.5rem;
+}
+
+/* Compact (a check started): the list is two lines (1.5 em each, the padding and the border), still
+   editable; Edit shows it whole again. */
+.tool-input.is-compact:not(.is-editing) .pf-box .textarea {
+  min-height: 0;
+  height: calc(3em + 16px);
+  resize: none;
 }
 
 .pf-box-status p {
@@ -41,71 +59,7 @@
   margin: 0;
 }
 
-.pf-prompt:empty {
-  display: none;
-}
-
-/* the progress bar, and "Notify me when done" under it once the check has run 30 s */
-.pf-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.pf-notify {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.pf-notify:empty,
-.pf-notify:has(> .job-notify[hidden]) {
-  display: none;
-}
-
-/* ---- the head ------------------------------------------------------------------- */
-
-.pf-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 16px;
-  padding: 12px 16px;
-}
-
-.pf-head-main {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.pf-head-title {
-  margin: 0;
-  font-size: 16px;
-  overflow-wrap: anywhere;
-}
-
-.pf-head-actions,
-.pf-exports {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 8px;
-  min-width: 0;
-}
-
-/* ---- tiles and the table ------------------------------------------------------------ */
-
-.pf-tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
-  gap: 10px;
-}
-
-.pf-tiles .stat-label {
-  white-space: normal;
-}
+/* ---- the Domains tab: the metric strip (read-only) and the table ------------------------ */
 
 .pf-domains {
   min-width: 0;
@@ -557,11 +511,6 @@
     overflow-wrap: anywhere;
   }
 
-  .pf-head-actions,
-  .pf-exports {
-    width: 100%;
-  }
-
   .pf-pol-card .card-actions {
     flex-basis: 100%;
     margin-left: 0;
@@ -607,14 +556,56 @@
   }
 }
 
-/* ---- the Certificates (CT) tab (ui/ctwatch-panel.js) --------------------------------- */
+/* ---- the Certificates (CT) tab (ui/ctwatch-panel.js): a tool of its own in the tab ---------- */
+
+.pf-ct,
+.pf-ct-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
+  min-width: 0;
+}
 
 .pf-ct-loading {
   padding: 16px 0;
 }
 
+.pf-ct-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-lg);
+}
+
+/* The radar's field and the panel's Check CT on one row (Check CT on the field's row, as region 3). */
+.pf-ct-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2) var(--space-3);
+}
+
+.pf-ct-run {
+  --btn-h: var(--field-h);
+  margin-top: calc(var(--lh-sm) + 6px);
+}
+
 .pf-ct-days {
+  flex: 0 1 22rem;
   max-width: 22rem;
+}
+
+.pf-ct-foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.pf-ct-quota {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
 }
 
 .pf-ct-quota strong {
@@ -686,7 +677,17 @@
 
 @media (max-width: 640px) {
   .pf-ct-days {
+    flex-basis: 100%;
     max-width: none;
+  }
+
+  .pf-ct-run {
+    flex: 1 1 100%;
+    margin-top: 0;
+  }
+
+  .pf-ct-run > .btn {
+    flex: 1;
   }
 
   .pf-ct-table td.pf-col-domain .pf-cell {
@@ -846,11 +847,10 @@
 
 @media print {
   .pf-form-card,
+  .pf-prompt-slot,
   .pf-ct-form,
   .pf-ct-sources,
-  .pf-exports,
   .pf-pol-card,
-  .pf-tiles,
   .pf-na [data-action="retry-source"],
   .pf-col-domain [data-action="retry-source"] {
     display: none !important;

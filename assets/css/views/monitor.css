@@ -1,19 +1,26 @@
 /*
- * views/monitor.css — "Monitoring" view (.mon-*): the runner's results read in the browser or from
- * GitHub, the tiles, the target table with its sparklines (labelled cards on a phone) and the
- * change timeline.
+ * views/monitor.css — "Monitoring" view (.mon-*) on the page template (style.css § 4,
+ * ui/template.js): the source card (the runner's results read in the browser or from GitHub), the
+ * result header, the Targets tab (the metric strip, the target table with its sparklines: labelled
+ * cards on a phone) and the Changes tab (the change timeline).
  */
 
-.mon-page {
-  margin-top: 16px;
+.mon-page,
+.mon-results,
+.mon-targets,
+.mon-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
   min-width: 0;
 }
 
-/* ---- the source ---------------------------------------------------------------- */
-
-.mon-source-card .filedrop-compact {
-  padding: 10px 14px;
+.mon-targets,
+.mon-timeline {
+  gap: var(--space-4);
 }
+
+/* ---- the source (region 2) ---------------------------------------------------------- */
 
 .mon-source {
   align-self: flex-start;
@@ -83,30 +90,38 @@
   min-width: 0;
 }
 
-/* ---- the numbers and the links -------------------------------------------------- */
-
-/* Two tiles a row on a phone: the labels wrap there instead of being cut. */
-.mon-stats {
-  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
-}
-
-.mon-stats .stat-label {
-  white-space: normal;
-}
-
-.mon-stats .stat-hint {
-  overflow-wrap: anywhere;
-}
-
-.mon-summary {
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 16px;
-}
+/* ---- the result header's links (the nightly issue, the latest run) ---------------------- */
 
 .mon-links {
   gap: 6px 16px;
   min-width: 0;
+}
+
+.mon-stats .metric-hint {
+  max-width: 16rem;
+  overflow-wrap: anywhere;
+}
+
+/* The targets table's Show select: its label beside it. */
+.mon-filter.field {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mon-filter .field-label {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.mon-filter .select {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* ---- the targets ------------------------------------------------------------------ */

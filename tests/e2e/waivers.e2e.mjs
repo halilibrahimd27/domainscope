@@ -626,8 +626,14 @@ async function main() {
       await page.waitFor(() => [...document.querySelectorAll('.pf-ct-table [data-role="ct-known-line"]')].length === 2, { message: 'both known', timeout: 10000 });
       const after = (await rows()).find((r) => r.names === 'cdn.example.com');
       assertEqual([after.flags, after.button], [['known'], false], 'neither new nor unexpected');
-      const tiles = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-ct-tile]')].map((el) => [el.dataset.ctTile, el.querySelector('.stat-value')?.textContent.trim()])));
-      assertEqual([tiles.new, tiles.unexpected], ['0', '0'], 'the tiles follow');
+      // the CT tab's figures (its read-only metric strip): a zero folds into "None: …"
+      const tiles = await page.evaluate(() => {
+        const strip = document.querySelector('.pf-ct-tiles');
+        const out = Object.fromEntries([...strip.querySelectorAll('[data-metric]')].map((el) => [el.dataset.metric, el.querySelector('.metric-value')?.textContent.trim()]));
+        for (const id of (strip.querySelector('.metric-zero')?.dataset.folded || '').split(' ').filter(Boolean)) out[id] = '0';
+        return out;
+      });
+      assertEqual([tiles.new, tiles.unexpected], ['0', '0'], 'the figures follow');
       assertEqual(await page.evaluate(() => document.activeElement?.dataset.role), 'ct-known-line', 'the focus on the row\'s known line');
       // the focus scrolled the table to the row's line: back to its start for the picture
       await page.evaluate(() => document.querySelectorAll('.pf-ct-table .dt-scroll').forEach((el) => { el.scrollLeft = 0; }));

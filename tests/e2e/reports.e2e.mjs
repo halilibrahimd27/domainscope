@@ -15,7 +15,7 @@
  * the reports' domain's SPF looked up (TXT / MX / A only) and the sources classified with the
  * server list — your servers, an authorized third party through an include, forwarders, unknown
  * senders —, the verdict "not ready for p=reject" with the sources to fix first and their fixes,
- * the class tiles filtering the table, a row's details, the reverse DNS and network of an address
+ * the classes' read-only figures and the Show select filtering the table, a row's details, the reverse DNS and network of an address
  * only on a click, the CSV export (every column), Copy summary; the TLS-RPT tab: success rate,
  * policies, failure types with advice and links to Domain Health, DNS Lookup and the Certificate
  * view; the second domain; a failed SPF lookup said so and Check again; the kept reports on the way
@@ -187,6 +187,12 @@ function storedZip(entries) {
 }
 
 const text = (page, sel) => page.evaluate((s) => document.querySelector(s)?.textContent.replace(/\s+/g, ' ').trim() || '', sel);
+/** The sending addresses' Show select: one class ('' for every class). */
+const setClass = (page, cls) => page.evaluate((v) => {
+  const sel = document.querySelector('[data-role="rpt-cls-filter"]');
+  sel.value = v;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+}, cls);
 const counts = (page) => page.evaluate(() => ({ dns: window.__dnsLog.length, ip: window.__ipLog.length }));
 /** The Service column: ip → "name|via" (a named source) or its muted text ("—", "not identified"). */
 const tableServices = (page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.rpt-sources tbody tr.dt-row')].map((tr) => {
@@ -254,8 +260,8 @@ async function main() {
       });
       assertEqual(nav, ['portfolio', 'monitor', 'reports'], 'Watch & report group');
       assertEqual(await text(page, 'h1'), 'DMARC & TLS reports', 'title');
-      assert(await page.evaluate(() => !!document.querySelector('.rpt-page .empty')), 'empty state');
-      assert(/never uploaded or saved/.test(await text(page, '#page-body .alert')), 'privacy note');
+      assert(await page.evaluate(() => !!document.querySelector('.rpt-page .tool-empty')), 'empty state');
+      assert(/never uploaded or saved/.test(await text(page, '.rpt-load .tool-input-foot .privacy-note')), 'privacy note');
       assertEqual(await counts(page), { dns: 0, ip: 0 }, 'nothing sent');
       await page.evaluate(saveInventory, 'mail01 203.0.113.25\napp02 203.0.113.99\n');
       await shot(page, opts, 'reports-empty-desktop-light-en');
@@ -300,12 +306,14 @@ async function main() {
       await shot(page, opts, 'reports-dmarc-desktop-light-en');
     });
 
-    await run.step('a class tile filters the table; a row\'s details say why, with the current SPF', async () => {
-      await page.click('.rpt-cls [data-cls="unknown"]');
+    await run.step('the class figures; the Show select filters the table; a row\'s details say why, with the current SPF', async () => {
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rpt-cls .metric')].map((m) => `${m.dataset.cls} ${m.querySelector('.metric-value').textContent}`)),
+        ['yours 2,055', 'third-party 3,010', 'forwarder 25', 'unknown 85'], 'the messages of each class, read-only');
+      assertEqual(await page.evaluate(() => document.querySelectorAll('.rpt-cls button, .rpt-cls [tabindex]').length), 0, 'figures, not buttons');
+      await setClass(page, 'unknown');
       await page.waitFor(() => document.querySelectorAll('.rpt-sources tbody tr.dt-row').length === 2, { message: 'unknown only' });
       assertEqual((await tableClasses(page)).map(([, c]) => c), ['unknown', 'unknown'], 'filtered');
-      assertEqual(await page.evaluate(() => document.querySelector('.rpt-cls [data-cls="unknown"]').getAttribute('aria-pressed')), 'true', 'pressed');
-      await page.click('[data-action="rpt-cls-clear"]');
+      await setClass(page, '');
       await page.waitFor(() => document.querySelectorAll('.rpt-sources tbody tr.dt-row').length === 10, { message: 'every class again' });
       await page.evaluate(() => {
         const tr = [...document.querySelectorAll('.rpt-sources tbody tr.dt-row')].find((r) => r.querySelector('.rpt-ip')?.dataset.ip === '192.0.2.44');
@@ -525,10 +533,10 @@ async function main() {
     await run.step('Forget drops the reports: the empty state again, nothing kept', async () => {
       await waitDmarc(page);
       await page.click('[data-action="rpt-forget"]');
-      await page.waitFor(() => !!document.querySelector('.rpt-page .empty') && !document.querySelector('.rpt-sources'), { message: 'forgotten' });
+      await page.waitFor(() => !!document.querySelector('.rpt-page .tool-empty') && !document.querySelector('.rpt-sources'), { message: 'forgotten' });
       await gotoRoute(page, 'lookup');
       await page.click('a.nav-link[data-view="reports"]');
-      await page.waitFor(() => document.documentElement.dataset.view === 'reports' && !!document.querySelector('.rpt-page .empty'), { message: 'still empty' });
+      await page.waitFor(() => document.documentElement.dataset.view === 'reports' && !!document.querySelector('.rpt-page .tool-empty'), { message: 'still empty' });
       assertEqual(await page.evaluate(() => !!document.querySelector('.page-kept:not([hidden]) .kept-note')), false, 'no kept note');
       await page.evaluate(saveInventory, '');
     });
@@ -557,7 +565,7 @@ async function main() {
         assertEqual(await page.evaluate(() => document.querySelector('.rpt-domain option') ? 'picker' : document.querySelector('.rpt-head .card-title')?.textContent), 'example.com', 'one domain');
         assert(/Reports for example\.com/.test(await text(page, '.rpt-results-title')), 'results title');
         await page.click('[data-action="rpt-forget"]');
-        await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+        await page.waitFor(() => !!document.querySelector('.rpt-page .tool-empty'), { message: 'forgotten' });
       } finally {
         await rm(dir, { recursive: true, force: true }).catch(() => {});
       }
@@ -577,7 +585,7 @@ async function main() {
         assertEqual(await page.evaluate(() => document.querySelectorAll('.rpt-problem-list li').length), 200, 'the first 200 listed');
         assertEqual(await text(page, '.rpt-problem-list li:last-child .rpt-problem-path'), 'notes.zip › notes/n199.txt', 'in their order');
         assertEqual(await text(page, '.rpt-problem-more'), '+5 more', 'the rest counted');
-        assert(await page.evaluate(() => !!document.querySelector('.rpt-page .empty')), 'no results to show');
+        assert(await page.evaluate(() => !!document.querySelector('.rpt-page .tool-empty')), 'no results to show');
         await page.click('[data-action="rpt-forget"]');
         await page.waitFor(() => !document.querySelector('[data-role="rpt-files"]'), { message: 'forgotten' });
         assertEqual(await page.evaluate(() => document.querySelectorAll('.rpt-problem-list li, [data-action="rpt-forget"]').length), 0, 'the list and Forget gone');
@@ -613,7 +621,7 @@ async function main() {
         await page.waitFor(() => !document.querySelector('[data-role="rpt-busy"]'), { message: 'stopped' });
         const toastText = await page.waitFor(() => document.querySelector('.toast-info .toast-message')?.textContent, { message: 'toast' });
         assertEqual(toastText, 'Reading stopped. No report had been read yet.', 'the toast');
-        assert(await page.evaluate(() => !!document.querySelector('.rpt-page .empty') && !document.querySelector('[data-role="rpt-files"]')), 'nothing read, nothing kept');
+        assert(await page.evaluate(() => !!document.querySelector('.rpt-page .tool-empty') && !document.querySelector('[data-role="rpt-files"]')), 'nothing read, nothing kept');
         assertEqual(await page.evaluate(() => document.activeElement?.classList.contains('filedrop')), true, 'the focus back on the drop zone');
         assertEqual(await counts(page), before, 'nothing sent');
       } finally {
@@ -627,7 +635,7 @@ async function main() {
       await waitDmarc(page, 'read after the stop');
       assertEqual(await text(page, '[data-role="rpt-files"]'), '1 file · 1 DMARC report · 0 TLS reports', 'files line');
       await page.click('[data-action="rpt-forget"]');
-      await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+      await page.waitFor(() => !!document.querySelector('.rpt-page .tool-empty'), { message: 'forgotten' });
     });
 
     await run.step('a zipped mailbox folder: the bar counts the reports inside it, Stop (Esc) acts between them and keeps the reports read before it', async () => {
@@ -675,7 +683,7 @@ async function main() {
           assertEqual((await counts(page)).ip, before.ip, 'no IP data asked');
           await waitDmarc(page, 'the kept reports classified');
           await page.click('[data-action="rpt-forget"]');
-          await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+          await page.waitFor(() => !!document.querySelector('.rpt-page .tool-empty'), { message: 'forgotten' });
         } finally {
           await page.evaluate(() => { TextDecoder.prototype.decode = window.__realDecode; });
         }
@@ -730,7 +738,7 @@ async function main() {
         }
         await waitDmarc(page, 'the kept reports classified');
         await page.click('[data-action="rpt-forget"]');
-        await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+        await page.waitFor(() => !!document.querySelector('.rpt-page .tool-empty'), { message: 'forgotten' });
       } finally {
         await page.evaluate((id) => import('./assets/js/state.js').then(({ state }) => state.deleteWorkspace(id)), otherId);
         await rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -773,7 +781,7 @@ async function main() {
         await rm(dir, { recursive: true, force: true }).catch(() => {});
       }
       await page.click('[data-action="rpt-forget"]');
-      await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+      await page.waitFor(() => !!document.querySelector('.rpt-page .tool-empty'), { message: 'forgotten' });
     });
 
     run.group('Offline');
@@ -802,7 +810,7 @@ async function main() {
       const cls = Object.fromEntries(await tableClasses(page));
       assertEqual([cls['198.51.100.10'], cls['203.0.113.25']], ['third-party', 'yours'], 'the SPF tells them apart');
       await page.click('[data-action="rpt-forget"]');
-      await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+      await page.waitFor(() => !!document.querySelector('.rpt-page .tool-empty'), { message: 'forgotten' });
     });
 
     run.group('Senders named by service');
@@ -903,10 +911,10 @@ async function main() {
         assert(/^dmarc-services-example\.org-.*\.csv$/.test(csv.name), csv.name);
         const { SERVICE_CSV_COLUMNS } = await import('../../assets/js/lib/senders.js');
         assertEqual(csvHeader(csv.text), [...SERVICE_CSV_COLUMNS], 'services CSV header');
-        await page.click('.rpt-cls [data-cls="unknown"]');
+        await setClass(page, 'unknown');
         await page.waitFor(() => document.querySelectorAll('.rpt-services tbody tr.dt-row').length === 4, { message: 'the unknown senders\' services' });
         assertEqual((await tableGroups(page)).map(([k]) => k), ['name:google (including gmail and google workspace)', 'isp', 'net:example hosting ltd', 'unnamed'], 'filtered');
-        await page.click('[data-action="rpt-cls-clear"]');
+        await setClass(page, '');
         await page.waitFor(() => document.querySelectorAll('.rpt-services tbody tr.dt-row').length === 7, { message: 'every class again' });
       });
 
@@ -937,7 +945,7 @@ async function main() {
         await page.emulateMedia({ 'prefers-color-scheme': 'light' });
         await setLangUi(page, 'en');
         await page.click('[data-action="rpt-forget"]');
-        await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+        await page.waitFor(() => !!document.querySelector('.rpt-page .tool-empty'), { message: 'forgotten' });
       });
     } finally {
       await rm(sendersDir, { recursive: true, force: true }).catch(() => {});

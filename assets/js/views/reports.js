@@ -46,13 +46,14 @@
 
 import { h, clear } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, DataTable, Disclosure, EmptyState, FileDrop, Icon, KeyValueList, ProgressBar, SegmentedControl, StatCard, Tabs,
+  Alert, Badge, Button, Card, DataTable, Disclosure, FileDrop, Icon, KeyValueList, ProgressBar, RelativeTime, SegmentedControl, Tabs,
   announce, checkbox, confirmDialog, ipSortValue, select, toast
 } from '../ui/components.js';
+import { EmptyState, MetricStrip, PrivacyNote, ResultActions, ResultHeader, ResultTitle, StatusSummary } from '../ui/template.js';
 import { downloadText, timestampedName } from '../ui/download.js';
-import { registerStrings, formatNumber, formatPercent, formatDate, formatDateTime } from '../i18n.js';
+import { registerStrings, formatNumber, formatPercent, formatDate, formatDateTime, formatRelative } from '../i18n.js';
 import {
-  readReportFiles, aggregateDmarc, spfDomainsFor, loadSpfContext, classifySources, dmarcOverview, dmarcCsvRows,
+  readReportFiles, aggregateDmarc, spfDomainsFor, loadSpfContext, classifySources, dmarcOverview, dmarcCsvRows, reportsStatus,
   DMARC_CSV_COLUMNS, SOURCE_CLASSES, DISPOSITIONS, MAX_REPORT_FILES
 } from '../lib/dmarcreport.js';
 import { summarizeTls, tlsAdvice, tlsCsvRows, TLS_CSV_COLUMNS, TLS_RESULT_TYPES, TLS_POLICY_TYPES } from '../lib/tlsrpt.js';
@@ -123,10 +124,10 @@ registerStrings('en', REPORTS_SUMMARY_I18N.en);
 registerStrings('tr', REPORTS_SUMMARY_I18N.tr);
 
 registerStrings('en', {
-  'rpt.privacyTitle': 'Everything stays in this browser',
-  'rpt.privacy': 'The report files are read and unpacked here, never uploaded or saved: a reload, Forget or “Delete all local data” drops them. To tell your servers from third parties, the page then looks up the current SPF record of each reported domain over your DoH resolvers (domain names only); an address’s reverse DNS and network only when you press Look up or Identify senders. Only with “Keep a summary of these reports in this workspace” turned on is a summary of them kept in this workspace: counts per day and per sending address, never the files.',
+  'rpt.privacyNote': 'The report files are read here, never uploaded or saved; then the reported domains’ SPF is looked up over your DoH resolvers to tell your servers from third parties.',
   'rpt.drop.title': 'Drop DMARC and TLS reports here, or choose them',
-  'rpt.drop.more': 'Add more reports',
+  'rpt.addFiles': 'Add reports',
+  'rpt.addHint': 'or drop them here',
   'rpt.drop.hint': 'Up to {max} files at once: .xml, .xml.gz, .zip (a zipped mailbox folder too), .json, .json.gz',
   'rpt.choose': 'Choose files',
   'rpt.folder': 'Choose a folder',
@@ -168,8 +169,22 @@ registerStrings('en', {
   'rpt.problem.not-json': 'JSON that could not be read',
   'rpt.problem.not-tlsrpt': 'JSON, but no TLS report',
   'rpt.problem.empty': 'an empty file',
-  'rpt.emptyTitle': 'Read the reports your domain receives',
-  'rpt.emptyBody': 'Receivers such as Google and Microsoft mail a DMARC aggregate report (rua) every day, and TLS-RPT reports about the TLS sessions to your MX hosts. Drop them here — many at once, zipped or not — to see who sends mail as your domain, what fails, and what to fix before p=reject.',
+  'rpt.emptyLine': 'Drop the DMARC aggregate (rua) and TLS-RPT reports your domain receives — many at once, zipped or not.',
+  'rpt.check.senders': 'Who sends as the domain',
+  'rpt.check.alignment': 'SPF and DKIM alignment',
+  'rpt.check.reject': 'Ready for p=reject?',
+  'rpt.check.tls': 'TLS failures at your MX hosts',
+  'rpt.readAt': 'Read {time}',
+  'rpt.status.failing': { one: '{count} message fails DMARC', other: '{count} messages fail DMARC' },
+  'rpt.status.tlsFailed': { one: '{count} TLS session failed', other: '{count} TLS sessions failed' },
+  'rpt.status.messages': { one: '{count} message', other: '{count} messages' },
+  'rpt.status.senders': { one: '{count} sending address', other: '{count} sending addresses' },
+  'rpt.status.sessions': { one: '{count} TLS session', other: '{count} TLS sessions' },
+  'rpt.stat.label': 'The domain in numbers',
+  'rpt.cls.label': 'The messages by source class',
+  'rpt.clsShow': 'Show',
+  'rpt.clsAll': 'Every class ({count})',
+  'rpt.clsOption': '{cls} ({count})',
   'rpt.tab.dmarc': 'DMARC',
   'rpt.tab.tls': 'TLS-RPT',
   'rpt.tabs': 'Report types',
@@ -251,8 +266,6 @@ registerStrings('en', {
   'rpt.clsDesc.forwarder': 'DKIM passes, SPF does not: mail forwarded or relayed by a mailing list.',
   'rpt.clsDesc.unknown': 'Nothing authenticates it as the domain: spoofing, or a service not set up yet.',
   'rpt.clsHint': { one: '{count} address · {pct} pass', other: '{count} addresses · {pct} pass' },
-  'rpt.clsFilter': 'Show only {cls}',
-  'rpt.filterClear': 'Show every class',
   'rpt.sources': 'Sending addresses',
   'rpt.sourcesCaption': 'Sending addresses of {domain}',
   'rpt.col.ip': 'Address',
@@ -329,6 +342,7 @@ registerStrings('en', {
   'rpt.tls.stat.sessions': 'Sessions',
   'rpt.tls.stat.failed': 'Failed sessions',
   'rpt.tls.stat.senders': 'Sending organisations',
+  'rpt.tls.stat.label': 'The TLS sessions in numbers',
   'rpt.tls.policies': 'Policies the senders found',
   'rpt.tls.policy.sts': 'MTA-STS',
   'rpt.tls.policy.tlsa': 'DANE (TLSA)',
@@ -496,10 +510,10 @@ registerStrings('en', {
 });
 
 registerStrings('tr', {
-  'rpt.privacyTitle': 'Her şey bu tarayıcıda kalır',
-  'rpt.privacy': 'Rapor dosyaları burada okunur ve açılır; hiçbir yere yüklenmez ya da kaydedilmez: sayfayı yenilemek, Unut ya da “Tüm yerel verileri sil” onları siler. Sunucularınızı üçüncü taraflardan ayırmak için sayfa ardından raporlanan her alan adının güncel SPF kaydını DoH çözümleyicileriniz üzerinden sorgular (yalnızca alan adları); bir adresin ters DNS ve ağ bilgisi ise yalnızca Sorgula’ya ya da Göndericileri tanımla’ya bastığınızda sorulur. Raporların özeti yalnızca “Bu raporların özetini bu çalışma alanında tut” açıksa bu çalışma alanında tutulur: dosyaların kendisi değil, gün ve gönderen adres başına sayılar.',
+  'rpt.privacyNote': 'Rapor dosyaları burada okunur, hiçbir yere yüklenmez ya da kaydedilmez; ardından sunucularınızı üçüncü taraflardan ayırmak için raporlanan alan adlarının SPF kaydı DoH çözümleyicileriniz üzerinden sorgulanır.',
   'rpt.drop.title': 'DMARC ve TLS raporlarını buraya bırakın ya da seçin',
-  'rpt.drop.more': 'Daha fazla rapor ekleyin',
+  'rpt.addFiles': 'Rapor ekleyin',
+  'rpt.addHint': 'ya da buraya bırakın',
   'rpt.drop.hint': 'Aynı anda en fazla {max} dosya: .xml, .xml.gz, .zip (zip’lenmiş bir posta klasörü de), .json, .json.gz',
   'rpt.choose': 'Dosya seçin',
   'rpt.folder': 'Klasör seçin',
@@ -541,8 +555,22 @@ registerStrings('tr', {
   'rpt.problem.not-json': 'okunamayan JSON',
   'rpt.problem.not-tlsrpt': 'JSON, ama TLS raporu değil',
   'rpt.problem.empty': 'boş bir dosya',
-  'rpt.emptyTitle': 'Alan adınıza gelen raporları okuyun',
-  'rpt.emptyBody': 'Google ve Microsoft gibi alıcılar her gün bir DMARC toplu raporu (rua), MX sunucularınıza kurulan TLS oturumları hakkında da TLS-RPT raporları gönderir. Onları buraya bırakın — aynı anda birden çok, zip’li ya da değil — adınıza kimlerin e-posta gönderdiğini, neyin geçmediğini ve p=reject’ten önce neyi düzeltmeniz gerektiğini görün.',
+  'rpt.emptyLine': 'Alan adınıza gelen DMARC toplu (rua) ve TLS-RPT raporlarını bırakın — aynı anda birden çok, zip’li ya da değil.',
+  'rpt.check.senders': 'Alan adı adına kim gönderiyor',
+  'rpt.check.alignment': 'SPF ve DKIM uyumu',
+  'rpt.check.reject': 'p=reject’e hazır mı?',
+  'rpt.check.tls': 'MX sunucularındaki TLS hataları',
+  'rpt.readAt': 'Okundu: {time}',
+  'rpt.status.failing': '{count} e-posta DMARC’den geçmiyor',
+  'rpt.status.tlsFailed': '{count} TLS oturumu başarısız',
+  'rpt.status.messages': '{count} e-posta',
+  'rpt.status.senders': '{count} gönderen adres',
+  'rpt.status.sessions': '{count} TLS oturumu',
+  'rpt.stat.label': 'Sayılarla alan adı',
+  'rpt.cls.label': 'Kaynak sınıfına göre e-postalar',
+  'rpt.clsShow': 'Göster',
+  'rpt.clsAll': 'Bütün sınıflar ({count})',
+  'rpt.clsOption': '{cls} ({count})',
   'rpt.tab.dmarc': 'DMARC',
   'rpt.tab.tls': 'TLS-RPT',
   'rpt.tabs': 'Rapor türleri',
@@ -624,8 +652,6 @@ registerStrings('tr', {
   'rpt.clsDesc.forwarder': 'DKIM geçiyor, SPF geçmiyor: yönlendirilen ya da bir e-posta listesinin aktardığı e-posta.',
   'rpt.clsDesc.unknown': 'Hiçbir şey onu alan adı olarak doğrulamıyor: sahte gönderim ya da henüz kurulmamış bir hizmet.',
   'rpt.clsHint': '{count} adres · {pct} geçiyor',
-  'rpt.clsFilter': 'Yalnızca bu sınıfı göster: {cls}',
-  'rpt.filterClear': 'Her sınıfı göster',
   'rpt.sources': 'Gönderen adresler',
   'rpt.sourcesCaption': '{domain} alan adının gönderen adresleri',
   'rpt.col.ip': 'Adres',
@@ -702,6 +728,7 @@ registerStrings('tr', {
   'rpt.tls.stat.sessions': 'Oturumlar',
   'rpt.tls.stat.failed': 'Başarısız oturumlar',
   'rpt.tls.stat.senders': 'Gönderen kuruluşlar',
+  'rpt.tls.stat.label': 'Sayılarla TLS oturumları',
   'rpt.tls.policies': 'Göndericilerin bulduğu politikalar',
   'rpt.tls.policy.sts': 'MTA-STS',
   'rpt.tls.policy.tlsa': 'DANE (TLSA)',
@@ -1347,8 +1374,7 @@ export function mount(container, ctx) {
   // signal stops everything when it is left.
   let work = new AbortController();
   const signal = () => mergeSignals(ctx.signal, work.signal);
-  const root = h('div', { class: 'rpt-page stack' });
-  root.append(Alert({ variant: 'ok', icon: 'lock', title: t('rpt.privacyTitle'), message: t('rpt.privacy'), compact: true }));
+  const root = h('div', { class: 'rpt-page' });
   container.append(root);
 
   let busy = false;
@@ -1366,6 +1392,8 @@ export function mount(container, ctx) {
   let groupTotalsEl = null;
   let identifyBtn = null;
   let sourcesBody = null;
+  // The sources' Show select (by class), in the DMARC tab's sources section.
+  let classSelect = null;
   let groupRefreshQueued = false;
   const num = (n) => formatNumber(n);
   // Every share as the headline says it: one decimal when it has one, never all or none unless it is.
@@ -2013,13 +2041,22 @@ export function mount(container, ctx) {
   }
 
   /* --- rendering --------------------------------------------------------------------- */
-  const loadEl = h('div');
+  // Region 2 (the file input) and the result (the empty state, or the result header and the tabs).
+  const loadEl = h('div', { class: 'rpt-load-host' });
   // A form of its own for the shell's shortcuts, without a submit: nothing in the results runs the view.
-  const resultsEl = h('div', { class: 'stack', dataset: { shortcutScope: 'results' } });
+  const resultsEl = h('div', { class: 'rpt-results', dataset: { shortcutScope: 'results' } });
   root.append(loadEl, resultsEl);
-  let summaryBtn = null;
   let dmarcPanel = null;
   let tabs = null;
+  // Region 4: one result header for the life of the view (`.rpt-results-head`; its title `.rpt-results-title`).
+  const head = ResultHeader({ className: 'rpt-results-head' });
+  head.title.classList.add('rpt-results-title');
+  // The counts of every report read: each opens the tab that lists it (lib/dmarcreport.js reportsStatus).
+  const status = StatusSummary({ items: [] });
+  head.set('status', status.el);
+  /** Copy summary with ¶, Report and Print: drawn with the result. */
+  let actions = null;
+  ctx.onCleanup(() => { if (actions) actions.dispose(); });
 
   function renderAll() {
     renderLoad();
@@ -2030,8 +2067,16 @@ export function mount(container, ctx) {
     return !!(S.dmarcReports.length || S.tlsReports.length);
   }
 
+  /**
+   * Region 2 (DESIGN §5.5, a "File" tool): while nothing is read, the drop zone, Choose files and
+   * Choose a folder; from a drop on, one row — what was read, Add reports (a small drop zone: a
+   * click chooses, a drop reads), Choose a folder and Forget reports. The switch that keeps a
+   * summary, what could not be used and the privacy note stay under it.
+   */
   function renderLoad() {
     clear(loadEl);
+    const loaded = hasReports() || S.problems.length > 0;
+    const compact = loaded || busy;
     const drop = FileDrop({
       onFiles: (files) => load(files),
       accept: ACCEPT,
@@ -2043,19 +2088,17 @@ export function mount(container, ctx) {
       // The reports are read from their bytes (zip, gzip, the XML's own encoding): no text decoded here.
       text: false,
       paste: false,
-      icon: 'inbox',
-      title: hasReports() ? t('rpt.drop.more') : t('rpt.drop.title'),
-      hint: t('rpt.drop.hint', { max: num(MAX_REPORT_FILES) }),
-      compact: hasReports()
+      icon: compact ? 'upload' : 'inbox',
+      title: compact ? t('rpt.addFiles') : t('rpt.drop.title'),
+      hint: compact ? t('rpt.addHint') : t('rpt.drop.hint', { max: num(MAX_REPORT_FILES) }),
+      compact
     });
     // '/' focuses the drop zone; Ctrl/Cmd+Enter (the shell's run shortcut) chooses files.
     drop.el.dataset.shortcut = 'focus';
     // Choosing more while it reads is fine: they are read next.
-    const actions = [Button({
-      label: t('rpt.choose'), icon: 'upload', size: 'sm', variant: hasReports() ? 'secondary' : 'primary',
-      dataset: { action: 'rpt-choose', shortcut: 'submit' }, onClick: () => drop.open()
-    })];
-    if (drop.openFolder) actions.push(Button({ label: t('rpt.folder'), icon: 'folder', size: 'sm', variant: 'secondary', onClick: () => drop.openFolder() }));
+    const folder = drop.openFolder
+      ? Button({ label: t('rpt.folder'), icon: 'folder', size: 'sm', variant: 'secondary', dataset: { action: 'rpt-folder' }, onClick: () => drop.openFolder() })
+      : null;
     // Keep a summary of these reports in this workspace: off by default, like Remember origins.
     const kept = currentHistory();
     const keepSwitch = checkbox({
@@ -2067,20 +2110,29 @@ export function mount(container, ctx) {
       onChange: (on) => toggleKeep(on)
     });
     keepSwitch.input.dataset.role = 'rpt-keep';
-    // Files that were no report are listed too: Forget drops that list as well.
-    if (hasReports() || S.problems.length) {
-      actions.push(Button({ label: t('rpt.forget'), icon: 'trash', size: 'sm', variant: 'ghost', disabled: busy, dataset: { action: 'rpt-forget' }, onClick: forget }));
+    const parts = [];
+    if (compact) {
+      // Files that were no report are listed too: Forget drops that list as well.
+      const forgetBtn = loaded
+        ? Button({ label: t('rpt.forget'), icon: 'trash', size: 'sm', variant: 'ghost', disabled: busy, dataset: { action: 'rpt-forget' }, onClick: forget })
+        : null;
+      parts.push(h('div', { class: 'file-input-row' },
+        h('p', { class: 'file-input-summary' }, loaded ? [Icon('inbox', { size: 16 }), filesLine()] : null),
+        h('div', { class: 'file-input-actions' }, drop.el, folder, forgetBtn)));
+    } else {
+      parts.push(drop.el, h('div', { class: 'file-input-buttons' },
+        Button({ label: t('rpt.choose'), icon: 'upload', size: 'sm', variant: 'primary', dataset: { action: 'rpt-choose', shortcut: 'submit' }, onClick: () => drop.open() }),
+        folder));
     }
-    const body = h('div', { class: 'stack-sm' }, drop.el, keepSwitch.el);
-    if (kept.keep && !state.workspacePersistence) body.append(Alert({ variant: 'warn', compact: true, message: t('rpt.keep.memory') }));
-    if (busy) {
-      progress = ProgressBar({ label: t('rpt.busy'), value: readDone, max: Math.max(readTotal, 1) });
-      const stop = Button({ label: t('rpt.stop'), icon: 'stop', size: 'sm', variant: 'secondary', dataset: { action: 'rpt-stop', shortcut: 'cancel' }, onClick: stopReading });
-      body.append(h('div', { class: 'rpt-busy stack-sm', dataset: { role: 'rpt-busy' } }, progress.el, stop));
-    }
-    if (hasReports() || S.problems.length) body.append(filesLine());
-    if (S.problems.length) body.append(problemsList());
-    loadEl.append(Card({ className: 'rpt-load', children: body, footer: actions.length ? h('div', { class: 'cluster rpt-load-actions' }, actions) : null }));
+    parts.push(keepSwitch.el);
+    if (kept.keep && !state.workspacePersistence) parts.push(Alert({ variant: 'warn', compact: true, message: t('rpt.keep.memory') }));
+    if (S.problems.length) parts.push(problemsList());
+    // What is sent and to whom; the rest (Look up, Identify senders) is one click away, in About.
+    parts.push(h('div', { class: 'tool-input-foot' }, PrivacyNote({ text: t('rpt.privacyNote'), href: ctx.href('about', { section: 'sent' }) })));
+    loadEl.append(h('div', {
+      class: ['tool-input', 'card', 'file-input', 'rpt-load', { 'is-compact': compact }],
+      attrs: { role: 'group', 'aria-label': t('nav.reports') }
+    }, parts));
   }
 
   function filesLine() {
@@ -2092,7 +2144,7 @@ export function mount(container, ctx) {
     ];
     if (dup) bits.push(t('rpt.count.duplicates', { count: dup }));
     if (S.problems.length) bits.push(t('rpt.count.problems', { count: S.problems.length }));
-    return h('p', { class: 'text-sm muted rpt-files', dataset: { role: 'rpt-files' } }, bits.join(' · '));
+    return h('span', { class: 'rpt-files', dataset: { role: 'rpt-files' } }, bits.join(' · '));
   }
 
   function problemsList() {
@@ -2110,28 +2162,42 @@ export function mount(container, ctx) {
     });
   }
 
-  function renderResults() {
-    if (historyPanel) {
-      historyPanel.destroy();
-      historyPanel = null;
+  /** A status item pressed: the tab that lists what it counts. */
+  function openTab(tab) {
+    if (tabs && tabs.panel(tab) && tabs.getSelected() !== tab) tabs.select(tab);
+  }
+
+  /**
+   * The result header: the domains read (or the history's title), when, the counts, and the
+   * actions; while files are read, the progress and Stop (`[data-role="rpt-busy"]`) in its
+   * progress line.
+   */
+  function renderHead(keptDomains) {
+    const reports = hasReports();
+    let title = t('rpt.histTitle');
+    if (reports) {
+      const domains = new Set([...S.dmarc.domains, ...S.tls.domains].map((d) => d.domain));
+      title = domains.size === 1 ? t('rpt.resultsOne', { domain: [...domains][0] }) : t('rpt.resultsMany', { count: domains.size });
+    } else if (busy) title = t('rpt.reading', { count: readTotal });
+    head.setState(busy ? 'running' : 'done');
+    head.set('title', ResultTitle({ running: busy && !reports, text: title }));
+    head.set('meta', reports && S.loadedAt ? RelativeTime(S.loadedAt, { className: 'rpt-read-at', text: t('rpt.readAt', { time: formatRelative(S.loadedAt) }) }) : null);
+    let busyEl = null;
+    if (busy) {
+      progress = ProgressBar({ label: t('rpt.busy'), value: readDone, max: Math.max(readTotal, 1) });
+      const stop = Button({ label: t('rpt.stop'), icon: 'stop', size: 'sm', variant: 'secondary', dataset: { action: 'rpt-stop', shortcut: 'cancel' }, onClick: stopReading });
+      busyEl = h('div', { class: 'rpt-busy', dataset: { role: 'rpt-busy' } }, progress.el, stop);
     }
-    clear(resultsEl);
-    sourcesTable = null;
-    bulkBtn = null;
-    groupTable = null;
-    groupTotalsEl = null;
-    identifyBtn = null;
-    sourcesBody = null;
-    dmarcPanel = null;
-    tabs = null;
-    const kept = currentHistory();
-    const keptDomains = historyDomains(kept).length;
-    if (!hasReports() && !keptDomains) {
-      if (!busy) resultsEl.append(EmptyState({ icon: 'inbox', title: t('rpt.emptyTitle'), message: t('rpt.emptyBody') }));
-      return;
-    }
-    summaryBtn = hasReports() ? SummaryButton({
+    head.set('progress', busyEl);
+    status.update(reportsStatus({ dmarc: S.dmarc, tls: S.tls }).map((item) => ({
+      ...item,
+      text: t(`rpt.status.${item.key}`, { count: item.count }),
+      onPress: () => openTab(item.tab)
+    })));
+    if (actions) actions.dispose();
+    const summary = reports ? SummaryButton({
       kind: 'reports',
+      plainLabel: t('result.plainTitle'),
       facts: () => {
         const m = dmarcModel();
         const tlsSummary = tlsOf(m ? m.agg.domain : S.tlsDomain) || (m ? null : tlsOf(S.tlsDomain));
@@ -2146,25 +2212,54 @@ export function mount(container, ctx) {
       },
       url: () => ctx.shareUrl({})
     }) : null;
-    let title = t('rpt.histTitle');
-    if (hasReports()) {
-      const domains = new Set([...S.dmarc.domains, ...S.tls.domains].map((d) => d.domain));
-      title = domains.size === 1 ? t('rpt.resultsOne', { domain: [...domains][0] }) : t('rpt.resultsMany', { count: domains.size });
-    }
     // The customer report: the DMARC domain on screen (the History tab's when it is shown), with its history.
     const report = S.dmarcReports.length || keptDomains ? ReportButton(ctx, 'dmarc', () => reportInput()) : null;
-    resultsEl.append(h('div', { class: 'rpt-results-head' },
-      h('h2', { class: 'rpt-results-title', attrs: { tabindex: -1 } }, title),
-      h('div', { class: 'cluster rpt-results-actions' }, summaryBtn ? summaryBtn.el : null, report)));
+    // A file result: no Copy link (DESIGN §5.5); Print is its one "file".
+    actions = ResultActions({ summary, report, print: !!(summary || report) });
+    actions.setDisabled(busy);
+    head.set('actions', actions.el);
+  }
+
+  function renderResults() {
+    if (historyPanel) {
+      historyPanel.destroy();
+      historyPanel = null;
+    }
+    clear(resultsEl);
+    sourcesTable = null;
+    bulkBtn = null;
+    groupTable = null;
+    groupTotalsEl = null;
+    identifyBtn = null;
+    sourcesBody = null;
+    classSelect = null;
+    dmarcPanel = null;
+    tabs = null;
+    const kept = currentHistory();
+    const keptDomains = historyDomains(kept).length;
+    if (!hasReports() && !keptDomains && !busy) {
+      if (actions) actions.dispose();
+      actions = null;
+      resultsEl.append(h('div', { class: 'rpt-empty' }, EmptyState({
+        icon: 'inbox',
+        message: t('rpt.emptyLine'),
+        checks: ['senders', 'alignment', 'reject', 'tls'].map((k) => t(`rpt.check.${k}`))
+      })));
+      return;
+    }
+    renderHead(keptDomains);
+    resultsEl.append(head.el);
+    // The first files are being read: the header says so; the tabs come with the reports.
+    if (!hasReports() && !keptDomains) return;
     const items = [];
     const dmarcContent = () => {
       dmarcPanel = h('div', { class: 'stack rpt-dmarc' });
       fillDmarc();
       return dmarcPanel;
     };
-    if (S.dmarcReports.length) items.push({ id: 'dmarc', label: t('rpt.tab.dmarc'), icon: 'mail', badge: S.dmarcReports.length, content: dmarcContent });
-    if (S.tlsReports.length) items.push({ id: 'tls', label: t('rpt.tab.tls'), icon: 'lock', badge: S.tlsReports.length, content: () => tlsPanel() });
-    if (kept.keep || keptDomains) items.push({ id: 'history', label: t('rpt.tab.history'), icon: 'activity', badge: keptDomains || null, content: () => historyContent() });
+    if (S.dmarcReports.length) items.push({ id: 'dmarc', label: t('rpt.tab.dmarc'), badge: S.dmarcReports.length, content: dmarcContent });
+    if (S.tlsReports.length) items.push({ id: 'tls', label: t('rpt.tab.tls'), badge: S.tlsReports.length, content: () => tlsPanel() });
+    if (kept.keep || keptDomains) items.push({ id: 'history', label: t('rpt.tab.history'), badge: keptDomains || null, content: () => historyContent() });
     tabs = Tabs(items, { selected: items.some((i) => i.id === S.tab) ? S.tab : items[0].id, label: t('rpt.tabs'), className: 'rpt-tabs', onChange: (tab) => { S.tab = tab; } });
     resultsEl.append(tabs.el);
   }
@@ -2197,7 +2292,7 @@ export function mount(container, ctx) {
     const inside = a && a !== scope && scope.contains(a) ? a : null;
     let key = null;
     if (inside && inside.dataset.action) key = `[data-action="${inside.dataset.action}"]${inside.dataset.ip ? `[data-ip="${inside.dataset.ip}"]` : ''}`;
-    else if (inside && inside.dataset.cls) key = `.stat-button[data-cls="${inside.dataset.cls}"]`;
+    else if (inside && inside.matches('.rpt-cls-filter select')) key = '.rpt-cls-filter select';
     else if (inside && inside.matches('.rpt-domain select')) key = '.rpt-domain select';
     else if (inside && inside.matches('.rpt-view .seg-btn')) key = `.rpt-view .seg-btn[data-value="${inside.dataset.value}"]`;
     fn();
@@ -2223,10 +2318,14 @@ export function mount(container, ctx) {
     if (keepTable && (sourcesTable || groupTable) && dmarcParts && dmarcParts.agg === agg) {
       keepFocus(dmarcPanel, () => {
         const head = dmarcHead(m);
-        const tiles = classTiles(overview);
+        const tiles = classMetrics(overview);
         dmarcParts.head.replaceWith(head);
         dmarcParts.tiles.replaceWith(tiles);
         dmarcParts = { agg, head, tiles };
+        if (classSelect) {
+          classSelect.setOptions(classOptions(overview));
+          classSelect.value = S.cls || '';
+        }
         if (sourcesTable) {
           const drawn = new Map(sourcesTable.getRows().map((r) => [r.ip, r]));
           sourcesTable.updateRows(rows.filter((r) => {
@@ -2249,22 +2348,28 @@ export function mount(container, ctx) {
     }, (d) => d.messages, 'rpt.domainOption');
     if (picker) dmarcPanel.append(picker);
     const head = dmarcHead(m);
-    const tiles = classTiles(overview);
+    const tiles = classMetrics(overview);
     dmarcParts = { agg, head, tiles };
-    dmarcPanel.append(head, tiles, sourcesSection(agg, rows), reportersSection(agg));
+    dmarcPanel.append(head, tiles, sourcesSection(agg, rows, overview), reportersSection(agg));
   }
 
   function dmarcHead({ agg, overview: o, line }) {
     const reporters = agg.reporters.map((r) => r.org);
     const shown = reporters.slice(0, 3).join(', ') + (reporters.length > 3 ? ` ${t('common.moreCount', { count: reporters.length - 3 })}` : '');
-    const complianceVariant = o.compliance === null ? 'default' : o.compliance >= 0.98 ? 'ok' : o.compliance >= 0.9 ? 'warn' : 'error';
-    const stats = h('div', { class: 'stat-grid rpt-stats' },
-      StatCard({ label: t('rpt.stat.compliance'), value: o.compliance === null ? '—' : share(o.compliance), variant: complianceVariant,
-        hint: t('rpt.stat.complianceHint', { pass: num(o.pass), total: num(o.messages) }) }).el,
-      StatCard({ label: t('rpt.stat.messages'), value: o.messages }).el,
-      StatCard({ label: t('rpt.stat.sources'), value: agg.sources.length }).el,
-      StatCard({ label: t('rpt.stat.failing'), value: o.fail, variant: o.fail ? 'warn' : 'ok', hint: t('rpt.stat.failingHint') }).el);
-    stats.querySelector('.stat .stat-value').classList.add('rpt-compliance');
+    // The domain's figures (region 6, read-only): colour only on a compliance or a failing count that needs a look.
+    const complianceSeverity = o.compliance === null || o.compliance >= 0.98 ? null : o.compliance >= 0.9 ? 'warn' : 'error';
+    const strip = MetricStrip({ className: 'rpt-stats', label: t('rpt.stat.label') });
+    strip.update([
+      {
+        id: 'compliance', label: t('rpt.stat.compliance'), value: o.compliance === null ? '—' : share(o.compliance), severity: complianceSeverity,
+        hint: t('rpt.stat.complianceHint', { pass: num(o.pass), total: num(o.messages) })
+      },
+      { id: 'messages', label: t('rpt.stat.messages'), value: o.messages },
+      { id: 'sources', label: t('rpt.stat.sources'), value: agg.sources.length },
+      { id: 'failing', label: t('rpt.stat.failing'), value: o.fail, severity: o.fail ? 'warn' : null, hint: t('rpt.stat.failingHint') }
+    ], { foldable: [] });
+    strip.el.querySelector('[data-metric="compliance"] .metric-value').classList.add('rpt-compliance');
+    const stats = strip.el;
     const p = agg.policy;
     const policy = h('p', { class: 'rpt-policy text-sm' }, h('span', { class: 'muted' }, `${t('rpt.policy')}: `),
       h('code', { class: 'mono' }, `p=${p.p}`), ' ', h('code', { class: 'mono' }, `sp=${p.sp}`),
@@ -2341,42 +2446,35 @@ export function mount(container, ctx) {
       retry);
   }
 
-  function classTiles(o) {
-    const tiles = SOURCE_CLASSES.map((cls) => {
+  /**
+   * The messages by source class (region 6, read-only): how many each class sent, its addresses and
+   * how much of it passes. The sources' Show select (classOptions) filters by class.
+   */
+  function classMetrics(o) {
+    const strip = MetricStrip({ className: 'rpt-cls', label: t('rpt.cls.label') });
+    strip.update(SOURCE_CLASSES.map((cls) => {
       const b = o.byClass[cls];
-      const style = CLASS_STYLE[cls];
-      const tile = StatCard({
+      return {
+        id: cls,
         label: t(`rpt.cls.${cls}`),
         value: b.messages,
-        icon: style.icon,
-        variant: style.tile || style.variant,
-        hint: t('rpt.clsHint', { count: b.sources, pct: b.messages ? share(b.pass / b.messages) : '—' }),
-        pressed: S.cls === cls,
-        onClick: () => {
-          S.cls = S.cls === cls ? null : cls;
-          for (const el of grid.querySelectorAll('.stat-button')) el.setAttribute('aria-pressed', String(el.dataset.cls === S.cls));
-          applyClassFilter();
-          clearBtn.hidden = !S.cls;
-        }
-      });
-      tile.el.dataset.cls = cls;
-      tile.el.title = t(`rpt.clsDesc.${cls}`);
-      tile.el.setAttribute('aria-label', `${t('rpt.clsFilter', { cls: t(`rpt.cls.${cls}`) })}: ${formatNumber(b.messages)}`);
-      return tile.el;
-    });
-    const grid = h('div', { class: 'stat-grid rpt-cls' }, tiles);
-    const clearBtn = Button({
-      label: t('rpt.filterClear'), size: 'sm', variant: 'ghost', icon: 'x',
-      dataset: { action: 'rpt-cls-clear' },
-      onClick: () => {
-        S.cls = null;
-        for (const el of grid.querySelectorAll('.stat-button')) el.setAttribute('aria-pressed', 'false');
-        applyClassFilter();
-        clearBtn.hidden = true;
-      }
-    });
-    clearBtn.hidden = !S.cls;
-    return h('div', { class: 'stack-sm' }, grid, h('div', null, clearBtn));
+        title: t(`rpt.clsDesc.${cls}`),
+        // unknown senders are the class that needs a look (spoofing, or a service nobody set up)
+        severity: cls === 'unknown' && b.messages ? 'warn' : null,
+        hint: t('rpt.clsHint', { count: b.sources, pct: b.messages ? share(b.pass / b.messages) : '—' })
+      };
+    }), { foldable: [] });
+    for (const el of strip.el.querySelectorAll('.metric')) el.dataset.cls = el.dataset.metric;
+    return strip.el;
+  }
+
+  /** The Show select's options: every class, then each one, with its addresses. */
+  function classOptions(o) {
+    const total = SOURCE_CLASSES.reduce((n, cls) => n + o.byClass[cls].sources, 0);
+    return [
+      { value: '', label: t('rpt.clsAll', { count: total }) },
+      ...SOURCE_CLASSES.map((cls) => ({ value: cls, label: t('rpt.clsOption', { cls: t(`rpt.cls.${cls}`), count: num(o.byClass[cls].sources) }) }))
+    ];
   }
 
   function whyText(r) {
@@ -2487,7 +2585,7 @@ export function mount(container, ctx) {
   }
 
   /** The sending addresses: one row per address, or folded per service. */
-  function sourcesSection(agg, rows) {
+  function sourcesSection(agg, rows, overview) {
     const view = SegmentedControl({
       label: t('rpt.view.label'),
       size: 'sm',
@@ -2499,10 +2597,23 @@ export function mount(container, ctx) {
         keepFocus(dmarcPanel, () => fillSources(agg));
       }
     });
+    // The class a table shows (DESIGN §5.1: a result filters through its table's Show select): both views follow it.
+    classSelect = select({
+      label: t('rpt.clsShow'),
+      size: 'sm',
+      className: 'rpt-cls-filter',
+      value: S.cls || '',
+      options: classOptions(overview),
+      onChange: (v) => {
+        S.cls = SOURCE_CLASSES.includes(v) ? v : null;
+        applyClassFilter();
+      }
+    });
+    classSelect.input.dataset.role = 'rpt-cls-filter';
     sourcesBody = h('div', { class: 'stack-sm' });
     fillSources(agg, rows);
     return h('section', { class: 'stack-sm rpt-sources-section', attrs: { 'aria-label': t('rpt.sources') } },
-      h('div', { class: 'rpt-sources-head' }, h('h3', { class: 'rpt-subtitle' }, t('rpt.sources')), view.el), sourcesBody);
+      h('div', { class: 'rpt-sources-head' }, h('h3', { class: 'rpt-subtitle' }, t('rpt.sources')), classSelect.el, view.el), sourcesBody);
   }
 
   function identifyButton() {
@@ -2706,13 +2817,20 @@ export function mount(container, ctx) {
 
   function tlsHead(s) {
     const total = s.success + s.failure;
-    const variant = s.rate === null ? 'default' : s.rate >= 0.99 ? 'ok' : s.rate >= 0.9 ? 'warn' : 'error';
-    const stats = h('div', { class: 'stat-grid rpt-stats' },
-      StatCard({ label: t('rpt.tls.stat.rate'), value: s.rate === null ? '—' : share(s.rate), variant, hint: t('rpt.tls.stat.rateHint', { ok: num(s.success), total: num(total) }) }).el,
-      StatCard({ label: t('rpt.tls.stat.sessions'), value: total }).el,
-      StatCard({ label: t('rpt.tls.stat.failed'), value: s.failure, variant: s.failure ? 'warn' : 'ok' }).el,
-      StatCard({ label: t('rpt.tls.stat.senders'), value: s.orgs.length }).el);
-    stats.querySelector('.stat .stat-value').classList.add('rpt-tls-rate');
+    // The domain's sessions (region 6, read-only): colour only on a rate or a failure count that needs a look.
+    const rateSeverity = s.rate === null || s.rate >= 0.99 ? null : s.rate >= 0.9 ? 'warn' : 'error';
+    const strip = MetricStrip({ className: 'rpt-stats', label: t('rpt.tls.stat.label') });
+    strip.update([
+      {
+        id: 'rate', label: t('rpt.tls.stat.rate'), value: s.rate === null ? '—' : share(s.rate), severity: rateSeverity,
+        hint: t('rpt.tls.stat.rateHint', { ok: num(s.success), total: num(total) })
+      },
+      { id: 'sessions', label: t('rpt.tls.stat.sessions'), value: total },
+      { id: 'failed', label: t('rpt.tls.stat.failed'), value: s.failure, severity: s.failure ? 'warn' : null },
+      { id: 'senders', label: t('rpt.tls.stat.senders'), value: s.orgs.length }
+    ], { foldable: [] });
+    strip.el.querySelector('[data-metric="rate"] .metric-value').classList.add('rpt-tls-rate');
+    const stats = strip.el;
     const policies = h('ul', { class: 'rpt-tls-policies' }, s.policies.map((p) => h('li', { dataset: { policy: p.type } },
       Badge(TLS_POLICY_TYPES.includes(p.type) ? t(`rpt.tls.policy.${p.type}`) : p.type, { variant: p.type === 'no-policy-found' ? 'neutral' : 'accent', icon: p.type === 'no-policy-found' ? null : 'lock' }),
       p.mode ? [' ', h('code', { class: 'mono' }, `mode: ${p.mode}`)] : null,

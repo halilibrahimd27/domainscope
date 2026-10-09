@@ -370,7 +370,7 @@ async function main() {
       assertEqual(h.domains['example.com'].checked, '2026-09-30', 'classed against the current SPF');
       await openHistory(page);
       assertEqual(await text(page, '.rh-domain-card .card-title'), 'example.com', 'the domain on screen first');
-      assertEqual(await page.evaluate(() => document.querySelectorAll('.rh-stats .stat-value')[0].textContent), '5,175', 'messages');
+      assertEqual(await page.evaluate(() => document.querySelectorAll('.rh-stats .metric-value')[0].textContent), '5,175', 'messages');
       assertEqual((await bars(page, 'volume')).map(([d]) => d), ['2026-09-25', '2026-09-26'], 'a bar for each day with a report');
       assertEqual(await page.evaluate(() => document.querySelectorAll('.rh-chart[data-chart="volume"] .rh-x-label').length > 1), true, 'dates under the bars');
       assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rh-chart[data-chart="volume"] .rh-legend-item')].map((x) => x.textContent)),
@@ -663,7 +663,7 @@ async function main() {
         return { cls: seg.getAttribute('class'), height: Math.round(seg.getBBox().height * 100) / 100 };
       });
       assertEqual(stub, { cls: 'rh-band-error', height: 2 }, 'a 2 px stub in the error band');
-      assertEqual(await page.evaluate(() => document.querySelectorAll('.rh-stats .stat-value')[1].textContent), '0%', 'the compliance of the period');
+      assertEqual(await page.evaluate(() => document.querySelectorAll('.rh-stats .metric-value')[1].textContent), '0%', 'the compliance of the period');
     });
 
     await run.step('its SPF landing classes that domain again at the limit: trimmed again and said so, never lost', async () => {

@@ -725,6 +725,28 @@ export function matchesCtFilter(row, filter, { radar = CT_WATCH_DEFAULT_DAYS[0] 
 }
 
 /**
+ * The CT tab's status summary (docs/DESIGN.md §5.4; a tab that is a tool of its own, §5.5), from
+ * {@link analyzeCt}'s counts: the current certificates that expire within the radar's reach, those
+ * from an unexpected CA and those logged only as a precertificate (warnings), the certificates new
+ * since the last check (information), then the current ones. Each item is the table's filter of the
+ * same name ({@link CT_WATCH_FILTERS}; `current` is the table's default). Wildcards are left to the
+ * metric strip and the Show select: a summary holds five items at most.
+ * @param {Record<string, number>|null} counts
+ * @returns {Array<{ key: string, severity: 'warn'|'info'|'neutral', count: number, filter: string }>}
+ */
+export function ctWatchStatus(counts) {
+  const c = counts || {};
+  const n = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.floor(Number(v)) : 0);
+  return [
+    ['expiring', 'warn'],
+    ['unexpected', 'warn'],
+    ['precert', 'warn'],
+    ['new', 'info'],
+    ['current', 'neutral']
+  ].map(([key, severity]) => ({ key, severity, count: n(c[key]), filter: key }));
+}
+
+/**
  * The calendar entries of the expiries: one per name set of a domain whose newest certificate is
  * current, with a UID per (domain, name set), so importing a newer file moves the event of a
  * renewed certificate instead of adding one (lib/ics.js).

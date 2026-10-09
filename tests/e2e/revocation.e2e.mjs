@@ -345,7 +345,7 @@ async function main() {
 
     await run.step('the CSV holds when and why it was revoked', async () => {
       await takeDownloads(page);
-      await page.click('[data-action="ct-csv"]');
+      await resultAction(page, '[data-action="ct-csv"]', '.pf-ct-head');
       await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'CSV' });
       const [csv] = await takeDownloads(page);
       const columns = csvHeader(csv.text);

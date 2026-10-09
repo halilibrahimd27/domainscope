@@ -15,14 +15,15 @@
  * name servers' own domain (example.net, served to all three) asked of RDAP once and its expiry in
  * every row, the .tr row honest about having no RDAP (the registry's WHOIS instead), DNSSEC, CAA,
  * SPF / DMARC / DKIM / MTA-STS / TLS-RPT, a parked domain locked down; an RDAP 503 and a CAA
- * SERVFAIL as "⚠ n/a" with a Retry that asks only that cell's lookup; sort and filter; the CSV,
- * JSON and .ics exports (RFC 5545: CRLF, lines folded within 75 octets, a stable UID per domain,
+ * SERVFAIL as "⚠ n/a" with a Retry that asks only that cell's lookup; sort, the Domains tab's
+ * read-only figures, the status summary and the Show select as the filters; the CSV, JSON and .ics
+ * exports from the result header's Export menu (RFC 5545: CRLF, lines folded within 75 octets, a stable UID per domain,
  * the alarms 30 and 7 days before); the policy: a preset, the rule controls and the JSON kept in
  * step and in the workspace, a rule that does not exist said and left out, the matrix with the
  * evidence of each cell and its CSV; Copy summary; Esc stops a run (rows not looked up offer
  * "Look up"); the Certificates (CT) tab (ui/ctwatch-panel.js, loaded on its first use) over a fake
  * Cert Spotter and crt.sh answered in the page: nothing sent before Check CT, Cert Spotter one
- * request at a time and crt.sh after its 429, the tiles and flags (new since the workspace's
+ * request at a time and crt.sh after its 429, the figures, the status summary and flags (new since the workspace's
  * baseline, an unexpected CA, a wildcard, a precertificate only, a superseded certificate), the
  * radar's colours, a domain both sources failed as "⚠ n/a" with a Retry of that domain, the
  * baseline written to the workspace and a second check with nothing new, the CSV and the .ics
@@ -43,7 +44,7 @@ import { spotterRow, crtshRow } from '../js/ct-fake.mjs';
 import { certId, CT_EXPORT_COLUMNS } from '../../assets/js/lib/ctwatch.js';
 import {
   BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  gotoRoute, installDownloadCapture, setLangUi, shot, stubClipboard, takeClipboard, takeDownloads, waitReady
+  gotoRoute, installDownloadCapture, resultAction, setLangUi, shot, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const DAY = 86400000;
@@ -240,8 +241,13 @@ const waitDone = (page, message = 'portfolio checked') => page.waitFor(() => !!d
 /** The CT tab: its check done (or stopped) and Check CT back. */
 const waitCt = (page, message = 'CT checked') => page.waitFor(() => !!document.querySelector('.pf-ct .pf-head[data-status="done"], .pf-ct .pf-head[data-status="stopped"]')
   && !document.querySelector('[data-action="ct-run"]').hidden, { timeout: 40000, message });
-const ctTiles = (page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.pf-ct-tiles [data-ct-tile]')]
-  .map((el) => [el.dataset.ctTile, el.querySelector('.stat-value').textContent.trim()])));
+/** The CT tab's figures (its read-only metric strip): a zero folded into "None: …" reads '0'. */
+const ctTiles = (page) => page.evaluate(() => {
+  const strip = document.querySelector('.pf-ct-tiles');
+  const out = Object.fromEntries([...strip.querySelectorAll('[data-metric]')].map((el) => [el.dataset.metric, el.querySelector('.metric-value').textContent.trim()]));
+  for (const id of (strip.querySelector('.metric-zero')?.dataset.folded || '').split(' ').filter(Boolean)) out[id] = '0';
+  return out;
+});
 /** The CT table's rows: the names, the flags and the radar band of each. */
 const ctRows = (page) => page.evaluate(() => [...document.querySelectorAll('.pf-ct-table tbody tr.dt-row')].map((tr) => ({
   names: [...tr.querySelectorAll('td.pf-ct-names .mono')].map((e) => e.textContent).join(' '),
@@ -292,7 +298,7 @@ async function main() {
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="pf-domains"]').value), DOMAINS.join('\n'), 'recent domains, most recent first');
       assert(await page.evaluate(() => !!document.querySelector('[data-note="prefilled"]')), 'says where the list came from');
       assert(/3 domains/.test(await text(page, '.pf-box-status')), 'counted');
-      assert(await page.evaluate(() => !!document.querySelector('.pf-empty .empty')), 'empty state');
+      assert(await page.evaluate(() => !!document.querySelector('.pf-empty .tool-empty')), 'empty state');
       assertEqual(await counts(page), { dns: 0, rdap: 0 }, 'nothing sent');
       await shot(page, opts, 'portfolio-empty-desktop-light-en');
     });
@@ -372,25 +378,27 @@ async function main() {
       assertEqual([...new Set(q)], ['example-test.com.tr|CAA'], 'CAA only');
     });
 
-    await run.step('sort by expiry; the tiles and the filter', async () => {
+    await run.step('sort by expiry; the figures, the status summary and the Show select', async () => {
       await page.click('.pf-table th[data-key="expiry"] .dt-sort');
       const order = await page.evaluate(() => [...document.querySelectorAll('.pf-table tbody .pf-domain')].map((d) => d.textContent));
       assertEqual(order, ['example.org', 'example.com', 'example-test.com.tr'], 'soonest first, the unknown last');
-      assertEqual(await page.evaluate(() => document.querySelector('[data-tile="expiring"] .stat-value').textContent), '1', 'one domain expires within 30 days');
-      await page.click('[data-tile="ns"]');
+      assertEqual(await page.evaluate(() => document.querySelector('.pf-tiles [data-metric="expiring"] .metric-value').textContent), '1', 'one domain expires within 30 days');
+      await page.click('.pf-head .status-item[data-status="ns"]');
       assertEqual(await page.evaluate(() => document.querySelectorAll('.pf-table tbody tr.dt-row').length), 3, 'every zone is served from example.net');
-      await page.click('[data-tile="unlocked"]');
+      await page.click('.pf-head .status-item[data-status="unlocked"]');
       assertEqual(await page.evaluate(() => [...document.querySelectorAll('.pf-table tbody .pf-domain')].map((d) => d.textContent)), ['example.org'], 'no transfer lock');
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="pf-filter"]').value), 'unlocked', 'the select follows');
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.pf-head .status-item[aria-pressed="true"]')].map((b) => b.dataset.status)), ['unlocked'], 'pressed');
       await page.evaluate(() => { const s = document.querySelector('[data-role="pf-filter"]'); s.value = 'all'; s.dispatchEvent(new Event('change')); });
       assertEqual(await page.evaluate(() => document.querySelectorAll('.pf-table tbody tr.dt-row').length), 3, 'all again');
+      assertEqual(await page.evaluate(() => document.querySelectorAll('.pf-head .status-item[aria-pressed="true"]').length), 0, 'none pressed');
     });
 
     await run.step('exports: CSV, JSON and the .ics calendar (CRLF, folded within 75 octets, a UID per domain, alarms 30 and 7 days before)', async () => {
       await takeDownloads(page);
-      await page.click('[data-action="pf-csv"]');
-      await page.click('[data-action="pf-json"]');
-      await page.click('[data-action="pf-ics"]');
+      await resultAction(page, '[data-action="pf-csv"]', '.pf-head');
+      await resultAction(page, '[data-action="pf-json"]', '.pf-head');
+      await resultAction(page, '[data-action="pf-ics"]', '.pf-head');
       await page.waitFor(() => (window.__downloads || []).length === 3, { message: 'three downloads' });
       const [csv, json, ics] = await takeDownloads(page);
       assert(/^domain-portfolio-.*\.csv$/.test(csv.name) && csv.bom, csv.name);
@@ -515,7 +523,7 @@ async function main() {
       await page.waitFor(() => !!document.querySelector('[data-action="ct-run"]'), { message: 'the CT panel' });
       assert(/^3 domains from the portfolio list/.test(await text(page, '.pf-ct-domains')), await text(page, '.pf-ct-domains'));
       assert(/publicly trusted certificates only/.test(await text(page, '.pf-ct-form')), 'CT lists public certificates only');
-      assert(await page.evaluate(() => !!document.querySelector('.pf-ct-empty .empty') && document.querySelector('.pf-ct-results').hidden), 'the empty state');
+      assert(await page.evaluate(() => !!document.querySelector('.pf-ct-empty .tool-empty') && document.querySelector('.pf-ct-results').hidden), 'the empty state');
       assert(/^Cert Spotter: 0 of 10 /.test(await text(page, '[data-role="ct-quota"]')), await text(page, '[data-role="ct-quota"]'));
       assertEqual(await page.evaluate(() => window.__ctLog.length), 0, 'nothing sent');
     });
@@ -549,10 +557,11 @@ async function main() {
       const all = await ctRows(page);
       assertEqual(all.length, 5, 'every unexpired certificate');
       assertEqual(all.filter((r) => r.flags.includes('superseded')).map((r) => r.names), ['example.com www.example.com'], 'the renewed one is superseded');
-      await page.click('.pf-ct-tiles [data-ct-tile="precert"]');
-      assertEqual((await ctRows(page)).map((r) => r.names), ['shop.example.com'], 'a tile filters');
+      await page.click('.pf-ct-head .status-item[data-status="precert"]');
+      assertEqual((await ctRows(page)).map((r) => r.names), ['shop.example.com'], 'a status item filters');
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="ct-filter"]').value), 'precert', 'the select follows');
-      await page.click('.pf-ct-tiles [data-ct-tile="current"]');
+      await page.click('.pf-ct-head .status-item[data-status="current"]');
+      assertEqual(await page.evaluate(() => document.querySelector('[data-role="ct-filter"]').value), 'current', 'the current certificates again');
       await shot(page, opts, 'portfolio-ct-desktop-light-en');
     });
 
@@ -568,8 +577,8 @@ async function main() {
 
     await run.step('exports: the CSV of the rows shown; the .ics with a UID per name set and reminders on the radar\'s days', async () => {
       await takeDownloads(page);
-      await page.click('[data-action="ct-csv"]');
-      await page.click('[data-action="ct-ics"]');
+      await resultAction(page, '[data-action="ct-csv"]', '.pf-ct-head');
+      await resultAction(page, '[data-action="ct-ics"]', '.pf-ct-head');
       await page.waitFor(() => (window.__downloads || []).length === 2, { message: 'two downloads' });
       const [csv, ics] = await takeDownloads(page);
       assert(/^ct-watch-.*\.csv$/.test(csv.name), csv.name);
@@ -596,7 +605,11 @@ async function main() {
       assert(await page.evaluate(() => !document.querySelector('[data-note="first"]')), 'no first check any more');
       assert(/^Compared with the check of /.test(await text(page, '.pf-ct [data-note="compared"]')), await text(page, '.pf-ct [data-note="compared"]'));
       await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.setWorkspaceData('expectedCas', [])));
-      await page.waitFor(() => document.querySelector('.pf-ct-tiles [data-ct-tile="unexpected"] .stat-value')?.textContent.trim() === '0', { message: 'no expected CAs: no flag' });
+      await page.waitFor(() => {
+        const strip = document.querySelector('.pf-ct-tiles');
+        const shown = strip.querySelector('[data-metric="unexpected"] .metric-value');
+        return shown ? shown.textContent.trim() === '0' : (strip.querySelector('.metric-zero')?.dataset.folded || '').split(' ').includes('unexpected');
+      }, { message: 'no expected CAs: no flag' });
       await page.click('.pf-results .tab[data-tab="domains"]');
     });
 

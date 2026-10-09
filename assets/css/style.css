@@ -5406,10 +5406,22 @@ button.status-item[aria-pressed="true"] {
   min-width: 0;
 }
 
+/* Without FileInput (Monitoring, DMARC & TLS reports: DESIGN §5.5 "File"): the drop zone with its pickers
+   and how-to while nothing is loaded. */
+.file-input-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Once something is loaded, one row: the lead (FileInput's disclosure, or the line saying what was read)
+   and the actions. */
 .file-input-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: var(--space-2) var(--space-4);
+  min-width: 0;
 }
 
 .file-input-row > .file-input-more {
@@ -5421,10 +5433,71 @@ button.status-item[aria-pressed="true"] {
   padding-top: var(--space-3);
 }
 
+.file-input-summary {
+  display: flex;
+  flex: 1 1 18rem;
+  align-items: center;
+  align-self: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
+  overflow-wrap: anywhere;
+}
+
+.file-input-summary > .icon {
+  flex: none;
+  color: var(--text-3);
+}
+
 .file-input-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-2);
+}
+
+/* "Add files": the drop zone drawn as a small button (a click chooses, a drop reads). */
+.file-input-actions .filedrop {
+  flex-wrap: nowrap;
+  gap: var(--space-1);
+  min-height: var(--btn-h-sm);
+  padding: 0 var(--space-3);
+  border-width: 1px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.file-input-actions .filedrop-icon {
+  width: auto;
+  height: auto;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.file-input-actions .filedrop-title {
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+
+/* The hint ("or drop them here") is the button's description: for screen readers only. */
+.file-input-actions .filedrop-hint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.file-input-actions .filedrop-status {
+  display: none;
 }
 
 /* Phones: one column of fields with a full-width Run; compact, the field over the summary and Run;
@@ -5533,10 +5606,6 @@ button.status-item[aria-pressed="true"] {
   }
 
   /* A file tool's compact row: the disclosure, its actions under it. */
-  .file-input-row {
-    flex-wrap: wrap;
-  }
-
   .file-input-row > .file-input-more {
     flex: 1 1 100%;
   }

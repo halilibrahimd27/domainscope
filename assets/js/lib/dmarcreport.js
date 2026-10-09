@@ -1102,6 +1102,33 @@ export function dmarcOverview(agg, rows, { spfChecked = true } = {}) {
   };
 }
 
+/**
+ * The DMARC & TLS reports view's status summary (docs/DESIGN.md §5.4, §5.6; lib/template.js
+ * statusItems orders it and leaves the zeros out): over every domain read, the messages that fail
+ * DMARC and the TLS sessions that failed (errors), then the messages, the sending addresses and the
+ * TLS sessions. It counts the reports themselves, never the classes the current SPF gives their
+ * sources: those are per domain, in its DMARC tab. Each item opens the tab that lists what it counts.
+ * @param {{ dmarc?: { domains?: Array<{ messages: number, fail: number, sources: object[] }> }|null,
+ *   tls?: { domains?: Array<{ success: number, failure: number }> }|null }} [input] {@link aggregateDmarc}
+ *   and lib/tlsrpt.js summarizeTls
+ * @returns {Array<{ key: string, severity: 'error'|'neutral', count: number, tab: 'dmarc'|'tls' }>}
+ */
+export function reportsStatus({ dmarc = null, tls = null } = {}) {
+  const dmarcDomains = dmarc && Array.isArray(dmarc.domains) ? dmarc.domains : [];
+  const tlsDomains = tls && Array.isArray(tls.domains) ? tls.domains : [];
+  const sum = (list, of) => list.reduce((n, x) => {
+    const v = Number(x ? of(x) : 0);
+    return n + (Number.isFinite(v) && v > 0 ? v : 0);
+  }, 0);
+  return [
+    { key: 'failing', severity: 'error', count: sum(dmarcDomains, (d) => d.fail), tab: 'dmarc' },
+    { key: 'tlsFailed', severity: 'error', count: sum(tlsDomains, (d) => d.failure), tab: 'tls' },
+    { key: 'messages', severity: 'neutral', count: sum(dmarcDomains, (d) => d.messages), tab: 'dmarc' },
+    { key: 'senders', severity: 'neutral', count: sum(dmarcDomains, (d) => (Array.isArray(d.sources) ? d.sources.length : 0)), tab: 'dmarc' },
+    { key: 'sessions', severity: 'neutral', count: sum(tlsDomains, (d) => (Number(d.success) || 0) + (Number(d.failure) || 0)), tab: 'tls' }
+  ];
+}
+
 /* ------------------------------------------------------------------------ */
 /* Export                                                                   */
 /* ------------------------------------------------------------------------ */

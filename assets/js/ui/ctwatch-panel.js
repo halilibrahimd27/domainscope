@@ -2,11 +2,18 @@
  * ui/ctwatch-panel.js — Domain portfolio › Certificates (CT): the CT watchlist of the portfolio's
  * domains (lib/ctwatch.js), loaded with the tab on its first use.
  *
+ * A tab that is a tool of its own (docs/DESIGN.md §5.5): it has its own run row and privacy note,
+ * and its own result header, metric strip and table.
+ *
  * - The form: the portfolio's domains (the list of the check on screen, else the box's), the
- *   expiry radar's thresholds (30, 14, 7 days by default) and Check CT. Nothing is sent before
- *   the click. The line under it shows Cert Spotter's quota as this page used it.
- * - The result: tiles (current certificates, expiring, new since the last check, unexpected CA,
- *   wildcard, precertificate only), each a filter; one row per unexpired certificate with its
+ *   expiry radar's thresholds (30, 14, 7 days by default) and Check CT — the panel's primary
+ *   button, its Stop in the same slot. Nothing is sent before the click. The privacy note under it
+ *   says what goes where, and the line next to it Cert Spotter's quota as this page used it.
+ * - The result: a header (`.pf-ct-head`, h3: the domains read, when, compared with which check,
+ *   the status summary — lib/ctwatch.js ctWatchStatus, each count a filter of the table — and
+ *   Export ▾ with the CSV and the calendar), the counts as a read-only metric strip (current
+ *   certificates, expiring, new since the last check, unexpected CA, wildcard, precertificate
+ *   only; the Show select filters by any of them); one row per unexpired certificate with its
  *   names, CA, validity and flags (a revoked one: when and why; a revoked one or one from an
  *   unexpected CA: the CA's problem-reporting contact, ui/revocation.js, all from the same Cert
  *   Spotter answers); per domain how it was read, a domain that could not be read is
@@ -27,11 +34,12 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, Button, DataTable, Disclosure, EmptyState, ExternalLink, Icon, ProgressBar, StatCard, announce, select, textInput, toast } from './components.js';
+import { Alert, Badge, Button, DataTable, Disclosure, ExternalLink, Icon, ProgressBar, RelativeTime, announce, select, textInput, toast } from './components.js';
+import { EmptyState, MetricStrip, PrivacyNote, ResultActions, ResultHeader, ResultTitle, StatusSummary } from './template.js';
 import { registerStrings, formatDate, formatDateTime, formatNumber, formatRelative } from '../i18n.js';
 import {
   CT_WATCH_DEFAULT_DAYS, CT_WATCH_FILTERS, CT_WATCH_FLAGS, CT_WATCH_NOTES, CT_WATCH_MAX_DOMAINS, CT_WATCH_MAX_DAYS, CT_WATCH_MAX_THRESHOLDS,
-  CT_EXPORT_COLUMNS, analyzeCt, exportCtRow, expiryEntries, matchesCtFilter, parseRadarDays, readDomainCt, readPortfolioCt, readSeen, seenText,
+  CT_EXPORT_COLUMNS, analyzeCt, ctWatchStatus, exportCtRow, expiryEntries, matchesCtFilter, parseRadarDays, readDomainCt, readPortfolioCt, readSeen, seenText,
   spotterBudget, updateSeen
 } from '../lib/ctwatch.js';
 import { createLimiter, mergeSignals, onceAsync } from '../lib/util.js';
@@ -74,12 +82,10 @@ registerStrings('en', {
   'ctw.progressCount': '{done} of {total} domains',
   'ctw.quota': 'Cert Spotter: {used} of {limit} subdomain searches of the last hour sent from this page. A domain takes two at least, and the quota counts every request from your IP address.',
   'ctw.quotaOut': 'Cert Spotter’s hourly quota is used up until about {time}: domains go to crt.sh until then.',
-  'ctw.emptyTitle': 'The portfolio’s certificates, as CT logged them',
   'ctw.emptyBody': 'New issuance, an expiry radar and unexpected CAs for every domain of the list. Nothing has been sent yet.',
   'ctw.resultsTitle': { one: 'Certificates of {count} domain', other: 'Certificates of {count} domains' },
   'ctw.checkedAt': 'Checked {time}',
   'ctw.stoppedAt': 'Stopped {time}: the domains read until then are shown',
-  'ctw.runningNow': 'Reading…',
   'ctw.comparedWith': 'Compared with the check of {time}',
   'ctw.firstAll': 'First check of these domains in this workspace: nothing is marked new. The next check marks what was logged after this one.',
   'ctw.firstSome': { one: '{count} domain is checked for the first time in this workspace ({list}): none of its certificates is marked new.', other: '{count} domains are checked for the first time in this workspace ({list}): none of their certificates is marked new.' },
@@ -105,7 +111,12 @@ registerStrings('en', {
   'ctw.tile.unexpected': 'Unexpected CA',
   'ctw.tile.wildcard': 'Wildcard',
   'ctw.tile.precert': 'Precertificate only',
-  'ctw.tile.hint': 'Show only these',
+  'ctw.tile.label': 'The certificates in numbers',
+  'ctw.status.expiring': { one: '{count} expires within {days} days', other: '{count} expire within {days} days' },
+  'ctw.status.unexpected': { one: '{count} from an unexpected CA', other: '{count} from unexpected CAs' },
+  'ctw.status.precert': { one: '{count} precertificate only', other: '{count} precertificates only' },
+  'ctw.status.new': { one: '{count} new since the last check', other: '{count} new since the last check' },
+  'ctw.status.current': { one: '{count} current certificate', other: '{count} current certificates' },
   'ctw.filter.label': 'Show',
   'ctw.filter.current': 'Newest of each name set ({count})',
   'ctw.filter.all': 'Every unexpired certificate ({count})',
@@ -169,12 +180,10 @@ registerStrings('tr', {
   'ctw.progressCount': '{done} / {total} alan adı',
   'ctw.quota': 'Cert Spotter: son bir saatte bu sayfadan {limit} alt alan adı aramasının {used} tanesi gönderildi. Bir alan adı en az iki tane kullanır ve kota IP adresinizden giden her isteği sayar.',
   'ctw.quotaOut': 'Cert Spotter’ın saatlik kotası yaklaşık {time} saatine kadar doldu: o zamana kadar alan adları crt.sh’e gider.',
-  'ctw.emptyTitle': 'Portföyün sertifikaları, CT’nin kaydettiği gibi',
   'ctw.emptyBody': 'Listedeki her alan adı için yeni verilen sertifikalar, bir süre radarı ve beklenmeyen CA’lar. Henüz hiçbir şey gönderilmedi.',
   'ctw.resultsTitle': { other: '{count} alan adının sertifikaları' },
   'ctw.checkedAt': 'Kontrol: {time}',
   'ctw.stoppedAt': 'Durduruldu ({time}): o zamana kadar okunan alan adları gösteriliyor',
-  'ctw.runningNow': 'Okunuyor…',
   'ctw.comparedWith': 'Karşılaştırılan kontrol: {time}',
   'ctw.firstAll': 'Bu alan adlarının bu çalışma alanındaki ilk kontrolü: hiçbir sertifika yeni olarak işaretlenmez. Sonraki kontrol, bundan sonra kaydedilenleri işaretler.',
   'ctw.firstSome': { other: '{count} alan adı bu çalışma alanında ilk kez kontrol ediliyor ({list}): bunların hiçbir sertifikası yeni olarak işaretlenmez.' },
@@ -200,7 +209,12 @@ registerStrings('tr', {
   'ctw.tile.unexpected': 'Beklenmeyen CA',
   'ctw.tile.wildcard': 'Wildcard',
   'ctw.tile.precert': 'Yalnızca ön sertifika',
-  'ctw.tile.hint': 'Yalnızca bunları göster',
+  'ctw.tile.label': 'Sayılarla sertifikalar',
+  'ctw.status.expiring': '{count} sertifikanın süresi {days} gün içinde doluyor',
+  'ctw.status.unexpected': '{count} sertifika beklenmeyen bir CA’dan',
+  'ctw.status.precert': '{count} sertifika yalnızca ön sertifika olarak kayıtlı',
+  'ctw.status.new': '{count} sertifika son kontrolden beri yeni',
+  'ctw.status.current': '{count} geçerli sertifika',
   'ctw.filter.label': 'Göster',
   'ctw.filter.current': 'Her ad kümesinin en yenisi ({count})',
   'ctw.filter.all': 'Süresi dolmamış her sertifika ({count})',
@@ -353,32 +367,45 @@ export function mountCtWatch(host, { ctx, domains }) {
       daysField.setError(null);
     }
   });
-  const runBtn = Button({ label: t('ctw.run'), icon: 'certificate', variant: 'primary', dataset: { action: 'ct-run' }, onClick: () => start() });
-  const stopBtn = Button({ label: t('common.stop'), icon: 'stop', dataset: { action: 'ct-stop' }, onClick: () => { if (S.run) S.run.controller.abort(); } });
-  const quotaLine = h('p', { class: 'muted text-sm pf-ct-quota', dataset: { role: 'ct-quota' }, attrs: { 'aria-live': 'polite' } });
+  // The panel's own run (DESIGN §5.1, region 3: Check CT is the primary button inside the tab; Stop
+  // takes its slot while a check runs, and the keyboard focus goes with it).
+  const runBtn = Button({ label: t('ctw.run'), icon: 'play', variant: 'primary', className: 'run-bar-run', dataset: { action: 'ct-run' }, onClick: () => start() });
+  const stopBtn = Button({
+    label: t('common.stop'), icon: 'stop', variant: 'secondary', className: 'run-bar-stop', dataset: { action: 'ct-stop' },
+    onClick: () => { if (S.run) S.run.controller.abort(); }
+  });
+  const quotaLine = h('p', { class: 'pf-ct-quota', dataset: { role: 'ct-quota' }, attrs: { 'aria-live': 'polite' } });
   const formCard = h('div', { class: 'card pf-ct-form' },
     h('div', { class: 'card-body stack' },
-      h('h2', { class: 'pf-head-title' }, t('ctw.title')),
+      h('h2', { class: 'pf-ct-title' }, t('ctw.title')),
       h('p', { class: 'text-sm' }, t('ctw.intro')),
       Alert({ variant: 'info', compact: true, message: t('ctw.publicOnly') }),
       domainsLine,
-      daysField.el,
-      h('div', { class: 'pf-buttons' }, stopBtn, runBtn),
-      h('p', { class: 'muted text-sm pf-sends' }, t('ctw.sends')),
-      quotaLine));
+      h('div', { class: 'pf-ct-fields' }, daysField.el, h('div', { class: 'run-bar pf-ct-run' }, runBtn, stopBtn)),
+      h('div', { class: 'pf-ct-foot' }, PrivacyNote({ text: t('ctw.sends'), className: 'pf-sends' }), quotaLine)));
 
-  /* --- progress, notes, head, tiles, table ------------------------------------------------ */
+  /* --- the result: its header (region 4), notes, metric strip (region 6, read-only), table ------ */
   const progress = ProgressBar({ format: (v, max) => t('ctw.progressCount', { done: formatNumber(v), total: formatNumber(max) }) });
-  const progressRow = h('div', { class: 'pf-progress', hidden: true }, progress.el);
-  const emptyEl = h('div', { class: 'card pf-ct-empty' }, EmptyState({ icon: 'certificate', title: t('ctw.emptyTitle'), message: t('ctw.emptyBody') }));
+  const emptyEl = h('div', { class: 'pf-ct-empty' }, EmptyState({
+    icon: 'certificate',
+    message: t('ctw.emptyBody'),
+    checks: CT_TILES.map((k) => t(`ctw.tile.${k}`, { days: (parseRadarDays(S.days) || CT_WATCH_DEFAULT_DAYS)[0] }))
+  }));
   const notesEl = h('div', { class: 'stack pf-ct-notes' });
-  const headEl = h('div', { class: 'pf-ct-head-wrap' });
-  const tiles = Object.fromEntries(CT_TILES.map((k) => [k, StatCard({ label: '', value: 0, onClick: () => setFilter(S.filter === k && k !== 'current' ? 'current' : k), pressed: false })]));
-  for (const [k, tile] of Object.entries(tiles)) {
-    tile.el.dataset.ctTile = k;
-    tile.el.title = t('ctw.tile.hint');
-  }
-  const tilesEl = h('div', { class: 'pf-tiles pf-ct-tiles' }, Object.values(tiles).map((x) => x.el));
+  // A heading under the panel's own (h2): the note over a kept check is the portfolio's, never here.
+  const head = ResultHeader({ className: 'pf-ct-head pf-head', level: 3, kept: false });
+  const status = StatusSummary({ items: [] });
+  head.set('status', status.el);
+  /** Export ▾: the CSV and the calendar of the rows shown (no Copy summary: the portfolio's has the check). */
+  const actions = ResultActions({
+    exports: [
+      { label: t('ctw.export.csv'), title: t('ctw.export.title'), dataset: { action: 'ct-csv' }, onSelect: () => exportCsv() },
+      { label: t('ctw.export.ics'), icon: 'calendar', title: t('ctw.export.icsTitle'), dataset: { action: 'ct-ics' }, onSelect: () => exportCalendar() }
+    ]
+  });
+  head.set('actions', actions.el);
+  const tiles = MetricStrip({ className: 'pf-ct-tiles', label: t('ctw.tile.label') });
+  const tilesEl = tiles.el;
   const filterSelect = select({ label: t('ctw.filter.label'), options: [], value: S.filter, size: 'sm', className: 'pf-filter', onChange: (v) => setFilter(v) });
   filterSelect.input.dataset.role = 'ct-filter';
 
@@ -464,8 +491,8 @@ export function mountCtWatch(host, { ctx, domains }) {
   });
   table.el.dataset.role = 'ct-table';
 
-  const results = h('div', { class: 'stack-lg pf-ct-results' }, headEl, notesEl, tilesEl, table.el);
-  const root = h('div', { class: 'stack-lg pf-ct', dataset: { shortcutScope: 'ct' } }, formCard, progressRow, emptyEl, results);
+  const results = h('div', { class: 'pf-ct-results' }, head.el, notesEl, tilesEl, table.el);
+  const root = h('div', { class: 'pf-ct', dataset: { shortcutScope: 'ct' } }, formCard, emptyEl, results);
   host.append(root);
 
   /* --- rendering ---------------------------------------------------------------------- */
@@ -479,8 +506,11 @@ export function mountCtWatch(host, { ctx, domains }) {
       if (list.length > CT_WATCH_MAX_DOMAINS) domainsLine.append(' · ', h('span', { class: 'pf-invalid', dataset: { issue: 'capped' } }, t('ctw.capped', { max: CT_WATCH_MAX_DOMAINS, count: list.length - CT_WATCH_MAX_DOMAINS })));
     }
     const on = !!S.run;
+    // The keyboard focus follows the button it was on (Check CT ⇄ Stop), never falling to <body>.
+    const from = document.activeElement === (on ? runBtn : stopBtn);
     runBtn.hidden = on;
     stopBtn.hidden = !on;
+    if (from) (on ? stopBtn : runBtn).focus();
     daysField.input.readOnly = on;
     renderQuota();
   }
@@ -492,22 +522,22 @@ export function mountCtWatch(host, { ctx, domains }) {
     if (spotterBudget.left() < 2 && reset) quotaLine.append(' ', h('strong', { dataset: { quota: 'out' } }, t('ctw.quotaOut', { time: formatDateTime(reset) })));
   }
 
+  /** The check's header: what was read and when, compared with which check; the progress while it runs. */
   function renderHead() {
-    clear(headEl);
     if (!S.startedAt) return;
-    const meta = S.run
-      ? t('ctw.runningNow')
-      : S.stopped ? t('ctw.stoppedAt', { time: formatRelative(S.at) }) : t('ctw.checkedAt', { time: formatRelative(S.at) });
+    const runningNow = !!S.run;
+    head.el.dataset.status = runningNow ? 'running' : S.stopped ? 'stopped' : 'done';
+    head.setState(runningNow ? 'running' : 'done');
+    head.set('title', ResultTitle({ running: runningNow, text: t(runningNow ? 'ctw.progress' : 'ctw.resultsTitle', { count: S.order.length }) }));
     const before = S.seenBefore ? S.order.map((d) => S.seenBefore.domains[d]).filter(Boolean).map((e) => e.at).sort().at(-1) : null;
-    const exportBtn = (label, action, onClick, title) => Button({ label, icon: 'download', size: 'sm', dataset: { action }, title, onClick, disabled: !!S.run || !analysis.rows.length });
-    headEl.append(h('div', { class: 'card pf-head', dataset: { status: S.run ? 'running' : S.stopped ? 'stopped' : 'done' } },
-      h('div', { class: 'pf-head-main' },
-        h('h2', { class: 'pf-head-title' }, t('ctw.resultsTitle', { count: S.order.length })),
-        h('span', { class: 'muted text-xs', title: S.at ? formatDateTime(S.at) : null }, meta),
-        before ? h('span', { class: 'muted text-xs', dataset: { note: 'compared' }, title: formatDateTime(new Date(before)) }, t('ctw.comparedWith', { time: formatRelative(new Date(before)) })) : null),
-      h('div', { class: 'pf-exports', attrs: { role: 'group', 'aria-label': t('table.exportLabel') } },
-        exportBtn(t('ctw.export.csv'), 'ct-csv', () => exportCsv(), t('ctw.export.title')),
-        exportBtn(t('ctw.export.ics'), 'ct-ics', () => exportCalendar(), t('ctw.export.icsTitle')))));
+    const compared = before ? RelativeTime(new Date(before), { className: 'pf-ct-compared', text: t('ctw.comparedWith', { time: formatRelative(new Date(before)) }) }) : null;
+    if (compared) compared.dataset.note = 'compared';
+    head.set('meta', [
+      !runningNow && S.at ? RelativeTime(S.at, { text: S.stopped ? t('ctw.stoppedAt', { time: formatRelative(S.at) }) : t('ctw.checkedAt', { time: formatRelative(S.at) }) }) : null,
+      compared
+    ]);
+    head.set('progress', runningNow ? progress.el : null);
+    actions.setExportsDisabled(runningNow || !analysis.rows.length);
   }
 
   function readLine(domain) {
@@ -557,13 +587,26 @@ export function mountCtWatch(host, { ctx, domains }) {
     }));
   }
 
+  /** The status item that stands for the table's filter (pressed while it applies): none for the default. */
+  const statusOfFilter = (f) => (f !== 'current' && ctWatchStatus(null).some((x) => x.filter === f) ? f : null);
+
+  /** The counts: the head's status summary (each a filter), the metric strip (read-only), the Show select. */
   function renderTiles() {
     const c = analysis.counts || {};
-    const variants = { current: 'default', expiring: 'error', new: 'info', unexpected: 'warn', wildcard: 'default', precert: 'warn' };
-    for (const k of CT_TILES) {
-      const n = c[k] || 0;
-      tiles[k].set({ label: t(`ctw.tile.${k}`, { days: radar() }), value: n, variant: n && k !== 'current' ? variants[k] : 'default', pressed: S.filter === k });
-    }
+    const items = ctWatchStatus(c);
+    const severity = Object.fromEntries(items.map((x) => [x.key, x.severity]));
+    // While the check goes on no zero folds into the sentence: every count may still grow.
+    tiles.update(CT_TILES.map((k) => ({
+      id: k, label: t(`ctw.tile.${k}`, { days: radar() }), value: c[k] || 0,
+      severity: c[k] && (severity[k] === 'warn' || severity[k] === 'error') ? severity[k] : null
+    })), { foldable: S.run ? [] : CT_TILES.filter((k) => k !== 'current') });
+    status.update(items.map((item) => ({
+      ...item,
+      text: t(`ctw.status.${item.key}`, { count: item.count, days: radar() }),
+      // the current certificates are the table's default: a press shows them again
+      filter: item.key !== 'current',
+      onPress: () => setFilter(S.filter === item.filter ? 'current' : item.filter)
+    })), { pressed: statusOfFilter(S.filter) });
     filterSelect.setOptions(CT_WATCH_FILTERS.map((f) => ({ value: f, label: t(`ctw.filter.${f}`, { count: c[f] || 0, days: radar() }) })));
     filterSelect.value = S.filter;
   }
@@ -613,18 +656,12 @@ export function mountCtWatch(host, { ctx, domains }) {
     const has = !!S.startedAt;
     emptyEl.hidden = has;
     results.hidden = !has;
+    if (S.run) progress.set(S.reads.size, S.order.length);
     renderHead();
     renderNotes();
     renderTiles();
     table.setRows(analysis.rows);
     table.setFilter((r) => matchesCtFilter(r, S.filter, { radar: radar() }));
-    if (S.run) {
-      progressRow.hidden = false;
-      progress.setLabel(t('ctw.progress', { count: S.order.length }));
-      progress.set(S.reads.size, S.order.length);
-    } else {
-      progressRow.hidden = true;
-    }
   }
 
   let timer = null;
@@ -743,6 +780,8 @@ export function mountCtWatch(host, { ctx, domains }) {
     destroy() {
       panels.delete(onState);
       unsubscribe();
+      // the actions follow the phone layout: their listener would keep this panel alive
+      actions.dispose();
       if (timer) clearTimeout(timer);
       // Leaving the view stops a check: what was read so far is kept (and goes into the baseline).
       if (S.run) S.run.controller.abort();

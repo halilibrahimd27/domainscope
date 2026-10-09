@@ -3,16 +3,23 @@
  * many domains, one row each, and the policy audit of the workspace. lib/portfolio.js runs the lookups and turns them into
  * facts; lib/policy.js reads the policy and evaluates it; this view draws them:
  *
+ * The page template (docs/DESIGN.md §5; ui/template.js, a "Batch" tool): the input card holds the
+ * list, its count, the DKIM option and the privacy note, and folds to one row from the moment a
+ * check starts; the result header ("Portfolio of 3 domains") holds the progress, the status summary
+ * (lib/portfolio.js portfolioStatus: each count a filter of the Domains table) and the actions
+ * (Copy summary with ¶, Export ▾ — CSV, JSON, calendar — and Copy link); then the tabs.
+ *
  * - The list: pasted domains (host names and URLs give their registrable domain), filled in from
  *   the workspace's recent domains while the box is empty; nothing is sent until Check portfolio.
  * - The table (Domains tab): per domain what changed in its registration since the workspace's last
  *   check (lib/regwatch.js: the registrar, a lock removed, a hold, the name servers, the DS records, a
- *   renewal — a badge, a tile, a filter and a Copy summary line), the expiry with its countdown (coloured by the days left),
+ *   renewal — a badge, a figure, a filter and a Copy summary line), the expiry with its countdown (coloured by the days left),
  *   the registry status flags read for risk, the registrar, DNSSEC, the name servers' own domains
  *   with their expiry, CAA and the mail posture (SPF, DMARC, DKIM, MTA-STS / TLS-RPT, the
  *   lock-down of a domain that takes no mail). Rows fill as the lookups land; a lookup that
- *   failed is "⚠ n/a" in its cell with a Retry of that cell's lookups only. Tiles and a filter pick
- *   out what needs a look; columns sort. Exports: CSV, JSON and an .ics calendar of every expiry.
+ *   failed is "⚠ n/a" in its cell with a Retry of that cell's lookups only. The tab's metric strip
+ *   counts its rows (read-only); the status summary and the Show select pick out what needs a
+ *   look; columns sort. Exports: CSV, JSON and an .ics calendar of every expiry.
  * - Domain security tab: CSC's eight measures per domain with a 0–8 score, the portfolio's
  *   adoption of each measure and a CSV (ui/secscore-panel.js over lib/secscore.js, loaded with
  *   the tab on its first use): computed from the check on screen, nothing more is sent.
@@ -31,14 +38,19 @@
 
 import { h, clear, debounce } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, DataTable, EmptyState, ErrorBanner, ExternalLink, Icon, ProgressBar, Spinner, StatCard, Tabs,
+  Alert, Badge, Button, Card, DataTable, ErrorBanner, ExternalLink, Icon, ProgressBar, RelativeTime, Spinner, Tabs,
   announce, checkbox, select, textInput, textarea, toast
 } from '../ui/components.js';
-import { registerStrings, formatBytes, formatNumber, formatDate, formatDateTime, formatRelative, t as translate } from '../i18n.js';
+import { registerStrings, formatBytes, formatNumber, formatDate, formatRelative, t as translate } from '../i18n.js';
 import {
   PORTFOLIO_CELLS, CELL_LOOKUPS, LOOKUP_SOURCES, PORTFOLIO_MAX_DOMAINS, PORTFOLIO_DKIM_SELECTORS, PORTFOLIO_LOOKUPS, CRITICAL_STATUSES,
-  parsePortfolioInput, createPortfolio, cellFailures, rowRisk, unregisteredNsDomains, expiryEvents, expiryUid, exportRow, EXPORT_COLUMNS, portfolioSummaryFacts
+  parsePortfolioInput, createPortfolio, cellFailures, rowRisk, unregisteredNsDomains, expiryEvents, expiryUid, exportRow, EXPORT_COLUMNS, portfolioSummaryFacts,
+  portfolioStatus
 } from '../lib/portfolio.js';
+import {
+  EmptyState, MetricStrip, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput
+} from '../ui/template.js';
+import { inputCompact, optionsSummary, templateState } from '../lib/template.js';
 import {
   POLICY_RULES, POLICY_PRESET_IDS, POLICY_OPS, POLICY_I18N, POLICY_MAX_CHARS, parsePolicy, policyText, presetPolicy, auditPortfolio, auditCsv,
   auditJson, evidenceText, policyRule, waiverText
@@ -103,16 +115,15 @@ registerStrings('en', {
   'pf.run': 'Check portfolio',
   'pf.dkim': 'Look for DKIM keys at {count} common selectors',
   'pf.dkimHint': '{queries} more DNS questions per domain. Off, the DKIM column and rule say “not checked”.',
-  'pf.sends': 'Nothing is sent until you press Check portfolio. Then each domain’s DNS questions go to your DoH resolvers and its registration lookup to the registry’s RDAP server (rdap.org only when the registry cannot be reached, at most one request a second). The name servers’ own domains are looked up the same way, once each.',
+  'pf.dkimOff': 'DKIM not checked',
+  'pf.privacy': 'Nothing is sent until you press Check portfolio: then each domain’s DNS questions go to your DoH resolvers and its registration lookup to the registry’s RDAP server.',
   'pf.needOne': 'Enter at least one domain such as example.com.',
-  'pf.emptyTitle': 'Every domain of a customer in one table',
-  'pf.emptyBody': 'Expiry with a countdown, registry status flags (a missing transfer lock, holds, pending deletes), the registrar, DNSSEC, the name servers’ own domains and their expiry, CAA and the mail posture — then an expiry calendar and a policy audit.',
+  'pf.emptyLine': 'One row per domain, filled in as its lookups land; then an expiry calendar and a policy audit.',
   'pf.progress': { one: 'Checking {count} domain', other: 'Checking {count} domains' },
   'pf.progressCount': '{done} of {total} domains',
   'pf.resultsTitle': { one: 'Portfolio of {count} domain', other: 'Portfolio of {count} domains' },
   'pf.checkedAt': 'Checked {time}',
   'pf.stoppedAt': { one: 'Stopped {time}: {count} domain not looked up in full', other: 'Stopped {time}: {count} domains not looked up in full' },
-  'pf.runningNow': 'Looking up…',
   'pf.done': { one: 'Portfolio of {count} domain checked', other: 'Portfolio of {count} domains checked' },
   'pf.stopped': 'Stopped: the lookups that landed are shown',
   'pf.doneToast': { zero: 'Portfolio checked: nothing needs a look.', one: 'Portfolio checked: {count} domain needs a look.', other: 'Portfolio checked: {count} domains need a look.' },
@@ -133,7 +144,14 @@ registerStrings('en', {
   'pf.tile.unlocked': 'No transfer lock',
   'pf.tile.ns': 'Name server domain at risk',
   'pf.tile.failed': 'Lookups failed',
-  'pf.tile.filterHint': 'Show only these',
+  'pf.tile.label': 'The domains in numbers',
+
+  'pf.status.expiring': { one: '{count} expires within 30 days', other: '{count} expire within 30 days' },
+  'pf.status.critical': { one: '{count} critical status', other: '{count} critical statuses' },
+  'pf.status.failed': { one: '{count} with a failed lookup', other: '{count} with failed lookups' },
+  'pf.status.unlocked': { one: '{count} without a transfer lock', other: '{count} without a transfer lock' },
+  'pf.status.ns': { one: '{count} with its name servers at risk', other: '{count} with their name servers at risk' },
+  'pf.status.changed': { one: '{count} changed since your last check', other: '{count} changed since your last check' },
 
   'pf.filter.label': 'Show',
   'pf.filter.all': 'All domains ({count})',
@@ -309,16 +327,15 @@ registerStrings('tr', {
   'pf.run': 'Portföyü kontrol et',
   'pf.dkim': 'DKIM anahtarlarını yaygın {count} seçicide ara',
   'pf.dkimHint': 'Alan adı başına {queries} DNS sorgusu daha. Kapalıyken DKIM sütunu ve kuralı “kontrol edilmedi” der.',
-  'pf.sends': 'Portföyü kontrol et’e basana kadar hiçbir şey gönderilmez. Sonra her alan adının DNS sorguları DoH çözümleyicilerinize, kayıt sorgusu kayıt kuruluşunun RDAP sunucusuna gider (rdap.org yalnızca kayıt kuruluşuna ulaşılamazsa, saniyede en fazla bir istekle). Ad sunucularının kendi alan adları da aynı yolla, her biri bir kez sorgulanır.',
+  'pf.dkimOff': 'DKIM kontrol edilmez',
+  'pf.privacy': 'Portföyü kontrol et’e basana kadar hiçbir şey gönderilmez: sonra her alan adının DNS sorguları DoH çözümleyicilerinize, kayıt sorgusu da kayıt kuruluşunun RDAP sunucusuna gider.',
   'pf.needOne': 'example.com gibi en az bir alan adı girin.',
-  'pf.emptyTitle': 'Bir müşterinin bütün alan adları tek tabloda',
-  'pf.emptyBody': 'Geri sayımlı bitiş tarihi, kayıt durumu işaretleri (eksik transfer kilidi, askıya alma, silinme bekleyenler), kayıt firması, DNSSEC, ad sunucularının kendi alan adları ve bitişleri, CAA ve e-posta ayarları — ardından bitiş takvimi ve politika denetimi.',
+  'pf.emptyLine': 'Alan adı başına bir satır, sorguları geldikçe dolar; ardından bitiş takvimi ve politika denetimi.',
   'pf.progress': '{count} alan adı kontrol ediliyor',
   'pf.progressCount': '{done}/{total} alan adı',
   'pf.resultsTitle': '{count} alan adlık portföy',
   'pf.checkedAt': 'Kontrol edildi: {time}',
   'pf.stoppedAt': 'Durduruldu: {time} — {count} alan adı tam sorgulanmadı',
-  'pf.runningNow': 'Sorgulanıyor…',
   'pf.done': '{count} alan adlık portföy kontrol edildi',
   'pf.stopped': 'Durduruldu: gelen sorgular gösteriliyor',
   'pf.doneToast': { zero: 'Portföy kontrol edildi: bakılması gereken bir şey yok.', other: 'Portföy kontrol edildi: {count} alan adına bakmak gerekiyor.' },
@@ -339,7 +356,14 @@ registerStrings('tr', {
   'pf.tile.unlocked': 'Transfer kilidi yok',
   'pf.tile.ns': 'Riskli ad sunucusu alan adı',
   'pf.tile.failed': 'Başarısız sorgu',
-  'pf.tile.filterHint': 'Yalnızca bunları göster',
+  'pf.tile.label': 'Sayılarla alan adları',
+
+  'pf.status.expiring': '{count} alan adının süresi 30 gün içinde doluyor',
+  'pf.status.critical': '{count} kritik durum',
+  'pf.status.failed': '{count} alan adında sorgu başarısız',
+  'pf.status.unlocked': '{count} alan adında transfer kilidi yok',
+  'pf.status.ns': '{count} alan adının ad sunucuları risk altında',
+  'pf.status.changed': '{count} alan adı son kontrolünüzden beri değişti',
 
   'pf.filter.label': 'Göster',
   'pf.filter.all': 'Bütün alan adları ({count})',
@@ -754,13 +778,15 @@ export function mount(container, ctx) {
     session.prefilled = p.domains.length > 0;
   }
 
+  /* --- region 2: the input (ui/template.js ToolInput, a "Batch" tool) -------------------- */
   const box = textarea({
     label: t('pf.domains'),
     value: session.text || '',
     rows: 6,
     placeholder: t('pf.placeholder'),
+    hint: t('pf.hint', { max: formatNumber(PORTFOLIO_MAX_DOMAINS) }),
     className: 'pf-box',
-    attrs: { 'data-role': 'pf-domains', 'data-shortcut': 'focus', 'aria-describedby': 'pf-box-status' },
+    attrs: { 'data-role': 'pf-domains', 'data-shortcut': 'focus' },
     onInput: (v) => {
       session.text = v;
       session.prefilled = false;
@@ -770,73 +796,111 @@ export function mount(container, ctx) {
       if (ctPanel) ctPanel.refresh();
     }
   });
+  /** The count of the list and what was left out of it: said as it changes (a polite live region). */
   const boxStatus = h('div', { class: 'pf-box-status text-sm', id: 'pf-box-status', attrs: { 'aria-live': 'polite' } });
   const dkimBox = checkbox({
     label: t('pf.dkim', { count: PORTFOLIO_DKIM_SELECTORS.length }),
     checked: session.dkim,
     hint: t('pf.dkimHint', { queries: PORTFOLIO_DKIM_SELECTORS.length + 1 }),
     className: 'pf-dkim',
-    onChange: (on) => { session.dkim = on; }
+    onChange: (on) => {
+      session.dkim = on;
+      input.refresh();
+      syncRunBar();
+    }
   });
-  const runBtn = Button({ label: t('pf.run'), icon: 'search', variant: 'primary', dataset: { action: 'pf-run', shortcut: 'submit' }, onClick: () => start() });
-  const stopBtn = Button({ label: t('common.stop'), icon: 'stop', dataset: { action: 'pf-stop', shortcut: 'cancel' }, onClick: () => stop() });
-  const promptEl = h('div', { class: 'pf-prompt' });
-  const formCard = h('div', { class: 'card pf-form-card' },
-    h('div', { class: 'card-body stack' },
-      box.el,
-      boxStatus,
-      dkimBox.el,
-      h('div', { class: 'pf-buttons' }, stopBtn, runBtn),
-      h('p', { class: 'muted text-sm pf-sends' }, t('pf.sends')),
-      promptEl));
+  const runBar = RunBar({
+    label: t('pf.run'),
+    dataset: { action: 'pf-run', shortcut: 'submit' },
+    stopDataset: { action: 'pf-stop', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => stop(),
+    hasValue: () => parsePortfolioInput(box.value).domains.length > 0
+  });
+  const input = ToolInput({
+    className: 'pf-form-card',
+    fieldsClass: 'pf-form',
+    label: t('nav.portfolio'),
+    primary: box.el,
+    run: runBar,
+    notes: [boxStatus],
+    more: [dkimBox.el],
+    // the rest (rdap.org as the fallback, the name servers' own domains) is one click away, in About
+    privacy: PrivacyNote({ text: t('pf.privacy'), href: ctx.href('about', { section: 'sent' }), className: 'pf-sends' }),
+    // the compact row's one line: the option off its default
+    summary: () => optionsSummary([{ label: t('pf.dkimOff'), isDefault: session.dkim }])
+  });
+  ctx.onCleanup(() => runBar.dispose());
 
   function renderBoxStatus() {
     clear(boxStatus);
     const p = parsePortfolioInput(box.value);
-    const bits = [h('span', { class: 'pf-count' }, t('pf.count', { count: p.domains.length })), h('span', { class: 'muted' }, ` · ${t('pf.hint', { max: formatNumber(PORTFOLIO_MAX_DOMAINS) })}`)];
-    boxStatus.append(h('p', null, bits));
+    boxStatus.append(h('p', null, h('span', { class: 'pf-count' }, t('pf.count', { count: p.domains.length }))));
     if (p.invalid.length) boxStatus.append(h('p', { class: 'pf-invalid', dataset: { issue: 'invalid' } }, t('pf.invalid', { list: p.invalid.slice(0, 8).join(', ') + (p.invalid.length > 8 ? ` ${t('common.moreCount', { count: p.invalid.length - 8 })}` : '') })));
     if (p.capped) boxStatus.append(h('p', { class: 'pf-invalid', dataset: { issue: 'capped' } }, t('pf.capped', { max: formatNumber(PORTFOLIO_MAX_DOMAINS), count: p.capped })));
     if (session.prefilled && box.value === session.text) boxStatus.append(h('p', { class: 'muted', dataset: { note: 'prefilled' } }, t('pf.prefilled')));
+    syncRunBar();
   }
+
+  /* --- region 4: the ready prompt (a shared link waits for a click, DESIGN §5.2) ------------- */
+  // No kept-result slot: the note over the last check goes into that check's header, never here.
+  const prompt = ResultHeader({ className: 'result-ready pf-prompt', kept: false });
+  prompt.setState('ready');
+  const promptSlot = h('div', { class: 'pf-prompt-slot', hidden: true });
 
   /** "Opened from a link …": the box holds the link's list, which no run on screen is about. */
   function renderPrompt() {
-    clear(promptEl);
-    if (!session.link || running()) return;
     const p = parsePortfolioInput(box.value);
-    const linked = parsePortfolioInput(session.link).domains;
-    if (!p.domains.length || p.domains.join(',') !== linked.join(',')) return;
-    if (session.job && session.job.domains.join(',') === linked.join(',')) return;
-    const el = Alert({ variant: 'info', compact: true, message: t('pf.linkPrompt', { count: p.domains.length }) });
-    el.dataset.prompt = 'link';
-    promptEl.append(el);
+    const linked = session.link ? parsePortfolioInput(session.link).domains : [];
+    const show = !!session.link && !running() && p.domains.length > 0 && p.domains.join(',') === linked.join(',')
+      && !(session.job && session.job.domains.join(',') === linked.join(','));
+    clear(promptSlot);
+    promptSlot.hidden = !show;
+    if (show) {
+      prompt.set('title', ResultTitle({ icon: 'link', text: h('span', { dataset: { prompt: 'link' } }, t('pf.linkPrompt', { count: p.domains.length })) }));
+      promptSlot.append(prompt.el);
+    }
+    syncRunBar();
   }
 
-  /* --- results skeleton -------------------------------------------------------------- */
+  /* --- region 4: the result header (`.pf-head`, present from the moment a check starts) ------ */
   const progress = ProgressBar({ format: (v, max) => t('pf.progressCount', { done: formatNumber(v), total: formatNumber(max) }) });
-  /** "Notify me when done" of the running check (ui/jobs.js: offered once it has run 30 s). */
-  const notifyHost = h('div', { class: 'pf-notify' });
-  const progressRow = h('div', { class: 'pf-progress', hidden: true }, progress.el, notifyHost);
-  const showProgress = (on) => {
-    progressRow.hidden = !on;
-  };
-  const emptyEl = h('div', { class: 'card pf-empty' }, EmptyState({ icon: 'box', title: t('pf.emptyTitle'), message: t('pf.emptyBody') }));
-  const headEl = h('div', { class: 'pf-head-wrap' });
-  const tiles = Object.fromEntries(['domains', ...PORTFOLIO_TILES].map((k) => [k, StatCard({
-    label: t(`pf.tile.${k}`),
-    value: 0,
-    onClick: k === 'domains' ? () => setFilter('all') : () => setFilter(session.filter === k ? 'all' : k),
-    pressed: false
-  })]));
-  for (const [k, tile] of Object.entries(tiles)) {
-    tile.el.dataset.tile = k;
-    if (k !== 'domains') tile.el.title = t('pf.tile.filterHint');
-  }
-  const tilesEl = h('div', { class: 'pf-tiles' }, Object.values(tiles).map((x) => x.el));
+  const head = ResultHeader({ className: 'pf-head' });
+  const headSlot = h('div', { class: 'pf-head-wrap' });
+  // The counts as filters: a press shows the Domains tab filtered; a second press shows every domain.
+  const status = StatusSummary({ items: [] });
+  head.set('status', status.el);
+  /** The head's actions (ResultActions: Copy summary with ¶, Export ▾, Copy link), disabled while a check runs. */
+  let actions = null;
+  ctx.onCleanup(() => { if (actions) actions.dispose(); });
 
-  /** The head's summary button (disabled while a run is going). */
-  let summary = null;
+  /* --- the Domains tab: the empty state, the metric strip (region 6, read-only), the table ---- */
+  const emptyEl = h('div', { class: 'pf-empty' }, EmptyState({
+    icon: 'box',
+    message: t('pf.emptyLine'),
+    checks: PORTFOLIO_CELLS.map((c) => t(`pf.col.${c}`))
+  }));
+  const tiles = MetricStrip({ className: 'pf-tiles', label: t('pf.tile.label') });
+  const tilesEl = tiles.el;
+
+  /** The template state now (lib/template.js): a check running, a result on screen, a link that waits. */
+  function stateNow() {
+    return templateState({ running: running(), result: !!session.job, ready: !promptSlot.hidden });
+  }
+
+  /**
+   * The run bar and the input follow the state: compact from the moment a check starts; "Run
+   * again" while the box and the DKIM option ask for the check on screen.
+   */
+  function syncRunBar() {
+    const st = stateNow();
+    const job = session.job;
+    runBar.setState(st);
+    runBar.setRerun(st === 'done' && !!job && job.dkim === session.dkim
+      && parsePortfolioInput(box.value).domains.join(',') === job.domains.join(','));
+    runBar.refresh();
+    input.setCompact(inputCompact(st));
+  }
 
   /* --- cells ------------------------------------------------------------------------- */
   const mono = (text) => h('span', { class: 'mono pf-break' }, text);
@@ -1196,17 +1260,20 @@ export function mount(container, ctx) {
     label: t('nav.portfolio'),
     onChange: (tab) => {
       session.tab = tab;
+      // One primary button at a time: the CT tab's Check CT leads while it is open (DESIGN §5.1, region 3).
+      runBar.setPrimary(tab !== 'ct');
       if (tab === 'security') openSecurity();
       if (tab === 'policy') renderPolicyMatrix();
       if (tab === 'ct') openCt();
     }
   });
+  runBar.setPrimary(session.tab !== 'ct');
   if (session.tab === 'security') openSecurity();
   if (session.tab === 'ct') openCt();
 
   // No part of the form: Ctrl/Cmd+Enter in a table filter or the policy editor starts no new run.
-  const results = h('div', { class: 'stack-lg pf-results', dataset: { shortcutScope: 'results' } }, headEl, tabs.el);
-  container.append(h('div', { class: 'stack-lg pf-view' }, formCard, progressRow, results));
+  const results = h('div', { class: 'pf-results', dataset: { shortcutScope: 'results' } }, headSlot, tabs.el);
+  container.append(h('div', { class: 'pf-view' }, input.el, promptSlot, results, runBar.float));
 
   function domainColumns() {
     const renders = {
@@ -1239,59 +1306,86 @@ export function mount(container, ctx) {
   const changedRows = () => rows.map((r) => ({ domain: r.domain, c: changedOf(r.domain) })).filter((x) => x.c)
     .map((x) => ({ domain: x.domain, at: x.c.at, tone: x.c.tone, changes: x.c.changes.map((c) => ({ code: c.code, item: c.item })) }));
 
+  /** The result header of the check on screen (in the page only while there is one: its `.pf-head` says so). */
   function renderHead() {
-    const old = headEl.firstElementChild;
-    const focused = old && old.contains(document.activeElement) ? document.activeElement : null;
-    const focusAction = focused && focused.dataset ? focused.dataset.action : null;
-    clear(headEl);
     const job = session.job;
-    if (!job) return;
+    if (!job) {
+      head.el.remove();
+      return;
+    }
+    if (!head.el.isConnected) headSlot.append(head.el);
+    const runningNow = job.status === 'running';
     const notLooked = job.domains.filter((d) => job.run.pending(d).length).length;
-    summary = SummaryButton({
+    head.el.dataset.status = job.status;
+    head.setState(runningNow ? 'running' : 'done');
+    head.set('title', ResultTitle({ running: runningNow, text: t(runningNow ? 'pf.progress' : 'pf.resultsTitle', { count: job.domains.length }) }));
+    // "Notify me when done" of the running check (ui/jobs.js: offered once it has run 30 s).
+    head.set('key', runningNow ? NotifyButton(job.handle) : null);
+    head.set('meta', !runningNow && job.finishedAt ? RelativeTime(job.finishedAt, {
+      className: 'pf-checked',
+      text: job.status === 'stopped' && notLooked
+        ? t('pf.stoppedAt', { time: formatRelative(job.finishedAt), count: notLooked })
+        : t('pf.checkedAt', { time: formatRelative(job.finishedAt) })
+    }) : null);
+    head.set('progress', runningNow ? progress.el : null);
+    if (actions) actions.dispose();
+    const summary = SummaryButton({
       kind: 'portfolio',
+      plainLabel: t('result.plainTitle'),
       facts: () => (session.job && session.job.status !== 'running'
         ? portfolioSummaryFacts(allFacts(), {
           at: session.job.finishedAt, stopped: session.job.status === 'stopped', notLooked: session.job.domains.filter((d) => session.job.run.pending(d).length).length, audit,
           changed: changedRows()
         })
         : null),
-      url: () => (session.job ? ctx.shareUrl(permalinkParams('portfolio', shareParams(session.job.domains))) : null),
-      disabled: job.status === 'running'
+      url: () => (session.job ? ctx.shareUrl(permalinkParams('portfolio', shareParams(session.job.domains))) : null)
     });
-    const meta = job.status === 'running'
-      ? h('span', { class: 'muted text-xs' }, t('pf.runningNow'))
-      : h('span', { class: 'muted text-xs', title: job.finishedAt ? formatDateTime(job.finishedAt) : null },
-        job.status === 'stopped' && notLooked ? t('pf.stoppedAt', { time: formatRelative(job.finishedAt), count: notLooked }) : t('pf.checkedAt', { time: formatRelative(job.finishedAt) }));
-    const exportBtn = (label, action, onClick, title) => Button({ label, icon: 'download', size: 'sm', dataset: { action }, title, onClick });
-    headEl.append(h('div', { class: 'card pf-head', dataset: { status: job.status } },
-      h('div', { class: 'pf-head-main' },
-        h('h2', { class: 'pf-head-title' }, t('pf.resultsTitle', { count: job.domains.length })),
-        meta),
-      h('div', { class: 'pf-head-actions' },
-        summary.el,
-        h('div', { class: 'pf-exports', attrs: { role: 'group', 'aria-label': t('table.exportLabel') } },
-          exportBtn(t('pf.export.csv'), 'pf-csv', () => exportRows('csv'), t('pf.export.title')),
-          exportBtn(t('pf.export.json'), 'pf-json', () => exportRows('json'), t('pf.export.title')),
-          exportBtn(t('pf.export.ics'), 'pf-ics', () => exportCalendar(), t('pf.export.icsTitle'))))));
-    if (focusAction) {
-      const target = headEl.querySelector(`[data-action="${CSS.escape(focusAction)}"]`);
-      if (target && !target.disabled) target.focus({ preventScroll: true });
-    }
+    actions = ResultActions({
+      summary,
+      exports: [
+        { label: t('pf.export.csv'), title: t('pf.export.title'), dataset: { action: 'pf-csv' }, onSelect: () => exportRows('csv') },
+        { label: t('pf.export.json'), title: t('pf.export.title'), dataset: { action: 'pf-json' }, onSelect: () => exportRows('json') },
+        { label: t('pf.export.ics'), icon: 'calendar', title: t('pf.export.icsTitle'), dataset: { action: 'pf-ics' }, onSelect: () => exportCalendar() }
+      ],
+      // Copy link shares the check on screen (its domains while a link can carry them), not the box.
+      link: () => (session.job ? ctx.shareUrl(shareParams(session.job.domains)) : null)
+    });
+    actions.setDisabled(runningNow);
+    head.set('actions', actions.el);
   }
 
+  /** The status item that stands for a filter of the table (pressed while it applies): none for the others. */
+  const statusOfFilter = (f) => (PORTFOLIO_TILES.includes(f) ? f : null);
+
+  /** A status item pressed: the Domains tab with its filter (pressed again: every domain). */
+  function pressStatus(item) {
+    setFilter(session.filter === item.filter ? 'all' : item.filter);
+    if (tabs.getSelected() !== 'domains') tabs.select('domains');
+  }
+
+  /** The counts: the Domains tab's metric strip (read-only), the head's status summary and the Show select. */
   function renderTiles() {
     const list = allFacts();
     const count = (f) => list.filter((x) => matchesFilter(x, f, { policyFails, changedOf })).length;
-    tiles.domains.set({ value: list.length, pressed: session.filter === 'all' });
-    // a change counts red when one of them is bad (another registrar, a lock removed …)
+    const counts = Object.fromEntries(PORTFOLIO_FILTERS.map((f) => [f, count(f)]));
+    // a change counts as an error when one of them is bad (another registrar, a lock removed …)
     const changedBad = rows.some((r) => (changedOf(r.domain) || {}).tone === 'bad');
-    const variants = { changed: changedBad ? 'error' : 'warn', expiring: 'error', critical: 'error', unlocked: 'warn', ns: 'error', failed: 'warn' };
-    for (const k of PORTFOLIO_TILES) {
-      const n = count(k);
-      tiles[k].set({ value: n, variant: n ? variants[k] : 'default', pressed: session.filter === k });
-    }
+    const items = portfolioStatus({ ...counts, changedBad });
+    const severity = Object.fromEntries(items.map((x) => [x.key, x.severity]));
+    // While the check goes on no zero folds into the sentence: every count may still grow.
+    const growing = !!session.job && session.job.status === 'running';
+    tiles.update([
+      { id: 'domains', label: t('pf.tile.domains'), value: list.length },
+      ...PORTFOLIO_TILES.map((k) => ({ id: k, label: t(`pf.tile.${k}`), value: counts[k], severity: counts[k] ? severity[k] : null }))
+    ], { foldable: growing ? [] : [...PORTFOLIO_TILES] });
+    status.update(items.map((item) => ({
+      ...item,
+      text: t(`pf.status.${item.key}`, { count: item.count }),
+      filter: true,
+      onPress: () => pressStatus(item)
+    })), { pressed: statusOfFilter(session.filter) });
     filterSelect.setOptions(PORTFOLIO_FILTERS.filter((f) => f !== 'policy' || (parsed.policy && parsed.policy.rules.length))
-      .map((f) => ({ value: f, label: t(`pf.filter.${f}`, { count: count(f) }) })));
+      .map((f) => ({ value: f, label: t(`pf.filter.${f}`, { count: counts[f] }) })));
     filterSelect.value = session.filter;
   }
 
@@ -1340,13 +1434,12 @@ export function mount(container, ctx) {
   }
 
   function setRunning(on) {
-    const hadFocus = document.activeElement === (on ? runBtn : stopBtn);
-    runBtn.hidden = on;
-    stopBtn.hidden = !on;
+    // The keyboard focus follows the button it was on (Check portfolio ⇄ Stop), never falling to <body>.
+    runBar.setRunning(on);
     box.input.readOnly = on;
-    if (summary) summary.setDisabled(on);
+    if (actions) actions.setDisabled(on);
     ctx.setBusy(on);
-    if (hadFocus) (on ? stopBtn : runBtn).focus();
+    syncRunBar();
   }
 
   /** Bind the view to a job: its rows into the table, its events to redraws. */
@@ -1362,23 +1455,14 @@ export function mount(container, ctx) {
     emptyEl.hidden = true;
     tilesEl.hidden = false;
     table.el.hidden = false;
+    if (job.status === 'running') progress.set(job.done, job.domains.length);
     renderHead();
     renderTiles();
     setFilter(session.filter);
     renderPolicy();
     if (ctPanel) ctPanel.refresh();
     if (securityPanel) securityPanel.refresh();
-    clear(notifyHost);
-    if (job.status === 'running') {
-      showProgress(true);
-      progress.setLabel(t('pf.progress', { count: job.domains.length }));
-      progress.set(job.done, job.domains.length);
-      notifyHost.append(NotifyButton(job.handle));
-      setRunning(true);
-    } else {
-      showProgress(false);
-      setRunning(false);
-    }
+    setRunning(job.status === 'running');
   }
 
   function onJob(type, e) {
@@ -1393,10 +1477,8 @@ export function mount(container, ctx) {
     flush();
     if (type === 'done') {
       progress.done(t('common.done'));
-      setTimeout(() => { if (session.job === job && job.status !== 'running') showProgress(false); }, 1200);
       announce(t('pf.done', { count: job.domains.length }));
     } else {
-      showProgress(false);
       if (type === 'stopped' && !ctx.signal.aborted) announce(t('pf.stopped'));
       if (type === 'error') ctx.toast(`${t('error.title')}: ${job.error && job.error.message ? job.error.message : String(job.error)}`, { type: 'error' });
     }
@@ -1437,7 +1519,6 @@ export function mount(container, ctx) {
     session.job = startRun({ domains: p.domains, reduced: p.reduced, dkim: session.dkim, dns });
     renderBoxStatus();
     renderPrompt();
-    setShareAction();
     attach(session.job);
   }
 
@@ -1534,11 +1615,6 @@ export function mount(container, ctx) {
     renderHead();
     focusRow(domain, '*');
     announce(t('pf.retried', { domain }));
-  }
-
-  function setShareAction() {
-    const job = session.job;
-    ctx.setActions(CopyButton(() => ctx.shareUrl(job ? shareParams(job.domains) : ctx.params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
   }
 
   /* --- exports ----------------------------------------------------------------------- */
@@ -1938,11 +2014,9 @@ export function mount(container, ctx) {
   }
 
   /* --- initial state ------------------------------------------------------------------ */
-  stopBtn.hidden = true;
   renderBoxStatus();
   renderPrompt();
   if (session.job) {
-    setShareAction();
     attach(session.job);
   } else {
     // Without a run the Domains tab says what the table will hold; the policy tab edits the
@@ -1950,6 +2024,7 @@ export function mount(container, ctx) {
     tilesEl.hidden = true;
     table.el.hidden = true;
     renderPolicy();
+    syncRunBar();
   }
   // The accepted risks changed (an "Accept…" here, the Workspaces dialog, another tab): the matrix follows.
   cleanups.push(state.subscribe(({ key, value }) => {

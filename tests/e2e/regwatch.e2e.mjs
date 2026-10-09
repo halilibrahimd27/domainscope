@@ -116,9 +116,13 @@ const changedRows = (page) => page.evaluate(() => Object.fromEntries([...documen
   const el = tr.querySelector('.pf-changed');
   return [tr.querySelector('.pf-domain')?.textContent, el ? { codes: el.dataset.changed, tone: el.dataset.tone, text: el.textContent.replace(/\s+/g, ' ').trim() } : null];
 })));
+/** A figure of the Domains tab's metric strip: its value and whether it is coloured as an error (a zero folded into "None: …" reads '0'). */
 const tile = (page, k) => page.evaluate((key) => {
-  const el = document.querySelector(`[data-tile="${key}"]`);
-  return el ? { value: el.querySelector('.stat-value').textContent.trim(), error: el.classList.contains('stat-v-error') } : null;
+  const strip = document.querySelector('.pf-tiles');
+  const el = strip && strip.querySelector(`[data-metric="${key}"] .metric-value`);
+  if (el) return { value: el.textContent.trim(), error: el.classList.contains('metric-error') };
+  const folded = ((strip && strip.querySelector('.metric-zero')?.dataset.folded) || '').split(' ');
+  return folded.includes(key) ? { value: '0', error: false } : null;
 }, k);
 const shownDomains = (page) => page.evaluate(() => [...document.querySelectorAll('.pf-table tbody .pf-domain')].map((d) => d.textContent));
 const seenOf = (page) => page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.workspaceData('rdapSeen')));
@@ -182,8 +186,9 @@ async function main() {
       await shot(page, opts, 'regwatch-changed-desktop-light-en');
     });
 
-    await run.step('the tile and the Show select filter the changed rows; "needs a look" holds the bad one only', async () => {
-      await page.click('[data-tile="changed"]');
+    await run.step('the status summary and the Show select filter the changed rows; "needs a look" holds the bad one only', async () => {
+      assertEqual(await page.evaluate(() => document.querySelector('.pf-head .status-item[data-status="changed"]')?.dataset.severity), 'error', 'a bad change: an error');
+      await page.click('.pf-head .status-item[data-status="changed"]');
       assertEqual((await shownDomains(page)).sort(), ['example.com', 'example.org'], 'the changed rows');
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="pf-filter"]').value), 'changed', 'the select follows');
       assert(/Changed since your last check \(2\)/.test(await page.evaluate(() => [...document.querySelectorAll('[data-role="pf-filter"] option')].map((o) => o.textContent).join('|'))), 'its count');

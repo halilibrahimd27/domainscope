@@ -34,7 +34,7 @@ import { encodeMessage, decodeMessage } from '../../assets/js/lib/dnswire.js';
 import { launchBrowser } from './cdp.mjs';
 import {
   BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  gotoRoute, installDownloadCapture, setLangUi, shot, takeDownloads, waitReady
+  gotoRoute, installDownloadCapture, resultAction, setLangUi, shot, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const DAY = 86400000;
@@ -263,7 +263,7 @@ async function main() {
       assert(!/client update prohibited|client delete prohibited/.test(cells['example.net'].status), cells['example.net'].status);
       assert(!/server update prohibited|server delete prohibited/.test(cells['example.com'].status), cells['example.com'].status);
       await takeDownloads(page);
-      await page.click('[data-action="pf-csv"]');
+      await resultAction(page, '[data-action="pf-csv"]', '.pf-head');
       await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'the Domains CSV' });
       const [csv] = await takeDownloads(page);
       const lines = csv.text.replace(/^\uFEFF/, '').trimEnd().split('\r\n');

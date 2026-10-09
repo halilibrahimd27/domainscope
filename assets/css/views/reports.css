@@ -9,22 +9,26 @@
  * roll-up). The tables turn into labelled cards on a phone. Uses the design tokens from style.css only.
  */
 
-/* Drop zone and what was read */
-.rpt-load .card-foot {
-  padding-top: 10px;
+/* The page template's regions (style.css § 4): the file input, then the result header and the tabs. */
+.rpt-page,
+.rpt-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
+  min-width: 0;
 }
 
-.rpt-load-actions {
-  justify-content: flex-end;
+/* While reading (in the result header's progress line): the files read so far, Stop beside them. */
+.rpt-busy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
 }
 
-.rpt-files {
-  margin: 0;
-}
-
-/* While reading: the files read so far, Stop under them. */
-.rpt-busy .btn {
-  align-self: flex-start;
+.rpt-busy .progress {
+  flex: 1 1 16rem;
+  min-width: 0;
 }
 
 .rpt-problem-list {
@@ -40,33 +44,6 @@
   overflow-wrap: anywhere;
 }
 
-/* Results head: the title with the busiest domain, Copy summary on the right (wraps under it on a phone). */
-.rpt-results-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 16px;
-}
-
-.rpt-results-title {
-  min-width: 0;
-  margin: 0;
-  font-size: 17px;
-  font-weight: 650;
-  overflow-wrap: anywhere;
-}
-
-.rpt-results-title:focus {
-  outline: none;
-}
-
-.rpt-results-title:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-  border-radius: var(--radius-xs);
-}
-
 .rpt-domain {
   max-width: 28rem;
 }
@@ -75,30 +52,6 @@
   margin: 0;
   font-size: 14px;
   font-weight: 650;
-}
-
-/* DMARC head card: the four numbers two by two on a phone (one per row would push the verdict far down). */
-.rpt-stats {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
-}
-
-@media (max-width: 600px) {
-  .rpt-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-  }
-
-  .rpt-stats .stat {
-    padding: 10px 10px 10px 13px;
-  }
-
-  .rpt-stats .stat-label {
-    white-space: normal;
-  }
-
-  .rpt-stats .stat-value {
-    font-size: 21px;
-  }
 }
 
 .rpt-head .card-title,
@@ -263,19 +216,11 @@
   padding-left: 18px;
 }
 
-/* Class tiles: four across on a wide screen, two on a phone. */
-.rpt-cls {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-@media (max-width: 900px) {
-  .rpt-cls {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-.rpt-cls .stat-label {
-  white-space: normal;
+/* The figures' hints (n addresses · x % pass) wrap rather than widen the strip. */
+.rpt-cls .metric-hint,
+.rpt-stats .metric-hint {
+  max-width: 16rem;
+  overflow-wrap: anywhere;
 }
 
 /* Sending addresses */
@@ -327,13 +272,38 @@
   max-width: 60rem;
 }
 
-/* The sending addresses' head: the title, and the address / service switch on its right (under it on a phone). */
+/* The sending addresses' head: the title, the class Show select and the address / service switch
+   (under it on a phone). */
 .rpt-sources-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: 8px 16px;
+}
+
+.rpt-sources-head .rpt-subtitle {
+  flex: 1 1 auto;
+}
+
+.rpt-cls-filter.field {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.rpt-cls-filter .field-label {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.rpt-cls-filter .select {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* The service behind a source (or a service group): the name, its type and evidence under it. */
@@ -488,13 +458,20 @@
   font-weight: 600;
 }
 
-/* The switch "Keep a summary of these reports in this workspace", under the drop zone. */
+/* The switch "Keep a summary of these reports in this workspace", under the drop zone (once reports
+   are read, its label alone: the hint is for screen readers then). */
 .rpt-keep .check-hint {
   max-width: 62rem;
 }
 
-.rpt-results-actions {
-  gap: 8px;
+.rpt-load.is-compact .rpt-keep .check-hint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* ---- History (ui/report-history.js, .rh-*) -------------------------------------------- */

@@ -1414,6 +1414,11 @@ the same names into `ui/after/`.
 | C6 | Domain portfolio does not save its list. Its box prefills from the 20 most recent domains, so an MSP with 50 domains per customer pastes them again, and Home covers only domains checked at least once (they stay in `rdapSeen`). | worth it, as an additive `watchlist` part: Portfolio prefills from it, and Home counts against it ("12 of 50 domains checked in the last 7 days"). It is a product change, outside this redesign. |
 | C7 | An attention count per workspace in the switcher, so an MSP sees which customer needs a look without opening each workspace in turn. | later. The switcher would read every workspace's `rdapSeen`, `ctSeen` and `waivers` when it opens. It would show counts only, never domain names, since the switcher is on screen during screen-shares. |
 
+**Decided 2026-10-10:** every recommendation above is accepted as written.
+- C1–C4 apply from phase 1.
+- C5 and C6 come after the redesign, as small additive workspace parts. C6 (a per-workspace domain watchlist) goes first, because Home's counts depend on it.
+- C7 waits until C6 has shipped.
+
 ---
 
 ## Review notes

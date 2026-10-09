@@ -1,5 +1,6 @@
 /**
- * lib/handover.js — the workspace hand-over file: plain and sealed round trips, what a sealed file
+ * lib/handover.js — the workspace hand-over file: plain and sealed round trips (the DMARC report
+ * history among the parts, encrypted with the rest), what a sealed file
  * shows (nothing but its parameters), the clear errors (not JSON, another format, a newer
  * version, a damaged file, a missing or wrong password, a changed file) and the sanitizing of
  * every imported value. Sealed at MIN_ITERATIONS for speed. No DOM, no network.
@@ -46,7 +47,9 @@ const DATA = {
   // The Rollout board (lib/rollout.js): its JSON text, one board with web01 installed.
   rollout: '{"v":1,"boards":[{"id":"abababababababababababababababababababababababababababababababab","label":"*.example.com","created":"2026-09-28T09:00:00.000Z","updated":"2026-09-28T09:10:00.000Z","rows":[{"k":"s:web01","n":"web01","s":null,"i":"2026-09-28T09:10:00.000Z","r":null,"v":null,"a":null,"m":"2026-09-28T09:10:00.000Z"}]}]}',
   // The accepted risks (lib/waivers.js): their JSON text, carried as it is.
-  waivers: '{"format":"domainscope-waivers","v":1,"waivers":[{"id":"w-0123456789abcdef","kind":"finding","domain":"example.com","ref":"dmarc.policy-none","reason":"Moving to quarantine in Q1","owner":"Mail team","created":"2026-09-28T09:00:00.000Z","expires":"2026-12-31"}]}'
+  waivers: '{"format":"domainscope-waivers","v":1,"waivers":[{"id":"w-0123456789abcdef","kind":"finding","domain":"example.com","ref":"dmarc.policy-none","reason":"Moving to quarantine in Q1","owner":"Mail team","created":"2026-09-28T09:00:00.000Z","expires":"2026-12-31"}]}',
+  // The DMARC report history (lib/dmarchistory.js): its JSON text, one domain kept with the switch on.
+  reportHistory: '{"v":1,"keep":true,"updatedAt":"2026-09-28T09:00:00.000Z","domains":{"example.com":{"days":{"2026-09-27":{"msgs":12,"dmarcPass":10,"spfAligned":10,"dkimAligned":9,"quarantine":0,"reject":0,"unknownMsgs":2,"knownFail":0}},"sources":{"192.0.2.10":{"first":"2026-09-27","last":"2026-09-27","msgs":10,"passMsgs":10,"cls":"yours","service":null,"type":null,"checked":true},"203.0.113.9":{"first":"2026-09-27","last":"2026-09-27","msgs":2,"passMsgs":0,"cls":"unknown","service":null,"type":null}},"recent":{"2026-09-27":{"192.0.2.10":[10,10,10,9,0,0],"203.0.113.9":[2,0,0,0,0,0]}},"policy":{"p":"none","sp":"none","pct":100,"seenAt":"2026-09-27T23:59:59.000Z"},"seen":{"2026-09-27":["00000000000000aa"]},"cut":null,"checked":"2026-09-28"}}}'
 };
 const WS = { name: 'Acme', data: DATA, app: 'DomainScope 1.0.0', exportedAt: AT };
 
@@ -61,7 +64,8 @@ describe('the plain file', () => {
     assert.equal(file.workspace.default, false);
     assert.equal(file.workspace.exportedAt, '2026-09-28T09:30:00.000Z');
     assert.equal(file.workspace.app, 'DomainScope 1.0.0');
-    assert.deepEqual(Object.keys(file.workspace.parts), ['inventory', 'wordlist', 'expectedCas', 'recent', 'origins', 'ctSeen', 'rdapSeen', 'rollout', 'waivers']);
+    assert.deepEqual(Object.keys(file.workspace.parts), ['inventory', 'wordlist', 'expectedCas', 'recent', 'origins', 'ctSeen', 'rdapSeen', 'rollout', 'waivers', 'reportHistory']);
+    assert.equal(file.workspace.parts.reportHistory, DATA.reportHistory, 'the DMARC report history goes with the workspace');
     assert.equal(file.workspace.parts.origins.entries.length, 2, 'the origin map goes with the workspace');
     assert.equal(file.workspace.parts.ctSeen, DATA.ctSeen, 'the CT watch baseline too');
     assert.equal(file.workspace.parts.rdapSeen, DATA.rdapSeen, 'and the registration watch baseline');
@@ -105,7 +109,7 @@ describe('the sealed file', () => {
     assert.equal(file.kdf.hash, 'SHA-256');
     assert.equal(file.kdf.iterations, MIN_ITERATIONS);
     assert.equal(file.cipher.name, 'AES-GCM');
-    for (const secret of ['Acme', 'web01', '192.0.2.10', 'billing', 'Renewal', 'example.com', PASSWORD]) {
+    for (const secret of ['Acme', 'web01', '192.0.2.10', '203.0.113.9', 'billing', 'Renewal', 'example.com', 'dmarcPass', PASSWORD]) {
       assert.ok(!text.includes(secret), `the file shows "${secret}"`);
     }
     const { encrypted } = readWorkspaceFile(text);
@@ -123,6 +127,7 @@ describe('the sealed file', () => {
     assert.equal(ws.name, 'Acme');
     assert.deepEqual(ws.data.expectedCas, DATA.expectedCas);
     assert.equal(ws.data.inventory.text, DATA.inventory.text);
+    assert.equal(ws.data.reportHistory, DATA.reportHistory, 'the report history, sealed with the rest');
   });
 
   test('no password, a wrong one, or a changed file: clear errors', async () => {

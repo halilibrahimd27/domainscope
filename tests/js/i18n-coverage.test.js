@@ -81,6 +81,8 @@ before(async () => {
   await imp('assets/js/ui/report.js');
   // Domain portfolio › Certificates (CT): loaded on the tab's first use.
   await imp('assets/js/ui/ctwatch-panel.js');
+  // DMARC & TLS reports › History: loaded on the tab's first use.
+  await imp('assets/js/ui/report-history.js');
   // Domain portfolio › Domain security: loaded on the tab's first use.
   await imp('assets/js/ui/secscore-panel.js');
   // Renewal readiness › Plan: loaded on the panel's first open.
@@ -444,6 +446,20 @@ describe('i18n coverage', () => {
     for (const g of senders.SENDER_GUIDES) add(`rpt.guide.${g}`);
     for (const v of views.reports.SOURCE_VIEWS) add(`rpt.view.${v}`);
     for (const st of (await imp('assets/js/lib/ptrsweep.js')).FCRDNS_STATUSES) add(`rpt.ptrState.${st}`);
+    // … and the report history (lib/dmarchistory.js, ui/report-history.js): the roll-up's verdicts, the
+    // stacked segments and the compliance bands, the charts, tooltips and tables by day and by week,
+    // and everything a merge can say.
+    const [dmarchistory, historyPanel] = await Promise.all([imp('assets/js/lib/dmarchistory.js'), imp('assets/js/ui/report-history.js')]);
+    for (const v of dmarchistory.ROLLUP_VERDICTS) add(`rpt.hist.verdict.${v}`);
+    for (const k of historyPanel.VOLUME_SEGMENTS) add(`rpt.hist.seg.${k}`);
+    for (const [band] of historyPanel.COMPLIANCE_BANDS) add(`rpt.hist.band.${band}`);
+    for (const bin of ['day', 'week']) {
+      for (const k of [`rpt.hist.chart.volume.${bin}`, `rpt.hist.chart.compliance.${bin}`, `rpt.hist.tip.none.${bin}`, `rpt.hist.table.${bin}`, `rpt.hist.col.${bin}`]) add(k);
+    }
+    const said = views.reports.keepMessages({ merged: 1, duplicates: 1, skipped: { old: 1, future: 1, cut: 1, invalid: 1 } }, { dropped: { recentDays: 1, sources: 1, days: 1, domains: 1 } });
+    assert.equal(said.length, 6, 'every message a merge can say');
+    for (const [k] of said) add(k);
+    for (const k of ['rpt.keep.turnedOn', 'rpt.keep.turnedOff']) add(k);
     // Domain portfolio (lib/portfolio.js, lib/policy.js through views/portfolio.js): every column,
     // filter, tile and risk, every state a cell words from the facts, every rule, status, preset,
     // parse error and evidence of the policy, and the summary's texts (lib/portfoliosummary.js).

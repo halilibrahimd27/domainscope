@@ -38,6 +38,7 @@ import {
 } from '../lib/waivers.js';
 // the accepted risks' texts (wvr.*) and their errors in words
 import { waiverErrorText } from './waivers.js';
+import { readHistory, historySummary } from '../lib/dmarchistory.js';
 import { workspaceLabel, defaultWorkspaceNames, isDefaultWorkspaceName, storageErrorText } from './workspace-ui.js';
 
 /** The hand-over file errors the dialog words itself (lib/handover.js HandoverError codes). */
@@ -129,10 +130,12 @@ registerStrings('en', {
   'ws.sum.ctSeen': 'a CT watch baseline',
   'ws.sum.rdapSeen': 'a registration watch baseline',
   'ws.sum.rollout': 'a Rollout board',
+  'ws.sum.reportHistory': { one: 'a DMARC report history of {count} domain', other: 'a DMARC report history of {count} domains' },
+  'ws.sum.reportHistoryOn': 'keeping DMARC report summaries is on',
   'ws.sum.encrypted': 'was encrypted',
   'ws.importNew': 'Import as a new workspace',
   'ws.importReplace': 'Replace “{name}”',
-  'ws.replaceConfirm': 'Replace everything in “{name}” — its servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy, origin map, CT watch baseline and accepted risks — with the file’s? This cannot be undone.',
+  'ws.replaceConfirm': 'Replace everything in “{name}” — its servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy, origin map, CT watch baseline, accepted risks and DMARC report history — with the file’s? This cannot be undone.',
   'ws.imported': 'Imported as the new workspace “{name}”.',
   'ws.replaced': '“{name}” replaced with the file’s contents.',
   'ws.err.too-large': 'The file is too large (at most {size}).',
@@ -224,10 +227,12 @@ registerStrings('tr', {
   'ws.sum.ctSeen': 'bir CT izleme referansı',
   'ws.sum.rdapSeen': 'bir kayıt izleme referansı',
   'ws.sum.rollout': 'bir dağıtım panosu',
+  'ws.sum.reportHistory': '{count} alan adının DMARC rapor geçmişi',
+  'ws.sum.reportHistoryOn': 'DMARC rapor özetlerini tutma açık',
   'ws.sum.encrypted': 'şifreliydi',
   'ws.importNew': 'Yeni çalışma alanı olarak içe aktar',
   'ws.importReplace': '“{name}” alanının yerine koy',
-  'ws.replaceConfirm': '“{name}” içindeki her şey — sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları, alan adı politikası, origin haritası, CT izleme referansı ve kabul edilen riskleri — dosyadakilerle değiştirilsin mi? Bu işlem geri alınamaz.',
+  'ws.replaceConfirm': '“{name}” içindeki her şey — sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları, alan adı politikası, origin haritası, CT izleme referansı, kabul edilen riskleri ve DMARC rapor geçmişi — dosyadakilerle değiştirilsin mi? Bu işlem geri alınamaz.',
   'ws.imported': '“{name}” adlı yeni çalışma alanı olarak içe aktarıldı.',
   'ws.replaced': '“{name}” dosyanın içeriğiyle değiştirildi.',
   'ws.err.too-large': 'Dosya çok büyük (en fazla {size}).',
@@ -317,6 +322,12 @@ export function importSummary(ws) {
   // the accepted risks the file carries (an entry that cannot be read is left out when they are read)
   const waivers = readWaivers(d.waivers);
   if (waivers.length) parts.push(t('wvr.ws.sum', { count: waivers.length }));
+  if (d.reportHistory) {
+    // The file switches keeping DMARC report summaries on in the workspace it opens as: say so too.
+    const kept = historySummary(readHistory(d.reportHistory));
+    if (kept.domains) parts.push(t('ws.sum.reportHistory', { count: kept.domains }));
+    if (kept.keep) parts.push(t('ws.sum.reportHistoryOn'));
+  }
   if (ws.encrypted) parts.push(t('ws.sum.encrypted'));
   return parts.join(' · ');
 }

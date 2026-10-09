@@ -5,17 +5,24 @@
  * every source class, SPF line state and advice link has its look, and which rows of the sources
  * table a new classification redraws; the service line's words and the service view's groups,
  * in English and Turkish, why a source has no service yet, what an Identify senders lookup keeps
- * and whom its button says it asks. The module is DOM-free at import. Pure Node, no network;
- * documentation data only.
+ * and whom its button says it asks; the report history's wiring (when the classes rest on the SPF,
+ * the classifier a merge asks, what a merge says), the words the head and the customer report
+ * share, the report's facts (no server of the list, no file, no contact) and the History panel's
+ * pure parts. The module is DOM-free at import. Pure Node, no network; documentation data only.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   id, titleKey, icon, alignedState, fixParams, headlineShare, summaryFacts, verdictLook, CLASS_STYLE, TLS_TOOLS, SPF_LINE_STATES, VERDICT_EXTRA_KEYS,
   INTEL_MAX, FIX_FIRST_MAX, IDENTIFY_CONCURRENCY, GROUP_LIST_MAX, SOURCE_VIEWS, result, sourceRowChanged, serviceLabel, serviceHow, groupName, ptrFact,
-  unnamedHint
+  unnamedHint, loadHistoryPanel, HISTORY_SYNC_MS, SPF_CHECKED_STATES, classesChecked, historyClassifier, keepMessages, spfLineText, noteTexts, reportWhyText,
+  fixStepText, spfReasonText, dmarcReportFacts
 } from '../../assets/js/views/reports.js';
-import { SOURCE_CLASSES, FIX_CODES, DMARC_VERDICTS, aggregateDmarc, parseAggregateReport, classifySources } from '../../assets/js/lib/dmarcreport.js';
+import {
+  SOURCE_CLASSES, FIX_CODES, DMARC_VERDICTS, aggregateDmarc, parseAggregateReport, classifySources, readReportFiles, dmarcOverview
+} from '../../assets/js/lib/dmarcreport.js';
+import { emptyHistory, mergeReports, ROLLUP_VERDICTS } from '../../assets/js/lib/dmarchistory.js';
 import { buildIpIndex, parseInventory } from '../../assets/js/lib/inventory.js';
 import { TLS_RESULT_TYPES, tlsAdvice } from '../../assets/js/lib/tlsrpt.js';
 import { reportsSummary } from '../../assets/js/lib/reportsummary.js';
@@ -250,4 +257,145 @@ test('unnamedHint: why a source has no service yet', () => {
   });
   assert.equal(inLang('tr', () => unnamedHint(srcRow({ cls: 'yours' }), {}, t)), 'Kendi sunucunuz: Göndericileri tanımla ona bakmaz.');
   assert.equal(inLang('tr', () => unnamedHint(srcRow({ ip: '10.1.2.3', private: true }), {}, t)), 'Özel bir adres: Göndericileri tanımla ona bakmaz.');
+});
+
+/* ---- the report history and the customer report ---------------------------------------------- */
+
+const MAILBOX = new URL('../fixtures/mailreports/reports-2026-09.zip', import.meta.url);
+const FIX_NOW = Date.parse('2026-09-30T12:00:00Z');
+
+/** The fixture mailbox read and aggregated, example.com classified with a server list (mail01, app02) and no SPF. */
+async function fixtureModel() {
+  const read = await readReportFiles([{ name: 'reports-2026-09.zip', bytes: new Uint8Array(readFileSync(MAILBOX)) }]);
+  const dmarc = aggregateDmarc(read.dmarc);
+  const agg = dmarc.domains.find((d) => d.domain === 'example.com');
+  const index = buildIpIndex(parseInventory('mail01 203.0.113.25\napp02 203.0.113.99\n').servers);
+  const rows = classifySources(agg, { index });
+  return { read, dmarc, agg, index, rows, overview: dmarcOverview(agg, rows, { spfChecked: false }) };
+}
+
+test('the history wiring: the panel loads on first use, a classification is written a moment later, what "checked" means', () => {
+  assert.equal(typeof loadHistoryPanel, 'function');
+  assert.ok(HISTORY_SYNC_MS >= 100 && HISTORY_SYNC_MS <= 2000);
+  assert.deepEqual([...SPF_CHECKED_STATES], ['ok', 'none', 'multiple']);
+  const agg = { domain: 'example.com', sources: [{ headerFrom: ['example.com'], spfAuth: [{ domain: 'bounce.example.com', messages: 3 }], messages: 3 }] };
+  assert.equal(classesChecked(agg, new Map()), false, 'no SPF read');
+  assert.equal(classesChecked(agg, new Map([['example.com', { status: 'ok' }]])), false, 'the bounce domain\'s SPF is not read yet');
+  assert.equal(classesChecked(agg, new Map([['example.com', { status: 'ok' }], ['bounce.example.com', { status: 'none' }]])), true, 'no record is an answer too');
+  assert.equal(classesChecked(agg, new Map([['example.com', { status: 'multiple' }], ['bounce.example.com', { status: 'failed' }]])), false, 'a failed lookup is no answer');
+  assert.equal(classesChecked(null, new Map()), false);
+});
+
+test('historyClassifier: the class the page gives, the service the reports or a reverse name give (never a network alone), provisional without the SPF', () => {
+  const rows = [srcRow({ ip: '192.0.2.10', cls: 'yours' }), srcRow({ ip: '198.51.100.7', cls: 'third-party' }), srcRow({ ip: '203.0.113.9', cls: 'unknown' })];
+  const idents = {
+    '192.0.2.10': { service: 'Google Workspace', type: 'mailbox', via: 'dkim' },
+    '198.51.100.7': { service: 'EXAMPLE-AS Example Hosting', type: 'network', via: 'asn' },
+    '203.0.113.9': null
+  };
+  const asked = [];
+  const classify = historyClassifier(new Map([['example.com', { rows, checked: true }], ['example.net', { rows: [srcRow({ ip: '192.0.2.10', cls: 'unknown' })], checked: false }]]),
+    (domain, row) => {
+      asked.push(`${domain} ${row.ip}`);
+      return idents[row.ip];
+    });
+  assert.deepEqual(classify('example.com', '192.0.2.10'), { cls: 'yours', service: 'Google Workspace', type: 'mailbox', provisional: false });
+  assert.deepEqual(classify('example.com', '198.51.100.7'), { cls: 'third-party', service: null, type: null, provisional: false });
+  assert.deepEqual(classify('example.com', '203.0.113.9'), { cls: 'unknown', service: null, type: null, provisional: false });
+  assert.deepEqual(classify('example.net', '192.0.2.10'), { cls: 'unknown', service: 'Google Workspace', type: 'mailbox', provisional: true }, 'each domain its own rows');
+  assert.equal(classify('example.com', '192.0.2.99'), null, 'an address the reports do not have');
+  assert.equal(classify('example.org', '192.0.2.10'), null, 'a domain not read');
+  assert.ok(asked.includes('example.net 192.0.2.10'), 'named with its own domain');
+});
+
+test('keepMessages: what a merge says, in order; the size cap said once', () => {
+  const m = (o) => ({ merged: 0, duplicates: 0, skipped: { old: 0, future: 0, cut: 0, invalid: 0 }, ...o });
+  const none = { dropped: { recentDays: 0, sources: 0, days: 0, domains: 0 } };
+  assert.deepEqual(keepMessages(m({ merged: 3, duplicates: 1 }), none), [['rpt.keep.added', { count: 3 }], ['rpt.keep.already', { count: 1 }]]);
+  assert.deepEqual(keepMessages(m({ skipped: { old: 2, future: 1, cut: 4, invalid: 0 } }), { dropped: { recentDays: 1, sources: 0, days: 0, domains: 0 } }).map(([k]) => k),
+    ['rpt.keep.old', 'rpt.keep.future', 'rpt.keep.cut', 'rpt.keep.trimmed']);
+  assert.deepEqual(keepMessages(m({}), null), []);
+  inLang('en', () => {
+    assert.equal(t('rpt.keep.added', { count: 1 }), '1 report added to the history of this workspace.');
+    assert.equal(t('rpt.keep.already', { count: 3 }), '3 reports were in the history already and are not counted again.');
+    assert.equal(t('rpt.keep.old', { count: 2, days: 400 }), '2 reports older than 400 days were not kept.');
+  });
+  inLang('tr', () => {
+    assert.equal(t('rpt.keep.added', { count: 3 }), '3 rapor bu çalışma alanının geçmişine eklendi.');
+    assert.equal(t('rpt.keep.already', { count: 3 }), 'Geçmişte zaten olan 3 rapor yeniden sayılmadı.');
+  });
+});
+
+test('the words a report and the head share: the SPF line, the notes, a fix, why a source is yours without naming the server', async () => {
+  const { agg, rows, overview } = await fixtureModel();
+  inLang('en', () => {
+    assert.equal(spfLineText({ line: 'loading', context: null, overview, domain: 'example.com' }, t).text, 'looking up…');
+    assert.equal(spfLineText({ line: null, context: null, overview, domain: 'example.com' }, t).text, 'not checked');
+    assert.equal(spfLineText({ line: 'failed', context: { error: 'SERVFAIL' }, overview, domain: 'example.com' }, t).text, 'could not be read (SERVFAIL)');
+    const broken = spfLineText({ line: 'ok', context: { at: new Date(0) }, overview: { spfError: { domain: 'example.com', reason: 'lookup-limit' } }, domain: 'example.com' }, t);
+    assert.equal(broken.broken, 'lookup-limit');
+    assert.match(broken.text, /a permanent error for receivers: more than 10 DNS lookups/);
+    assert.deepEqual(noteTexts(agg, overview, null, t).map((n) => n.note), overview.notes.filter((n) => n !== 'spf-unknown'), 'no "SPF not checked" before it was asked');
+    assert.ok(noteTexts(agg, overview, 'failed', t).some((n) => n.note === 'spf-unknown'));
+    const mine = rows.find((r) => r.ip === '203.0.113.99');
+    assert.equal(mine.reason, 'inventory');
+    assert.equal(reportWhyText(mine, t), 'In your server list');
+    assert.ok(!reportWhyText(mine, t).includes('app02'));
+    assert.match(fixStepText(mine, 'dkim-sign', 'example.com', t), /^Sign its mail with DKIM for example\.com/);
+    assert.equal(spfReasonText(null, t), 'a syntax error');
+  });
+  assert.equal(inLang('tr', () => reportWhyText({ reason: 'inventory', detail: 'app02' }, t)), 'Sunucu listenizde');
+});
+
+test('dmarcReportFacts: the reports read and what the history keeps, worded; no server of the list, no file, no contact', async () => {
+  const { read, agg, rows, overview } = await fixtureModel();
+  const history = mergeReports(emptyHistory({ keep: true }), read.dmarc, { now: FIX_NOW }).history;
+  const facts = inLang('en', () => dmarcReportFacts({ domain: 'example.com', agg, rows, overview, line: null, history, period: 30, now: FIX_NOW, at: new Date(FIX_NOW) }, t));
+  const c = facts.current;
+  assert.equal(facts.domain, 'example.com');
+  assert.deepEqual([c.reports, c.messages, c.reporters.length], [agg.reports, agg.messages, agg.reporters.length]);
+  assert.deepEqual(c.classes.map((x) => x.cls), [...SOURCE_CLASSES]);
+  assert.equal(c.verdict.title, t('rpt.verdict.fix-first.title'));
+  assert.ok(c.fixes.length > 0 && c.fixes.every((f) => f.steps.length && f.label && f.why), JSON.stringify(c.fixes[0]));
+  assert.equal(c.spf, 'not checked');
+  const text = JSON.stringify(facts);
+  for (const secret of ['mail01', 'app02', '.xml', 'reports-2026-09.zip', 'noreply-dmarc-support']) assert.ok(!text.includes(secret), secret);
+  // the history part: its period, the totals of every message kept, the roll-up's verdict
+  assert.equal(facts.history.days, 30);
+  assert.equal(facts.history.totals.msgs, agg.messages);
+  assert.ok(['fix-first', 'ready', 'enforced', 'enforced-losing'].includes(facts.history.verdict));
+  assert.equal(facts.history.newSince, null, 'two days of history: nothing is new yet');
+  // In Turkish, the same facts in Turkish.
+  const tr = inLang('tr', () => dmarcReportFacts({ domain: 'example.com', agg, rows, overview, line: null, history, now: FIX_NOW }, t));
+  assert.equal(tr.current.verdict.title, 'Henüz p=reject için hazır değil');
+  assert.equal(tr.current.spf, 'kontrol edilmedi');
+  // The history alone, and a domain neither read nor kept.
+  const kept = dmarcReportFacts({ domain: 'example.net', history, now: FIX_NOW }, t);
+  assert.deepEqual([kept.current, kept.history.totals.reportedDays > 0], [null, true]);
+  assert.equal(dmarcReportFacts({ domain: 'example.org', history, now: FIX_NOW }, t), null);
+  assert.equal(dmarcReportFacts({ domain: 'example.com', history: emptyHistory(), now: FIX_NOW }, t), null);
+});
+
+test('the History panel\'s pure parts: compliance bands, the stack of a day, clean axis tops, the labels that fit', async () => {
+  const panel = await loadHistoryPanel();
+  assert.deepEqual([0.99, 0.98, 0.95, 0.9, 0.5, null].map((v) => panel.complianceBand(v)), ['ok', 'ok', 'warn', 'warn', 'error', null]);
+  assert.deepEqual(panel.volumeSegments({ msgs: 100, dmarcPass: 90, knownFail: 4 }), [{ key: 'pass', value: 90 }, { key: 'other', value: 6 }, { key: 'known', value: 4 }]);
+  assert.deepEqual(panel.volumeSegments({ msgs: 10, dmarcPass: 10, knownFail: 3 }).map((s) => s.value), [10, 0, 0], 'never more failing than failed');
+  assert.deepEqual(panel.VOLUME_SEGMENTS, ['pass', 'other', 'known']);
+  assert.deepEqual([0, 1, 7, 10, 11, 240, 2600, 51000].map(panel.niceMax), [1, 1, 10, 10, 20, 250, 5000, 100000]);
+  assert.deepEqual(panel.labelIndexes(30, 5), [5, 13, 21, 29], 'the same gap between labels, counted back from today');
+  assert.deepEqual(panel.labelIndexes(30, 11), [2, 5, 8, 11, 14, 17, 20, 23, 26, 29]);
+  assert.deepEqual(panel.labelIndexes(4, 10), [0, 1, 2, 3], 'room for every bar');
+  assert.deepEqual(panel.labelIndexes(1, 5), [0]);
+  assert.deepEqual(panel.labelIndexes(0, 5), []);
+  assert.deepEqual(panel.labelIndexes(58, 1), [57]);
+  assert.deepEqual(Object.keys(panel.VERDICT_LOOK).sort(), [...ROLLUP_VERDICTS].sort());
+  for (const lang of ['en', 'tr']) {
+    inLang(lang, () => {
+      for (const v of ROLLUP_VERDICTS) assert.ok(!t(`rpt.hist.verdict.${v}`).startsWith('rpt.'), `${lang} ${v}`);
+      for (const k of panel.VOLUME_SEGMENTS) assert.ok(!t(`rpt.hist.seg.${k}`).startsWith('rpt.'), `${lang} ${k}`);
+    });
+  }
+  assert.equal(inLang('tr', () => t('rpt.hist.newLine', { count: 0, date: '3 Eki 2026' })), '3 Eki 2026 tarihinden bu yana yeni gönderici yok.');
+  assert.equal(inLang('en', () => t('rpt.hist.newLine', { count: 2, date: 'Oct 3, 2026' })), '2 new senders since Oct 3, 2026.');
 });

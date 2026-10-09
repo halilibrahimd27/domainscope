@@ -1,6 +1,7 @@
 /**
- * report.js — the customer report: a Domain overview (views/domain.js) or a Domain Health result
- * (views/health.js) as ONE self-contained HTML file, to send to a customer or print to PDF.
+ * report.js — the customer report: a Domain overview (views/domain.js), a Domain Health result
+ * (views/health.js) or a domain's DMARC reports and their history (views/reports.js) as ONE
+ * self-contained HTML file, to send to a customer or print to PDF.
  *
  * - One file that loads nothing: the CSS is inline ({@link REPORT_CSS}, a light, print-friendly
  *   design in the app's look), there is no script at all, and a strict CSP meta
@@ -14,7 +15,8 @@
  *   Certificate Transparency value would run as script.
  * - Content ({@link ReportDoc}): the problems with their advice first, then the result's facts
  *   (the overview's cards: {@link domainReport}; Health's notes, passed checks and the records it
- *   read: {@link healthReport}), the time of the result and of the report, the tool version, what
+ *   read: {@link healthReport}; the DMARC reports' head, classes, services, notes and the trend the
+ *   workspace kept: {@link dmarcReport}), the time of the result and of the report, the tool version, what
  *   was checked, and on request the result's permalink — its inputs only ({@link reportLinkParams},
  *   lib/summarycore.js PERMALINK_PARAMS), never a result — so the recipient runs it again.
  * - Words come from the injected `t` in the UI language: the overview's own strings for its cards
@@ -29,7 +31,7 @@
  */
 
 /** The kinds of report: the view each one comes from. */
-export const REPORT_KINDS = Object.freeze(['domain', 'health']);
+export const REPORT_KINDS = Object.freeze(['domain', 'health', 'dmarc']);
 
 /** Severities, worst first (lib/health.js HealthCheck.severity). */
 export const REPORT_SEVERITIES = Object.freeze(['error', 'warn', 'info', 'ok']);
@@ -38,7 +40,7 @@ export const REPORT_SEVERITIES = Object.freeze(['error', 'warn', 'info', 'ok']);
 export const REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'";
 
 /** File name stems (ui/download.js timestampedName adds the domain and the time). */
-export const REPORT_FILE_BASES = Object.freeze({ domain: 'domain-overview-report', health: 'domain-health-report' });
+export const REPORT_FILE_BASES = Object.freeze({ domain: 'domain-overview-report', health: 'domain-health-report', dmarc: 'dmarc-report' });
 
 /** The Domain overview's cards in their order (lib/passport.js PASSPORT_CARDS; a unit test keeps them equal). */
 const DOMAIN_CARDS = Object.freeze(['registration', 'dns', 'mail', 'web', 'certs', 'saas', 'health']);
@@ -183,6 +185,7 @@ export const REPORT_CSS = [
   '.crep-light-ok{border-color:var(--ok-border);border-left-color:var(--ok);background:var(--ok-bg)}',
   '.crep-light-warn{border-color:var(--warn-border);border-left-color:var(--warn);background:var(--warn-bg)}',
   '.crep-light-error{border-color:var(--error-border);border-left-color:var(--error);background:var(--error-bg)}',
+  '.crep-light-info{border-color:var(--info-border);border-left-color:var(--info);background:var(--info-bg)}',
   '.crep-score{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}',
   '.crep-verdict-label{font-weight:600}',
   '.crep-verdict-body{flex-basis:100%;color:var(--text-2)}',
@@ -209,6 +212,7 @@ export const REPORT_CSS = [
   '.crep-item-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px}',
   '.crep-item-group{color:var(--muted);font-size:12px}',
   '.crep-item-detail{margin-top:4px;color:var(--text-2)}',
+  '.crep-item-steps{margin:6px 0 0;padding-left:18px;color:var(--text-2)}',
   '.crep-passed{margin:0;padding-left:18px;columns:2;column-gap:24px;color:var(--text-2)}',
   '.crep-group{font-size:13px;font-weight:600;color:var(--muted)}',
   '.crep-muted{color:var(--muted)}',
@@ -230,6 +234,7 @@ export const REPORT_CSS = [
  * @property {string} title
  * @property {string} [detail] the explanation and what to do
  * @property {string} [group] the check group's name
+ * @property {string[]} [steps] what to do, one step a line (a DMARC source to fix)
  */
 
 /**
@@ -252,14 +257,15 @@ export const REPORT_CSS = [
 
 /**
  * @typedef {object} ReportDoc
- * @property {'domain'|'health'} kind
+ * @property {'domain'|'health'|'dmarc'} kind
  * @property {string} subject the domain
  * @property {string|null} subtitle
  * @property {Date|null} at when the result was made
- * @property {{ light: 'ok'|'warn'|'error', score: number, label: string, body?: string|null,
- *   counts: Array<{ severity: string, text: string }> }|null} verdict
+ * @property {{ light: 'ok'|'info'|'warn'|'error', score: number, display?: string, label: string, body?: string|null,
+ *   counts: Array<{ severity: string, text: string }> }|null} verdict `display`: the figure shown instead of "score/100"
  * @property {ReportItem[]} problems errors and warnings with their advice, worst first
  * @property {boolean} problemsKnown false when the health checks did not run (no problem list)
+ * @property {string} [problemsNote] what the problems section says when it lists none (instead of the default)
  * @property {ReportSection[]} sections
  * @property {string[]} method what was checked
  */
@@ -699,11 +705,171 @@ export function healthReport(input, opts) {
   };
 }
 
+/* --- DMARC & TLS reports ------------------------------------------------------------- */
+
+/**
+ * @typedef {object} DmarcReportInput the facts views/reports.js dmarcReportFacts gathers for one domain,
+ *   its texts already in the UI language where the view words them (a verdict, a fix, why a source is
+ *   in its class); never a server name of the inventory, a file name or a reporter's contact
+ * @property {string} domain
+ * @property {Date|null} [at] when the reports were read (or the history last changed)
+ * @property {object|null} [current] the reports read in the tab: { begin, end, reports, reporters: string[],
+ *   messages, pass, compliance, policy: { p, sp, np, pct, testing, adkim, aspf }, verdict: { variant, title, body },
+ *   spf: string, unknown: string|null, unknownSources: number, classes: [{ cls, label, sources, messages, pass }],
+ *   fixes: [{ ip, service, label, why, count, steps: string[], severity }], moreFixes: number,
+ *   services: [{ name, type, addresses, messages, pass }], notes: string[] }
+ * @property {object|null} [history] what the workspace keeps (lib/dmarchistory.js): { days, from, to, totals,
+ *   slots, policy, verdict, newSince, newSources: [{ ip, service, first, msgs }], moreNew: number }
+ */
+
+/** The look of a DMARC verdict the view words (verdictLook variants) and of a roll-up verdict. */
+const DMARC_LIGHTS = Object.freeze({
+  ok: 'ok', info: 'info', warn: 'warn', error: 'error', 'no-mail': 'info', enforced: 'ok', ready: 'ok', 'fix-first': 'warn', 'enforced-losing': 'error'
+});
+
+/**
+ * A domain's DMARC report: the verdict of the reports read in the tab (its compliance as the
+ * figure), the sources to fix first with their steps, then the reports' head (period, reporters,
+ * messages, compliance, policy, the current SPF), the sending addresses by class and by service and
+ * the notes; and, when the workspace keeps a history of the domain, the trend of the period (its
+ * totals and one line a day or a week) and the senders new in it. With the history alone (no report
+ * read in the tab), its verdict and trend. Every value is text the serializer escapes: a reporter's
+ * name, a service, a domain a report names.
+ * @param {DmarcReportInput} input
+ * @param {{ t: Function, has?: (key: string) => boolean, num?: (n: number) => string, share?: (ratio: number|null) => string }} opts
+ *   `num` / `share`: the UI's number and percentage formats (plain without)
+ * @returns {ReportDoc}
+ */
+export function dmarcReport(input, opts) {
+  const w = words(opts);
+  const { t, say } = w;
+  const num = typeof opts.num === 'function' ? opts.num : (n) => String(n);
+  const share = typeof opts.share === 'function' ? opts.share
+    : (r) => (r === null || r === undefined || !Number.isFinite(r) ? '—' : `${Math.round(r * 1000) / 10}%`);
+  const i = input || {};
+  const domain = String(i.domain || '');
+  const c = i.current && typeof i.current === 'object' ? i.current : null;
+  const hi = i.history && typeof i.history === 'object' ? i.history : null;
+  const band = (r) => (r === null || r === undefined ? null : r >= 0.98 ? 'ok' : r >= 0.9 ? 'warn' : 'error');
+  const policyText = (p) => (p ? [`p=${p.p}`, `sp=${p.sp || p.p}`, p.np ? `np=${p.np}` : null, `pct=${p.pct ?? 100}`, p.testing ? `t=${p.testing}` : null,
+    p.adkim ? `adkim=${p.adkim}` : null, p.aspf ? `aspf=${p.aspf}` : null].filter(Boolean).join(' ') : null);
+  const list = (x) => (Array.isArray(x) ? x : []);
+
+  let verdict = null;
+  if (c && c.verdict) {
+    const counts = [];
+    const toFix = list(c.fixes).length + (c.moreFixes || 0);
+    if (toFix) counts.push({ severity: 'error', text: t('crep.dmarc.count.fix', { count: toFix }) });
+    if (c.unknownSources) counts.push({ severity: 'warn', text: t('crep.dmarc.count.unknown', { count: c.unknownSources }) });
+    counts.push({ severity: 'ok', text: t('crep.dmarc.count.messages', { count: c.messages || 0 }) });
+    verdict = {
+      light: DMARC_LIGHTS[c.verdict.variant] || 'warn',
+      score: c.compliance === null || c.compliance === undefined ? 0 : Math.round(c.compliance * 100),
+      display: share(c.compliance),
+      label: String(c.verdict.title || ''),
+      body: c.verdict.body ? String(c.verdict.body) : null,
+      counts
+    };
+  } else if (hi && hi.totals) {
+    verdict = {
+      light: DMARC_LIGHTS[hi.verdict] || 'info',
+      score: hi.totals.compliance === null || hi.totals.compliance === undefined ? 0 : Math.round(hi.totals.compliance * 100),
+      display: share(hi.totals.compliance),
+      label: say(`rpt.hist.verdict.${hi.verdict}`, null, String(hi.verdict || '')),
+      body: null,
+      counts: [{ severity: 'ok', text: t('crep.dmarc.count.messages', { count: hi.totals.msgs || 0 }) }]
+    };
+  }
+
+  const problems = c ? list(c.fixes).map((f) => ({
+    severity: f.severity === 'error' ? 'error' : 'warn',
+    title: [f.ip, f.service, f.label].filter(Boolean).map(String).join(' · '),
+    detail: [f.why, f.count].filter(Boolean).map(String).join(' — ') || null,
+    steps: list(f.steps).map(String)
+  })) : [];
+  if (c && c.moreFixes) problems.push({ severity: 'warn', title: t('common.moreCount', { count: c.moreFixes }) });
+
+  const sections = [];
+  if (c) {
+    sections.push({
+      id: 'reports',
+      title: t('crep.dmarc.reports'),
+      rows: [
+        row(t('crep.dmarc.period'), `${utcDay(c.begin)} → ${utcDay(c.end)}`),
+        row(t('crep.dmarc.reportCount'), t('crep.dmarc.reportsFrom', { count: c.reports || 0, reporters: list(c.reporters).map(String).join(', ') })),
+        row(t('crep.dmarc.messages'), num(c.messages || 0)),
+        row(t('crep.dmarc.compliance'), `${share(c.compliance)} · ${t('crep.dmarc.passOf', { pass: num(c.pass || 0), total: num(c.messages || 0) })}`,
+          { severity: band(c.compliance) }),
+        row(t('crep.dmarc.policy'), policyText(c.policy), { mono: true }),
+        row(t('crep.dmarc.spf'), c.spf ? String(c.spf) : null)
+      ].filter(hasValue),
+      notes: c.unknown ? [note('warn', String(c.unknown))] : []
+    });
+    sections.push({
+      id: 'classes',
+      title: t('crep.dmarc.classes'),
+      rows: list(c.classes).map((k) => row(String(k.label),
+        t('crep.dmarc.classValue', { count: k.sources || 0, messages: num(k.messages || 0), pct: k.messages ? share(k.pass / k.messages) : '—' })))
+    });
+    if (list(c.services).length) {
+      sections.push({
+        id: 'services',
+        title: t('crep.dmarc.services'),
+        rows: c.services.map((x) => row(x.type ? `${x.name} (${x.type})` : String(x.name),
+          t('crep.dmarc.classValue', { count: x.addresses || 0, messages: num(x.messages || 0), pct: x.messages ? share(x.pass / x.messages) : '—' })))
+      });
+    }
+    if (list(c.notes).length) sections.push({ id: 'notes', title: t('crep.notes'), items: c.notes.map((n) => ({ severity: 'info', title: String(n) })) });
+  }
+  if (hi && hi.totals) {
+    const tot = hi.totals;
+    sections.push({
+      id: 'trend',
+      title: t('crep.dmarc.trend', { count: hi.days || 0 }),
+      rows: [
+        row(t('crep.dmarc.period'), `${utcDay(hi.from)} → ${utcDay(hi.to)}`),
+        row(t('crep.dmarc.messages'), num(tot.msgs || 0)),
+        row(t('crep.dmarc.compliance'), share(tot.compliance), { severity: band(tot.compliance) }),
+        row(t('crep.dmarc.unknownShare'), share(tot.unknownShare)),
+        row(t('crep.dmarc.daysWith'), t('crep.dmarc.daysValue', { count: tot.reportedDays || 0, days: num(hi.days || 0) })),
+        hi.policy ? row(t('crep.dmarc.lastPolicy'), `${policyText(hi.policy)} · ${utcDay(hi.policy.seenAt)}`, { mono: true }) : null,
+        ...list(hi.slots).filter((x) => x.reportedDays).map((x) => row(x.day === x.to ? utcDay(x.day) : `${utcDay(x.day)} → ${utcDay(x.to)}`,
+          t('crep.dmarc.slotValue', { count: x.msgs || 0, pct: share(x.compliance), unknown: share(x.unknownShare) }),
+          { severity: band(x.compliance) === 'error' ? 'error' : null }))
+      ].filter(hasValue)
+    });
+    const fresh = list(hi.newSources);
+    sections.push({
+      id: 'new',
+      title: hi.newSince ? t('crep.dmarc.newTitle', { date: utcDay(hi.newSince) }) : t('crep.dmarc.newTitleNone'),
+      rows: fresh.map((x) => row(String(x.ip), t('crep.dmarc.newValue', {
+        service: x.service ? String(x.service) : t('crep.dmarc.unnamed'), date: utcDay(x.first), count: x.msgs || 0
+      }))),
+      notes: [!hi.newSince ? note(null, t('crep.dmarc.newNotYet')) : !fresh.length ? note(null, t('crep.dmarc.newNone')) : null,
+        hi.moreNew ? note(null, t('common.moreCount', { count: hi.moreNew })) : null].filter(Boolean)
+    });
+  }
+  return {
+    kind: 'dmarc',
+    subject: domain,
+    subtitle: c ? t('crep.dmarc.subtitle', { from: utcDay(c.begin), to: utcDay(c.end) }) : hi ? t('crep.dmarc.subtitleHistory', { count: hi.days || 0 }) : null,
+    at: asDate(i.at),
+    verdict,
+    problems,
+    problemsKnown: !!c,
+    problemsNote: c ? t('crep.dmarc.noFix') : t('crep.dmarc.fixUnknown'),
+    sections,
+    method: [t('crep.method.dmarc.reports'), hi ? t('crep.method.dmarc.history', { count: hi.days || 0 }) : null,
+      t('crep.method.dmarc.classes'), t('crep.method.dmarc.private')].filter(Boolean)
+  };
+}
+
 /**
  * The permalink inputs of a report's result — what the recipient's link runs again, never a
  * result: the overview's domain, Health's domain and extra DKIM selectors (lib/summarycore.js
- * permalinkParams keeps only PERMALINK_PARAMS keys).
- * @param {'domain'|'health'} kind
+ * permalinkParams keeps only PERMALINK_PARAMS keys). The DMARC report has none: its reports are
+ * files only the sender has, never in a link.
+ * @param {'domain'|'health'|'dmarc'} kind
  * @param {object} input the builder's input
  * @returns {Record<string, string>}
  */
@@ -735,7 +901,8 @@ function valueCell(r) {
 /** A list of checks (problems, notes). */
 const itemList = (items, t) => el('ol', { class: 'crep-items' }, items.map((i) => el('li', { class: `crep-item crep-sev-${i.severity}` },
   el('div', { class: 'crep-item-head' }, badge(i.severity, t), el('strong', null, i.title), i.group ? el('span', { class: 'crep-item-group' }, i.group) : null),
-  i.detail ? el('p', { class: 'crep-item-detail' }, i.detail) : null)));
+  i.detail ? el('p', { class: 'crep-item-detail' }, i.detail) : null,
+  Array.isArray(i.steps) && i.steps.length ? el('ul', { class: 'crep-item-steps' }, i.steps.map((x) => el('li', null, x))) : null)));
 
 /** A section of facts, notes, checks or passed checks. */
 function sectionNode(s, t) {
@@ -770,13 +937,13 @@ export function reportBody(doc, opts) {
       el('tr', null, el('th', { scope: 'row' }, t('crep.generatedAt')), el('td', null, el('time', { datetime: generated.toISOString() }, utcTime(generated)))),
       el('tr', null, el('th', { scope: 'row' }, t('crep.tool')), el('td', null, t('crep.toolValue', { version }))))),
     v ? el('div', { class: `crep-verdict crep-light-${v.light}`, 'data-light': v.light, 'data-score': v.score },
-      el('span', { class: 'crep-score' }, `${v.score}/100`),
+      el('span', { class: 'crep-score' }, v.display || `${v.score}/100`),
       el('span', { class: 'crep-verdict-label' }, v.label),
       el('ul', { class: 'crep-counts' }, v.counts.map((c) => el('li', { class: `crep-sev-${c.severity}` }, el('span', { class: 'crep-badge' }, `${SEVERITY_GLYPHS[c.severity]} ${c.text}`)))),
       v.body ? el('p', { class: 'crep-verdict-body' }, v.body) : null) : null);
   const problems = el('section', { class: 'crep-card crep-section crep-problems', 'data-section': 'problems' },
     el('h2', null, t('crep.problems')),
-    doc.problems.length ? itemList(doc.problems, t) : el('p', { class: 'crep-muted' }, t(doc.problemsKnown === false ? 'crep.problemsUnknown' : 'crep.noProblems')));
+    doc.problems.length ? itemList(doc.problems, t) : el('p', { class: 'crep-muted' }, doc.problemsNote || t(doc.problemsKnown === false ? 'crep.problemsUnknown' : 'crep.noProblems')));
   const method = el('section', { class: 'crep-card crep-section crep-method', 'data-section': 'method' },
     el('h2', null, t('crep.method')),
     el('ul', null, doc.method.map((m) => el('li', null, m))));
@@ -824,15 +991,15 @@ export function reportHtml(doc, opts) {
 
 /**
  * Build a report of a view's result.
- * @param {'domain'|'health'} kind
- * @param {object} input {@link domainReport} or {@link healthReport} input
+ * @param {'domain'|'health'|'dmarc'} kind
+ * @param {object} input {@link domainReport}, {@link healthReport} or {@link dmarcReport} input
  * @param {{ t: Function, lang?: 'en'|'tr', has?: Function, statusText?: Function, version?: string,
  *   generatedAt?: Date, link?: string|null }} opts
  * @returns {{ doc: ReportDoc, html: string }}
  */
 export function buildReport(kind, input, opts) {
   if (!REPORT_KINDS.includes(kind)) throw new TypeError(`report: unknown kind ${kind}`);
-  const doc = kind === 'domain' ? domainReport(input, opts) : healthReport(input, opts);
+  const doc = kind === 'domain' ? domainReport(input, opts) : kind === 'health' ? healthReport(input, opts) : dmarcReport(input, opts);
   return { doc, html: reportHtml(doc, opts) };
 }
 
@@ -905,6 +1072,42 @@ export const REPORT_I18N = Object.freeze({
     'crep.rerun': 'Run it again',
     'crep.rerunNote': 'The link carries only the domain and the options, never a result: opening it runs the check again in the browser.',
     'crep.foot': 'Made in the browser with DomainScope {version}. This file has no scripts and loads nothing from the network.',
+    'crep.kind.dmarc': 'DMARC report',
+    'crep.dmarc.subtitle': 'Aggregate reports from {from} to {to}',
+    'crep.dmarc.subtitleHistory': { one: 'The history of the last {count} day', other: 'The history of the last {count} days' },
+    'crep.dmarc.noFix': 'No source you use fails DMARC.',
+    'crep.dmarc.fixUnknown': 'The reports themselves are not open in DomainScope, so the sources to fix are not listed: drop them again for that.',
+    'crep.dmarc.reports': 'The reports',
+    'crep.dmarc.period': 'Period',
+    'crep.dmarc.reportCount': 'Reports',
+    'crep.dmarc.reportsFrom': { one: '{count} report from {reporters}', other: '{count} reports from {reporters}' },
+    'crep.dmarc.messages': 'Messages',
+    'crep.dmarc.compliance': 'DMARC compliance',
+    'crep.dmarc.passOf': '{pass} of {total} messages pass',
+    'crep.dmarc.policy': 'Published policy',
+    'crep.dmarc.spf': 'Current SPF',
+    'crep.dmarc.classes': 'Sending addresses by class',
+    'crep.dmarc.classValue': { one: '{count} address · {messages} messages · {pct} pass', other: '{count} addresses · {messages} messages · {pct} pass' },
+    'crep.dmarc.services': 'Services behind the sending addresses',
+    'crep.dmarc.trend': { one: 'The last {count} day', other: 'The last {count} days' },
+    'crep.dmarc.unknownShare': 'From unknown senders',
+    'crep.dmarc.daysWith': 'Days with reports',
+    'crep.dmarc.daysValue': '{count} of {days}',
+    'crep.dmarc.lastPolicy': 'Last published policy',
+    'crep.dmarc.slotValue': { one: '{count} message · {pct} pass · {unknown} from unknown senders', other: '{count} messages · {pct} pass · {unknown} from unknown senders' },
+    'crep.dmarc.newTitle': 'New senders since {date}',
+    'crep.dmarc.newTitleNone': 'New senders',
+    'crep.dmarc.newValue': { one: '{service} · first seen {date} · {count} message', other: '{service} · first seen {date} · {count} messages' },
+    'crep.dmarc.newNone': 'No new sender.',
+    'crep.dmarc.newNotYet': 'A sender is marked new once the history covers a week before it.',
+    'crep.dmarc.unnamed': 'service not identified',
+    'crep.dmarc.count.fix': { one: '{count} source to fix', other: '{count} sources to fix' },
+    'crep.dmarc.count.unknown': { one: '{count} unknown sender', other: '{count} unknown senders' },
+    'crep.dmarc.count.messages': { one: '{count} message', other: '{count} messages' },
+    'crep.method.dmarc.reports': 'The DMARC aggregate reports receivers sent to the domain’s rua address, read in the browser; the domain’s current SPF record, asked over DNS-over-HTTPS, and the workspace’s server list tell the classes apart.',
+    'crep.method.dmarc.history': { one: 'The trend: the summary the workspace kept of the reports dropped before, over the last {count} day.', other: 'The trend: the summary the workspace kept of the reports dropped before, over the last {count} days.' },
+    'crep.method.dmarc.classes': 'Classes: your servers (the server list, or the domain’s own SPF terms), authorized third parties (another organisation’s SPF include), forwarders (DKIM passes, SPF does not) and unknown senders. Telling a DKIM-signing service from a forwarder that kept the signature is a heuristic.',
+    'crep.method.dmarc.private': 'Not in this report: the report files, the names of your servers, the reporters’ contacts and the recipients of the mail.',
 
     'crep.panel.title': 'Customer report',
     'crep.panel.body': 'One HTML file with this result — the problems and their advice first, then the facts, when and how it was checked — in a light, print-friendly design and in the interface language. It has no scripts and loads nothing, so it can go to a customer as it is. It is made in your browser: nothing is sent.',
@@ -976,6 +1179,42 @@ export const REPORT_I18N = Object.freeze({
     'crep.rerun': 'Yeniden çalıştır',
     'crep.rerunNote': 'Bağlantı yalnızca alan adını ve seçenekleri taşır, hiçbir sonucu taşımaz: açıldığında kontrol tarayıcıda yeniden çalışır.',
     'crep.foot': 'Tarayıcıda DomainScope {version} ile hazırlandı. Bu dosyada betik yoktur ve ağdan hiçbir şey yüklemez.',
+    'crep.kind.dmarc': 'DMARC raporu',
+    'crep.dmarc.subtitle': '{from} – {to} arası toplu raporlar',
+    'crep.dmarc.subtitleHistory': 'Son {count} günün geçmişi',
+    'crep.dmarc.noFix': 'Kullandığınız kaynaklar arasında DMARC’den geçmeyen yok.',
+    'crep.dmarc.fixUnknown': 'Raporların kendisi DomainScope’ta açık değil; bu yüzden düzeltilecek kaynaklar listelenmedi. Bunun için raporları yeniden bırakın.',
+    'crep.dmarc.reports': 'Raporlar',
+    'crep.dmarc.period': 'Dönem',
+    'crep.dmarc.reportCount': 'Raporlar',
+    'crep.dmarc.reportsFrom': '{reporters} kaynağından {count} rapor',
+    'crep.dmarc.messages': 'E-postalar',
+    'crep.dmarc.compliance': 'DMARC uyumu',
+    'crep.dmarc.passOf': '{total} e-postanın {pass} tanesi geçiyor',
+    'crep.dmarc.policy': 'Yayınlanan politika',
+    'crep.dmarc.spf': 'Güncel SPF',
+    'crep.dmarc.classes': 'Sınıfa göre gönderen adresler',
+    'crep.dmarc.classValue': '{count} adres · {messages} e-posta · {pct} geçiyor',
+    'crep.dmarc.services': 'Gönderen adreslerin arkasındaki hizmetler',
+    'crep.dmarc.trend': 'Son {count} gün',
+    'crep.dmarc.unknownShare': 'Bilinmeyen göndericilerden',
+    'crep.dmarc.daysWith': 'Raporlu günler',
+    'crep.dmarc.daysValue': '{count} / {days}',
+    'crep.dmarc.lastPolicy': 'Son yayınlanan politika',
+    'crep.dmarc.slotValue': '{count} e-posta · {pct} geçiyor · {unknown} bilinmeyen göndericilerden',
+    'crep.dmarc.newTitle': '{date} tarihinden bu yana yeni göndericiler',
+    'crep.dmarc.newTitleNone': 'Yeni göndericiler',
+    'crep.dmarc.newValue': '{service} · ilk kez {date} tarihinde · {count} e-posta',
+    'crep.dmarc.newNone': 'Yeni gönderici yok.',
+    'crep.dmarc.newNotYet': 'Bir gönderici, geçmiş ondan önceki bir haftayı kapsadığında yeni olarak işaretlenir.',
+    'crep.dmarc.unnamed': 'hizmeti tanımlanamadı',
+    'crep.dmarc.count.fix': 'düzeltilecek {count} kaynak',
+    'crep.dmarc.count.unknown': '{count} bilinmeyen gönderici',
+    'crep.dmarc.count.messages': '{count} e-posta',
+    'crep.method.dmarc.reports': 'Alıcıların alan adının rua adresine gönderdiği DMARC toplu raporları tarayıcıda okundu; sınıfları, alan adının DNS-over-HTTPS ile sorulan güncel SPF kaydı ve çalışma alanının sunucu listesi ayırdı.',
+    'crep.method.dmarc.history': 'Eğilim: çalışma alanının daha önce bırakılan raporlardan tuttuğu özet, son {count} gün.',
+    'crep.method.dmarc.classes': 'Sınıflar: sunucularınız (sunucu listesi ya da alan adının kendi SPF terimleri), yetkili üçüncü taraflar (başka bir kuruluşun SPF include’u), yönlendirenler (DKIM geçiyor, SPF geçmiyor) ve bilinmeyen göndericiler. DKIM ile imzalayan bir hizmeti imzayı koruyan bir yönlendiriciden ayırmak bir tahmindir.',
+    'crep.method.dmarc.private': 'Bu raporda olmayanlar: rapor dosyaları, sunucularınızın adları, raporlayanların iletişim bilgileri ve e-postaların alıcıları.',
 
     'crep.panel.title': 'Müşteri raporu',
     'crep.panel.body': 'Bu sonucu içeren tek bir HTML dosyası — önce sorunlar ve öneriler, ardından bulgular, ne zaman ve nasıl kontrol edildiği — açık renkli, yazdırmaya uygun bir tasarımda ve arayüz dilinde. Betik içermez ve hiçbir şey yüklemez; olduğu gibi müşteriye gönderilebilir. Tarayıcınızda hazırlanır: hiçbir şey gönderilmez.',

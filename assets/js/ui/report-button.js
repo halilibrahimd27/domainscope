@@ -1,8 +1,8 @@
 /**
- * report-button.js — the "Report" button of the Domain overview and Domain Health (views/domain.js,
- * views/health.js; one call in each). It carries only its own label: the panel, the report
- * builder and its stylesheet (ui/report.js, lib/report.js) load on the first click, so neither
- * view's first load grows by more than this file.
+ * report-button.js — the "Report" button of the Domain overview, Domain Health and DMARC & TLS
+ * reports (views/domain.js, views/health.js, views/reports.js; one call in each). It carries only
+ * its own label: the panel, the report builder and its stylesheet (ui/report.js, lib/report.js)
+ * load on the first click, so no view's first load grows by more than this file.
  */
 
 import { Button, toast } from './components.js';
@@ -27,9 +27,9 @@ const loadPanel = onceAsync(() => import('./report.js'));
  * The "Report" button: on a click it reads the result through `input` and opens the report
  * panel (ui/report.js openReport). Disabled while the view's run goes on.
  * @param {import('../app.js').ViewContext} ctx the view's context
- * @param {'domain'|'health'} kind lib/report.js REPORT_KINDS
+ * @param {'domain'|'health'|'dmarc'} kind lib/report.js REPORT_KINDS
  * @param {() => object|null} input the builder's input at click time (lib/report.js domainReport /
- *   healthReport); null when there is nothing to report
+ *   healthReport / dmarcReport); null when there is nothing to report
  * @param {{ disabled?: boolean }} [opts]
  * @returns {HTMLButtonElement}
  */

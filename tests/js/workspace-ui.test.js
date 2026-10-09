@@ -129,6 +129,19 @@ describe('the origin map in words', () => {
     setLang('en');
   });
 
+  test('an imported hand-over file says it holds a DMARC report history, and when it switches keeping summaries on', () => {
+    const text = (keep) => JSON.stringify({ v: 1, keep, updatedAt: null, domains: { 'example.com': { days: { '2026-09-27': { msgs: 1 } }, sources: {}, recent: {}, policy: null, seen: {}, cut: null, checked: null } } });
+    const ws = (reportHistory) => ({ encrypted: false, data: { ...emptyWorkspaceData(), reportHistory } });
+    setLang('en');
+    assert.match(importSummary(ws(text(true))), /a DMARC report history of 1 domain · keeping DMARC report summaries is on$/);
+    assert.match(importSummary(ws(text(false))), /a DMARC report history of 1 domain$/);
+    assert.doesNotMatch(importSummary(ws('')), /DMARC/);
+    assert.doesNotMatch(importSummary(ws('{"v":9}')), /DMARC/, 'a text that is no history says nothing');
+    setLang('tr');
+    assert.match(importSummary(ws(text(true))), /1 alan adının DMARC rapor geçmişi · DMARC rapor özetlerini tutma açık$/);
+    setLang('en');
+  });
+
   test('Turkish: a server that no longer serves the name, and one origin to remember', () => {
     setLang('tr');
     for (const key of ['om.stale.cli-not-hosted', 'om.stale.verify-not-hosted']) {

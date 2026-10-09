@@ -1,6 +1,6 @@
 /**
- * report.js — the customer report panel, opened by the "Report" button of the Domain overview and
- * Domain Health (ui/report-button.js) and loaded on its first click. A dialog that
+ * report.js — the customer report panel, opened by the "Report" button of the Domain overview,
+ * Domain Health and DMARC & TLS reports (ui/report-button.js) and loaded on its first click. A dialog that
  *
  * - downloads the result as ONE self-contained HTML file (lib/report.js: inline CSS, no script, a
  *   strict CSP, every value escaped) in the interface language, through ui/download.js;
@@ -11,7 +11,8 @@
  *   Both go away after printing;
  * - optionally adds the result's permalink, which carries its inputs only (the domain, Health's
  *   extra DKIM selectors: lib/report.js reportLinkParams, lib/summarycore.js permalinkParams),
- *   never a result, so the recipient runs it again; "Copy the link" copies the same link.
+ *   never a result, so the recipient runs it again; "Copy the link" copies the same link. A DMARC
+ *   report has no such link (its reports are files only the sender has): the panel offers none.
  *
  * Nothing is sent: the report is made from the result on screen.
  */
@@ -20,7 +21,8 @@ import { h } from './dom.js';
 import { CopyButton, Modal, checkbox, toast } from './components.js';
 import { downloadText, timestampedName } from './download.js';
 import { statusText } from './source-status.js';
-import { registerStrings, t, getLang, hasString } from '../i18n.js';
+import { registerStrings, t, getLang, hasString, formatNumber, formatPercent } from '../i18n.js';
+import { sharePercent } from '../lib/util.js';
 import { permalinkParams } from '../lib/summarycore.js';
 import { REPORT_CSS, REPORT_FILE_BASES, REPORT_I18N, buildReport, reportBody, reportLinkParams } from '../lib/report.js';
 
@@ -37,6 +39,13 @@ let printing = null;
 
 /** A key the UI language (or English) has: the builders fall back to readable text otherwise. */
 const has = (key) => hasString(key, getLang()) || hasString(key, 'en');
+
+/** A share as the views say it (one decimal when it has one, never all or none unless it is), '—' for none. */
+const share = (ratio) => {
+  if (ratio === null || ratio === undefined || !Number.isFinite(ratio)) return '—';
+  const v = sharePercent(ratio);
+  return formatPercent(v / 100, Number.isInteger(v) ? 0 : 1);
+};
 
 /**
  * Can this browser print a report from the page (shadow roots and constructed stylesheets)?
@@ -114,21 +123,26 @@ export function printReport(body) {
 /**
  * Open the report panel for a result.
  * @param {import('../app.js').ViewContext} ctx the view's context (shareUrl, version)
- * @param {'domain'|'health'} kind
- * @param {object} input lib/report.js domainReport / healthReport input
+ * @param {'domain'|'health'|'dmarc'} kind
+ * @param {object} input lib/report.js domainReport / healthReport / dmarcReport input
  * @returns {Promise<void>} when the panel has closed (and the print, if asked, has started)
  */
 export async function openReport(ctx, kind, input) {
   const linkParams = reportLinkParams(kind, input);
+  // A result with no input to run again (DMARC: the reports are files) gets no link at all.
+  const linkable = Object.keys(linkParams).length > 0;
   const link = () => ctx.shareUrl(permalinkParams(kind, linkParams));
-  const linkBox = checkbox({
+  const linkBox = linkable ? checkbox({
     label: t('crep.panel.link'),
     checked: true,
     hint: t('crep.panel.linkHint', { inputs: Object.values(linkParams).join(' · ') })
-  });
-  linkBox.input.dataset.role = 'report-link';
+  }) : null;
+  if (linkBox) linkBox.input.dataset.role = 'report-link';
   /** The builder's options at the moment of the click: the time, the link if it is wanted. */
-  const options = () => ({ t, lang: getLang(), has, statusText, version: ctx.version, generatedAt: new Date(), link: linkBox.input.checked ? link() : null });
+  const options = () => ({
+    t, lang: getLang(), has, statusText, num: formatNumber, share, version: ctx.version, generatedAt: new Date(),
+    link: linkBox && linkBox.input.checked ? link() : null
+  });
   const fail = (err) => {
     toast(t('crep.panel.failed', { error: err && err.message ? err.message : String(err) }), { type: 'error' });
     return false;
@@ -138,8 +152,8 @@ export async function openReport(ctx, kind, input) {
     className: 'crep-modal',
     content: h('div', { class: 'stack' },
       h('p', { class: 'text-sm' }, t('crep.panel.body')),
-      linkBox.el,
-      h('div', null, CopyButton(link, { label: t('crep.panel.copyLink'), size: 'sm', variant: 'ghost' }))),
+      linkBox ? linkBox.el : null,
+      linkBox ? h('div', null, CopyButton(link, { label: t('crep.panel.copyLink'), size: 'sm', variant: 'ghost' })) : null),
     actions: [
       { label: t('crep.panel.print'), icon: 'file', value: 'print', dataset: { action: 'report-print' } },
       {

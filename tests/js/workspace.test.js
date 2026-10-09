@@ -194,6 +194,18 @@ describe('part values', () => {
     assert.equal(sanitizeWorkspaceData({ rdapSeen: text }).rdapSeen, text);
   });
 
+  test('the DMARC report history: the JSON text lib/dmarchistory.js writes, kept whole or not at all (a cut text is no JSON); anything else empty', () => {
+    assert.ok(WORKSPACE_PARTS.includes('reportHistory'));
+    assert.equal(WORKSPACE_LIMITS.reportHistory, 4 * 1024 * 1024);
+    const text = '{"v":1,"keep":true,"updatedAt":null,"domains":{}}';
+    assert.equal(sanitizePart('reportHistory', text), text);
+    assert.equal(sanitizePart('reportHistory', 'h'.repeat(WORKSPACE_LIMITS.reportHistory)).length, WORKSPACE_LIMITS.reportHistory);
+    assert.equal(sanitizePart('reportHistory', 'h'.repeat(WORKSPACE_LIMITS.reportHistory + 1)), '', 'never cut');
+    assert.equal(sanitizePart('reportHistory', { v: 1, domains: {} }), '');
+    assert.equal(sanitizePart('reportHistory', null), '');
+    assert.equal(emptyWorkspaceData().reportHistory, '', 'empty until the switch is turned on');
+  });
+
   test('notes: free text with its line breaks; controls other than tab / newline dropped; capped', () => {
     assert.equal(sanitizePart('notes', 'Renewal:\r\n\tcall ops\u0007 first'), 'Renewal:\n\tcall ops first');
     assert.equal(sanitizePart('notes', 'n'.repeat(WORKSPACE_LIMITS.notes + 5)).length, WORKSPACE_LIMITS.notes);

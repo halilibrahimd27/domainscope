@@ -20,7 +20,9 @@
  *                "ctSeen": "<JSON text of lib/ctwatch.js: { v, domains: { <domain>: { at, ids: { <id>: <expiry day> } } } }>",
  *                "rdapSeen": "<JSON text of lib/regwatch.js: { v, domains: { <domain>: { at, state, registrar, ianaId, statuses,
  *                             expires, nameservers, ds } } }>",
- *                "policy": "…", "rollout": "<JSON text of lib/rollout.js: { v: 1, boards }>" } } }
+ *                "policy": "…", "rollout": "<JSON text of lib/rollout.js: { v: 1, boards }>",
+ *                "waivers": "<JSON text of lib/waivers.js: { format, v: 1, waivers: [{ id, kind, domain, ref, reason, owner, created, expires }] }>",
+ *                "reportHistory": "<JSON text of lib/dmarchistory.js: { v: 1, keep, updatedAt, domains: { <domain>: { days, sources, recent, policy, seen, cut, checked } } }>" } } }
  *   An empty part is left out. `default`: exported from the Default workspace.
  *
  * DOM-free; the password is never stored or kept (lib/cryptobox.js).

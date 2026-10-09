@@ -14,7 +14,15 @@
  *   each service; **Identify senders** looks up what no report names; the reporters;
  * - TLS-RPT: the success rate, the policies senders found, the failures by type with advice and
  *   a link to the check that goes deeper (Domain Health's MTA-STS card, TLSA records in DNS
- *   Lookup, the MX host's certificate and its DANE tab), every failure detail.
+ *   Lookup, the MX host's certificate and its DANE tab), every failure detail;
+ * - History (ui/report-history.js, loaded with the tab): with "Keep a summary of these reports in
+ *   this workspace" on (off by default), each drop's DMARC reports are merged into the workspace
+ *   part `reportHistory` (lib/dmarchistory.js) once the domain on screen has its SPF: per day the
+ *   volume and results, per sending address the days it was first and last seen with its class
+ *   and service. The tab draws the trend, the new senders and a roll-up across the workspace's
+ *   domains; a class the SPF or the server list changes later follows in the recent days;
+ * - Report: the DMARC domain on screen (or the History tab's) as a customer report (lib/report.js
+ *   kind 'dmarc'), with its trend when the history keeps it.
  *
  * Privacy: the files are read and kept in this module's memory only (never uploaded, stored or put
  * in a URL); a reload, Forget, another workspace or "Delete all local data" drops them. After a
@@ -27,6 +35,10 @@
  * the network of those still unnamed as Look up asks it. Offline, the reports are still read and
  * classified from their own evidence and the server list, and the SPF line says it was not checked.
  *
+ * The summary the switch keeps never holds the files, file names, envelope recipients or the
+ * reporters' contacts; it leaves the browser only inside a workspace hand-over file, and "Forget
+ * report history" or "Delete all local data" deletes it. While the switch is off nothing is written.
+ *
  * The page session keeps only the fact that reports were read (`result()`, no subject); a drop
  * makes the busiest reported domain the current target. Pure helpers are exported for
  * tests/js/reports-view.test.js; the module is DOM-free at import time.
@@ -35,7 +47,7 @@
 import { h, clear } from '../ui/dom.js';
 import {
   Alert, Badge, Button, Card, DataTable, Disclosure, EmptyState, FileDrop, Icon, KeyValueList, ProgressBar, SegmentedControl, StatCard, Tabs,
-  announce, ipSortValue, select, toast
+  announce, checkbox, confirmDialog, ipSortValue, select, toast
 } from '../ui/components.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { registerStrings, formatNumber, formatPercent, formatDate, formatDateTime } from '../i18n.js';
@@ -52,11 +64,15 @@ import { checkFcrdns, FCRDNS_STATUSES } from '../lib/ptrsweep.js';
 import { ipFieldStatus } from '../lib/sourcestatus.js';
 import { registrableDomain } from '../lib/domain.js';
 import { toCsv } from '../lib/export.js';
-import { mergeSignals, sharePercent } from '../lib/util.js';
+import { mergeSignals, onceAsync, sharePercent } from '../lib/util.js';
 import { registerSummaryBuilder } from '../lib/summarycore.js';
 import { reportsSummary, REPORTS_SUMMARY_I18N } from '../lib/reportsummary.js';
 import { NaMark } from '../ui/source-status.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { ReportButton } from '../ui/report-button.js';
+import {
+  HISTORY_DAYS, HISTORY_PERIODS, readHistory, historyText, setKeep, forgetHistory, mergeReports, reclassify, prune, historyDomains, trend, newSince, newSources, rollup
+} from '../lib/dmarchistory.js';
 
 /** Route id (`#/reports`). */
 export const id = 'reports';
@@ -81,6 +97,12 @@ export const IDENTIFY_CONCURRENCY = 8;
 export const GROUP_LIST_MAX = 20;
 /** The two views of the sending addresses: one row per address, or per service. */
 export const SOURCE_VIEWS = Object.freeze(['address', 'service']);
+/** The History tab's panel (ui/report-history.js), loaded on the tab's first use (a failed load is tried again). */
+export const loadHistoryPanel = onceAsync(() => import('../ui/report-history.js'));
+/** A history classified again is written this long after the last change that asked for it (ms). */
+export const HISTORY_SYNC_MS = 300;
+/** The SPF states (lib/dmarcreport.js SpfContext status) under which the classes rest on the current SPF. */
+export const SPF_CHECKED_STATES = Object.freeze(['ok', 'none', 'multiple']);
 
 /** Badge / tile look of each source class. */
 export const CLASS_STYLE = Object.freeze({
@@ -101,7 +123,7 @@ registerStrings('tr', REPORTS_SUMMARY_I18N.tr);
 
 registerStrings('en', {
   'rpt.privacyTitle': 'Everything stays in this browser',
-  'rpt.privacy': 'The report files are read and unpacked here, never uploaded or saved: a reload, Forget or “Delete all local data” drops them. To tell your servers from third parties, the page then looks up the current SPF record of each reported domain over your DoH resolvers (domain names only); an address’s reverse DNS and network only when you press Look up or Identify senders.',
+  'rpt.privacy': 'The report files are read and unpacked here, never uploaded or saved: a reload, Forget or “Delete all local data” drops them. To tell your servers from third parties, the page then looks up the current SPF record of each reported domain over your DoH resolvers (domain names only); an address’s reverse DNS and network only when you press Look up or Identify senders. Only with “Keep a summary of these reports in this workspace” turned on is a summary of them kept in this workspace: counts per day and per sending address, never the files.',
   'rpt.drop.title': 'Drop DMARC and TLS reports here, or choose them',
   'rpt.drop.more': 'Add more reports',
   'rpt.drop.hint': 'Up to {max} files at once: .xml, .xml.gz, .zip (a zipped mailbox folder too), .json, .json.gz',
@@ -244,6 +266,7 @@ registerStrings('en', {
   'rpt.aligned.fail': 'fail',
   'rpt.aligned.part': '{pct} pass',
   'rpt.why.inventory': 'In your server list: {detail}',
+  'rpt.why.inventoryList': 'In your server list',
   'rpt.why.spf': 'Your SPF authorizes it: {detail}',
   'rpt.why.spf-listed': 'Listed by your SPF ({detail}), but receivers get a permanent error from the record first',
   'rpt.why.spf-report': 'Passed SPF aligned in the reports (the current SPF could not tell)',
@@ -443,12 +466,36 @@ registerStrings('en', {
   'rpt.grp.unnamedLine': { one: '{count} address not identified ({messages})', other: '{count} addresses not identified ({messages})' },
   'rpt.grp.via': 'Named from',
   'rpt.grp.evidence': 'Evidence',
-  'rpt.grp.list': 'Addresses'
+  'rpt.grp.list': 'Addresses',
+  'rpt.keep.label': 'Keep a summary of these reports in this workspace',
+  'rpt.keep.hint': 'Off by default: while it is off nothing is written. When it is on, each day’s volume and results and, for every sending address, the days it was first and last seen with its class and service are kept in this browser for {days} days, never the report files.',
+  'rpt.keep.memory': 'Browser storage is unavailable, so the summary lasts only until this tab is closed.',
+  'rpt.keep.turnedOn': 'A summary of the DMARC reports is kept in this workspace.',
+  'rpt.keep.turnedOff': 'Reports are no longer added to the history.',
+  'rpt.keep.stopTitle': 'Stop keeping a summary?',
+  'rpt.keep.stopBody': 'New reports are no longer added. What the history holds stays in this workspace until you forget it in the History tab.',
+  'rpt.keep.stop': 'Stop keeping',
+  'rpt.keep.added': { one: '{count} report added to the history of this workspace.', other: '{count} reports added to the history of this workspace.' },
+  'rpt.keep.already': { one: '{count} report was in the history already and is not counted again.', other: '{count} reports were in the history already and are not counted again.' },
+  'rpt.keep.old': { one: '{count} report older than {days} days was not kept.', other: '{count} reports older than {days} days were not kept.' },
+  'rpt.keep.future': { one: '{count} report dated in the future was not kept.', other: '{count} reports dated in the future were not kept.' },
+  'rpt.keep.cut': { one: '{count} report of a day the history dropped to stay within its size was not kept.', other: '{count} reports of days the history dropped to stay within its size were not kept.' },
+  'rpt.keep.trimmed': 'The history reached its size limit (4 MB): its oldest details were dropped.',
+  'rpt.keep.failed': 'The report history could not be saved: {error}',
+  'rpt.tab.history': 'History',
+  'rpt.histTitle': 'Report history of this workspace',
+  'rpt.hist.verdict.no-mail': 'No mail in this period',
+  'rpt.hist.verdict.enforced': 'p=reject in force',
+  'rpt.hist.verdict.enforced-losing': 'p=reject in force, refusing your mail',
+  'rpt.hist.verdict.fix-first': 'Fix first: known sources fail',
+  'rpt.hist.verdict.ready': 'Ready for p=reject',
+  'rpt.hist.loading': 'Loading the history…',
+  'rpt.hist.loadFailed': 'The history could not be loaded. Check the connection and try again.'
 });
 
 registerStrings('tr', {
   'rpt.privacyTitle': 'Her şey bu tarayıcıda kalır',
-  'rpt.privacy': 'Rapor dosyaları burada okunur ve açılır; hiçbir yere yüklenmez ya da kaydedilmez: sayfayı yenilemek, Unut ya da “Tüm yerel verileri sil” onları siler. Sunucularınızı üçüncü taraflardan ayırmak için sayfa ardından raporlanan her alan adının güncel SPF kaydını DoH çözümleyicileriniz üzerinden sorgular (yalnızca alan adları); bir adresin ters DNS ve ağ bilgisi ise yalnızca Sorgula’ya ya da Göndericileri tanımla’ya bastığınızda sorulur.',
+  'rpt.privacy': 'Rapor dosyaları burada okunur ve açılır; hiçbir yere yüklenmez ya da kaydedilmez: sayfayı yenilemek, Unut ya da “Tüm yerel verileri sil” onları siler. Sunucularınızı üçüncü taraflardan ayırmak için sayfa ardından raporlanan her alan adının güncel SPF kaydını DoH çözümleyicileriniz üzerinden sorgular (yalnızca alan adları); bir adresin ters DNS ve ağ bilgisi ise yalnızca Sorgula’ya ya da Göndericileri tanımla’ya bastığınızda sorulur. Raporların özeti yalnızca “Bu raporların özetini bu çalışma alanında tut” açıksa bu çalışma alanında tutulur: dosyaların kendisi değil, gün ve gönderen adres başına sayılar.',
   'rpt.drop.title': 'DMARC ve TLS raporlarını buraya bırakın ya da seçin',
   'rpt.drop.more': 'Daha fazla rapor ekleyin',
   'rpt.drop.hint': 'Aynı anda en fazla {max} dosya: .xml, .xml.gz, .zip (zip’lenmiş bir posta klasörü de), .json, .json.gz',
@@ -591,6 +638,7 @@ registerStrings('tr', {
   'rpt.aligned.fail': 'geçmedi',
   'rpt.aligned.part': '{pct} geçti',
   'rpt.why.inventory': 'Sunucu listenizde: {detail}',
+  'rpt.why.inventoryList': 'Sunucu listenizde',
   'rpt.why.spf': 'SPF kaydınız yetkilendiriyor: {detail}',
   'rpt.why.spf-listed': 'SPF kaydınızda listeli ({detail}), ama alıcılar önce kayıttan kalıcı hata alıyor',
   'rpt.why.spf-report': 'Raporlarda hizalı SPF’ten geçti (güncel SPF bunu söyleyemedi)',
@@ -790,7 +838,31 @@ registerStrings('tr', {
   'rpt.grp.unnamedLine': '{count} adres tanımlanamadı ({messages})',
   'rpt.grp.via': 'Neye göre adlandırıldı',
   'rpt.grp.evidence': 'Kanıt',
-  'rpt.grp.list': 'Adresler'
+  'rpt.grp.list': 'Adresler',
+  'rpt.keep.label': 'Bu raporların özetini bu çalışma alanında tut',
+  'rpt.keep.hint': 'Varsayılan olarak kapalı: kapalıyken hiçbir şey yazılmaz. Açıkken her günün hacmi ve sonuçları, her gönderen adresin de ilk ve son görüldüğü günler, sınıfı ve hizmeti bu tarayıcıda {days} gün tutulur; rapor dosyaları hiçbir zaman tutulmaz.',
+  'rpt.keep.memory': 'Tarayıcı depolaması kullanılamıyor; özet yalnızca bu sekme kapanana kadar kalır.',
+  'rpt.keep.turnedOn': 'DMARC raporlarının özeti bu çalışma alanında tutuluyor.',
+  'rpt.keep.turnedOff': 'Raporlar artık geçmişe eklenmiyor.',
+  'rpt.keep.stopTitle': 'Özet tutma durdurulsun mu?',
+  'rpt.keep.stopBody': 'Yeni raporlar artık eklenmez. Geçmişte tutulanlar, Geçmiş sekmesinde siz unutana kadar bu çalışma alanında kalır.',
+  'rpt.keep.stop': 'Tutmayı durdur',
+  'rpt.keep.added': '{count} rapor bu çalışma alanının geçmişine eklendi.',
+  'rpt.keep.already': 'Geçmişte zaten olan {count} rapor yeniden sayılmadı.',
+  'rpt.keep.old': '{days} günden eski {count} rapor tutulmadı.',
+  'rpt.keep.future': 'Tarihi ileride olan {count} rapor tutulmadı.',
+  'rpt.keep.cut': 'Geçmişin boyut sınırında kalmak için çıkardığı günlere ait {count} rapor tutulmadı.',
+  'rpt.keep.trimmed': 'Geçmiş boyut sınırına (4 MB) ulaştı: en eski ayrıntıları çıkarıldı.',
+  'rpt.keep.failed': 'Rapor geçmişi kaydedilemedi: {error}',
+  'rpt.tab.history': 'Geçmiş',
+  'rpt.histTitle': 'Bu çalışma alanının rapor geçmişi',
+  'rpt.hist.verdict.no-mail': 'Bu dönemde e-posta yok',
+  'rpt.hist.verdict.enforced': 'p=reject yürürlükte',
+  'rpt.hist.verdict.enforced-losing': 'p=reject yürürlükte, e-postanız reddediliyor',
+  'rpt.hist.verdict.fix-first': 'Önce düzeltin: bilinen kaynaklar geçmiyor',
+  'rpt.hist.verdict.ready': 'p=reject için hazır',
+  'rpt.hist.loading': 'Geçmiş yükleniyor…',
+  'rpt.hist.loadFailed': 'Geçmiş yüklenemedi. Bağlantıyı kontrol edip yeniden deneyin.'
 });
 
 /* ------------------------------------------------------------------------ */
@@ -973,6 +1045,217 @@ export function ptrFact(v) {
 }
 
 /* ------------------------------------------------------------------------ */
+/* The report history (lib/dmarchistory.js) and the customer report         */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Whether the classes of a domain's sources rest on its current SPF: every SPF record the classes
+ * need (lib/dmarcreport.js spfDomainsFor) was read — no record, or several, is an answer too.
+ * Without it they come from the reports and the server list alone: provisional for the history.
+ * @param {object|null} agg lib/dmarcreport.js DomainAggregate
+ * @param {Map<string, { status: string }>} spf the SPF contexts read so far
+ * @returns {boolean}
+ */
+export function classesChecked(agg, spf) {
+  const wanted = agg ? spfDomainsFor(agg) : [];
+  return wanted.length > 0 && wanted.every((d) => spf.has(d) && SPF_CHECKED_STATES.includes(spf.get(d).status));
+}
+
+/**
+ * The classifier the history asks when it merges a drop or classes its sources again
+ * (lib/dmarchistory.js HistoryClassify): each domain's sources as the page classifies them now,
+ * the service behind each (what the reports, the SPF and a reverse DNS lookup name; a network
+ * alone is no service) and whether the classes rest on the domain's current SPF.
+ * @param {{ get(domain: string): { rows: object[], checked: boolean }|undefined }} domains lib/dmarcreport.js classifySources
+ *   rows per domain: a Map, or an object whose get() classes a domain on its first use
+ * @param {(domain: string, row: object) => object|null} identOf lib/senders.js identifySource of a row of a domain
+ * @returns {import('../lib/dmarchistory.js').HistoryClassify}
+ */
+export function historyClassifier(domains, identOf) {
+  const byIp = new Map();
+  return (domain, ip) => {
+    const entry = domains.get(domain);
+    if (!entry) return null;
+    if (!byIp.has(domain)) byIp.set(domain, new Map(entry.rows.map((r) => [r.ip, r])));
+    const row = byIp.get(domain).get(ip);
+    if (!row) return null;
+    const ident = identOf ? identOf(domain, row) : null;
+    const named = ident && ident.via !== 'asn' ? ident : null;
+    return { cls: row.cls, service: named ? named.service : null, type: named ? named.type : null, provisional: !entry.checked };
+  };
+}
+
+/**
+ * What a merge into the history says (the toast after a drop or the switch): the reports added,
+ * those it had already, those it did not take, and whether the size cap dropped details.
+ * @param {{ merged: number, duplicates: number, skipped: { old: number, future: number, cut: number } }} m lib/dmarchistory.js mergeReports
+ * @param {{ dropped: { recentDays: number, sources: number, days: number } }|null} p lib/dmarchistory.js prune
+ * @returns {Array<[string, object]>} text keys and their params, in order
+ */
+export function keepMessages(m, p) {
+  const out = [];
+  if (m.merged) out.push(['rpt.keep.added', { count: m.merged }]);
+  if (m.duplicates) out.push(['rpt.keep.already', { count: m.duplicates }]);
+  if (m.skipped.old) out.push(['rpt.keep.old', { count: m.skipped.old, days: HISTORY_DAYS }]);
+  if (m.skipped.future) out.push(['rpt.keep.future', { count: m.skipped.future }]);
+  if (m.skipped.cut) out.push(['rpt.keep.cut', { count: m.skipped.cut }]);
+  if (p && (p.dropped.recentDays || p.dropped.sources || p.dropped.days)) out.push(['rpt.keep.trimmed', {}]);
+  return out;
+}
+
+/**
+ * The words of an SPF permerror's reason (lib/health.js SPF_PERMERROR_REASONS).
+ * @param {string|null} reason
+ * @param {(key: string, params?: object) => string} t
+ * @returns {string}
+ */
+export function spfReasonText(reason, t) {
+  return t(`rpt.spfError.${reason || 'syntax'}`);
+}
+
+/**
+ * The text of one fix of a source (`rpt.fix.<code>`), with its domains and the permerror's reason.
+ * @param {object} r a lib/dmarcreport.js classifySources row
+ * @param {string} code a lib/dmarcreport.js FIX_CODES value
+ * @param {string} domain the policy domain
+ * @param {(key: string, params?: object) => string} t
+ * @returns {string}
+ */
+export function fixStepText(r, code, domain, t) {
+  return t(`rpt.fix.${code}`, { ...fixParams(r, code, domain), why: r.spfNow && r.spfNow.reason ? spfReasonText(r.spfNow.reason, t) : '' });
+}
+
+/**
+ * Why a source is in its class, as a customer report says it: a server of your list is not named.
+ * @param {{ reason: string, detail?: string|null }} r
+ * @param {(key: string, params?: object) => string} t
+ * @returns {string}
+ */
+export function reportWhyText(r, t) {
+  return r.reason === 'inventory' ? t('rpt.why.inventoryList') : t(`rpt.why.${r.reason}`, { detail: r.detail || '' });
+}
+
+/**
+ * The SPF line of a domain (the DMARC head; the customer report): looking up, offline, checked
+ * with when (and the permerror receivers get), no record, several, a failed lookup, not checked.
+ * @param {{ line: string|null, context: object|null, overview: object, domain: string }} o
+ * @param {(key: string, params?: object) => string} t
+ * @returns {{ text: string, broken: string|null }}
+ */
+export function spfLineText({ line, context, overview, domain }, t) {
+  const broken = line === 'ok' && overview && overview.spfError && overview.spfError.domain === domain ? overview.spfError.reason : null;
+  let text;
+  if (line === 'loading') text = t('rpt.spf.loading');
+  else if (line === 'offline') text = t('rpt.spf.offline');
+  else if (line === 'ok') text = [t('rpt.spf.ok', { time: formatDateTime(context && context.at) }), broken ? t('rpt.spf.broken', { why: spfReasonText(broken, t) }) : null].filter(Boolean).join(' · ');
+  else if (line === 'none' || line === 'multiple') text = t(`rpt.spf.${line}`);
+  else if (line === 'failed') text = t('rpt.spf.failed', { error: (context && context.error) || '' });
+  else text = t('rpt.det.notChecked');
+  return { text, broken };
+}
+
+/**
+ * The notes of a DMARC head, worded (the "SPF not checked" note only once the SPF was asked).
+ * @param {object} agg lib/dmarcreport.js DomainAggregate
+ * @param {object} o lib/dmarcreport.js dmarcOverview
+ * @param {string|null} line the SPF line's state
+ * @param {(key: string, params?: object) => string} t
+ * @returns {Array<{ note: string, text: string }>}
+ */
+export function noteTexts(agg, o, line, t) {
+  const params = (n) => (n === 'spf-permerror'
+    ? { count: o.spfError.sources, domain: o.spfError.domain, why: spfReasonText(o.spfError.reason, t) }
+    : { count: agg.days, pct: agg.policy.pct, policies: agg.policies.map((x) => `p=${x}`).join(', ') });
+  const out = o.notes.filter((n) => n !== 'spf-unknown' || line !== null).map((n) => ({ note: n, text: t(`rpt.note.${n}`, params(n)) }));
+  if (agg.skipped) out.push({ note: 'skipped', text: t('rpt.skipped', { count: agg.skipped }) });
+  return out;
+}
+
+/** Sources to fix, services and new senders a customer report lists (the rest is counted). */
+export const REPORT_LIST_MAX = 25;
+
+/**
+ * The facts of the DMARC customer report (lib/report.js dmarcReport) of one domain: the reports read
+ * in the tab for it — their head, the verdict, the sources to fix with their steps, the classes, the
+ * services, the notes — and what the workspace's history keeps of it — the trend of the period, its
+ * verdict, the senders new in it — worded in the UI language. Never a server name of the server
+ * list, a file name or a reporter's contact.
+ * @param {{ domain: string, agg?: object|null, rows?: object[]|null, overview?: object|null, line?: string|null,
+ *   context?: object|null, identOf?: (row: object) => object|null, history?: object|null, period?: number,
+ *   now?: number, at?: Date|null }} input `context`: the domain's SPF context; `history`: lib/dmarchistory.js History
+ * @param {(key: string, params?: object) => string} t
+ * @returns {import('../lib/report.js').DmarcReportInput|null} null with neither reports nor history for the domain
+ */
+export function dmarcReportFacts({ domain, agg = null, rows = null, overview = null, line = null, context = null, identOf = null, history = null,
+  period = HISTORY_PERIODS[0], now = Date.now(), at = null }, t) {
+  const num = (n) => formatNumber(n);
+  const kept = history && history.domains && Object.prototype.hasOwnProperty.call(history.domains, domain) ? history : null;
+  if (!(agg && rows && overview) && !kept) return null;
+  let current = null;
+  if (agg && rows && overview) {
+    const o = overview;
+    const look = verdictLook(o);
+    const counts = o.verdict === 'spf-broken' ? { count: o.atRisk.length, messages: num(o.atRiskMessages) }
+      : { count: o.blockers.length, messages: num(o.verdict === 'ready' ? o.unknownFail : o.blocked) };
+    const ident = (r) => (identOf ? identOf(r) : null);
+    const all = [...o.blockers, ...o.atRisk];
+    const spf = spfLineText({ line, context, overview: o, domain: agg.domain }, t).text;
+    current = {
+      begin: agg.begin,
+      end: agg.end,
+      reports: agg.reports,
+      reporters: agg.reporters.map((r) => r.org),
+      messages: o.messages,
+      pass: o.pass,
+      compliance: o.compliance,
+      policy: { ...agg.policy },
+      verdict: { variant: look.variant, title: t(`rpt.verdict.${look.key}.title`), body: t(`rpt.verdict.${look.key}.body`, counts) },
+      spf: [spf, context && context.record ? context.record : null].filter(Boolean).join(' · '),
+      unknown: o.unknown.length ? t('rpt.unknownLine', { count: o.unknown.length, messages: num(o.unknownFail) }) : null,
+      unknownSources: o.unknown.length,
+      classes: SOURCE_CLASSES.map((cls) => ({ cls, label: t(`rpt.cls.${cls}`), sources: o.byClass[cls].sources, messages: o.byClass[cls].messages, pass: o.byClass[cls].pass })),
+      fixes: all.slice(0, REPORT_LIST_MAX).map((r) => {
+        const svc = serviceLabel(ident(r), t);
+        return {
+          ip: r.ip,
+          service: svc ? svc.name : null,
+          label: t(`rpt.clsOne.${r.cls}`),
+          why: reportWhyText(r, t),
+          count: r.fail ? t('rpt.fix.failing', { fail: num(r.fail), messages: num(r.messages) }) : t('rpt.fix.spfOnly', { count: num(r.atRisk), messages: num(r.messages) }),
+          steps: r.fixes.map((f) => fixStepText(r, f, agg.domain, t)),
+          severity: o.enforced ? 'error' : 'warn'
+        };
+      }),
+      moreFixes: Math.max(0, all.length - REPORT_LIST_MAX),
+      services: groupSources(rows, ident).groups.filter((g) => g.key !== 'unnamed').slice(0, REPORT_LIST_MAX).map((g) => ({
+        name: groupName(g, t), type: g.key !== 'isp' && g.type ? t(`rpt.svcType.${g.type}`) : null, addresses: g.addresses, messages: g.messages, pass: g.pass
+      })),
+      notes: noteTexts(agg, o, line, t).map((n) => n.text)
+    };
+  }
+  let hist = null;
+  if (kept) {
+    const tr = trend(kept, domain, { days: period, now });
+    const since = newSince(kept, domain, { now });
+    const fresh = newSources(kept, domain, since);
+    const roll = rollup(kept, { now, days: period }).rows.find((x) => x.domain === domain);
+    hist = {
+      days: period,
+      from: tr.from,
+      to: tr.to,
+      totals: tr.totals,
+      slots: tr.slots,
+      policy: kept.domains[domain].policy,
+      verdict: roll ? roll.verdict : 'no-mail',
+      newSince: since,
+      newSources: fresh.slice(0, REPORT_LIST_MAX).map((x) => ({ ip: x.ip, service: x.service, first: x.first, msgs: x.msgs })),
+      moreNew: Math.max(0, fresh.length - REPORT_LIST_MAX)
+    };
+  }
+  return { domain, at: at || (kept && kept.updatedAt ? new Date(kept.updatedAt) : new Date(now)), current, history: hist };
+}
+
+/* ------------------------------------------------------------------------ */
 /* Module state: the reports of this tab (memory only)                      */
 /* ------------------------------------------------------------------------ */
 
@@ -1009,6 +1292,8 @@ let intelService = null;
 /** The DohClient intelService asks: a new one (another resolver chain) gets a new service. */
 let intelDns = null;
 let active = null;
+/** ui/report-history.js once the History tab loaded it (its choices are reset with the reports). */
+let historyModule = null;
 
 /** Forget every report (Forget, another workspace, "Delete all local data"). */
 function resetReports() {
@@ -1028,13 +1313,17 @@ export function mount(container, ctx) {
   const { t, state } = ctx;
   if (!subscribed) {
     subscribed = true;
-    state.subscribe(({ key }) => {
+    state.subscribe(({ key, value, origin }) => {
       // The reports are a customer's: another workspace forgets them like "Delete all local data".
       if (key === 'cleared' || key === 'workspace') {
         resetReports();
+        if (historyModule) historyModule.resetHistoryPanel();
         if (rerender) rerender();
       } else if (key === 'inventory' && rerender && S.dmarc) {
         rerender({ keep: true });
+      } else if (key === 'workspaceData' && origin === 'external' && rerender && value && Array.isArray(value.parts) && value.parts.includes('reportHistory')) {
+        // Another tab kept, forgot or switched off the report history: the switch and the History tab follow.
+        rerender({ history: true });
       }
     });
   }
@@ -1069,6 +1358,197 @@ export function mount(container, ctx) {
     return formatPercent(x.value, x.digits);
   };
   const day = (d) => formatDate(d, { utc: true, dateStyle: 'medium' });
+  // False once the view is left: what lands later (a merge after the SPF) draws nothing.
+  let alive = true;
+
+  /* --- the report history (lib/dmarchistory.js, the workspace part reportHistory) ----------- */
+  let historyCache = { text: null, value: null };
+  let historyPanel = null;
+  let syncTimer = null;
+  // The classes of the domains not on screen, for the history: kept while their inputs stay the same.
+  const classCache = new Map();
+
+  /** The workspace's history now, parsed once per stored text. */
+  function currentHistory() {
+    const text = state.workspaceData('reportHistory') || '';
+    if (text !== historyCache.text) historyCache = { text, value: readHistory(text) };
+    return historyCache.value;
+  }
+
+  const historyHasDomains = () => Object.keys(currentHistory().domains).length > 0;
+  /** The History tab is there while the switch is on or something is kept. */
+  const historyTabWanted = () => currentHistory().keep || historyHasDomains();
+
+  /** Write the history (nothing when its text did not change); a write that failed says so. */
+  async function saveHistory(next) {
+    const text = historyText(next);
+    if (text === (state.workspaceData('reportHistory') || '')) return true;
+    const done = state.setWorkspaceData('reportHistory', text);
+    historyCache = state.workspaceData('reportHistory') === text ? { text, value: next } : { text: null, value: null };
+    const ok = await done;
+    if (!ok && state.workspacePersistence && state.workspaceError) {
+      toast(t('rpt.keep.failed', { error: state.workspaceError.message || String(state.workspaceError) }), { type: 'warn' });
+    }
+    return ok;
+  }
+
+  /**
+   * The sources of the DMARC domains read in the tab, classified as the page does now, for the
+   * history: a domain is classed when the history first asks about it (a drop of one domain never
+   * classes the others again).
+   */
+  function historyClassifierNow() {
+    const index = ctx.getInventoryIndex();
+    const m = dmarcModel();
+    const entries = new Map();
+    const domains = {
+      get(domain) {
+        if (entries.has(domain)) return entries.get(domain);
+        const agg = aggOf(domain);
+        let entry;
+        if (agg) {
+          let rows;
+          if (m && m.agg === agg) rows = m.rows;
+          else {
+            const hit = classCache.get(domain);
+            if (hit && hit.agg === agg && hit.index === index && hit.spfVersion === S.spfVersion && hit.spf === S.spf) rows = hit.rows;
+            else {
+              rows = classifySources(agg, { spf: S.spf, index });
+              classCache.set(domain, { agg, index, spfVersion: S.spfVersion, spf: S.spf, rows });
+            }
+          }
+          entry = { rows, checked: classesChecked(agg, S.spf) };
+        }
+        entries.set(domain, entry);
+        return entry;
+      }
+    };
+    return historyClassifier(domains, (domain, row) => identFor(domain, row));
+  }
+
+  /** Merge DMARC reports into the history (the switch is on), keep it within its window and size, say what happened. */
+  function keepReports(reports, { quiet = false } = {}) {
+    const h = currentHistory();
+    if (!h.keep || !reports.length) return;
+    const now = Date.now();
+    const m = mergeReports(h, reports, { now, classify: historyClassifierNow() });
+    const p = prune(m.history, { now });
+    saveHistory(p.history);
+    refreshHistory();
+    const said = keepMessages(m, p);
+    if (!quiet && said.length) toast(said.map(([key, params]) => t(key, params)).join(' '), { type: m.merged ? 'success' : 'info' });
+  }
+
+  /** The classes or services changed (the SPF landed, the server list changed, Identify senders): the history follows, a moment later. */
+  function syncHistory() {
+    if (!S.dmarc || !currentHistory().keep) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(runSync, HISTORY_SYNC_MS);
+  }
+
+  function runSync() {
+    syncTimer = null;
+    const h = currentHistory();
+    if (!h.keep || !S.dmarc) return;
+    const domains = S.dmarc.domains.map((d) => d.domain).filter((d) => Object.prototype.hasOwnProperty.call(h.domains, d));
+    if (!domains.length) return;
+    const r = reclassify(h, historyClassifierNow(), { now: Date.now(), domains });
+    if (!r.changed) return;
+    saveHistory(r.history);
+    refreshHistory();
+  }
+
+  /** "Keep a summary of these reports in this workspace" turned on or off. */
+  async function toggleKeep(on) {
+    if (!on && historyHasDomains()) {
+      const ok = await confirmDialog({ title: t('rpt.keep.stopTitle'), message: t('rpt.keep.stopBody'), confirmLabel: t('rpt.keep.stop') });
+      if (!ok) {
+        if (alive) {
+          renderLoad();
+          focusKeep();
+        }
+        return;
+      }
+    }
+    // The history as it is now: another tab may have written it while the dialog was open.
+    await saveHistory(setKeep(currentHistory(), on));
+    if (!alive) return;
+    announce(t(on ? 'rpt.keep.turnedOn' : 'rpt.keep.turnedOff'));
+    renderAll();
+    // Turned on with reports read: these reports are kept now.
+    if (on && S.dmarcReports.length) keepReports(S.dmarcReports);
+    focusKeep();
+  }
+
+  function focusKeep() {
+    const sw = root.querySelector('[data-role="rpt-keep"]');
+    if (sw) sw.focus();
+  }
+
+  /** Forget report history (the History tab, after its confirmation): the switch stays as it is. */
+  async function forgetKept() {
+    await saveHistory(forgetHistory(currentHistory()));
+    if (!alive) return;
+    renderAll();
+    const back = root.querySelector('.rpt-tabs [data-tab="history"]') || root.querySelector('.rpt-load .filedrop');
+    if (back) back.focus();
+  }
+
+  /** The history changed: the History tab follows (added or removed with everything else when it has to). */
+  function refreshHistory() {
+    if (!alive) return;
+    const has = !!(tabs && tabs.panel('history'));
+    if (historyTabWanted() !== has || (!tabs && historyHasDomains())) {
+      renderResults();
+      return;
+    }
+    if (tabs && has) tabs.setBadge('history', historyDomains(currentHistory()).length || null);
+    if (historyPanel) historyPanel.refresh();
+  }
+
+  /** The History tab's content: the panel loads with its first show. */
+  function historyContent() {
+    const host = h('div', { class: 'stack rh-panel', dataset: { role: 'rpt-history' } }, h('p', { class: 'text-sm muted' }, t('rpt.hist.loading')));
+    loadHistoryPanel().then((mod) => {
+      historyModule = mod;
+      if (!alive || !host.isConnected) return;
+      clear(host);
+      if (historyPanel) historyPanel.destroy();
+      historyPanel = mod.mountHistory(host, { ctx, read: currentHistory, preferred: () => S.domain, classStyle: CLASS_STYLE, onForget: () => forgetKept() });
+    }, () => {
+      ctx.checkOutdated();
+      if (!host.isConnected) return;
+      clear(host);
+      host.append(Alert({ variant: 'error', message: t('rpt.hist.loadFailed') }));
+    });
+    return host;
+  }
+
+  /** The customer report's facts: the domain on screen (the History tab's when it is shown), with its history. */
+  function reportInput() {
+    const hist = currentHistory();
+    const onHistory = !!(tabs && tabs.getSelected() === 'history' && historyPanel);
+    const first = historyDomains(hist)[0];
+    const domain = onHistory ? historyPanel.domain() : S.domain || (historyPanel && historyPanel.domain()) || (first && first.domain) || null;
+    if (!domain) return null;
+    const agg = aggOf(domain);
+    let rows = null;
+    let overview = null;
+    let line = null;
+    if (agg) {
+      const m = dmarcModel();
+      if (m && m.agg === agg) ({ rows, overview, line } = m);
+      else {
+        rows = classifySources(agg, { spf: S.spf, index: ctx.getInventoryIndex() });
+        line = spfStateOf(domain);
+        overview = dmarcOverview(agg, rows, { spfChecked: line === 'loading' || SPF_CHECKED_STATES.includes(line) });
+      }
+    }
+    return dmarcReportFacts({
+      domain, agg, rows, overview, line, context: S.spf.get(domain) || null, identOf: (r) => identFor(domain, r), history: hist,
+      period: historyPanel ? historyPanel.period() : HISTORY_PERIODS[0], now: Date.now(), at: agg ? S.loadedAt : null
+    }, t);
+  }
 
   /* --- reading ----------------------------------------------------------------------- */
   const showProgress = () => {
@@ -1159,7 +1639,15 @@ export function mount(container, ctx) {
     // A Stop gives the focus back to the drop zone, as its button is gone; a read to the end, to the results.
     if (stopped) focusDrop();
     else if (head && kept) head.focus({ preventScroll: true });
-    checkSpf();
+    const spf = checkSpf();
+    // With the switch on, the drop's DMARC reports join the history once the domain on screen has
+    // its SPF (or could not get it): their sources are kept with the classes the page gives them then.
+    if (kept && got.dmarc.length && currentHistory().keep) {
+      const reports = got.dmarc;
+      spf.finally(() => {
+        if (mine === S) keepReports(reports);
+      });
+    }
   }
 
   /** Stop reading (the Stop button, Esc): the queue is dropped; the reports read before stay, those of an archive it cut too. */
@@ -1246,7 +1734,10 @@ export function mount(container, ctx) {
       if (!(err && err.name === 'AbortError')) toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
     }
     // Forget (or another workspace) dropped these reports meanwhile: nothing to draw.
-    if (!ctx.signal.aborted && mine === S) refreshDmarc();
+    if (!ctx.signal.aborted && mine === S) {
+      refreshDmarc();
+      syncHistory();
+    }
   }
 
   // The last classification: the same reports, server list and SPF answers give the same rows (the
@@ -1322,21 +1813,26 @@ export function mount(container, ctx) {
    * (no lookup), then — once asked — its reverse DNS, the bundled lists and Look up's network.
    */
   function identOf(r) {
+    return identFor(S.domain, r);
+  }
+
+  /** The service behind a source of a domain (the history names the sources of every domain read). */
+  function identFor(domain, r) {
     const fact = S.ptr.get(r.ip) || null;
     const got = S.intel.get(r.ip);
     const info = got && got.info ? got.info : null;
     const cached = identCache.get(r);
-    if (cached && cached.fact === fact && cached.info === info && cached.maps === senderMaps) return cached.ident;
+    if (cached && cached.domain === domain && cached.fact === fact && cached.info === info && cached.maps === senderMaps) return cached.ident;
     const looked = info && Array.isArray(info.ptr) && info.ptr.length ? info.ptr[0] : null;
     const ident = identifySource(r, {
-      domain: S.domain,
+      domain,
       spfPath: spfPathOf(r),
       ptrName: fact && fact.name ? fact.name : looked,
       ptrConfirmed: !!(fact && fact.confirmed),
       maps: senderMaps,
       holder: info && info.holder ? { name: info.holder, asn: info.asn } : null
     });
-    identCache.set(r, { fact, info, maps: senderMaps, ident });
+    identCache.set(r, { domain, fact, info, maps: senderMaps, ident });
     return ident;
   }
 
@@ -1447,6 +1943,7 @@ export function mount(container, ctx) {
     }).length;
     announce(t('rpt.id.done', { named, count: ips.length }));
     updateIdentify();
+    syncHistory();
   }
 
   /* --- the service view ---------------------------------------------------------------------- */
@@ -1533,11 +2030,23 @@ export function mount(container, ctx) {
       dataset: { action: 'rpt-choose', shortcut: 'submit' }, onClick: () => drop.open()
     })];
     if (drop.openFolder) actions.push(Button({ label: t('rpt.folder'), icon: 'folder', size: 'sm', variant: 'secondary', onClick: () => drop.openFolder() }));
+    // Keep a summary of these reports in this workspace: off by default, like Remember origins.
+    const kept = currentHistory();
+    const keepSwitch = checkbox({
+      label: t('rpt.keep.label'),
+      hint: t('rpt.keep.hint', { days: num(HISTORY_DAYS) }),
+      checked: kept.keep,
+      switch: true,
+      className: 'rpt-keep',
+      onChange: (on) => toggleKeep(on)
+    });
+    keepSwitch.input.dataset.role = 'rpt-keep';
     // Files that were no report are listed too: Forget drops that list as well.
     if (hasReports() || S.problems.length) {
       actions.push(Button({ label: t('rpt.forget'), icon: 'trash', size: 'sm', variant: 'ghost', disabled: busy, dataset: { action: 'rpt-forget' }, onClick: forget }));
     }
-    const body = h('div', { class: 'stack-sm' }, drop.el);
+    const body = h('div', { class: 'stack-sm' }, drop.el, keepSwitch.el);
+    if (kept.keep && !state.workspacePersistence) body.append(Alert({ variant: 'warn', compact: true, message: t('rpt.keep.memory') }));
     if (busy) {
       progress = ProgressBar({ label: t('rpt.busy'), value: readDone, max: Math.max(readTotal, 1) });
       const stop = Button({ label: t('rpt.stop'), icon: 'stop', size: 'sm', variant: 'secondary', dataset: { action: 'rpt-stop', shortcut: 'cancel' }, onClick: stopReading });
@@ -1576,6 +2085,10 @@ export function mount(container, ctx) {
   }
 
   function renderResults() {
+    if (historyPanel) {
+      historyPanel.destroy();
+      historyPanel = null;
+    }
     clear(resultsEl);
     sourcesTable = null;
     bulkBtn = null;
@@ -1585,11 +2098,13 @@ export function mount(container, ctx) {
     sourcesBody = null;
     dmarcPanel = null;
     tabs = null;
-    if (!hasReports()) {
+    const kept = currentHistory();
+    const keptDomains = historyDomains(kept).length;
+    if (!hasReports() && !keptDomains) {
       if (!busy) resultsEl.append(EmptyState({ icon: 'inbox', title: t('rpt.emptyTitle'), message: t('rpt.emptyBody') }));
       return;
     }
-    summaryBtn = SummaryButton({
+    summaryBtn = hasReports() ? SummaryButton({
       kind: 'reports',
       facts: () => {
         const m = dmarcModel();
@@ -1604,12 +2119,17 @@ export function mount(container, ctx) {
         });
       },
       url: () => ctx.shareUrl({})
-    });
-    const domains = new Set([...S.dmarc.domains, ...S.tls.domains].map((d) => d.domain));
-    const title = domains.size === 1 ? t('rpt.resultsOne', { domain: [...domains][0] }) : t('rpt.resultsMany', { count: domains.size });
+    }) : null;
+    let title = t('rpt.histTitle');
+    if (hasReports()) {
+      const domains = new Set([...S.dmarc.domains, ...S.tls.domains].map((d) => d.domain));
+      title = domains.size === 1 ? t('rpt.resultsOne', { domain: [...domains][0] }) : t('rpt.resultsMany', { count: domains.size });
+    }
+    // The customer report: the DMARC domain on screen (the History tab's when it is shown), with its history.
+    const report = S.dmarcReports.length || keptDomains ? ReportButton(ctx, 'dmarc', () => reportInput()) : null;
     resultsEl.append(h('div', { class: 'rpt-results-head' },
       h('h2', { class: 'rpt-results-title', attrs: { tabindex: -1 } }, title),
-      summaryBtn.el));
+      h('div', { class: 'cluster rpt-results-actions' }, summaryBtn ? summaryBtn.el : null, report)));
     const items = [];
     const dmarcContent = () => {
       dmarcPanel = h('div', { class: 'stack rpt-dmarc' });
@@ -1618,6 +2138,7 @@ export function mount(container, ctx) {
     };
     if (S.dmarcReports.length) items.push({ id: 'dmarc', label: t('rpt.tab.dmarc'), icon: 'mail', badge: S.dmarcReports.length, content: dmarcContent });
     if (S.tlsReports.length) items.push({ id: 'tls', label: t('rpt.tab.tls'), icon: 'lock', badge: S.tlsReports.length, content: () => tlsPanel() });
+    if (kept.keep || keptDomains) items.push({ id: 'history', label: t('rpt.tab.history'), icon: 'activity', badge: keptDomains || null, content: () => historyContent() });
     tabs = Tabs(items, { selected: items.some((i) => i.id === S.tab) ? S.tab : items[0].id, label: t('rpt.tabs'), className: 'rpt-tabs', onChange: (tab) => { S.tab = tab; } });
     resultsEl.append(tabs.el);
   }
@@ -1735,11 +2256,7 @@ export function mount(container, ctx) {
     if (o.blockers.length || o.atRisk.length) body.append(fixFirst(agg, o));
     if (o.unknown.length) body.append(h('p', { class: 'rpt-unknown-line text-sm' }, Icon('alert', { size: 14 }), ' ', t('rpt.unknownLine', { count: o.unknown.length, messages: num(o.unknownFail) })));
     body.append(spfLine(agg, line, o));
-    const noteParams = (n) => (n === 'spf-permerror'
-      ? { count: o.spfError.sources, domain: o.spfError.domain, why: spfErrorText(o.spfError.reason) }
-      : { count: agg.days, pct: p.pct, policies: agg.policies.map((x) => `p=${x}`).join(', ') });
-    const notes = o.notes.filter((n) => n !== 'spf-unknown' || line !== null).map((n) => h('li', { dataset: { note: n } }, t(`rpt.note.${n}`, noteParams(n))));
-    if (agg.skipped) notes.push(h('li', { dataset: { note: 'skipped' } }, t('rpt.skipped', { count: agg.skipped })));
+    const notes = noteTexts(agg, o, line, t).map((n) => h('li', { dataset: { note: n.note } }, n.text));
     if (notes.length) body.append(h('ul', { class: 'rpt-notes text-sm muted' }, notes));
     if (agg.errors.length) body.append(Disclosure({ summary: t('rpt.errors'), className: 'rpt-reporter-errors', children: h('ul', null, agg.errors.slice(0, 20).map((e) => h('li', { class: 'mono text-sm' }, e))) }));
     return Card({
@@ -1753,11 +2270,11 @@ export function mount(container, ctx) {
 
   /** The words of a permerror's reason (health.SPF_PERMERROR_REASONS). */
   function spfErrorText(reason) {
-    return t(`rpt.spfError.${reason || 'syntax'}`);
+    return spfReasonText(reason, t);
   }
 
   function fixText(r, f, domain) {
-    return t(`rpt.fix.${f}`, { ...fixParams(r, f, domain), why: r.spfNow && r.spfNow.reason ? spfErrorText(r.spfNow.reason) : '' });
+    return fixStepText(r, f, domain, t);
   }
 
   function fixFirst(agg, o) {
@@ -1783,14 +2300,7 @@ export function mount(container, ctx) {
   function spfLine(agg, line, o) {
     const c = S.spf.get(agg.domain);
     // The domain's own record gives receivers a permerror (for the most mail): the line says so and why.
-    const broken = line === 'ok' && o.spfError && o.spfError.domain === agg.domain ? o.spfError.reason : null;
-    let text;
-    if (line === 'loading') text = t('rpt.spf.loading');
-    else if (line === 'offline') text = t('rpt.spf.offline');
-    else if (line === 'ok') text = [t('rpt.spf.ok', { time: formatDateTime(c.at) }), broken ? t('rpt.spf.broken', { why: spfErrorText(broken) }) : null].filter(Boolean).join(' · ');
-    else if (line === 'none' || line === 'multiple') text = t(`rpt.spf.${line}`);
-    else if (line === 'failed') text = t('rpt.spf.failed', { error: (c && c.error) || '' });
-    else text = t('rpt.det.notChecked');
+    const { text, broken } = spfLineText({ line, context: c || null, overview: o, domain: agg.domain }, t);
     // Busy, never disabled, while the lookup runs: the keyboard focus stays on it across the redraws.
     const loading = line === 'loading';
     const retry = Button({
@@ -2271,9 +2781,14 @@ export function mount(container, ctx) {
     return Disclosure({ summary: `${t('rpt.tls.senders')} (${num(s.orgs.length)})`, className: 'rpt-tls-senders-box', children: table.el });
   }
 
-  rerender = ({ keep = false } = {}) => {
-    if (keep) refreshDmarc();
-    else renderAll();
+  rerender = ({ keep = false, history = false } = {}) => {
+    if (history) {
+      renderLoad();
+      refreshHistory();
+    } else if (keep) {
+      refreshDmarc();
+      syncHistory();
+    } else renderAll();
   };
   renderAll();
   // Coming back with reports read before: the SPF of a domain not looked up yet, or not while offline
@@ -2290,6 +2805,16 @@ export function mount(container, ctx) {
       for (const [ip, got] of S.intel) if (got.loading) S.intel.delete(ip);
       // Identify senders stops with the view; what it looked up stays (S.ptr).
       S.identifying = null;
+      alive = false;
+      // A history classified again and not written yet is written now.
+      if (syncTimer) {
+        clearTimeout(syncTimer);
+        runSync();
+      }
+      if (historyPanel) {
+        historyPanel.destroy();
+        historyPanel = null;
+      }
     }
   };
 }

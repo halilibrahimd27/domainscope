@@ -1,8 +1,9 @@
 /**
- * lib/report.js — the customer report (one self-contained HTML file) of the Domain overview and
- * Domain Health: the one escaping helper against injection payloads, the serializer's allow-lists,
- * the file's structure (CSP, no script, problems first, times, version, what was checked, the
- * re-run link), both languages, failures as statuses, and the permalink inputs.
+ * lib/report.js — the customer report (one self-contained HTML file) of the Domain overview,
+ * Domain Health and DMARC & TLS reports: the one escaping helper against injection payloads, the
+ * serializer's allow-lists, the file's structure (CSP, no script, problems first, times, version,
+ * what was checked, the re-run link), both languages, failures as statuses, the permalink inputs,
+ * and the DMARC section (crafted reporters, services and records escaped; no server of the list).
  * No network: a table-driven fake DoH client (real wire records) and a fake fetch for RDAP; the
  * overview's cards and Health's report come from the real lib/passport.js and lib/health.js.
  */
@@ -15,7 +16,7 @@ import '../../assets/js/views/domain.js';
 // DMARC & TLS reports: its `rpt.*` keys and `.rpt-` classes must stay clear of the customer report's.
 import '../../assets/js/views/reports.js';
 import {
-  REPORT_CSP, REPORT_CSS, REPORT_I18N, REPORT_KINDS, REPORT_SEVERITIES, REPORT_FILE_BASES, buildReport, domainReport, el, escapeHtml,
+  REPORT_CSP, REPORT_CSS, REPORT_I18N, REPORT_KINDS, REPORT_SEVERITIES, REPORT_FILE_BASES, buildReport, domainReport, dmarcReport, el, escapeHtml,
   healthReport, isWebUrl, renderHtml, reportBody, reportHtml, reportLinkParams, utcDay, utcTime
 } from '../../assets/js/lib/report.js';
 import { PASSPORT_CARDS, buildPassport, passportCards } from '../../assets/js/lib/passport.js';
@@ -394,6 +395,122 @@ describe('healthReport: the checks with their problems and advice first', () => 
   });
 });
 
+/* --- the DMARC report ------------------------------------------------------------------ */
+
+describe('dmarcReport: a domain\'s DMARC reports and the history the workspace keeps, as one inert file', () => {
+  const crafted = () => ({
+    domain: 'example.com',
+    at: NOW,
+    current: {
+      begin: new Date('2026-09-25T00:00:00Z'),
+      end: new Date('2026-09-26T23:59:59Z'),
+      reports: 3,
+      reporters: [XSS, 'google.com'],
+      messages: 5175,
+      pass: 4913,
+      compliance: 4913 / 5175,
+      policy: { p: 'none', sp: 'none', np: null, pct: 100, testing: null, adkim: 'r', aspf: 'r' },
+      verdict: { variant: 'warn', title: 'Not ready for p=reject yet', body: `2 sources fail ${ATTR}` },
+      spf: `checked · v=spf1 ${XSS} -all`,
+      unknown: '2 unknown senders, 85 failing messages',
+      unknownSources: 2,
+      classes: [{ cls: 'yours', label: 'Your servers', sources: 3, messages: 4960, pass: 4900 }, { cls: 'unknown', label: 'Unknown senders', sources: 2, messages: 85, pass: 0 }],
+      fixes: [{ ip: '198.51.100.20', service: 'Evil "Mailer" <b>', label: 'Third party', why: 'Authorized through include:spf.mailer.example.net', count: '120 of 120 messages fail',
+        steps: [ATTR, 'Sign its mail with DKIM'], severity: 'warn' }],
+      moreFixes: 0,
+      services: [{ name: '<img src=x onerror=alert(3)>', type: 'Email marketing', addresses: 1, messages: 120, pass: 0 }],
+      notes: ['The reports cover 2 days']
+    },
+    history: {
+      days: 30,
+      from: '2026-09-01',
+      to: '2026-09-30',
+      totals: { msgs: 100, dmarcPass: 90, unknownMsgs: 5, knownFail: 5, reportedDays: 2, compliance: 0.9, unknownShare: 0.05 },
+      slots: [
+        { day: '2026-09-25', to: '2026-09-25', reportedDays: 1, msgs: 60, compliance: 0.95, unknownShare: 0.02 },
+        { day: '2026-09-26', to: '2026-09-26', reportedDays: 1, msgs: 40, compliance: 0.825, unknownShare: 0.1 },
+        { day: '2026-09-27', to: '2026-09-27', reportedDays: 0, msgs: 0, compliance: null, unknownShare: null }
+      ],
+      policy: { p: 'none', sp: 'none', pct: 100, seenAt: '2026-09-26T23:59:59.000Z' },
+      verdict: 'fix-first',
+      newSince: '2026-09-20',
+      newSources: [{ ip: '203.0.113.9', service: XSS, first: '2026-09-25', msgs: 5 }],
+      moreNew: 0
+    }
+  });
+
+  test('the file: no script, crafted values escaped, compliance as the figure, the sections in order; it never has a re-run link', () => {
+    const { doc, html } = buildReport('dmarc', crafted(), { ...words('en'), num: i18n.formatNumber, link: LINK });
+    assertInert(html);
+    assert.ok(html.includes('<title>DMARC report · example.com</title>'));
+    assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;, google.com'), 'the reporter named in the report, escaped');
+    assert.ok(html.includes('Evil &quot;Mailer&quot; &lt;b&gt;'), 'a service name, escaped');
+    assert.ok(html.includes('&lt;img src=x onerror=alert(3)&gt;'), 'a service group, escaped');
+    assert.ok(html.includes(escapeHtml(ATTR)), 'a fix step, escaped');
+    assert.ok(html.includes(`v=spf1 ${escapeHtml(XSS)} -all`), 'the SPF record, escaped');
+    assert.match(html, /<span class="crep-score">94\.9%<\/span>/, 'the compliance is the figure');
+    assert.match(html, /data-light="warn"/);
+    const order = [...html.matchAll(/data-section="([a-z]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(order, ['problems', 'reports', 'classes', 'services', 'notes', 'trend', 'new', 'method']);
+    assert.equal(doc.problems.length, 1);
+    assert.deepEqual(doc.problems[0].steps, [ATTR, 'Sign its mail with DKIM']);
+    assert.ok(html.includes('<ul class="crep-item-steps">'), 'the steps of a fix as a list');
+    assert.ok(html.includes('5,175'), 'numbers in the UI\'s format');
+    const trend = doc.sections.find((s) => s.id === 'trend');
+    assert.deepEqual(trend.rows.slice(6).map((r) => r.label), ['2026-09-25', '2026-09-26'], 'one line per day with a report');
+    assert.equal(trend.rows[7].severity, 'error', 'a day under 90 %');
+    assert.ok(html.includes('2026-09-25 · 5 messages'), 'a new sender with its day');
+    // A DMARC report is made from files only the sender has: nothing to run again, so no link at all.
+    assert.deepEqual(reportLinkParams('dmarc', crafted()), {});
+    assert.equal(REPORT_FILE_BASES.dmarc, 'dmarc-report');
+  });
+
+  test('the history alone: its verdict and trend; the sources to fix not listed, and said so', () => {
+    const input = { ...crafted(), current: null };
+    const { doc, html } = buildReport('dmarc', input, words('en'));
+    assertInert(html);
+    assert.equal(doc.verdict.label, 'Fix first: known sources fail');
+    assert.equal(doc.verdict.display, '90%');
+    assert.deepEqual(doc.sections.map((s) => s.id), ['trend', 'new']);
+    assert.ok(html.includes(REPORT_I18N.en['crep.dmarc.fixUnknown']));
+    assert.ok(html.includes('The history of the last 30 days'));
+    // Neither a verdict nor a history: an empty report says so.
+    const bare = dmarcReport({ domain: 'example.com', current: null, history: null }, words('en'));
+    assert.deepEqual([bare.verdict, bare.sections.length], [null, 0]);
+  });
+
+  test('Turkish: the frame and its own words', () => {
+    const { html } = buildReport('dmarc', crafted(), words('tr'));
+    assert.ok(html.startsWith('<!doctype html>\n<html lang="tr">'));
+    for (const s of ['DMARC raporu · example.com', 'Sorunlar ve öneriler', 'Sınıfa göre gönderen adresler', 'Son 30 gün', '2026-09-20 tarihinden bu yana yeni göndericiler']) {
+      assert.ok(html.includes(s), s);
+    }
+    assertInert(html);
+  });
+
+  test('from real reports through the view\'s facts: no server of the list, no file or contact in the file', async () => {
+    const { readReportFiles: readFiles, aggregateDmarc: aggregate, classifySources: classify, dmarcOverview: overviewOf } = await import('../../assets/js/lib/dmarcreport.js');
+    const { buildIpIndex, parseInventory } = await import('../../assets/js/lib/inventory.js');
+    const { dmarcReportFacts } = await import('../../assets/js/views/reports.js');
+    const { emptyHistory, mergeReports } = await import('../../assets/js/lib/dmarchistory.js');
+    const bytes = new Uint8Array(readFileSync(new URL('../fixtures/mailreports/reports-2026-09.zip', import.meta.url)));
+    const read = await readFiles([{ name: 'reports-2026-09.zip', bytes }]);
+    const agg = aggregate(read.dmarc).domains.find((d) => d.domain === 'example.com');
+    const rows = classify(agg, { index: buildIpIndex(parseInventory('mail01 203.0.113.25\napp02 203.0.113.99\n').servers) });
+    const now = Date.parse('2026-09-30T12:00:00Z');
+    const history = mergeReports(emptyHistory({ keep: true }), read.dmarc, { now }).history;
+    for (const lang of ['en', 'tr']) {
+      const w = words(lang);
+      const facts = dmarcReportFacts({ domain: 'example.com', agg, rows, overview: overviewOf(agg, rows, { spfChecked: false }), history, now, at: new Date(now) }, w.t);
+      const { html } = buildReport('dmarc', facts, w);
+      assertInert(html);
+      for (const secret of ['mail01', 'app02', 'reports-2026-09', '.xml', 'noreply-dmarc-support']) assert.ok(!html.includes(secret), `${lang}: ${secret}`);
+      assert.ok(html.includes('203.0.113.99'), `${lang}: the address of a source to fix`);
+      assert.match(html, /data-section="trend"/);
+    }
+  });
+});
+
 /* --- the permalink, the kinds, the texts -------------------------------------------- */
 
 describe('the re-run link carries the inputs only', () => {
@@ -410,7 +527,7 @@ describe('the re-run link carries the inputs only', () => {
   });
 
   test('the kinds and their file names', () => {
-    assert.deepEqual([...REPORT_KINDS], ['domain', 'health']);
+    assert.deepEqual([...REPORT_KINDS], ['domain', 'health', 'dmarc']);
     assert.deepEqual(Object.keys(REPORT_FILE_BASES), [...REPORT_KINDS]);
     assert.throws(() => buildReport('zone', {}, words('en')), TypeError);
     assert.throws(() => domainReport(domainInput, {}), TypeError, 'opts.t is required');

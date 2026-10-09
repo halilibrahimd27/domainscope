@@ -1,10 +1,12 @@
 /*
  * views/reports.css — "DMARC & TLS reports" view (.rpt-*). The drop zone with what was read and
- * what could not be used, the results head with Copy summary, then two tabs: DMARC (the head
- * card with the stats, policy, verdict, "Fix first" and the SPF line; the class tiles; the
- * sending addresses; the reporters) and TLS-RPT (the head card, the failure types with advice
- * and links, the failure details, the senders). The tables turn into labelled cards on a phone.
- * Uses the design tokens from style.css only.
+ * what could not be used and the switch that keeps a summary in the workspace, the results head
+ * with Copy summary and Report, then the tabs: DMARC (the head card with the stats, policy,
+ * verdict, "Fix first" and the SPF line; the class tiles; the sending addresses; the reporters),
+ * TLS-RPT (the head card, the failure types with advice and links, the failure details, the
+ * senders) and History (ui/report-history.js, .rh-*: the filters, the domain's numbers, two bar
+ * charts in inline SVG with their tooltip, legend and table, the sending addresses over time, the
+ * roll-up). The tables turn into labelled cards on a phone. Uses the design tokens from style.css only.
  */
 
 /* Drop zone and what was read */
@@ -486,6 +488,346 @@
   font-weight: 600;
 }
 
+/* The switch "Keep a summary of these reports in this workspace", under the drop zone. */
+.rpt-keep .check-hint {
+  max-width: 62rem;
+}
+
+.rpt-results-actions {
+  gap: 8px;
+}
+
+/* ---- History (ui/report-history.js, .rh-*) -------------------------------------------- */
+
+.rh-filters {
+  align-items: flex-end;
+  gap: 8px 16px;
+}
+
+.rh-domain {
+  min-width: 0;
+  max-width: 28rem;
+}
+
+.rh-domain-card .card-title,
+.rh-domain-card .card-subtitle {
+  overflow-wrap: anywhere;
+}
+
+.rh-charts {
+  display: grid;
+  gap: 18px;
+}
+
+.rh-chart {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+}
+
+.rh-chart-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+/* The plot: the SVG drawn to its width, the y labels in its left gutter, the tooltip over it. */
+.rh-plot {
+  position: relative;
+  min-width: 0;
+  border-radius: var(--radius-xs);
+  outline: none;
+  touch-action: pan-y;
+}
+
+.rh-plot:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.rh-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.rh-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.rh-base {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.rh-hi {
+  fill: var(--surface-3);
+}
+
+.rh-seg-pass {
+  fill: var(--accent-solid);
+}
+
+.rh-seg-other {
+  fill: var(--k-private-solid);
+}
+
+.rh-seg-known {
+  fill: var(--error-solid);
+}
+
+.rh-band-ok {
+  fill: var(--ok-solid);
+}
+
+.rh-band-warn {
+  fill: var(--warn-solid);
+}
+
+.rh-band-error {
+  fill: var(--error-solid);
+}
+
+.rh-y {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 42px;
+  pointer-events: none;
+}
+
+.rh-y-label {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.rh-x {
+  position: relative;
+  height: 16px;
+  pointer-events: none;
+}
+
+.rh-x-label {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.rh-x-label.rh-x-first {
+  transform: none;
+}
+
+.rh-x-label.rh-x-last {
+  transform: translateX(-100%);
+}
+
+/* The tooltip: the value first and strong, the rest under it; never wider than the plot. */
+.rh-tip {
+  position: absolute;
+  top: 4px;
+  z-index: 2;
+  display: grid;
+  gap: 2px;
+  max-width: min(18rem, 100%);
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: none;
+}
+
+.rh-tip-head {
+  font-weight: 650;
+}
+
+.rh-tip-line {
+  color: var(--text-2);
+}
+
+.rh-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--text-2);
+}
+
+.rh-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rh-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.rh-swatch.rh-seg-pass {
+  background: var(--accent-solid);
+}
+
+.rh-swatch.rh-seg-other {
+  background: var(--k-private-solid);
+}
+
+.rh-swatch.rh-seg-known {
+  background: var(--error-solid);
+}
+
+.rh-swatch.rh-band-ok {
+  background: var(--ok-solid);
+}
+
+.rh-swatch.rh-band-warn {
+  background: var(--warn-solid);
+}
+
+.rh-swatch.rh-band-error {
+  background: var(--error-solid);
+}
+
+.rh-pct-ok {
+  color: var(--ok);
+}
+
+.rh-pct-warn {
+  color: var(--warn);
+}
+
+.rh-pct-error {
+  color: var(--error);
+}
+
+.rh-new-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+
+.rh-new-line {
+  margin: 0;
+}
+
+.rh-first {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+}
+
+.rh-sources .dt-row.rh-row-new td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent-solid);
+}
+
+.rh-rollup .dt-row.rh-row-current td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent-solid);
+}
+
+/* A domain of the roll-up shows its trend: a link-like button. */
+.rh-show {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+  font-weight: 600;
+  text-align: start;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.rh-show[aria-current="true"] {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.rh-show:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.rh-verdict {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  min-width: 10rem;
+}
+
+.rh-not-checked {
+  white-space: normal;
+}
+
+.rh-rollup-totals,
+.rh-privacy {
+  margin: 0;
+}
+
+.rh-footer {
+  padding-top: 4px;
+}
+
+@media (max-width: 600px) {
+  .rh-filters {
+    align-items: stretch;
+  }
+
+  .rh-filters > * {
+    min-width: 0;
+    max-width: none;
+  }
+
+  .rh-verdict {
+    min-width: 0;
+  }
+
+  /* A verdict or a "new since" badge says all of its words on a phone: it wraps instead of widening the card. */
+  .rh-first > *,
+  .rh-verdict > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .rh-panel .dt-row .badge {
+    height: auto;
+    min-height: 21px;
+    padding-top: 3px;
+    padding-bottom: 3px;
+    line-height: 1.3;
+    white-space: normal;
+  }
+
+  .rh-sources .dt-row.rh-row-new,
+  .rh-rollup .dt-row.rh-row-current {
+    box-shadow: inset 3px 0 0 var(--accent-solid);
+  }
+
+  .rh-sources .dt-row.rh-row-new td:first-child,
+  .rh-rollup .dt-row.rh-row-current td:first-child {
+    box-shadow: none;
+  }
+}
+
 /* A phone: each table row is a card of labelled lines (the headers come from data-label). */
 @media (max-width: 600px) {
   .rpt-page .dt-table,
@@ -598,5 +940,16 @@
 
   .rpt-tls-type {
     break-inside: avoid;
+  }
+
+  .rh-chart {
+    break-inside: avoid;
+  }
+
+  .rh-tip,
+  .rh-filters,
+  .rh-footer .btn,
+  .rh-only-new {
+    display: none !important;
   }
 }

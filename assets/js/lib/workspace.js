@@ -3,8 +3,9 @@
  * (the server inventory, the learned names, the custom wordlist, the expected CAs, free-text
  * notes, the domains worked on, the domain policy of the portfolio audit (lib/policy.js), the
  * origin map of its proxied names, the certificates its CT watch has seen (lib/ctwatch.js), what the
- * registries last said of its domains (lib/regwatch.js), the Rollout board and the accepted risks
- * (lib/waivers.js)), so a DUPLICATE_IP never mixes two customers' servers and a label
+ * registries last said of its domains (lib/regwatch.js), the Rollout board, the accepted risks
+ * (lib/waivers.js) and the DMARC report history (lib/dmarchistory.js)), so a DUPLICATE_IP never mixes
+ * two customers' servers and a label
  * learned from one customer's scans is never tried under another customer's domains.
  * Settings about the tool itself (theme, language, resolvers, parallelism) stay global (state.js).
  *
@@ -49,7 +50,7 @@ import { randomLabel } from './util.js';
 export const DEFAULT_WORKSPACE_ID = 'default';
 
 /** What one workspace holds. */
-export const WORKSPACE_PARTS = Object.freeze(['inventory', 'learned', 'wordlist', 'expectedCas', 'notes', 'recent', 'policy', 'origins', 'ctSeen', 'rdapSeen', 'rollout', 'waivers']);
+export const WORKSPACE_PARTS = Object.freeze(['inventory', 'learned', 'wordlist', 'expectedCas', 'notes', 'recent', 'policy', 'origins', 'ctSeen', 'rdapSeen', 'rollout', 'waivers', 'reportHistory']);
 
 /** Bounds: workspaces, name and notes length (characters), list lengths, stored text sizes. */
 export const WORKSPACE_LIMITS = Object.freeze({
@@ -65,7 +66,8 @@ export const WORKSPACE_LIMITS = Object.freeze({
   policy: 16384,
   ctSeen: 1048576,
   rdapSeen: 524288,
-  waivers: 65536
+  waivers: 65536,
+  reportHistory: 4194304
 });
 
 /** localStorage key of the pointer to the active workspace (the id, as a plain string). */
@@ -283,6 +285,9 @@ export function sanitizePart(part, value) {
     case 'rdapSeen': return typeof value === 'string' ? cut(value, WORKSPACE_LIMITS.rdapSeen) : '';
     // The accepted risks: JSON text, read by lib/waivers.js; never cut (a cut text is no JSON).
     case 'waivers': return typeof value === 'string' && value.length <= WORKSPACE_LIMITS.waivers ? value : '';
+    // The DMARC report history (lib/dmarchistory.js): its JSON text, kept whole or not at all (a cut
+    // text is no JSON; its own prune() keeps it under the cap), read and checked by readHistory.
+    case 'reportHistory': return typeof value === 'string' && value.length <= WORKSPACE_LIMITS.reportHistory ? value : '';
     default: throw new WorkspaceError('part', `unknown workspace part: ${part}`);
   }
 }

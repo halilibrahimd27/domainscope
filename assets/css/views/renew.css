@@ -24,9 +24,11 @@
 
 /* Compact (a check ran): the names box keeps two lines, the rest waits behind Edit. */
 .rnw-form-card.is-compact:not(.is-editing) [data-role="renew-names"] {
-  /* two lines of text, its 7 px paddings and 1 px borders */
-  height: calc(2lh + 16px);
+  /* two lines of text and the 1 px borders; the paddings narrowed so that only a third line's
+     leading (never its glyphs) could fall in the bottom one */
+  height: calc(2lh + 9px);
   min-height: 0;
+  padding-block: 4px 3px;
   resize: none;
 }
 

@@ -1,7 +1,7 @@
 /**
  * lib/originmap.js — the workspace part 'origins' `{ v: 1, remember, entries, refuted? }`: which
  * server and port really serves a proxied name. The model and readers (start route); merge rules
- * and `refuted`: lib/originfill.js. Pure. Spec §5.61.
+ * and `refuted`: lib/originfill.js. Pure. Spec §5.70.
  */
 
 import { normalizeHostname } from './domain.js';

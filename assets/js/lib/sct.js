@@ -1,7 +1,8 @@
 /**
  * sct.js — the Signed Certificate Timestamps embedded in a certificate, the CT logs that issued
  * them and the certificate's standing under Chrome's and Apple's Certificate Transparency
- * policies (Certificate › Transparency, ui/sct-panel.js; spec §5.90).
+ * policies (spec §5.82). Built for a Certificate › Transparency tab (ROADMAP P2.9) that no view
+ * shows yet: nothing in the page imports this module.
  *
  * - {@link certificateScts} finds extension 1.3.6.1.4.1.11129.2.4.2 in a certificate's DER (its
  *   own small DER walk, so this module does not need lib/x509.js) and {@link decodeSctList}

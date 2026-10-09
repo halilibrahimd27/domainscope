@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * build-ctlogs.mjs — the site's copy of Google's CT log list (assets/data/ctlogs.json): the
- * fallback of Certificate › Transparency (assets/js/lib/sct.js, spec §5.90) when the page cannot
+ * fallback of assets/js/lib/sct.js `loadCtLogList()` (spec §5.82) when the page cannot
  * fetch the live list (offline, or www.gstatic.com unreachable).
  *
  *   node tools/build-ctlogs.mjs              # download the live list and rewrite the copy

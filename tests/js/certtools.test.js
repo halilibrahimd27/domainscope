@@ -50,7 +50,7 @@ describe('SSL Targets: the status summary and the key metric', () => {
 });
 
 describe('SSL Targets: the findings (the old summary alerts)', () => {
-  const textKeys = (list) => list.map((x) => `${x.key}:${x.severity}:${x.text ? x.text.key : x.raw || 'view'}`);
+  const textKeys = (list) => list.map((x) => `${x.summary || x.key}:${x.severity}:${x.text ? x.text.key : x.raw || 'view'}`);
 
   test('a certificate scan with a server list: what needs it, what to check, how the names were found', () => {
     const list = scanFindings({
@@ -97,6 +97,20 @@ describe('SSL Targets: the findings (the old summary alerts)', () => {
     ]);
     assert.equal(findingRows(list).shown[0].key, 'dangling', 'the error first');
     assert.deepEqual(scanFindings(), [{ key: 'no-inventory', severity: 'info', icon: 'server', text: { key: 'scan.sum.noInventory', params: {} } }]);
+  });
+
+  test('two warnings of one code are two rows (each its own key), and both keep the code as their hook', () => {
+    // lib/scanner.js warns twice when both the per-domain and the total cap cut the wordlist.
+    const list = scanFindings({
+      inventory: true, warnings: [{ code: 'BRUTEFORCE_TRUNCATED', detail: '500 (example.net)' }, { code: 'BRUTEFORCE_TRUNCATED', detail: '5000' }],
+      knownWarnings: ['BRUTEFORCE_TRUNCATED']
+    });
+    const warned = list.filter((x) => x.summary === 'BRUTEFORCE_TRUNCATED');
+    assert.deepEqual(warned.map((x) => x.text.params.detail), ['500 (example.net)', '5000']);
+    assert.equal(new Set(list.map((x) => x.key)).size, list.length, 'every key its own');
+    const { shown, more } = findingRows(list);
+    assert.deepEqual([...shown, ...more].filter((x) => x.summary === 'BRUTEFORCE_TRUNCATED').map((x) => x.text.params.detail), ['500 (example.net)', '5000'], 'both drawn');
+    assert.ok(list.filter((x) => x.summary === undefined).every((x) => !x.key.includes(':')), 'the other findings: the key is the hook');
   });
 });
 
@@ -221,5 +235,25 @@ describe('SSL Targets: the folded setup row and the setup\'s signature (lib/scan
       { ...base, zone: 'exact' }
     ]) assert.notEqual(setupSignature(other), sig, JSON.stringify(other));
     assert.equal(typeof setupSignature(), 'string');
+  });
+
+  test('the signature: the server list and, while a wordlist runs, its vocabulary are part of the setup', () => {
+    const vocab = { locales: ['de', 'tr'], custom: ['shop', 'intranet'], learned: true };
+    const base = {
+      domains: ['example.net'], certs: [], extraNames: [], servers: ['["web01",["203.0.113.20"]]'],
+      options: { sources: [], bruteforce: 'small', permutations: false, includeExpired: false, originHints: false }, wordlist: vocab
+    };
+    const sig = setupSignature(base);
+    assert.equal(setupSignature({ ...base, servers: ['["web01",["203.0.113.20"]]', '["web01",["203.0.113.20"]]'] }), sig, 'one server once');
+    assert.equal(setupSignature({ ...base, wordlist: { locales: ['tr', 'de'], custom: ['intranet', 'shop'], learned: true } }), sig, 'the order does not count');
+    for (const other of [
+      { ...base, servers: [...base.servers, '["web02",["203.0.113.21"]]'] }, { ...base, servers: ['["web01",["203.0.113.21"]]'] }, { ...base, servers: [] },
+      { ...base, wordlist: { ...vocab, locales: ['de'] } }, { ...base, wordlist: { ...vocab, locales: null } }, { ...base, wordlist: { ...vocab, custom: ['shop'] } },
+      { ...base, wordlist: { ...vocab, learned: false } }
+    ]) assert.notEqual(setupSignature(other), sig, JSON.stringify(other));
+    // Without a wordlist the vocabulary scans nothing.
+    const off = { ...base, options: { ...base.options, bruteforce: 'off' } };
+    assert.equal(setupSignature({ ...off, wordlist: { locales: null, custom: [], learned: false } }), setupSignature(off));
+    assert.equal(setupSignature({ ...off, wordlist: null }), setupSignature(off));
   });
 });

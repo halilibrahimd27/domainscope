@@ -56,7 +56,9 @@ export function scanKeyMetric({ stats = null, cert = false, inventory = false } 
  * SSL Targets' findings (DESIGN §5.6: "6 alerts → finding list", in the Hosts tab): what the old
  * summary alerts said, each with its key (the view's `data-summary` hook), severity, icon and text
  * (`text`: an i18n key and its parameters; null where the view words it itself: the renewal line).
- * The finding list shows the worst first (lib/template.js findingRows).
+ * A scanner warning is keyed by its code and its place in `warnings` (`CODE:3`: one code may come
+ * more than once, and each is a row), its code the hook (`summary`). The finding list shows the
+ * worst first (lib/template.js findingRows).
  * @param {{ inventory?: boolean, cert?: boolean, stats?: object, suspects?: number, nowhere?: string[], plan?: { need: number,
  *   uncovered: number }|null, verify?: boolean, mx?: boolean, networks?: string[], tech?: { total: number, dns: number, sources: number,
  *   zone?: number }|null, wildcards?: string[], failedSources?: number, warnings?: Array<{ code: string, detail?: string }>,
@@ -64,8 +66,8 @@ export function scanKeyMetric({ stats = null, cert = false, inventory = false } 
  *   `suspects`: servers the inventory and DNS disagree on; `nowhere`: names whose TLS terminates nowhere; `plan`: several
  *   certificates (`need`: servers of the list that need a set); `verify`: pairs to check exist; `mx`: in-domain mail servers;
  *   `knownWarnings`: the warning codes the view has words for
- * @returns {Array<{ key: string, severity: 'error'|'warn'|'info'|'ok', icon: string, text: { key: string, params: object }|null,
- *   raw?: string }>}
+ * @returns {Array<{ key: string, summary?: string, severity: 'error'|'warn'|'info'|'ok', icon: string,
+ *   text: { key: string, params: object }|null, raw?: string }>}
  */
 export function scanFindings({
   inventory = false, cert = false, stats = {}, suspects = 0, nowhere = [], plan = null, verify = false, mx = false, networks = [],
@@ -106,13 +108,19 @@ export function scanFindings({
   if (wild.length) add('wildcard', 'info', 'layers', 'scan.sum.wildcard', { list: wild.join(', ') });
   if (count(failedSources)) add('sources-failed', 'warn', 'alert', 'scan.sum.sourcesFailed', { count: count(failedSources) });
   const known = new Set(Array.isArray(knownWarnings) ? knownWarnings : []);
-  for (const w of Array.isArray(warnings) ? warnings : []) {
-    if (!w || typeof w.code !== 'string' || !w.code) continue;
-    // A code without a sentence (a newer scanner) still reads as `CODE: detail`, never as a raw key.
-    const entry = { key: w.code, severity: 'warn', icon: 'alert', text: known.has(w.code) ? { key: `scan.warn.${w.code}`, params: { detail: w.detail } } : null };
+  (Array.isArray(warnings) ? warnings : []).forEach((w, i) => {
+    if (!w || typeof w.code !== 'string' || !w.code) return;
+    // One row per warning: the scanner raises a code more than once (BRUTEFORCE_TRUNCATED for the
+    // per-domain and the total cap, PUBLIC_SUFFIX per base), so the key is the code and its place;
+    // the code stays the row's hook (`summary`). A code without a sentence (a newer scanner) still
+    // reads as `CODE: detail`, never as a raw key.
+    const entry = {
+      key: `${w.code}:${i}`, summary: w.code, severity: 'warn', icon: 'alert',
+      text: known.has(w.code) ? { key: `scan.warn.${w.code}`, params: { detail: w.detail } } : null
+    };
     if (!entry.text) entry.raw = `${w.code}: ${w.detail ?? ''}`;
     out.push(entry);
-  }
+  });
   return out;
 }
 

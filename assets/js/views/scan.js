@@ -2423,16 +2423,23 @@ export function mount(container, ctx) {
     });
   }
 
-  /** What a scan with the form as it is would scan (lib/scanform setupSignature). */
+  /**
+   * What a scan with the form as it is would scan (lib/scanform setupSignature): with the server list
+   * (each server as the scan reads it, its line left out) and the wordlist vocabulary shared with
+   * Subdomains, so another list or vocabulary asks for a new scan.
+   */
   function currentSignature() {
     const rw = renewal();
     const leaf = certLeaf();
     const zone = activeZone();
+    const vocab = sharedVocabulary();
     return setupSignature({
       domains: parseDomainsInput(domainsField.value).domains,
       certs: rw ? rw.leaves.map((l) => `${l.cert.serialHex}|${l.cert.issuerDN}`) : leaf ? [`${leaf.serialHex}|${leaf.issuerDN}`] : [],
       extraNames: parseHostList(session.extraText || '', { allowWildcard: true }).valid,
+      servers: state.inventory.servers.map((s) => JSON.stringify({ ...s, line: undefined })),
       options,
+      wordlist: { locales: vocab.locales, custom: vocab.custom, learned: vocab.learnedOn },
       zone: zone ? zoneModes.get(zone) || 'discover' : null
     });
   }
@@ -2537,7 +2544,11 @@ export function mount(container, ctx) {
   /* --- state subscriptions ---------------------------------------------------- */
   cleanups.push(state.subscribe((change) => {
     const { key, value } = change;
-    if (key === 'inventory') renderInventoryStep();
+    if (key === 'inventory') {
+      renderInventoryStep();
+      // the folded row's server count, and Run: another list is another scan
+      syncSetup();
+    }
     // The issuer badge of the loaded certificate follows the workspace's expected CAs.
     if (key === 'workspaceData' && expectedCasChanged(change)) renderCertStep();
     if (key === 'settings') {
@@ -3598,7 +3609,8 @@ function buildRunUI(run, ctx, { onFinish }) {
       key: f.key,
       severity: f.severity,
       icon: f.icon,
-      dataset: { summary: f.key },
+      // a scanner warning: one row each, its code the hook
+      dataset: { summary: f.summary || f.key },
       // Several certificates: which set each server needs is on the Renewal plan tab.
       text: f.key === 'renewal' ? renewalSummaryText({ sets: plan.sets, inventory: inv, need })
         : f.text ? t(f.text.key, numberParams(f.text.params)) : f.raw,

@@ -434,8 +434,13 @@
   max-width: 560px;
 }
 
-/* Phones: the key metric wraps under the title, as wide as the card. */
+/* Phones: the key metric wraps under the title, as wide as the card (its slot takes the row, so
+   100% is the header's width, not its own text's). */
 @media (max-width: 719px) {
+  .cert-overview .result-key {
+    flex: 1 1 100%;
+  }
+
   .cert-validity {
     width: 100%;
   }
@@ -867,23 +872,6 @@
 }
 
 @media (max-width: 600px) {
-  .cert-overview-main {
-    padding: 14px;
-  }
-
-  .cert-overview-foot {
-    padding: 12px 14px;
-  }
-
-  .cert-overview-cn {
-    font-size: 17px;
-  }
-
-  .cert-overview-icon {
-    width: 40px;
-    height: 40px;
-  }
-
   .cert-chain-head .btn {
     margin-left: 0;
   }

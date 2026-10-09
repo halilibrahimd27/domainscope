@@ -139,22 +139,30 @@ export function setupSummary({ cert = null, certs = 0, domains = [], servers = 0
 /**
  * What a scan with this setup would scan, as one string: a finished scan whose setup has the same
  * signature is what the form still asks for, so Run reads "Run again" (DESIGN §5.1, region 3) — any
- * other domain, certificate, extra name, option or zone mode makes it the verb again. The order of
- * the domains, names and sources does not count.
- * @param {{ domains?: string[], certs?: string[], extraNames?: string[], options?: { sources?: string[], bruteforce?: string,
- *   permutations?: boolean, permutationBudget?: number, includeExpired?: boolean, originHints?: boolean }, zone?: string|null }} [setup]
- *   `certs`: a key per certificate (serial and issuer); `zone`: the zone file's mode, or null
+ * other domain, certificate, extra name, server list, option, wordlist vocabulary or zone mode makes
+ * it the verb again. The order of the domains, names, servers, sources, languages and custom words
+ * does not count.
+ * @param {{ domains?: string[], certs?: string[], extraNames?: string[], servers?: string[], options?: { sources?: string[],
+ *   bruteforce?: string, permutations?: boolean, permutationBudget?: number, includeExpired?: boolean, originHints?: boolean },
+ *   wordlist?: { locales?: string[]|null, custom?: string[], learned?: boolean }|null, zone?: string|null }} [setup]
+ *   `certs`: a key per certificate (serial and issuer); `servers`: a key per server of the list (what the scan reads of it:
+ *   its name, addresses, ports and topology); `wordlist`: the vocabulary shared with Subdomains — the languages (null:
+ *   chosen by the domains), the custom words and whether learned names are tried (the switch only: a finished scan
+ *   learns more) —, counted only while a wordlist level runs; `zone`: the zone file's mode, or null
  * @returns {string}
  */
-export function setupSignature({ domains = [], certs = [], extraNames = [], options = {}, zone = null } = {}) {
+export function setupSignature({ domains = [], certs = [], extraNames = [], servers = [], options = {}, wordlist = null, zone = null } = {}) {
   const sorted = (list) => [...new Set((Array.isArray(list) ? list : []).map(String))].sort();
   const o = options || {};
+  const w = o.bruteforce && o.bruteforce !== 'off' && wordlist ? wordlist : null;
   return JSON.stringify({
     domains: sorted(domains),
     certs: sorted(certs),
     extra: sorted(extraNames),
+    servers: sorted(servers),
     sources: sorted(o.sources),
     bruteforce: o.bruteforce || null,
+    words: w ? { locales: Array.isArray(w.locales) ? sorted(w.locales) : null, custom: sorted(w.custom), learned: !!w.learned } : null,
     permutations: o.permutations ? Number(o.permutationBudget) || 0 : 0,
     expired: !!o.includeExpired,
     hints: !!o.originHints,

@@ -719,8 +719,8 @@ export function StatusSummary({ items = [], verdict = false, pressed = null, lab
  * and the rest goes behind "⋯"; the row is drawn again when the screen crosses that width. The
  * menu items keep their data-action / data-export; Copy link is `data-action="copy-link"`.
  * Tool-specific actions are NextSteps, never here. A destructive action (Remove, Forget: `tail`,
- * which keeps its own confirmation) goes last in the Export ▾ menu, after Print, and so last in
- * "⋯" on a phone (DESIGN §5.3); it carries `data-tail`.
+ * which keeps its own confirmation) goes last in the Export ▾ menu, after Print, and last in "⋯"
+ * on a phone, after Copy link too (DESIGN §5.3); it carries `data-tail`.
  * @param {{ summary?: { el: HTMLElement, plain?: HTMLElement, setDisabled?: Function, copy?: Function }|null,
  *   report?: HTMLButtonElement|null, exports?: Array<{ label: string, icon?: string, title?: string, onSelect: Function, dataset?: object }>,
  *   print?: boolean|Function, link?: (() => string|null)|null, tail?: Array<{ label: string, icon?: string, onSelect: Function, dataset?: object }>,
@@ -794,15 +794,18 @@ export function ResultActions({ summary = null, report = null, exports = [], pri
     }
     if (plan.more.length) {
       const items = [];
+      const item = (x) => ({ label: x.label, icon: x.icon || 'download', dataset: x.dataset || {}, onSelect: (e) => x.onSelect(e) });
       for (const id of plan.more) {
         if (id === 'plain') {
           items.push({ label: t('result.plainTitle'), icon: 'pilcrow', dataset: { action: 'copy-summary-text' }, onSelect: () => summary.copy && summary.copy('text') });
         } else if (id === 'report') {
           items.push({ label: report.textContent.trim(), icon: 'file-text', dataset: { action: 'report' }, onSelect: () => { if (!report.disabled) report.click(); } });
         } else if (id === 'export') {
-          for (const x of fileItems) items.push({ label: x.label, icon: x.icon || 'download', dataset: x.dataset || {}, onSelect: (e) => x.onSelect(e) });
+          for (const x of fileItems) if (!tailItems.includes(x)) items.push(item(x));
         } else if (id === 'link') items.push({ label: t('common.copyLink'), icon: 'link', dataset: { action: 'copy-link' }, onSelect: () => copyLinkFromMenu() });
       }
+      // The destructive tail closes the menu, after Copy link too (DESIGN §5.3).
+      if (plan.more.includes('export')) for (const x of tailItems) items.push(item(x));
       const menu = MenuButton({ label: t('result.more'), icon: 'more', dataset: { menu: 'more' }, items });
       append(el, menu.el);
     }

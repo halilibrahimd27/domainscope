@@ -619,8 +619,11 @@ export function mount(container, ctx) {
       }))
     }).el);
     if (!actions) {
-      const subject = commonTarget(report.names.map((r) => r.base));
-      const file = (ext) => timestampedName('renewal-readiness', ext, subject ? subject.value : null, current.report.finishedAt);
+      // The actions outlive this report: a file is named after the report on screen when it is saved.
+      const file = (ext) => {
+        const subject = commonTarget(current.report.names.map((r) => r.base));
+        return timestampedName('renewal-readiness', ext, subject ? subject.value : null, current.report.finishedAt);
+      };
       actions = ResultActions({
         summary: SummaryButton({
           kind: 'renew',

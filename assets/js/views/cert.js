@@ -490,7 +490,7 @@ registerStrings('tr', {
   'cert.loadedToast': '{name}: sertifika yüklendi',
   'cert.fileInfo': '{name} · {count}',
   'cert.count': { one: '{count} sertifika', other: '{count} sertifika' },
-  'cert.emptyLine': 'Adları, geçerliliği, anahtarı, zincir sırası, CAA’sı ve Certificate Transparency kayıtları — ve kurulması gereken sunucular.',
+  'cert.emptyLine': 'Adları, geçerliliği, anahtarı, zincir sırası, CAA’sı ve Certificate Transparency kayıtları — ve kurulacağı sunucular.',
   'cert.emptyCheck.names': 'Adlar',
   'cert.emptyCheck.validity': 'Geçerlilik',
   'cert.emptyCheck.key': 'Anahtar ve parmak izleri',
@@ -2365,6 +2365,10 @@ export function mount(container, ctx) {
     const analysis = analyzeChain(result.certificates, result.leaf);
     const certs = [...analysis.ordered, ...analysis.unrelated];
     if (viewState.selected >= result.certificates.length) viewState.selected = 0;
+    // The chain notes start the CCADB lookup — or start a failed one again (back online, the view
+    // drawn anew) — so they come before the header that reads it: its chain item then follows the
+    // lookup they run. Retry starts it again too, and the chain item follows the new one.
+    const chainNotes = CertChainNotes(load, { onRetry: () => { if (refreshHeadStatus) refreshHeadStatus(); } });
     // Region 4 first (the answer), then what the file needs said.
     content.append(overviewHead(result.leaf, analysis, certs).el);
     // A CT certificate is what a CA issued, not what a server sends: point at the check that knows.
@@ -2374,9 +2378,7 @@ export function mount(container, ctx) {
       })] : []
     });
     content.append(h('div', { class: 'stack-sm cert-notes' },
-      ...certWarningAlerts(result, { name: load.name }), sourceNote, CertPfxNote(load),
-      // Retry starts the lookup again: the header's chain item follows the new one.
-      CertChainNotes(load, { onRetry: () => { if (refreshHeadStatus) refreshHeadStatus(); } })));
+      ...certWarningAlerts(result, { name: load.name }), sourceNote, CertPfxNote(load), chainNotes));
     const tabsHost = h('div', { class: 'cert-tabs-host' });
     content.append(tabsHost);
     let tabs = null;
@@ -2508,8 +2510,9 @@ export function mount(container, ctx) {
         if (refreshHeadStatus === renderStatus && head.el.isConnected) renderStatus();
       };
       function renderStatus() {
-        // The lookup as it stands: started once if nothing started it yet, never retried from here
-        // (a redraw after a failed lookup would ask again and again; the note's Retry does that).
+        // The lookup as it stands — the chain notes, built just before, started it (or a failed one
+        // again) —, never retried from here: the header is drawn again whenever the CAA check or the
+        // lookup moves on, and would ask again and again after a failure; Retry does that.
         const job = chainRepairJob(load) || startChainRepair(load);
         const end = chainEndVerdict(job);
         const caaEntry = caaCache.get(certKey(leaf)) || null;

@@ -21,8 +21,12 @@
  *     cut-off, Mozilla only the renewal, the root expires first) with the announcement link, and
  *     "Source" for Mozilla's date from the CCADB report;
  *   - an issuer the list does not hold: said plainly, no download; a complete chain: no note;
+ *   - the result header's chain item follows the lookup: "Chain not known" for a partial chain
+ *     whose lookup failed, and once the view comes back online the notes look again and the header
+ *     with them ("Chain incomplete": the list adds an intermediate);
  *   - the list cannot be loaded (the shard request fails): the note says so, Retry reads it (the
- *     Deep CA it adds is one only the certificate records list, as Let's Encrypt's YE issuers);
+ *     Deep CA it adds is one only the certificate records list, as Let's Encrypt's YE issuers), and
+ *     the header's chain item after it;
  *   - a PKCS#12 bundle holding only the server certificate: the bundle's Download fullchain.pem
  *     and the note's both add the intermediate;
  *   - the PEM tab opened while the lookup is still running (the shard request held back): its
@@ -187,6 +191,20 @@ async function loadFile(page, root, file, { until = 'ended', pfx = false } = {})
   await removeToasts(page);
 }
 
+/** The Certificate view's result header: its chain item's words and severity, or null. */
+const chainItem = (page) => page.evaluate(() => {
+  const item = document.querySelector('.cert-overview .status-item[data-status="chain"]');
+  return item ? [item.querySelector('.status-text').textContent, item.dataset.severity] : null;
+});
+
+/** Fail the step on a problem other than the dataset requests it failed on purpose, then forget those. */
+async function onlyDatasetFailures(page) {
+  const p = await page.problems();
+  const other = p.logErrors.filter((e) => !String(e.url || e.text).includes('/assets/data/intermediates/'));
+  assertEqual([other.length, p.exceptions.length, p.consoleErrors.length], [0, 0, 0], 'no other problem');
+  await page.resetProblems();
+}
+
 /** What the notes under `root` say. */
 const notes = (page, root) => page.evaluate((r) => {
   const box = document.querySelector(`${r} .chainfix`);
@@ -342,6 +360,25 @@ async function main() {
       assertEqual(pemBodies(file.text), [LEAF, INTER], 'leaf first');
     });
 
+    await run.step('the header\'s chain item follows the lookup: "not known" once it failed, and when the view comes back the notes look again and the header with them', async () => {
+      await assertClean(page, 'before the lost connection', origin);
+      // A file that stops at an intermediate whose issuer only the list knows: the header waits for the lookup.
+      net.offline.shards = true;
+      await loadFile(page, CERT, deepPartial);
+      assertEqual((await notes(page, CERT)).state, 'error', 'the lookup failed');
+      assertEqual(await chainItem(page), ['Chain not known', 'info'], 'a failed lookup: not known');
+      // Back online, another tool and back: the notes start the failed lookup again, the header follows.
+      net.offline.shards = false;
+      await gotoRoute(page, 'about');
+      await gotoRoute(page, 'cert');
+      await page.waitFor(() => document.querySelector('.cert-view .chainfix')?.dataset.chainfix === 'done', { message: 'looked up again', timeout: 15000 });
+      assertEqual((await notes(page, CERT)).kind, 'repaired', 'the notes: the intermediate found');
+      await page.waitFor(() => document.querySelector('.cert-overview .status-item[data-status="chain"] .status-text')?.textContent === 'Chain incomplete',
+        { message: 'the header follows the notes', timeout: 5000 });
+      assertEqual(await chainItem(page), ['Chain incomplete', 'warn'], 'the list adds an intermediate: incomplete');
+      await onlyDatasetFailures(page);
+    });
+
     await run.step('the list cannot be loaded: the note says so, and Retry reads it', async () => {
       await assertClean(page, 'before the lost connection', origin);
       net.offline.shards = true;
@@ -364,11 +401,10 @@ async function main() {
       n = await notes(page, CERT);
       assertEqual(n.added.map((a) => a.split(' — ')[0].replace(/issued by.*$/, '').trim()), ['Added: DomainScope Test Deep CA', 'Added: DomainScope Test Policy CA'], 'two added');
       assertEqual(n.title, '2 missing intermediates found', 'title');
+      // The header after Retry: a server certificate alone is an incomplete chain, whatever the list says.
+      assertEqual(await chainItem(page), ['Chain incomplete', 'warn'], 'the header after Retry');
       // The failed requests are the only problems of the step.
-      const p = await page.problems();
-      const other = p.logErrors.filter((e) => !String(e.url || e.text).includes('/assets/data/intermediates/'));
-      assertEqual([other.length, p.exceptions.length, p.consoleErrors.length], [0, 0, 0], 'no other problem');
-      await page.resetProblems();
+      await onlyDatasetFailures(page);
     });
 
     await run.step('Chain tab: a file that stops at an intermediate issued by another intermediate is not "complete"; leaf + intermediate of a root is', async () => {

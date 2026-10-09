@@ -19,7 +19,8 @@
  *   - SSL Targets (ec_wildcard.pem, an inventory of one server): a scan folds the setup into one row
  *     ("Certificate … · Domains … · 1 server · …", Edit with aria-expanded / aria-controls) and the
  *     result header starts on the first screen; Run reads "Run again" (secondary) while the setup
- *     asks for the scan on screen, "Start scan" (primary) once a domain changes; the key metric (the
+ *     asks for the scan on screen, "Start scan" (primary) once a domain or the server list changes;
+ *     Edit and the findings' "n more" are 24 px targets (40 px on a touch screen); the key metric (the
  *     servers to update), the status summary (servers opens its tab, the host counts filter the
  *     table and a second press shows every host), the actions in order with Export ▾'s five files,
  *     the next steps (Verify, Rollout), the Hosts tab's read-only figures, its findings (worst
@@ -29,12 +30,15 @@
  *     ends with Print then Remove (marked as the destructive tail), no Copy link for a file, the next
  *     steps; Remove from the menu empties the page;
  *   - Renewal readiness: a check keeps Run in the footer (the same element), the input compact, the
- *     verdict header with "0 will fail", Export ▾ (CSV, JSON), Copy link, "Run again";
+ *     verdict header with "0 will fail", Export ▾ (CSV, JSON), Copy link, "Run again"; a second
+ *     check's files are named after its own names;
  *   - Certificate estate (report-a.json): the input folds to one row ("1 report loaded", Add files,
- *     Forget all), the header's counts filter the list with the Show select (a second press shows
- *     every row), Export ▾ (CSV, Print), the figures in the Certificates tab;
- *   - phones: at 375×812 (Turkish, dark) Copy summary alone in the row and the rest behind "⋯", and
- *     at 320 px (English, light) no horizontal scroll on the four tools, empty or with a result;
+ *     Forget all), the header's counts (on the page's pinned clock: the report's certificates expire
+ *     on fixed dates) filter the list with the Show select (a second press shows every row), Export ▾
+ *     (CSV, Print), the figures in the Certificates tab;
+ *   - phones: at 375×812 (Turkish, dark) Copy summary alone in the row and the rest behind "⋯", the
+ *     Certificate's key metric as wide as its header, and at 320 px (English, light) no horizontal
+ *     scroll on the four tools, empty or with a result;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; nothing sent.
  */
 
@@ -43,6 +47,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
+import { pinnedClockScript } from './clock.mjs';
 import { orderSuites } from './run-all.mjs';
 import { SOURCES } from '../../assets/js/lib/sources.js';
 import {
@@ -66,6 +71,12 @@ const ZONE = {
 };
 const EXTRA = ['www.wild.example.net', 'api.wild.example.net', 'shop.wild.example.net'];
 const INVENTORY = 'web01 203.0.113.20';
+/**
+ * The instant the expectations were written for (the estate suite's, estate.e2e.mjs ESTATE_NOW): the
+ * page's clock starts here on every load. report-a.json's certificates expire on fixed dates (one on
+ * 2026-10-03, one on 2026-10-20), so on the real clock its counts would drift with the day.
+ */
+const CERTIFICATES_NOW = Date.parse('2026-10-01T12:00:00Z');
 /** SSL Targets' stored options: no passive source, no wordlist, no variations, no origin hints. */
 const SCAN_OPTIONS = JSON.stringify({ sources: [], knownSources: SOURCES.map((s) => s.id), bruteforce: 'off', permutations: false, originHints: false });
 
@@ -89,19 +100,26 @@ async function networkGuard(page) {
   return hits;
 }
 
-/** A page with example.net's DNS in it, downloads captured, the network guarded, the scan's options and inventory stored. */
+/** Store `text` as the active workspace's inventory (the page's own state module). */
+const setInventory = (page, text) => page.evaluate(async (inv) => {
+  const { state } = await import('./assets/js/state.js');
+  await state.setInventory(inv).done;
+}, text);
+
+/**
+ * A page on the pinned clock with example.net's DNS in it, downloads captured, the network guarded,
+ * the scan's options and inventory stored.
+ */
 async function openPage(browser, server, viewport) {
   const page = await browser.newPage('about:blank', viewport);
   const hits = await networkGuard(page);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: pinnedClockScript(CERTIFICATES_NOW) });
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(APEX, ZONE) });
   await installDownloadCapture(page);
   await page.goto(`${server.url}#/about`);
   await waitReady(page);
-  await page.evaluate(async ([options, inventory]) => {
-    localStorage.setItem('ssds.scan.options', options);
-    const { state } = await import('./assets/js/state.js');
-    await state.setInventory(inventory).done;
-  }, [SCAN_OPTIONS, INVENTORY]);
+  await page.evaluate((options) => localStorage.setItem('ssds.scan.options', options), SCAN_OPTIONS);
+  await setInventory(page, INVENTORY);
   return { page, hits };
 }
 
@@ -257,6 +275,7 @@ async function main() {
           req: getComputedStyle(document.querySelector('[data-role="scan-requirement"]')).display,
           text: row.querySelector('.scan-fold-text').textContent,
           edit: [edit.textContent, edit.getAttribute('aria-expanded'), edit.getAttribute('aria-controls') === document.querySelector('.scan-setup').id],
+          editHeight: edit.getBoundingClientRect().height,
           headTop: Math.round(document.querySelector('.scan-run').getBoundingClientRect().top + window.scrollY)
         };
       });
@@ -264,6 +283,7 @@ async function main() {
       assertEqual(fold.text, 'Certificate *.wild.example.net·ECDSA P-256·Domains example.net·1 server·no passive sources · no brute force · no permutations · no origin hints · +3 extra names',
         'the folded row');
       assertEqual(fold.edit, ['Edit', 'false', true], 'Edit controls the steps');
+      assert(fold.editHeight >= 24, `Edit is a 24 px target: ${fold.editHeight}`);
       assert(fold.headTop < 900, `the result header starts on the first screen: ${fold.headTop}`);
       assertEqual(await scanRun(page), { label: 'Run again', primary: false, hidden: false }, 'Run again, secondary');
       await shot(page, 'certificates-scan-result-desktop-light-en');
@@ -322,7 +342,7 @@ async function main() {
           metrics: [...panel.querySelectorAll('.scan-stats .metric')].map((m) => m.dataset.metric),
           buttons: panel.querySelectorAll('.scan-stats button, .scan-stats a').length,
           findings: [...panel.querySelectorAll('.scan-summary .finding')].map((f) => [f.dataset.summary, f.dataset.severity, f.hidden]),
-          more: panel.querySelector('.scan-summary .finding-more')
+          more: panel.querySelector('.scan-summary .finding-more:not([hidden])')?.getBoundingClientRect().height ?? null
         };
       });
       assertEqual(info.order.slice(0, 2), ['metrics', 'findings'], 'figures, then findings');
@@ -331,6 +351,7 @@ async function main() {
       const hidden = info.findings.filter((f) => f[2]).length;
       assert(info.findings.length > 4 ? hidden === info.findings.length - 3 : hidden === 0, `three rows, then "n more": ${JSON.stringify(info.findings)}`);
       if (hidden) {
+        assert(info.more >= 24, `"n more" is a 24 px target: ${info.more}`);
         await page.click('.scan-summary .finding-more');
         assertEqual(await page.evaluate(() => [document.querySelectorAll('.scan-summary .finding[hidden]').length, document.querySelector('.scan-summary .finding-more').getAttribute('aria-expanded')]), [0, 'true'], 'every finding');
       }
@@ -354,7 +375,7 @@ async function main() {
       await page.click('.scan-tabs [data-tab="hosts"]');
     });
 
-    await run.step('Edit unfolds the steps (aria-expanded); another domain makes Run "Start scan" and primary, the same setup "Run again"; Edit folds them again', async () => {
+    await run.step('Edit unfolds the steps (aria-expanded); another domain or server list makes Run "Start scan" and primary, the same setup "Run again"; Edit folds them again', async () => {
       await page.click('[data-action="scan-setup-edit"]');
       await page.waitFor(() => !document.querySelector('.scan-form').classList.contains('is-folded'), { message: 'unfolded' });
       assertEqual(await page.evaluate(() => [document.querySelector('[data-action="scan-setup-edit"]').getAttribute('aria-expanded'),
@@ -365,6 +386,12 @@ async function main() {
       assertEqual(await scanRun(page), { label: 'Start scan', primary: true, hidden: false }, 'another domain: Start scan, primary');
       await page.type('[data-role="scan-domains"]', APEX);
       await page.waitFor(() => document.querySelector('[data-action="scan-run"] .btn-label').textContent === 'Run again', { message: 'Run again' });
+      // Another server list is another scan too; the list the scan used, "Run again" again.
+      await setInventory(page, `${INVENTORY}\nweb02 203.0.113.21`);
+      await page.waitFor(() => document.querySelector('[data-action="scan-run"] .btn-label').textContent === 'Start scan'
+        && /·2 servers·/.test(document.querySelector('.scan-fold-text').textContent), { message: 'another server list: Start scan, the row says 2 servers' });
+      await setInventory(page, INVENTORY);
+      await page.waitFor(() => document.querySelector('[data-action="scan-run"] .btn-label').textContent === 'Run again', { message: 'the scan\'s server list: Run again' });
       await page.evaluate(() => document.querySelector('[data-action="scan-setup-edit"]').focus());
       await page.press('Enter');
       await page.waitFor(() => document.querySelector('.scan-form').classList.contains('is-folded')
@@ -442,6 +469,21 @@ async function main() {
       await assertNoHorizontalScroll(page, 'renew result');
     });
 
+    await run.step('a second check: its CSV and JSON are named after its own names, not the first check\'s', async () => {
+      const name = `api.wild.${APEX}`;
+      await page.type('[data-role="renew-names"]', name);
+      await page.click('[data-action="renew-run"]');
+      await page.waitFor((n) => document.querySelector('.rnw-hero')?.dataset.state === 'done' && !document.querySelector('[data-action="renew-run"]').hidden
+        && [...document.querySelectorAll('.rnw-name-text')].map((el) => el.textContent).join(' ') === n, { args: [name], timeout: 30000, message: 'the second check done' });
+      await takeDownloads(page);
+      await resultAction(page, '[data-action="renew-csv"]', '.rnw-hero');
+      await resultAction(page, '[data-action="renew-json"]', '.rnw-hero');
+      await page.waitFor(() => (window.__downloads || []).length === 2, { message: 'CSV and JSON' });
+      const files = await takeDownloads(page);
+      assertEqual(files.map((f) => f.name.replace(/-\d{8}-\d{4}/, '')), [`renewal-readiness-${name}.csv`, `renewal-readiness-${name}.json`], 'named after the second check');
+      assert(files.every((f) => f.text.includes(name) && !f.text.includes(`www.${APEX}`)), 'its rows');
+    });
+
     run.group('Certificate estate: a report loaded');
     await run.step('the input folds to one row ("1 report loaded", Add files, Forget all); the header counts filter the list with the Show select; Export ▾ (CSV, Print)', async () => {
       await gotoRoute(page, 'estate');
@@ -457,10 +499,11 @@ async function main() {
         };
       });
       assertEqual(input, { compact: true, more: '1 report loaded', open: false, actions: ['estate-add', 'estate-forget'] }, 'one row');
-      // (The fixture's certificates expire on fixed dates: how many have expired depends on the day.)
+      // On the pinned clock (CERTIFICATES_NOW): one certificate has expired, two expire within 30 days.
       const status = await statusOf(page, '.estate-overview');
-      assertEqual(status.map((s) => [s.key, s.severity, s.kind]), [
-        ['expired', 'error', 'toggle'], ['soon', 'warn', 'toggle'], ['name-conflict', 'neutral', 'toggle'], ['shared-key', 'neutral', 'toggle'], ['weak', 'neutral', 'toggle']
+      assertEqual(status.map((s) => [s.key, s.severity, s.kind, s.count]), [
+        ['expired', 'error', 'toggle', 1], ['soon', 'warn', 'toggle', 2], ['name-conflict', 'neutral', 'toggle', 5], ['shared-key', 'neutral', 'toggle', 2],
+        ['weak', 'neutral', 'toggle', 2]
       ], 'the counts');
       const expired = status[0].count;
       await page.click('.estate-overview .status-item[data-status="expired"]');
@@ -498,9 +541,15 @@ async function main() {
       assertEqual(await actionsRow(phone, '.scan-run'), ['summary', 'menu:more'], 'SSL Targets: Copy summary, ⋯');
       const fold = await phone.evaluate(() => {
         const row = document.querySelector('.scan-fold').getBoundingClientRect();
-        return { inside: row.right <= document.documentElement.clientWidth + 0.5, text: document.querySelector('.scan-fold-text').textContent };
+        return {
+          inside: row.right <= document.documentElement.clientWidth + 0.5,
+          text: document.querySelector('.scan-fold-text').textContent,
+          edit: document.querySelector('[data-action="scan-setup-edit"]').getBoundingClientRect().height,
+          coarse: matchMedia('(pointer: coarse)').matches
+        };
       });
       assert(fold.inside && /^Sertifika \*\.wild\.example\.net/.test(fold.text), `the folded row fits, in Turkish: ${JSON.stringify(fold)}`);
+      assert(fold.edit >= (fold.coarse ? 40 : 24), `Edit is a ${fold.coarse ? 40 : 24} px target: ${JSON.stringify(fold)}`);
       await assertNoHorizontalScroll(phone, 'scan 375 tr dark');
       await phone.evaluate(() => window.scrollTo(0, 0));
       await shot(phone, 'certificates-scan-result-375-dark-tr');
@@ -509,6 +558,9 @@ async function main() {
       await phone.waitFor(() => document.querySelector('.cert-overview'), { message: 'the certificate' });
       assertEqual(await actionsRow(phone, '.cert-overview'), ['summary', 'menu:more'], 'Certificate: Copy summary, ⋯');
       assertEqual((await menuItems(phone, '.cert-overview', 'more')).slice(-1), ['cert-remove:tail'], 'Remove last behind ⋯');
+      // The key metric wraps under the title, as wide as the header (not as wide as its own text).
+      const key = await phone.evaluate(() => ['.cert-validity', '.result-top'].map((s) => Math.round(document.querySelector(`.cert-overview ${s}`).getBoundingClientRect().width)));
+      assert(key[0] >= key[1] - 1, `the key metric as wide as the header: ${key.join(' of ')} px`);
       await assertNoHorizontalScroll(phone, 'cert 375 tr dark');
       // Renewal readiness and Certificate estate.
       await gotoRoute(phone, 'renew');

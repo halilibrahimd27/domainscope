@@ -3781,7 +3781,7 @@ describe('ui/template.js — the page template', () => {
       a.dispose();
     });
 
-    test('a destructive tail (Remove) goes last, after Print, in Export ▾ — and last in "⋯" on a phone; it waits with the rest', () => {
+    test('a destructive tail (Remove) goes last, after Print, in Export ▾ — and last in "⋯" on a phone, after Copy link; it waits with the rest', () => {
       let removed = 0;
       const tail = [{ label: 'Remove', dataset: { action: 'cert-remove' }, onSelect: () => { removed += 1; } }, { label: 'no handler' }];
       const a = ResultActions({ summary: summary(), exports: files(1), print: true, tail, link: () => 'x' });
@@ -3802,7 +3802,8 @@ describe('ui/template.js — the page template', () => {
       assert.deepEqual(row(lone), ['summary+plain', 'cert-remove']);
       assert.equal(lone.el.querySelector('[data-action="cert-remove"]').dataset.tail, '');
       const phone = tplOnPhone(() => ResultActions({ summary: summary(), exports: files(1), print: true, tail, link: () => 'x' }));
-      assert.deepEqual(phone.el.querySelectorAll('.menu-item').map((i) => i.dataset.export || i.dataset.action), ['copy-summary-text', 'names', 'print', 'cert-remove', 'copy-link']);
+      assert.deepEqual(phone.el.querySelectorAll('.menu-item').map((i) => i.dataset.export || i.dataset.action), ['copy-summary-text', 'names', 'print', 'copy-link', 'cert-remove']);
+      assert.equal(phone.el.querySelectorAll('.menu-item').at(-1).dataset.tail, '', 'the destructive one last');
     });
 
     test('dispose removes the phone-layout listener (it would keep the page it drew alive): the actions\' and the run bar\'s', () => {

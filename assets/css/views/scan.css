@@ -30,10 +30,6 @@
   padding: var(--space-3) var(--card-pad);
 }
 
-.scan-fold[hidden] {
-  display: none;
-}
-
 .scan-fold-icon {
   flex: none;
   height: var(--lh-sm);
@@ -53,10 +49,22 @@
   overflow-wrap: anywhere;
 }
 
+/* A 24 px target (40 px on a touch screen) that leaves the row as tall as its text. */
 .scan-fold-edit {
   flex: none;
+  min-width: 24px;
+  min-height: 24px;
+  margin-block: -2px;
   font-size: var(--fs-sm);
   line-height: var(--lh-sm);
+}
+
+@media (pointer: coarse) {
+  .scan-fold-edit {
+    min-width: 40px;
+    min-height: 40px;
+    margin-block: -10px;
+  }
 }
 
 /* "A certificate or at least one domain is required" — a check once met */
@@ -673,10 +681,6 @@
   animation: none;
 }
 
-.scan-link-prompt[hidden] {
-  display: none;
-}
-
 .scan-chips {
   display: flex;
   flex-wrap: wrap;
@@ -1171,11 +1175,7 @@
   color: var(--warn);
 }
 
-/* "crt.sh still fetching" note in the progress panel. */
-.scan-src-wait[hidden] {
-  display: none;
-}
-
+/* "crt.sh still fetching" note in the Sources tab. */
 .scan-src-wait {
   display: flex;
   align-items: flex-start;

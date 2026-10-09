@@ -5147,9 +5147,19 @@ button.status-item[aria-pressed="true"] {
   flex: none;
 }
 
+/* "n more": a 24 px target, 40 px on a touch screen. */
 .finding-more {
   align-self: flex-start;
+  min-width: 24px;
+  min-height: 24px;
   font-size: var(--fs-xs);
+}
+
+@media (pointer: coarse) {
+  .finding-more {
+    min-width: 40px;
+    min-height: 40px;
+  }
 }
 
 /* Region 2 of a file tool: the drop zone and the rest; one compact row once something is loaded. */

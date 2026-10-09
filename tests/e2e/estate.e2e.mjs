@@ -156,16 +156,42 @@ async function deleteAllLocalData(page) {
   await frames(page);
 }
 
+/**
+ * bundle_leaf.pem in the Certificate view, settled: the leaf shown and the missing-intermediate
+ * lookup it starts over (ui/chain-repair.js `data-chainfix`), whose note above the tabs grows when
+ * it ends — a click measured before that lands below the tab (the "its own CSR matches" flake on a
+ * busy machine).
+ */
+async function certLoaded(page) {
+  await page.waitFor(() => document.querySelector('.cert-overview-cn')?.textContent === 'www.example.com'
+    && !document.querySelector('.cert-view [data-chainfix="running"]'), { message: 'certificate loaded, its chain lookup done' });
+  await removeToasts(page);
+}
+
+/** The PEM & OpenSSL tab selected and its CSR box on screen. */
+async function openPemTab(page) {
+  await page.click('.cert-tabs .tab[data-tab="pem"]');
+  await page.waitFor(() => document.querySelector('.cert-tabs .tab[data-tab="pem"]')?.getAttribute('aria-selected') === 'true'
+    && document.querySelector('.cert-tabs .tabpanel[data-tab="pem"]:not([hidden]) [data-role="cert-csr"]'), { message: 'PEM & OpenSSL tab' });
+}
+
+/** Type into the CSR box, then wait until it holds the text and has the focus (what Ctrl+Enter acts on). */
+async function typeCsr(page, text) {
+  await page.type('[data-role="cert-csr"]', text);
+  await page.waitFor((want) => {
+    const box = document.querySelector('.cert-tabs .tabpanel[data-tab="pem"]:not([hidden]) [data-role="cert-csr"]');
+    return !!box && document.activeElement === box && box.value.replace(/\r\n/g, '\n').trim() === want;
+  }, { args: [text.replace(/\r\n/g, '\n').trim()], message: 'the CSR in the focused box' });
+}
+
 /** Open the Certificate view with bundle_leaf.pem on its PEM & OpenSSL tab. */
 async function certPemTab(page) {
   await gotoRoute(page, 'cert');
   if (!(await page.evaluate(() => document.querySelector('.cert-overview-cn')?.textContent === 'www.example.com'))) {
     await page.setFileInput('.cert-view .filedrop-input', [fixture('bundle_leaf.pem')]);
-    await page.waitFor(() => document.querySelector('.cert-overview-cn')?.textContent === 'www.example.com', { message: 'certificate loaded' });
   }
-  await removeToasts(page);
-  await page.click('.cert-tabs .tab[data-tab="pem"]');
-  await page.waitForSelector('[data-role="cert-csr"]');
+  await certLoaded(page);
+  await openPemTab(page);
 }
 
 const csrBox = (page) => page.evaluate(() => document.querySelector('[data-role="cert-csr"]')?.value ?? null);
@@ -470,11 +496,9 @@ async function main() {
     await run.step('its own CSR matches (Ctrl+Enter in the box), another key\'s does not', async () => {
       await gotoRoute(page, 'cert');
       await page.setFileInput('.cert-view .filedrop-input', [fixture('bundle_leaf.pem')]);
-      await page.waitFor(() => document.querySelector('.cert-overview-cn')?.textContent === 'www.example.com', { message: 'certificate loaded' });
-      await removeToasts(page);
-      await page.click('.cert-tabs .tab[data-tab="pem"]');
-      await page.waitForSelector('[data-role="cert-csr"]');
-      await page.type('[data-role="cert-csr"]', await readFile(fixture('bundle_leaf.csr'), 'utf8'));
+      await certLoaded(page);
+      await openPemTab(page);
+      await typeCsr(page, await readFile(fixture('bundle_leaf.csr'), 'utf8'));
       await page.press('Enter', { ctrl: true });
       const ok = await page.waitFor(() => {
         const v = document.querySelector('.cert-csr-verdict');
@@ -483,7 +507,7 @@ async function main() {
       assertEqual(ok.match, 'true', 'match');
       assert(ok.text.includes('The CSR matches this certificate') && ok.text.includes('RSA 2048'), ok.text);
       await shotEl(page, opts, 'cert-csr-match-desktop-light-en', '.cert-csr');
-      await page.type('[data-role="cert-csr"]', await readFile(fixture('bundle_other.csr'), 'utf8'));
+      await typeCsr(page, await readFile(fixture('bundle_other.csr'), 'utf8'));
       await page.click('[data-action="cert-csr-compare"]');
       const no = await page.waitFor(() => {
         const v = document.querySelector('.cert-csr-verdict[data-match="false"]');
@@ -501,7 +525,7 @@ async function main() {
       assert(key.text.startsWith('That is a private key. It was not read or kept'), key.text);
       assertEqual(key.box, '', 'the box is emptied');
       assert(!(await page.evaluate(() => /PRIVATE KEY-----/.test(document.body.innerHTML))), 'no key left in the page');
-      await page.type('[data-role="cert-csr"]', await readFile(fixture('bundle_leaf.pem'), 'utf8'));
+      await typeCsr(page, await readFile(fixture('bundle_leaf.pem'), 'utf8'));
       await page.click('[data-action="cert-csr-compare"]');
       await page.waitFor(() => document.querySelector('.cert-csr-verdict[data-error="certificate"]'), { message: 'certificate verdict' });
       // only the first line of a key's base64: refused all the same
@@ -514,14 +538,13 @@ async function main() {
     await run.step('a key pasted without Compare does not come back after another tab or tool; a CSR does', async () => {
       await page.type('[data-role="cert-csr"]', await readFile(fixture('bundle_leaf.rsa.key'), 'utf8'));
       await page.click('.cert-tabs .tab[data-tab="names"]');
-      await page.click('.cert-tabs .tab[data-tab="pem"]');
-      await page.waitForSelector('[data-role="cert-csr"]');
+      await openPemTab(page);
       assertEqual(await csrBox(page), '', 'empty after another tab');
       await gotoRoute(page, 'estate');
       await certPemTab(page);
       assertEqual(await csrBox(page), '', 'empty after another tool');
       const csr = await readFile(fixture('bundle_leaf.csr'), 'utf8');
-      await page.type('[data-role="cert-csr"]', csr);
+      await typeCsr(page, csr);
       await gotoRoute(page, 'estate');
       await certPemTab(page);
       assertEqual(await csrBox(page), csr, 'a CSR stays for this page session');
@@ -604,8 +627,9 @@ async function main() {
       await assertNoHorizontalScroll(page, 'estate desktop dark TR');
       await shotPage(page, opts, 'estate-report-desktop-dark-tr');
       await gotoRoute(page, 'cert');
-      await page.click('.cert-tabs .tab[data-tab="pem"]');
-      await page.type('[data-role="cert-csr"]', await readFile(fixture('bundle_leaf.csr'), 'utf8'));
+      await certLoaded(page);
+      await openPemTab(page);
+      await typeCsr(page, await readFile(fixture('bundle_leaf.csr'), 'utf8'));
       await page.click('[data-action="cert-csr-compare"]');
       const text = await page.waitFor(() => document.querySelector('.cert-csr-verdict[data-match="true"]')?.textContent, { message: 'Turkish match' });
       assert(text.includes('CSR bu sertifikayla eşleşiyor'), text);

@@ -87,6 +87,15 @@ describe('lib/originnow.js', () => {
     assert.deepEqual([web03b.needsCert, web03b.maybeNeedsCert], [false, true]);
   });
 
+  test('stats.hintedServers counted again: a server the stale origins leave with candidates only is "possible via hints"', () => {
+    const r = result();
+    r.servers[1].hosts.push({ name: 'blog.example.com', ip: '192.0.2.40', covered: true, via: 'hint' });
+    const now = resultNow(r, map(entry('www.example.com', '192.0.2.40', 443, NOT_HOSTED), entry('shop.example.com', '192.0.2.40', 8443, ELSEWHERE)));
+    assert.deepEqual(now.servers.filter((g) => g.maybeNeedsCert).map((g) => g.server.name), ['web03', 'web05']);
+    assert.deepEqual([now.stats.needsCert, now.stats.hintedServers], [1, 2], 'the Servers card says what the tab shows');
+    assert.deepEqual([r.stats.needsCert, r.stats.hintedServers], [2, 1], 'the scan\'s own counts untouched');
+  });
+
   test('a covering wildcard masked by the name\'s own stale entry at its address and port: stale too', () => {
     const r = result();
     const m = map(entry('*.example.com', '192.0.2.40', 443), entry('www.example.com', '192.0.2.40', 443, NOT_HOSTED));

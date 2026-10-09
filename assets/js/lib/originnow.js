@@ -125,8 +125,9 @@ export function serversNow(result, map, stale = staleKnownUses(result, map)) {
 }
 
 /**
- * A scan's result with the map now ({@link hintsNow}, {@link serversNow}, `stats.needsCert`
- * counted again); the result itself when the map marks none of its remembered origins stale.
+ * A scan's result with the map now ({@link hintsNow}, {@link serversNow}, `stats.needsCert` and
+ * `stats.hintedServers` counted again); the result itself when the map marks none of its
+ * remembered origins stale.
  * @param {object|null} result ScanResult
  * @param {object|null} map the map, or its originIndex
  * @returns {object|null}
@@ -136,11 +137,17 @@ export function resultNow(result, map) {
   const stale = staleKnownUses(result, map);
   if (!stale.size) return result;
   const servers = serversNow(result, map, stale);
+  // Tied by origin hints alone, as lib/scanner.js counts them: a now-stale remembered origin is no tie.
+  const tied = (e) => e.via === 'dns' || e.via === 'zone' || (e.via === 'known' && !e.stale);
   return {
     ...result,
     originHints: hintsNow(result, map, stale),
     servers,
-    stats: { ...(result.stats || {}), needsCert: servers.filter((g) => g.needsCert).length }
+    stats: {
+      ...(result.stats || {}),
+      needsCert: servers.filter((g) => g.needsCert).length,
+      hintedServers: servers.filter((g) => !(Array.isArray(g.hosts) ? g.hosts : []).some(tied)).length
+    }
   };
 }
 

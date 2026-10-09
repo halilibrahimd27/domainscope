@@ -26,7 +26,7 @@ import { toCsv } from '../lib/export.js';
 import { computeFingerprints } from '../lib/x509.js';
 import {
   ROLLOUT_STEPS, ROLLOUT_STAGES, ROLLOUT_VERIFY, ROLLOUT_CSV_COLUMNS, boardId, setKey, rolloutRows, parseRollout, serializeRollout,
-  setStep, resetBoard, findBoard, verifyStatus, applyVerify, boardRows, rolloutProgress, rolloutCsvRows
+  setStep, setTotal, resetBoard, findBoard, verifyStatus, applyVerify, boardRows, rolloutProgress, rolloutCsvRows
 } from '../lib/rollout.js';
 import {
   DEPLOY_PLATFORMS, SNIPPET_SECTIONS, SNIPPET_NOTES, SNIPPET_WARNINGS, PLATFORM_OPTIONS, deploySnippet
@@ -328,6 +328,13 @@ export function RolloutPanel({ run, ctx, sets = null, plan = null, onChange = nu
     const st = statuses();
     applyChecks(st);
     view = boardRows(current(), id, rows, st);
+    keepTotal();
+  }
+
+  /** The stored board keeps how many rows the tab shows (Home's "3 of 5 servers updated"): written when that changed. */
+  function keepTotal() {
+    const saved = id ? findBoard(current(), id) : null;
+    if (saved && saved.total !== view.length) save(setTotal(current(), id, view.length));
   }
 
   /* --- the table ------------------------------------------------------------------- */

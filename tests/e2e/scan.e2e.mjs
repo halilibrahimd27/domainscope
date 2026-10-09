@@ -2228,6 +2228,8 @@ async function main() {
             assertEqual(board.id, fpHex, 'the board is named by the certificate fingerprint');
             const row = board.rows.find((r) => r.k === 's:web01');
             assert(row && row.i && row.r && !row.v, `web01 installed and reloaded: ${JSON.stringify(row)}`);
+            // The rows the tab shows go with the board (Home says "1 of n servers updated" from it).
+            assert(Number.isInteger(board.total) && board.total >= board.rows.length, `the board's total: ${JSON.stringify(board.total)}`);
           } finally {
             await other.close();
           }

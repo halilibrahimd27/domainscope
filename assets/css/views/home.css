@@ -1,0 +1,657 @@
+/*
+ * views/home.css — Home (views/home.js, docs/DESIGN.md §4): the quick start (the palette's box,
+ * styled here before ui/palette.js and palette.css load on its first use), Needs attention,
+ * Recent domains, Results in this tab, Start a job (the job cards of ui/start-tasks.js, whose
+ * base styles are in style.css), This workspace and the setup checklist. One column, then from
+ * 1100 px a grid of 3fr / 2fr. Loaded with the view (app.js VIEWS[].css).
+ */
+
+.home {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+
+@media (min-width: 1100px) {
+  .home-grid {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+}
+
+.home-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+}
+
+.home-col:empty {
+  display: none;
+}
+
+/* --- the cards ---------------------------------------------------------------- */
+
+.home-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--card-pad);
+}
+
+.home-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+
+.home-card-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: var(--lh-md);
+  font-weight: var(--fw-semibold);
+}
+
+/* Focused from script only (a card's own button went away) */
+.home-card-title:focus {
+  outline: none;
+}
+
+.home-card-lead {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+/* A button that reads as a link (the Workspaces dialog opens in place) */
+.home-link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.home-link-btn:hover {
+  text-decoration: underline;
+}
+
+/* --- quick start ---------------------------------------------------------------- */
+
+.home-quick {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.home-quick-box {
+  position: relative;
+}
+
+.home-quick-icon {
+  position: absolute;
+  top: 50%;
+  left: 14px;
+  color: var(--text-3);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.home-quick-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 48px;
+  padding: 11px 14px 11px 44px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  box-shadow: var(--shadow-xs);
+}
+
+.home-quick-input::placeholder {
+  color: var(--text-3);
+  opacity: 1;
+}
+
+.home-quick-input:focus {
+  border-color: var(--focus);
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.home-quick-hint {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+}
+
+/* The palette's results under the box (ui/palette.js PaletteBox; .pal-* in palette.css) */
+.home-quick-results:empty {
+  display: none;
+}
+
+.home-quick-results .pal-list {
+  max-height: min(50vh, 420px);
+  padding: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+/* --- Needs attention: one link per row ---------------------------------------------- */
+
+.home-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.home-rows > li + li {
+  border-top: 1px solid var(--border);
+}
+
+.home-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 36px;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: start;
+  text-decoration: none;
+}
+
+a.home-row,
+button.home-row {
+  cursor: pointer;
+}
+
+a.home-row:hover,
+button.home-row:hover {
+  background: var(--surface-hover);
+  text-decoration: none;
+}
+
+.home-row .sev {
+  flex: none;
+}
+
+.home-row-main {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--space-3);
+  min-width: 0;
+}
+
+.home-row-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.home-row-detail {
+  min-width: 0;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+.home-row-detail:empty {
+  display: none;
+}
+
+.home-row-names {
+  font-family: var(--font-mono);
+}
+
+.home-row-stale {
+  color: var(--warn);
+}
+
+.home-row-go {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-3);
+}
+
+.home-row-ok {
+  color: var(--text-2);
+}
+
+.home-rows-more {
+  display: flex;
+}
+
+.home-rows-more:empty,
+.home-rows:empty {
+  display: none;
+}
+
+.home-loading {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+/* A running job's ring (its progress; turning while that is not known) */
+.home-ring {
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--running);
+}
+
+.home-ring svg {
+  display: block;
+}
+
+.home-ring-track {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 2.5;
+}
+
+.home-ring-bar {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
+.home-ring.is-indeterminate svg {
+  animation: home-spin 1.2s linear infinite;
+}
+
+@keyframes home-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-ring.is-indeterminate svg {
+    animation: none;
+  }
+}
+
+/* --- Recent domains --------------------------------------------------------------- */
+
+.home-recent-list,
+.home-kept-list,
+.home-setup-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.home-recent-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 36px;
+  min-width: 0;
+}
+
+.home-recent-row + .home-recent-row,
+.home-kept-list > li + li,
+.home-setup-item + .home-setup-item {
+  border-top: 1px solid var(--border);
+}
+
+.home-recent-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: var(--space-1) 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.home-recent-name:hover {
+  color: var(--accent-text);
+  text-decoration: underline;
+}
+
+.home-recent-when {
+  flex: none;
+  font-size: var(--fs-xs);
+}
+
+.home-recent-actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-3);
+}
+
+.home-recent-action {
+  font-size: var(--fs-xs);
+}
+
+.home-recent-menu {
+  display: none;
+}
+
+/* --- Results in this tab ------------------------------------------------------------ */
+
+.home-kept-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-height: 36px;
+  padding: var(--space-2) 0;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.home-kept-row:hover {
+  text-decoration: none;
+}
+
+.home-kept-row:hover .home-kept-tool {
+  text-decoration: underline;
+}
+
+.home-kept-icon {
+  flex: none;
+  color: var(--text-3);
+}
+
+.home-kept-tool {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+.home-kept-subject {
+  min-width: 0;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+.home-kept-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.home-kept-when {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+}
+
+/* --- Start a job: the cards while the workspace is new, then a compact list ------------- */
+
+/* Six cards: three in a row on a wide page, two on a narrower one (never five and an orphan) */
+.home-jobs .start-tasks {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+}
+
+@media (min-width: 1100px) {
+  .home-jobs .start-tasks:not(.start-tasks-compact) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.home-jobs .start-tasks-compact {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
+.start-tasks-compact .start-task-item + .start-task-item {
+  border-top: 1px solid var(--border);
+}
+
+.start-tasks-compact .start-task {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 36px;
+  padding: var(--space-1) 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.start-tasks-compact .start-task:hover {
+  box-shadow: none;
+}
+
+.start-tasks-compact .start-task:hover .start-task-title {
+  text-decoration: underline;
+}
+
+.start-tasks-compact .start-task-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+}
+
+.start-tasks-compact .start-task-icon .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.start-tasks-compact .start-task-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+/* The job says it; its tool's name is still read out with the link */
+.start-tasks-compact .start-task-tool {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.start-tasks-compact .start-task-arrow {
+  position: static;
+  margin-left: auto;
+}
+
+/* --- This workspace ------------------------------------------------------------------ */
+
+.home-ws-counts,
+.home-ws-note,
+.home-ws-links {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.home-ws-note {
+  overflow-wrap: anywhere;
+}
+
+.home-ws-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-1);
+}
+
+/* --- Set up this workspace ----------------------------------------------------------- */
+
+.home-setup-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 36px;
+  padding: var(--space-1) 0;
+}
+
+.home-setup-mark {
+  flex: none;
+  color: var(--ok);
+}
+
+.home-setup-todo {
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-control);
+  border-radius: 50%;
+}
+
+.home-setup-text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
+}
+
+.home-setup-item.is-done .home-setup-text {
+  color: var(--text-2);
+}
+
+.home-setup-go {
+  flex: none;
+  font-size: var(--fs-sm);
+}
+
+/* --- the privacy line --------------------------------------------------------------- */
+
+.home-privacy {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+}
+
+.home-privacy .icon {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* --- phones -------------------------------------------------------------------------- */
+
+@media (max-width: 719.98px) {
+  .home,
+  .home-grid,
+  .home-col {
+    gap: var(--space-4);
+  }
+
+  /* The quick actions of a recent domain go behind its "⋯" */
+  .home-recent-actions {
+    display: none;
+  }
+
+  .home-recent-menu {
+    display: inline-flex;
+  }
+}
+
+/* Start a job on a phone: two columns of short chips, so the cards stay near the top */
+@media (max-width: 600px) {
+  .home-jobs .start-tasks,
+  .home-jobs .start-tasks-compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .home-jobs .start-task-item + .start-task-item {
+    border-top: 0;
+  }
+
+  .home-jobs .start-task-item:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  .home-jobs .start-task,
+  .home-jobs .start-tasks-compact .start-task {
+    gap: 9px;
+    min-height: 44px;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .home-jobs .start-task-icon {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+  }
+
+  .home-jobs .start-task-icon .icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .home-jobs .start-task-title {
+    font-size: 13px;
+    line-height: 1.25;
+  }
+
+  .home-jobs .start-task-tool {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .home-jobs .start-task-arrow {
+    display: none;
+  }
+}
+
+/* The smallest phones: still two columns, the chips without their icons (the text needs the width) */
+@media (max-width: 359.98px) {
+  .home-jobs .start-task-icon {
+    display: none;
+  }
+
+  .home-jobs .start-task,
+  .home-jobs .start-tasks-compact .start-task {
+    padding: 6px 8px;
+  }
+
+  .home-jobs .start-task-title {
+    font-size: 12.5px;
+  }
+}
+
+/* Touch screens: rows and links big enough for a finger */
+@media (pointer: coarse) {
+  .home-row,
+  .home-recent-row,
+  .home-kept-row,
+  .home-setup-item {
+    min-height: 44px;
+  }
+}

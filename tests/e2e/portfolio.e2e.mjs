@@ -542,6 +542,9 @@ async function main() {
       const seen = JSON.parse(await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.workspaceData('ctSeen'))));
       assertEqual(Object.keys(seen.domains).sort(), ['example.com', 'example.org'], 'the baseline: the domains read');
       assertEqual(Object.keys(seen.domains['example.com'].ids).length, 4, 'example.com: what it had, and what is new');
+      // Home counts the expiry days of the current certificates (`due`), never the ids a renewal replaced.
+      const due = seen.domains['example.com'].due;
+      assert(Array.isArray(due) && due.length > 0 && due.length < 4 && due.every((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)), `due: ${JSON.stringify(due)}`);
       await setCtFilter(page, 'all');
       const all = await ctRows(page);
       assertEqual(all.length, 5, 'every unexpired certificate');

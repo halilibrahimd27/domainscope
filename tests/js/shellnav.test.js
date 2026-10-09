@@ -53,9 +53,10 @@ const el = (tagName, extra = {}) => ({ tagName: tagName.toUpperCase(), ...extra 
 const key = (k, extra = {}) => ({ key: k, target: el('body'), ...extra });
 
 describe('groupViews — the tool groups', () => {
-  test('NAV_GROUPS: six jobs (investigate, certificates, change DNS, IPs, watch, setup), each translated', () => {
-    assert.deepEqual(ids(NAV_GROUPS), ['investigate', 'certs', 'change', 'network', 'watch', 'setup']);
-    for (const g of [...NAV_GROUPS, OTHER_GROUP]) {
+  test('NAV_GROUPS: Home without a heading, then six jobs (investigate, certificates, change DNS, IPs, watch, setup), each translated', () => {
+    assert.deepEqual(ids(NAV_GROUPS), ['home', 'investigate', 'certs', 'change', 'network', 'watch', 'setup']);
+    assert.equal(NAV_GROUPS[0].labelKey, null, 'Home: a group of its own, no heading, never "More tools"');
+    for (const g of [...NAV_GROUPS.slice(1), OTHER_GROUP]) {
       assert.ok(hasString(g.labelKey, 'en') && hasString(g.labelKey, 'tr'), g.labelKey);
     }
     assert.ok(Object.isFrozen(NAV_GROUPS) && NAV_GROUPS.every(Object.isFrozen));
@@ -67,14 +68,15 @@ describe('groupViews — the tool groups', () => {
 
   test('the registry: every view listed exactly once, in group order, registry order inside a group', () => {
     const groups = groupViews(VIEWS);
-    assert.deepEqual(ids(groups), ['investigate', 'certs', 'change', 'network', 'watch', 'setup']);
+    assert.deepEqual(ids(groups), ['home', 'investigate', 'certs', 'change', 'network', 'watch', 'setup']);
     assert.deepEqual(groups.map((g) => ids(g.views)), [
-      ['domain', 'health', 'subdomains', 'lookup'], ['scan', 'cert', 'renew', 'estate'], ['change', 'global', 'zone', 'retire'],
+      ['home'], ['domain', 'health', 'subdomains', 'lookup'], ['scan', 'cert', 'renew', 'estate'], ['change', 'global', 'zone', 'retire'],
       ['ip', 'bulk', 'ptr'], ['portfolio', 'monitor', 'reports'], ['inventory', 'about']
     ]);
     assert.deepEqual(groups.flatMap((g) => ids(g.views)).sort(), ids(VIEWS).sort());
     assert.deepEqual(groups.flatMap((g) => ids(g.views)), ids(VIEWS), 'the registry is in navigation order');
-    assert.equal(groups[0].labelKey, 'nav.groupInvestigate');
+    assert.equal(groups[0].labelKey, null);
+    assert.equal(groups[1].labelKey, 'nav.groupInvestigate');
   });
 
   test('a view added to the registry appears on its own (e.g. another tool in the IP group)', () => {
@@ -143,8 +145,9 @@ describe('the shell at each width; the page header\'s ⓘ; the search button\'s 
     assert.equal(of('cert'), 'privacy');
     assert.equal(of('about'), null);
     assert.equal(aboutSectionOf({ id: 'home', offline: true }), null);
+    assert.equal(of('home'), null, 'Home is no tool: no ⓘ');
     assert.equal(aboutSectionOf(null), null);
-    for (const v of VIEWS.filter((x) => x.id !== 'about')) {
+    for (const v of VIEWS.filter((x) => x.id !== 'about' && x.id !== 'home')) {
       assert.ok(hasString(`shell.aboutLink.${aboutSectionOf(v)}`, 'en') && hasString(`shell.aboutLink.${aboutSectionOf(v)}`, 'tr'), v.id);
     }
   });
@@ -175,24 +178,25 @@ describe('the shell at each width; the page header\'s ⓘ; the search button\'s 
 });
 
 describe('first-visit task picker', () => {
-  test('five jobs, each done by a view of the registry and translated in both languages', () => {
+  test('six jobs, each done by a view of the registry and translated in both languages', () => {
     assert.deepEqual(START_TASKS.map((x) => [x.id, x.view]), [
-      ['subdomains', 'subdomains'], ['certificate', 'scan'], ['health', 'health'], ['propagation', 'global'], ['zone', 'zone']
+      ['subdomains', 'subdomains'], ['certificate', 'scan'], ['health', 'health'], ['propagation', 'global'], ['zone', 'zone'], ['portfolio', 'portfolio']
     ]);
     const known = new Set(ids(VIEWS));
     for (const task of START_TASKS) {
       assert.ok(known.has(task.view), task.view);
       assert.ok(hasString(`start.task.${task.id}`, 'en') && hasString(`start.task.${task.id}`, 'tr'), task.id);
     }
-    assert.equal(START_TASKS[0].view, DEFAULT_VIEW, 'the start page\'s own job comes first');
+    assert.equal(DEFAULT_VIEW, 'home', 'Home is the start page');
+    assert.equal(START_TASKS[0].view, 'subdomains', 'its first job: "Find every subdomain"');
   });
 
   test('startTasks takes the tool\'s icon and leaves out a job whose tool is missing', () => {
     const tasks = startTasks(VIEWS);
     assert.deepEqual(tasks.map((x) => [x.id, x.icon]), [
-      ['subdomains', 'layers'], ['certificate', 'target'], ['health', 'activity'], ['propagation', 'globe'], ['zone', 'file-text']
+      ['subdomains', 'layers'], ['certificate', 'target'], ['health', 'activity'], ['propagation', 'globe'], ['zone', 'file-text'], ['portfolio', 'box']
     ]);
-    assert.deepEqual(ids(startTasks(VIEWS.filter((v) => v.id !== 'zone'))), ['subdomains', 'certificate', 'health', 'propagation']);
+    assert.deepEqual(ids(startTasks(VIEWS.filter((v) => v.id !== 'zone'))), ['subdomains', 'certificate', 'health', 'propagation', 'portfolio']);
     assert.deepEqual(startTasks([{ id: 'global' }]), [{ id: 'propagation', view: 'global', icon: null }]);
     assert.deepEqual(startTasks(null), []);
   });
@@ -505,8 +509,9 @@ describe('the controls the views mark for the shortcuts', () => {
   test('every view but About marks its run, its main input and its results (a new view cannot miss the shortcuts)', () => {
     // Without the markers Ctrl/Cmd+Enter and '/' do nothing there, silently. The results sit in a
     // scope without a submit: Ctrl/Cmd+Enter in a results filter once started the view's run again,
-    // dropping the results on screen.
-    const tools = VIEWS.filter((v) => v.id !== 'about');
+    // dropping the results on screen. Home runs nothing: '/' reaches its quick start.
+    assert.match(source('assets/js/views/home.js'), /shortcut: 'focus'/, 'home: the quick start answers "/"');
+    const tools = VIEWS.filter((v) => v.id !== 'about' && v.id !== 'home');
     assert.ok(tools.length >= 10, `views: ${ids(tools)}`);
     for (const v of tools) {
       const src = source(`assets/js/views/${v.id}.js`);

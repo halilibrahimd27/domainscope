@@ -378,6 +378,193 @@ export function IconButton({ icon, label, onClick = null, variant = 'ghost', siz
   return btn;
 }
 
+/* ------------------------------------------------------------------------ */
+/* Menu button                                                              */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Where a menu goes: under its button with its end edge on the button's, kept `margin` px inside
+ * the viewport; above the button when it does not fit under it but does above. Pure: the numbers
+ * of getBoundingClientRect and of the viewport.
+ * @param {{ anchor: { top: number, bottom: number, left: number, right: number }, menu: { width: number, height: number },
+ *   viewport: { width: number, height: number }, gap?: number, margin?: number }} box
+ * @returns {{ top: number, left: number, above: boolean }}
+ */
+export function menuPlacement({ anchor, menu, viewport, gap = 4, margin = 8 }) {
+  const below = anchor.bottom + gap;
+  const aboveTop = anchor.top - gap - menu.height;
+  const above = below + menu.height > viewport.height - margin && aboveTop >= margin;
+  const top = above ? aboveTop : Math.max(margin, Math.min(below, viewport.height - margin - menu.height));
+  const left = Math.min(Math.max(margin, viewport.width - margin - menu.width), Math.max(margin, anchor.right - menu.width));
+  return { top: Math.round(top), left: Math.round(left), above };
+}
+
+/**
+ * The item a key moves to in a menu of `count` items, from item `index` (-1: none yet): ↓ and ↑
+ * wrap around, Home and End go to the ends; null for any other key.
+ * @param {number} index
+ * @param {number} count
+ * @param {string} key KeyboardEvent.key
+ * @returns {number|null}
+ */
+export function menuStep(index, count, key) {
+  if (!(count > 0)) return null;
+  if (key === 'ArrowDown') return index < 0 ? 0 : (index + 1) % count;
+  if (key === 'ArrowUp') return index < 0 ? count - 1 : (index - 1 + count) % count;
+  if (key === 'Home') return 0;
+  if (key === 'End') return count - 1;
+  return null;
+}
+
+/** Can this browser show a popover (the top layer, light dismiss)? */
+function popoverSupported() {
+  const El = globalThis.HTMLElement;
+  return !!El && typeof El.prototype.showPopover === 'function';
+}
+
+/**
+ * A button that opens a short menu of actions (the WAI-ARIA menu button pattern), such as Home's
+ * "⋯" on a phone. The menu is a popover — the top layer: nothing clips it, a click outside or Esc
+ * closes it — placed under its button through CSSOM only ({@link menuPlacement}). Enter, Space or ↓
+ * open it on its first item, ↑ on its last; ↓ ↑ Home End move ({@link menuStep}); Esc closes it
+ * and the focus goes back to the button; Tab moves on and closes it. An item is a link (`href`,
+ * followed as any link) or an action (`onSelect`). Without popover support the menu is shown and
+ * hidden in place.
+ * @param {{ label: string, icon?: string, items: Array<{ label: string, icon?: string, href?: string,
+ *   onSelect?: (event: Event) => void, dataset?: object }>, size?: 'sm'|'md', className?: string, dataset?: object }} opts
+ *   `label`: the button's accessible name and tooltip (it shows its icon only) and the menu's name
+ * @returns {{ el: HTMLElement, button: HTMLButtonElement, menu: HTMLElement, open: (opts?: { last?: boolean }) => void,
+ *   close: (opts?: { focus?: boolean }) => void, isOpen: () => boolean }}
+ */
+export function MenuButton({ label, icon = 'more', items = [], size = 'sm', className = '', dataset = null }) {
+  const menuId = uid('menu');
+  const popover = popoverSupported();
+  const button = Button({
+    icon, size, variant: 'ghost', title: label, ariaLabel: label, className: 'btn-icon menu-button', dataset: dataset || {},
+    attrs: { 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-controls': menuId }
+  });
+  let shown = false;
+  const entries = (items || []).filter((item) => item && item.label).map((item) => {
+    const content = [item.icon ? Icon(item.icon, { size: 16 }) : null, h('span', { class: 'menu-item-label' }, item.label)];
+    const common = { class: 'menu-item', attrs: { role: 'menuitem', tabindex: -1 }, dataset: item.dataset || {}, on: { click: (event) => choose(item, event) } };
+    return item.href ? h('a', { ...common, href: item.href }, ...content) : h('button', { ...common, type: 'button' }, ...content);
+  });
+  const menu = h('div', {
+    class: 'menu-popover',
+    id: menuId,
+    hidden: !popover,
+    attrs: { role: 'menu', 'aria-label': label, popover: popover ? 'auto' : null }
+  }, ...entries);
+  const el = h('span', { class: ['menu-wrap', className] }, button, menu);
+
+  const isOpen = () => shown;
+
+  function place() {
+    const doc = globalThis.document;
+    const a = button.getBoundingClientRect();
+    const m = menu.getBoundingClientRect();
+    const view = { width: doc.documentElement.clientWidth || globalThis.innerWidth, height: globalThis.innerHeight };
+    const at = menuPlacement({ anchor: a, menu: { width: m.width, height: m.height }, viewport: view });
+    menu.style.top = `${at.top}px`;
+    menu.style.left = `${at.left}px`;
+  }
+
+  const onScroll = () => {
+    if (shown) place();
+  };
+  const onResize = () => close({ focus: false });
+  const onOutside = (event) => {
+    if (!menu.contains(event.target) && !button.contains(event.target)) close({ focus: false });
+  };
+  const onKey = (event) => {
+    if (event.key === 'Escape' || event.key === 'Esc') {
+      event.preventDefault();
+      close();
+    }
+  };
+
+  /** The menu is gone (closed here, by a click outside or by Esc): the button says so; the focus comes back when it was in the menu. */
+  function closed(focus) {
+    if (!shown) return;
+    shown = false;
+    button.setAttribute('aria-expanded', 'false');
+    globalThis.removeEventListener('scroll', onScroll, true);
+    globalThis.removeEventListener('resize', onResize);
+    if (!popover) {
+      globalThis.document.removeEventListener('pointerdown', onOutside, true);
+      globalThis.document.removeEventListener('keydown', onKey, true);
+    }
+    const active = globalThis.document.activeElement;
+    if (focus && (!active || active === globalThis.document.body || menu.contains(active))) button.focus({ preventScroll: true });
+  }
+
+  function open({ last = false } = {}) {
+    if (shown || !entries.length) return;
+    if (popover) menu.showPopover();
+    else {
+      menu.hidden = false;
+      globalThis.document.addEventListener('pointerdown', onOutside, true);
+      globalThis.document.addEventListener('keydown', onKey, true);
+    }
+    shown = true;
+    button.setAttribute('aria-expanded', 'true');
+    place();
+    globalThis.addEventListener('scroll', onScroll, true);
+    globalThis.addEventListener('resize', onResize);
+    entries[last ? entries.length - 1 : 0].focus({ preventScroll: true });
+  }
+
+  function close({ focus = true } = {}) {
+    if (!shown) return;
+    if (popover) {
+      try {
+        menu.hidePopover();
+      } catch {
+        // already hidden by the browser (a click outside)
+      }
+    } else menu.hidden = true;
+    closed(focus);
+  }
+
+  function choose(item, event) {
+    if (typeof item.onSelect === 'function') item.onSelect(event);
+    // A link is followed (a new page or view takes the focus); an action gives it back to the button.
+    close({ focus: !item.href });
+  }
+
+  // A click outside or Esc closes a popover by itself: the button follows.
+  if (popover) menu.addEventListener('toggle', (event) => {
+    if (event.newState === 'closed') closed(true);
+  });
+  // A light dismiss runs before the click: a click on the button that closed the menu does not open it again.
+  let openAtPress = false;
+  button.addEventListener('pointerdown', () => { openAtPress = shown; });
+  button.addEventListener('click', () => {
+    const was = openAtPress;
+    openAtPress = false;
+    if (shown) close();
+    else if (!was) open();
+  });
+  button.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    open({ last: event.key === 'ArrowUp' });
+  });
+  menu.addEventListener('keydown', (event) => {
+    const at = entries.indexOf(globalThis.document.activeElement);
+    const next = menuStep(at, entries.length, event.key);
+    if (next === null) return;
+    event.preventDefault();
+    entries[next].focus({ preventScroll: true });
+  });
+  // Tab (or a click elsewhere) took the focus out of the menu: it closes, the focus stays where it went.
+  menu.addEventListener('focusout', (event) => {
+    if (shown && event.relatedTarget && !menu.contains(event.relatedTarget)) close({ focus: false });
+  });
+
+  return { el, button, menu, open, close, isOpen };
+}
+
 /**
  * Put a button into a busy state (spinner, disabled, aria-busy) or restore it.
  * @param {HTMLButtonElement} button

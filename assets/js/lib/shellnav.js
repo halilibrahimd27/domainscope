@@ -11,9 +11,11 @@
 
 /**
  * Tool groups in navigation order, by job (docs/DESIGN.md §3.1). A view's `group` in app.js's
- * VIEWS names one of them; `labelKey` is the i18n key of the group heading.
+ * VIEWS names one of them; `labelKey` is the i18n key of the group heading. Home comes first, in
+ * a group of its own without a heading (null), so it never lands under "More tools".
  */
 export const NAV_GROUPS = Object.freeze([
+  { id: 'home', labelKey: null },
   { id: 'investigate', labelKey: 'nav.groupInvestigate' },
   { id: 'certs', labelKey: 'nav.groupCerts' },
   { id: 'change', labelKey: 'nav.groupChange' },
@@ -64,8 +66,8 @@ export const OTHER_GROUP = Object.freeze({ id: 'other', labelKey: 'nav.groupOthe
  * {@link OTHER_GROUP}. Groups without a view are left out.
  * @template {{ id: string, group?: string }} V
  * @param {ReadonlyArray<V>} views the view registry (app.js VIEWS)
- * @param {ReadonlyArray<{ id: string, labelKey: string }>} [groups]
- * @returns {Array<{ id: string, labelKey: string, views: V[] }>}
+ * @param {ReadonlyArray<{ id: string, labelKey: string|null }>} [groups]
+ * @returns {Array<{ id: string, labelKey: string|null, views: V[] }>} `labelKey` null: a group shown without a heading (Home)
  */
 export function groupViews(views, groups = NAV_GROUPS) {
   const out = groups.map((g) => ({ id: g.id, labelKey: g.labelKey, views: [] }));
@@ -95,15 +97,16 @@ export function isPlainClick(event) {
 /* ------------------------------------------------------------------------ */
 
 /**
- * The jobs the start page offers a first-time visitor, in display order. `id` names the i18n key
- * `start.task.<id>`; `view` is the tool that does the job.
+ * The jobs Home's "Start a job" offers (and About › Where to start), in display order. `id` names
+ * the i18n key `start.task.<id>`; `view` is the tool that does the job.
  */
 export const START_TASKS = Object.freeze([
   { id: 'subdomains', view: 'subdomains' },
   { id: 'certificate', view: 'scan' },
   { id: 'health', view: 'health' },
   { id: 'propagation', view: 'global' },
-  { id: 'zone', view: 'zone' }
+  { id: 'zone', view: 'zone' },
+  { id: 'portfolio', view: 'portfolio' }
 ].map((task) => Object.freeze(task)));
 
 /**

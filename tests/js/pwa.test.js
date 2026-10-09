@@ -283,9 +283,10 @@ describe('web app manifests', () => {
     }
   });
 
-  test('the texts that name the offline tools name exactly VIEWS[].offline', async () => {
+  test('the texts that name the offline tools name exactly VIEWS[].offline (Home, the start page, works offline too)', async () => {
     await import('../../assets/js/views/about.js'); // registers about.privOffline
-    const offline = VIEWS.filter((v) => v.offline).map((v) => v.id);
+    assert.equal(VIEWS.find((v) => v.id === 'home').offline, true, 'Home reads only what the browser keeps');
+    const offline = VIEWS.filter((v) => v.offline && v.group !== 'home').map((v) => v.id);
     assert.deepEqual(offline, ['cert', 'estate', 'change', 'zone', 'monitor', 'reports', 'inventory', 'about']);
     const prev = getLang();
     try {

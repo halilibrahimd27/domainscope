@@ -39,17 +39,19 @@ const DATA = {
         stale: { reason: 'cli-elsewhere', at: '2026-09-27T08:00:00.000Z', ip: '203.0.113.10', port: 443 } }
     ]
   },
-  // The CT watch's baseline (lib/ctwatch.js): its JSON text, carried as it is.
-  ctSeen: '{"v":1,"domains":{"example.com":{"at":"2026-09-27T12:00:00.000Z","ids":{"00000000000000aa":"2026-12-01"}}}}',
+  // The CT watch's baseline (lib/ctwatch.js): its JSON text, carried as it is (with the current certificates' `due` days).
+  ctSeen: '{"v":1,"domains":{"example.com":{"at":"2026-09-27T12:00:00.000Z","ids":{"00000000000000aa":"2026-12-01"},"due":["2026-12-01"]}}}',
   // The registration watch's baseline (lib/regwatch.js): its JSON text, carried as it is.
   rdapSeen: '{"v":1,"domains":{"example.com":{"at":"2026-09-27T12:00:00.000Z","state":"ok","registrar":"Example Registrar, Inc.","ianaId":"9999",'
     + '"statuses":["client transfer prohibited"],"expires":"2027-11-13","nameservers":["ns1.example.net"],"ds":["12345 13 2"]}}}',
   // The Rollout board (lib/rollout.js): its JSON text, one board with web01 installed.
-  rollout: '{"v":1,"boards":[{"id":"abababababababababababababababababababababababababababababababab","label":"*.example.com","created":"2026-09-28T09:00:00.000Z","updated":"2026-09-28T09:10:00.000Z","rows":[{"k":"s:web01","n":"web01","s":null,"i":"2026-09-28T09:10:00.000Z","r":null,"v":null,"a":null,"m":"2026-09-28T09:10:00.000Z"}]}]}',
+  rollout: '{"v":1,"boards":[{"id":"abababababababababababababababababababababababababababababababab","label":"*.example.com","created":"2026-09-28T09:00:00.000Z","updated":"2026-09-28T09:10:00.000Z","rows":[{"k":"s:web01","n":"web01","s":null,"i":"2026-09-28T09:10:00.000Z","r":null,"v":null,"a":null,"m":"2026-09-28T09:10:00.000Z"}],"total":2}]}',
   // The accepted risks (lib/waivers.js): their JSON text, carried as it is.
   waivers: '{"format":"domainscope-waivers","v":1,"waivers":[{"id":"w-0123456789abcdef","kind":"finding","domain":"example.com","ref":"dmarc.policy-none","reason":"Moving to quarantine in Q1","owner":"Mail team","created":"2026-09-28T09:00:00.000Z","expires":"2026-12-31"}]}',
   // The DMARC report history (lib/dmarchistory.js): its JSON text, one domain kept with the switch on.
-  reportHistory: '{"v":1,"keep":true,"updatedAt":"2026-09-28T09:00:00.000Z","domains":{"example.com":{"days":{"2026-09-27":{"msgs":12,"dmarcPass":10,"spfAligned":10,"dkimAligned":9,"quarantine":0,"reject":0,"unknownMsgs":2,"knownFail":0}},"sources":{"192.0.2.10":{"first":"2026-09-27","last":"2026-09-27","msgs":10,"passMsgs":10,"cls":"yours","service":null,"type":null,"checked":true},"203.0.113.9":{"first":"2026-09-27","last":"2026-09-27","msgs":2,"passMsgs":0,"cls":"unknown","service":null,"type":null}},"recent":{"2026-09-27":{"192.0.2.10":[10,10,10,9,0,0],"203.0.113.9":[2,0,0,0,0,0]}},"policy":{"p":"none","sp":"none","pct":100,"seenAt":"2026-09-27T23:59:59.000Z"},"seen":{"2026-09-27":["00000000000000aa"]},"cut":null,"checked":"2026-09-28"}}}'
+  reportHistory: '{"v":1,"keep":true,"updatedAt":"2026-09-28T09:00:00.000Z","domains":{"example.com":{"days":{"2026-09-27":{"msgs":12,"dmarcPass":10,"spfAligned":10,"dkimAligned":9,"quarantine":0,"reject":0,"unknownMsgs":2,"knownFail":0}},"sources":{"192.0.2.10":{"first":"2026-09-27","last":"2026-09-27","msgs":10,"passMsgs":10,"cls":"yours","service":null,"type":null,"checked":true},"203.0.113.9":{"first":"2026-09-27","last":"2026-09-27","msgs":2,"passMsgs":0,"cls":"unknown","service":null,"type":null}},"recent":{"2026-09-27":{"192.0.2.10":[10,10,10,9,0,0],"203.0.113.9":[2,0,0,0,0,0]}},"policy":{"p":"none","sp":"none","pct":100,"seenAt":"2026-09-27T23:59:59.000Z"},"seen":{"2026-09-27":["00000000000000aa"]},"cut":null,"checked":"2026-09-28"}}}',
+  // What Home counts of the nightly results (lib/digests.js): counts only.
+  digests: '{"monitor":{"at":"2026-09-28T03:00:00.000Z","imported":"2026-09-28T09:00:00.000Z","targets":4,"bad":1,"expiring":0,"incomplete":0}}'
 };
 const WS = { name: 'Acme', data: DATA, app: 'DomainScope 1.0.0', exportedAt: AT };
 
@@ -64,7 +66,8 @@ describe('the plain file', () => {
     assert.equal(file.workspace.default, false);
     assert.equal(file.workspace.exportedAt, '2026-09-28T09:30:00.000Z');
     assert.equal(file.workspace.app, 'DomainScope 1.0.0');
-    assert.deepEqual(Object.keys(file.workspace.parts), ['inventory', 'wordlist', 'expectedCas', 'recent', 'origins', 'ctSeen', 'rdapSeen', 'rollout', 'waivers', 'reportHistory']);
+    assert.deepEqual(Object.keys(file.workspace.parts), ['inventory', 'wordlist', 'expectedCas', 'recent', 'origins', 'ctSeen', 'rdapSeen', 'rollout', 'waivers', 'reportHistory', 'digests']);
+    assert.equal(file.workspace.parts.digests, DATA.digests, 'Home\'s digest of the nightly results goes too');
     assert.equal(file.workspace.parts.reportHistory, DATA.reportHistory, 'the DMARC report history goes with the workspace');
     assert.equal(file.workspace.parts.origins.entries.length, 2, 'the origin map goes with the workspace');
     assert.equal(file.workspace.parts.ctSeen, DATA.ctSeen, 'the CT watch baseline too');

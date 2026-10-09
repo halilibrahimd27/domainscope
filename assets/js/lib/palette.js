@@ -51,6 +51,7 @@ export const ACTION_IDS = Object.freeze(PALETTE_ACTIONS.map((a) => a.id));
  * protocol and command names people type (language-neutral, never shown).
  */
 export const TOOL_KEYWORDS = Object.freeze({
+  home: 'home dashboard start attention workspace',
   subdomains: 'subdomain crt ct passive enumerate',
   domain: 'overview whois rdap migration takeover',
   zone: 'zone bind axfr import cloudflare route53',

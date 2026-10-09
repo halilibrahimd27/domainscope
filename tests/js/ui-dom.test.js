@@ -18,7 +18,7 @@ import * as dom from '../../assets/js/ui/dom.js';
 import { sanitizeFilename, timestampedName, jsonReplacer } from '../../assets/js/ui/download.js';
 import {
   compareValues, ipSortValue, normalizeSearch, csvCell, rowsToCsv, decodeText, describeError, ICON_NAMES, KINDS, CliText,
-  folderOrder, Tag, Badge, Chip, Alert, TAG_VARIANTS, overflowEdges
+  folderOrder, Tag, Badge, Chip, Alert, TAG_VARIANTS, overflowEdges, MenuButton, menuPlacement, menuStep
 } from '../../assets/js/ui/components.js';
 import {
   parseRoute, buildRoute, sameParams, sameSearch, hasRepeatedKeys, VIEWS, REPO_URL, DEFAULT_VIEW
@@ -36,7 +36,7 @@ const subdomainsSource = async () => [
   await readFile(path.join(ROOT, 'assets', 'js', 'ui', 'subdomains-run.js'), 'utf8')
 ].join('\n');
 const SPEC_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
-const VIEW_IDS = ['domain', 'health', 'subdomains', 'lookup', 'scan', 'cert', 'renew', 'estate', 'change', 'global', 'zone', 'retire', 'ip', 'bulk', 'ptr', 'portfolio', 'monitor', 'reports', 'inventory', 'about'];
+const VIEW_IDS = ['home', 'domain', 'health', 'subdomains', 'lookup', 'scan', 'cert', 'renew', 'estate', 'change', 'global', 'zone', 'retire', 'ip', 'bulk', 'ptr', 'portfolio', 'monitor', 'reports', 'inventory', 'about'];
 
 /* ------------------------------------------------------------------------ */
 /* Minimal fake DOM (just enough for dom.js)                                */
@@ -423,7 +423,7 @@ describe('state', () => {
 
   test('defaults with empty storage', () => {
     const s = make(new MemoryStorage());
-    assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: [...DEFAULT_CHAIN], concurrency: 12, startTasks: true, density: 'comfortable' });
+    assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: [...DEFAULT_CHAIN], concurrency: 12, startTasks: true, density: 'comfortable', homeSetup: true });
     assert.equal(s.inventory.text, '');
     assert.deepEqual(s.inventory.servers, []);
     assert.equal(s.inventory.updatedAt, null);
@@ -461,7 +461,7 @@ describe('state', () => {
     const s = make(storage);
     await s.ready;
     assert.equal(s.inventory.text, '');
-    assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: ['google', 'cloudflare'], concurrency: 32, startTasks: true, density: 'comfortable' });
+    assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: ['google', 'cloudflare'], concurrency: 32, startTasks: true, density: 'comfortable', homeSetup: true });
   });
 
   test('sanitizeSettings validates each field', () => {
@@ -477,6 +477,9 @@ describe('state', () => {
     assert.equal(sanitizeSettings({}).startTasks, true, 'a record from before the task picker keeps it');
     assert.equal(sanitizeSettings({ startTasks: false }).startTasks, false);
     assert.equal(sanitizeSettings({ startTasks: 'no' }).startTasks, true, 'only an explicit false turns it off');
+    assert.equal(sanitizeSettings({}).homeSetup, true, 'Home\'s setup checklist shows until it is hidden');
+    assert.equal(sanitizeSettings({ homeSetup: false }).homeSetup, false);
+    assert.equal(sanitizeSettings({ homeSetup: 0 }).homeSetup, true, 'only an explicit false hides it');
     assert.equal(sanitizeSettings({}).density, 'comfortable', 'comfortable by default');
     assert.equal(sanitizeSettings({ density: 'compact' }).density, 'compact');
     assert.equal(sanitizeSettings({ density: 'tiny' }).density, 'comfortable', 'an unknown density falls back');
@@ -1150,6 +1153,68 @@ describe('components.js helpers', () => {
     assert.equal(link.getAttribute('aria-pressed'), null);
     assert.equal(Chip({ label: 'x', href: 'javascript:alert(1)' }).getAttribute('href'), null, 'a script URL is dropped');
   }));
+
+  test('MenuButton: a menu button (aria-haspopup, -expanded, -controls) over a menu of menuitems; links keep safe URLs only', () => withFakeDocument(() => {
+    let picked = 0;
+    const m = MenuButton({
+      label: 'More actions for example.com',
+      dataset: { action: 'home-recent-more' },
+      items: [
+        { label: 'Domain Health', icon: 'activity', href: '#/health?domain=example.com&run=0', dataset: { view: 'health' } },
+        { label: 'Script', href: 'javascript:alert(1)' },
+        { label: 'Forget', onSelect: () => { picked += 1; } },
+        { label: '' },
+        null
+      ]
+    });
+    const btn = m.button;
+    assert.equal(btn.tagName, 'BUTTON');
+    assert.equal(btn.getAttribute('aria-haspopup'), 'menu');
+    assert.equal(btn.getAttribute('aria-expanded'), 'false');
+    assert.equal(btn.getAttribute('aria-label'), 'More actions for example.com');
+    assert.equal(btn.dataset.action, 'home-recent-more');
+    assert.equal(btn.getAttribute('aria-controls'), m.menu.getAttribute('id'));
+    assert.equal(m.menu.getAttribute('role'), 'menu');
+    assert.equal(m.menu.getAttribute('aria-label'), 'More actions for example.com');
+    // node has no popover: the menu is shown and hidden in place
+    assert.equal(m.menu.getAttribute('popover'), null);
+    assert.equal(m.menu.hidden, true);
+    const items = m.menu.childNodes;
+    assert.equal(items.length, 3, 'an item without a label is left out');
+    assert.deepEqual(items.map((i) => [i.tagName, i.getAttribute('role'), i.getAttribute('tabindex')]),
+      [['A', 'menuitem', '-1'], ['A', 'menuitem', '-1'], ['BUTTON', 'menuitem', '-1']]);
+    assert.equal(items[0].getAttribute('href'), '#/health?domain=example.com&run=0');
+    assert.equal(items[0].dataset.view, 'health');
+    assert.equal(items[1].getAttribute('href'), null, 'a script URL is dropped');
+    assert.equal(items[2].getAttribute('type'), 'button');
+    assert.equal(m.isOpen(), false);
+    assert.equal(m.el.childNodes[0], btn, 'the menu follows its button: Tab from the last item moves on');
+    assert.equal(picked, 0);
+  }));
+
+  test('menuPlacement: under the button, end edges aligned, inside the viewport; above when only that fits', () => {
+    const viewport = { width: 375, height: 812 };
+    const menu = { width: 200, height: 160 };
+    const at = (top, right) => ({ top, bottom: top + 32, left: right - 32, right });
+    assert.deepEqual(menuPlacement({ anchor: at(100, 360), menu, viewport }), { top: 136, left: 160, above: false });
+    assert.deepEqual(menuPlacement({ anchor: at(100, 120), menu, viewport }), { top: 136, left: 8, above: false }, 'kept 8 px inside the left edge');
+    assert.deepEqual(menuPlacement({ anchor: at(700, 360), menu, viewport }), { top: 536, left: 160, above: true }, 'no room below: above');
+    const tall = { width: 200, height: 900 };
+    assert.equal(menuPlacement({ anchor: at(400, 360), menu: tall, viewport }).top, 8, 'taller than the screen: from the top margin');
+    assert.equal(menuPlacement({ anchor: at(100, 900), menu, viewport: { width: 1440, height: 900 } }).left, 700);
+  });
+
+  test('menuStep: ↓ ↑ wrap around, Home and End go to the ends, other keys do nothing', () => {
+    assert.equal(menuStep(-1, 3, 'ArrowDown'), 0);
+    assert.equal(menuStep(-1, 3, 'ArrowUp'), 2);
+    assert.equal(menuStep(0, 3, 'ArrowDown'), 1);
+    assert.equal(menuStep(2, 3, 'ArrowDown'), 0, 'wraps');
+    assert.equal(menuStep(0, 3, 'ArrowUp'), 2, 'wraps');
+    assert.equal(menuStep(1, 3, 'Home'), 0);
+    assert.equal(menuStep(1, 3, 'End'), 2);
+    assert.equal(menuStep(1, 3, 'Enter'), null);
+    assert.equal(menuStep(0, 0, 'ArrowDown'), null, 'an empty menu');
+  });
 
   test('Alert: a privacy note (ok + lock) is neutral, not good news; the other variants keep their class and role', () => withFakeDocument(() => {
     const note = Alert({ variant: 'ok', icon: 'lock', message: 'The file never leaves your browser.' });

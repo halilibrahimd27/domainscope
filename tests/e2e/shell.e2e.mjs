@@ -55,7 +55,10 @@ import { zoneHandoffScript } from './scan.e2e.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
 const BASE = '/domainscope/';
-const ROUTES = ['domain', 'health', 'subdomains', 'lookup', 'scan', 'cert', 'renew', 'estate', 'change', 'global', 'zone', 'retire', 'ip', 'bulk', 'ptr', 'portfolio', 'monitor', 'reports', 'inventory', 'about'];
+const ROUTES = ['home', 'domain', 'health', 'subdomains', 'lookup', 'scan', 'cert', 'renew', 'estate', 'change', 'global', 'zone', 'retire', 'ip', 'bulk', 'ptr', 'portfolio', 'monitor', 'reports', 'inventory', 'about'];
+
+/** The page's <h1> for a route: the tool's name, or on Home the workspace's (Default in this profile). */
+const HOME_TITLE = { en: 'Default workspace', tr: 'Varsayılan çalışma alanı' };
 
 const argv = process.argv.slice(2);
 const opt = (name) => argv.includes(name);
@@ -925,18 +928,18 @@ async function main() {
     const page = await browser.newPage('about:blank', { width: 1440, height: 900 });
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
 
-    await step('boots at the site root and shows the default view (subdomains)', async () => {
+    await step('boots at the site root and shows the default view (Home)', async () => {
       await page.goto(server.url);
       await waitReady(page);
-      assertEqual(await page.evaluate(() => document.documentElement.dataset.view), 'subdomains', 'default view');
-      assertEqual(await page.evaluate(() => document.querySelector('h1').textContent), title('subdomains', 'en'), 'h1');
+      assertEqual(await page.evaluate(() => document.documentElement.dataset.view), 'home', 'default view');
+      assertEqual(await page.evaluate(() => document.querySelector('h1').textContent), HOME_TITLE.en, 'h1: the workspace');
       assertEqual(await page.evaluate(() => document.querySelectorAll('.nav-link').length), ROUTES.length, 'nav links');
       assertEqual(await page.evaluate(() => document.documentElement.lang), 'en', 'html lang');
     });
 
     await step('the start route loads the global stylesheet and its own; development registers no service worker', async () => {
       const sheets = await page.evaluate(() => [...document.querySelectorAll('link[rel="stylesheet"]')].map((l) => new URL(l.href).pathname));
-      assertEqual(sheets, [`${BASE}assets/css/style.css`, `${BASE}assets/css/views/subdomains.css`], 'stylesheets');
+      assertEqual(sheets, [`${BASE}assets/css/style.css`, `${BASE}assets/css/views/home.css`], 'stylesheets');
       // registration is attempted when the browser is idle: give it that chance first
       await page.evaluate(() => new Promise((r) => requestIdleCallback(() => setTimeout(r, 200), { timeout: 3000 })));
       assertEqual(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length), 0, 'registrations');
@@ -948,9 +951,10 @@ async function main() {
       for (const id of ROUTES) {
         await step(`[${scheme}] #/${id} renders without horizontal scroll`, async () => {
           await gotoRoute(page, id);
-          assertEqual(await page.evaluate(() => document.querySelector('h1.page-title').textContent), title(id, 'en'), 'page title');
+          const heading = id === 'home' ? HOME_TITLE.en : title(id, 'en');
+          assertEqual(await page.evaluate(() => document.querySelector('h1.page-title').textContent), heading, 'page title');
           assertEqual(await page.evaluate(() => document.querySelector('.nav-link[aria-current="page"]')?.dataset.view), id, 'active nav');
-          assert((await page.evaluate(() => document.title)).includes(title(id, 'en')), 'document.title');
+          assert((await page.evaluate(() => document.title)).includes(heading), 'document.title');
           await assertNoHorizontalScroll(page, id);
           await shot(page, `desktop-${scheme}-en-${id}`);
         });
@@ -966,10 +970,10 @@ async function main() {
       assertEqual(idle, 1, 'the scan engine is modulepreloaded once, when idle');
     });
 
-    await step('router: unknown view → subdomains (URL rewritten), anchors keep the view', async () => {
+    await step('router: unknown view → Home (URL rewritten), anchors keep the view', async () => {
       await gotoRoute(page, 'about');
       await page.evaluate(() => { window.location.hash = '#/definitely-not-a-view'; });
-      await page.waitFor(() => document.documentElement.dataset.view === 'subdomains' && window.location.hash === '#/subdomains');
+      await page.waitFor(() => document.documentElement.dataset.view === 'home' && window.location.hash === '#/home');
       await gotoRoute(page, 'about');
       await page.evaluate(() => { window.location.hash = '#main'; });
       await new Promise((r) => setTimeout(r, 200));
@@ -1817,7 +1821,7 @@ async function main() {
       for (const id of ROUTES) {
         await step(`[${scheme}] #/${id} fits 390 px`, async () => {
           await gotoRoute(phone, id);
-          assertEqual(await phone.evaluate(() => document.querySelector('h1.page-title').textContent), title(id, 'tr'), 'page title');
+          assertEqual(await phone.evaluate(() => document.querySelector('h1.page-title').textContent), id === 'home' ? HOME_TITLE.tr : title(id, 'tr'), 'page title');
           await assertNoHorizontalScroll(phone, id);
           await shot(phone, `mobile-${scheme}-tr-${id}`);
         });
@@ -1991,11 +1995,15 @@ async function main() {
     await phone.close();
 
     /* ---------------- First visit, the Tools menu and keyboard shortcuts ---------------- */
-    group('Start page, Tools menu (375 px) and keyboard shortcuts');
+    group('Home\'s job cards, Tools menu (375 px) and keyboard shortcuts');
     const sm = await browser.newPage('about:blank', { width: 375, height: 740, mobile: true });
     await sm.emulateMedia({ 'prefers-color-scheme': 'light' });
-    const JOBS = ['subdomains', 'certificate', 'health', 'propagation', 'zone'];
-    const pickerShown = (p) => p.evaluate(() => !!document.querySelector('[data-role="start-picker"]'));
+    const JOBS = ['subdomains', 'certificate', 'health', 'propagation', 'zone', 'portfolio'];
+    /** Home's "Start a job" shows its cards (a first visit), not the short list. */
+    const cardsExpanded = (p) => p.evaluate(() => {
+      const card = document.querySelector('[data-role="start-picker"]');
+      return !!card && !card.classList.contains('is-compact');
+    });
     // DNS answers never arrive (offline suite): a run stays in progress until it is cancelled.
     const holdFetches = (p) => p.evaluate(() => {
       window.__realFetch = window.__realFetch || window.fetch;
@@ -2032,56 +2040,57 @@ async function main() {
         await (await import('./assets/js/state.js')).state.clearAll();
         localStorage.clear();
         localStorage.setItem('ssds.settings', JSON.stringify({ v: 2, lang: l }));
-        window.location.hash = '#/subdomains';
+        window.location.hash = '#/home';
       }, lang);
       await p.reload();
       await waitReady(p);
     };
 
-    await step('a first visit shows the task picker above Subdomains; each job links to its tool', async () => {
+    await step('a first visit: Home offers the job cards — two columns of chips under the quick start, each a link to its tool', async () => {
       await sm.goto(server.url);
       await waitReady(sm);
       await firstVisit(sm);
       const info = await sm.evaluate(() => {
-        const picker = document.querySelector('[data-role="start-picker"]');
-        if (!picker) return null;
+        const card = document.querySelector('[data-role="start-picker"]');
+        if (!card) return null;
         return {
-          above: !!(picker.compareDocumentPosition(document.querySelector('.page-header')) & Node.DOCUMENT_POSITION_FOLLOWING),
-          label: document.getElementById(picker.getAttribute('aria-labelledby'))?.textContent,
-          jobs: [...picker.querySelectorAll('.start-task')].map((a) => [a.dataset.task, a.getAttribute('href')]),
-          hide: picker.querySelector('[data-action="start-hide"]')?.getAttribute('aria-label')
+          view: document.documentElement.dataset.view,
+          label: document.getElementById(card.getAttribute('aria-labelledby'))?.textContent,
+          compact: card.classList.contains('is-compact'),
+          jobs: [...card.querySelectorAll('.start-task')].map((a) => [a.dataset.task, a.getAttribute('href')]),
+          fold: card.querySelector('[data-action="start-hide"]')?.textContent.trim()
         };
       });
-      assert(info, 'picker shown');
-      assert(info.above, 'above the Subdomains page header');
-      assertEqual(info.label, 'New here? Pick a job to start with', 'region label');
-      assertEqual(info.jobs, [['subdomains', '#/subdomains'], ['certificate', '#/scan'], ['health', '#/health'], ['propagation', '#/global'], ['zone', '#/zone']], 'jobs');
-      assertEqual(info.hide, 'Hide these suggestions', 'dismiss button label');
-      // Short chips in two columns (the job alone; the tool's name read out, not shown), so the tool's own
-      // field still starts on the first screen.
+      assert(info, 'job cards shown');
+      assertEqual([info.view, info.label, info.compact], ['home', 'Start a job', false], 'Home, its cards');
+      assertEqual(info.jobs, [['subdomains', '#/subdomains'], ['certificate', '#/scan'], ['health', '#/health'], ['propagation', '#/global'], ['zone', '#/zone'],
+        ['portfolio', '#/portfolio']], 'jobs');
+      assertEqual(info.fold, 'Show as a short list', 'the fold button');
+      // Short chips in two columns (the job alone; the tool's name read out, not shown), under the quick start.
       const chips = await sm.evaluate(() => {
-        const cards = [...document.querySelectorAll('.start-picker .start-task')];
+        const cards = [...document.querySelectorAll('.home-jobs .start-task')];
         return {
           columns: new Set(cards.map((a) => Math.round(a.getBoundingClientRect().left))).size,
           toolShown: cards.some((a) => a.querySelector('.start-task-tool').getBoundingClientRect().width > 1),
           toolNames: cards.map((a) => a.textContent).join(' | '),
-          fieldTop: Math.round(document.querySelector('[data-role="sub-domain"]').getBoundingClientRect().top),
+          fieldTop: Math.round(document.querySelector('[data-role="home-quick"]').getBoundingClientRect().top),
+          jobsTop: Math.round(cards[0].getBoundingClientRect().top),
           screen: window.innerHeight
         };
       });
       assertEqual(chips.columns, 2, 'two columns of chips');
       assert(!chips.toolShown && chips.toolNames.includes('SSL Targets'), `each chip names its tool for screen readers only: ${chips.toolNames}`);
-      assert(chips.fieldTop < chips.screen, `the domain field starts on the first screen: ${chips.fieldTop} of ${chips.screen} px`);
-      await assertNoHorizontalScroll(sm, 'start picker');
+      assert(chips.fieldTop < chips.jobsTop && chips.jobsTop < chips.screen, `the quick start, then the first jobs, on the first screen: ${JSON.stringify(chips)}`);
+      await assertNoHorizontalScroll(sm, 'job cards');
       await shot(sm, 'mobile-light-en-start-picker');
       await sm.emulateMedia({ 'prefers-color-scheme': 'dark' });
       await shot(sm, 'mobile-dark-en-start-picker');
       await sm.emulateMedia({ 'prefers-color-scheme': 'light' });
-      // The smallest phones (320 × 568): still two columns, the chips without icons, so the page's own title stays in view.
+      // The smallest phones (320 × 568): still two columns, the chips without icons, the page's own title in view.
       await sm.setViewport({ width: 320, height: 568, mobile: true });
       try {
         const small = await sm.evaluate(() => {
-          const cards = [...document.querySelectorAll('.start-picker .start-task')];
+          const cards = [...document.querySelectorAll('.home-jobs .start-task')];
           return {
             columns: new Set(cards.map((a) => Math.round(a.getBoundingClientRect().left))).size,
             icons: cards.some((a) => a.querySelector('.start-task-icon').getClientRects().length > 0),
@@ -2091,38 +2100,33 @@ async function main() {
         });
         assert(small.columns === 2 && !small.icons, `320 px chips: ${JSON.stringify(small)}`);
         assert(small.titleBottom < small.screen, `the page title is on the first screen at 320 × 568: ${small.titleBottom} px`);
-        await assertNoHorizontalScroll(sm, 'start picker at 320 px');
+        await assertNoHorizontalScroll(sm, 'job cards at 320 px');
         await shot(sm, 'mobile-light-en-start-picker-320');
       } finally {
         await sm.setViewport({ width: 375, height: 740, mobile: true });
       }
     });
 
-    await step('the start page\'s own job focuses its input; another job opens its tool', async () => {
-      // A Ctrl+click (a new tab) is the browser's: the page keeps its focus.
+    await step('a job opens its tool; a Ctrl+click is the browser\'s', async () => {
       await sm.evaluate(() => document.getElementById('page-title').focus());
-      assertEqual(await ctrlClick(sm, '.start-task[data-task="subdomains"]'), false, 'the app leaves a Ctrl+click alone');
-      assertEqual(await sm.evaluate(() => document.activeElement?.id), 'page-title', 'no jump to the input on a Ctrl+click');
-      await sm.click('.start-task[data-task="subdomains"]');
-      await sm.waitFor(() => document.activeElement?.dataset.role === 'sub-domain', { message: 'domain field focused' });
-      assertEqual(await sm.evaluate(() => document.documentElement.dataset.view), 'subdomains', 'still on Subdomains');
+      assertEqual(await ctrlClick(sm, '.start-task[data-task="zone"]'), false, 'the app leaves a Ctrl+click alone');
+      assertEqual(await sm.evaluate(() => [document.documentElement.dataset.view, document.activeElement?.id]), ['home', 'page-title'], 'no navigation on a Ctrl+click');
       await sm.click('.start-task[data-task="zone"]');
       await sm.waitFor(() => document.documentElement.dataset.view === 'zone', { message: 'Zone File opened' });
-      await gotoRoute(sm, 'subdomains');
-      assert(await pickerShown(sm), 'still offered: nothing was run');
+      await gotoRoute(sm, 'home');
+      assert(await cardsExpanded(sm), 'still cards: nothing was run');
     });
 
-    await step('dismissing hides it for good (persisted); About › Where to start still lists the jobs', async () => {
+    await step('folding shows the short list for good (persisted); About › Where to start still lists the jobs', async () => {
       await sm.click('[data-action="start-hide"]');
-      await sm.waitFor(() => !document.querySelector('[data-role="start-picker"]'));
-      assertEqual(await sm.evaluate(() => document.activeElement?.id), 'page-title', 'focus moves to the page title');
+      await sm.waitFor(() => document.querySelector('[data-role="start-picker"]')?.classList.contains('is-compact'), { message: 'the short list' });
+      assertEqual(await sm.evaluate(() => (document.activeElement?.classList.contains('home-card-title') ? document.activeElement.textContent : null)), 'Start a job',
+        'focus on the card\'s heading (the button went away)');
       assertEqual(await sm.evaluate(() => JSON.parse(localStorage.getItem('ssds.settings')).startTasks), false, 'stored');
-      assert(await sm.evaluate(() => [...document.querySelectorAll('.toast')].some((x) => x.textContent.includes('About › Where to start'))),
-        'the toast says where to find the jobs again');
-      await dismissToasts(sm);
+      assertEqual(await sm.evaluate(() => document.querySelectorAll('[data-role="start-picker"] .start-task').length), JOBS.length, 'every job still there');
       await sm.reload();
       await waitReady(sm);
-      assert(!await pickerShown(sm), 'still hidden after a reload');
+      assert(!await cardsExpanded(sm), 'still the short list after a reload');
       await gotoRoute(sm, 'about');
       const about = await sm.evaluate(() => ({
         title: document.querySelector('#about-start .section-title')?.textContent,
@@ -2134,10 +2138,10 @@ async function main() {
       await sm.waitFor(() => document.documentElement.dataset.view === 'scan', { message: 'SSL Targets opened from About' });
     });
 
-    await step('running something ends the first visit; so does data from an earlier visit', async () => {
+    await step('running something folds Home\'s cards to the short list; so does data from an earlier visit', async () => {
       const stored = () => sm.evaluate(() => JSON.parse(localStorage.getItem('ssds.settings') || '{}').startTasks);
       await firstVisit(sm);
-      assert(await pickerShown(sm), 'offered again after the data was deleted');
+      assert(await cardsExpanded(sm), 'offered again after the data was deleted');
       // The main signal: a tool at work (Bulk Resolve started with Ctrl+Enter, its answers held back).
       await gotoRoute(sm, 'bulk');
       assertEqual(await stored(), undefined, 'nothing run yet');
@@ -2150,8 +2154,8 @@ async function main() {
       await sm.evaluate(() => document.querySelector('[data-action="bulk-cancel"]').click());
       await sm.waitFor(() => !document.getElementById('app-header').classList.contains('is-busy'), { message: 'run stopped' });
       await releaseFetches(sm);
-      await gotoRoute(sm, 'subdomains');
-      assert(!await pickerShown(sm), 'no picker after a run');
+      await gotoRoute(sm, 'home');
+      assert(!await cardsExpanded(sm), 'no picker after a run');
       // An imported zone file (a sample: nothing is sent, the view never goes busy).
       await firstVisit(sm);
       await gotoRoute(sm, 'zone');
@@ -2164,22 +2168,22 @@ async function main() {
       await sm.type('[data-role="inventory-text"]', 'web01 192.0.2.10');
       await sm.press('Enter', { ctrl: true }); // the shared shortcut: Ctrl+Enter clicks Save
       await sm.waitFor(savedInventoryIs, { args: ['web01 192.0.2.10'], message: 'saved with Ctrl+Enter, no new line typed' });
-      await gotoRoute(sm, 'subdomains');
-      assert(!await pickerShown(sm), 'saved servers count as a run');
+      await gotoRoute(sm, 'home');
+      assert(!await cardsExpanded(sm), 'saved servers count as a run');
       // Remembered options alone (a switch flipped on the start page) are no run; learned names are.
       await firstVisit(sm);
       await sm.evaluate(() => localStorage.setItem('ssds.subdomains.options', '{}'));
       await sm.reload();
       await waitReady(sm);
-      assert(await pickerShown(sm), 'remembered view options are no run');
+      assert(await cardsExpanded(sm), 'remembered view options are no run');
       await sm.evaluate(() => localStorage.setItem('ssds.learned.labels', JSON.stringify({ v: 1, seq: 1, labels: { api: { hits: 1, last: 1 } } })));
       await sm.reload();
       await waitReady(sm);
-      assert(!await pickerShown(sm), 'a browser that ran a scan before (learned names)');
+      assert(!await cardsExpanded(sm), 'a browser that ran a scan before (learned names)');
       await firstVisit(sm, 'tr');
-      assert(await pickerShown(sm), 'offered in Turkish too');
-      assertEqual(await sm.evaluate(() => document.querySelector('.start-picker-title').textContent), 'İlk kez mi geliyorsunuz? Başlamak için bir iş seçin', 'TR title');
-      await assertNoHorizontalScroll(sm, 'start picker (TR)');
+      assert(await cardsExpanded(sm), 'offered in Turkish too');
+      assertEqual(await sm.evaluate(() => document.querySelector('[data-role="start-picker"] .home-card-title').textContent), 'Bir işe başlayın', 'TR title');
+      await assertNoHorizontalScroll(sm, 'job cards (TR)');
       await shot(sm, 'mobile-light-tr-start-picker');
     });
 
@@ -2202,7 +2206,7 @@ async function main() {
           sheet: d.classList.contains('modal-sheet'),
           full: Math.round(box.left) === 0 && Math.round(box.width) === window.innerWidth && Math.round(box.height) === window.innerHeight,
           title: document.getElementById(d.getAttribute('aria-labelledby'))?.textContent,
-          groups: [...d.querySelectorAll('.navmenu-group')].map((g) => [g.querySelector('.navmenu-label').textContent,
+          groups: [...d.querySelectorAll('.navmenu-group')].map((g) => [g.querySelector('.navmenu-label')?.textContent ?? null,
             [...g.querySelectorAll('.navmenu-link')].map((a) => a.dataset.view)]),
           current: [...d.querySelectorAll('.navmenu-link[aria-current="page"]')].map((a) => a.dataset.view),
           focused: document.activeElement?.dataset.view,
@@ -2214,7 +2218,7 @@ async function main() {
       assert(menu.modal && menu.sheet && menu.full, `a modal sheet over the whole screen (focus trap, the page inert): ${JSON.stringify(menu)}`);
       assertEqual(menu.title, 'Tools', 'dialog title');
       assertEqual(menu.groups, [
-        ['Investigate a domain', ['domain', 'health', 'subdomains', 'lookup']], ['Deploy & renew certificates', ['scan', 'cert', 'renew', 'estate']],
+        [null, ['home']], ['Investigate a domain', ['domain', 'health', 'subdomains', 'lookup']], ['Deploy & renew certificates', ['scan', 'cert', 'renew', 'estate']],
         ['Change & migrate DNS', ['change', 'global', 'zone', 'retire']], ['Map IPs to servers', ['ip', 'bulk', 'ptr']],
         ['Watch & report', ['portfolio', 'monitor', 'reports']], ['Setup & help', ['inventory', 'about']]
       ], 'groups');
@@ -2846,6 +2850,14 @@ async function main() {
         }));
         assertEqual(tr, { toasts: [[translate('pwa.updateReady'), translate('pwa.reload')]], manifest: 'manifest.tr.webmanifest' }, 'update toast in Turkish');
         setNodeLang('en');
+        // Home, open in this tab, counts with a module it loads after its first paint (lib/homedigest.js): the
+        // update dropped this version's files, so that load fails (and the probe of app.js) — logged on purpose.
+        await other.waitFor(() => {
+          const reading = document.querySelector('[data-role="home-loading"]');
+          return !reading || !reading.textContent;
+        }, { message: 'Home settled (counted, or its counts given up)' });
+        await other.evaluate(() => new Promise((r) => setTimeout(r, 500)));
+        await other.resetProblems();
         await other.click('.toast[data-toast="pwa-update"] .btn');
         await other.waitFor(() => document.querySelector('script[type="module"]')?.getAttribute('src') === 'v/app-two/assets/js/app.js'
           && document.documentElement.dataset.appReady === 'true', { timeout: 15000, message: 'the new version in the other tab' });

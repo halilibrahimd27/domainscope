@@ -52,6 +52,7 @@ import { trafficLight } from './summarycore.js';
 import { scoreHealth, countSeverities } from './healthscore.js';
 import { healthWaivers } from './waivers.js';
 import { serviceBySpf, passportKind } from './senders.js';
+import { rdapStatusFlags } from './regstatus.js';
 
 /** The cards of a passport, in display order. */
 export const PASSPORT_CARDS = Object.freeze(['registration', 'dns', 'mail', 'web', 'certs', 'saas', 'health']);
@@ -520,39 +521,8 @@ export function registryWhois(tld, domain = '') {
   return { name: null, url: `https://www.iana.org/domains/root/db/${t}.html`, iana: true };
 }
 
-/**
- * Registry status → what it means for the domain ('lock': a *Prohibited flag, 'hold', 'pending',
- * 'ok', 'other'), in RFC 8056 wording ('client hold') or EPP's ('clientHold') alike.
- */
-function statusKind(status) {
-  const s = canon(status);
-  if (/prohibited/.test(s)) return 'lock';
-  if (/hold\b/.test(s)) return 'hold';
-  if (/pending|redemption/.test(s)) return 'pending';
-  if (s === 'ok' || s === 'active' || s === 'associated') return 'ok';
-  return 'other';
-}
-
-/**
- * RDAP status values with their kind: holds and pending deletes first, then locks. `code` is
- * spelled as the registry sent it (RFC 8056's 'client transfer prohibited' or EPP's
- * 'clientTransferProhibited'); a value repeated in another case counts once.
- * @param {string[]} statuses
- * @returns {Array<{ code: string, kind: 'lock'|'hold'|'pending'|'ok'|'other' }>}
- */
-export function rdapStatusFlags(statuses) {
-  const order = { hold: 0, pending: 1, lock: 2, ok: 3, other: 4 };
-  const seen = new Set();
-  const flags = [];
-  for (const status of statuses || []) {
-    const code = String(status ?? '').trim();
-    const key = canon(code);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    flags.push({ code, kind: statusKind(key) });
-  }
-  return flags.sort((a, b) => order[a.kind] - order[b.kind] || canon(a.code).localeCompare(canon(b.code), 'en'));
-}
+// rdapStatusFlags (the statuses with their kind) lives in lib/regstatus.js with the other status rules.
+export { rdapStatusFlags } from './regstatus.js';
 
 /** Whole days from `now` until `date` (negative when past), like Domain Health's countdown. */
 function daysUntil(date, now) {

@@ -50,7 +50,7 @@ import { randomLabel } from './util.js';
 export const DEFAULT_WORKSPACE_ID = 'default';
 
 /** What one workspace holds. */
-export const WORKSPACE_PARTS = Object.freeze(['inventory', 'learned', 'wordlist', 'expectedCas', 'notes', 'recent', 'policy', 'origins', 'ctSeen', 'rdapSeen', 'rollout', 'waivers', 'reportHistory']);
+export const WORKSPACE_PARTS = Object.freeze(['inventory', 'learned', 'wordlist', 'expectedCas', 'notes', 'recent', 'policy', 'origins', 'ctSeen', 'rdapSeen', 'rollout', 'waivers', 'reportHistory', 'digests']);
 
 /** Bounds: workspaces, name and notes length (characters), list lengths, stored text sizes. */
 export const WORKSPACE_LIMITS = Object.freeze({
@@ -67,7 +67,8 @@ export const WORKSPACE_LIMITS = Object.freeze({
   ctSeen: 1048576,
   rdapSeen: 524288,
   waivers: 65536,
-  reportHistory: 4194304
+  reportHistory: 4194304,
+  digests: 16384
 });
 
 /** localStorage key of the pointer to the active workspace (the id, as a plain string). */
@@ -288,6 +289,8 @@ export function sanitizePart(part, value) {
     // The DMARC report history (lib/dmarchistory.js): its JSON text, kept whole or not at all (a cut
     // text is no JSON; its own prune() keeps it under the cap), read and checked by readHistory.
     case 'reportHistory': return typeof value === 'string' && value.length <= WORKSPACE_LIMITS.reportHistory ? value : '';
+    // What a tool found, in counts, for Home (lib/digests.js): JSON text, kept whole or not at all.
+    case 'digests': return typeof value === 'string' && value.length <= WORKSPACE_LIMITS.digests ? value : '';
     default: throw new WorkspaceError('part', `unknown workspace part: ${part}`);
   }
 }

@@ -366,13 +366,24 @@ export function replaceTarget(ws, list) {
 }
 
 /**
+ * The parts of the dialog a link can open it on (Home's setup checklist and its rows), each the
+ * control that takes the focus: a new workspace's name, the expected CAs, the accepted risks.
+ */
+export const PANEL_SECTIONS = Object.freeze({
+  new: '[data-role="ws-new-name"]',
+  expected: '[data-role="ws-expected"]',
+  waivers: '[data-role="ws-waivers-counts"], [data-role="ws-waivers-empty"]'
+});
+
+/**
  * Open the Workspaces dialog.
  * @param {{ state: object, switchTo: (id: string) => Promise<boolean>, setTarget: (value: string) => boolean,
- *   onClose?: () => void, appVersion?: string }} opts `switchTo`: the shell's switch (asks before
- *   stopping a long job); `setTarget`: make a recent domain the current target
+ *   onClose?: () => void, appVersion?: string, section?: string|null }} opts `switchTo`: the shell's switch
+ *   (asks before stopping a long job); `setTarget`: make a recent domain the current target;
+ *   `section`: one of {@link PANEL_SECTIONS} to open the dialog on (else the workspaces list)
  * @returns {{ el: HTMLDialogElement, close(): void }}
  */
-export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null, appVersion = '' }) {
+export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null, appVersion = '', section = null }) {
   const cleanups = [];
   let renaming = null; // id of the workspace whose name is being edited
   let renamingName = ''; // its name as shown when the edit began (said if another tab deletes it)
@@ -812,7 +823,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
     return h('div', { class: 'ws-block ws-waivers-block', dataset: { role: 'ws-waivers', total: String(c.total), expired: String(c.expired) } },
       h('div', { class: 'ws-block-head' }, h('span', { class: 'field-label', id: headId }, t('wvr.ws.title')), dropExpired),
       h('p', { class: 'field-hint' }, t('wvr.ws.hint')),
-      list.length ? h('p', { class: 'ws-note', dataset: { role: 'ws-waivers-counts' } }, t('wvr.ws.counts', { active: c.active, expiring: c.expiring, days: WAIVER_SOON_DAYS, expired: c.expired })) : null,
+      list.length ? h('p', { class: 'ws-note', dataset: { role: 'ws-waivers-counts' }, attrs: { tabindex: -1 } }, t('wvr.ws.counts', { active: c.active, expiring: c.expiring, days: WAIVER_SOON_DAYS, expired: c.expired })) : null,
       items,
       h('div', { class: 'ws-actions' }, exportBtn),
       drop.el,
@@ -1086,8 +1097,10 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
   renderCurrent();
   renderFile();
   modal.open();
-  // Straight to the workspaces, not the dialog's close button.
-  const first = listEl.querySelector('li.is-active') || listEl.querySelector('li');
+  // Straight to the part a link asked for, else to the workspaces — not the dialog's close button.
+  const wanted = Object.prototype.hasOwnProperty.call(PANEL_SECTIONS, section) ? body.querySelector(PANEL_SECTIONS[section]) : null;
+  const first = wanted || listEl.querySelector('li.is-active') || listEl.querySelector('li');
   if (first) first.focus({ preventScroll: true });
+  if (wanted && typeof wanted.scrollIntoView === 'function') wanted.scrollIntoView({ block: 'center' });
   return { el: modal.el, close: () => modal.close(null) };
 }

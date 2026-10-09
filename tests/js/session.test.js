@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 
 import {
   parseTarget, commonTarget, targetFits, fillRoute, isFillOnly, fillReplaces, backToLastRun, routeKey, targetSupersedes, carryRoute, restorePlan,
-  normalizeResult, keptNote, estimateSize, createSessionStore, TARGET_ROUTES, TARGET_KINDS, FILL_PARAM, FILL_VALUE, DEFAULT_LIMITS
+  normalizeResult, resultStatus, keptNote, estimateSize, createSessionStore, TARGET_ROUTES, TARGET_KINDS, FILL_PARAM, FILL_VALUE, DEFAULT_LIMITS
 } from '../../assets/js/lib/session.js';
 import { VIEWS, buildRoute, parseRoute, navHref, pageSession } from '../../assets/js/app.js';
 import { keptTimeText, chipParts } from '../../assets/js/ui/session-ui.js';
@@ -263,22 +263,32 @@ describe('routes', () => {
 });
 
 describe('results and the note', () => {
-  test('normalizeResult accepts { subject, at, params?, rerun?, label? } with a valid date', () => {
+  test('normalizeResult accepts { subject, at, params?, rerun?, label?, status? } with a valid date', () => {
     const at = new Date(Date.UTC(2026, 8, 27, 10, 0));
-    assert.deepEqual(normalizeResult({ subject: 'example.com', at }), { subject: 'example.com', at, params: null, rerun: true, label: null });
-    assert.deepEqual(normalizeResult({ subject: '', at: at.getTime() }), { subject: null, at, params: null, rerun: true, label: null });
-    assert.deepEqual(normalizeResult({ at: at.toISOString(), rerun: false }), { subject: null, at, params: null, rerun: false, label: null });
-    assert.deepEqual(normalizeResult({ subject: null, at, label: 'zone.live.kept' }), { subject: null, at, params: null, rerun: true, label: 'zone.live.kept' });
+    assert.deepEqual(normalizeResult({ subject: 'example.com', at }), { subject: 'example.com', at, params: null, rerun: true, label: null, status: null });
+    assert.deepEqual(normalizeResult({ subject: '', at: at.getTime() }), { subject: null, at, params: null, rerun: true, label: null, status: null });
+    assert.deepEqual(normalizeResult({ at: at.toISOString(), rerun: false }), { subject: null, at, params: null, rerun: false, label: null, status: null });
+    assert.deepEqual(normalizeResult({ subject: null, at, label: 'zone.live.kept' }), { subject: null, at, params: null, rerun: true, label: 'zone.live.kept', status: null });
     // The result's own params: strings, without the fill marker and empty values.
     assert.deepEqual(normalizeResult({ subject: 'example.com', at, params: { domain: 'example.com', selectors: null, run: '0', n: 2 } }).params,
       { domain: 'example.com', n: '2' });
     assert.equal(normalizeResult({ at, params: ['example.com'] }).params, null);
     assert.equal(normalizeResult({ at, params: 'domain=example.com' }).params, null);
     assert.equal(normalizeResult({ at, label: 42 }).label, null, 'a label is a translation key');
+    assert.deepEqual(normalizeResult({ at, status: { error: 2, warn: 0 } }).status, { error: 2, warn: 0 }, 'the open risks Home shows');
     assert.equal(normalizeResult({ subject: 'x', at: null }), null);
     assert.equal(normalizeResult({ subject: 'x', at: 'soon' }), null);
     assert.equal(normalizeResult(null), null);
     assert.equal(normalizeResult('example.com'), null);
+  });
+
+  test('resultStatus: whole counts of errors and warnings (a missing one 0); anything else none', () => {
+    assert.deepEqual(resultStatus({ error: 1, warn: 3 }), { error: 1, warn: 3 });
+    assert.deepEqual(resultStatus({ warn: 2 }), { error: 0, warn: 2 });
+    assert.deepEqual(resultStatus({ error: 0, warn: 0 }), { error: 0, warn: 0 }, 'a clean result says so');
+    for (const bad of [null, undefined, 3, 'error', [], {}, { error: -1 }, { error: 1.5 }, { warn: '2' }, { error: 1, warn: NaN }]) {
+      assert.equal(resultStatus(bad), null, JSON.stringify(bad));
+    }
   });
 
   test('keptNote: a language re-mount keeps its note; an older result gets one; a fresh one none', () => {
@@ -396,6 +406,13 @@ describe('createSessionStore', () => {
     assert.equal(s.kept('health').subject, 'example.org', 'replaced');
     assert.equal(s.usage().entries, 1);
     assert.equal(s.kept('lookup'), null);
+    assert.equal(s.kept('health').status, null, 'no status given: none');
+    s.keep('health', { params: { domain: 'example.org' }, subject: 'example.org', at, snapshot: { report: {} }, status: { error: 1, warn: 2 } });
+    const withStatus = s.kept('health');
+    assert.deepEqual(withStatus.status, { error: 1, warn: 2 }, 'the open risks Home shows');
+    withStatus.status.error = 9;
+    assert.equal(s.kept('health').status.error, 1, 'a copy');
+    assert.equal(s.keep('lookup', { at, status: { error: 'many' } }).status, null);
   });
 
   test('keep: a tool that keeps its own state keeps only the fact', () => {

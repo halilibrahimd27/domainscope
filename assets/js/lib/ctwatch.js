@@ -41,10 +41,14 @@
  */
 
 import { fetchJson, errorKind, sleep, throwIfAborted, createLimiter, ParseError } from './util.js';
-import { normalizeHostname, isSubdomainOf, sortHostnames, certCovers } from './domain.js';
+import { normalizeHostname, isSubdomainOf, sortHostnames } from './domain.js';
 import { fetchSource } from './sources.js';
 import { parseCertificate } from './x509.js';
 import { sha256 } from './sha.js';
+import { certStanding, emptySeen } from './ctseen.js';
+
+// The baseline (the workspace part `ctSeen`) lives in lib/ctseen.js, which Home reads without this module.
+export { CT_SEEN_VERSION, CT_SEEN_MAX_CHARS, CT_SEEN_MAX_DUE, emptySeen, readSeen, updateSeen, seenText, certStanding, currentDue } from './ctseen.js';
 import { CERTSPOTTER_ISSUANCES, CRTSH_BASE, CT_TIMEOUT_MS } from './ctcert.js';
 import { caaIssuerInfo } from './health.js';
 import { expectedCaStatus } from './expectedca.js';
@@ -73,10 +77,6 @@ export const CT_WATCH_DEFAULT_DAYS = Object.freeze([30, 14, 7]);
 export const CT_WATCH_MAX_DAYS = 398;
 /** At most this many thresholds. */
 export const CT_WATCH_MAX_THRESHOLDS = 5;
-/** The baseline's format version. */
-export const CT_SEEN_VERSION = 1;
-/** The baseline's text is kept under this many characters (lib/workspace.js WORKSPACE_LIMITS.ctSeen). */
-export const CT_SEEN_MAX_CHARS = 1048576;
 /** What a certificate row can be flagged with, in the order a row shows them ('known': a known certificate, lib/waivers.js). */
 export const CT_WATCH_FLAGS = Object.freeze(['new', 'unexpected', 'precert', 'wildcard', 'revoked', 'superseded', 'known']);
 /** The table's filters, in the select's order. */
@@ -643,12 +643,6 @@ function knownOf(known, c, t) {
   return matchWaiver(known, { kind: 'cert', domain: c.domain, refs: [c.spkiSha256, c.sha256] }, { now: t });
 }
 
-/** Is `name` covered by a certificate holding `names`? A wildcard needs the same wildcard. */
-function coveredBy(name, names) {
-  if (names.includes(name)) return true;
-  return !name.startsWith('*.') && certCovers(names, name).covered;
-}
-
 /**
  * The rows of the table and what the tiles count, from the domains' reads.
  * @param {DomainRead[]} reads
@@ -671,23 +665,11 @@ export function analyzeCt(reads, { now = Date.now(), days = CT_WATCH_DEFAULT_DAY
     const base = seen.domains[read.domain] || null;
     if (!base) first.push(read.domain);
     const certs = read.certs || [];
-    const groups = new Map();
-    for (const c of certs) {
-      const key = c.names.join(' ');
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(c);
-    }
-    const newestIds = new Set();
-    for (const list of groups.values()) {
-      const valid = list.filter((c) => c.revoked !== true && c.notBefore.getTime() <= t)
-        .sort((a, b) => b.notBefore - a.notBefore || (a.id < b.id ? -1 : 1));
-      if (valid[0]) newestIds.add(valid[0].id);
-    }
-    for (const c of certs) {
+    // the newest valid certificate of each name set, unless a later one covers it (lib/ctseen.js)
+    const standing = certStanding(certs, t);
+    for (const [i, c] of certs.entries()) {
       const daysLeft = Math.floor((c.notAfter.getTime() - t) / DAY_MS);
-      const superseded = certs.some((o) => o !== c && o.revoked !== true && o.notAfter > c.notAfter && c.names.every((n) => coveredBy(n, o.names)));
-      const newest = newestIds.has(c.id) && c.revoked !== true;
-      const current = newest && !superseded;
+      const { newest, superseded, current } = standing[i];
       const status = expectedCaStatus(c.issuer, expected);
       const k = knownOf(known, { ...c, domain: c.domain || read.domain }, tKnown);
       const isKnown = !!(k && k.active);
@@ -796,88 +778,4 @@ export function exportCtRow(r) {
     publicKeySha256: r.spkiSha256 || '',
     knownUntil: r.known ? r.known.expires : ''
   };
-}
-
-/* ------------------------------------------------------------------------ */
-/* The baseline (workspace part `ctSeen`)                                   */
-/* ------------------------------------------------------------------------ */
-
-/**
- * @typedef {{ v: number, domains: Record<string, { at: string, ids: Record<string, string> }> }} CtSeen
- *   per domain: when it was last read, and each certificate id seen with its expiry day (YYYY-MM-DD)
- */
-
-/** @returns {CtSeen} */
-export function emptySeen() {
-  return { v: CT_SEEN_VERSION, domains: {} };
-}
-
-const ID_RE = /^[0-9a-f]{16}$/;
-const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-/**
- * The baseline from the workspace's text: anything that is not one (another version, broken JSON,
- * a stray value) is dropped, entry by entry.
- * @param {unknown} text
- * @returns {CtSeen}
- */
-export function readSeen(text) {
-  const out = emptySeen();
-  let data = null;
-  try {
-    data = typeof text === 'string' && text.trim() ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-  if (!data || typeof data !== 'object' || data.v !== CT_SEEN_VERSION || !data.domains || typeof data.domains !== 'object') return out;
-  for (const [domain, entry] of Object.entries(data.domains)) {
-    if (normalizeHostname(domain) !== domain || !entry || typeof entry !== 'object' || typeof entry.at !== 'string' || Number.isNaN(Date.parse(entry.at))) continue;
-    const ids = {};
-    for (const [id, day] of Object.entries(entry.ids && typeof entry.ids === 'object' ? entry.ids : {})) {
-      if (ID_RE.test(id) && typeof day === 'string' && DAY_RE.test(day)) ids[id] = day;
-    }
-    out.domains[domain] = { at: new Date(Date.parse(entry.at)).toISOString(), ids };
-  }
-  return out;
-}
-
-/**
- * The baseline after a check: each domain that was read (in full or in part) gets the ids of its
- * certificates, added to those seen before (a source that missed one this time does not make it
- * "new" next time), and the time of the read; ids whose certificate has expired are dropped.
- * A domain that could not be read keeps its entry as it was.
- * @param {CtSeen} seen
- * @param {DomainRead[]} reads
- * @param {{ now?: Date|number }} [opts]
- * @returns {CtSeen} a new object
- */
-export function updateSeen(seen, reads, { now = Date.now() } = {}) {
-  const today = new Date(ms(now)).toISOString().slice(0, 10);
-  const out = { v: CT_SEEN_VERSION, domains: { ...(seen && seen.domains ? seen.domains : {}) } };
-  for (const read of reads || []) {
-    if (!read || read.state === 'failed') continue;
-    const prev = out.domains[read.domain];
-    const ids = {};
-    for (const [id, day] of Object.entries(prev ? prev.ids : {})) if (day >= today) ids[id] = day;
-    for (const c of read.certs || []) ids[c.id] = c.notAfter.toISOString().slice(0, 10);
-    out.domains[read.domain] = { at: read.at.toISOString(), ids };
-  }
-  return out;
-}
-
-/**
- * The baseline as the workspace keeps it: JSON, under {@link CT_SEEN_MAX_CHARS} characters (the
- * domains read longest ago are left out first when it would not fit).
- * @param {CtSeen} seen
- * @param {{ maxChars?: number }} [opts]
- * @returns {string} '' for an empty baseline
- */
-export function seenText(seen, { maxChars = CT_SEEN_MAX_CHARS } = {}) {
-  const entries = Object.entries(seen && seen.domains ? seen.domains : {}).sort((a, b) => (a[1].at < b[1].at ? 1 : a[1].at > b[1].at ? -1 : 0));
-  while (entries.length) {
-    const text = JSON.stringify({ v: CT_SEEN_VERSION, domains: Object.fromEntries([...entries].sort((a, b) => (a[0] < b[0] ? -1 : 1))) });
-    if (text.length <= maxChars) return text;
-    entries.pop();
-  }
-  return '';
 }

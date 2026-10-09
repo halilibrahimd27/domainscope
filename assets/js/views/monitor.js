@@ -18,7 +18,10 @@
  *   sparkline of the health score and of the soonest certificate expiry, and the timeline filtered
  *   by command, target and tone, with a CSV of what it shows.
  * - The results are kept in this module's memory only: a reload, Forget, another workspace or
- *   "Delete all local data" drops them; leaving the view stops a GitHub read.
+ *   "Delete all local data" drops them; leaving the view stops a GitHub read. What Home counts of
+ *   them — the tiles' numbers, when the newest check ran and the import time, never a target — goes
+ *   to the workspace part `digests` after each import ({@link monitorDigestOf}, lib/digests.js);
+ *   Forget removes it.
  *
  * Pure helpers are exported for the unit tests (tests/js/monitor-view.test.js); the module is
  * DOM-free at import time.
@@ -39,6 +42,7 @@ import {
   emptyMonitor, filterTimeline, latestRun, monitorRows, monitorSummaryFacts, monitorTiles, readMonitorFiles, repoOfRun, rowMatches,
   sparkPoints, timelineCsv, timelineEntries
 } from '../lib/monitor.js';
+import { monitorDigest, withDigest } from '../lib/digests.js';
 import {
   GITHUB_FETCH_ERRORS, GITHUB_HISTORY_MONTHS, GITHUB_MAX_FILES, GITHUB_MONTH_CHOICES, GITHUB_TOKEN_DOCS, GITHUB_TOKEN_URL, GITHUB_WEB, cleanToken, fetchResults, parseRepo,
   repoLinks
@@ -541,6 +545,25 @@ export function viewOf(data, now = Date.now()) {
   return { rows, tiles: monitorTiles(rows), entries: timelineEntries(data) };
 }
 
+/**
+ * What Home counts of the open results (the workspace part `digests`, lib/digests.js): the tiles'
+ * numbers — targets, targets with a bad change in the last MONITOR_RECENT_DAYS days, certificates
+ * under MONITOR_WARN_DAYS days, checks that did not complete —, when the newest check ran and when
+ * they were opened here. Counts only: no target is named.
+ * @param {{ rows: object[], tiles: object }|null} view {@link viewOf}
+ * @param {{ reports: object[], lines: object[] }} data
+ * @param {number} [now]
+ * @returns {object|null} null when nothing is open
+ */
+export function monitorDigestOf(view, data, now = Date.now()) {
+  if (!view || !data) return null;
+  const facts = monitorSummaryFacts(view.rows, view.tiles, data);
+  return monitorDigest({
+    at: facts.at || new Date(now), imported: new Date(now),
+    targets: view.tiles.targets, bad: view.tiles.bad.length, expiring: view.tiles.expiring.length, incomplete: view.tiles.incomplete.length
+  });
+}
+
 /** Badge variant of a number of days left. */
 export function daysVariant(days) {
   if (days === null || days === undefined) return 'neutral';
@@ -668,12 +691,22 @@ export function mount(container, ctx) {
       toast(msg, { type: 'success', timeout: 2500 });
     }
     render();
+    keepDigest();
     const target = read ? root.querySelector('.mon-stats [data-filter="all"]') : root.querySelector('.mon-drop');
     if (target) target.focus({ preventScroll: !read });
   }
 
+  /** Home's counts of the open results go to the workspace (none when nothing is open). */
+  function keepDigest() {
+    if (!state || typeof state.setWorkspaceData !== 'function') return;
+    const before = state.workspaceData('digests') || '';
+    const next = withDigest(before, 'monitor', monitorDigestOf(currentView(), S.data));
+    if (next !== before) Promise.resolve(state.setWorkspaceData('digests', next)).catch(() => {});
+  }
+
   function forget() {
     forgetAll();
+    keepDigest();
     toast(t('mon.forgotten'), { type: 'info' });
     render();
     const target = root.querySelector('.mon-drop, [data-role="mon-gh-repo"]');

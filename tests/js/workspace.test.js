@@ -206,6 +206,19 @@ describe('part values', () => {
     assert.equal(emptyWorkspaceData().reportHistory, '', 'empty until the switch is turned on');
   });
 
+  test('the digests for Home: the JSON text lib/digests.js writes, at most 16 KB, kept whole or not at all; anything else empty', () => {
+    assert.ok(WORKSPACE_PARTS.includes('digests'));
+    assert.equal(WORKSPACE_PARTS.at(-1), 'digests', 'a new part goes last: an older reader drops it harmlessly');
+    assert.equal(WORKSPACE_LIMITS.digests, 16384);
+    const text = '{"monitor":{"at":"2026-10-08T03:00:00.000Z","imported":"2026-10-08T09:00:00.000Z","targets":4,"bad":1,"expiring":0,"incomplete":2}}';
+    assert.equal(sanitizePart('digests', text), text);
+    assert.equal(sanitizePart('digests', 'd'.repeat(WORKSPACE_LIMITS.digests)).length, WORKSPACE_LIMITS.digests);
+    assert.equal(sanitizePart('digests', 'd'.repeat(WORKSPACE_LIMITS.digests + 1)), '', 'never cut');
+    assert.equal(sanitizePart('digests', { monitor: {} }), '');
+    assert.equal(emptyWorkspaceData().digests, '');
+    assert.equal(sanitizeWorkspaceData({ digests: text }).digests, text);
+  });
+
   test('notes: free text with its line breaks; controls other than tab / newline dropped; capped', () => {
     assert.equal(sanitizePart('notes', 'Renewal:\r\n\tcall ops\u0007 first'), 'Renewal:\n\tcall ops first');
     assert.equal(sanitizePart('notes', 'n'.repeat(WORKSPACE_LIMITS.notes + 5)).length, WORKSPACE_LIMITS.notes);

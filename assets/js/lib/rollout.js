@@ -17,7 +17,10 @@
  *
  * The workspace part 'rollout' (lib/workspace.js) holds the boards as JSON text written by
  * {@link serializeRollout} and read by {@link parseRollout}, which checks every field: the text
- * may come from another tab or an imported workspace file.
+ * may come from another tab or an imported workspace file. A stored board keeps only the rows
+ * someone ticked, so it also keeps its `total` ({@link setTotal}, additive since the redesign's
+ * phase 1c): the rows the Rollout tab showed when it last rendered with a scan, which Home counts
+ * against ("3 of 5 servers updated"). A board stored before has none.
  *
  * DOM-free and i18n-free (codes only).
  */
@@ -50,6 +53,8 @@ export const ROLLOUT_CSV_COLUMNS = Object.freeze([
 
 const HEX64_RE = /^[0-9a-f]{64}$/;
 const DEFAULT_PORT = 443;
+/** The largest board `total` kept: far above any real rollout, a bound for a hand-edited file. */
+const MAX_TOTAL = 100000;
 
 /**
  * The id of the board of these certificates: their SHA-256 fingerprints, lowercase, sorted, unique.
@@ -171,7 +176,8 @@ export function rolloutRows(result, { plan = null, setKeys = null } = {}) {
  * @property {'verify'|null} a 'verify': the Verify tab marked it verified
  * @property {string|null} m the user's last change of the row
  *
- * @typedef {{ id: string, label: string, created: string, updated: string, rows: SavedRow[] }} Board
+ * @typedef {{ id: string, label: string, created: string, updated: string, rows: SavedRow[], total?: number }} Board
+ *   `total`: the rows the Rollout tab last showed with a scan ({@link setTotal}); absent on an older board
  * @typedef {{ v: 1, boards: Board[] }} RolloutState
  */
 
@@ -211,7 +217,9 @@ function sanitizeBoard(raw) {
     rows.push(row);
   }
   const created = iso(raw.created) || iso(raw.updated) || new Date(0).toISOString();
-  return { id, label: text(raw.label, ROLLOUT_LIMITS.label), created, updated: iso(raw.updated) || created, rows };
+  const board = { id, label: text(raw.label, ROLLOUT_LIMITS.label), created, updated: iso(raw.updated) || created, rows };
+  if (Number.isInteger(raw.total) && raw.total >= 0 && raw.total <= MAX_TOTAL) board.total = raw.total;
+  return board;
 }
 
 /**
@@ -318,6 +326,23 @@ export function setStep(state, board, row, step, on, { now = Date.now } = {}) {
   b.rows[i] = r;
   b.updated = at;
   return putBoard(s, b);
+}
+
+/**
+ * The board's total kept with it: the rows the Rollout tab shows with its scan — the scan's rows
+ * and the stored rows it did not find ({@link boardRows}) — so Home can count "3 of 5 servers
+ * updated" (a stored board keeps only the rows someone ticked). Showing the tab is no change of the
+ * board: its `updated` time stays. A board that is not stored (nothing ticked yet) stays unstored.
+ * @param {RolloutState} state
+ * @param {string} id the board id
+ * @param {number} total
+ * @returns {RolloutState}
+ */
+export function setTotal(state, id, total) {
+  const s = parseRollout(state);
+  const prev = findBoard(s, id);
+  if (!prev || !Number.isInteger(total) || total < 0 || total > MAX_TOTAL || prev.total === total) return s;
+  return { v: 1, boards: s.boards.map((b) => (b.id === id ? { ...b, total } : b)) };
 }
 
 /**

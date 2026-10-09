@@ -1710,42 +1710,8 @@ button.nav-status:hover {
   font-size: 12px;
 }
 
-/* First-visit task picker (app.js, above the start page) and About › Where to start */
-.start-picker {
-  margin-bottom: 24px;
-  padding: 16px 18px 18px;
-  background: linear-gradient(135deg, var(--accent-soft), var(--surface) 55%);
-}
-
-.start-picker-head {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.start-picker-titles {
-  flex: 1;
-  min-width: 0;
-}
-
-.start-picker-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-
-.start-picker-lead {
-  margin: 3px 0 0;
-  color: var(--text-2);
-  font-size: 13.5px;
-}
-
-.start-picker-hide {
-  margin: -6px -8px 0 0;
-}
-
+/* The job cards (ui/start-tasks.js): Home's "Start a job" (views/home.css lays them out there) and
+   About › Where to start */
 .start-tasks {
   list-style: none;
   margin: 0;
@@ -1824,23 +1790,6 @@ button.nav-status:hover {
 }
 
 @media (max-width: 600px) {
-  .start-picker {
-    margin-bottom: 20px;
-    padding: 12px 12px 12px 14px;
-  }
-
-  .start-picker-head {
-    margin-bottom: 10px;
-  }
-
-  .start-picker-title {
-    font-size: 15px;
-  }
-
-  .start-picker-lead {
-    font-size: 13px;
-  }
-
   .start-tasks {
     grid-template-columns: minmax(0, 1fr);
     gap: 6px;
@@ -1870,78 +1819,6 @@ button.nav-status:hover {
   .start-task-arrow {
     position: static;
     margin-left: auto;
-  }
-
-  /* The start page's strip: two columns of short chips, so the tool's own field stays near the top */
-  .start-picker-lead {
-    display: none;
-  }
-
-  .start-picker .start-tasks {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .start-picker .start-task-item:last-child:nth-child(odd) {
-    grid-column: 1 / -1;
-  }
-
-  .start-picker .start-task {
-    gap: 9px;
-    min-height: 44px;
-    padding: 7px 9px;
-  }
-
-  .start-picker .start-task-icon {
-    width: 26px;
-    height: 26px;
-    border-radius: 6px;
-  }
-
-  .start-picker .start-task-icon .icon {
-    width: 16px;
-    height: 16px;
-  }
-
-  .start-picker .start-task-title {
-    font-size: 13px;
-    line-height: 1.25;
-  }
-
-  /* Still read out with the job (the link's name), not shown: the job says it. */
-  .start-picker .start-task-tool {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
-  .start-picker .start-task-arrow {
-    display: none;
-  }
-}
-
-/* The smallest phones: still two columns, the chips without their icons (the text needs the width) */
-@media (max-width: 359.98px) {
-  .start-picker {
-    padding: 10px 10px 10px 12px;
-  }
-
-  .start-picker-title {
-    font-size: 14px;
-  }
-
-  .start-picker .start-task-icon {
-    display: none;
-  }
-
-  .start-picker .start-task {
-    padding: 6px 8px;
-  }
-
-  .start-picker .start-task-title {
-    font-size: 12.5px;
   }
 }
 
@@ -2865,6 +2742,67 @@ button.nav-status:hover {
 .chip:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Menu button (ui/components.js MenuButton): a popover in the top layer, placed by its button
+   through CSSOM (top/left); the UA's centring of a popover is undone. */
+.menu-wrap {
+  display: inline-flex;
+}
+
+.menu-popover {
+  position: fixed;
+  inset: auto;
+  z-index: var(--z-popover);
+  min-width: 180px;
+  max-width: calc(100vw - 16px);
+  margin: 0;
+  padding: var(--space-1);
+  overflow: visible;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+}
+
+.menu-popover[hidden] {
+  display: none;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--btn-h);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: start;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item:focus {
+  background: var(--surface-hover);
+  text-decoration: none;
+}
+
+.menu-item .icon {
+  flex: none;
+  color: var(--text-3);
+}
+
+@media (pointer: coarse) {
+  .menu-item {
+    min-height: 44px;
+  }
 }
 
 /* Severity glyphs */

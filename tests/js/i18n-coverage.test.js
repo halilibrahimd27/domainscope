@@ -322,8 +322,9 @@ describe('i18n coverage', () => {
     for (const k of ['d', 'h', 'min', 's']) add(`dane.dur.${k}`);
     // Shell navigation (lib/shellnav.js): group headings, start-page jobs, shortcut descriptions.
     const shellnav = await imp('assets/js/lib/shellnav.js');
-    for (const g of [...shellnav.NAV_GROUPS, shellnav.OTHER_GROUP]) add(g.labelKey);
-    for (const g of shellnav.groupViews(app.VIEWS)) add(g.labelKey);
+    // Home's group has no heading (labelKey null).
+    for (const g of [...shellnav.NAV_GROUPS, shellnav.OTHER_GROUP]) if (g.labelKey) add(g.labelKey);
+    for (const g of shellnav.groupViews(app.VIEWS)) if (g.labelKey) add(g.labelKey);
     for (const task of shellnav.START_TASKS) add(`start.task.${task.id}`);
     for (const s of shellnav.SHORTCUTS) add(`keys.${s.id}`);
     // The page header's ⓘ: the link to each tool's About section.

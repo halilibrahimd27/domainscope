@@ -558,10 +558,16 @@ async function main() {
     await browser.conn.send('Browser.grantPermissions', { origin, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] }).catch(() => {});
 
     run.group('Desktop 1440×900 (English)');
-    await run.step('the site root lands on #/subdomains: in Investigate a domain, hero and intro', async () => {
+    await run.step('the site root lands on Home; Subdomains, opened first, is in Investigate a domain with its hero and intro', async () => {
       await page.goto(server.url);
       await waitReady(page);
       await setLangUi(page, 'en');
+      const root = await page.evaluate(() => ({ view: document.documentElement.dataset.view, brand: document.getElementById('brand').getAttribute('href') }));
+      assertEqual(root, { view: 'home', brand: '#/home' }, 'the site root opens Home');
+      // Subdomains as the first page a visitor opens (a bookmark of #/subdomains): its box takes the focus.
+      await page.goto('about:blank');
+      await page.goto(`${server.url}#/subdomains`);
+      await waitReady(page);
       const info = await page.evaluate(() => ({
         view: document.documentElement.dataset.view,
         hash: location.hash,
@@ -582,7 +588,8 @@ async function main() {
         wordlistOn: document.querySelector('[data-role="sub-wordlist"]').checked,
         advancedOpen: document.querySelector('.sub-advanced').open
       }));
-      assertEqual([info.view, info.firstNav, info.h1, info.firstGroup, info.brand], ['subdomains', 'domain', 'Subdomains', 'Investigate a domain', '#/subdomains'], 'default route');
+      assertEqual([info.view, info.firstNav, info.h1, info.firstGroup, info.brand], ['subdomains', 'home', 'Subdomains', 'Investigate a domain', '#/home'],
+        'Home first in the navigation (its group has no heading), Subdomains in Investigate a domain');
       assertEqual(info.firstGroupShown, 'none', 'group labels in sentence case');
       assert(info.input && info.label && info.placeholder === 'example.com', `search box: ${JSON.stringify(info)}`);
       // The box takes the focus only with a mouse (no on-screen keyboard popping up on a phone).

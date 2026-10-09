@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 
 import {
   ROLLOUT_STEPS, ROLLOUT_STAGES, ROLLOUT_VERIFY, ROLLOUT_LIMITS, ROLLOUT_CSV_COLUMNS, boardId, setKey, rolloutRows,
-  emptyRollout, parseRollout, serializeRollout, findBoard, setStep, resetBoard, verifyStatus, applyVerify, boardRows,
+  emptyRollout, parseRollout, serializeRollout, findBoard, setStep, setTotal, resetBoard, verifyStatus, applyVerify, boardRows,
   rolloutProgress, rolloutCsvRows
 } from '../../assets/js/lib/rollout.js';
 import { sanitizePart } from '../../assets/js/lib/workspace.js';
@@ -154,6 +154,29 @@ describe('the stored checklist', () => {
   test('reset removes the board', () => {
     const s = setStep(emptyRollout(), BOARD, rows[0], 'installed', true);
     assert.deepEqual(resetBoard(s, ID), emptyRollout());
+  });
+
+  test('total (additive): kept with a stored board, its updated time unmoved; never stores a board by itself', () => {
+    assert.deepEqual(setTotal(emptyRollout(), ID, 4), emptyRollout(), 'nothing ticked yet: nothing stored');
+    let s = setStep(emptyRollout(), BOARD, rows[0], 'installed', true, { now: clock('2026-10-08T09:00:00Z') });
+    assert.equal('total' in findBoard(s, ID), false, 'a board starts without one');
+    const shown = boardRows(s, ID, rows);
+    s = setTotal(s, ID, shown.length);
+    assert.equal(findBoard(s, ID).total, rows.length);
+    assert.equal(findBoard(s, ID).updated, '2026-10-08T09:00:00.000Z', 'showing the tab is no change');
+    assert.deepEqual(setTotal(s, ID, rows.length), s, 'the same total: the same state');
+    // the next tick keeps it, a round trip through the workspace text too
+    s = setStep(s, BOARD, rows[1], 'verified', true, { now: clock('2026-10-08T10:00:00Z') });
+    assert.equal(findBoard(s, ID).total, rows.length);
+    assert.equal(parseRollout(serializeRollout(s)).boards[0].total, rows.length);
+    for (const bad of [-1, 1.5, '4', 100001, null]) assert.equal(findBoard(setTotal(s, ID, bad), ID).total, rows.length, String(bad));
+    // an older board (no total) and a hand-edited one with a stray value read without it
+    const text = serializeRollout(s);
+    const stray = JSON.parse(text);
+    stray.boards[0].total = 'many';
+    assert.equal('total' in parseRollout(JSON.stringify(stray)).boards[0], false);
+    delete stray.boards[0].total;
+    assert.equal('total' in parseRollout(JSON.stringify(stray)).boards[0], false);
   });
 });
 

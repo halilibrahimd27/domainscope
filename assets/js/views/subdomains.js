@@ -2397,7 +2397,7 @@ export function networkOwner(cidr, opts, onLoadFailed) {
  */
 function startRun(run, scanConfig, appState, onDataMissing) {
   // Progress outside this view: tab title, navigation ring, favicon badge, opt-in notification.
-  run.job = startJob({ view: 'subdomains' });
+  run.job = startJob({ view: 'subdomains', subject: (scanConfig.domains || []).join(', ') || null });
   const hooks = {
     onStage(stage, info = {}) {
       applyStage(run, stage, info);

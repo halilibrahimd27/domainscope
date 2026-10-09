@@ -1431,7 +1431,7 @@ function emit(run, type, payload) {
  */
 function startRun(run, scanConfig, appState, onDataMissing) {
   // Progress outside this view: tab title, navigation ring, favicon badge, opt-in notification.
-  run.job = startJob({ view: 'scan' });
+  run.job = startJob({ view: 'scan', subject: (scanConfig.domains || []).join(', ') || null });
   // What a streamed hit is checked against: the certificate, or every certificate of a renewal.
   const coverCert = Array.isArray(scanConfig.certs) && scanConfig.certs.length
     ? { hostnames: [...new Set(scanConfig.certs.flatMap((c) => c.hostnames || []))] } : scanConfig.cert;

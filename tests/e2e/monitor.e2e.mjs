@@ -25,6 +25,8 @@
  *     only in the Authorization header to api.github.com (no cookies, no referrer, no redirects),
  *     kept nowhere (the DOM, storage, IndexedDB); the ledger names GitHub with the repository and
  *     the token; the open issue linked; a refused token in the page's words;
+ *   - Home's digest of the results (the workspace part `digests`): the tiles' counts and the times,
+ *     never a target; Forget removes it;
  *   - Forget, "Delete all local data" and another workspace forget the results;
  *   - Turkish + dark at 375 px and English at 320 px: no horizontal scroll, the table as cards;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; no request sent.
@@ -284,6 +286,15 @@ async function main() {
       await shotPage(page, opts, 'monitor-results-desktop-light-en');
     });
 
+    await run.step('Home\'s digest: the tiles\' counts, when the newest check ran and the import time — never a target', async () => {
+      const digest = await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.workspaceData('digests') || ''));
+      const d = JSON.parse(digest).monitor;
+      assertEqual([d.targets, d.bad, d.expiring, d.incomplete], [5, 3, 2, 2], 'the tiles');
+      assertEqual(d.at, '2026-10-09T03:40:00.000Z', 'the newest check of the results');
+      assert(Number.isFinite(Date.parse(d.imported)), `imported: ${d.imported}`);
+      assert(!/example/.test(digest), 'counts only');
+    });
+
     await run.step('each row: the sparklines, the grade, the certificates, the takeover and the audit, the checks', async () => {
       const com = await page.evaluate(() => {
         const row = [...document.querySelectorAll('.mon-table tbody tr.dt-row')][0];
@@ -474,6 +485,7 @@ async function main() {
     await run.step('Forget, "Delete all local data" and another workspace forget the results', async () => {
       await page.click('[data-action="mon-forget"]');
       await page.waitFor(() => document.querySelector('.mon-page > .empty') && !document.querySelector('.mon-stats'), { message: 'forgotten' });
+      assertEqual(await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.workspaceData('digests'))), '', 'Forget removes Home\'s digest too');
       await removeToasts(page);
       await choose(page, paths);
       await removeToasts(page);

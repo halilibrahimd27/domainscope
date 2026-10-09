@@ -1,6 +1,6 @@
 /**
- * views/portfolio.js — "Domain portfolio" (`#/portfolio?domains=a,b`): many domains, one row each,
- * and the policy audit of the workspace. lib/portfolio.js runs the lookups and turns them into
+ * views/portfolio.js — "Domain portfolio" (`#/portfolio?domains=a,b`, `&tab=ct` to open a tab):
+ * many domains, one row each, and the policy audit of the workspace. lib/portfolio.js runs the lookups and turns them into
  * facts; lib/policy.js reads the policy and evaluates it; this view draws them:
  *
  * - The list: pasted domains (host names and URLs give their registrable domain), filled in from
@@ -735,6 +735,8 @@ export function mount(container, ctx) {
   let ctPanel = null;
 
   /* --- the box ---------------------------------------------------------------------- */
+  // `tab=`: a link opens one of the tabs (Home's certificate rows: `tab=ct` with the domains).
+  if (PORTFOLIO_TABS.includes(ctx.params.tab)) session.tab = ctx.params.tab;
   const routeText = ctx.params.domains ? linkText(ctx.params.domains) : '';
   if (routeText) {
     const last = session.job ? session.job.domains : null;
@@ -1988,6 +1990,7 @@ export function mount(container, ctx) {
       start();
     },
     update(params) {
+      if (PORTFOLIO_TABS.includes(params.tab) && tabs.getSelected() !== params.tab) tabs.select(params.tab);
       const text = params.domains ? linkText(params.domains) : '';
       if (!text) return true;
       session.link = text;

@@ -111,16 +111,24 @@ const JS = join(ASSETS, 'js');
  * the palette's box, the page header's purpose line and ⓘ): ≈ 346 KB (354,669 bytes), 24,211 bytes under the budget. app.js
  * grew by 2,623 bytes, i18n.js by 894 (the purpose lines and the six group names in both languages), style.css by 1,148;
  * ui/palette.js stays off the route (the sheet loads it on its first open, as Ctrl/⌘+K does).
+ * Phase 1c (Home is the start page, docs/DESIGN.md §4): ≈ 267 KB (273,594 bytes), 105,286 bytes under the budget. The
+ * Subdomains view's graph beyond app.js and subdomains.css left the route; Home came on it — views/home.js (11,349 bytes: its
+ * strings in both languages), views/home.css (2,896), MenuButton in ui/components.js (2,442), ui/jobs.js's jobList / onJobs (495)
+ * and a result's status in lib/session.js (383); ui/start-tasks.js is now Home's, no longer app.js's. Home's counts
+ * (lib/homedigest.js with the owners' readers), the DMARC history and the palette load after its first paint or on first use.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;
 
 /**
  * Modules that must never be part of the start route (lib/summary.js: every view's Copy summary but the start view's; lib/netinfo.js:
- * the provider tables, the shell needs only lib/ip.js; the palette: Ctrl/⌘+K and the phone Tools sheet load it on their first use).
+ * the provider tables, the shell needs only lib/ip.js; the palette: Ctrl/⌘+K, the phone Tools sheet and Home's quick start load it on
+ * their first use; lib/homedigest.js: Home's counts, with the readers it imports, after Home's first paint; ui/template.js: the result
+ * template of the redesign's phase 2, with its views).
  */
 const HEAVY = ['lib/scanner.js', 'lib/sources.js', 'lib/doh.js', 'lib/dnswire.js', 'lib/zoneparse.js', 'lib/x509.js', 'lib/health.js',
-  'lib/propagation.js', 'lib/ipintel.js', 'lib/zonedrift.js', 'lib/summary.js', 'lib/topology.js', 'lib/netinfo.js', 'ui/palette.js', 'lib/palette.js'];
+  'lib/propagation.js', 'lib/ipintel.js', 'lib/zonedrift.js', 'lib/summary.js', 'lib/topology.js', 'lib/netinfo.js', 'ui/palette.js', 'lib/palette.js',
+  'lib/homedigest.js', 'lib/ctseen.js', 'lib/regwatch.js', 'lib/waivers.js', 'lib/rollout.js', 'lib/dmarchistory.js', 'lib/ctwatch.js', 'ui/template.js'];
 
 const rel = (file) => relative(ROOT, file).split(sep).join('/');
 const code = (file) => readFileSync(file, 'utf8')
@@ -176,8 +184,12 @@ describe('the start route', () => {
   test('leaves the heavy libraries to the views that need them or to their first use', () => {
     const names = files.map(rel);
     assert.deepEqual(HEAVY.filter((m) => names.includes(`assets/js/${m}`)), []);
-    assert.ok(names.includes('assets/js/lib/scanplan.js'), 'the plan line comes from lib/scanplan.js');
-    assert.ok(names.includes('assets/js/lib/sourceinfo.js'), 'the source list comes from lib/sourceinfo.js');
+    assert.equal(DEFAULT_VIEW, 'home');
+    assert.ok(!names.includes('assets/js/views/subdomains.js'), 'Subdomains is no longer the start view');
+    // Home loads its counts with a dynamic import() after its first paint, and the DMARC history in an idle moment.
+    const home = code(join(JS, 'views', 'home.js'));
+    assert.match(home, /import\('\.\.\/lib\/homedigest\.js'\)/);
+    assert.match(home, /import\('\.\.\/lib\/dmarchistory\.js'\)/);
   });
 
   test('loads one stylesheet from index.html and the default view\'s own with the view', () => {
@@ -188,6 +200,15 @@ describe('the start route', () => {
   test('index.html modulepreloads exactly the static graph of app.js', () => {
     const preloads = attrUrls(/<link rel="modulepreload" href="([^"]+)"/g).map(rel).sort();
     assert.deepEqual(preloads, staticGraph(join(JS, 'app.js')).map(rel).sort());
+  });
+});
+
+describe('the Subdomains view graph', () => {
+  test('the plan line and the source list come from their light modules, without the heavy libraries', () => {
+    const names = staticGraph(join(JS, 'views', 'subdomains.js')).map(rel);
+    assert.ok(names.includes('assets/js/lib/scanplan.js'), 'the plan line comes from lib/scanplan.js');
+    assert.ok(names.includes('assets/js/lib/sourceinfo.js'), 'the source list comes from lib/sourceinfo.js');
+    assert.deepEqual(HEAVY.filter((m) => names.includes(`assets/js/${m}`)), []);
   });
 });
 
@@ -211,7 +232,8 @@ describe('the discovery engine loads on the first scan', () => {
     const view = code(join(JS, 'views', 'subdomains.js'));
     assert.match(view, /\[dns, runUi\] = await Promise\.all\(\[ctx\.getDns\(\), loadOnFirstUse\(loadRunUi, ctx\.checkOutdated\)\]\);/);
     assert.match(view, /export const loadRunUi = onceAsync\(\(\) => import\('\.\.\/ui\/subdomains-run\.js'\)\);/);
-    const route = new Set(startRouteFiles().map(rel));
+    // What the Subdomains view has loaded by the time it scans: the start route and its own graph.
+    const route = new Set([...startRouteFiles(), ...staticGraph(join(JS, 'views', 'subdomains.js'))].map(rel));
     const runGraph = staticGraph(join(JS, 'ui', 'subdomains-run.js')).map(rel).filter((f) => !route.has(f));
     const preload = VIEWS.find((v) => v.id === 'subdomains').preload.map((m) => `assets/js/${m}`);
     assert.deepEqual(runGraph.filter((f) => !preload.includes(f)), [], 'every module the run UI adds to the route is preloaded');

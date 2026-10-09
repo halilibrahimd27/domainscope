@@ -11,8 +11,10 @@ import assert from 'node:assert/strict';
 import {
   fnv64, dnValue, caName, certId, parseRadarDays, radarBand, createSpotterBudget, spotterWatchUrl, fromSpotterItems, fromCrtshCerts,
   readDomainCt, readPortfolioCt, analyzeCt, matchesCtFilter, expiryEntries, exportCtRow, CT_EXPORT_COLUMNS, emptySeen, readSeen,
-  updateSeen, seenText, CT_WATCH_FILTERS, CT_WATCH_FLAGS, CT_WATCH_NOTES, CT_WATCH_STATES, CT_WATCH_SPOTTER_MIN, CT_WATCH_MAX_DOMAINS
+  updateSeen, seenText, currentDue, CT_SEEN_MAX_DUE, CT_WATCH_FILTERS, CT_WATCH_FLAGS, CT_WATCH_NOTES, CT_WATCH_STATES, CT_WATCH_SPOTTER_MIN,
+  CT_WATCH_MAX_DOMAINS
 } from '../../assets/js/lib/ctwatch.js';
+import * as ctseen from '../../assets/js/lib/ctseen.js';
 import { CERTSPOTTER_ISSUANCES } from '../../assets/js/lib/ctcert.js';
 import { sourceStatus } from '../../assets/js/lib/sourcestatus.js';
 import { CT_ISSUER as ISSUER, spotterRow as issuance, crtshRow as crtRow, lastSpotterId } from './ct-fake.mjs';
@@ -463,8 +465,68 @@ describe('the baseline', () => {
       { domain: 'example.com', at: NOW, state: 'partial', certs: [c('0000000000000004', '2026-12-02T00:00:00Z')] },
       { domain: 'example.org', at: NOW, state: 'failed', certs: [] }
     ], { now: NOW });
-    assert.deepEqual(seen.domains['example.com'], { at: NOW.toISOString(), ids: { '0000000000000002': '2026-12-01', '0000000000000004': '2026-12-02' } });
+    // these test certificates carry no names or issue date: none is current, `due` is empty
+    assert.deepEqual(seen.domains['example.com'], { at: NOW.toISOString(), ids: { '0000000000000002': '2026-12-01', '0000000000000004': '2026-12-02' }, due: [] });
     assert.equal(seen.domains['example.org'].at, '2026-10-01T00:00:00.000Z');
+  });
+
+  test('due: the expiry days of the check\'s current certificates — never one its renewal replaced, a revoked one or one not issued yet', () => {
+    const cert = (id, names, notBefore, notAfter, extra = {}) => ({ id, names, notBefore: new Date(notBefore), notAfter: new Date(notAfter), ...extra });
+    const read = {
+      domain: 'example.com', at: NOW, state: 'ok', certs: [
+        // the renewal of www and the apex replaced the old one: only the renewal is due
+        cert('0000000000000011', ['example.com', 'www.example.com'], '2026-07-01T00:00:00Z', '2026-10-15T00:00:00Z'),
+        cert('0000000000000012', ['example.com', 'www.example.com'], '2026-09-20T00:00:00Z', '2026-12-19T00:00:00Z'),
+        // a name set of its own (two labels down: the wildcard below does not cover it), current
+        cert('0000000000000013', ['api.eu.example.com'], '2026-08-01T00:00:00Z', '2026-10-30T00:00:00Z'),
+        // revoked: never current
+        cert('0000000000000014', ['mail.example.com'], '2026-08-01T00:00:00Z', '2026-10-20T00:00:00Z', { revoked: true }),
+        // logged ahead of its validity: not current yet
+        cert('0000000000000015', ['shop.example.com'], '2026-12-01T00:00:00Z', '2027-03-01T00:00:00Z'),
+        // a wildcard covers an older single name: the single name is superseded
+        cert('0000000000000016', ['cdn.example.com'], '2026-06-01T00:00:00Z', '2026-10-12T00:00:00Z'),
+        cert('0000000000000017', ['*.example.com'], '2026-09-01T00:00:00Z', '2026-11-30T00:00:00Z')
+      ]
+    };
+    const seen = updateSeen(emptySeen(), [read], { now: NOW });
+    assert.deepEqual(seen.domains['example.com'].due, ['2026-10-30', '2026-11-30', '2026-12-19']);
+    assert.deepEqual(currentDue(read, NOW), ['2026-10-30', '2026-11-30', '2026-12-19']);
+    // what analyzeCt calls current is what `due` keeps, one day per certificate
+    const rows = analyzeCt([read], { now: NOW }).rows;
+    assert.deepEqual(rows.filter((r) => r.current).map((r) => r.notAfter.toISOString().slice(0, 10)).sort(), seen.domains['example.com'].due);
+    // a second current certificate that ends the same day as another counts as one more
+    const twin = { ...read, certs: [...read.certs, cert('0000000000000018', ['vpn.eu.example.com'], '2026-08-01T00:00:00Z', '2026-10-30T00:00:00Z')] };
+    assert.deepEqual(currentDue(twin, NOW), ['2026-10-30', '2026-10-30', '2026-11-30', '2026-12-19']);
+    // the baseline's ids keep every certificate seen (the replaced one too): Home never counts them
+    assert.ok('0000000000000011' in seen.domains['example.com'].ids);
+  });
+
+  test('the baseline lives in lib/ctseen.js (Home reads it without the watch): ctwatch re-exports the same functions', () => {
+    for (const name of ['emptySeen', 'readSeen', 'updateSeen', 'seenText', 'currentDue', 'certStanding', 'CT_SEEN_VERSION', 'CT_SEEN_MAX_CHARS', 'CT_SEEN_MAX_DUE']) {
+      assert.ok(name in ctseen, name);
+    }
+    assert.equal(readSeen, ctseen.readSeen);
+    assert.equal(updateSeen, ctseen.updateSeen);
+    assert.equal(currentDue, ctseen.currentDue);
+    assert.deepEqual(ctseen.certStanding([], NOW), []);
+    assert.deepEqual(ctseen.certStanding(null, NOW), []);
+    assert.deepEqual(currentDue(null, NOW), []);
+  });
+
+  test('due is kept by readSeen when it is a list of days (sorted, one per certificate); an older baseline has none', () => {
+    const at = NOW.toISOString();
+    const text = JSON.stringify({ v: 1, domains: {
+      'example.com': { at, ids: {}, due: ['2026-12-01', 'soon', '2026-10-20', '2026-12-01', 7] },
+      'example.org': { at, ids: {} },
+      'example.net': { at, ids: {}, due: 'not a list' }
+    } });
+    const seen = readSeen(text);
+    assert.deepEqual(seen.domains['example.com'].due, ['2026-10-20', '2026-12-01', '2026-12-01'], 'two certificates that end the same day count twice');
+    assert.equal('due' in seen.domains['example.org'], false, 'written before `due` existed');
+    assert.equal('due' in seen.domains['example.net'], false);
+    assert.deepEqual(readSeen(seenText(seen)), seen, 'round-trips');
+    const many = Array.from({ length: CT_SEEN_MAX_DUE + 10 }, (_, i) => new Date(Date.UTC(2027, 0, 1 + i)).toISOString().slice(0, 10));
+    assert.equal(readSeen(JSON.stringify({ v: 1, domains: { 'example.com': { at, ids: {}, due: many } } })).domains['example.com'].due.length, CT_SEEN_MAX_DUE);
   });
 
   test('the text round-trips; junk is dropped entry by entry; another version is no baseline', () => {

@@ -150,7 +150,9 @@ export function watchTarget(target, { prev = null, prevAt = null, now, radar, ex
   };
   let next = base;
   if (target.answered && Number.isFinite(time(target.readAt))) {
-    next = updateSeen(seen, [{ domain, state: 'ok', at: new Date(time(target.readAt)), certs }], { now }).domains[domain];
+    // The report's store stays { at, ids }: the `due` list the app's baseline gained (for Home) is the app's.
+    const read = updateSeen(seen, [{ domain, state: 'ok', at: new Date(time(target.readAt)), certs }], { now }).domains[domain];
+    next = read ? { at: read.at, ids: read.ids } : read;
   }
   return {
     ...target,

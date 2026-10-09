@@ -68,7 +68,6 @@ import {
   groupViews, isPlainClick, isRunSignal, hasUsedBefore, SHORTCUTS, keyCaps, isApplePlatform, shortcutFor, pickShortcutTarget,
   isTypingTarget, isSearchClear, navMenuMode, aboutSectionOf, paletteKeyHint, PALETTE_KEYSHORTCUTS, SHELL_WIDTHS
 } from './lib/shellnav.js';
-import { StartTaskList } from './ui/start-tasks.js';
 import {
   createSessionStore, carryRoute, restorePlan, normalizeResult, keptNote, FILL_PARAM, FILL_VALUE
 } from './lib/session.js';
@@ -85,8 +84,8 @@ import { countRequests } from './lib/egresslog.js';
 export const REPO_URL = 'https://github.com/halilibrahimd27/domainscope';
 /** App version (keep in sync with package.json). */
 export const APP_VERSION = '1.0.0';
-/** Default route. */
-export const DEFAULT_VIEW = 'subdomains';
+/** Default route: Home (`#/`, an unknown route and the brand link open it). */
+export const DEFAULT_VIEW = 'home';
 /** The first view waits this long at most for the workspace store (IndexedDB) to open. */
 const WORKSPACE_WAIT_MS = 8000;
 
@@ -97,7 +96,7 @@ const WORKSPACE_WAIT_MS = 8000;
  * order the views were opened in.
  */
 export const VIEW_CSS_ORDER = Object.freeze([
-  'views/subdomains.css', 'views/domain.css', 'views/fix.css', 'views/zone.css', 'views/zonetools.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css',
+  'views/home.css', 'views/subdomains.css', 'views/domain.css', 'views/fix.css', 'views/zone.css', 'views/zonetools.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css',
   'views/renew.css', 'views/estate.css', 'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/change.css', 'views/ip.css', 'views/ptr.css', 'views/retire.css',
   'views/health.css', 'views/reports.css', 'views/portfolio.css', 'views/monitor.css', 'views/inventory.css', 'views/topology.css', 'views/about.css'
 ]);
@@ -124,6 +123,8 @@ export const ENGINE_MODULES = Object.freeze([
  * network (the service worker keeps it working offline; the other views say they need one).
  */
 export const VIEWS = Object.freeze([
+  // Home: the workspace at a glance (reads only what this browser keeps: works offline)
+  { id: 'home', group: 'home', icon: 'home', css: ['views/home.css'], offline: true, load: () => import('./views/home.js') },
   // Investigate a domain: "a customer asks about example.com"
   { id: 'domain', group: 'investigate', icon: 'id-card', css: ['views/domain.css'], load: () => import('./views/domain.js') },
   { id: 'health', group: 'investigate', icon: 'activity', css: ['views/fix.css', 'views/health.css'], load: () => import('./views/health.js') },
@@ -575,7 +576,7 @@ function keepResult(cur) {
     }
   }
   const params = restorable ? res.params || cur.ctx.params : {};
-  pageSession.keep(cur.id, { params, subject: res.subject, at: res.at, snapshot });
+  pageSession.keep(cur.id, { params, subject: res.subject, at: res.at, snapshot, status: res.status });
 }
 
 /* ------------------------------------------------------------------------ */
@@ -620,6 +621,14 @@ function keepResult(cur) {
  * @property {(fn: () => void) => void} onCleanup  run fn when the view unmounts (e.g. state.subscribe's unsubscribe)
  * @property {() => Map<string, object[]>} getInventoryIndex  memoized IP → servers index
  * @property {ReadonlyArray<{ id: string, group: string, icon: string }>} views  the navigation registry (VIEWS)
+ * @property {object} session                 the page session (lib/session.js: the current target, the kept results)
+ * @property {(view: string) => string} navHref  where a navigation link to a tool leads (its kept result or the
+ *                                         current target filled in)
+ * @property {(section?: string|null) => void} openWorkspaces  the Workspaces dialog, on one of its parts
+ *                                         (ui/workspace-panel.js PANEL_SECTIONS: 'new', 'expected', 'waivers')
+ * @property {() => Promise<object|null>} loadPalette  ui/palette.js with palette.css (loaded on first use)
+ * @property {(heading: { title: string, purpose?: string|null }) => void} setHeading  the page's own title (the <h1>
+ *                                         and the tab's) and purpose line, in place of the tool's (Home: the workspace)
  * @property {string} repoUrl
  * @property {string} version
  */
@@ -675,8 +684,24 @@ function makeContext(id, params, searchParams, controller, restored, sub = '') {
     repoUrl: REPO_URL,
     version: APP_VERSION,
     views: VIEWS,
+    session: pageSession,
     navigate,
     href: buildRoute,
+    navHref,
+    openWorkspaces: (section = null) => {
+      if (isCurrent(ctx)) openWorkspaces({ section });
+    },
+    loadPalette,
+    setHeading({ title, purpose = null } = {}) {
+      if (!isCurrent(ctx) || !dom.pageTitle) return;
+      const text = String(title || t(`nav.${id}`));
+      dom.pageTitle.textContent = text;
+      if (dom.pagePurpose && purpose !== null) {
+        dom.pagePurpose.textContent = String(purpose);
+        dom.pagePurpose.hidden = !purpose;
+      }
+      setBaseTitle(`${text} · ${t('app.name')}`);
+    },
     getDns,
     getGlobalping: () => getGlobalping(),
     checkOutdated: () => noticeIfOutdated(pageIsOutdated),
@@ -927,15 +952,14 @@ function renderPageHeader(def, view = null) {
   const purposeKey = `nav.${def.id}.purpose`;
   const purpose = hasString(purposeKey) ? t(purposeKey) : t(`nav.${def.id}.desc`);
   const about = pageAbout(def, purpose);
+  dom.pagePurpose = purpose ? h('p', { class: 'page-desc page-purpose' }, purpose) : null;
   clear(dom.page);
-  // A first-time visitor on the start page gets the task picker above the tool.
-  if (def.id === DEFAULT_VIEW && state.settings.startTasks) dom.page.append(startPicker());
   dom.page.append(
     h('header', { class: 'page-header' },
       h('div', { class: 'page-icon', attrs: { 'aria-hidden': 'true' } }, Icon(def.icon, { size: 16 })),
       h('div', { class: 'page-titles' },
         h('div', { class: 'page-title-row' }, dom.pageTitle, about),
-        purpose ? h('p', { class: 'page-desc page-purpose' }, purpose) : null,
+        dom.pagePurpose,
         dom.pageAboutPanel,
         dom.keptNote),
       dom.pageActions),
@@ -997,7 +1021,7 @@ function renderOfflineNote() {
   clear(note);
   note.hidden = !isOffline() || def.offline;
   if (note.hidden) return;
-  const tools = VIEWS.filter((v) => v.offline).flatMap((v, i) => [
+  const tools = VIEWS.filter((v) => v.offline && v.group !== 'home').flatMap((v, i) => [
     i ? ' · ' : null,
     h('a', { href: buildRoute(v.id), dataset: { view: v.id } }, t(`nav.${v.id}`))
   ]);
@@ -1463,9 +1487,11 @@ function errorText(err) {
 /**
  * Open the Workspaces dialog: its module and stylesheet load on first use (a page left open
  * across a deploy is offered a reload). The focus returns to the switcher, or on a phone to the
- * Tools button.
+ * Tools button. `section`: the part to open it on (ui/workspace-panel.js PANEL_SECTIONS), for
+ * Home's links; else the workspaces list.
+ * @param {{ section?: string|null }} [opts]
  */
-async function openWorkspaces() {
+async function openWorkspaces({ section = null } = {}) {
   if (workspacePanel) return;
   workspacePanel = 'loading';
   let mod;
@@ -1479,6 +1505,7 @@ async function openWorkspaces() {
   }
   workspacePanel = mod.openWorkspacePanel({
     state,
+    section: typeof section === 'string' ? section : null,
     appVersion: APP_VERSION,
     switchTo: switchWorkspace,
     setTarget: (value) => !!pageSession.setTarget(value),
@@ -1804,13 +1831,13 @@ async function attachSheetSearch(host, tiles, menu) {
 }
 
 /* ------------------------------------------------------------------------ */
-/* First-visit task picker                                                  */
+/* Home's job cards                                                         */
 /* ------------------------------------------------------------------------ */
 
 /**
  * The visitor ran something (a view went busy, a zone or a certificate was loaded, servers were
- * saved): the start page stops offering the task picker. A picker on screen stays until the page
- * is shown again, so nothing jumps under the pointer.
+ * saved): Home's "Start a job" folds its cards to the compact list (views/home.js). Cards on
+ * screen stay until Home is shown again, so nothing jumps under the pointer.
  */
 function noteRun() {
   if (state.settings.startTasks) state.updateSettings({ startTasks: false });
@@ -1827,42 +1854,6 @@ function storedKeys() {
   } catch {
     return [];
   }
-}
-
-/** The dismissible strip of job cards above the start page: a first-time visitor's "where do I begin?". */
-function startPicker() {
-  const titleId = uid('start-title');
-  const hide = IconButton({
-    icon: 'x',
-    label: t('start.hide'),
-    className: 'start-picker-hide',
-    onClick: () => {
-      state.updateSettings({ startTasks: false });
-      strip.remove();
-      toast(t('start.hidden', { where: `${t('nav.about')} › ${t('start.aboutTitle')}` }), { type: 'info' });
-      // The button that had the focus is gone.
-      if (dom.pageTitle) dom.pageTitle.focus({ preventScroll: true });
-    }
-  });
-  hide.dataset.action = 'start-hide';
-  const strip = h('section', { class: 'start-picker card', dataset: { role: 'start-picker' }, attrs: { 'aria-labelledby': titleId } },
-    h('div', { class: 'start-picker-head' },
-      h('div', { class: 'start-picker-titles' },
-        // Not a heading: the strip comes before the page's <h1>; its title names the region instead.
-        h('p', { class: 'start-picker-title', id: titleId }, t('start.title')),
-        h('p', { class: 'start-picker-lead' }, t('start.lead'))),
-      hide),
-    StartTaskList({
-      views: VIEWS,
-      href: (view) => buildRoute(view),
-      onPick: (task, event) => {
-        // The job of the page that is open: go to its input instead of opening it again (a new tab is the browser's).
-        if (!current || task.view !== current.id || !isPlainClick(event)) return;
-        event.preventDefault();
-        focusMainInput();
-      }
-    }));
-  return strip;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2005,6 +1996,14 @@ function onShortcutKey(event) {
 let palette = null;
 
 /** The command palette (ui/palette.js with palette.css, on first use). */
+/** ui/palette.js with its stylesheet, loaded on first use (Ctrl/⌘+K, the Tools sheet, Home's quick start); null when it cannot load. */
+function loadPalette() {
+  return Promise.all([import('./ui/palette.js'), loadStylesheet('palette.css')]).then(([m]) => m, () => {
+    noticeIfOutdated(pageIsOutdated);
+    return null;
+  });
+}
+
 function openPalette() {
   palette = palette || Promise.all([import('./ui/palette.js'), loadStylesheet('palette.css')]).then(([m]) => m.openPalette({
     views: VIEWS, navigate, href: navHref, state, session: pageSession, done: () => { palette = null; }

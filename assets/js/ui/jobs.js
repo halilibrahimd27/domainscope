@@ -16,8 +16,9 @@
  * With `prefers-reduced-motion` the ring does not spin and the favicon changes in 10 % steps.
  *
  * The shell sets the page's own title through {@link setBaseTitle} and calls
- * {@link refreshJobIndicators} after it re-renders the navigation. The arithmetic and the
- * markup live in lib/jobprogress.js.
+ * {@link refreshJobIndicators} after it re-renders the navigation. Home lists the jobs running
+ * ({@link jobList}, with what each is about when its view said so) and follows them
+ * ({@link onJobs}). The arithmetic and the markup live in lib/jobprogress.js.
  */
 
 import { h, svg } from './dom.js';
@@ -69,11 +70,14 @@ let icon = null;
 let shownIcon = undefined;
 let renderTimer = null;
 const listeners = new Set();
+/** Home's listeners: called after each render (a job started, moved on or ended). */
+const watchers = new Set();
 
 /**
  * @typedef {object} JobHandle
  * @property {number} id
  * @property {string} view
+ * @property {string|null} subject what the job is about (a domain, the domains of a scan), when its view said
  * @property {Date} startedAt
  * @property {(fraction: number|null) => void} update the job's progress (it never runs backwards)
  * @property {(end: { status: 'done'|'cancelled'|'error', body?: string }) => void} finish
@@ -82,18 +86,21 @@ const listeners = new Set();
 
 /**
  * Register a running job of `view` ('subdomains', 'scan', 'bulk').
- * @param {{ view: string }} opts
+ * @param {{ view: string, subject?: string|null }} opts `subject`: what the job is about, as Home
+ *   names it (a domain, a scan's domains); at most 200 characters are kept
  * @returns {JobHandle}
  */
-export function startJob({ view }) {
+export function startJob({ view, subject = null }) {
   counter += 1;
-  const job = { id: counter, view: String(view), startedAt: new Date(), fraction: null };
+  const about = typeof subject === 'string' && subject.trim() ? subject.trim().slice(0, 200) : null;
+  const job = { id: counter, view: String(view), subject: about, startedAt: new Date(), fraction: null };
   jobs.set(job.id, job);
   schedule();
   emit();
   return {
     id: job.id,
     view: job.view,
+    subject: job.subject,
     startedAt: job.startedAt,
     update(fraction) {
       if (!jobs.has(job.id)) return;
@@ -110,6 +117,26 @@ export function startJob({ view }) {
     },
     running: () => jobs.has(job.id)
   };
+}
+
+/**
+ * The jobs running now, oldest first: the view that runs each, what it is about (null when its
+ * view did not say), how far it is (0–1; null while that is not known) and when it started. Home
+ * lists them.
+ * @returns {Array<{ id: number, view: string, subject: string|null, fraction: number|null, startedAt: Date }>}
+ */
+export function jobList() {
+  return [...jobs.values()].map((j) => ({ id: j.id, view: j.view, subject: j.subject, fraction: j.fraction, startedAt: j.startedAt }));
+}
+
+/**
+ * Follow the jobs: `fn` is called when one starts, moves on (at most four times a second) or ends.
+ * @param {() => void} fn
+ * @returns {() => void} stop following
+ */
+export function onJobs(fn) {
+  watchers.add(fn);
+  return () => watchers.delete(fn);
 }
 
 /** Work that runs without a job here ({@link registerRunning}): i18n key of its name → is it running? */
@@ -189,14 +216,22 @@ function render() {
   clearTimeout(renderTimer);
   renderTimer = null;
   const doc = globalThis.document;
-  if (!doc) return;
-  const running = [...jobs.values()];
-  const combined = combineJobs(running);
-  if (baseTitle === null) baseTitle = doc.title;
-  const pct = percentOf(combined.fraction);
-  doc.title = running.length ? progressTitle(baseTitle, pct === null ? null : formatPercent(pct / 100)) : baseTitle;
-  renderNav(doc, running);
-  renderFavicon(doc, running.length ? combined.fraction : undefined);
+  if (doc) {
+    const running = [...jobs.values()];
+    const combined = combineJobs(running);
+    if (baseTitle === null) baseTitle = doc.title;
+    const pct = percentOf(combined.fraction);
+    doc.title = running.length ? progressTitle(baseTitle, pct === null ? null : formatPercent(pct / 100)) : baseTitle;
+    renderNav(doc, running);
+    renderFavicon(doc, running.length ? combined.fraction : undefined);
+  }
+  for (const fn of [...watchers]) {
+    try {
+      fn();
+    } catch {
+      // a listener of a view that is gone
+    }
+  }
 }
 
 /** The sidebar's links and, while it is open, the Tools sheet's or drawer's (below 1100 px). */

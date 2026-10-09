@@ -317,9 +317,11 @@ export function restorePlan(params, kept) {
  * own Re-run sits in the page header, or the result cannot be run again, like a certificate file).
  * `label`: the translation key of the note's text (with `{time}`) when "Result from <time>" would
  * not say which result it is, like the Zone File's live check under its other tabs; null for the
- * shell's own wording.
+ * shell's own wording. `status` (optional): the result's open risks, `{ error, warn }` — whole
+ * counts, a missing one 0 —, which Home's "Results in this tab" shows; null when the view gives none.
  * @param {unknown} res
- * @returns {{ subject: string|null, at: Date, params: Record<string, string>|null, rerun: boolean, label: string|null }|null}
+ * @returns {{ subject: string|null, at: Date, params: Record<string, string>|null, rerun: boolean, label: string|null,
+ *   status: { error: number, warn: number }|null }|null}
  */
 export function normalizeResult(res) {
   if (!res || typeof res !== 'object') return null;
@@ -330,8 +332,24 @@ export function normalizeResult(res) {
     at,
     params: res.params && typeof res.params === 'object' && !Array.isArray(res.params) ? cleanParams(res.params) : null,
     rerun: res.rerun !== false,
-    label: typeof res.label === 'string' && res.label ? res.label : null
+    label: typeof res.label === 'string' && res.label ? res.label : null,
+    status: resultStatus(res.status)
   };
+}
+
+/**
+ * A result's open-risk counts checked: `{ error, warn }` as whole counts ≥ 0 (a missing one 0), or
+ * null for anything that is not such an object or counts nothing at all.
+ * @param {unknown} status
+ * @returns {{ error: number, warn: number }|null}
+ */
+export function resultStatus(status) {
+  if (!status || typeof status !== 'object' || Array.isArray(status)) return null;
+  const count = (v) => (v === undefined || v === null ? 0 : Number.isInteger(v) && v >= 0 && v <= 1e9 ? v : NaN);
+  const error = count(status.error);
+  const warn = count(status.warn);
+  if (Number.isNaN(error) || Number.isNaN(warn) || (status.error === undefined && status.warn === undefined)) return null;
+  return { error, warn };
 }
 
 /**
@@ -443,6 +461,7 @@ export function estimateSize(value, limit = Infinity) {
  *   that keeps its own state (Subdomains, SSL Targets, Bulk Resolve, Certificate) or when dropped
  * @property {number} size estimated bytes of the snapshot
  * @property {boolean} dropped the snapshot was too large to keep (alone or with the others)
+ * @property {{ error: number, warn: number }|null} status the result's open risks ({@link resultStatus}), for Home
  */
 
 /**
@@ -482,7 +501,7 @@ export function createSessionStore({
     const d = value instanceof Date ? value : new Date(value ?? NaN);
     return Number.isFinite(d.getTime()) ? d : now();
   };
-  const copy = (entry) => (entry ? { ...entry, params: { ...entry.params } } : null);
+  const copy = (entry) => (entry ? { ...entry, params: { ...entry.params }, status: entry.status ? { ...entry.status } : null } : null);
 
   /**
    * Drop the oldest snapshots (their queries stay, marked dropped) until the total fits; a new
@@ -536,10 +555,11 @@ export function createSessionStore({
      * result kept again (the same `at` and params: the tool was left once more without a new run)
      * keeps its age, so a result only looked at again is not taken for the newest.
      * @param {string} view
-     * @param {{ params?: Record<string, string>, subject?: string|null, at?: Date|number|string, snapshot?: any }} result
+     * @param {{ params?: Record<string, string>, subject?: string|null, at?: Date|number|string, snapshot?: any,
+     *   status?: { error?: number, warn?: number }|null }} result
      * @returns {KeptResult} a copy of the entry
      */
-    keep(view, { params = {}, subject = null, at = null, snapshot = null } = {}) {
+    keep(view, { params = {}, subject = null, at = null, snapshot = null, status = null } = {}) {
       const has = snapshot !== null && snapshot !== undefined;
       const size = has ? estimate(snapshot, entryBytes) : 0;
       const tooLarge = has && size > entryBytes;
@@ -550,7 +570,8 @@ export function createSessionStore({
         at: toDate(at),
         snapshot: has && !tooLarge ? snapshot : null,
         size: has && !tooLarge ? size : 0,
-        dropped: tooLarge
+        dropped: tooLarge,
+        status: resultStatus(status)
       };
       const prev = kept.get(entry.view);
       const again = !!prev && prev.at.getTime() === entry.at.getTime() && routeKey(prev.params) === routeKey(entry.params);

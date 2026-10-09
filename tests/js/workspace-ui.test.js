@@ -13,7 +13,7 @@ import {
   workspaceLabel, defaultWorkspaceNames, isDefaultWorkspaceName, storageReason, storageErrorText, STORAGE_REASONS
 } from '../../assets/js/ui/workspace-ui.js';
 import { exportFileName, passwordProblem, importSummary, PASSWORD_PROBLEMS } from '../../assets/js/ui/workspace-panel.js';
-import { registerRunning, runningWork } from '../../assets/js/ui/jobs.js';
+import { registerRunning, runningWork, jobList, onJobs, startJob } from '../../assets/js/ui/jobs.js';
 import { WorkspaceError, emptyWorkspaceData } from '../../assets/js/lib/workspace.js';
 import '../../assets/js/views/zone.js';
 import '../../assets/js/views/ptr.js';
@@ -184,5 +184,34 @@ describe('the shell', () => {
     for (const lang of LANGS) {
       for (const key of ['vfy.switchRunning', 'nav.ptr', 'par.switchRunning', 'oc.switchRunning', 'rpt.switchRunning', 'chg.switchRunning']) assert.ok(hasString(key, lang), `${key} ${lang}`);
     }
+  });
+
+  test('jobList names the running jobs for Home, with their subject and progress; onJobs follows them', () => {
+    assert.deepEqual(jobList(), []);
+    let calls = 0;
+    const stop = onJobs(() => { calls += 1; });
+    const sub = startJob({ view: 'subdomains', subject: '  example.com, example.org ' });
+    const bulk = startJob({ view: 'bulk' });
+    const scan = startJob({ view: 'scan', subject: 'x'.repeat(300) });
+    try {
+      assert.equal(sub.subject, 'example.com, example.org');
+      assert.equal(scan.subject.length, 200, 'a long subject is cut');
+      assert.deepEqual(jobList().map((j) => [j.view, j.subject, j.fraction]),
+        [['subdomains', 'example.com, example.org', null], ['bulk', null, null], ['scan', 'x'.repeat(200), null]]);
+      assert.ok(jobList()[0].startedAt instanceof Date);
+      sub.update(0.4);
+      assert.equal(jobList()[0].fraction, 0.4);
+      assert.deepEqual(runningWork(), ['nav.subdomains', 'nav.bulk', 'nav.scan']);
+      bulk.finish({ status: 'cancelled' });
+      assert.deepEqual(jobList().map((j) => j.view), ['subdomains', 'scan']);
+      assert.ok(calls >= 1, 'a finish renders at once and tells Home');
+      stop();
+      const before = calls;
+      sub.finish({ status: 'done' });
+      assert.equal(calls, before, 'a stopped listener hears nothing more');
+    } finally {
+      for (const job of [sub, bulk, scan]) job.finish({ status: 'cancelled' });
+    }
+    assert.deepEqual(jobList(), []);
   });
 });

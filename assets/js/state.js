@@ -9,7 +9,7 @@
  *   - the active workspace's other parts (lib/workspace.js WORKSPACE_PARTS: learned names, custom
  *       wordlist, expected CAs, notes, recent domains, the origin map): `workspaceData(part)` / `setWorkspaceData()`;
  *       the learned names also through `learnedStorage`, a Storage-like view for lib/learned.js.
- *   - settings (localStorage, the same in every workspace): { lang, theme, chain, concurrency, startTasks, density }
+ *   - settings (localStorage, the same in every workspace): { lang, theme, chain, concurrency, startTasks, density, homeSetup }
  *   - session (memory only): free-form key/value for handing data between views,
  *       e.g. the cert view stores `pendingCert` and the scan view `takeSession('pendingCert')`s it.
  *
@@ -71,9 +71,10 @@ export const CONCURRENCY_RANGE = Object.freeze({ min: 1, max: 32 });
 export const DENSITIES = Object.freeze(['comfortable', 'compact']);
 
 /**
- * Default settings (lang null = follow the browser). `startTasks`: the start page still offers
- * its first-visit task picker (app.js turns it off once it is dismissed or the visitor ran something).
- * `density`: the page's spacing (style.css; touch screens keep large targets either way).
+ * Default settings (lang null = follow the browser). `startTasks`: Home shows its "Start a job"
+ * cards expanded (app.js folds them to a compact list once they are folded or the visitor ran
+ * something). `density`: the page's spacing (style.css; touch screens keep large targets either
+ * way). `homeSetup`: Home shows its "Set up this workspace" checklist (until it is hidden).
  */
 export const DEFAULT_SETTINGS = Object.freeze({
   lang: null,
@@ -81,7 +82,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   chain: Object.freeze([...DEFAULT_CHAIN]),
   concurrency: 12,
   startTasks: true,
-  density: 'comfortable'
+  density: 'comfortable',
+  homeSetup: true
 });
 
 const RESOLVER_IDS = new Set(RESOLVERS.map((r) => r.id));
@@ -90,7 +92,7 @@ const RESOLVER_IDS = new Set(RESOLVERS.map((r) => r.id));
  * Validate/normalize a settings object; unknown or invalid fields fall back to defaults.
  * @param {object} input
  * @returns {{ lang: 'tr'|'en'|null, theme: 'auto'|'light'|'dark', chain: string[], concurrency: number, startTasks: boolean,
- *   density: 'comfortable'|'compact' }}
+ *   density: 'comfortable'|'compact', homeSetup: boolean }}
  */
 export function sanitizeSettings(input) {
   const src = input && typeof input === 'object' ? input : {};
@@ -104,7 +106,9 @@ export function sanitizeSettings(input) {
   // Only an explicit false turns the picker off: records written before it existed keep it.
   const startTasks = src.startTasks !== false;
   const density = DENSITIES.includes(src.density) ? src.density : DEFAULT_SETTINGS.density;
-  return { lang, theme, chain, concurrency, startTasks, density };
+  // Like startTasks: only an explicit false hides the checklist.
+  const homeSetup = src.homeSetup !== false;
+  return { lang, theme, chain, concurrency, startTasks, density, homeSetup };
 }
 
 /**
@@ -605,8 +609,9 @@ export function createState({
 
     /**
      * Merge and persist settings (validated with {@link sanitizeSettings}).
-     * @param {Partial<{ lang: 'tr'|'en'|null, theme: string, chain: string[], concurrency: number, startTasks: boolean, density: string }>} patch
-     * @returns {{ lang, theme, chain, concurrency, startTasks, density }} the new settings
+     * @param {Partial<{ lang: 'tr'|'en'|null, theme: string, chain: string[], concurrency: number, startTasks: boolean, density: string,
+     *   homeSetup: boolean }>} patch
+     * @returns {{ lang, theme, chain, concurrency, startTasks, density, homeSetup }} the new settings
      */
     updateSettings(patch) {
       const next = sanitizeSettings({ ...settings, ...(patch || {}) });

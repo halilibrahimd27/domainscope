@@ -8,23 +8,34 @@
  * certificate": other views read it through `ctx.state.inventory` / `ctx.getInventoryIndex()`.
  * A second tab (`tab=origins`) holds the workspace's origin map (ui/origin-map-panel.js): which
  * of these servers really serves a name behind a CDN. Nothing here ever leaves the browser.
+ *
+ * The page template (ui/template.js; docs/DESIGN.md §5, §8 phase 5), an editor: the three tabs sit
+ * right under the page header; the inventory tab's input card holds the editor (Save under it, the
+ * page's primary button), the workspace, the saved state, Clear, the file import, the formats and
+ * the privacy note — never compact, its output is live as you type. The result header (`.inv-head`)
+ * counts the servers, the lines and the addresses, the status summary (warnings, addresses, groups:
+ * lib/netresults.js inventoryStatus) and Export ▾ (targets.txt, CSV, JSON); then the warnings, where
+ * TLS terminates and the table (a card per server on a phone).
  */
 
-import { h, clear, debounce } from '../ui/dom.js';
+import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, DataTable, Disclosure, FileDrop, Icon, Modal, StatCard, Tabs,
+  Badge, Button, Card, CodeBlock, DataTable, Disclosure, FileDrop, Icon, Modal, Tabs,
   TruncatedList, confirmDialog, ipSortValue, textarea, toast
 } from '../ui/components.js';
-import { downloadText } from '../ui/download.js';
+import { downloadText, timestampedName } from '../ui/download.js';
 import { formatNumber, formatRelative, registerStrings } from '../i18n.js';
 import { parseInventory, addressTargets, serverTargets } from '../lib/inventory.js';
 import { terminatesTls, topologyTokens } from '../lib/topology.js';
 import { TopologyCard } from '../ui/topology.js';
 import { cliServerName } from '../lib/export.js';
-import { isPrivateIP, ipVersion } from '../lib/netinfo.js';
+import { isPrivateIP } from '../lib/netinfo.js';
 import { workspaceLabel } from '../ui/workspace-ui.js';
 import { OriginMapPanel } from '../ui/origin-map-panel.js';
 import { ExposurePanel } from '../ui/exposure-panel.js';
+import { PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput } from '../ui/template.js';
+import { exportColumns, exportObjects, inventoryFigures, inventoryStatus } from '../lib/netresults.js';
+import { toCsv, toJson } from '../lib/export.js';
 
 /** Route id. */
 export const id = 'inventory';
@@ -88,11 +99,9 @@ registerStrings('en', {
   'inv.tab.inventory': 'Inventory',
   'inv.tab.origins': 'Origin map',
   'inv.tab.exposure': 'Exposure audit',
-  'inv.privacyTitle': 'Stays in your browser',
   'inv.privacy': 'The inventory is parsed and stored only on this device, with the current workspace (this browser’s IndexedDB). It is never uploaded — the other tools use it locally to match DNS answers to your servers. Each workspace has its own inventory.',
   'inv.workspace': 'Workspace: {name}',
   'inv.workspaceTitle': 'This inventory belongs to the workspace “{name}”. Switch workspaces in the header.',
-  'inv.editorTitle': 'Inventory',
   'inv.editorSubtitle': 'Paste it or import a file — any common format works',
   'inv.textareaLabel': 'Server inventory',
   'inv.placeholder': '# one server per line: name and IP address(es)\nweb01 10.0.1.11\nweb02 10.0.1.12 2001:db8::12\n\n# also: /etc/hosts, CSV/TSV, Ansible INI/YAML, JSON',
@@ -113,14 +122,13 @@ registerStrings('en', {
   'inv.replace': 'Replace',
   'inv.append': 'Append',
   'inv.imported': '{name} loaded — review it and press Save.',
-  'inv.stat.servers': 'Servers',
-  'inv.stat.ips': 'IP addresses',
   'inv.stat.ipsHint': '{v4} IPv4 · {v6} IPv6 · {priv} private',
-  'inv.stat.groups': 'Groups',
-  'inv.stat.warnings': 'Warnings',
   'inv.stat.lines': { zero: 'no lines', one: '{count} line', other: '{count} lines' },
+  'inv.resultsTitle': { zero: 'No servers yet', one: '{count} server', other: '{count} servers' },
+  'inv.status.warnings': { one: '{count} warning', other: '{count} warnings' },
+  'inv.status.ips': { one: '{count} IP address', other: '{count} IP addresses' },
+  'inv.status.groups': { one: '{count} group', other: '{count} groups' },
   'inv.tableTitle': 'Parsed servers',
-  'inv.tableSubtitle': 'What the tools will match against',
   'inv.col.name': 'Server',
   'inv.col.ips': 'IP addresses',
   'inv.col.groups': 'Groups',
@@ -163,11 +171,9 @@ registerStrings('tr', {
   'inv.tab.inventory': 'Envanter',
   'inv.tab.origins': 'Origin haritası',
   'inv.tab.exposure': 'Açığa çıkma denetimi',
-  'inv.privacyTitle': 'Tarayıcınızda kalır',
   'inv.privacy': 'Envanter yalnızca bu cihazda, geçerli çalışma alanıyla birlikte ayrıştırılır ve saklanır (bu tarayıcının IndexedDB deposu). Hiçbir yere yüklenmez — diğer araçlar DNS yanıtlarını sunucularınızla yerel olarak eşleştirmek için kullanır. Her çalışma alanının kendi envanteri vardır.',
   'inv.workspace': 'Çalışma alanı: {name}',
   'inv.workspaceTitle': 'Bu envanter “{name}” çalışma alanına ait. Çalışma alanını üst çubuktan değiştirin.',
-  'inv.editorTitle': 'Envanter',
   'inv.editorSubtitle': 'Yapıştırın veya dosya içe aktarın — yaygın biçimlerin hepsi olur',
   'inv.textareaLabel': 'Sunucu envanteri',
   'inv.placeholder': '# her satıra bir sunucu: ad ve IP adres(ler)i\nweb01 10.0.1.11\nweb02 10.0.1.12 2001:db8::12\n\n# ayrıca: /etc/hosts, CSV/TSV, Ansible INI/YAML, JSON',
@@ -188,14 +194,13 @@ registerStrings('tr', {
   'inv.replace': 'Değiştir',
   'inv.append': 'Sonuna ekle',
   'inv.imported': '{name} yüklendi — kontrol edip Kaydet’e basın.',
-  'inv.stat.servers': 'Sunucular',
-  'inv.stat.ips': 'IP adresleri',
   'inv.stat.ipsHint': '{v4} IPv4 · {v6} IPv6 · {priv} özel',
-  'inv.stat.groups': 'Gruplar',
-  'inv.stat.warnings': 'Uyarılar',
   'inv.stat.lines': { zero: 'satır yok', other: '{count} satır' },
+  'inv.resultsTitle': { zero: 'Henüz sunucu yok', other: '{count} sunucu' },
+  'inv.status.warnings': '{count} uyarı',
+  'inv.status.ips': '{count} IP adresi',
+  'inv.status.groups': '{count} grup',
   'inv.tableTitle': 'Ayrıştırılan sunucular',
-  'inv.tableSubtitle': 'Araçların eşleştirme yapacağı liste',
   'inv.col.name': 'Sunucu',
   'inv.col.ips': 'IP adresleri',
   'inv.col.groups': 'Gruplar',
@@ -284,20 +289,31 @@ export function mount(container, ctx) {
 
   let parsed = parseInventory(initialText);
 
-  /* --- editor ---------------------------------------------------------- */
+  /* --- region 2: the editor (ui/template.js ToolInput; never compact: the output is live) --- */
   const editor = textarea({
     label: t('inv.textareaLabel'),
+    hint: t('inv.editorSubtitle'),
     value: initialText,
     rows: 16,
     placeholder: t('inv.placeholder'),
     className: 'inv-editor-field',
     attrs: { 'data-role': 'inventory-text', 'data-shortcut': 'focus' }
   });
-  editor.el.querySelector('.field-label').classList.add('sr-only');
 
   const statusEl = h('div', { class: 'inv-status', attrs: { 'aria-live': 'polite' } });
-  const saveBtn = Button({ label: t('inv.save'), icon: 'check', variant: 'primary', onClick: save, dataset: { action: 'save', shortcut: 'submit' } });
-  const clearBtn = Button({ label: t('inv.clear'), icon: 'trash', variant: 'ghost', onClick: clearAll, dataset: { action: 'clear' } });
+  /** The view's three tabs (made below, once the inventory tab's content exists). */
+  let tabs = null;
+  // Save is the page's primary button (its run bar: on a phone also at the bottom of the screen
+  // while the editor holds unsaved changes and Save is out of view).
+  const runBar = RunBar({
+    label: t('inv.save'),
+    icon: 'check',
+    dataset: { action: 'save', shortcut: 'submit' },
+    onRun: () => save(),
+    hasValue: () => isDirty() && (!tabs || tabs.getSelected() === 'inventory')
+  });
+  const saveBtn = runBar.run;
+  const clearBtn = Button({ label: t('inv.clear'), icon: 'trash', variant: 'ghost', size: 'sm', onClick: clearAll, dataset: { action: 'clear' } });
 
   const drop = FileDrop({
     accept: ACCEPT,
@@ -320,43 +336,98 @@ export function mount(container, ctx) {
   })), { label: t('inv.formatsTitle'), className: 'inv-examples' });
 
   const wsName = workspaceLabel(state.workspace);
-  const editorCard = Card({
-    title: t('inv.editorTitle'),
-    subtitle: t('inv.editorSubtitle'),
-    icon: 'file-text',
+  const tool = ToolInput({
     className: 'inv-editor',
-    actions: Badge(t('inv.workspace', { name: wsName }), {
-      icon: 'briefcase', variant: 'accent', className: 'inv-workspace', title: t('inv.workspaceTitle', { name: wsName })
-    }),
-    children: h('div', { class: 'stack' },
+    label: t('inv.textareaLabel'),
+    primary: editor.el,
+    run: runBar,
+    notes: [h('div', { class: 'inv-actions' },
+      Badge(t('inv.workspace', { name: wsName }), {
+        icon: 'briefcase', variant: 'accent', className: 'inv-workspace', title: t('inv.workspaceTitle', { name: wsName })
+      }),
+      statusEl, clearBtn)],
+    extras: [
       drop,
-      editor.el,
-      h('div', { class: 'inv-actions' }, statusEl, h('div', { class: 'inv-buttons' }, clearBtn, saveBtn)),
       Disclosure({
         summary: t('inv.formatsTitle'),
         className: 'inv-formats',
         children: h('div', { class: 'stack-sm' }, h('p', { class: 'muted text-sm' }, t('inv.formatsNote')),
           h('p', { class: 'muted text-sm', dataset: { role: 'topology-note' } }, t('inv.topologyNote')), examplesTabs)
-      }))
+      })
+    ],
+    privacy: PrivacyNote({ text: t('inv.privacy'), className: 'inv-privacy' })
   });
+  // An editor, not a search: a form landmark named after it.
+  tool.el.setAttribute('role', 'form');
 
-  /* --- results --------------------------------------------------------- */
-  const stats = {
-    servers: StatCard({ label: t('inv.stat.servers'), icon: 'server', variant: 'accent' }),
-    ips: StatCard({ label: t('inv.stat.ips'), icon: 'network' }),
-    groups: StatCard({ label: t('inv.stat.groups'), icon: 'layers' }),
-    warnings: StatCard({ label: t('inv.stat.warnings'), icon: 'alert' })
-  };
-
-  const targetsBtn = Button({
-    label: t('inv.targets'),
-    icon: 'download',
-    size: 'sm',
-    title: t('inv.targetsTitle'),
-    dataset: { action: 'targets' },
-    onClick: () => downloadText('targets.txt', targetsText(parsed.servers))
+  /* --- regions 4 and 8: the result header, the warnings, the topology, the table ------------ */
+  /** The parsed list's header (`.inv-head`, its server count in `data-servers`): not a run, so no kept-result slot. */
+  const head = ResultHeader({ className: 'inv-head', kept: false });
+  const status = StatusSummary({ items: [] });
+  head.set('status', status.el);
+  const actions = ResultActions({
+    exports: [
+      { label: t('inv.targets'), icon: 'file-text', title: t('inv.targetsTitle'), dataset: { export: 'targets', action: 'targets' }, onSelect: () => downloadText('targets.txt', targetsText(parsed.servers)) },
+      { label: t('common.exportCsv'), icon: 'download', dataset: { export: 'csv' }, onSelect: () => exportTable('csv') },
+      { label: t('common.exportJson'), icon: 'download', dataset: { export: 'json' }, onSelect: () => exportTable('json') }
+    ]
   });
+  head.set('actions', actions.el);
 
+  const columns = [
+    {
+      key: 'name',
+      label: t('inv.col.name'),
+      sortable: true,
+      sortValue: (s) => s.name,
+      searchValue: (s) => [s.name, ...(s.aliases || [])].join(' '),
+      exportValue: (s) => s.name,
+      render: (s) => h('div', { class: 'inv-name' },
+        h('span', { class: 'inv-name-main' }, s.name),
+        s.aliases && s.aliases.length ? h('span', { class: 'inv-aliases' }, t('inv.aliases', { names: s.aliases.join(', ') })) : null,
+        s.backends || !terminatesTls(s) ? h('span', { class: 'cluster inv-topo' },
+          s.backends ? Badge(t('inv.badge.lb'), { variant: 'accent', icon: 'git-branch' }) : null,
+          terminatesTls(s) ? null : Badge(t('inv.badge.plain'), { variant: 'ok', icon: 'unlock' })) : null)
+    },
+    {
+      key: 'ips',
+      label: t('inv.col.ips'),
+      sortable: true,
+      sortValue: (s) => ipSortValue(s.ips[0]),
+      searchValue: (s) => serverTargets(s).join(' '),
+      exportValue: (s) => serverTargets(s).join(' '),
+      render: (s) => TruncatedList(endpointsOf(s), {
+        max: 4,
+        render: (e) => h('span', { class: 'inv-ip' }, e.target,
+          isPrivateIP(e.ip) ? Badge(t('inv.private'), { variant: 'private', className: 'inv-ip-badge' }) : null)
+      })
+    },
+    {
+      key: 'groups',
+      label: t('inv.col.groups'),
+      sortable: true,
+      sortValue: (s) => s.groups[0],
+      searchValue: (s) => s.groups.join(' '),
+      exportValue: (s) => s.groups.join(' '),
+      render: (s) => (s.groups.length ? h('div', { class: 'cluster inv-groups' }, s.groups.map((g) => Badge(g, { variant: 'neutral' }))) : null)
+    },
+    {
+      key: 'line',
+      label: t('inv.col.line'),
+      sortable: true,
+      align: 'end',
+      width: '5.5rem',
+      className: 'num',
+      render: (s) => h('button', {
+        type: 'button',
+        class: 'link-btn num',
+        title: t('inv.lineN', { n: s.line }),
+        on: { click: () => jumpToLine(s.line) }
+      }, String(s.line))
+    }
+  ];
+  // The table's files are the result header's Export ▾; on a phone each server is a card of
+  // labelled lines (style.css .dt-cards).
   const table = DataTable({
     caption: t('inv.tableTitle'),
     search: true,
@@ -364,61 +435,22 @@ export function mount(container, ctx) {
     sort: { key: 'line', dir: 'asc' },
     empty: t('inv.empty'),
     rowKey: (s) => s.id,
-    toolbar: targetsBtn,
-    export: { filename: 'servers' },
-    columns: [
-      {
-        key: 'name',
-        label: t('inv.col.name'),
-        sortable: true,
-        sortValue: (s) => s.name,
-        searchValue: (s) => [s.name, ...(s.aliases || [])].join(' '),
-        exportValue: (s) => s.name,
-        render: (s) => h('div', { class: 'inv-name' },
-          h('span', { class: 'inv-name-main' }, s.name),
-          s.aliases && s.aliases.length ? h('span', { class: 'inv-aliases' }, t('inv.aliases', { names: s.aliases.join(', ') })) : null,
-          s.backends || !terminatesTls(s) ? h('span', { class: 'cluster inv-topo' },
-            s.backends ? Badge(t('inv.badge.lb'), { variant: 'accent', icon: 'git-branch' }) : null,
-            terminatesTls(s) ? null : Badge(t('inv.badge.plain'), { variant: 'ok', icon: 'unlock' })) : null)
-      },
-      {
-        key: 'ips',
-        label: t('inv.col.ips'),
-        sortable: true,
-        sortValue: (s) => ipSortValue(s.ips[0]),
-        searchValue: (s) => serverTargets(s).join(' '),
-        exportValue: (s) => serverTargets(s).join(' '),
-        render: (s) => TruncatedList(endpointsOf(s), {
-          max: 4,
-          render: (e) => h('span', { class: 'inv-ip' }, e.target,
-            isPrivateIP(e.ip) ? Badge(t('inv.private'), { variant: 'private', className: 'inv-ip-badge' }) : null)
-        })
-      },
-      {
-        key: 'groups',
-        label: t('inv.col.groups'),
-        sortable: true,
-        sortValue: (s) => s.groups[0],
-        searchValue: (s) => s.groups.join(' '),
-        exportValue: (s) => s.groups.join(' '),
-        render: (s) => (s.groups.length ? h('div', { class: 'cluster inv-groups' }, s.groups.map((g) => Badge(g, { variant: 'neutral' }))) : null)
-      },
-      {
-        key: 'line',
-        label: t('inv.col.line'),
-        sortable: true,
-        align: 'end',
-        width: '5.5rem',
-        className: 'num',
-        render: (s) => h('button', {
-          type: 'button',
-          class: 'link-btn num',
-          title: t('inv.lineN', { n: s.line }),
-          on: { click: () => jumpToLine(s.line) }
-        }, String(s.line))
-      }
-    ]
+    export: false,
+    cellLabels: true,
+    className: 'inv-table dt-cards',
+    columns
   });
+
+  /** The servers the table lists (search applied, in its order) as a CSV or JSON file. */
+  function exportTable(format) {
+    const rows = table.getVisibleRows();
+    const cols = exportColumns(columns);
+    const name = timestampedName('servers', format);
+    const file = format === 'csv'
+      ? downloadText(name, toCsv(rows, cols), 'text/csv;charset=utf-8')
+      : downloadText(name, `${toJson(exportObjects(rows, cols))}\n`, 'application/json;charset=utf-8');
+    toast(t('table.exported', { file }), { type: 'success', timeout: 2500 });
+  }
 
   const warningsList = h('ul', { class: 'inv-warnings' });
   const warningsCard = Card({
@@ -434,36 +466,27 @@ export function mount(container, ctx) {
   const topologySlot = h('div', { class: 'inv-topology', dataset: { role: 'topology-slot' } });
 
   // No part of the editor's form: Ctrl/Cmd+Enter in the table's filter saves nothing.
-  const resultsCol = h('div', { class: 'stack inv-results', dataset: { shortcutScope: 'results' } },
-    h('div', { class: 'stat-grid inv-stats' }, stats.servers, stats.ips, stats.groups, stats.warnings),
-    warningsCard,
-    topologySlot,
-    Card({ title: t('inv.tableTitle'), subtitle: t('inv.tableSubtitle'), icon: 'server', children: table }));
+  const resultsCol = h('div', { class: 'inv-results', dataset: { shortcutScope: 'results' } }, head.el, warningsCard, topologySlot, table.el);
 
-  // Three tabs: the inventory, the workspace's origin map, and the origin exposure audit (each of
-  // the last two built on its first show).
+  // Three tabs right under the page header: the inventory, the workspace's origin map, and the
+  // origin exposure audit (each of the last two built on its first show).
   let originPanel = null;
   let exposurePanel = null;
   const originCount = () => {
     const map = state.workspaceData('origins');
     return map && map.entries.length ? map.entries.length : null;
   };
-  const tabs = Tabs([
+  tabs = Tabs([
+    { id: 'inventory', label: t('inv.tab.inventory'), content: h('div', { class: 'inv-layout' }, tool.el, resultsCol) },
     {
-      id: 'inventory', label: t('inv.tab.inventory'), icon: 'server',
-      content: h('div', { class: 'stack' },
-        Alert({ variant: 'ok', icon: 'lock', title: t('inv.privacyTitle'), message: t('inv.privacy'), compact: true }),
-        h('div', { class: 'inv-layout' }, editorCard, resultsCol))
-    },
-    {
-      id: 'origins', label: t('inv.tab.origins'), icon: 'map-pin', badge: originCount(),
+      id: 'origins', label: t('inv.tab.origins'), badge: originCount(),
       content: () => {
         originPanel = OriginMapPanel({ ctx });
         return originPanel.el;
       }
     },
     {
-      id: 'exposure', label: t('inv.tab.exposure'), icon: 'shield',
+      id: 'exposure', label: t('inv.tab.exposure'),
       content: () => {
         exposurePanel = ExposurePanel({ ctx });
         return exposurePanel.el;
@@ -473,9 +496,12 @@ export function mount(container, ctx) {
     selected: INVENTORY_TABS.includes(ctx.params.tab) ? ctx.params.tab : 'inventory',
     label: t('inv.tabs'),
     className: 'inv-tabs',
-    onChange: (tab) => ctx.setParams({ tab: tab === 'inventory' ? null : tab })
+    onChange: (tab) => {
+      ctx.setParams({ tab: tab === 'inventory' ? null : tab });
+      runBar.refresh();
+    }
   });
-  container.append(tabs.el);
+  container.append(tabs.el, runBar.float);
 
   /* --- behaviour ------------------------------------------------------- */
   function isDirty() {
@@ -495,23 +521,32 @@ export function mount(container, ctx) {
     }
     saveBtn.disabled = !dirty;
     clearBtn.disabled = !editor.value && !state.inventory.text;
+    runBar.refresh();
+  }
+
+  /** "2 warnings": the keyboard focus goes to the first of them (its button jumps to the line). */
+  function focusWarnings() {
+    const first = warningsList.querySelector('.inv-warning:not(:disabled)') || warningsList.querySelector('.inv-warning');
+    if (!first) return;
+    warningsCard.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+    first.focus({ preventScroll: true });
   }
 
   function renderResults() {
-    const { servers, warnings, stats: st } = parsed;
-    const ips = servers.flatMap((s) => s.ips);
-    const v6 = ips.filter((ip) => ipVersion(ip) === 6).length;
-    const priv = ips.filter((ip) => isPrivateIP(ip)).length;
-    const groups = new Set(servers.flatMap((s) => s.groups));
-    stats.servers.set({ value: servers.length, hint: t('inv.stat.lines', { count: st.lines }) });
-    stats.ips.set({
-      value: ips.length,
-      hint: ips.length ? t('inv.stat.ipsHint', { v4: formatNumber(ips.length - v6), v6: formatNumber(v6), priv: formatNumber(priv) }) : null
-    });
-    stats.groups.set({ value: groups.size, hint: groups.size ? [...groups].slice(0, 4).join(', ') + (groups.size > 4 ? '…' : '') : null });
-    stats.warnings.set({ value: warnings.length, variant: warnings.length ? 'warn' : 'default' });
+    const { servers, warnings } = parsed;
+    const f = inventoryFigures(parsed);
+    head.el.dataset.servers = String(f.servers);
+    head.set('title', ResultTitle({ text: t('inv.resultsTitle', { count: f.servers }) }));
+    head.set('meta', [t('inv.stat.lines', { count: f.lines }),
+      f.ips ? t('inv.stat.ipsHint', { v4: formatNumber(f.v4), v6: formatNumber(f.v6), priv: formatNumber(f.priv) }) : null].filter(Boolean).join(' · '));
+    status.update(inventoryStatus(f).map((x) => ({
+      ...x,
+      text: t(`inv.status.${x.key}`, { count: x.count }),
+      title: x.key === 'groups' && f.groups.length ? f.groups.slice(0, 8).join(', ') + (f.groups.length > 8 ? '…' : '') : null,
+      onPress: x.key === 'warnings' ? () => focusWarnings() : null
+    })));
+    actions.setExportsDisabled(!servers.some((s) => s.ips.length));
     table.setRows(servers);
-    targetsBtn.disabled = !servers.some((s) => s.ips.length);
     clear(topologySlot);
     const topology = TopologyCard(servers);
     topologySlot.hidden = !topology;
@@ -658,6 +693,8 @@ export function mount(container, ctx) {
     if (exposurePanel) exposurePanel.destroy();
     clearInterval(timer);
     reparseSoon.cancel();
+    runBar.dispose();
+    actions.dispose();
     // Keep an unsaved draft for this session so navigating away does not lose it.
     if (isDirty()) state.setSession('inventoryDraft', editor.value);
   };

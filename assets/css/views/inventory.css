@@ -1,13 +1,15 @@
 /*
- * views/inventory.css — "Servers" view (.inv-*).
+ * views/inventory.css — "Servers" view (.inv-*) on the page template (style.css § 4): the editor's
+ * input card with the result column beside it from 1180 px, the table's card mode on a phone; the
+ * Origin map (.om-*) and Exposure audit (.exp-*) tabs.
  */
 
 .inv-layout {
   display: grid;
   grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: 20px;
+  gap: var(--stack-gap);
   align-items: start;
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 
 @media (max-width: 1180px) {
@@ -16,41 +18,43 @@
   }
 }
 
-/* The workspace badge goes under the titles on a narrow card rather than squeezing them. */
-.inv-editor .card-head {
-  flex-wrap: wrap;
-}
-
-.inv-editor .card-titles {
-  flex: 1 1 200px;
-}
-
-/* A long workspace name is cut with an ellipsis (its title has it in full). */
-.inv-editor .card-actions {
+.inv-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
   min-width: 0;
-  max-width: 100%;
 }
 
 .inv-editor .textarea {
   min-height: 320px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
+}
+
+/* The editor's card: Save under the editor, right-aligned (not beside a 16-line box). */
+.inv-editor.tool-input .tool-input-fields {
+  grid-auto-flow: row;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.inv-editor.tool-input .tool-input-fields:has(.field-label) > .run-bar {
+  justify-self: end;
+  margin-top: 0;
 }
 
 .inv-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
-/* On a 320 px phone with wider fonts Save goes under Clear rather than past the card. */
-.inv-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-  min-width: 0;
+/* A long workspace name is cut with an ellipsis (its title has it in full). */
+.inv-workspace {
+  max-width: 100%;
+}
+
+.inv-actions > .btn {
   margin-left: auto;
 }
 
@@ -73,17 +77,7 @@
 
 .inv-formats .tab {
   padding: 7px 10px 9px;
-  font-size: 12.5px;
-}
-
-.inv-stats {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-@media (max-width: 640px) {
-  .inv-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+  font-size: var(--fs-xs);
 }
 
 .inv-name {

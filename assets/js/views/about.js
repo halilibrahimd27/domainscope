@@ -6,11 +6,16 @@
  *
  * Route params: `#/about?section=sent` (the footer's "What this page sent") scrolls to that
  * section and puts the focus on its heading, then drops the param so the link works again.
+ *
+ * A document (docs/DESIGN.md §5.5, §5.6, §8 phase 5): the page header, the hero (a plain card, no
+ * gradient), "On this page" as chips, then the sections; no input or result regions. Its tables
+ * turn into cards of labelled lines on a phone (style.css .dt-cards), a hint is muted text (§7) and
+ * the privacy list's icons are neutral (a privacy note is not good news).
  */
 
 import { h } from '../ui/dom.js';
 import {
-  Alert, Badge, ButtonLink, Button, CliText, CodeBlock, Disclosure, ExternalLink, Icon, Section, confirmDialog
+  Badge, ButtonLink, Button, CliText, CodeBlock, Disclosure, ExternalLink, Icon, Section, confirmDialog
 } from '../ui/components.js';
 import { registerStrings, formatDate, formatNumber, formatRegion } from '../i18n.js';
 import { RESOLVERS, RESOLVERS_VERIFIED, GEO_VANTAGES, DEFAULT_CHAIN, getResolver } from '../lib/resolvers.js';
@@ -440,11 +445,20 @@ const CLI_STATUSES = [
   { code: 'CLOSED', variant: 'unresolved', icon: 'lock' }
 ];
 
+/**
+ * A static table of text: each cell carries its column's label (`data-label`), so on a phone each
+ * row is a card of labelled lines headed by its first cell (style.css .dt-cards).
+ * @param {string[]} headers
+ * @param {Array<Array<string|Node>>} rows
+ * @param {string} [className]
+ * @returns {HTMLElement}
+ */
 function simpleTable(headers, rows, className = '') {
-  return h('div', { class: ['dt-scroll', 'dt-scroll-free', 'about-table', className], attrs: { tabindex: 0 } },
+  return h('div', { class: ['dt-scroll', 'dt-scroll-free', 'about-table', 'dt-cards', className], attrs: { tabindex: 0 } },
     h('table', { class: 'dt-table' },
       h('thead', null, h('tr', null, headers.map((x) => h('th', { attrs: { scope: 'col' } }, x)))),
-      h('tbody', null, rows.map((cells) => h('tr', { class: 'dt-row' }, cells.map((c) => h('td', null, c)))))));
+      h('tbody', null, rows.map((cells) => h('tr', { class: 'dt-row' },
+        cells.map((c, i) => h('td', { dataset: { label: headers[i] } }, c)))))));
 }
 
 function flowNode(iconName, label, sub = null, variant = '') {
@@ -503,7 +517,7 @@ export function mount(container, ctx) {
     h('span', { class: 'about-toc-label' }, t('about.onThisPage')),
     tocItems.map((key) => h('button', {
       type: 'button',
-      class: 'about-toc-link',
+      class: 'chip about-toc-link',
       dataset: { toc: key },
       on: { click: () => goTo(key) }
     }, tocLabel(key))));
@@ -559,7 +573,9 @@ export function mount(container, ctx) {
             flowArrow(t('about.flowSni')),
             flowNode('server', t('about.flowOrigin'), `10.0.1.20 · ${t('about.flowCert')}`, 'ok')))))
   });
-  cloudflare.querySelector('.section-body').append(Alert({ variant: 'info', icon: 'lightbulb', message: t('about.cfHints'), compact: true }));
+  // A hint, not an alert (DESIGN §7): muted text under the diagrams.
+  cloudflare.querySelector('.section-body').append(h('p', { class: 'about-cf-hint' },
+    Icon('lightbulb', { size: 14 }), h('span', null, t('about.cfHints'))));
 
   /* Sources & quotas */
   const sources = section('sources', {

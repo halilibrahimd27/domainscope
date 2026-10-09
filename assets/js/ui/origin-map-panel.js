@@ -21,10 +21,11 @@
  *   Origin CA certificate; "Also names not known to be behind a CDN" takes every name.
  *
  * Nothing here reaches the network. Every string is rendered through h() / text nodes: names and
- * server names come from files.
+ * server names come from files. Where the map is kept is a privacy note under the switch (a warning
+ * above the panel only when it lives in this tab alone); on a phone each entry is a card (`.dt-cards`).
  */
 
-import { h, clear } from './dom.js';
+import { h, clear, append } from './dom.js';
 import {
   Alert, Badge, Button, Card, DataTable, FileDrop, IconButton, announce, checkbox, confirmDialog, textInput
 } from './components.js';
@@ -33,6 +34,7 @@ import { state } from '../state.js';
 import { originKey, originTarget, sanitizeOriginMap, ORIGIN_DEFAULT_PORT } from '../lib/originmap.js';
 import { addManualOrigin, removeOrigins, setRemember, readCliReports } from '../lib/originfill.js';
 import { keptHereOnly, originMap, recordOrigins, recordText, saveOrigins, serverOf, staleText, StaleBadge } from './origin-map.js';
+import { PrivacyNote } from './template.js';
 
 /** Why the form refuses an entry (lib/originmap.js addManualOrigin). */
 export const FORM_ERRORS = Object.freeze(['off', 'name', 'ip', 'port', 'limit']);
@@ -320,7 +322,8 @@ export function OriginMapPanel({ ctx }) {
       pageSize: 200,
       sort: { key: 'name', dir: 'asc' },
       empty: t('omp.empty'),
-      className: 'om-table',
+      cellLabels: true,
+      className: 'om-table dt-cards',
       rowClass: (e) => (e.stale ? 'om-row-stale' : null),
       export: { filename: 'origin-map' },
       columns: [
@@ -354,6 +357,7 @@ export function OriginMapPanel({ ctx }) {
       className: 'om-card',
       children: h('div', { class: 'stack-sm' },
         rememberSwitch(m),
+        keptHereOnly() ? null : PrivacyNote({ text: t('omp.privacy'), className: 'om-privacy' }),
         m.remember ? null : Alert({
           variant: 'info', compact: true, icon: 'map-pin',
           message: h('span', { dataset: { role: 'om-off' } }, t('omp.offHere'), m.entries.length ? ` ${t('omp.offKept', { count: m.entries.length })}` : '')
@@ -427,9 +431,8 @@ export function OriginMapPanel({ ctx }) {
     // A row's control (Edit) is found again by its entry, never as the first row's.
     const rowKey = focusKey && active.dataset.key;
     clear(el);
-    el.append(
-      keptHereOnly() ? Alert({ variant: 'warn', icon: 'alert', compact: true, message: t('omp.privacyMemory') })
-        : Alert({ variant: 'ok', icon: 'lock', compact: true, message: t('omp.privacy') }),
+    append(el,
+      keptHereOnly() ? Alert({ variant: 'warn', icon: 'alert', compact: true, message: t('omp.privacyMemory') }) : null,
       tableCard(m),
       h('div', { class: 'om-columns' }, formCard(m), importCard(m)));
     if (S.outcome) {

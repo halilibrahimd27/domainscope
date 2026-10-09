@@ -1,26 +1,39 @@
 /*
- * views/ptr.css — "Reverse DNS" view (.ptr-*). The form (target | focus domain), the AS prefix
- * picker, then the results at full width. Uses the design tokens from style.css only.
+ * views/ptr.css — "Reverse DNS" view (.ptr-*) on the page template (style.css § 4: the input card
+ * with the target and the focus domain on one row, the link's prompt and the sweep's result header,
+ * the metric strip, the table's card mode on a phone), with the AS prefix picker between the form
+ * and the results. Uses the design tokens from style.css only.
  */
 
-/* Form: the target list next to the focus domain on wide screens, stacked on phones. */
-.ptr-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(220px, 1fr);
-  gap: 14px 24px;
-  align-items: start;
+.ptr-view,
+.ptr-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
 }
 
-@media (max-width: 760px) {
-  .ptr-form {
-    grid-template-columns: minmax(0, 1fr);
-  }
+/* No AS lookup, no sweep: their slots take no room (nor a gap). */
+.ptr-asn-host:empty,
+.ptr-results-host:empty {
+  display: none;
 }
 
 .ptr-target .textarea {
   min-height: 92px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
+}
+
+/* Compact (from the first sweep): the target is one row (DESIGN §5.1), as high as a field; Edit
+   shows the whole card. */
+.ptr-form-card.is-compact:not(.is-editing) .ptr-target .textarea {
+  height: var(--field-h);
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  line-height: calc(var(--field-h) - 2px);
+  resize: none;
 }
 
 .ptr-parsed {
@@ -46,42 +59,8 @@
   min-width: 0;
 }
 
-.ptr-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 16px;
-}
-
-.ptr-run {
-  margin-left: auto;
-}
-
-.ptr-privacy {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  margin: 0;
-}
-
-.ptr-privacy .icon {
-  flex: none;
-  margin-top: 2px;
-}
-
-@media (max-width: 600px) {
-  .ptr-run {
-    width: 100%;
-  }
-
-  .ptr-run .btn {
-    flex: 1;
-  }
-}
-
-.ptr-empty .empty {
-  padding: 48px 24px;
+.ptr-concurrency {
+  align-self: center;
 }
 
 /* AS prefix picker */
@@ -148,44 +127,6 @@
 }
 
 /* Results */
-.ptr-results-title {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.ptr-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
-}
-
-.ptr-stats {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-}
-
-.ptr-stats .stat-top {
-  align-items: flex-start;
-}
-
-.ptr-stats .stat-label {
-  white-space: normal;
-  line-height: 1.3;
-  overflow-wrap: anywhere;
-}
-
-@media (max-width: 1280px) {
-  .ptr-stats {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 640px) {
-  .ptr-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 .ptr-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -200,9 +141,9 @@
 }
 
 .ptr-filter .field-label {
-  font-size: 12.5px;
-  font-weight: 600;
   color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
 }
 
 .ptr-filter .select {
@@ -211,11 +152,11 @@
 }
 
 .ptr-expand {
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .ptr-ip {
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 
 .ptr-ipcell {
@@ -224,14 +165,8 @@
   gap: 1px;
 }
 
-/* The forward check under the address, shown on a phone only (its column is hidden there). */
-.ptr-st-inline {
-  display: none;
-  margin-top: 4px;
-}
-
 .ptr-count {
-  font-weight: 650;
+  font-weight: var(--fw-semibold);
 }
 
 .ptr-names,
@@ -243,7 +178,7 @@
 }
 
 .ptr-name.is-focus a {
-  font-weight: 650;
+  font-weight: var(--fw-semibold);
   color: var(--accent-text);
 }
 
@@ -262,7 +197,7 @@
 }
 
 .ptr-template {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   overflow-wrap: anywhere;
 }
 
@@ -276,8 +211,8 @@
   background: var(--accent-soft);
   color: var(--accent-text);
   font-family: var(--font-sans);
-  font-size: 10.5px;
-  font-weight: 700;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-bold);
   line-height: 1.5;
   vertical-align: 0.05em;
 }
@@ -326,30 +261,24 @@
   position: relative;
 }
 
-@media (max-width: 600px) {
+/* A phone: each row is a card (style.css .dt-cards); a focus row's accent bar marks the whole card. */
+@media (max-width: 719px) {
   .ptr-filter,
   .ptr-toolbar {
     width: 100%;
   }
 
-  .ptr-table .dt-table th.ptr-col-check,
-  .ptr-table .dt-table td.ptr-col-check {
-    display: none;
-  }
-
-  .ptr-st-inline {
-    display: block;
-  }
-
-  /* A long PTR name breaks rather than push the other columns off the screen. */
-  .ptr-table .dt-table td.ptr-col-ptr {
-    min-width: 9rem;
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-
   .ptr-filter .select {
     flex: 1;
     min-width: 0;
+  }
+
+  .ptr-row.is-focus td:first-child,
+  .ptr-row.is-focus td.dt-expander + td {
+    box-shadow: none;
+  }
+
+  .ptr-table .dt-table tbody tr.dt-row.is-focus {
+    box-shadow: inset 3px 0 0 var(--accent);
   }
 }

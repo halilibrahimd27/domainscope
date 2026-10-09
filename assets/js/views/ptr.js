@@ -22,12 +22,22 @@
  *
  * Shareable: `#/ptr?target=192.0.2.0/24&focus=example.com` pre-fills the form and waits for a
  * click (a link never starts a thousand DNS queries by itself).
+ *
+ * The page template (ui/template.js; docs/DESIGN.md §5, §8 phase 5), a batch tool: the input card
+ * holds the target with Sweep (List prefixes for an AS) on its row, the focus domain, the example
+ * chip and the privacy note, and turns compact from the first sweep (the focus domain then sits
+ * behind Edit, named in the summary line). A link's prompt is a result header of its own (the
+ * ready state, `.ptr-prompt`). The sweep's result header (`.ptr-progress`) says "Reverse DNS of
+ * <target>", its progress or time, the status summary (failed, not resolving back, confirmed, with
+ * a PTR name, none: lib/netresults.js ptrStatus; a press is the table's Show filter), Copy summary
+ * with ¶ (lib/summary.js ptrSummary), Export ▾ (names.txt, CSV, JSON) and Copy link, and the next
+ * steps; the metric strip and the table (a card per row on a phone) are the body.
  */
 
-import { h, clear, debounce, uid } from '../ui/dom.js';
+import { h, clear, debounce } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, CopyButton, DataTable, EmptyState, ErrorBanner, Icon, KeyValueList, KindBadge,
-  Modal, ProgressBar, StatCard, TruncatedList, announce, checkbox, ipSortValue, normalizeSearch, select, textInput, textarea, toast
+  Alert, Badge, Button, Card, CodeBlock, DataTable, ErrorBanner, Icon, KeyValueList, KindBadge,
+  Modal, ProgressBar, TruncatedList, announce, checkbox, ipSortValue, normalizeSearch, select, textInput, textarea, toast
 } from '../ui/components.js';
 import {
   t, registerStrings, formatNumber, formatDuration, formatDateTime
@@ -45,6 +55,13 @@ import { errorKind } from '../lib/util.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { state as stateSingleton } from '../state.js';
 import { registerRunning } from '../ui/jobs.js';
+import {
+  EmptyState, ExampleChips, MetricStrip, NextSteps, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput, withSubject
+} from '../ui/template.js';
+import { inputCompact, templateState } from '../lib/template.js';
+import { PTR_FOLDABLE, ptrStatus, ptrStatusOfFilter, ptrSummaryFacts } from '../lib/netresults.js';
+import { permalinkParams } from '../ui/view-summaries.js';
+import { SummaryButton } from '../ui/summary-button.js';
 
 /** Route id (`#/ptr`). */
 export const id = 'ptr';
@@ -75,10 +92,10 @@ registerStrings('en', {
   'ptr.run': 'Sweep',
   'ptr.list': 'List prefixes',
   'ptr.stop': 'Stop',
-  'ptr.example': 'Example:',
   'ptr.exampleTitle': 'RIPE NCC’s AS: lists its announced prefixes (one request to RIPEstat)',
+  'ptr.sum.focus': 'your domain: {domain}',
   'ptr.concurrency': 'Parallel queries: {n} (Settings)',
-  'ptr.privacy': 'The reverse (PTR) lookups and the forward (A / AAAA) checks go to your DoH resolvers (Settings); the network’s own name servers see them coming from those resolvers. Listing an AS’s prefixes sends only the AS number to RIPEstat. Private addresses are never sent anywhere.',
+  'ptr.privacy': 'The reverse (PTR) and forward (A / AAAA) lookups go to your DoH resolvers, an AS number to RIPEstat; private addresses are never sent.',
   'ptr.parsed.addresses': { one: '{count} address', other: '{count} addresses' },
   'ptr.parsed.lookups': { one: '{count} PTR lookup, plus one forward lookup per name found', other: '{count} PTR lookups, plus one forward lookup per name found' },
   'ptr.parsed.asn': 'AS{asn}: list its announced prefixes first (one request to RIPEstat), then pick what to sweep.',
@@ -147,6 +164,11 @@ registerStrings('en', {
   'ptr.busy': 'Sweeping…',
   'ptr.busyAsn': 'Listing prefixes…',
   'ptr.results': 'Reverse DNS of {target}',
+  'ptr.status.failed': { one: '{count} lookup failed', other: '{count} lookups failed' },
+  'ptr.status.mismatch': { one: '{count} does not resolve back', other: '{count} do not resolve back' },
+  'ptr.status.confirmed': '{count} confirmed',
+  'ptr.status.named': '{count} with a PTR name',
+  'ptr.status.none': '{count} without reverse DNS',
 
   'ptr.stat.addresses': 'Addresses',
   'ptr.stat.addressesHint': '{v4} IPv4 · {v6} IPv6',
@@ -229,6 +251,7 @@ registerStrings('en', {
   'ptr.empty.running': 'Results appear here as the addresses are looked up.',
   'ptr.names': 'names.txt',
   'ptr.namesTitle': 'Download the PTR names (provider-generated names left out)',
+  'ptr.namesNone': 'No PTR name to download: the names a provider generates are left out.',
   'ptr.toScan': 'Add names to a scan',
   'ptr.toScanTitle': { one: 'Open a Subdomains scan with the {count} PTR name (you press Scan)', other: 'Open a Subdomains scan with the {count} PTR names (you press Scan)' },
   'ptr.toInventory': 'Add to Servers',
@@ -244,8 +267,13 @@ registerStrings('en', {
   'ptr.inv.manualLines': { one: '{count} host: name and address', other: '{count} hosts: name and addresses' },
   'ptr.inv.openServers': 'Open Servers',
   'ptr.scan.none': 'No PTR name to scan.',
-  'ptr.emptyTitle': 'Who is behind a block of addresses?',
-  'ptr.emptyBody': 'Look up the reverse DNS of a whole network, an address range or the prefixes of an AS, check that each name resolves back (forward-confirmed reverse DNS) and spot the hosts that are not in your inventory yet.'
+  'ptr.emptyLine': 'A whole network, a range or an AS’s prefixes: each address’s reverse name, and whether that name resolves back to it.',
+  'ptr.check.names': 'PTR names',
+  'ptr.check.confirmed': 'Forward-confirmed',
+  'ptr.check.templated': 'Names a provider generates',
+  'ptr.check.focus': 'Your domain first',
+  'ptr.check.servers': 'Your servers',
+  'ptr.check.missing': 'Hosts not in your list yet'
 });
 
 registerStrings('tr', {
@@ -259,10 +287,10 @@ registerStrings('tr', {
   'ptr.run': 'Tara',
   'ptr.list': 'Önekleri listele',
   'ptr.stop': 'Durdur',
-  'ptr.example': 'Örnek:',
   'ptr.exampleTitle': 'RIPE NCC’nin AS’i: duyurduğu önekleri listeler (RIPEstat’a tek istek)',
+  'ptr.sum.focus': 'alan adınız: {domain}',
   'ptr.concurrency': 'Paralel sorgu: {n} (Ayarlar)',
-  'ptr.privacy': 'Ters (PTR) sorgular ve ileri (A / AAAA) doğrulamalar DoH çözümleyicilerinize (Ayarlar) gider; ağın kendi ad sunucuları bunları o çözümleyicilerden gelmiş olarak görür. Bir AS’in öneklerini listelemek RIPEstat’a yalnızca AS numarasını gönderir. Özel (private) adresler hiçbir yere gönderilmez.',
+  'ptr.privacy': 'Ters (PTR) ve ileri (A / AAAA) sorgular DoH çözümleyicilerinize, AS numarası RIPEstat’a gider; özel adresler asla gönderilmez.',
   'ptr.parsed.addresses': '{count} adres',
   'ptr.parsed.lookups': '{count} PTR sorgusu, ayrıca bulunan her ad için bir ileri sorgu',
   'ptr.parsed.asn': 'AS{asn}: önce duyurduğu önekleri listeleyin (RIPEstat’a tek istek), sonra neyin taranacağını seçin.',
@@ -331,6 +359,11 @@ registerStrings('tr', {
   'ptr.busy': 'Taranıyor…',
   'ptr.busyAsn': 'Önekler listeleniyor…',
   'ptr.results': '{target} için ters DNS',
+  'ptr.status.failed': '{count} sorgu başarısız',
+  'ptr.status.mismatch': '{count} tanesi geri çözülmüyor',
+  'ptr.status.confirmed': '{count} doğrulandı',
+  'ptr.status.named': '{count} tanesinin PTR adı var',
+  'ptr.status.none': '{count} tanesinin ters DNS’i yok',
 
   'ptr.stat.addresses': 'Adres',
   'ptr.stat.addressesHint': '{v4} IPv4 · {v6} IPv6',
@@ -413,6 +446,7 @@ registerStrings('tr', {
   'ptr.empty.running': 'Adresler sorgulandıkça sonuçlar burada görünür.',
   'ptr.names': 'names.txt',
   'ptr.namesTitle': 'PTR adlarını indir (sağlayıcının ürettiği adlar hariç)',
+  'ptr.namesNone': 'İndirilecek PTR adı yok: sağlayıcının ürettiği adlar dışarıda bırakılır.',
   'ptr.toScan': 'Adları taramaya ekle',
   'ptr.toScanTitle': '{count} PTR adıyla bir Subdomain taraması aç (Tara’ya siz basarsınız)',
   'ptr.toInventory': 'Sunuculara ekle',
@@ -428,8 +462,13 @@ registerStrings('tr', {
   'ptr.inv.manualLines': '{count} host: ad ve adres',
   'ptr.inv.openServers': 'Sunucuları aç',
   'ptr.scan.none': 'Taranacak PTR adı yok.',
-  'ptr.emptyTitle': 'Bir adres bloğunun arkasında kim var?',
-  'ptr.emptyBody': 'Bütün bir ağın, bir adres aralığının ya da bir AS’in öneklerinin ters DNS’ine bakın, her adın yine o adrese çözüldüğünü doğrulayın (ileri doğrulanmış ters DNS) ve envanterinizde henüz olmayan sunucuları görün.'
+  'ptr.emptyLine': 'Bütün bir ağ, bir aralık ya da bir AS’in önekleri: her adresin ters adı ve bu adın yine o adrese çözülüp çözülmediği.',
+  'ptr.check.names': 'PTR adları',
+  'ptr.check.confirmed': 'İleri doğrulama',
+  'ptr.check.templated': 'Sağlayıcının ürettiği adlar',
+  'ptr.check.focus': 'Önce alan adınız',
+  'ptr.check.servers': 'Sunucularınız',
+  'ptr.check.missing': 'Listenizde henüz olmayan host’lar'
 });
 
 /* ------------------------------------------------------------------------ */
@@ -618,7 +657,7 @@ export function mount(container, ctx) {
   // A link that waited for a sweep which ended while this view was not mounted.
   if (!sweepRunning()) takePending();
 
-  /* --- form ---------------------------------------------------------------- */
+  /* --- region 2: the input (ui/template.js ToolInput) ------------------------------- */
   const targetField = textarea({
     label: t('ptr.target.label'),
     value: session.text,
@@ -633,6 +672,7 @@ export function mount(container, ctx) {
       targetField.setError(null);
       hidePrompt();
       renderParsedSoon();
+      syncRunBar();
     }
   });
   const focusField = textInput({
@@ -649,58 +689,67 @@ export function mount(container, ctx) {
       focusField.setError(null);
       if (ui) ui.refocus();
       syncRouteFocus();
+      tool.refresh();
     },
     onEnter: () => start()
   });
   const parsedEl = h('div', { class: 'ptr-parsed text-sm', attrs: { 'aria-live': 'polite' } });
   const issuesEl = h('div', { class: 'stack-sm ptr-issues' });
-  const promptEl = h('div', { class: 'ptr-prompt', hidden: true });
-  const runBtn = Button({ label: t('ptr.run'), icon: 'play', variant: 'primary', dataset: { action: 'ptr-run', shortcut: 'submit' }, onClick: () => start() });
-  const stopBtn = Button({ label: t('ptr.stop'), icon: 'stop', dataset: { action: 'ptr-stop', shortcut: 'cancel' }, onClick: () => stop() });
-  stopBtn.hidden = true;
+  const runBar = RunBar({
+    label: t('ptr.run'),
+    dataset: { action: 'ptr-run', shortcut: 'submit' },
+    stopLabel: t('ptr.stop'),
+    stopDataset: { action: 'ptr-stop', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => stop(),
+    hasValue: () => !!targetField.value.trim()
+  });
   const concurrencyNote = h('span', { class: 'muted text-xs ptr-concurrency' });
   const renderConcurrency = () => {
     concurrencyNote.textContent = t('ptr.concurrency', { n: formatNumber(state.settings.concurrency) });
   };
-  const example = h('div', { class: 'cluster text-sm ptr-examples' },
-    h('span', { class: 'muted' }, t('ptr.example')),
-    h('button', {
-      type: 'button', class: 'link-btn mono', title: t('ptr.exampleTitle'), dataset: { example: EXAMPLE_ASN },
-      on: {
-        click: () => {
-          if (isRunning()) return;
-          targetField.value = EXAMPLE_ASN;
-          session.text = EXAMPLE_ASN;
-          hidePrompt();
-          renderParsed();
-          targetField.focus();
-        }
-      }
-    }, EXAMPLE_ASN));
-
-  const formCard = Card({
+  // The example fills the box (one RIPEstat request only once the user lists its prefixes).
+  const example = ExampleChips({
+    className: 'ptr-examples',
+    examples: [{ value: EXAMPLE_ASN, title: t('ptr.exampleTitle') }],
+    onPick: (value) => {
+      if (isRunning()) return;
+      targetField.value = value;
+      session.text = value;
+      hidePrompt();
+      renderParsed();
+      syncRunBar();
+    },
+    focus: () => runBar.run
+  });
+  const tool = ToolInput({
     className: 'ptr-form-card',
-    children: h('div', { class: 'stack' },
-      h('div', { class: 'ptr-form' }, targetField.el, focusField.el),
-      parsedEl,
-      issuesEl,
-      promptEl,
-      h('div', { class: 'ptr-actions' },
-        h('div', { class: 'cluster' }, example, concurrencyNote),
-        h('div', { class: 'cluster ptr-run' }, stopBtn, runBtn)),
-      h('p', { class: 'muted text-xs ptr-privacy' }, Icon('lock', { size: 12 }), h('span', null, t('ptr.privacy'))))
+    fieldsClass: 'ptr-form',
+    label: t('nav.ptr'),
+    primary: targetField.el,
+    inline: [focusField.el],
+    run: runBar,
+    notes: [parsedEl, issuesEl],
+    extras: [example, concurrencyNote],
+    privacy: PrivacyNote({ text: t('ptr.privacy'), className: 'ptr-privacy' }),
+    summary: () => (focusValue() ? t('ptr.sum.focus', { domain: focusValue() }) : '')
   });
 
+  /* --- regions 4 and 8: the link's prompt, the AS picker, the results ------------------- */
+  /** A link waits for a click ("Opened from a link …", the template's ready state): a result header of its own. */
+  const prompt = ResultHeader({ className: 'result-ready ptr-prompt', kept: false });
+  prompt.setState('ready');
+  prompt.el.hidden = true;
   // The prefix picker is a sub-form (its Sweep selected answers Ctrl/Cmd+Enter there); the results
   // hold no submit, so a filter or search box in them starts no new sweep.
   const asnHost = h('div', { class: 'ptr-asn-host', dataset: { shortcutScope: 'ptr-asn' } });
   const resultsHost = h('div', { class: 'ptr-results-host', dataset: { shortcutScope: 'results' } });
-  const emptyEl = Card({
-    padded: false,
-    className: 'ptr-empty',
-    children: EmptyState({ icon: 'swap', title: t('ptr.emptyTitle'), message: t('ptr.emptyBody') })
-  });
-  container.append(h('div', { class: 'stack-lg ptr-view' }, formCard, asnHost, emptyEl, resultsHost));
+  const emptyEl = h('div', { class: 'ptr-empty' }, EmptyState({
+    icon: 'swap',
+    message: t('ptr.emptyLine'),
+    checks: ['names', 'confirmed', 'templated', 'focus', 'servers', 'missing'].map((c) => t(`ptr.check.${c}`))
+  }));
+  container.append(h('div', { class: 'ptr-view' }, tool.el, prompt.el, asnHost, emptyEl, resultsHost, runBar.float));
 
   /* --- parsing ------------------------------------------------------------- */
   let parsed = parseSweepTarget(session.text);
@@ -716,7 +765,7 @@ export function mount(container, ctx) {
     if (isListing() && !(parsed.kind === 'asn' && parsed.asn === session.asn.asn)) session.asn.controller.abort();
     clear(parsedEl);
     clear(issuesEl);
-    runBtn.querySelector('.btn-label').textContent = parsed.kind === 'asn' ? t('ptr.list') : t('ptr.run');
+    runBar.setLabel(parsed.kind === 'asn' ? t('ptr.list') : t('ptr.run'));
     if (parsed.kind === 'asn' && parsed.ok) {
       parsedEl.append(Icon('info', { size: 13 }), h('span', null, t('ptr.parsed.asn', { asn: parsed.asn })));
     } else if (parsed.kind === 'addresses' && parsed.addresses.length) {
@@ -734,11 +783,12 @@ export function mount(container, ctx) {
         actions: suggestion ? [Button({
           label: t('ptr.issue.use', { suggestion }), size: 'sm', dataset: { action: 'ptr-use-suggestion' },
           onClick: () => {
-            // The target box is read-only while a sweep runs (like the Example button).
+            // The target box is read-only while a sweep runs (like the example).
             if (isRunning()) return;
             targetField.value = suggestion;
             session.text = suggestion;
             renderParsed();
+            syncRunBar();
             targetField.focus();
           }
         })] : null
@@ -758,8 +808,6 @@ export function mount(container, ctx) {
 
   /* --- link prompt ----------------------------------------------------------- */
   function showPrompt() {
-    clear(promptEl);
-    promptEl.hidden = false;
     let message;
     if (session.pending) {
       // A target that reads as nothing is named by its first token (a link can carry anything).
@@ -771,9 +819,9 @@ export function mount(container, ctx) {
         ? t('ptr.link.promptAsn', { asn: `AS${parsed.asn}` })
         : t('ptr.link.prompt', { target: parsed.label, count: parsed.addresses.length });
     }
-    const alert = Alert({ variant: 'info', icon: 'link', compact: true, message });
-    alert.dataset.prompt = session.pending ? 'waiting' : 'link';
-    promptEl.append(alert);
+    prompt.set('title', ResultTitle({ icon: 'link', text: h('span', { dataset: { prompt: session.pending ? 'waiting' : 'link' } }, message) }));
+    prompt.el.hidden = false;
+    syncLayout();
   }
 
   /** Fill the form from the session (a link applied): re-read it, re-rank the results for its focus, prompt. */
@@ -786,12 +834,21 @@ export function mount(container, ctx) {
     if (ui) ui.refocus();
     if (parsed.ok) showPrompt();
     else hidePrompt();
+    tool.refresh();
+    syncRunBar();
   }
 
   function hidePrompt() {
     session.prompt = false;
-    clear(promptEl);
-    promptEl.hidden = true;
+    prompt.el.hidden = true;
+    prompt.set('title', null);
+    syncLayout();
+  }
+
+  /** The empty state shows only while nothing else does: no prompt, no AS lookup, no sweep. */
+  function syncLayout() {
+    const asnShown = !!(session.asn && session.asn.status !== 'cancelled');
+    emptyEl.hidden = !prompt.el.hidden || asnShown || !!session.job;
   }
 
   /* --- run ------------------------------------------------------------------- */
@@ -803,23 +860,36 @@ export function mount(container, ctx) {
   const isListing = () => !!(session.asn && session.asn.status === 'loading' && session.asn.controller);
 
   /**
+   * The run bar and the input follow what runs and what is shown: Stop while a sweep or an AS
+   * lookup runs; compact from a sweep's start; "Run again" while the form holds the swept target
+   * (the focus domain only re-ranks the rows); secondary while the prefix picker's "Sweep selected"
+   * leads.
+   */
+  function syncRunBar() {
+    const job = session.job;
+    const st = templateState({ running: isRunning() || isListing(), result: !!job, ready: !prompt.el.hidden });
+    const same = !!job && st === 'done' && targetTokens(targetField.value).join(',') === targetTokens(job.target).join(',');
+    runBar.setState(st);
+    runBar.setRerun(same);
+    runBar.setPrimary(!(session.asn && session.asn.status === 'done' && session.asn.result && session.asn.result.prefixes.length));
+    tool.setCompact(inputCompact(isRunning() ? 'running' : job ? 'done' : 'empty'));
+    tool.refresh();
+    runBar.refresh();
+  }
+
+  /**
    * Sweep ⇄ Stop and the page's busy state follow what runs: a sweep, or an AS lookup (Stop
    * cancels either). Derived from both each time, so the end of one never clears the other's.
    */
   function syncControls() {
     const sweeping = isRunning();
     const listing = isListing();
-    const stoppable = sweeping || listing;
-    // Keyboard focus follows Sweep ⇄ Stop instead of falling to <body> when one is hidden.
-    const doc = globalThis.document;
-    const moveFocus = doc && doc.activeElement === (stoppable ? runBtn : stopBtn);
-    runBtn.hidden = stoppable;
-    stopBtn.hidden = !stoppable;
+    // The keyboard focus follows Sweep ⇄ Stop instead of falling to <body> when one is hidden.
+    runBar.setRunning(sweeping || listing);
     targetField.input.readOnly = sweeping;
-    if (moveFocus) (stoppable ? stopBtn : runBtn).focus({ preventScroll: true });
     ctx.setBusy(sweeping ? t('ptr.busy') : listing ? t('ptr.busyAsn') : false);
-    renderHeaderActions();
     if (syncPicker) syncPicker();
+    syncRunBar();
   }
 
   function stop() {
@@ -834,6 +904,7 @@ export function mount(container, ctx) {
     focusField.setError(null);
     if (focusField.value.trim() && !focusValue()) {
       focusField.setError(t('ptr.focus.invalid'));
+      if (tool.isCompact()) tool.setEditing(true);
       focusField.focus();
       return;
     }
@@ -895,7 +966,6 @@ export function mount(container, ctx) {
   function attach(job) {
     if (ui) ui.dispose();
     clear(resultsHost);
-    emptyEl.hidden = true;
     ui = buildJobUI(job, ctx, {
       focus: focusValue,
       onFinish: () => {
@@ -904,6 +974,7 @@ export function mount(container, ctx) {
       }
     });
     resultsHost.append(ui.el);
+    syncLayout();
     syncControls();
   }
 
@@ -916,19 +987,6 @@ export function mount(container, ctx) {
     session.routeTarget = params ? params.target : null;
     session.routeFocus = params && params.focus ? params.focus : '';
     ctx.setParams(params ? { target: params.target, focus: params.focus } : {});
-  }
-
-  function renderHeaderActions() {
-    const job = session.job;
-    if (!job || !shareParams(job.target)) {
-      ctx.setActions();
-      return;
-    }
-    // The focus domain is read at the click: one edited after the sweep is in the link.
-    ctx.setActions(CopyButton(() => {
-      const params = shareParams(job.target, focusField.value);
-      return ctx.shareUrl({ target: params.target, focus: params.focus });
-    }, { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
   }
 
   /** The focus domain changed: the URL keeps its target and carries the new focus (never an invalid one). */
@@ -972,6 +1030,7 @@ export function mount(container, ctx) {
       syncControls();
       if (session.asn !== entry) return;
       renderAsn();
+      syncRunBar();
       if (entry.status === 'done') announce(t('ptr.asn.title', { asn: entry.asn }));
       else if (entry.status === 'error') announce(t('ptr.asn.failed', { asn: entry.asn }));
     });
@@ -981,11 +1040,8 @@ export function mount(container, ctx) {
     clear(asnHost);
     syncPicker = null;
     const entry = session.asn;
-    if (!entry || entry.status === 'cancelled') {
-      emptyEl.hidden = !!session.job;
-      return;
-    }
-    emptyEl.hidden = true;
+    syncLayout();
+    if (!entry || entry.status === 'cancelled') return;
     if (entry.status === 'loading') {
       asnHost.append(Card({
         className: 'ptr-asn', title: t('ptr.asn.title', { asn: entry.asn }), icon: 'network',
@@ -1051,6 +1107,7 @@ export function mount(container, ctx) {
                 targetField.value = p.part;
                 session.text = p.part;
                 renderParsed();
+                syncRunBar();
                 targetField.focus();
                 targetField.input.scrollIntoView({ block: 'nearest' });
               }
@@ -1140,8 +1197,9 @@ export function mount(container, ctx) {
   renderConcurrency();
   if (session.asn) followAsn(session.asn);
   if (session.job) attach(session.job);
-  else renderHeaderActions();
   if (session.pending || (session.prompt && parsed.ok)) showPrompt();
+  syncLayout();
+  syncRunBar();
 
   cleanups.push(state.subscribe(({ key }) => {
     if (key === 'settings') renderConcurrency();
@@ -1176,6 +1234,7 @@ export function mount(container, ctx) {
     cleanups.forEach((fn) => fn());
     if (ui) ui.dispose();
     ui = null;
+    runBar.dispose();
     active = null;
   };
 }
@@ -1259,37 +1318,61 @@ function statusBadge(status) {
   return Badge(t(`ptr.st.${status}`), { variant: STATUS_VARIANT[status] || 'neutral', icon: STATUS_ICON[status] || null, title: t(`ptr.st.${status}.title`) });
 }
 
+/**
+ * A sweep's result (docs/DESIGN.md §5.1): the result header (`.ptr-progress`, its `data-status` the
+ * sweep's) with "Reverse DNS of <target>", its progress or time, the status summary — whose items
+ * press the table's Show filter, which follows them back —, Copy summary with ¶ (lib/summary.js
+ * ptrSummary), Export ▾ (names.txt, CSV, JSON: what the table lists) and Copy link, the next steps
+ * "Add names to a scan" and "Add to Servers"; then the metric strip and the table (a card per row
+ * on a phone).
+ */
 function buildJobUI(job, ctx, { focus, onFinish }) {
   const { state } = ctx;
-
-  /* progress */
-  const progress = ProgressBar({ label: t('ptr.progress') });
-  const meta = h('div', { class: 'ptr-meta text-sm muted' });
-  const notice = h('div');
-  const progressCard = h('div', { class: 'card ptr-progress', dataset: { status: job.status } },
-    h('div', { class: 'stack-sm' }, progress, meta), notice);
-
-  /* stats */
   const inv = () => state.inventory.servers.length > 0;
-  const pick = (f) => () => setFilter(f, { chosen: true });
-  const stat = {
-    addresses: StatCard({ label: t('ptr.stat.addresses'), icon: 'network', variant: 'accent', onClick: pick('all') }),
-    named: StatCard({ label: t('ptr.stat.named'), icon: 'swap', variant: 'info', onClick: pick('ptr') }),
-    confirmed: StatCard({ label: t('ptr.stat.confirmed'), icon: 'check-circle', variant: 'ok', onClick: pick('confirmed') }),
-    none: StatCard({ label: t('ptr.stat.none'), icon: 'minus-circle', variant: 'unresolved', onClick: pick('none') }),
-    failed: StatCard({ label: t('ptr.stat.failed'), icon: 'x-circle', variant: 'nxdomain', onClick: pick('failed') }),
-    // The sixth card: names under the focus domain, or (without one) the matched servers.
-    focus: StatCard({ label: t('ptr.stat.focus', { domain: '' }), icon: 'target', variant: 'accent', onClick: pick('focus') }),
-    servers: StatCard({ label: t('ptr.stat.servers'), icon: 'server', variant: 'direct' })
-  };
-  const statFilters = { addresses: 'all', named: 'ptr', confirmed: 'confirmed', none: 'none', failed: 'failed', focus: 'focus' };
-  const statsGrid = h('div', { class: 'stat-grid ptr-stats' });
-  Object.entries(stat).forEach(([k, s]) => {
-    s.el.dataset.stat = k;
-    statsGrid.append(s.el);
-  });
+  const live = () => job.status === 'running';
 
-  /* table */
+  /* region 4: the result header */
+  const head = ResultHeader({ className: 'ptr-progress', dataset: { status: job.status } });
+  head.title.classList.add('ptr-results-title');
+  const progress = ProgressBar({ label: t('ptr.progress') });
+  const meta = h('span', { class: 'ptr-meta' });
+  head.set('meta', meta);
+  const notice = h('div', { class: 'ptr-notice' });
+  head.set('notes', notice);
+  const status = StatusSummary({ items: [] });
+  head.set('status', status.el);
+  const link = shareParams(job.target) ? () => {
+    // The focus domain is read at the click: one edited after the sweep is in the link.
+    const params = shareParams(job.target, focus() || '');
+    return ctx.shareUrl({ target: params.target, focus: params.focus });
+  } : null;
+  const summaryFacts = () => {
+    const f = focus();
+    return ptrSummaryFacts(job, { summary: sweepSummary(job.results, { focus: f }), focus: f, focusNames: f ? sweepNames(job.results, { focus: f, onlyFocus: true }) : [] });
+  };
+  const actions = ResultActions({
+    summary: SummaryButton({
+      kind: 'ptr',
+      plainLabel: t('result.plainTitle'),
+      facts: summaryFacts,
+      url: () => {
+        const params = shareParams(job.target, focus() || '');
+        return params ? ctx.shareUrl(permalinkParams('ptr', params)) : null;
+      }
+    }),
+    exports: [
+      { label: t('ptr.names'), icon: 'file-text', title: t('ptr.namesTitle'), dataset: { export: 'names', action: 'ptr-names' }, onSelect: () => downloadNames() },
+      { label: t('common.exportCsv'), icon: 'download', dataset: { export: 'csv' }, onSelect: () => exportRows('csv', table.getVisibleRows()) },
+      { label: t('common.exportJson'), icon: 'download', dataset: { export: 'json' }, onSelect: () => exportRows('json', table.getVisibleRows()) }
+    ],
+    link
+  });
+  head.set('actions', actions.el);
+
+  /* region 6: the metric strip — read-only (the status summary and the Show select filter) */
+  const metrics = MetricStrip({ className: 'ptr-stats' });
+
+  /* region 8: the table */
   const filterSel = select({
     label: t('ptr.filter.label'),
     size: 'sm',
@@ -1311,9 +1394,6 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     }
   });
   expandBox.input.dataset.role = 'ptr-expand';
-  const namesBtn = Button({ label: t('ptr.names'), icon: 'download', size: 'sm', variant: 'ghost', title: t('ptr.namesTitle'), dataset: { action: 'ptr-names' }, onClick: () => downloadNames() });
-  const scanBtn = Button({ label: t('ptr.toScan'), icon: 'layers', size: 'sm', dataset: { action: 'ptr-to-scan' }, onClick: () => handOffToScan() });
-  const invBtn = Button({ label: t('ptr.toInventory'), icon: 'server', size: 'sm', dataset: { action: 'ptr-to-inventory' }, onClick: () => addToInventory() });
 
   const hostLink = (name, type = 'A,AAAA') => h('a', { class: 'mono', href: ctx.href('lookup', { name, type }) }, name);
   const serversCell = (servers) => (servers.length
@@ -1341,18 +1421,16 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     el.dataset.status = r.result.status;
     return el;
   };
+  // On a phone each row is a card of labelled lines (style.css .dt-cards): the address heads it.
   const columns = [
     {
       key: 'ip', label: t('ptr.col.ip'), sortable: true, sortValue: (r) => r.sortKey,
       searchValue: (r) => (r.type === 'pattern' ? r.members.map((m) => m.ip).join(' ') : r.result.ip),
-      // On a phone the forward check sits under the address (its own column is hidden).
-      render: (r) => h('div', { class: 'ptr-ipwrap' },
-        r.type === 'pattern'
-          ? h('div', { class: 'ptr-ipcell' },
-            h('span', { class: 'ptr-count' }, t('ptr.pattern.count', { count: r.members.length })),
-            h('span', { class: 'muted text-xs mono' }, `${r.members[0].ip} – ${r.members[r.members.length - 1].ip}`))
-          : h('span', { class: 'mono ptr-ip' }, r.result.ip),
-        h('div', { class: 'ptr-st-inline' }, checkCell(r)))
+      render: (r) => (r.type === 'pattern'
+        ? h('div', { class: 'ptr-ipcell' },
+          h('span', { class: 'ptr-count' }, t('ptr.pattern.count', { count: r.members.length })),
+          h('span', { class: 'muted text-xs mono' }, `${r.members[0].ip} – ${r.members[r.members.length - 1].ip}`))
+        : h('span', { class: 'mono ptr-ip' }, r.result.ip))
     },
     {
       key: 'ptr', label: t('ptr.col.ptr'), sortable: true, className: 'ptr-col-ptr',
@@ -1410,11 +1488,12 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     noMatch: t('ptr.noMatch'),
     rowKey: (r) => r.key,
     sort: { key: 'ip', dir: 'asc' },
-    className: 'ptr-table',
+    export: false,
+    cellLabels: true,
+    className: 'ptr-table dt-cards',
     rowClass: (r) => ['ptr-row', `ptr-row-${r.type}`, { 'is-focus': r.focus }],
-    toolbar: h('div', { class: 'ptr-toolbar' }, filterSel.el, expandBox.el, namesBtn, scanBtn, invBtn),
+    toolbar: h('div', { class: 'ptr-toolbar' }, filterSel.el, expandBox.el),
     details: (r) => (r.type === 'pattern' ? patternDetails(r) : addressDetails(r)),
-    export: { formats: ['csv', 'json'], onExport: (format, rows) => exportRows(format, rows) },
     columns,
     onChange: () => {
       if (table && table.getSearch() !== appliedSearch) applyFilter();
@@ -1456,10 +1535,7 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
   }
   applyFilter();
 
-  const resultsTitleId = uid('ptr-results');
-  const el = h('section', { class: 'stack ptr-results', attrs: { 'aria-labelledby': resultsTitleId }, dataset: { job: job.id } },
-    h('h2', { class: 'section-title ptr-results-title', id: resultsTitleId }, t('ptr.results', { target: job.label })),
-    progressCard, statsGrid, table.el);
+  const el = h('div', { class: 'ptr-results', dataset: { job: job.id } }, head.el, metrics.el, table.el);
 
   /* rows, kept stable per key so an expanded row stays open while results stream in */
   const rowCache = new Map();
@@ -1480,51 +1556,80 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
   }
   const syncSoon = throttle(syncRows, 250);
 
-  /** Show `f` ({@link SWEEP_FILTERS}); `chosen`: the user picked it (the select or a stat card). */
+  /** Show `f` ({@link SWEEP_FILTERS}); `chosen`: the user picked it (the select or a status item). */
   function setFilter(f, { chosen = false } = {}) {
     if (chosen) session.filterChosen = true;
     session.filter = SWEEP_FILTERS.includes(f) ? f : 'all';
     filterSel.value = session.filter;
     applyFilter();
-    for (const [k, v] of Object.entries(statFilters)) stat[k].set({ pressed: v === session.filter });
+    status.setPressed(ptrStatusOfFilter(session.filter));
   }
 
   function renderStats() {
     const f = focus();
     const s = sweepSummary(job.results, { focus: f });
-    stat.addresses.set({ value: job.planned, hint: t('ptr.stat.addressesHint', { v4: formatNumber(job.planned - job.addresses.filter((ip) => ip.includes(':')).length), v6: formatNumber(job.addresses.filter((ip) => ip.includes(':')).length) }) });
-    stat.named.set({ value: s.withPtr, hint: t('ptr.stat.namedHint', { count: s.templated }) });
-    stat.confirmed.set({ value: s.byStatus.confirmed, hint: confirmedHint(s) });
-    stat.none.set({ value: s.noReverse, hint: t('ptr.stat.noneHint', { nx: formatNumber(s.byStatus.nxdomain), empty: formatNumber(s.byStatus['no-ptr']) }) });
-    stat.failed.set({ value: s.failed, hint: t('ptr.stat.failedHint', { count: s.byStatus.servfail }), variant: s.failed ? 'error' : 'nxdomain' });
-    stat.focus.el.hidden = !f;
-    stat.servers.el.hidden = !!f;
+    const v6 = job.addresses.filter((ip) => ip.includes(':')).length;
+    const last = f
+      ? { id: 'focus', label: t('ptr.stat.focus', { domain: f }), value: s.focus }
+      : inv() ? {
+        id: 'servers',
+        label: t('ptr.stat.servers'),
+        value: new Set(sweepRows(job.results, { collapse: false, index: ctx.getInventoryIndex() }).flatMap((r) => r.servers.map((x) => x.serverId))).size
+      } : null;
+    metrics.update([
+      { id: 'addresses', label: t('ptr.stat.addresses'), value: job.planned, hint: t('ptr.stat.addressesHint', { v4: formatNumber(job.planned - v6), v6: formatNumber(v6) }) },
+      { id: 'named', label: t('ptr.stat.named'), value: s.withPtr, hint: t('ptr.stat.namedHint', { count: s.templated }) },
+      { id: 'confirmed', label: t('ptr.stat.confirmed'), value: s.byStatus.confirmed, hint: confirmedHint(s) },
+      { id: 'none', label: t('ptr.stat.none'), value: s.noReverse, hint: t('ptr.stat.noneHint', { nx: formatNumber(s.byStatus.nxdomain), empty: formatNumber(s.byStatus['no-ptr']) }) },
+      { id: 'failed', label: t('ptr.stat.failed'), value: s.failed, severity: s.failed ? 'error' : null, hint: s.failed ? t('ptr.stat.failedHint', { count: s.byStatus.servfail }) : null },
+      last
+    ].filter(Boolean), { foldable: live() ? [] : [...PTR_FOLDABLE] });
+    status.update(ptrStatus(s).map((x) => ({
+      ...x,
+      text: t(`ptr.status.${x.key}`, { count: x.count }),
+      onPress: () => setFilter(session.filter === x.filter ? 'all' : x.filter, { chosen: true })
+    })), { pressed: ptrStatusOfFilter(session.filter) });
     // Without a focus domain "Under your domain" would match nothing: it is off, and a table
     // showing it goes back to the default filter.
     focusOption.disabled = !f;
     if (!f && session.filter === 'focus') setFilter('ptr');
-    if (f) stat.focus.set({ label: t('ptr.stat.focus', { domain: f }), value: s.focus });
-    else {
-      const servers = new Set(sweepRows(job.results, { collapse: false, index: ctx.getInventoryIndex() }).flatMap((r) => r.servers.map((x) => x.serverId)));
-      stat.servers.set({ value: inv() ? servers.size : '—', hint: inv() ? null : t('ptr.stat.serversNone') });
-    }
-    for (const [k, v] of Object.entries(statFilters)) stat[k].set({ pressed: v === session.filter });
   }
 
+  /** The next steps, and what they would do now (their title, off while nothing would be handed over). */
   function renderActions() {
     const f = focus();
     const names = scanHandoff(job.results, { focus: f }).names;
     const adds = inventoryAdditions(job.results, { servers: state.inventory.servers, index: ctx.getInventoryIndex(), focus: f });
-    namesBtn.disabled = !sweepNames(job.results, { focus: f }).length;
-    scanBtn.disabled = !names.length || job.status === 'running';
-    scanBtn.title = t('ptr.toScanTitle', { count: names.length });
-    invBtn.disabled = !adds.length || job.status === 'running';
-    invBtn.title = adds.length ? t('ptr.toInventoryTitle', { count: adds.length }) : t('ptr.inv.none');
+    head.set('next', NextSteps({
+      steps: [
+        { label: t('ptr.toScan'), icon: 'layers', title: t('ptr.toScanTitle', { count: names.length }), dataset: { action: 'ptr-to-scan' }, onClick: () => handOffToScan() },
+        {
+          label: t('ptr.toInventory'), icon: 'server', title: adds.length ? t('ptr.toInventoryTitle', { count: adds.length }) : t('ptr.inv.none'),
+          dataset: { action: 'ptr-to-inventory' }, onClick: () => addToInventory()
+        }
+      ]
+    }));
+    const next = head.get('next');
+    next.querySelector('[data-action="ptr-to-scan"]').disabled = !names.length || live();
+    next.querySelector('[data-action="ptr-to-inventory"]').disabled = !adds.length || live();
     expandBox.el.hidden = !job.results.some((r) => r.template);
   }
 
+  /** The result header's title, its progress and what the sweep did: while it runs, and once it ended. */
+  function renderHead() {
+    head.el.dataset.status = job.status;
+    head.setState(live() ? 'running' : 'done');
+    head.set('title', ResultTitle({
+      running: live(),
+      severity: job.status === 'error' ? 'error' : null,
+      text: withSubject((p) => t('ptr.results', p), job.label, { name: 'target' })
+    }));
+    head.set('progress', live() ? progress.el : null);
+    actions.setDisabled(live());
+  }
+
   const renderProgress = throttle(() => {
-    if (job.status === 'running') {
+    if (live()) {
       progress.set(job.results.length, job.planned);
       meta.textContent = t('ptr.meta.running', { done: formatNumber(job.results.length), total: formatNumber(job.planned), time: formatDuration(Date.now() - job.startedAt) });
     } else {
@@ -1601,7 +1706,10 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
 
   function downloadNames() {
     const names = sweepNames(job.results, { focus: focus() });
-    if (!names.length) return;
+    if (!names.length) {
+      toast(t('ptr.namesNone'), { type: 'info' });
+      return;
+    }
     const file = downloadText('names.txt', `${names.join('\n')}\n`);
     toast(t('table.exported', { file }), { type: 'success', timeout: 2500 });
   }
@@ -1673,16 +1781,14 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
   }
 
   /* lifecycle */
-  /** Show the job's end; `live`: it just ended (announced), else a re-mount shows a finished job. */
-  function finish(live) {
+  /** Show the job's end; `liveEnd`: it just ended (announced), else a re-mount shows a finished job. */
+  function finish(liveEnd) {
     clear(notice);
-    progressCard.dataset.status = job.status;
     // A re-mounted view shows the real count, not the bar's default scale.
     progress.set(job.results.length, job.planned);
     if (job.status === 'done') {
       progress.done(t('ptr.progress.done'));
       progress.setVariant('ok');
-      if (live) announce(t('ptr.doneToast', { count: job.results.length }));
     } else if (job.status === 'cancelled') {
       progress.setVariant('warn');
       progress.setLabel(t('ptr.progress.stopped'));
@@ -1692,11 +1798,13 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
       notice.append(ErrorBanner(job.error, { title: t('ptr.failed') }));
     }
     table.setLoading(false);
+    renderHead();
     syncRows();
     // The default filter would hide every row of a sweep that found no PTR name: show them all.
     if (!session.filterChosen && session.filter === 'ptr' && job.results.length && !job.results.some((r) => r.names.length)) setFilter('all');
     renderProgress();
     stopTicker();
+    if (liveEnd && job.status === 'done') announce(t('ptr.doneToast', { count: job.results.length }));
     onFinish();
   }
 
@@ -1715,9 +1823,10 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     }
   };
 
+  renderHead();
   syncRows();
   renderProgress();
-  if (job.status === 'running') {
+  if (live()) {
     table.setLoading(true);
     ticker = setInterval(renderProgress, 1000);
     job.listeners.add(listener);
@@ -1732,6 +1841,7 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
     dispose() {
       job.listeners.delete(listener);
       stopTicker();
+      actions.dispose();
     }
   };
 }

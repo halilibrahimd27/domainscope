@@ -24,6 +24,7 @@ import {
 import { THC_REVERSE_LIMIT } from '../lib/ipintel.js';
 import { sourceStatus } from '../lib/sourcestatus.js';
 import { RetryButton, reasonText, setRetryBusy, sourceName, statusText } from './source-status.js';
+import { PrivacyNote } from './template.js';
 import { normalizeIP } from '../lib/ip.js';
 import { mergeSignals, splitList } from '../lib/util.js';
 
@@ -319,7 +320,8 @@ export function ReverseIpPanel({ ctx, getIntel, workspaceFor, onNames = null }) 
     dense: true,
     pageSize: 100,
     cellLabels: true,
-    className: 'rip-table',
+    // A phone: each name is a card of labelled lines (style.css .dt-cards).
+    className: 'rip-table dt-cards',
     toolbar: h('div', { class: 'cluster rip-filters' }, statusSelect.el, sourceSelect.el),
     rowClass: (r) => ['rip-row', `rip-st-${r.status}`],
     export: { filename: 'reverse-ip', json: (list) => reverseExportRows(list) },
@@ -376,7 +378,7 @@ export function ReverseIpPanel({ ctx, getIntel, workspaceFor, onNames = null }) 
         summary: t('rip.keys'), className: 'rip-keys',
         children: h('div', { class: 'stack-sm' }, h('div', { class: 'rip-keyfields' }, shodanKey.el, whoisKey.el), h('p', { class: 'muted text-xs' }, t('rip.keysNote')))
       }),
-      h('p', { class: 'muted text-xs rip-privacy' }, t('rip.privacy')),
+      PrivacyNote({ text: t('rip.privacy'), className: 'rip-privacy' }),
       notesEl, progressEl, resultsEl)
   });
   el.dataset.panel = 'reverse-ip';

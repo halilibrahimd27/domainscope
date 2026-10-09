@@ -4411,6 +4411,111 @@ button.nav-status:hover {
   }
 }
 
+/* DataTable card mode (docs/DESIGN.md §7, phase 5): a table with the `dt-cards` class and its cells'
+   labels (DataTable({ cellLabels: true })) turns each row into a card of labelled lines on a phone,
+   never a table wider than the screen. The first cell heads its card, unlabelled, with the row's
+   details button at its right; an empty cell ("—") takes no line; the page scrolls, not the table. */
+@media (max-width: 719px) {
+  .dt-cards .dt-scroll {
+    max-height: none;
+  }
+
+  .dt-cards .dt-table,
+  .dt-cards .dt-table tbody {
+    display: block;
+  }
+
+  .dt-cards .dt-table thead {
+    display: none;
+  }
+
+  .dt-cards .dt-table tbody tr.dt-row {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr) auto;
+    gap: var(--space-1) var(--space-3);
+    padding: var(--space-3);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .dt-cards .dt-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .dt-cards .dt-table td {
+    display: grid;
+    grid-column: 1 / 3;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    justify-items: start;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .dt-cards .dt-table td::before {
+    content: attr(data-label);
+    max-width: 9rem;
+    color: var(--text-3);
+    font-family: var(--font-sans);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+    line-height: var(--lh-sm);
+  }
+
+  .dt-cards .dt-table td:has(> .dt-null:only-child) {
+    display: none;
+  }
+
+  .dt-cards .dt-table tbody tr.dt-row > :is(td:first-child:not(.dt-expander), td.dt-expander + td) {
+    display: block;
+    grid-row: 1;
+    padding-bottom: var(--space-1);
+    font-weight: var(--fw-semibold);
+  }
+
+  .dt-cards .dt-table tbody tr.dt-row > :is(td:first-child:not(.dt-expander), td.dt-expander + td)::before {
+    content: none;
+  }
+
+  .dt-cards .dt-table td.dt-expander {
+    display: block;
+    grid-row: 1;
+    grid-column: 3;
+    width: auto;
+  }
+
+  .dt-cards .dt-table td.dt-expander::before {
+    content: none;
+  }
+
+  .dt-cards .dt-table tbody .dt-row:hover td {
+    background: none;
+  }
+
+  .dt-cards .dt-table tr.dt-details {
+    display: block;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .dt-cards .dt-table tr.dt-details > td {
+    display: block;
+  }
+
+  .dt-cards .dt-details-body {
+    padding: var(--space-1) var(--space-3) var(--space-3);
+  }
+
+  /* A tag in a card wraps rather than widening it. */
+  .dt-cards .dt-table .badge {
+    max-width: 100%;
+    height: auto;
+    min-height: 20px;
+    white-space: normal;
+  }
+}
+
 /* ---- Page template (ui/template.js; docs/DESIGN.md §5): the regions every tool shares --------- */
 
 /* The regions one under the other: a tool's page, its result, a tab's panel. An empty one takes no room. */

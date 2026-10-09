@@ -15,12 +15,17 @@
  * Authenticated Origin Pulls / mTLS, a Cloudflare Tunnel, move the service, rotate the address).
  * CSV export and Copy summary. Every string is rendered through h() / text nodes; names and
  * server names come from the workspace.
+ *
+ * On the page template's parts (ui/template.js; docs/DESIGN.md §8 phase 5): the lead card holds the
+ * figures as a metric strip (`.exp-stats`; the worst severity coloured when high or critical), the
+ * two runs and the privacy note under them; each table turns into cards on a phone (`.dt-cards`).
  */
 
 import { h, clear } from './dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, Spinner, StatCard, announce
+  Alert, Badge, Button, Card, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, Spinner, announce
 } from './components.js';
+import { MetricStrip, PrivacyNote } from './template.js';
 import { t, registerStrings, formatNumber } from '../i18n.js';
 import { state } from '../state.js';
 import { errorKind } from '../lib/util.js';
@@ -50,7 +55,7 @@ registerStrings('en', {
   'exp.stat.probeable': 'Probeable',
   'exp.stat.findings': 'Findings',
   'exp.stat.worst': 'Worst',
-  'exp.none': 'No origins',
+  'exp.none': 'None',
   'exp.targetsTitle': 'Proxied origins',
   'exp.targetsSubtitle': 'The (name, origin) pairs this audit covers',
   'exp.col.name': 'Name',
@@ -130,7 +135,7 @@ registerStrings('tr', {
   'exp.stat.probeable': 'Ölçülebilir',
   'exp.stat.findings': 'Bulgular',
   'exp.stat.worst': 'En kötü',
-  'exp.none': 'Origin yok',
+  'exp.none': 'Yok',
   'exp.targetsTitle': 'Proxy’li origin’ler',
   'exp.targetsSubtitle': 'Bu denetimin kapsadığı (ad, origin) çiftleri',
   'exp.col.name': 'Ad',
@@ -409,7 +414,8 @@ export function ExposurePanel({ ctx }) {
       search: findings.length > 8,
       pageSize: 200,
       empty: t('exp.ranClean'),
-      className: 'exp-table',
+      cellLabels: true,
+      className: 'exp-table dt-cards',
       rowClass: (f) => `exp-row-${f.severity}`,
       export: { filename: 'origin-exposure' },
       columns: [
@@ -473,7 +479,8 @@ export function ExposurePanel({ ctx }) {
       dense: true,
       search: S.targets.length > 10,
       pageSize: 200,
-      className: 'exp-targets-table',
+      cellLabels: true,
+      className: 'exp-targets-table dt-cards',
       columns: [
         { key: 'name', label: t('exp.col.name'), mono: true, sortable: true, render: (x) => x.name },
         { key: 'origin', label: t('exp.col.origin'), mono: true, sortable: true, exportValue: (x) => x.target, render: (x) => x.target },
@@ -500,31 +507,39 @@ export function ExposurePanel({ ctx }) {
     return h('div', { class: 'cluster exp-controls' }, leaksBtn, probeBtn, progressEl);
   }
 
+  /** The figures (a read-only metric strip): the findings in warn, the worst severity as a word. */
   function statsRow() {
-    const findings = allFindings();
-    const s = exposureSummary(findings);
+    const s = exposureSummary(allFindings());
     const probeable = S.targets.filter((x) => x.probeable).length;
-    return h('div', { class: 'stat-grid exp-stats' },
-      StatCard({ label: t('exp.stat.targets'), value: formatNumber(S.targets.length), icon: 'server', variant: 'accent' }),
-      StatCard({ label: t('exp.stat.probeable'), value: formatNumber(probeable), icon: 'globe' }),
-      StatCard({ label: t('exp.stat.findings'), value: formatNumber(s.total), icon: 'alert', variant: s.total ? 'warn' : 'default' }),
-      StatCard({ label: t('exp.stat.worst'), value: s.worst ? t(`exp.sev.${s.worst}`) : t('exp.none'), icon: 'shield', variant: s.worst === 'critical' || s.worst === 'high' ? 'warn' : 'default' }));
+    const worst = s.worst === 'critical' ? 'error' : s.worst === 'high' ? 'warn' : null;
+    return MetricStrip({
+      className: 'exp-stats',
+      metrics: [
+        { id: 'targets', label: t('exp.stat.targets'), value: S.targets.length },
+        { id: 'probeable', label: t('exp.stat.probeable'), value: probeable },
+        { id: 'findings', label: t('exp.stat.findings'), value: s.total, severity: s.total ? 'warn' : null },
+        // Before an audit nothing is known ("—"); after one without a finding, "None".
+        { id: 'worst', label: t('exp.stat.worst'), value: s.worst ? t(`exp.sev.${s.worst}`) : S.ran ? t('exp.none') : null, severity: worst }
+      ]
+    }).el;
   }
 
   function render() {
     clear(el);
-    el.append(Alert({ variant: 'ok', icon: 'lock', compact: true, message: t('exp.privacy') }));
+    // What the runs send, under them (a quiet line, not a green alert above the panel).
+    const privacy = PrivacyNote({ text: t('exp.privacy'), className: 'exp-privacy' });
     if (!S.targets.length) {
       el.append(Card({
         icon: 'shield', className: 'exp-lead',
         children: h('div', { class: 'stack-sm' }, h('p', null, t('exp.lead')),
-          EmptyState({ icon: 'map-pin', message: t('exp.empty'), action: Button({ label: t('exp.openMap'), icon: 'map-pin', size: 'sm', onClick: () => ctx.setParams({ tab: 'origins' }) }) }))
+          EmptyState({ icon: 'map-pin', message: t('exp.empty'), action: Button({ label: t('exp.openMap'), icon: 'map-pin', size: 'sm', onClick: () => ctx.setParams({ tab: 'origins' }) }) }),
+          privacy)
       }));
       updateProgress();
       return;
     }
     el.append(
-      Card({ icon: 'shield', className: 'exp-lead', children: h('div', { class: 'stack-sm' }, h('p', null, t('exp.lead')), statsRow(), controls()) }));
+      Card({ icon: 'shield', className: 'exp-lead', children: h('div', { class: 'stack-sm' }, h('p', null, t('exp.lead')), statsRow(), controls(), privacy) }));
     if (S.leakError) {
       el.append(ErrorBanner(S.leakError, { title: t('exp.leakError'), compact: true, onRetry: () => auditLeaks({ retry: true }) }));
     }

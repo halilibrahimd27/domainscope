@@ -1,16 +1,15 @@
 /*
- * views/about.css — "About" view (.about-*).
+ * views/about.css — "About" view (.about-*): a document (docs/DESIGN.md §5.5) — the hero, "On this
+ * page" chips (style.css .chip), the sections; its tables are cards on a phone (style.css .dt-cards).
  */
 
-/* Hero */
+/* Hero: a plain card (no decorative gradient, DESIGN §2). */
 .about-hero {
   display: flex;
   align-items: center;
-  gap: 32px;
-  padding: 28px 30px;
-  background:
-    radial-gradient(120% 140% at 100% 0%, var(--accent-soft) 0%, transparent 55%),
-    var(--surface);
+  gap: var(--space-8);
+  padding: var(--space-6);
+  background: var(--surface);
 }
 
 .about-hero-text {
@@ -20,10 +19,10 @@
 }
 
 .about-hero-title {
-  margin: 0 0 10px;
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-xl);
 }
 
 .about-hero-text p {
@@ -31,70 +30,50 @@
 }
 
 .about-hero-actions {
-  margin-top: 18px;
+  margin-top: var(--space-4);
 }
 
 .about-hero-logo {
-  width: 104px;
-  height: 104px;
+  width: 96px;
+  height: 96px;
   flex: none;
-  border-radius: 24px;
-  box-shadow: var(--shadow);
+  border-radius: 22px;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 719px) {
   .about-hero {
     flex-direction: column-reverse;
     align-items: flex-start;
-    gap: 16px;
-    padding: 20px;
+    gap: var(--space-4);
+    padding: var(--space-4);
   }
 
   .about-hero-logo {
-    width: 56px;
-    height: 56px;
-    border-radius: 14px;
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
   }
 
   .about-hero-title {
-    font-size: 19px;
+    font-size: var(--fs-lg);
+    line-height: var(--lh-lg);
   }
 }
 
-/* On-this-page chips */
+/* On this page: the shared chips (style.css .chip). */
 .about-toc {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  margin: 18px 0 30px;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 var(--space-6);
 }
 
 .about-toc-label {
-  margin-right: 4px;
-  font-size: 11.5px;
-  font-weight: 650;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  margin-right: var(--space-1);
   color: var(--text-3);
-}
-
-.about-toc-link {
-  padding: 4px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--surface);
-  color: var(--text-2);
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 550;
-  cursor: pointer;
-  transition: color var(--dur), border-color var(--dur);
-}
-
-.about-toc-link:hover {
-  border-color: var(--border-strong);
-  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
 }
 
 :root[data-view="about"] .section-title:focus {
@@ -155,7 +134,24 @@
   color: var(--text-2);
 }
 
-/* Cloudflare explanation + flow diagrams */
+/* Cloudflare explanation + flow diagrams, then a hint in muted text (DESIGN §7: hints are not alerts) */
+.about-cf-hint {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  max-width: 82ch;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
+}
+
+.about-cf-hint .icon {
+  flex: none;
+  color: var(--text-3);
+  transform: translateY(2px);
+}
+
 .about-cf {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
@@ -351,40 +347,15 @@
   }
 }
 
-/* Tables (text-heavy: cells wrap; rows become stacked cards on phones) */
+/* Tables (text-heavy: cells wrap; on a phone each row is a card, style.css .dt-cards) */
 .about-table td {
   vertical-align: top;
   white-space: normal;
 }
 
-@media (max-width: 640px) {
-  .about-table thead {
-    display: none;
-  }
-
-  .about-table tr {
-    display: block;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .about-table tbody tr:last-child {
-    border-bottom: 0;
-  }
-
-  .about-table td,
-  .about-table tbody tr:last-child td {
-    display: block;
-    padding: 2px 0;
-    border: 0;
-  }
-
+@media (max-width: 719px) {
   .about-table.about-statuses td:first-child {
     width: auto;
-  }
-
-  .about-table tbody .dt-row:hover td {
-    background: none;
   }
 }
 
@@ -418,6 +389,7 @@
   color: var(--text-2);
 }
 
+/* Neutral icons: a privacy line is a fact, not good news (green means OK, DESIGN K1). */
 .about-privacy-icon {
   width: 28px;
   height: 28px;
@@ -425,10 +397,10 @@
   display: grid;
   place-items: center;
   margin-top: -3px;
-  border: 1px solid var(--ok-border);
-  border-radius: 8px;
-  background: var(--ok-bg);
-  color: var(--ok);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-2);
 }
 
 /* What this page sent (ui/egress-panel.js): the page session's ledger */

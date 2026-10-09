@@ -8,20 +8,29 @@
  * the row's cell keeps the count and the first names.
  *
  * Data: lib/ipintel.js (RIPEstat + ipwho.is fallback + DoH PTR). Private addresses never
- * leave the browser. Results stream into the table; CSV/JSON export. A plain direct address on a
- * well-known network is named in the operator cell (lib/networklabel.js): from the weekly provider
- * list's network tier at once ("Cloudflare network · not necessarily proxied", "AWS network"), with
- * its origin AS once RIPEstat names the same operator, else from the AS alone.
+ * leave the browser. Results stream into the table. A plain direct address on a well-known network
+ * is named in the operator cell (lib/networklabel.js): from the weekly provider list's network tier
+ * at once ("Cloudflare network · not necessarily proxied", "AWS network"), with its origin AS once
+ * RIPEstat names the same operator, else from the AS alone.
  *
- * "Copy summary" above the stat cards: one line for Jira / Slack (lib/summary.js) with the time the
- * lookup ended; it says how many addresses are in the server list (never a server's name, the
- * tooltip says so), how many lookups failed (rows whose every source failed) and how many
- * addresses a stopped lookup never reached, and its link leaves out private and inventory addresses.
+ * The page template (ui/template.js; docs/DESIGN.md §5, §8 phase 5), a batch tool: the input card
+ * holds the box, Look up on its row, the example chips (they only fill the box), "My servers' IPs",
+ * Clear and the privacy note, and turns compact from the first lookup. The result header
+ * (`.ipi-results-bar`) says how many addresses (one by itself), when, the status summary (sources
+ * failed, behind a CDN, networks, countries, your servers, private: lib/netresults.js ipStatus; a
+ * press on the ones that filter lists their rows only), Copy summary with ¶, Export ▾ (CSV, JSON:
+ * what the table lists) and Copy link, the next step "Domains on these addresses" and a chip per
+ * service. The metric strip (zero counts folded into one sentence) and the table (a card per row on
+ * a phone) are the body.
+ *
+ * "Copy summary": one line for Jira / Slack (lib/summary.js) with the time the lookup ended; it
+ * says how many addresses are in the server list (never a server's name, the tooltip says so), how
+ * many lookups failed (rows whose every source failed) and how many addresses a stopped lookup
+ * never reached, and its link leaves out private and inventory addresses.
  *
  * No silent dashes (lib/sourcestatus.js, ui/source-status.js): a cell that a failed source left
  * empty says "⚠ n/a" with the source and the reason, a chip per service sums the failures up,
  * and Retry (per row, or per chip for every row it failed on) asks only those sources again.
- * Stat cards whose count is zero fold into one sentence (lib/density.js).
  *
  * Shareable: `#/ip?ips=8.8.8.8,1.1.1.1` (also `ip=` / `q=`; host names allowed) runs on open;
  * with `run=0` (an address carried over from another tool, lib/session.js) it is only filled in.
@@ -31,13 +40,13 @@
 
 import { h, clear, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, DataTable, EmptyState, ErrorBanner, ExternalLink, KeyValueList, KindBadge, ProgressBar, StatCard,
+  Alert, Badge, Button, DataTable, ErrorBanner, ExternalLink, Icon, KeyValueList, KindBadge, ProgressBar, RelativeTime,
   TruncatedList, announce, ipSortValue, setButtonBusy, textarea
 } from '../ui/components.js';
-import { registerStrings, formatNumber, formatRegion, localeTag } from '../i18n.js';
+import { registerStrings, formatNumber, formatRegion, formatRelative, localeTag } from '../i18n.js';
 import { createIpIntel, networkHint } from '../lib/ipintel.js';
 import { ipFieldStatus, ipRetrySources, ipSourceChips, sourceStatus, IP_FIELDS, EXPORT_NA } from '../lib/sourcestatus.js';
-import { addressLines, foldZeroStats } from '../lib/density.js';
+import { addressLines } from '../lib/density.js';
 import { NaMark, RetryButton, SourceChip, setRetryBusy, statusText } from '../ui/source-status.js';
 import { classifyResolution, ipVersion, isPrivateIP, loadRanges, normalizeIP, rangesInfo } from '../lib/netinfo.js';
 import { networkLabel } from '../lib/networklabel.js';
@@ -49,6 +58,13 @@ import { originIndex } from '../lib/originmap.js';
 import { commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
 import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import {
+  EmptyState, ExampleChips, MetricStrip, NextSteps, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput
+} from '../ui/template.js';
+import { inputCompact, statusItems, templateState } from '../lib/template.js';
+import { IP_FOLDABLE, exportColumns, ipFigures, ipMetricIds, ipRowMatches, ipStatus } from '../lib/netresults.js';
+import { toCsv, toJson } from '../lib/export.js';
+import { downloadText, timestampedName } from '../ui/download.js';
 
 /** Route id (`#/ip`). */
 export const id = 'ip';
@@ -62,7 +78,8 @@ export const MAX_IPS = 250;
 /** Maximum host names resolved per run. */
 export const MAX_HOSTS = 100;
 
-const EXAMPLE = '8.8.8.8\n1.1.1.1\n2606:4700:4700::1111\n9.9.9.9\ngithub.com\n';
+/** The example chips: two public resolvers, an IPv6 address, a host name (resolved first). */
+const IP_EXAMPLES = Object.freeze([['8.8.8.8', '1.1.1.1'], ['2606:4700:4700::1111'], ['github.com']]);
 
 /** A row's routing, RPKI, abuse contact and CIDR breadcrumb panel, loaded when a row's details first open. */
 const loadEnrich = onceAsync(() => import('../ui/ip-enrich-panel.js'));
@@ -73,7 +90,6 @@ registerStrings('en', {
   'ipi.inputHint': 'One per line, or separated by spaces/commas. Ports and [brackets] are fine; # starts a comment.',
   'ipi.run': 'Look up',
   'ipi.stop': 'Stop',
-  'ipi.example': 'Example',
   'ipi.fromInventory': 'My servers’ IPs',
   'ipi.fromInventoryTitle': 'Load every IP address from the saved server inventory',
   'ipi.clear': 'Clear',
@@ -90,8 +106,22 @@ registerStrings('en', {
   'ipi.stopped': 'Stopped — rows without data were not looked up.',
   'ipi.hostFailed': 'Could not resolve: {items}',
   'ipi.privacy': 'Addresses are sent to RIPEstat and ipwho.is (and reverse DNS to your DoH resolver). Private addresses are never sent anywhere.',
-  'ipi.emptyTitle': 'Who is behind an IP address?',
-  'ipi.emptyBody': 'Reverse DNS, network owner (ASN), location, CDN/cloud detection and your own servers — for up to {max} addresses at once.',
+  'ipi.emptyLine': 'Up to {max} addresses or host names at once: who runs each address and where it is.',
+  'ipi.check.ptr': 'Reverse DNS',
+  'ipi.check.asn': 'Network owner (ASN)',
+  'ipi.check.location': 'Location',
+  'ipi.check.cdn': 'CDN or cloud',
+  'ipi.check.server': 'Your servers',
+  'ipi.check.reverse': 'Other domains on the address',
+  'ipi.resultsTitle': { one: '{count} address', other: '{count} addresses' },
+  'ipi.lookingCount': { one: 'Looking up {count} address…', other: 'Looking up {count} addresses…' },
+  'ipi.resolvingTitle': 'Resolving the host names…',
+  'ipi.checkedAt': 'Looked up {time}',
+  'ipi.status.cdn': '{count} behind a CDN',
+  'ipi.status.nets': { one: '{count} network', other: '{count} networks' },
+  'ipi.status.countries': { one: '{count} country', other: '{count} countries' },
+  'ipi.status.mine': '{count} in your server list',
+  'ipi.status.priv': '{count} private',
 
   'ipi.stat.ips': 'Addresses',
   'ipi.stat.ipsHint': '{v4} IPv4 · {v6} IPv6',
@@ -164,7 +194,6 @@ registerStrings('tr', {
   'ipi.inputHint': 'Her satıra bir tane ya da boşluk/virgülle ayırarak. Port ve [köşeli parantez] sorun değil; # yorum başlatır.',
   'ipi.run': 'Sorgula',
   'ipi.stop': 'Durdur',
-  'ipi.example': 'Örnek',
   'ipi.fromInventory': 'Sunucularımın IP’leri',
   'ipi.fromInventoryTitle': 'Kayıtlı sunucu envanterindeki tüm IP adreslerini yükle',
   'ipi.clear': 'Temizle',
@@ -181,8 +210,22 @@ registerStrings('tr', {
   'ipi.stopped': 'Durduruldu — verisi olmayan satırlar sorgulanmadı.',
   'ipi.hostFailed': 'Çözümlenemedi: {items}',
   'ipi.privacy': 'Adresler RIPEstat ve ipwho.is’e (ters DNS ise DoH çözümleyicinize) gönderilir. Özel (private) adresler hiçbir yere gönderilmez.',
-  'ipi.emptyTitle': 'Bir IP adresinin arkasında kim var?',
-  'ipi.emptyBody': 'Ters DNS, ağ sahibi (ASN), konum, CDN/bulut tespiti ve kendi sunucularınız — tek seferde {max} adrese kadar.',
+  'ipi.emptyLine': 'Tek seferde {max} adrese ya da host adına kadar: her adresi kimin işlettiği ve nerede olduğu.',
+  'ipi.check.ptr': 'Ters DNS',
+  'ipi.check.asn': 'Ağ sahibi (ASN)',
+  'ipi.check.location': 'Konum',
+  'ipi.check.cdn': 'CDN ya da bulut',
+  'ipi.check.server': 'Sunucularınız',
+  'ipi.check.reverse': 'Adresteki diğer alan adları',
+  'ipi.resultsTitle': '{count} adres',
+  'ipi.lookingCount': '{count} adres sorgulanıyor…',
+  'ipi.resolvingTitle': 'Host adları çözümleniyor…',
+  'ipi.checkedAt': '{time} sorgulandı',
+  'ipi.status.cdn': '{count} tanesi CDN arkasında',
+  'ipi.status.nets': '{count} ağ',
+  'ipi.status.countries': '{count} ülke',
+  'ipi.status.mine': '{count} tanesi sunucu listenizde',
+  'ipi.status.priv': '{count} tanesi özel',
 
   'ipi.stat.ips': 'Adres',
   'ipi.stat.ipsHint': '{v4} IPv4 · {v6} IPv6',
@@ -362,8 +405,9 @@ export function mount(container, ctx) {
         .filter(Boolean).join(' ');
     return { badge: t('ipi.net.badge', { name: hint.name }), short, long };
   };
+  const hasInventory = () => ctx.state.inventory.servers.length > 0;
 
-  /* --- input ----------------------------------------------------------------------- */
+  /* --- region 2: the input (ui/template.js ToolInput) ------------------------------- */
   const input = textarea({
     label: t('ipi.inputLabel'),
     value: initialText,
@@ -375,27 +419,38 @@ export function mount(container, ctx) {
     attrs: { 'data-role': 'ip-input', 'data-shortcut': 'focus' }
   });
   const parsedEl = h('div', { class: 'ipi-parsed muted text-sm', attrs: { 'aria-live': 'polite' } });
-  const runBtn = Button({ label: t('ipi.run'), icon: 'search', variant: 'primary', dataset: { action: 'run', shortcut: 'submit' }, onClick: () => start() });
-  const stopBtn = Button({ label: t('ipi.stop'), icon: 'stop', dataset: { action: 'stop', shortcut: 'cancel' }, onClick: () => stop() });
-  stopBtn.hidden = true;
-  const exampleBtn = Button({
-    label: t('ipi.example'), icon: 'file-text', variant: 'ghost', size: 'sm', dataset: { action: 'example' },
-    onClick: () => {
-      input.value = EXAMPLE;
+  const runBar = RunBar({
+    label: t('ipi.run'),
+    dataset: { action: 'run', shortcut: 'submit' },
+    stopLabel: t('ipi.stop'),
+    stopDataset: { action: 'stop', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => stop(),
+    hasValue: () => !!input.value.trim()
+  });
+  // An example fills the box and leaves the keyboard on Look up: nothing is sent before that click.
+  const examplesEl = ExampleChips({
+    className: 'ipi-examples',
+    examples: IP_EXAMPLES.map((list) => ({ value: list.join('\n'), label: list.join(' ') })),
+    onPick: (value) => {
+      input.value = `${value}\n`;
+      input.setError(null);
       updateParsed();
-    }
+    },
+    focus: () => runBar.run
   });
   const inventoryIps = () => [...new Set(ctx.state.inventory.servers.flatMap((s) => s.ips))];
   const inventoryBtn = Button({
     label: t('ipi.fromInventory'), icon: 'server', variant: 'ghost', size: 'sm', title: t('ipi.fromInventoryTitle'), dataset: { action: 'inventory' },
     onClick: () => {
       input.value = `${inventoryIps().join('\n')}\n`;
+      input.setError(null);
       updateParsed();
     }
   });
   inventoryBtn.hidden = inventoryIps().length === 0;
   const clearBtn = Button({
-    label: t('ipi.clear'), icon: 'trash', variant: 'ghost', size: 'sm',
+    label: t('ipi.clear'), icon: 'trash', variant: 'ghost', size: 'sm', dataset: { action: 'ipi-clear' },
     onClick: () => {
       input.value = '';
       updateParsed();
@@ -407,182 +462,196 @@ export function mount(container, ctx) {
     const p = parseIpInput(input.value);
     parsedEl.textContent = p.ips.length || p.hosts.length
       ? `${t('ipi.parsedIps', { count: p.ips.length })} · ${t('ipi.parsedHosts', { count: p.hosts.length })}` : '';
+    syncRunBar();
   }
   input.input.addEventListener('input', updateParsed);
-  updateParsed();
 
-  const formCard = Card({
+  const tool = ToolInput({
     className: 'ipi-form-card',
-    children: h('div', { class: 'stack' },
-      input.el,
-      h('div', { class: 'ipi-actions' },
-        h('div', { class: 'cluster' }, exampleBtn, inventoryBtn, clearBtn, parsedEl),
-        h('div', { class: 'cluster ipi-run' }, stopBtn, runBtn)),
-      h('p', { class: 'muted text-xs ipi-privacy' }, t('ipi.privacy')))
+    label: t('nav.ip'),
+    primary: input.el,
+    run: runBar,
+    notes: [parsedEl],
+    extras: [examplesEl, h('div', { class: 'cluster ipi-fill' }, inventoryBtn, clearBtn)],
+    privacy: PrivacyNote({ text: t('ipi.privacy'), className: 'ipi-privacy' })
   });
 
-  /* --- results ------------------------------------------------------------------------- */
+  /* --- regions 4, 6 and 8: the result header, the metric strip, the table ----------------- */
   const progress = ProgressBar({ label: t('ipi.looking') });
-  progress.el.hidden = true;
   const notesEl = h('div', { class: 'stack-sm ipi-notes' });
-  const stats = {
-    ips: StatCard({ label: t('ipi.stat.ips'), icon: 'network', variant: 'accent' }),
-    cdn: StatCard({ label: t('ipi.stat.cdn'), icon: 'cloud', variant: 'cloudflare' }),
-    mine: StatCard({ label: t('ipi.stat.mine'), icon: 'server', variant: 'direct' }),
-    priv: StatCard({ label: t('ipi.stat.private'), icon: 'lock', variant: 'private' }),
-    nets: StatCard({ label: t('ipi.stat.networks'), icon: 'layers' }),
-    countries: StatCard({ label: t('ipi.stat.countries'), icon: 'map-pin' })
-  };
+  const sourcesEl = h('div', { class: 'src-chips ipi-sources', hidden: true, attrs: { role: 'group', 'aria-label': t('ipi.det.sources'), tabindex: -1 } });
+  /** The result header (`.ipi-results-bar`, the old bar's hook): there from a run's start. */
+  const head = ResultHeader({ className: 'ipi-results-bar' });
+  head.set('notes', notesEl);
+  head.set('sources', sourcesEl);
+  /** The status items' table filter, pressed (lib/netresults.js IP_FILTERS by item key), or null. */
+  let pressed = null;
+  const status = StatusSummary({ items: [] });
+  head.set('status', status.el);
+  // Zero counts fold into one sentence ("None of these addresses is behind a CDN / proxy"): the
+  // folded metrics' phrases and the row count of the last drawing, read by zeroText.
+  let zeroPhrases = new Map();
+  let zeroCount = 0;
+  const metrics = MetricStrip({
+    className: 'ipi-stats',
+    zeroText: (labels) => t('ipi.zero', { count: zeroCount, list: listText(labels.map((l) => zeroPhrases.get(l)).filter(Boolean)) })
+  });
+  const quotaNote = h('p', { class: 'ipi-quota' }, Icon('info', { size: 13 }), h('span', null, t('ipi.quota')));
 
-  const exportOpts = {
-    filename: 'ip-intel',
-    json: (rows) => rows.map((r) => ({
-      ip: r.ip,
-      version: ipVersion(r.ip),
-      hosts: r.hosts,
-      private: isPrivateIP(r.ip),
-      operator: r.classification.provider ? r.classification.provider.name : r.classification.kind,
-      network: (() => {
-        const hint = hintOf(r);
-        return hint ? { id: hint.id, name: hint.name, asn: hint.asn, category: hint.category, relation: hint.relation, source: hint.source } : null;
-      })(),
-      ptr: r.info ? r.info.ptr : [],
-      asn: r.info ? r.info.asn : null,
-      asName: r.info ? r.info.asName : null,
-      holder: r.info ? r.info.holder : null,
-      prefix: r.info ? r.info.prefix : null,
-      country: r.info ? r.info.country : null,
-      city: r.info ? r.info.city : null,
-      rir: r.info ? r.info.rir : null,
-      announced: r.info ? r.info.announced : null,
-      servers: r.servers.map((s) => s.name),
-      reverseIp: r.reverse && r.reverse.result && r.reverse.result.ok ? r.reverse.result.domains : null,
-      error: r.info ? r.info.error : null,
-      // Fields a failed source left empty (not "none"), and why.
-      unavailable: Object.fromEntries(IP_FIELDS.map((f) => [f, ipFieldStatus(r.info, f)]).filter(([, st]) => st).map(([f, st]) => [f, st.sources])),
-      sourceErrors: r.info ? r.info.errors.map((e) => ({ source: e.source, error: e.error, errorKind: e.errorKind, status: e.status ?? null })) : []
-    }))
-  };
+  const exportJson = (rows) => rows.map((r) => ({
+    ip: r.ip,
+    version: ipVersion(r.ip),
+    hosts: r.hosts,
+    private: isPrivateIP(r.ip),
+    operator: r.classification.provider ? r.classification.provider.name : r.classification.kind,
+    network: (() => {
+      const hint = hintOf(r);
+      return hint ? { id: hint.id, name: hint.name, asn: hint.asn, category: hint.category, relation: hint.relation, source: hint.source } : null;
+    })(),
+    ptr: r.info ? r.info.ptr : [],
+    asn: r.info ? r.info.asn : null,
+    asName: r.info ? r.info.asName : null,
+    holder: r.info ? r.info.holder : null,
+    prefix: r.info ? r.info.prefix : null,
+    country: r.info ? r.info.country : null,
+    city: r.info ? r.info.city : null,
+    rir: r.info ? r.info.rir : null,
+    announced: r.info ? r.info.announced : null,
+    servers: r.servers.map((s) => s.name),
+    reverseIp: r.reverse && r.reverse.result && r.reverse.result.ok ? r.reverse.result.domains : null,
+    error: r.info ? r.info.error : null,
+    // Fields a failed source left empty (not "none"), and why.
+    unavailable: Object.fromEntries(IP_FIELDS.map((f) => [f, ipFieldStatus(r.info, f)]).filter(([, st]) => st).map(([f, st]) => [f, st.sources])),
+    sourceErrors: r.info ? r.info.errors.map((e) => ({ source: e.source, error: e.error, errorKind: e.errorKind, status: e.status ?? null })) : []
+  }));
   /** CSV text of a cell: its value, or "n/a" ({@link EXPORT_NA}) when a failed source left it empty. */
   const csvValue = (r, field, value) => (value ? value : ipFieldStatus(r.info, field) ? EXPORT_NA : '');
 
+  const columns = [
+    {
+      key: 'ip', label: t('ipi.col.ip'), sortable: true, sortValue: (r) => ipSortValue(r.ip),
+      searchValue: (r) => [r.ip, ...r.hosts].join(' '), exportValue: (r) => r.ip,
+      render: (r) => h('div', { class: 'ipi-ipcell' },
+        // A full IPv6 address may break in two on a phone (lib/density.js addressLines).
+        h('span', { class: 'mono ipi-ip' }, addressLines(r.ip).flatMap((part, i) => (i ? [h('wbr'), part] : [part]))),
+        r.hosts.length ? h('span', { class: 'muted text-xs' }, t('ipi.fromHost', { host: r.hosts.slice(0, 2).join(', ') + (r.hosts.length > 2 ? ` +${r.hosts.length - 2}` : '') })) : null,
+        rowRetry(r))
+    },
+    {
+      key: 'operator', label: t('ipi.col.operator'), sortable: true, sortValue: (r) => r.classification.kind,
+      searchValue: (r) => {
+        const hint = hintOf(r);
+        return `${r.classification.kind} ${r.classification.provider ? r.classification.provider.name : ''} ${hint ? hintText(hint).badge : ''}`;
+      },
+      exportValue: (r) => {
+        const base = r.classification.provider ? r.classification.provider.name : t(`kind.${r.classification.kind}`);
+        const hint = hintOf(r);
+        return hint ? `${base} · ${hintText(hint).badge}${hint.asn !== null ? ` (AS${hint.asn})` : ''}` : base;
+      },
+      render: renderOperator
+    },
+    {
+      key: 'server', label: t('ipi.col.server'), sortable: true,
+      sortValue: (r) => (r.servers.length ? r.servers[0].name : null),
+      searchValue: (r) => r.servers.map((s) => s.name).join(' '),
+      exportValue: (r) => r.servers.map((s) => s.name).join(' '),
+      render: (r) => (r.servers.length ? h('div', { class: 'cluster' }, r.servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server' }))) : null)
+    },
+    {
+      key: 'ptr', label: t('ipi.col.ptr'), sortable: true, className: 'ipi-col-ptr', sortValue: (r) => (r.info && r.info.ptr[0]) || null,
+      searchValue: (r) => (r.info ? r.info.ptr.join(' ') : ''), exportValue: (r) => csvValue(r, 'ptr', r.info ? r.info.ptr.join(' ') : ''),
+      render: (r) => (r.pending ? pendingCell() : r.info && r.info.ptr.length ? TruncatedList(r.info.ptr, { max: 2, render: hostLink }) : naCell(r, 'ptr'))
+    },
+    {
+      key: 'network', label: t('ipi.col.holder'), sortable: true, className: 'ipi-col-network',
+      sortValue: (r) => (r.info ? r.info.asn : null),
+      searchValue: (r) => (r.info ? `AS${r.info.asn || ''} ${r.info.asName || ''} ${r.info.holder || ''}` : ''),
+      exportValue: (r) => csvValue(r, 'network', r.info ? [r.info.asn ? `AS${r.info.asn}` : '', [r.info.asName, r.info.holder].filter((x, i, arr) => x && arr.indexOf(x) === i).join(' - ')].filter(Boolean).join(' ') : ''),
+      render: (r) => {
+        if (r.pending || !r.info) return null;
+        if (!r.info.asn && !r.info.holder) {
+          return naCell(r, 'network') || (r.info.announced === false ? Badge(t('ipi.notAnnounced'), { title: t('ipi.notAnnouncedTitle') }) : null);
+        }
+        const same = !r.info.holder || r.info.asName === r.info.holder;
+        return h('div', { class: 'ipi-holder' },
+          h('span', { class: 'ipi-holder-name' },
+            r.info.asn ? ExternalLink(`https://stat.ripe.net/AS${r.info.asn}`, `AS${r.info.asn}`, { className: 'mono ipi-asn', icon: false }) : null,
+            r.info.asn ? ' ' : null,
+            r.info.asName || r.info.holder),
+          !same ? h('span', { class: 'muted text-xs ipi-holder-org' }, r.info.holder) : null);
+      }
+    },
+    {
+      key: 'prefix', label: t('ipi.col.prefix'), sortable: true, mono: true, className: 'ipi-col-prefix',
+      sortValue: (r) => (r.info && r.info.prefix ? ipSortValue(r.info.prefix.split('/')[0]) : null),
+      exportValue: (r) => csvValue(r, 'prefix', r.info ? r.info.prefix || '' : ''),
+      render: (r) => (r.info && r.info.prefix ? r.info.prefix : naCell(r, 'prefix'))
+    },
+    {
+      key: 'location', label: t('ipi.col.location'), sortable: true, className: 'ipi-col-location',
+      sortValue: (r) => (r.info && r.info.country ? `${formatRegion(r.info.country)} ${r.info.city || ''}` : null),
+      searchValue: (r) => (r.info && r.info.country ? `${r.info.country} ${formatRegion(r.info.country)} ${r.info.city || ''}` : ''),
+      exportValue: (r) => csvValue(r, 'location', r.info && r.info.country ? [r.info.country, r.info.city].filter(Boolean).join(' ') : ''),
+      render: (r) => (r.info && r.info.country ? h('div', { class: 'ipi-loc' },
+        h('span', null, flag(r.info.country), ' ', formatRegion(r.info.country)),
+        r.info.city ? h('span', { class: 'muted text-xs' }, r.info.city) : null) : naCell(r, 'location'))
+    },
+    {
+      key: 'reverse', label: t('ipi.col.reverse'), searchable: true,
+      searchValue: (r) => (r.reverse && r.reverse.result && r.reverse.result.ok ? r.reverse.result.domains.join(' ') : ''),
+      exportValue: (r) => (r.reverse && r.reverse.result && r.reverse.result.ok ? r.reverse.result.domains.join(' ') : ''),
+      render: renderReverse
+    }
+  ];
+
+  // The table's files are the result header's Export ▾ (it writes what the table lists); on a
+  // phone each row is a card of labelled lines (style.css .dt-cards).
   const table = DataTable({
     caption: t('nav.ip'),
     rowKey: (r) => r.ip,
     search: true,
     dense: true,
     pageSize: 100,
-    export: exportOpts,
+    export: false,
+    cellLabels: true,
+    className: 'ipi-table dt-cards',
     rowClass: (r) => ['ipi-row', { 'is-pending': r.pending }],
     details: (r) => renderDetails(r),
-    columns: [
-      {
-        key: 'ip', label: t('ipi.col.ip'), sortable: true, sortValue: (r) => ipSortValue(r.ip),
-        searchValue: (r) => [r.ip, ...r.hosts].join(' '), exportValue: (r) => r.ip,
-        render: (r) => h('div', { class: 'ipi-ipcell' },
-          // A full IPv6 address may break in two on a phone (lib/density.js addressLines).
-          h('span', { class: 'mono ipi-ip' }, addressLines(r.ip).flatMap((part, i) => (i ? [h('wbr'), part] : [part]))),
-          r.hosts.length ? h('span', { class: 'muted text-xs' }, t('ipi.fromHost', { host: r.hosts.slice(0, 2).join(', ') + (r.hosts.length > 2 ? ` +${r.hosts.length - 2}` : '') })) : null,
-          rowRetry(r))
-      },
-      {
-        key: 'operator', label: t('ipi.col.operator'), sortable: true, sortValue: (r) => r.classification.kind,
-        searchValue: (r) => {
-          const hint = hintOf(r);
-          return `${r.classification.kind} ${r.classification.provider ? r.classification.provider.name : ''} ${hint ? hintText(hint).badge : ''}`;
-        },
-        exportValue: (r) => {
-          const base = r.classification.provider ? r.classification.provider.name : t(`kind.${r.classification.kind}`);
-          const hint = hintOf(r);
-          return hint ? `${base} · ${hintText(hint).badge}${hint.asn !== null ? ` (AS${hint.asn})` : ''}` : base;
-        },
-        render: renderOperator
-      },
-      {
-        key: 'server', label: t('ipi.col.server'), sortable: true,
-        sortValue: (r) => (r.servers.length ? r.servers[0].name : null),
-        searchValue: (r) => r.servers.map((s) => s.name).join(' '),
-        exportValue: (r) => r.servers.map((s) => s.name).join(' '),
-        render: (r) => (r.servers.length ? h('div', { class: 'cluster' }, r.servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server' }))) : null)
-      },
-      {
-        key: 'ptr', label: t('ipi.col.ptr'), sortable: true, className: 'ipi-col-ptr', sortValue: (r) => (r.info && r.info.ptr[0]) || null,
-        searchValue: (r) => (r.info ? r.info.ptr.join(' ') : ''), exportValue: (r) => csvValue(r, 'ptr', r.info ? r.info.ptr.join(' ') : ''),
-        render: (r) => (r.pending ? pendingCell() : r.info && r.info.ptr.length ? TruncatedList(r.info.ptr, { max: 2, render: hostLink }) : naCell(r, 'ptr'))
-      },
-      {
-        key: 'network', label: t('ipi.col.holder'), sortable: true, className: 'ipi-col-network',
-        sortValue: (r) => (r.info ? r.info.asn : null),
-        searchValue: (r) => (r.info ? `AS${r.info.asn || ''} ${r.info.asName || ''} ${r.info.holder || ''}` : ''),
-        exportValue: (r) => csvValue(r, 'network', r.info ? [r.info.asn ? `AS${r.info.asn}` : '', [r.info.asName, r.info.holder].filter((x, i, arr) => x && arr.indexOf(x) === i).join(' - ')].filter(Boolean).join(' ') : ''),
-        render: (r) => {
-          if (r.pending || !r.info) return null;
-          if (!r.info.asn && !r.info.holder) {
-            return naCell(r, 'network') || (r.info.announced === false ? Badge(t('ipi.notAnnounced'), { title: t('ipi.notAnnouncedTitle') }) : null);
-          }
-          const same = !r.info.holder || r.info.asName === r.info.holder;
-          return h('div', { class: 'ipi-holder' },
-            h('span', { class: 'ipi-holder-name' },
-              r.info.asn ? ExternalLink(`https://stat.ripe.net/AS${r.info.asn}`, `AS${r.info.asn}`, { className: 'mono ipi-asn', icon: false }) : null,
-              r.info.asn ? ' ' : null,
-              r.info.asName || r.info.holder),
-            !same ? h('span', { class: 'muted text-xs ipi-holder-org' }, r.info.holder) : null);
-        }
-      },
-      {
-        key: 'prefix', label: t('ipi.col.prefix'), sortable: true, mono: true, className: 'ipi-col-prefix',
-        sortValue: (r) => (r.info && r.info.prefix ? ipSortValue(r.info.prefix.split('/')[0]) : null),
-        exportValue: (r) => csvValue(r, 'prefix', r.info ? r.info.prefix || '' : ''),
-        render: (r) => (r.info && r.info.prefix ? r.info.prefix : naCell(r, 'prefix'))
-      },
-      {
-        key: 'location', label: t('ipi.col.location'), sortable: true, className: 'ipi-col-location',
-        sortValue: (r) => (r.info && r.info.country ? `${formatRegion(r.info.country)} ${r.info.city || ''}` : null),
-        searchValue: (r) => (r.info && r.info.country ? `${r.info.country} ${formatRegion(r.info.country)} ${r.info.city || ''}` : ''),
-        exportValue: (r) => csvValue(r, 'location', r.info && r.info.country ? [r.info.country, r.info.city].filter(Boolean).join(' ') : ''),
-        render: (r) => (r.info && r.info.country ? h('div', { class: 'ipi-loc' },
-          h('span', null, flag(r.info.country), ' ', formatRegion(r.info.country)),
-          r.info.city ? h('span', { class: 'muted text-xs' }, r.info.city) : null) : naCell(r, 'location'))
-      },
-      {
-        key: 'reverse', label: t('ipi.col.reverse'), searchable: true,
-        searchValue: (r) => (r.reverse && r.reverse.result && r.reverse.result.ok ? r.reverse.result.domains.join(' ') : ''),
-        exportValue: (r) => (r.reverse && r.reverse.result && r.reverse.result.ok ? r.reverse.result.domains.join(' ') : ''),
-        render: renderReverse
-      }
-    ]
+    columns
   });
 
-  const quotaNote = Alert({ variant: 'info', compact: true, icon: 'info', message: t('ipi.quota') });
-  for (const [key, card] of Object.entries(stats)) card.el.dataset.stat = key;
-  const statsGrid = h('div', { class: 'stat-grid ipi-stats' }, stats.ips, stats.cdn, stats.mine, stats.priv, stats.nets, stats.countries);
-  // Zero counts of these fold into one sentence (ipi.zero); networks and countries grow while lookups run.
-  const zeroNote = h('p', { class: 'muted text-sm ipi-zero', hidden: true });
-  const sourcesEl = h('div', { class: 'src-chips ipi-sources', hidden: true, attrs: { role: 'group', 'aria-label': t('ipi.det.sources'), tabindex: -1 } });
-  const emptyEl = h('div', { class: 'card ipi-empty' }, EmptyState({ icon: 'network', title: t('ipi.emptyTitle'), message: t('ipi.emptyBody', { max: formatNumber(MAX_IPS) }) }));
+  /** The rows the table lists (filter and search applied, in its order) as a CSV or JSON file. */
+  function exportTable(format) {
+    const rows = table.getVisibleRows();
+    const name = timestampedName('ip-intel', format);
+    const file = format === 'csv'
+      ? downloadText(name, toCsv(rows, exportColumns(columns)), 'text/csv;charset=utf-8')
+      : downloadText(name, `${toJson(exportJson(rows))}\n`, 'application/json;charset=utf-8');
+    ctx.toast(t('table.exported', { file }), { type: 'success', timeout: 2500 });
+  }
+
+  const emptyEl = h('div', { class: 'ipi-empty' }, EmptyState({
+    icon: 'network',
+    message: t('ipi.emptyLine', { max: formatNumber(MAX_IPS) }),
+    checks: ['ptr', 'asn', 'location', 'cdn', 'server', 'reverse'].map((c) => t(`ipi.check.${c}`))
+  }));
+  // Domains on this IP: the panel loads on the first "Find domains" (ui/reverse-ip-panel.js).
+  const reverseHost = h('div', { class: 'ipi-reverse-host', hidden: true });
   // No part of the form: Ctrl/Cmd+Enter in the table's filter starts no new run.
+  const results = h('div', { class: 'ipi-results', hidden: true, dataset: { shortcutScope: 'results' } }, head.el, metrics.el, quotaNote, table.el);
+  container.append(h('div', { class: 'ipi-view' }, tool.el, emptyEl, results, reverseHost, runBar.float));
+
   /** The link a share button copies for a run's params: private and inventory addresses left out. */
   const permalink = (params) => ctx.shareUrl(permalinkParams('ip', params, {
     exclude: [...ctx.getInventoryIndex().keys(), ...(current ? current.rows.filter((r) => r.servers.length).map((r) => r.ip) : [])]
   }));
-  // "Copy summary": one line (lib/summary.js); the link is the run's own (never the route, which a
-  // carried address may have changed).
-  const summary = SummaryButton({
-    kind: 'ip',
-    disabled: true,
-    inventory: 'count',
-    facts: () => (current && !current.controller && current.rows.length ? { rows: current.rows, at: current.finishedAt, stopped: current.stopped } : null),
-    url: () => (current ? permalink(lookupParams(current.text)) : null)
+
+  /** The run's actions (ResultActions), drawn for each run: its Copy link exists only when a link can carry its addresses. */
+  let actions = null;
+  ctx.onCleanup(() => {
+    runBar.dispose();
+    if (actions) actions.dispose();
   });
-  // Domains on this IP: the panel loads on the first "Find domains" (ui/reverse-ip-panel.js).
-  const reverseHost = h('div', { class: 'ipi-reverse-host', hidden: true });
-  const reverseAllBtn = Button({
-    label: t('ipi.rev.all'), icon: 'globe', size: 'sm', variant: 'ghost', dataset: { action: 'reverse-all' },
-    onClick: () => openReverse((current ? current.rows : []).map((r) => r.ip), { run: false })
-  });
-  const results = h('div', { class: 'stack ipi-results', hidden: true, dataset: { shortcutScope: 'results' } },
-    progress, notesEl, h('div', { class: 'ipi-results-bar' }, summary.el, reverseAllBtn), statsGrid, zeroNote, quotaNote, sourcesEl, table);
-  container.append(h('div', { class: 'stack-lg ipi-view' }, formCard, emptyEl, results, reverseHost));
 
   /* --- cell renderers ----------------------------------------------------------------- */
   /** "⚠ n/a" when a failed source left `field` empty (null for a real "none" or a pending row). */
@@ -725,31 +794,54 @@ export function mount(container, ctx) {
     };
   }
 
+  /** The metric strip's figure of each id (lib/netresults.js IP_METRICS), with its hint. */
+  const METRIC_OF = {
+    ips: (f) => ({ label: t('ipi.stat.ips'), value: f.ips, hint: t('ipi.stat.ipsHint', { v4: formatNumber(f.v4), v6: formatNumber(f.v6) }) }),
+    cdn: (f) => ({ label: t('ipi.stat.cdn'), value: f.cdn, hint: f.providers.slice(0, 3).join(', ') || null }),
+    mine: (f) => ({ label: t('ipi.stat.mine'), value: f.mine, hint: f.servers.slice(0, 3).join(', ') || null }),
+    priv: (f) => ({ label: t('ipi.stat.private'), value: f.priv }),
+    nets: (f) => ({ label: t('ipi.stat.networks'), value: f.nets }),
+    countries: (f) => ({ label: t('ipi.stat.countries'), value: f.countries.length, hint: f.countries.slice(0, 6).join(' ') || null })
+  };
+
+  /** The status summary's words of each item (lib/netresults.js ipStatus). */
+  const statusWords = (key, count) => (key === 'sources' ? t('result.sourcesFailed', { count }) : t(`ipi.status.${key}`, { count }));
+  /** What the status summary shows now, in words: announced once when a lookup ends. */
+  let statusLine = [];
+
+  /** The metric strip, the status summary and the source chips of the rows on screen. */
   function renderStats(rows) {
-    const v6 = rows.filter((r) => ipVersion(r.ip) === 6).length;
-    stats.ips.set({ value: rows.length, hint: t('ipi.stat.ipsHint', { v4: formatNumber(rows.length - v6), v6: formatNumber(v6) }) });
-    const cdn = rows.filter((r) => r.classification.hidesOrigin);
-    const names = [...new Set(cdn.map((r) => r.classification.provider.name))];
-    stats.cdn.set({ value: cdn.length, hint: names.slice(0, 3).join(', ') || null });
-    const mine = rows.filter((r) => r.servers.length);
-    stats.mine.set({ value: mine.length, hint: mine.length ? [...new Set(mine.flatMap((r) => r.servers.map((s) => s.name)))].slice(0, 3).join(', ') : null });
-    stats.priv.set({ value: rows.filter((r) => isPrivateIP(r.ip)).length });
-    const asns = new Set(rows.map((r) => r.info && r.info.asn).filter(Boolean));
-    stats.nets.set({ value: asns.size });
-    const countries = [...new Set(rows.map((r) => r.info && r.info.country).filter(Boolean))];
-    stats.countries.set({ value: countries.length, hint: countries.slice(0, 6).join(' ') || null });
-    // Zero counts fold into one muted sentence (never the address count, nor the networks and
-    // countries, which are still growing while lookups run).
-    const { folded } = foldZeroStats([
-      { id: 'ips', value: rows.length }, { id: 'cdn', value: cdn.length }, { id: 'mine', value: mine.length },
-      { id: 'priv', value: rows.filter((r) => isPrivateIP(r.ip)).length }
-    ], { foldable: rows.length ? ['cdn', 'mine', 'priv'] : [] });
-    for (const [key, card] of Object.entries(stats)) card.el.hidden = folded.includes(key);
-    // "one of your servers" only when there is a server list to match against.
-    const parts = folded.filter((id) => id !== 'mine' || ctx.state.inventory.servers.length).map((id) => t(`ipi.zero.${id}`));
-    zeroNote.hidden = !parts.length;
-    zeroNote.textContent = parts.length ? t('ipi.zero', { count: rows.length, list: listText(parts) }) : '';
-    renderSources(rows);
+    const figures = ipFigures(rows);
+    const inventory = hasInventory();
+    const list = ipMetricIds({ inventory }).map((id) => ({ id, ...METRIC_OF[id](figures) }));
+    zeroPhrases = new Map(list.filter((m) => IP_FOLDABLE.includes(m.id)).map((m) => [m.label, t(`ipi.zero.${m.id}`)]));
+    zeroCount = rows.length;
+    metrics.update(list, { foldable: rows.length ? [...IP_FOLDABLE] : [] });
+    const chips = ipSourceChips(rows);
+    renderSources(rows, chips);
+    const items = ipStatus({ figures, failedSources: chips.filter((c) => c.state === 'failed').length, inventory }).map((item) => ({
+      ...item,
+      text: statusWords(item.key, item.count),
+      onPress: item.filter ? () => setFilter(pressed === item.key ? null : item.key)
+        : item.key === 'sources' ? () => focusSources() : null
+    }));
+    status.update(items, { pressed });
+    statusLine = statusItems(items).map((x) => x.text);
+  }
+
+  /** A status item pressed: the table lists only its rows (pressed again: every row). */
+  function setFilter(key) {
+    const item = key ? ipStatus().find((x) => x.key === key) : null;
+    pressed = item && item.filter ? key : null;
+    table.setFilter(pressed ? (row) => ipRowMatches(row, item.filter) : null);
+    status.setPressed(pressed);
+  }
+
+  /** "1 source failed": the keyboard focus goes to the chips, whose Retry asks it again. */
+  function focusSources() {
+    if (sourcesEl.hidden) return;
+    sourcesEl.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+    (sourcesEl.querySelector('[data-action="retry-source"]') || sourcesEl).focus({ preventScroll: true });
   }
 
   /** "a, b or c" in the UI language. */
@@ -765,14 +857,14 @@ export function mount(container, ctx) {
    * One chip per service: where its failures left fields empty, with a Retry of those rows. No
    * chips while nothing was asked (a run stopped before its first answer: the note says so).
    */
-  function renderSources(rows) {
+  function renderSources(rows, chips = ipSourceChips(rows)) {
     const looked = rows.some((r) => !isPrivateIP(r.ip) && (r.pending || r.info));
     // A chip's Retry that had the keyboard focus gets it back, or the group when that Retry is gone.
     const focused = sourcesEl.contains(globalThis.document.activeElement) ? globalThis.document.activeElement.dataset.chip || '' : null;
     sourcesEl.hidden = !looked;
     clear(sourcesEl);
     if (!looked) return;
-    for (const chip of ipSourceChips(rows)) {
+    for (const chip of chips) {
       const failedRows = rows.filter((r) => chip.ips.includes(r.ip));
       sourcesEl.append(SourceChip(chip, {
         onRetry: () => retryRows(failedRows, chip.sources),
@@ -780,6 +872,66 @@ export function mount(container, ctx) {
       }));
     }
     if (focused !== null) (sourcesEl.querySelector(`[data-chip="${focused}"]`) || sourcesEl).focus();
+  }
+
+  /**
+   * The result header of the run on screen: while it runs, what it does and its progress; once it
+   * ended, its count ("3 addresses", one address by itself), when, the actions and the next step.
+   */
+  function renderHead() {
+    const state = current;
+    if (!state) return;
+    const running = !!state.controller;
+    const count = state.rows.length;
+    head.setState(running ? 'running' : 'done');
+    let title;
+    if (running) title = state.resolving ? t('ipi.resolvingTitle') : t('ipi.lookingCount', { count });
+    else if (count === 1) title = h('span', { class: 'mono result-subject' }, state.rows[0].ip);
+    else title = t('ipi.resultsTitle', { count });
+    head.set('title', ResultTitle({ running, text: title }));
+    head.set('meta', !running && state.finishedAt
+      ? RelativeTime(state.finishedAt, { className: 'ipi-at', text: t('ipi.checkedAt', { time: formatRelative(state.finishedAt) }) }) : null);
+    head.set('progress', running ? progress.el : null);
+    if (actions) actions.setDisabled(running || !count);
+    head.set('next', !running && count ? NextSteps({
+      steps: [{ label: t('ipi.rev.all'), icon: 'globe', dataset: { action: 'reverse-all' }, onClick: () => openReverse(state.rows.map((r) => r.ip), { run: false }) }]
+    }) : null);
+  }
+
+  /**
+   * The actions of a run (ResultActions): Copy summary with ¶, Export ▾ (CSV, JSON: what the table
+   * lists) and Copy link when a link can carry the run's addresses (at most 40 of them): the run on
+   * screen, not the box, which may hold a carried address. Like Copy summary's link, it leaves out
+   * private and inventory addresses (the address bar keeps them: a reload runs the same lookup).
+   */
+  function renderActions(params) {
+    if (actions) actions.dispose();
+    actions = ResultActions({
+      summary: SummaryButton({
+        kind: 'ip',
+        inventory: 'count',
+        plainLabel: t('result.plainTitle'),
+        facts: () => (current && !current.controller && current.rows.length ? { rows: current.rows, at: current.finishedAt, stopped: current.stopped } : null),
+        url: () => (current ? permalink(lookupParams(current.text)) : null)
+      }),
+      exports: [
+        { label: t('common.exportCsv'), icon: 'download', dataset: { export: 'csv' }, onSelect: () => exportTable('csv') },
+        { label: t('common.exportJson'), icon: 'download', dataset: { export: 'json' }, onSelect: () => exportTable('json') }
+      ],
+      link: params.ips ? () => permalink(params) : null
+    });
+    head.set('actions', actions.el);
+    actions.setDisabled(!!(current && current.controller));
+  }
+
+  /** The run bar and the input follow the state: compact once a lookup starts, "Run again" while the box asks for the rows on screen. */
+  function syncRunBar() {
+    const running = !!(current && current.controller);
+    const state = templateState({ running, result: !!(current && current.rows.length) });
+    runBar.setState(state);
+    runBar.setRerun(state === 'done' && entriesOf(input.value).join('\n') === entriesOf(current.text).join('\n'));
+    tool.setCompact(inputCompact(state));
+    runBar.refresh();
   }
 
   /**
@@ -830,11 +982,12 @@ export function mount(container, ctx) {
   }
 
   function setRunning(on) {
-    runBtn.hidden = on;
-    stopBtn.hidden = !on;
+    // The keyboard focus follows the button it was on (Look up ⇄ Stop).
+    runBar.setRunning(on);
     input.input.readOnly = on;
-    summary.setDisabled(on || !(current && current.rows.length));
+    if (actions) actions.setDisabled(on || !(current && current.rows.length));
     ctx.setBusy(on ? t('ipi.looking') : false);
+    syncRunBar();
   }
 
   function stop() {
@@ -861,7 +1014,6 @@ export function mount(container, ctx) {
     const tokens = [...parsed.ips, ...parsed.hosts];
     const params = lookupParams(input.value);
     ctx.setParams(params);
-    setShareAction(params);
     const one = commonTarget(tokens);
     ctx.runStarted(one ? one.value : null);
     run(parsed, null, { text: input.value });
@@ -877,17 +1029,6 @@ export function mount(container, ctx) {
   function lookupParams(text) {
     const tokens = entriesOf(text);
     return { ips: tokens.length && tokens.length <= 40 ? tokens.join(',') : null };
-  }
-
-  /**
-   * "Copy link" in the page header when a link can carry the run's addresses (at most 40 of
-   * them), after a run and again for a run restored by a re-mount: the run on screen, not the box,
-   * which may hold a carried address. Like Copy summary's link, it leaves out private and
-   * inventory addresses (the address bar keeps them: a reload runs the same lookup).
-   */
-  function setShareAction(params) {
-    if (params.ips) ctx.setActions(CopyButton(() => permalink(params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
-    else ctx.setActions();
   }
 
   /**
@@ -922,34 +1063,39 @@ export function mount(container, ctx) {
     if (current) current.life.abort();
     const controller = new AbortController();
     // `life` cancels this run's Retries (a new run, Stop, the view going away).
-    const state = { controller, life: new AbortController(), rows: [], stopped: false, text, finishedAt: null };
+    const state = { controller, life: new AbortController(), rows: [], stopped: false, text, finishedAt: null, resolving: false };
     current = state;
     emptyEl.hidden = true;
     results.hidden = false;
     clear(notesEl);
-    zeroNote.hidden = true;
     sourcesEl.hidden = true;
+    setFilter(null);
     if (parsed.invalid.length) note('warn', t('ipi.invalid', { items: parsed.invalid.slice(0, 12).join(', ') + (parsed.invalid.length > 12 ? ' …' : '') }));
     if (parsed.cidrs.length) note('info', t('ipi.cidr', { range: parsed.cidrs[0] }));
     table.setRows([]);
+    renderActions(lookupParams(text));
 
     if (preset) {
       state.rows = preset.map((r) => ({ ...r, servers: serversOf(r.ip) }));
       table.setRows(state.rows);
-      renderStats(state.rows);
       state.controller = null;
       state.finishedAt = at ? new Date(at) : new Date();
       // A lookup stopped before a re-mount still says so (its summary does too).
       state.stopped = !!stopped;
       if (state.stopped) note('info', t('ipi.stopped'));
-      summary.setDisabled(!preset.length);
+      renderStats(state.rows);
+      renderHead();
+      syncRunBar();
       return;
     }
 
     const signal = mergeSignals(ctx.signal, controller.signal);
-    setRunning(true);
-    progress.el.hidden = false;
     progress.setVariant('default');
+    progress.setLabel(t('ipi.looking'));
+    progress.set(0, 1);
+    renderStats([]);
+    renderHead();
+    setRunning(true);
     try {
       // The range dataset's network tier names the operator of a direct address at once (lib/networklabel.js):
       // wait for its one load per page. A failed load leaves the built-in table, and only the AS-based hint.
@@ -974,6 +1120,8 @@ export function mount(container, ctx) {
       const hosts = parsed.hosts.slice(0, MAX_HOSTS);
       if (parsed.hosts.length > MAX_HOSTS) note('warn', t('ipi.hostsTruncated', { max: MAX_HOSTS }));
       if (hosts.length) {
+        state.resolving = true;
+        renderHead();
         progress.setLabel(t('ipi.resolving'));
         progress.set(0, hosts.length);
         let done = 0;
@@ -987,6 +1135,7 @@ export function mount(container, ctx) {
           for (const ip of addrs) if (!addIp(ip, host, res.cnames)) truncated = true;
         }));
         if (failed.length) note('warn', t('ipi.hostFailed', { items: failed.join(', ') }));
+        state.resolving = false;
       }
       if (truncated) note('warn', t('ipi.truncated', { max: MAX_IPS }));
 
@@ -994,6 +1143,7 @@ export function mount(container, ctx) {
       state.rows = [...byIp.values()];
       table.setRows(state.rows);
       renderStats(state.rows);
+      renderHead();
       const intel = getIntel(dns);
       progress.setLabel(t('ipi.looking'));
       progress.set(0, state.rows.length);
@@ -1016,16 +1166,14 @@ export function mount(container, ctx) {
     } catch (err) {
       if (current !== state) return;
       if (err && err.name === 'AbortError') {
-        if (state.stopped) {
-          note('info', t('ipi.stopped'));
-          progress.setVariant('warn');
-        }
+        if (state.stopped) note('info', t('ipi.stopped'));
       } else {
         ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
       }
     } finally {
       if (current === state) {
         state.controller = null;
+        state.resolving = false;
         state.finishedAt = new Date();
         for (const row of state.rows) {
           if (row.pending) {
@@ -1034,8 +1182,10 @@ export function mount(container, ctx) {
           }
         }
         renderStats(state.rows);
+        renderHead();
         if (!ctx.signal.aborted) setRunning(false);
-        setTimeout(() => { if (current === state && !state.controller && !state.stopped) progress.el.hidden = true; }, 900);
+        // The totals, said once (the status summary is not a live region).
+        if (!ctx.signal.aborted && state.rows.length && !state.stopped) announce([t('ipi.resultsTitle', { count: state.rows.length }), ...statusLine].join(' · '));
       }
     }
   }
@@ -1095,6 +1245,7 @@ export function mount(container, ctx) {
   }
 
   /* --- initial state ---------------------------------------------------------------- */
+  updateParsed();
   if (restored && restored.reverse) {
     // Domains on this IP as it was before a re-mount: shown again, nothing sent.
     ensureReversePanel().then((panel) => {
@@ -1106,7 +1257,6 @@ export function mount(container, ctx) {
   if (restored && Array.isArray(restored.rows) && restored.rows.length) {
     const text = restored.query ?? restored.text ?? '';
     run(parseIpInput(text), restored.rows, { text, at: restored.at, stopped: restored.stopped });
-    setShareAction(lookupParams(text));
     // The kept rows under an address carried over from another tool: the box takes the address.
     if (isFillOnly(ctx.params) && paramText) takeCarried(splitList(paramText).join('\n'));
   } else if (paramText && !isFillOnly(ctx.params)) {

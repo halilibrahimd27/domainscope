@@ -1,71 +1,58 @@
 /*
- * views/ip.css — "IP Intel" view (.ipi-*), with its routing panel in a row's details
- * (ui/ip-enrich-panel.js, .ipe-*).
+ * views/ip.css — "IP Intel" view (.ipi-*) on the page template (style.css § 4: the input card, the
+ * result header, the metric strip, the table's card mode on a phone), with its routing panel in a
+ * row's details (ui/ip-enrich-panel.js, .ipe-*).
  * Domains on this IP (ui/reverse-ip-panel.js, loaded on the first "Find domains"): .rip-*.
  */
 
+.ipi-view,
+.ipi-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
+}
+
 .ipi-input .textarea {
   min-height: 132px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
 }
 
-.ipi-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 16px;
-}
-
-.ipi-run {
-  margin-left: auto;
+/* Compact (from the first lookup): the box is one row (DESIGN §5.1), as high as a field, its first
+   line centred and the next ones out of view (still editable: the caret scrolls them in); Edit
+   shows it whole again. */
+.ipi-form-card.is-compact:not(.is-editing) .ipi-input .textarea {
+  height: var(--field-h);
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  line-height: calc(var(--field-h) - 2px);
+  resize: none;
 }
 
 .ipi-parsed:empty {
   display: none;
 }
 
-.ipi-privacy {
-  margin: 0;
+.ipi-fill {
+  gap: var(--space-1);
 }
 
-@media (max-width: 600px) {
-  .ipi-run {
-    width: 100%;
-  }
-
-  .ipi-run .btn {
-    flex: 1;
-  }
-}
-
-.ipi-empty {
-  padding: 8px 0;
-}
-
-/* Copy summary above the stat cards, at the end of the row */
-.ipi-results-bar {
+/* Find domains' quota: a hint, not an alert (DESIGN §7: hints are muted text). */
+.ipi-quota {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
+  align-items: baseline;
+  gap: var(--space-1);
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
 }
 
-.ipi-stats {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-}
-
-@media (max-width: 1280px) {
-  .ipi-stats {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 640px) {
-  .ipi-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.ipi-quota .icon {
+  flex: none;
+  transform: translateY(2px);
 }
 
 .ipi-row.is-pending td {
@@ -148,11 +135,6 @@
 
 .ipi-problem {
   overflow-wrap: anywhere;
-}
-
-/* Stat cards whose count is zero, folded into one sentence under the grid. */
-.ipi-zero {
-  margin: -6px 0 0;
 }
 
 .ipi-rev {
@@ -269,11 +251,10 @@
   }
 }
 
-/* Print (style.css hides the shell and every control): leave out the form, the empty state and the Copy summary bar. */
+/* Print (style.css hides the shell, every control and the template's input and actions): leave out the empty state and the quota hint. */
 @media print {
-  .ipi-form-card,
   .ipi-empty,
-  .ipi-results-bar,
+  .ipi-quota,
   .rip-form,
   .rip-keys,
   .rip-more,
@@ -407,16 +388,20 @@
   margin-left: 4px;
 }
 
-@media (max-width: 640px) {
-  /* The details row is as wide as the table, which scrolls sideways on a phone: the panel stays
-     in view at the scroller's left edge and wraps at the screen's width (gutters and the details
-     padding taken off), so nothing of it needs a sideways scroll to be read. */
-  .ipi-enrich {
-    position: sticky;
-    left: 0;
-    max-width: calc(100vw - 96px);
+/* A phone: each row is a card (style.css .dt-cards); its cells give up their table widths. */
+@media (max-width: 719px) {
+  .ipi-op,
+  .ipi-holder {
+    min-width: 0;
+    max-width: none;
   }
 
+  .ipi-rev .tlist {
+    max-width: none;
+  }
+}
+
+@media (max-width: 640px) {
   .ipe-head {
     align-items: flex-start;
   }
@@ -529,11 +514,6 @@
 }
 
 @media (max-width: 640px) {
-  /* The details row is as wide as the scrolling table: keep the panel inside the visible part. */
-  .ipi-bl {
-    max-width: calc(100vw - 88px);
-  }
-
   .ipi-bl-table thead {
     display: none;
   }

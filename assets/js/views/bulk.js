@@ -12,6 +12,16 @@
  * another tool is opened and its results are shown again on return. Rows stream into the
  * tables (DataTable batches the rendering), so thousands of names stay responsive.
  *
+ * The page template (ui/template.js; docs/DESIGN.md §5, §8 phase 5), a batch tool: the input card
+ * holds the list, the options beside it, Resolve under the list (on a phone also at the bottom of
+ * the screen while the list is long), the parse summary, the file import and the privacy note, and
+ * turns compact from the first job. The job's result header (`.bulk-progress`) has its title, its
+ * progress or time, the status summary (lookups failed, not resolving, behind a CDN, resolving,
+ * direct, your servers: lib/netresults.js bulkStatus; a press is the host table's Show filter),
+ * Copy summary with ¶ (lib/summary.js bulkSummary), Export ▾ (the host names and the IP addresses as
+ * CSV or JSON) and Copy link (`names=`, up to 40 names), and the next step "Use in IP Intel"; each
+ * tab has its metric strip and its table (a card per row on a phone).
+ *
  * Route params: `#/bulk?names=a.example.com,b.example.com` pre-fills the list; with `run=0` (a
  * name carried over from another tool, lib/session.js) only an empty list or one that still holds
  * the last job's names or the name carried before takes it. "Delete all local data" forgets the list and the last job (a
@@ -20,8 +30,8 @@
 
 import { h, clear } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, DataTable, EmptyState, ErrorBanner, FileDrop, Icon, KeyValueList, KindBadge,
-  ProgressBar, StatCard, Tabs, TruncatedList, announce, checkbox, copyText, ipSortValue, select, textarea, toast
+  Alert, Badge, Button, DataTable, ErrorBanner, FileDrop, Icon, KeyValueList, KindBadge,
+  ProgressBar, Tabs, TruncatedList, announce, checkbox, copyText, ipSortValue, select, textarea, toast
 } from '../ui/components.js';
 import {
   t, registerStrings, formatNumber, formatDuration, formatDateTime, formatRegion
@@ -32,12 +42,19 @@ import { lookupServers } from '../lib/inventory.js';
 import { createIpIntel } from '../lib/ipintel.js';
 import { RESOLVERS, getResolver } from '../lib/resolvers.js';
 import { errorKind, splitList } from '../lib/util.js';
-import { backToLastRun, commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
+import { FILL_PARAM, FILL_VALUE, backToLastRun, commonTarget, fillReplaces, isFillOnly } from '../lib/session.js';
 import { state as stateSingleton } from '../state.js';
 import { bulkFraction } from '../lib/jobprogress.js';
 import { ipFieldStatus, sourceStatus, EXPORT_NA } from '../lib/sourcestatus.js';
 import { NaMark } from '../ui/source-status.js';
 import { startJob as trackJob, NotifyButton } from '../ui/jobs.js';
+import { EmptyState, MetricStrip, NextSteps, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput } from '../ui/template.js';
+import { inputCompact, optionsSummary, templateState } from '../lib/template.js';
+import { BULK_FOLDABLE, bulkLinkParams, bulkStatus, bulkSummaryFacts, exportColumns, exportObjects, handoffIps } from '../lib/netresults.js';
+import { toCsv, toJson } from '../lib/export.js';
+import { downloadText, timestampedName } from '../ui/download.js';
+import { permalinkParams } from '../ui/view-summaries.js';
+import { SummaryButton } from '../ui/summary-button.js';
 
 /** Route id. */
 export const id = 'bulk';
@@ -64,8 +81,6 @@ export const IP_FILTERS = Object.freeze(['all', 'mine', 'unknown', 'cdn', 'priva
 /* ------------------------------------------------------------------------ */
 
 registerStrings('en', {
-  'bulk.inputTitle': 'Hostnames',
-  'bulk.inputSubtitle': 'Paste a list, import a file, or reuse the names of the last scan',
   'bulk.inputLabel': 'Hostnames to resolve',
   'bulk.placeholder': 'www.example.com.tr\napi.example.com.tr\nmail.example.com.tr\n\n# one per line, or separated by spaces / commas; URLs are fine',
   'bulk.dropTitle': 'Import a list',
@@ -90,8 +105,11 @@ registerStrings('en', {
   'bulk.opt.chain': 'Failover chain from Settings ({chain})',
   'bulk.opt.concurrency': 'Parallel queries: {n} (Settings)',
   'bulk.run': 'Resolve',
-  'bulk.runAgain': 'Resolve again',
   'bulk.cancel': 'Cancel',
+  'bulk.privacy': 'Host names go to your DoH resolvers; with the options, reverse names too and public addresses to RIPEstat or ipwho.is. Your server list stays in this browser.',
+  'bulk.sum.ptr': 'reverse DNS',
+  'bulk.sum.asn': 'network owners',
+  'bulk.sum.noCache': 'no cache',
   'bulk.required': 'Enter at least one valid hostname.',
   'bulk.busy': 'Resolving…',
 
@@ -105,6 +123,21 @@ registerStrings('en', {
   'bulk.failed': 'Resolving failed',
   'bulk.doneToast': { one: 'Bulk resolve finished: {count} hostname', other: 'Bulk resolve finished: {count} hostnames' },
   'bulk.showResults': 'Show results',
+  'bulk.resolvingTitle': { one: 'Resolving {count} host name…', other: 'Resolving {count} host names…' },
+  'bulk.resultsTitle': { one: '{count} host name resolved', other: '{count} host names resolved' },
+  'bulk.cancelledTitle': '{done} of {total} host names resolved',
+  'bulk.status.errors': { one: '{count} lookup failed', other: '{count} lookups failed' },
+  'bulk.status.unresolved': '{count} not resolving',
+  'bulk.status.hidden': '{count} behind a CDN',
+  'bulk.status.resolving': '{count} resolving',
+  'bulk.status.direct': '{count} direct',
+  'bulk.status.mine': '{count} on your servers',
+  'bulk.exp.hostsCsv': 'Host names (CSV)',
+  'bulk.exp.hostsJson': 'Host names (JSON)',
+  'bulk.exp.ipsCsv': 'IP addresses (CSV)',
+  'bulk.exp.ipsJson': 'IP addresses (JSON)',
+  'bulk.toIp': 'Use in IP Intel',
+  'bulk.toIpTitle': { one: 'Open IP Intel with the {count} address filled in (you press Look up)', other: 'Open IP Intel with the {count} addresses filled in (you press Look up)' },
 
   'bulk.stat.names': 'Hostnames',
   'bulk.stat.namesHint': '{count} resolving',
@@ -168,13 +201,16 @@ registerStrings('en', {
   'bulk.d.error': 'Error',
   'bulk.d.tools': 'Open in',
   'bulk.d.ede': 'Extended DNS error',
-  'bulk.emptyTitle': 'Resolve many hostnames at once',
-  'bulk.emptyBody': 'Paste the list on the left: every name is resolved in your browser over DNS-over-HTTPS, classified (Cloudflare, CDN, direct …) and matched to your saved servers.'
+  'bulk.emptyLine': 'Every name is resolved in this browser over DNS-over-HTTPS, classified and matched to your servers.',
+  'bulk.check.ips': 'IPv4 and IPv6',
+  'bulk.check.cname': 'CNAME chain',
+  'bulk.check.kind': 'Cloudflare, CDN or direct',
+  'bulk.check.servers': 'Your servers',
+  'bulk.check.ptr': 'Reverse DNS (optional)',
+  'bulk.check.asn': 'Network owner (optional)'
 });
 
 registerStrings('tr', {
-  'bulk.inputTitle': 'Host adları',
-  'bulk.inputSubtitle': 'Liste yapıştırın, dosya içe aktarın ya da son taramanın adlarını kullanın',
   'bulk.inputLabel': 'Çözümlenecek host adları',
   'bulk.placeholder': 'www.example.com.tr\napi.example.com.tr\nmail.example.com.tr\n\n# her satıra bir ad, ya da boşluk / virgülle ayrılmış; URL de olur',
   'bulk.dropTitle': 'Liste içe aktar',
@@ -199,8 +235,11 @@ registerStrings('tr', {
   'bulk.opt.chain': 'Ayarlar’daki yedekleme zinciri ({chain})',
   'bulk.opt.concurrency': 'Paralel sorgu: {n} (Ayarlar)',
   'bulk.run': 'Çözümle',
-  'bulk.runAgain': 'Yeniden çözümle',
   'bulk.cancel': 'İptal et',
+  'bulk.privacy': 'Host adları DoH çözümleyicilerinize gider; seçeneklerle ters adlar da, genel adresler de RIPEstat’a ya da ipwho.is’e. Sunucu listeniz bu tarayıcıda kalır.',
+  'bulk.sum.ptr': 'ters DNS',
+  'bulk.sum.asn': 'ağ sahipleri',
+  'bulk.sum.noCache': 'önbelleksiz',
   'bulk.required': 'En az bir geçerli host adı girin.',
   'bulk.busy': 'Çözümleniyor…',
 
@@ -214,6 +253,21 @@ registerStrings('tr', {
   'bulk.failed': 'Çözümleme başarısız oldu',
   'bulk.doneToast': { one: 'Toplu çözümleme bitti: {count} host adı', other: 'Toplu çözümleme bitti: {count} host adı' },
   'bulk.showResults': 'Sonuçları göster',
+  'bulk.resolvingTitle': '{count} host adı çözümleniyor…',
+  'bulk.resultsTitle': '{count} host adı çözümlendi',
+  'bulk.cancelledTitle': '{total} host adından {done} tanesi çözümlendi',
+  'bulk.status.errors': '{count} sorgu başarısız',
+  'bulk.status.unresolved': '{count} çözümlenmeyen',
+  'bulk.status.hidden': '{count} tanesi CDN arkasında',
+  'bulk.status.resolving': '{count} çözümlenen',
+  'bulk.status.direct': '{count} doğrudan',
+  'bulk.status.mine': '{count} tanesi sunucularınızda',
+  'bulk.exp.hostsCsv': 'Host adları (CSV)',
+  'bulk.exp.hostsJson': 'Host adları (JSON)',
+  'bulk.exp.ipsCsv': 'IP adresleri (CSV)',
+  'bulk.exp.ipsJson': 'IP adresleri (JSON)',
+  'bulk.toIp': 'IP Bilgisi’nde kullan',
+  'bulk.toIpTitle': 'IP Bilgisi’ni {count} adres doldurulmuş olarak aç (Sorgula’ya siz basarsınız)',
 
   'bulk.stat.names': 'Host adları',
   'bulk.stat.namesHint': '{count} tanesi çözümleniyor',
@@ -277,8 +331,13 @@ registerStrings('tr', {
   'bulk.d.error': 'Hata',
   'bulk.d.tools': 'Şurada aç',
   'bulk.d.ede': 'Genişletilmiş DNS hatası',
-  'bulk.emptyTitle': 'Çok sayıda host adını tek seferde çözümleyin',
-  'bulk.emptyBody': 'Listeyi soldaki alana yapıştırın: her ad tarayıcınızda DNS-over-HTTPS ile çözümlenir, sınıflandırılır (Cloudflare, CDN, doğrudan …) ve kayıtlı sunucularınızla eşleştirilir.'
+  'bulk.emptyLine': 'Her ad bu tarayıcıda DNS-over-HTTPS ile çözümlenir, sınıflandırılır ve sunucularınızla eşleştirilir.',
+  'bulk.check.ips': 'IPv4 ve IPv6',
+  'bulk.check.cname': 'CNAME zinciri',
+  'bulk.check.kind': 'Cloudflare, CDN ya da doğrudan',
+  'bulk.check.servers': 'Sunucularınız',
+  'bulk.check.ptr': 'Ters DNS (isteğe bağlı)',
+  'bulk.check.asn': 'Ağ sahibi (isteğe bağlı)'
 });
 
 /* ------------------------------------------------------------------------ */
@@ -431,10 +490,11 @@ export function ipRowMatches(row, filter) {
  * @param {object[]} rows
  * @param {Map<string, object>|object[]} ipRows
  * @returns {{ total: number, resolved: number, hidden: number, cloudflare: number, direct: number, onServers: number,
- *   unresolved: number, errors: number, ips: number, v4: number, v6: number, servers: number }}
+ *   unresolved: number, errors: number, ips: number, v4: number, v6: number, servers: number, mine: number }}
+ *   `mine`: the host names that point at one of your servers (the 'mine' filter)
  */
 export function bulkStats(rows, ipRows) {
-  const s = { total: 0, resolved: 0, hidden: 0, cloudflare: 0, direct: 0, onServers: 0, unresolved: 0, errors: 0, ips: 0, v4: 0, v6: 0, servers: 0 };
+  const s = { total: 0, resolved: 0, hidden: 0, cloudflare: 0, direct: 0, onServers: 0, unresolved: 0, errors: 0, ips: 0, v4: 0, v6: 0, servers: 0, mine: 0 };
   const servers = new Set();
   for (const r of rows || []) {
     s.total += 1;
@@ -448,6 +508,7 @@ export function bulkStats(rows, ipRows) {
       if (r.servers.length) s.onServers += 1;
     }
     if (r.resolution.status !== 'NOERROR' && r.resolution.status !== 'NXDOMAIN') s.errors += 1;
+    if (r.servers.length) s.mine += 1;
     for (const m of r.servers) servers.add(m.serverId);
   }
   const ips = ipRows instanceof Map ? [...ipRows.values()] : ipRows || [];
@@ -843,7 +904,7 @@ export function mount(container, ctx) {
   } else if (!fromRoute.length) backToJob();
   if (session.text === null) session.text = '';
 
-  /* --- input ------------------------------------------------------------------------ */
+  /* --- region 2: the input (ui/template.js ToolInput) ---------------------------------- */
   const area = textarea({
     label: t('bulk.inputLabel'),
     rows: 12,
@@ -857,7 +918,6 @@ export function mount(container, ctx) {
       renderParse();
     }
   });
-  area.el.querySelector('.field-label').classList.add('sr-only');
   const parseInfo = h('div', { class: 'bulk-parse text-sm', attrs: { 'aria-live': 'polite' } });
   const drop = FileDrop({
     accept: ACCEPT,
@@ -904,24 +964,6 @@ export function mount(container, ctx) {
     }));
   }
 
-  let parsed = parseBulkInput(area.value);
-  function renderParse() {
-    parsed = parseBulkInput(area.value);
-    clear(parseInfo);
-    const bits = [Badge(t('bulk.parsed', { count: parsed.names.length }), { variant: parsed.names.length ? 'ok' : 'neutral', icon: parsed.names.length ? 'check' : null })];
-    if (parsed.duplicates) bits.push(Badge(t('bulk.duplicates', { count: parsed.duplicates }), { variant: 'neutral' }));
-    if (parsed.invalid.length) bits.push(Badge(t('bulk.invalid', { count: parsed.invalid.length }), { variant: 'warn', icon: 'alert', title: parsed.invalid.slice(0, 20).join(' ') }));
-    if (parsed.ips.length) bits.push(Badge(t('bulk.ipsIgnored', { count: parsed.ips.length }), { variant: 'info', icon: 'info' }));
-    if (parsed.truncated) bits.push(Badge(t('bulk.tooMany', { max: formatNumber(MAX_NAMES) }), { variant: 'warn', icon: 'alert' }));
-    parseInfo.append(h('div', { class: 'cluster' }, bits));
-    if (parsed.invalid.length) {
-      parseInfo.append(h('details', { class: 'bulk-invalid' },
-        h('summary', null, t('bulk.showInvalid')),
-        h('div', { class: 'mono text-sm bulk-invalid-list' }, parsed.invalid.slice(0, 200).join('\n'))));
-    }
-    runBtn.disabled = !parsed.names.length || !!(session.job && session.job.status === 'running');
-  }
-
   /* --- options ---------------------------------------------------------------------------- */
   const ptrBox = checkbox({ label: t('bulk.opt.ptr'), hint: t('bulk.opt.ptrHint'), checked: options.ptr, onChange: (on) => setOption('ptr', on) });
   const asnBox = checkbox({ label: t('bulk.opt.asn'), hint: t('bulk.opt.asnHint'), checked: options.asn, onChange: (on) => setOption('asn', on) });
@@ -944,61 +986,94 @@ export function mount(container, ctx) {
   function setOption(key, value) {
     options = { ...options, [key]: value };
     saveOptions(options);
+    tool.refresh();
+    syncRunBar();
   }
+  const optionsEl = h('div', { class: 'stack bulk-side' },
+    h('div', { class: 'field-label' }, t('bulk.optionsTitle')),
+    h('div', { class: 'stack-sm' }, ptrBox.el, asnBox.el, cacheBox.el),
+    h('div', { class: 'stack-sm' }, resolverSelect.el, concurrencyNote));
 
-  const runBtn = Button({ label: t('bulk.run'), icon: 'play', variant: 'primary', dataset: { action: 'bulk-run', shortcut: 'submit' }, onClick: () => start() });
-  const cancelBtn = Button({ label: t('bulk.cancel'), icon: 'stop', dataset: { action: 'bulk-cancel', shortcut: 'cancel' }, onClick: () => cancel() });
-  cancelBtn.hidden = true;
-
-  const inputCard = Card({
-    title: t('bulk.inputTitle'),
-    subtitle: t('bulk.inputSubtitle'),
-    icon: 'list',
-    className: 'bulk-input',
-    children: h('div', { class: 'bulk-input-grid' },
-      h('div', { class: 'stack bulk-input-main' },
-        drop,
-        h('div', { class: 'bulk-input-tools' }, scanNames, clearBtn),
-        area.el,
-        parseInfo),
-      h('div', { class: 'stack bulk-side' },
-        h('div', { class: 'field-label' }, t('bulk.optionsTitle')),
-        h('div', { class: 'stack-sm' }, ptrBox.el, asnBox.el, cacheBox.el),
-        h('div', { class: 'stack-sm' }, resolverSelect.el, concurrencyNote),
-        h('div', { class: 'bulk-actions' }, runBtn, cancelBtn)))
+  const runBar = RunBar({
+    label: t('bulk.run'),
+    dataset: { action: 'bulk-run', shortcut: 'submit' },
+    stopLabel: t('bulk.cancel'),
+    stopDataset: { action: 'bulk-cancel', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => cancel(),
+    hasValue: () => !!parsed.names.length
   });
+  /** The compact row's summary: the options that are on (none by default). */
+  const optionsLine = () => optionsSummary([
+    { label: t('bulk.sum.ptr'), isDefault: !options.ptr },
+    { label: t('bulk.sum.asn'), isDefault: !options.asn },
+    { label: t('bulk.sum.noCache'), isDefault: !options.noCache },
+    { label: options.resolver ? (getResolver(options.resolver) || { name: options.resolver }).name : '', isDefault: !options.resolver }
+  ]);
+  const tool = ToolInput({
+    className: 'bulk-input',
+    label: t('nav.bulk'),
+    primary: area.el,
+    inline: [optionsEl],
+    run: runBar,
+    notes: [parseInfo],
+    extras: [drop, h('div', { class: 'bulk-input-tools' }, scanNames, clearBtn)],
+    privacy: PrivacyNote({ text: t('bulk.privacy') }),
+    summary: optionsLine
+  });
+
+  let parsed = parseBulkInput(area.value);
+  function renderParse() {
+    parsed = parseBulkInput(area.value);
+    clear(parseInfo);
+    const bits = [Badge(t('bulk.parsed', { count: parsed.names.length }), { variant: parsed.names.length ? 'ok' : 'neutral', icon: parsed.names.length ? 'check' : null })];
+    if (parsed.duplicates) bits.push(Badge(t('bulk.duplicates', { count: parsed.duplicates }), { variant: 'neutral' }));
+    if (parsed.invalid.length) bits.push(Badge(t('bulk.invalid', { count: parsed.invalid.length }), { variant: 'warn', icon: 'alert', title: parsed.invalid.slice(0, 20).join(' ') }));
+    if (parsed.ips.length) bits.push(Badge(t('bulk.ipsIgnored', { count: parsed.ips.length }), { variant: 'info', icon: 'info' }));
+    if (parsed.truncated) bits.push(Badge(t('bulk.tooMany', { max: formatNumber(MAX_NAMES) }), { variant: 'warn', icon: 'alert' }));
+    parseInfo.append(h('div', { class: 'cluster' }, bits));
+    if (parsed.invalid.length) {
+      parseInfo.append(h('details', { class: 'bulk-invalid' },
+        h('summary', null, t('bulk.showInvalid')),
+        h('div', { class: 'mono text-sm bulk-invalid-list' }, parsed.invalid.slice(0, 200).join('\n'))));
+    }
+    syncRunBar();
+  }
 
   // The results are no part of the form: Ctrl/Cmd+Enter in a filter there starts no new run.
   const resultsHost = h('div', { class: 'bulk-results-host', dataset: { shortcutScope: 'results' } });
-  container.append(h('div', { class: 'bulk-layout' }, inputCard, resultsHost));
-
-  renderScanNames();
-  renderParse();
-  renderConcurrency();
-
-  cleanups.push(state.subscribe(({ key, value }) => {
-    if (key === 'settings') {
-      renderConcurrency();
-      resolverSelect.setOptions([{ value: '', label: t('bulk.opt.chain', { chain: chainLabel() }) }, ...RESOLVERS.map((r) => ({ value: r.id, label: r.name }))]);
-    }
-    if (key === 'session' && value && value.name === 'scanHosts') renderScanNames();
-  }));
+  container.append(h('div', { class: 'bulk-layout' }, tool.el, resultsHost, runBar.float));
 
   /* --- jobs ---------------------------------------------------------------------------------- */
   let ui = null;
+  const running = () => !!(session.job && session.job.status === 'running');
+
+  /**
+   * The run bar and the input follow the job: compact while one runs or is shown, "Run again"
+   * while the list and the options ask for the job on screen; Resolve waits for a valid name.
+   */
+  function syncRunBar() {
+    const job = session.job;
+    const st = templateState({ running: running(), result: !!job });
+    const same = !!job && st === 'done' && parsed.names.join('\n') === job.names.join('\n')
+      && ['ptr', 'asn', 'noCache', 'resolver'].every((k) => options[k] === job.options[k]);
+    runBar.setState(st);
+    runBar.setRerun(same);
+    runBar.run.disabled = !parsed.names.length || running();
+    tool.setCompact(inputCompact(st));
+    runBar.refresh();
+  }
 
   function setRunning(on) {
-    runBtn.hidden = on;
-    cancelBtn.hidden = !on;
-    runBtn.querySelector('.btn-label').textContent = session.job && !on ? t('bulk.runAgain') : t('bulk.run');
-    runBtn.disabled = !parsed.names.length;
+    runBar.setRunning(on);
     ctx.setBusy(on ? t('bulk.busy') : false);
+    syncRunBar();
   }
 
   let starting = false;
   async function start() {
     // `starting` covers the await below, so a double click cannot start two jobs.
-    if (starting || (session.job && session.job.status === 'running')) return;
+    if (starting || running()) return;
     renderParse();
     if (!parsed.names.length) {
       area.setError(t('bulk.required'));
@@ -1030,7 +1105,7 @@ export function mount(container, ctx) {
   }
 
   function cancel() {
-    if (session.job && session.job.status === 'running') session.job.controller.abort();
+    if (running()) session.job.controller.abort();
   }
 
   function attach(job) {
@@ -1041,14 +1116,25 @@ export function mount(container, ctx) {
     setRunning(job.status === 'running');
   }
 
+  renderScanNames();
+  renderConcurrency();
+  renderParse();
   if (session.job) attach(session.job);
   else {
-    resultsHost.append(Card({
-      padded: false,
-      className: 'bulk-intro',
-      children: EmptyState({ icon: 'list', title: t('bulk.emptyTitle'), message: t('bulk.emptyBody') })
-    }));
+    resultsHost.append(h('div', { class: 'bulk-intro' }, EmptyState({
+      icon: 'list',
+      message: t('bulk.emptyLine'),
+      checks: ['ips', 'cname', 'kind', 'servers', 'ptr', 'asn'].map((c) => t(`bulk.check.${c}`))
+    })));
   }
+
+  cleanups.push(state.subscribe(({ key, value }) => {
+    if (key === 'settings') {
+      renderConcurrency();
+      resolverSelect.setOptions([{ value: '', label: t('bulk.opt.chain', { chain: chainLabel() }) }, ...RESOLVERS.map((r) => ({ value: r.id, label: r.name }))]);
+    }
+    if (key === 'session' && value && value.name === 'scanHosts') renderScanNames();
+  }));
 
   active = {
     // "Run again" of the kept-result note: the last job's names (with the options as set now).
@@ -1084,6 +1170,7 @@ export function mount(container, ctx) {
     cleanups.forEach((fn) => fn());
     if (ui) ui.dispose();
     ui = null;
+    runBar.dispose();
     active = null;
   };
 }
@@ -1125,45 +1212,65 @@ export default { id, titleKey, icon, mount, unmount, update, result, rerun };
 /* Job UI                                                                   */
 /* ------------------------------------------------------------------------ */
 
+/**
+ * A job's result (docs/DESIGN.md §5.1): the result header (`.bulk-progress`, its `data-status` the
+ * job's) with the job's title, its time or progress, the status summary — whose items press the
+ * host table's Show filter, which follows them back —, Copy summary with ¶, Export ▾ (the host
+ * names and the IP addresses as CSV or JSON: what each table lists) and Copy link while a link can
+ * carry the names; then the two tabs, each with its metric strip and its table (a card per row on a
+ * phone).
+ */
 function buildJobUI(job, ctx, { onFinish }) {
   const opts = job.options;
   const showPtr = opts.ptr || opts.asn;
   const showAsn = opts.asn;
-
-  /* progress */
-  const progress = ProgressBar({ label: t('bulk.progress.resolve') });
-  const meta = h('div', { class: 'bulk-meta text-sm muted' });
-  const enrichLine = h('div', { class: 'bulk-enrich text-sm muted' });
-  const notice = h('div');
-
-  /* stats */
   const inv = job.inventoryServers > 0;
-  const stat = {
-    names: StatCard({ label: t('bulk.stat.names'), icon: 'list', variant: 'accent', onClick: () => setHostFilter('all'), pressed: true }),
-    hidden: StatCard({ label: t('bulk.stat.hidden'), icon: 'cloud', variant: 'cloudflare', onClick: () => setHostFilter('hidden'), pressed: false }),
-    direct: StatCard({ label: t('bulk.stat.direct'), icon: 'server', variant: 'direct', onClick: () => setHostFilter('direct'), pressed: false }),
-    unresolved: StatCard({ label: t('bulk.stat.unresolved'), icon: 'x-circle', variant: 'nxdomain', onClick: () => setHostFilter('unresolved'), pressed: false }),
-    ips: StatCard({ label: t('bulk.stat.ips'), icon: 'network', variant: 'info', onClick: () => tabs.select('ips', { focus: true }) }),
-    servers: StatCard({ label: t('bulk.stat.servers'), icon: 'server', variant: 'warn', onClick: () => (inv ? setHostFilter('mine') : null) })
-  };
-  const statFilters = { names: 'all', hidden: 'hidden', direct: 'direct', unresolved: 'unresolved', servers: 'mine' };
-  const statsGrid = h('div', { class: 'stat-grid bulk-stats' });
-  Object.entries(stat).forEach(([k, s]) => {
-    s.el.dataset.stat = k;
-    statsGrid.append(s.el);
+
+  /* region 4: the result header */
+  const head = ResultHeader({ className: 'bulk-progress', dataset: { status: job.status } });
+  const progress = ProgressBar({ label: t('bulk.progress.resolve') });
+  const metaText = h('span', { class: 'bulk-meta' });
+  const enrichLine = h('span', { class: 'bulk-enrich' });
+  const notify = NotifyButton(job.handle || null);
+  head.set('meta', [metaText, enrichLine, notify]);
+  const notice = h('div', { class: 'bulk-notice' });
+  head.set('notes', notice);
+  let hostFilter = 'all';
+  const status = StatusSummary({ items: [] });
+  head.set('status', status.el);
+  const linkParams = bulkLinkParams(job.names);
+  const actions = ResultActions({
+    summary: SummaryButton({
+      kind: 'bulk',
+      inventory: 'count',
+      plainLabel: t('result.plainTitle'),
+      facts: () => bulkSummaryFacts(job, { inventory: inv }),
+      url: () => (linkParams ? ctx.shareUrl(permalinkParams('bulk', linkParams)) : null)
+    }),
+    exports: [
+      { label: t('bulk.exp.hostsCsv'), icon: 'download', dataset: { export: 'csv' }, onSelect: () => exportTable(hostsTable, hostColumns, 'bulk-resolve', 'csv') },
+      { label: t('bulk.exp.hostsJson'), icon: 'download', dataset: { export: 'json' }, onSelect: () => exportTable(hostsTable, hostColumns, 'bulk-resolve', 'json') },
+      { label: t('bulk.exp.ipsCsv'), icon: 'download', dataset: { export: 'ips-csv' }, onSelect: () => exportTable(ipTable, ipColumns, 'bulk-ips', 'csv') },
+      { label: t('bulk.exp.ipsJson'), icon: 'download', dataset: { export: 'ips-json' }, onSelect: () => exportTable(ipTable, ipColumns, 'bulk-ips', 'json') }
+    ],
+    link: linkParams ? () => ctx.shareUrl(linkParams) : null
   });
+  head.set('actions', actions.el);
 
-  const renderStats = throttle(() => {
-    const s = bulkStats(job.rows, job.ips);
-    stat.names.set({ value: s.total, hint: t('bulk.stat.namesHint', { count: formatNumber(s.resolved) }) });
-    stat.hidden.set({ value: s.hidden, hint: t('bulk.stat.hiddenHint', { count: formatNumber(s.cloudflare) }) });
-    stat.direct.set({ value: s.direct, hint: inv ? t('bulk.stat.directHint', { count: s.onServers }) : null });
-    stat.unresolved.set({ value: s.unresolved, hint: t('bulk.stat.unresolvedHint', { count: s.errors }), variant: s.errors ? 'error' : 'nxdomain' });
-    stat.ips.set({ value: s.ips, hint: t('bulk.stat.ipsHint', { v4: formatNumber(s.v4), v6: formatNumber(s.v6) }) });
-    stat.servers.set({ value: inv ? s.servers : '—', hint: inv ? t('bulk.stat.serversHint') : t('bulk.stat.serversNone') });
-  }, 120);
+  /** A table's rows as it lists them (filter and search applied, in its order), as a CSV or JSON file. */
+  function exportTable(table, columns, base, format) {
+    const rows = table.getVisibleRows();
+    const cols = exportColumns(columns);
+    const name = timestampedName(base, format, job.names[0]);
+    const file = format === 'csv'
+      ? downloadText(name, toCsv(rows, cols), 'text/csv;charset=utf-8')
+      : downloadText(name, `${toJson(exportObjects(rows, cols))}\n`, 'application/json;charset=utf-8');
+    toast(t('table.exported', { file }), { type: 'success', timeout: 2500 });
+  }
 
-  /* hosts table */
+  /* regions 6 and 8 of the Host names tab: the metric strip, the table */
+  const hostStats = MetricStrip({ className: 'bulk-stats' });
+  const ipStats = MetricStrip({ className: 'bulk-ip-stats' });
   const hostFilterSel = select({
     label: t('bulk.filter.show'),
     size: 'sm',
@@ -1173,12 +1280,13 @@ function buildJobUI(job, ctx, { onFinish }) {
     onChange: (v) => setHostFilter(v, false)
   });
   hostFilterSel.input.dataset.role = 'bulk-filter';
-  let hostFilter = 'all';
+  /** The host table's Show filter (the select, or a status item: each follows the other). */
   function setHostFilter(f, selectTab = true) {
-    hostFilter = f;
-    hostFilterSel.value = f;
-    hostsTable.setFilter(f === 'all' ? null : (row) => bulkRowMatches(row, f));
-    for (const [k, v] of Object.entries(statFilters)) stat[k].set({ pressed: v === f });
+    hostFilter = BULK_FILTERS.includes(f) ? f : 'all';
+    hostFilterSel.value = hostFilter;
+    hostsTable.setFilter(hostFilter === 'all' ? null : (row) => bulkRowMatches(row, hostFilter));
+    const item = bulkStatus({}).find((x) => x.filter === hostFilter);
+    status.setPressed(item ? item.key : null);
     if (selectTab) tabs.select('hosts');
   }
 
@@ -1244,98 +1352,101 @@ function buildJobUI(job, ctx, { onFinish }) {
     }
   });
 
+  // Most useful first; on a phone each row is a card of labelled lines (style.css .dt-cards).
+  const hostColumns = [
+    { key: 'name', label: t('bulk.col.name'), sortable: true, mono: true, sortValue: (r) => r.name.split('.').reverse().join('.'), searchValue: (r) => r.name, exportValue: (r) => r.name },
+    {
+      key: 'status', label: t('bulk.col.status'), sortable: true,
+      sortValue: (r) => `${r.classification.dangling ? 'a' : 'b'}${r.classification.kind}`,
+      searchValue: (r) => `${r.resolution.status} ${t(`kind.${r.classification.dangling ? 'dangling' : r.classification.kind}`)} ${r.classification.provider ? r.classification.provider.name : ''}`,
+      exportValue: (r) => `${r.resolution.status}${r.classification.kind ? ` ${r.classification.dangling ? 'dangling' : r.classification.kind}` : ''}${r.classification.provider ? ` ${r.classification.provider.name}` : ''}`,
+      render: (r) => h('div', { class: 'cluster bulk-status' }, KindBadge(r.classification),
+        r.resolution.status !== 'NOERROR' && r.resolution.status !== 'NXDOMAIN'
+          ? Badge(r.resolution.status, { variant: 'error', mono: true, title: r.resolution.error || '' }) : null)
+    },
+    {
+      key: 'ipv4', label: t('bulk.col.ipv4'), sortable: true, mono: true,
+      sortValue: (r) => ipSortValue(r.resolution.ipv4[0]),
+      searchValue: (r) => r.resolution.ipv4.join(' '),
+      exportValue: (r) => r.resolution.ipv4.join(' '),
+      render: (r) => (r.resolution.ipv4.length ? TruncatedList(r.resolution.ipv4, { max: 2 }) : null)
+    },
+    {
+      key: 'servers', label: t('bulk.col.servers'), sortable: true,
+      sortValue: (r) => (r.servers[0] ? r.servers[0].name : ''),
+      searchValue: (r) => r.servers.map((s) => `${s.name} ${s.ip}`).join(' '),
+      exportValue: (r) => r.servers.map((s) => `${s.name} (${s.ip})`).join(' '),
+      render: (r) => (r.servers.length
+        ? TruncatedList(r.servers, { max: 2, mono: false, render: (s) => h('span', { class: 'bulk-server', title: s.ip }, Icon('server', { size: 12 }), ' ', s.name) })
+        : null)
+    },
+    showPtr ? {
+      key: 'ptr', label: t('bulk.col.ptr'), mono: true, sortable: true,
+      sortValue: (r) => ptrText(r)[0] || '',
+      searchValue: (r) => ptrText(r).join(' '),
+      exportValue: (r) => exportCell(ptrText(r).join(' '), hostCellNa(r, 'ptr')),
+      render: (r) => {
+        const list = ptrText(r);
+        if (list.length) return TruncatedList(list, { max: 2 });
+        return enrichPending(r) ? pendingCell() : enrichSkipped(r) ? skippedCell() : hostNa(r, 'ptr');
+      }
+    } : null,
+    showAsn ? {
+      key: 'asn', label: t('bulk.col.asn'), sortable: true, wrap: true,
+      sortValue: (r) => asnText(r)[0] || '',
+      searchValue: (r) => asnText(r).join(' '),
+      exportValue: (r) => exportCell(asnText(r).join(' | '), hostCellNa(r, 'network')),
+      render: (r) => {
+        const list = asnText(r);
+        if (list.length) return TruncatedList(list, { max: 2, mono: false });
+        return enrichPending(r) ? pendingCell() : enrichSkipped(r) ? skippedCell() : hostNa(r, 'network');
+      }
+    } : null,
+    {
+      key: 'cname', label: t('bulk.col.cname'), sortable: true, mono: true,
+      sortValue: (r) => r.resolution.cnames[r.resolution.cnames.length - 1] || '',
+      searchValue: (r) => r.resolution.cnames.join(' '),
+      exportValue: (r) => r.resolution.cnames.join(' > '),
+      // The final target tells where the name really lives; the full chain is in the details / export.
+      render: (r) => {
+        const chain = r.resolution.cnames;
+        if (!chain.length) return null;
+        return h('span', { class: 'bulk-cname', title: chain.join(' → ') }, chain[chain.length - 1],
+          chain.length > 1 ? h('span', { class: 'muted' }, ` (+${chain.length - 1})`) : null);
+      }
+    },
+    {
+      key: 'ipv6', label: t('bulk.col.ipv6'), sortable: true, mono: true,
+      sortValue: (r) => ipSortValue(r.resolution.ipv6[0]),
+      searchValue: (r) => r.resolution.ipv6.join(' '),
+      exportValue: (r) => r.resolution.ipv6.join(' '),
+      render: (r) => (r.resolution.ipv6.length ? TruncatedList(r.resolution.ipv6, { max: 1 }) : null)
+    },
+    {
+      key: 'ttl', label: t('bulk.col.ttl'), sortable: true, align: 'end', className: 'num',
+      sortValue: (r) => (Number.isFinite(r.resolution.ttl) ? r.resolution.ttl : null),
+      exportValue: (r) => (Number.isFinite(r.resolution.ttl) ? r.resolution.ttl : ''),
+      render: (r) => (Number.isFinite(r.resolution.ttl) ? formatNumber(r.resolution.ttl) : null)
+    }
+  ].filter(Boolean);
+
   const hostsTable = DataTable({
     caption: t('bulk.hosts.caption'),
     search: true,
     pageSize: 200,
     empty: t('bulk.hosts.empty'),
     rowKey: (r) => r.name,
-    className: 'bulk-hosts',
+    export: false,
+    cellLabels: true,
+    className: 'bulk-hosts dt-cards',
     rowClass: (r) => ({ 'bulk-row-error': r.resolution.status !== 'NOERROR' && r.resolution.status !== 'NXDOMAIN' }),
     toolbar: h('div', { class: 'bulk-toolbar' }, hostFilterSel.el,
       copyBtn('bulk.copyResolving', () => hostsTable.getVisibleRows().filter((r) => r.ips.length).map((r) => r.name), 'bulk-copy-names')),
     details: (r) => rowDetails(r, ctx),
-    export: { filename: 'bulk-resolve', subject: job.names[0] },
-    // Most useful first (the table scrolls horizontally on narrow screens).
-    columns: [
-      { key: 'name', label: t('bulk.col.name'), sortable: true, mono: true, sortValue: (r) => r.name.split('.').reverse().join('.'), searchValue: (r) => r.name, exportValue: (r) => r.name },
-      {
-        key: 'status', label: t('bulk.col.status'), sortable: true,
-        sortValue: (r) => `${r.classification.dangling ? 'a' : 'b'}${r.classification.kind}`,
-        searchValue: (r) => `${r.resolution.status} ${t(`kind.${r.classification.dangling ? 'dangling' : r.classification.kind}`)} ${r.classification.provider ? r.classification.provider.name : ''}`,
-        exportValue: (r) => `${r.resolution.status}${r.classification.kind ? ` ${r.classification.dangling ? 'dangling' : r.classification.kind}` : ''}${r.classification.provider ? ` ${r.classification.provider.name}` : ''}`,
-        render: (r) => h('div', { class: 'cluster bulk-status' }, KindBadge(r.classification),
-          r.resolution.status !== 'NOERROR' && r.resolution.status !== 'NXDOMAIN'
-            ? Badge(r.resolution.status, { variant: 'error', mono: true, title: r.resolution.error || '' }) : null)
-      },
-      {
-        key: 'ipv4', label: t('bulk.col.ipv4'), sortable: true, mono: true,
-        sortValue: (r) => ipSortValue(r.resolution.ipv4[0]),
-        searchValue: (r) => r.resolution.ipv4.join(' '),
-        exportValue: (r) => r.resolution.ipv4.join(' '),
-        render: (r) => (r.resolution.ipv4.length ? TruncatedList(r.resolution.ipv4, { max: 2 }) : null)
-      },
-      {
-        key: 'servers', label: t('bulk.col.servers'), sortable: true,
-        sortValue: (r) => (r.servers[0] ? r.servers[0].name : ''),
-        searchValue: (r) => r.servers.map((s) => `${s.name} ${s.ip}`).join(' '),
-        exportValue: (r) => r.servers.map((s) => `${s.name} (${s.ip})`).join(' '),
-        render: (r) => (r.servers.length
-          ? TruncatedList(r.servers, { max: 2, mono: false, render: (s) => h('span', { class: 'bulk-server', title: s.ip }, Icon('server', { size: 12 }), ' ', s.name) })
-          : null)
-      },
-      showPtr ? {
-        key: 'ptr', label: t('bulk.col.ptr'), mono: true, sortable: true,
-        sortValue: (r) => ptrText(r)[0] || '',
-        searchValue: (r) => ptrText(r).join(' '),
-        exportValue: (r) => exportCell(ptrText(r).join(' '), hostCellNa(r, 'ptr')),
-        render: (r) => {
-          const list = ptrText(r);
-          if (list.length) return TruncatedList(list, { max: 2 });
-          return enrichPending(r) ? pendingCell() : enrichSkipped(r) ? skippedCell() : hostNa(r, 'ptr');
-        }
-      } : null,
-      showAsn ? {
-        key: 'asn', label: t('bulk.col.asn'), sortable: true, wrap: true,
-        sortValue: (r) => asnText(r)[0] || '',
-        searchValue: (r) => asnText(r).join(' '),
-        exportValue: (r) => exportCell(asnText(r).join(' | '), hostCellNa(r, 'network')),
-        render: (r) => {
-          const list = asnText(r);
-          if (list.length) return TruncatedList(list, { max: 2, mono: false });
-          return enrichPending(r) ? pendingCell() : enrichSkipped(r) ? skippedCell() : hostNa(r, 'network');
-        }
-      } : null,
-      {
-        key: 'cname', label: t('bulk.col.cname'), sortable: true, mono: true,
-        sortValue: (r) => r.resolution.cnames[r.resolution.cnames.length - 1] || '',
-        searchValue: (r) => r.resolution.cnames.join(' '),
-        exportValue: (r) => r.resolution.cnames.join(' > '),
-        // The final target tells where the name really lives; the full chain is in the details / export.
-        render: (r) => {
-          const chain = r.resolution.cnames;
-          if (!chain.length) return null;
-          return h('span', { class: 'bulk-cname', title: chain.join(' → ') }, chain[chain.length - 1],
-            chain.length > 1 ? h('span', { class: 'muted' }, ` (+${chain.length - 1})`) : null);
-        }
-      },
-      {
-        key: 'ipv6', label: t('bulk.col.ipv6'), sortable: true, mono: true,
-        sortValue: (r) => ipSortValue(r.resolution.ipv6[0]),
-        searchValue: (r) => r.resolution.ipv6.join(' '),
-        exportValue: (r) => r.resolution.ipv6.join(' '),
-        render: (r) => (r.resolution.ipv6.length ? TruncatedList(r.resolution.ipv6, { max: 1 }) : null)
-      },
-      {
-        key: 'ttl', label: t('bulk.col.ttl'), sortable: true, align: 'end', className: 'num',
-        sortValue: (r) => (Number.isFinite(r.resolution.ttl) ? r.resolution.ttl : null),
-        exportValue: (r) => (Number.isFinite(r.resolution.ttl) ? r.resolution.ttl : ''),
-        render: (r) => (Number.isFinite(r.resolution.ttl) ? formatNumber(r.resolution.ttl) : null)
-      }
-    ].filter(Boolean)
+    columns: hostColumns
   });
 
-  /* IP table */
+  /* the IP addresses tab */
   const ipFilterSel = select({
     label: t('bulk.filter.show'),
     size: 'sm',
@@ -1345,6 +1456,71 @@ function buildJobUI(job, ctx, { onFinish }) {
     onChange: (v) => ipTable.setFilter(v === 'all' ? null : (row) => ipRowMatches(row, v))
   });
   ipFilterSel.input.dataset.role = 'bulk-ip-filter';
+  const ipColumns = [
+    { key: 'ip', label: t('bulk.col.ip'), sortable: true, mono: true, sortValue: (r) => ipSortValue(r.ip), exportValue: (r) => r.ip },
+    {
+      key: 'type', label: t('bulk.col.type'), sortable: true,
+      sortValue: (r) => (r.private ? 'a' : r.provider ? `b${r.provider.name}` : 'c'),
+      searchValue: (r) => (r.private ? t('bulk.ip.private') : r.provider ? r.provider.name : t('bulk.ip.public')),
+      exportValue: (r) => (r.private ? 'private' : r.provider ? r.provider.name : 'public'),
+      render: (r) => (r.private ? Badge(t('bulk.ip.private'), { variant: 'private', icon: 'lock' })
+        : r.provider ? Badge(r.provider.name, { variant: r.provider.id === 'cloudflare' ? 'cloudflare' : r.provider.hidesOrigin ? 'cdn' : 'platform' })
+          : Badge(t('bulk.ip.public'), { variant: 'direct', icon: 'server' }))
+    },
+    {
+      key: 'count', label: t('bulk.col.count'), sortable: true, align: 'end', className: 'num', defaultDir: 'desc',
+      sortValue: (r) => r.hosts.length,
+      exportValue: (r) => r.hosts.length,
+      render: (r) => formatNumber(r.hosts.length)
+    },
+    {
+      key: 'hosts', label: t('bulk.col.hosts'), mono: true,
+      searchValue: (r) => r.hosts.join(' '),
+      exportValue: (r) => r.hosts.join(' '),
+      render: (r) => TruncatedList(r.hosts, { max: 3 })
+    },
+    {
+      key: 'servers', label: t('bulk.col.servers'), sortable: true,
+      sortValue: (r) => (r.servers[0] ? r.servers[0].name : ''),
+      searchValue: (r) => r.servers.map((s) => s.name).join(' '),
+      exportValue: (r) => r.servers.map((s) => s.name).join(' '),
+      render: (r) => (r.servers.length ? h('div', { class: 'cluster' }, r.servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server' }))) : null)
+    },
+    showPtr ? {
+      key: 'ptr', label: t('bulk.col.ptr'), sortable: true, mono: true,
+      sortValue: (r) => (r.ptr && r.ptr[0]) || '',
+      searchValue: (r) => (r.ptr || []).join(' '),
+      exportValue: (r) => exportCell((r.ptr || []).join(' '), ipCellNa(r, 'ptr')),
+      render: (r) => (r.ptr && r.ptr.length ? TruncatedList(r.ptr, { max: 2 })
+        : (!r.private && (r.enriching || r.ptr === null) ? pendingCell() : r.skipped ? skippedCell() : naOf(r, 'ptr')))
+    } : null,
+    showAsn ? {
+      key: 'asn', label: t('bulk.col.asn'), sortable: true, wrap: true,
+      sortValue: (r) => (r.info && r.info.asn) || null,
+      searchValue: (r) => (r.info ? `AS${r.info.asn || ''} ${r.info.holder || ''}` : ''),
+      exportValue: (r) => exportCell(r.info && r.info.asn ? `AS${r.info.asn} ${r.info.holder || ''}`.trim() : '', ipCellNa(r, 'network')),
+      render: (r) => (r.info && r.info.asn
+        ? h('span', null, h('span', { class: 'mono' }, `AS${r.info.asn}`), r.info.holder ? ` ${r.info.holder}` : '')
+        : (!r.private && (r.enriching || r.ptr === null) ? pendingCell()
+          : r.skipped ? skippedCell()
+            : naOf(r, 'network') || (r.enrichError && !r.info ? Badge(t('common.error'), { variant: 'error', title: r.enrichError }) : null)))
+    } : null,
+    showAsn ? {
+      key: 'country', label: t('bulk.col.country'), sortable: true,
+      sortValue: (r) => (r.info && r.info.country) || '',
+      searchValue: (r) => (r.info && r.info.country ? `${r.info.country} ${formatRegion(r.info.country)}` : ''),
+      exportValue: (r) => exportCell((r.info && r.info.country) || '', ipCellNa(r, 'location')),
+      render: (r) => (r.info && r.info.country
+        ? h('span', { title: r.info.city || '' }, `${formatRegion(r.info.country, r.info.country)}`)
+        : naOf(r, 'location'))
+    } : null,
+    showAsn ? {
+      key: 'prefix', label: t('bulk.col.prefix'), sortable: true, mono: true,
+      sortValue: (r) => (r.info && r.info.prefix) || '',
+      exportValue: (r) => exportCell((r.info && r.info.prefix) || '', ipCellNa(r, 'prefix')),
+      render: (r) => (r.info && r.info.prefix ? r.info.prefix : naOf(r, 'prefix'))
+    } : null
+  ].filter(Boolean);
   const ipTable = DataTable({
     caption: t('bulk.ips.caption'),
     search: true,
@@ -1352,90 +1528,71 @@ function buildJobUI(job, ctx, { onFinish }) {
     empty: t('bulk.ips.empty'),
     rowKey: (r) => r.ip,
     sort: { key: 'count', dir: 'desc' },
-    className: 'bulk-ips',
+    export: false,
+    cellLabels: true,
+    className: 'bulk-ips dt-cards',
     toolbar: h('div', { class: 'bulk-toolbar' }, ipFilterSel.el,
       copyBtn('bulk.copyIps', () => ipTable.getVisibleRows().map((r) => r.ip), 'bulk-copy-ips')),
-    export: { filename: 'bulk-ips', subject: job.names[0] },
-    columns: [
-      { key: 'ip', label: t('bulk.col.ip'), sortable: true, mono: true, sortValue: (r) => ipSortValue(r.ip) },
-      {
-        key: 'type', label: t('bulk.col.type'), sortable: true,
-        sortValue: (r) => (r.private ? 'a' : r.provider ? `b${r.provider.name}` : 'c'),
-        searchValue: (r) => (r.private ? t('bulk.ip.private') : r.provider ? r.provider.name : t('bulk.ip.public')),
-        exportValue: (r) => (r.private ? 'private' : r.provider ? r.provider.name : 'public'),
-        render: (r) => (r.private ? Badge(t('bulk.ip.private'), { variant: 'private', icon: 'lock' })
-          : r.provider ? Badge(r.provider.name, { variant: r.provider.id === 'cloudflare' ? 'cloudflare' : r.provider.hidesOrigin ? 'cdn' : 'platform' })
-            : Badge(t('bulk.ip.public'), { variant: 'direct', icon: 'server' }))
-      },
-      {
-        key: 'count', label: t('bulk.col.count'), sortable: true, align: 'end', className: 'num', defaultDir: 'desc',
-        sortValue: (r) => r.hosts.length,
-        exportValue: (r) => r.hosts.length,
-        render: (r) => formatNumber(r.hosts.length)
-      },
-      {
-        key: 'hosts', label: t('bulk.col.hosts'), mono: true,
-        searchValue: (r) => r.hosts.join(' '),
-        exportValue: (r) => r.hosts.join(' '),
-        render: (r) => TruncatedList(r.hosts, { max: 3 })
-      },
-      {
-        key: 'servers', label: t('bulk.col.servers'), sortable: true,
-        sortValue: (r) => (r.servers[0] ? r.servers[0].name : ''),
-        searchValue: (r) => r.servers.map((s) => s.name).join(' '),
-        exportValue: (r) => r.servers.map((s) => s.name).join(' '),
-        render: (r) => (r.servers.length ? h('div', { class: 'cluster' }, r.servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server' }))) : null)
-      },
-      showPtr ? {
-        key: 'ptr', label: t('bulk.col.ptr'), sortable: true, mono: true,
-        sortValue: (r) => (r.ptr && r.ptr[0]) || '',
-        searchValue: (r) => (r.ptr || []).join(' '),
-        exportValue: (r) => exportCell((r.ptr || []).join(' '), ipCellNa(r, 'ptr')),
-        render: (r) => (r.ptr && r.ptr.length ? TruncatedList(r.ptr, { max: 2 })
-          : (!r.private && (r.enriching || r.ptr === null) ? pendingCell() : r.skipped ? skippedCell() : naOf(r, 'ptr')))
-      } : null,
-      showAsn ? {
-        key: 'asn', label: t('bulk.col.asn'), sortable: true, wrap: true,
-        sortValue: (r) => (r.info && r.info.asn) || null,
-        searchValue: (r) => (r.info ? `AS${r.info.asn || ''} ${r.info.holder || ''}` : ''),
-        exportValue: (r) => exportCell(r.info && r.info.asn ? `AS${r.info.asn} ${r.info.holder || ''}`.trim() : '', ipCellNa(r, 'network')),
-        render: (r) => (r.info && r.info.asn
-          ? h('span', null, h('span', { class: 'mono' }, `AS${r.info.asn}`), r.info.holder ? ` ${r.info.holder}` : '')
-          : (!r.private && (r.enriching || r.ptr === null) ? pendingCell()
-            : r.skipped ? skippedCell()
-              : naOf(r, 'network') || (r.enrichError && !r.info ? Badge(t('common.error'), { variant: 'error', title: r.enrichError }) : null)))
-      } : null,
-      showAsn ? {
-        key: 'country', label: t('bulk.col.country'), sortable: true,
-        sortValue: (r) => (r.info && r.info.country) || '',
-        searchValue: (r) => (r.info && r.info.country ? `${r.info.country} ${formatRegion(r.info.country)}` : ''),
-        exportValue: (r) => exportCell((r.info && r.info.country) || '', ipCellNa(r, 'location')),
-        render: (r) => (r.info && r.info.country
-          ? h('span', { title: r.info.city || '' }, `${formatRegion(r.info.country, r.info.country)}`)
-          : naOf(r, 'location'))
-      } : null,
-      showAsn ? {
-        key: 'prefix', label: t('bulk.col.prefix'), sortable: true, mono: true,
-        sortValue: (r) => (r.info && r.info.prefix) || '',
-        exportValue: (r) => exportCell((r.info && r.info.prefix) || '', ipCellNa(r, 'prefix')),
-        render: (r) => (r.info && r.info.prefix ? r.info.prefix : naOf(r, 'prefix'))
-      } : null
-    ].filter(Boolean)
+    columns: ipColumns
   });
 
   const tabs = Tabs([
-    { id: 'hosts', label: t('bulk.tab.hosts'), icon: 'list', content: hostsTable.el },
+    { id: 'hosts', label: t('bulk.tab.hosts'), content: h('div', { class: 'bulk-panel' }, hostStats.el, hostsTable.el) },
     {
-      id: 'ips', label: t('bulk.tab.ips'), icon: 'network',
-      content: h('div', { class: 'stack-sm' }, h('p', { class: 'muted text-sm' }, t('bulk.ips.intro')), ipTable.el)
+      id: 'ips', label: t('bulk.tab.ips'),
+      content: h('div', { class: 'bulk-panel' }, h('p', { class: 'muted text-sm bulk-ips-intro' }, t('bulk.ips.intro')), ipStats.el, ipTable.el)
     }
   ], { label: t('nav.bulk'), className: 'bulk-tabs' });
 
-  const progressCard = h('div', { class: 'card bulk-progress', dataset: { status: job.status } },
-    h('div', { class: 'stack-sm' }, progress, h('div', { class: 'bulk-progress-foot' }, meta, enrichLine, NotifyButton(job.handle || null))), notice);
-  const el = h('div', { class: 'stack bulk-results', dataset: { job: job.id } }, progressCard, statsGrid, tabs);
+  const el = h('div', { class: 'bulk-results', dataset: { job: job.id } }, head.el, tabs.el);
 
   /* live rendering */
+  const live = () => job.status === 'running';
+  /** The result header's title, its progress, the next step: what the job does now, or did. */
+  function renderHead() {
+    head.el.dataset.status = job.status;
+    head.setState(live() ? 'running' : 'done');
+    let title;
+    if (live()) title = ResultTitle({ running: true, text: t('bulk.resolvingTitle', { count: job.names.length }) });
+    else if (job.status === 'error') title = ResultTitle({ severity: 'error', text: t('bulk.failed') });
+    else if (job.status === 'cancelled') title = ResultTitle({ text: t('bulk.cancelledTitle', { done: formatNumber(job.done), total: formatNumber(job.names.length) }) });
+    else title = ResultTitle({ text: t('bulk.resultsTitle', { count: job.names.length }) });
+    head.set('title', title);
+    head.set('progress', live() ? progress.el : null);
+    actions.setDisabled(live());
+    const ips = handoffIps(job.ips.keys());
+    head.set('next', !live() && ips.length ? NextSteps({
+      steps: [{
+        label: t('bulk.toIp'), icon: 'network', title: t('bulk.toIpTitle', { count: ips.length }), dataset: { action: 'bulk-to-ip' },
+        href: ctx.href('ip', { ips: ips.join(','), [FILL_PARAM]: FILL_VALUE })
+      }]
+    }) : null);
+  }
+
+  const renderStats = throttle(() => {
+    const s = bulkStats(job.rows, job.ips);
+    const done = !live();
+    hostStats.update([
+      { id: 'names', label: t('bulk.stat.names'), value: s.total, hint: t('bulk.stat.namesHint', { count: formatNumber(s.resolved) }) },
+      { id: 'hidden', label: t('bulk.stat.hidden'), value: s.hidden, hint: s.hidden ? t('bulk.stat.hiddenHint', { count: formatNumber(s.cloudflare) }) : null },
+      { id: 'direct', label: t('bulk.stat.direct'), value: s.direct, hint: inv && s.direct ? t('bulk.stat.directHint', { count: s.onServers }) : null },
+      {
+        id: 'unresolved', label: t('bulk.stat.unresolved'), value: s.unresolved, severity: s.errors ? 'error' : s.unresolved ? 'warn' : null,
+        hint: s.unresolved ? t('bulk.stat.unresolvedHint', { count: s.errors }) : null
+      }
+    ], { foldable: done ? [...BULK_FOLDABLE] : [] });
+    ipStats.update([
+      { id: 'ips', label: t('bulk.stat.ips'), value: s.ips, hint: t('bulk.stat.ipsHint', { v4: formatNumber(s.v4), v6: formatNumber(s.v6) }) },
+      inv ? { id: 'servers', label: t('bulk.stat.servers'), value: s.servers, hint: t('bulk.stat.serversHint') } : null
+    ].filter(Boolean));
+    const item = bulkStatus({}).find((x) => x.filter === hostFilter);
+    status.update(bulkStatus(s, { inventory: inv }).map((x) => ({
+      ...x,
+      text: t(`bulk.status.${x.key}`, { count: x.count }),
+      onPress: () => setHostFilter(hostFilter === x.filter ? 'all' : x.filter)
+    })), { pressed: item ? item.key : null });
+  }, 120);
+
   const refreshHosts = throttle(() => hostsTable.refresh(), 300);
   const refreshIps = throttle(() => ipTable.refresh(), 300);
   const renderBadges = throttle(() => {
@@ -1443,20 +1600,20 @@ function buildJobUI(job, ctx, { onFinish }) {
     tabs.setBadge('ips', job.ips.size || null);
   }, 150);
   const renderProgress = throttle(() => {
-    if (job.status === 'running') progress.set(job.done, job.names.length);
-    meta.textContent = job.status === 'running'
+    if (live()) progress.set(job.done, job.names.length);
+    metaText.textContent = live()
       ? formatDuration(Date.now() - job.startedAt)
       : `${t('bulk.finished', { count: formatNumber(job.done), time: formatDuration((job.finishedAt || new Date()) - job.startedAt) })} · ${t('bulk.finishedAt', { when: formatDateTime(job.finishedAt || new Date()) })}`;
     enrichLine.textContent = job.ipTotal ? t('bulk.enrich', { done: formatNumber(job.ipDone), total: formatNumber(job.ipTotal) }) : '';
+    enrichLine.hidden = !job.ipTotal;
   }, 100);
 
-  function finish() {
+  /** Show the job's end; `liveEnd`: it just ended (its totals said once), else a re-mount shows a finished job. */
+  function finish(liveEnd) {
     clear(notice);
-    progressCard.dataset.status = job.status;
     if (job.status === 'done') {
       progress.done(t('bulk.progress.done'));
       progress.setVariant('ok');
-      announce(t('bulk.doneToast', { count: job.rows.length }));
     } else if (job.status === 'cancelled') {
       progress.setVariant('warn');
       progress.setLabel(t('bulk.progress.cancelled'));
@@ -1468,10 +1625,12 @@ function buildJobUI(job, ctx, { onFinish }) {
     hostsTable.setLoading(false);
     hostsTable.refresh();
     ipTable.refresh();
+    renderHead();
     renderStats();
     renderBadges();
     renderProgress();
     stopTicker();
+    if (liveEnd && job.status === 'done') announce(t('bulk.doneToast', { count: job.rows.length }));
     onFinish();
   }
 
@@ -1502,7 +1661,7 @@ function buildJobUI(job, ctx, { onFinish }) {
       case 'done':
       case 'cancelled':
       case 'error':
-        finish();
+        finish(true);
         break;
       default:
         break;
@@ -1512,15 +1671,16 @@ function buildJobUI(job, ctx, { onFinish }) {
   // Replay, then follow.
   if (job.rows.length) hostsTable.setRows(job.rows);
   if (job.ips.size) ipTable.setRows([...job.ips.values()]);
-  hostsTable.setLoading(job.status === 'running');
+  hostsTable.setLoading(live());
+  renderHead();
   renderStats();
   renderBadges();
   renderProgress();
-  if (job.status === 'running') {
+  if (live()) {
     ticker = setInterval(renderProgress, 1000);
     job.listeners.add(listener);
   } else {
-    finish();
+    finish(false);
   }
 
   return {
@@ -1528,6 +1688,7 @@ function buildJobUI(job, ctx, { onFinish }) {
     dispose() {
       job.listeners.delete(listener);
       stopTicker();
+      actions.dispose();
     }
   };
 }

@@ -1,15 +1,19 @@
 /*
- * DomainScope — design system
+ * DomainScope — design system (docs/DESIGN.md §6)
  *
  * 1. Tokens (light) + dark overrides (system preference unless data-theme="light",
  *    and forced with data-theme="dark"); the dark palette is screen-only, so paper always
- *    gets the light one (dark text, see 5. print)
+ *    gets the light one (dark text, see 5. print). Then the compact density
+ *    (html[data-density="compact"], set by boot.js) and the touch sizes (pointer: coarse).
  * 2. Base / reset
  * 3. App shell: header, sidebar nav (horizontal on phones), main, page header, footer
  * 4. Components (match assets/js/ui/components.js): buttons, fields, checks, segmented,
- *    badges, severity, alerts, cards, sections, stats, key-value, code, lists, tabs,
- *    progress, spinner, toast, modal, file drop, empty state, data table
- * 5. Utilities, reduced motion, print
+ *    tags (badges) and chips, severity, alerts, cards, sections, stats, key-value, code, lists,
+ *    tabs, progress, spinner, toast, modal, file drop, empty state, data table
+ * 5. Utilities, reduced motion, forced colours, print
+ *
+ * Token names keep their meaning: new ones are added next to the old ones, never renamed (a
+ * var() that no longer resolves unsets its property silently).
  *
  * Per-view styles live in assets/css/views/<view>.css and use a view prefix (.inv-, .about-, …).
  * No inline styles anywhere (CSP style-src 'self'); JS only sets CSSOM properties.
@@ -22,27 +26,92 @@
 :root {
   color-scheme: light;
 
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans",
-    Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
+  /* Fonts: system stacks only (no web fonts; the CSP has no font-src), Linux names included */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Liberation Sans", Arial, sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
   --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas,
-    "Liberation Mono", monospace;
+    "DejaVu Sans Mono", "Liberation Mono", monospace;
 
+  /* Type scale: size / line height. Linux fonts have no 500 face (it renders as 400): no state
+     hangs on a 400 → 500 change; 600 is safe (it renders bold). */
+  --fs-2xs: 11px; /* tags, kbd, nav group labels on short screens */
+  --lh-2xs: 16px;
+  --fs-xs: 12px; /* meta, hints, timestamps, table second lines */
+  --lh-xs: 16px;
+  --fs-sm: 13px; /* controls, tabs, table cells, nav links */
+  --lh-sm: 20px;
+  --fs-md: 14px; /* body copy, inputs, card titles */
+  --lh-md: 22px;
+  --fs-lg: 16px; /* result title, section titles */
+  --lh-lg: 24px;
+  --fs-xl: 20px; /* page title, metric values */
+  --lh-xl: 28px;
+  --fs-2xl: 28px; /* score (Health), compliance % */
+  --lh-2xl: 32px;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* Spacing: a 4 px grid */
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Density: comfortable (the default; compact and touch below) */
+  --field-h: 36px;
+  --btn-h: 32px;
+  --btn-h-sm: 28px;
+  --btn-h-lg: 40px;
+  --row-h: 36px;
+  --cell-x: 12px;
+  --card-pad: 16px;
+  --stack-gap: 20px;
+  --section-gap: 32px;
+
+  /* Focus: every focusable element's ring (fields add --focus-ring) */
+  --focus-w: 2px;
+  --focus-offset: 2px;
+
+  /* Layers */
+  --z-sticky: 30;
+  --z-header: 40;
+  --z-popover: 60;
+  --z-toast: 80;
+
+  /* Colour roles. Colour is status: red, amber, green and blue mean error, warning, OK and info,
+     always with an icon and a word; a fact with no judgement is neutral. */
   --bg: #f4f5f7;
   --bg-sidebar: #f9fafb;
   --surface: #ffffff;
   --surface-2: #f6f7f9;
   --surface-3: #eceef2;
   --surface-hover: #f2f4f7;
+  /* Selection is neutral (the selected nav link, a pressed filter); blue marks what you can act on */
+  --surface-selected: #e6e9ee;
   --border: #e2e5ea;
   --border-strong: #cdd2da;
+  /* Fields, segmented outlines, the switch's track: ≥ 3:1 on bg, bg-sidebar, surface and surface-2
+     (WCAG 1.4.11); a control never sits on surface-3 */
+  --border-control: #858e9d;
   --text: #14171c;
   --text-2: #464d5b;
-  --text-3: #687080;
+  --text-3: #5f6877;
+  --text-disabled: #9aa1ad;
   --on-accent: #ffffff;
 
+  /* --accent / --accent-hover: links, icons, bars. --accent-solid(-hover): fills under white text. */
   --accent: #2563eb;
   --accent-hover: #1d4fd7;
   --accent-solid: #2563eb;
+  --accent-solid-hover: #1d4fd7;
   --accent-soft: #edf3ff;
   --accent-soft-border: #cadbfd;
   --accent-text: #1d4ed8;
@@ -50,6 +119,8 @@
   --focus-ring: 0 0 0 3px rgba(37, 99, 235, 0.25);
   --selection: rgba(37, 99, 235, 0.18);
 
+  /* Solid status fills carry no text (icons, dots, bars, progress); a count on a status colour
+     uses its tint (--*-bg) with the status text colour. The danger button has its own fill. */
   --ok: #157a3d;
   --ok-solid: #16a34a;
   --ok-bg: #ebf7ef;
@@ -66,8 +137,15 @@
   --error-solid: #dc2626;
   --error-bg: #fdeeee;
   --error-border: #f4c4c6;
+  --danger-solid: #dc2626;
+  --danger-solid-hover: #b91c1c;
+  /* A fact with no judgement: found by wordlist, self-signed as a fact, RSA 2048 */
+  --neutral: #464d5b;
+  --neutral-bg: #eceef2;
+  --neutral-border: #e2e5ea;
+  --running: var(--accent);
 
-  /* Classification kinds (always paired with an icon + text label) */
+  /* Classification kinds (always paired with an icon + text label); KindBadge only */
   --k-cloudflare: #b4500a;
   --k-cloudflare-solid: #f38020;
   --k-cloudflare-bg: #fff2e7;
@@ -101,22 +179,32 @@
   --k-dangling-bg: #fff0eb;
   --k-dangling-border: #f7c7b7;
 
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius: 8px;
-  --radius-lg: 12px;
-  --radius-pill: 999px;
+  /* Radii: static tags are 4 px rectangles, interactive chips are pills */
+  --radius-xs: 4px; /* tags, kbd, code, table row hover */
+  --radius-sm: 6px; /* buttons, inputs, selects, tabs' hover */
+  --radius: 8px; /* menus, popovers, inner panels, toasts */
+  --radius-lg: 10px; /* cards, dialogs */
+  --radius-pill: 999px; /* chips, switches, progress */
 
-  --shadow-xs: 0 1px 1px rgba(16, 24, 40, 0.04);
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 1px rgba(16, 24, 40, 0.03);
+  /* Elevation: cards are flat (a border and --shadow-sm); --shadow only for what floats (menus,
+     sticky bars, the drawer), --shadow-lg only for dialogs */
+  --shadow-xs: 0 1px 1px rgba(16, 24, 40, 0.04); /* buttons */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05); /* cards */
   --shadow: 0 4px 12px rgba(16, 24, 40, 0.08), 0 1px 3px rgba(16, 24, 40, 0.05);
   --shadow-lg: 0 18px 44px rgba(16, 24, 40, 0.16), 0 4px 12px rgba(16, 24, 40, 0.08);
   --backdrop: rgba(12, 16, 23, 0.46);
   --header-bg: rgba(255, 255, 255, 0.86);
 
+  /* Layout */
   --header-h: 56px;
   --sidebar-w: 244px;
+  --drawer-w: 280px;
   --content-max: 1360px;
+  --page-x: 32px;
+  --page-top: 20px;
+  --page-x-phone: 16px;
+
+  /* Motion */
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
   --dur: 140ms;
 }
@@ -130,15 +218,19 @@
     --surface-2: #1a2028;
     --surface-3: #242b35;
     --surface-hover: #1d242d;
+    --surface-selected: rgba(255, 255, 255, 0.07);
     --border: #28303b;
     --border-strong: #3a4351;
+    --border-control: #646d7c;
     --text: #e6e9ef;
     --text-2: #b3bbc8;
     --text-3: #8c95a4;
+    --text-disabled: #5d6573;
     --on-accent: #ffffff;
     --accent: #5b93ff;
     --accent-hover: #7aa7ff;
     --accent-solid: #2f6bdc;
+    --accent-solid-hover: #2a5fc6;
     --accent-soft: rgba(91, 147, 255, 0.13);
     --accent-soft-border: rgba(91, 147, 255, 0.34);
     --accent-text: #90b6ff;
@@ -161,6 +253,11 @@
     --error-solid: #ef4d4d;
     --error-bg: rgba(239, 77, 77, 0.13);
     --error-border: rgba(239, 77, 77, 0.36);
+    --danger-solid: #c43232;
+    --danger-solid-hover: #a82828;
+    --neutral: #b3bbc8;
+    --neutral-bg: #242b35;
+    --neutral-border: #3a4351;
     --k-cloudflare: #ffa35c;
     --k-cloudflare-solid: #f38020;
     --k-cloudflare-bg: rgba(243, 128, 32, 0.15);
@@ -193,10 +290,12 @@
     --k-dangling-solid: #f46a3d;
     --k-dangling-bg: rgba(244, 106, 61, 0.15);
     --k-dangling-border: rgba(244, 106, 61, 0.4);
-    --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.3);
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-    --shadow: 0 6px 16px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
-    --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.55), 0 4px 12px rgba(0, 0, 0, 0.35);
+    /* Borders carry depth in dark: no shadow on buttons and cards (a transparent one, not
+       `none`, so a shadow list that starts with it stays valid) */
+    --shadow-xs: 0 0 0 transparent;
+    --shadow-sm: 0 0 0 transparent;
+    --shadow: 0 6px 16px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.6), 0 4px 12px rgba(0, 0, 0, 0.35);
     --backdrop: rgba(0, 0, 0, 0.6);
     --header-bg: rgba(21, 26, 33, 0.86);
   }
@@ -211,15 +310,19 @@
     --surface-2: #1a2028;
     --surface-3: #242b35;
     --surface-hover: #1d242d;
+    --surface-selected: rgba(255, 255, 255, 0.07);
     --border: #28303b;
     --border-strong: #3a4351;
+    --border-control: #646d7c;
     --text: #e6e9ef;
     --text-2: #b3bbc8;
     --text-3: #8c95a4;
+    --text-disabled: #5d6573;
     --on-accent: #ffffff;
     --accent: #5b93ff;
     --accent-hover: #7aa7ff;
     --accent-solid: #2f6bdc;
+    --accent-solid-hover: #2a5fc6;
     --accent-soft: rgba(91, 147, 255, 0.13);
     --accent-soft-border: rgba(91, 147, 255, 0.34);
     --accent-text: #90b6ff;
@@ -242,6 +345,11 @@
     --error-solid: #ef4d4d;
     --error-bg: rgba(239, 77, 77, 0.13);
     --error-border: rgba(239, 77, 77, 0.36);
+    --danger-solid: #c43232;
+    --danger-solid-hover: #a82828;
+    --neutral: #b3bbc8;
+    --neutral-bg: #242b35;
+    --neutral-border: #3a4351;
     --k-cloudflare: #ffa35c;
     --k-cloudflare-solid: #f38020;
     --k-cloudflare-bg: rgba(243, 128, 32, 0.15);
@@ -274,12 +382,39 @@
     --k-dangling-solid: #f46a3d;
     --k-dangling-bg: rgba(244, 106, 61, 0.15);
     --k-dangling-border: rgba(244, 106, 61, 0.4);
-    --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.3);
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-    --shadow: 0 6px 16px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.3);
-    --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.55), 0 4px 12px rgba(0, 0, 0, 0.35);
+    /* Borders carry depth in dark: no shadow on buttons and cards (a transparent one, not
+       `none`, so a shadow list that starts with it stays valid) */
+    --shadow-xs: 0 0 0 transparent;
+    --shadow-sm: 0 0 0 transparent;
+    --shadow: 0 6px 16px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.6), 0 4px 12px rgba(0, 0, 0, 0.35);
     --backdrop: rgba(0, 0, 0, 0.6);
     --header-bg: rgba(21, 26, 33, 0.86);
+  }
+}
+
+/* Density: compact (a global setting; boot.js puts it on <html> before the first paint). Type
+   sizes, the sidebar's height tiers and the 24 px least link target do not change with it. */
+:root[data-density="compact"] {
+  --field-h: 32px;
+  --btn-h: 28px;
+  --btn-h-sm: 24px;
+  --row-h: 30px;
+  --card-pad: 12px;
+  --stack-gap: 16px;
+  --section-gap: 24px;
+  --page-x: 24px;
+}
+
+/* Touch: targets of 40 px or more whatever the density. The compact selector is listed too: it
+   is more specific than :root, so without it compact would win on a touch screen. */
+@media (pointer: coarse) {
+  :root,
+  :root[data-density="compact"] {
+    --field-h: 44px;
+    --btn-h: 40px;
+    --btn-h-sm: 36px;
+    --row-h: 44px;
   }
 }
 
@@ -305,7 +440,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: var(--fs-md);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -362,7 +497,7 @@ code {
 }
 
 kbd {
-  font-size: 11.5px;
+  font-size: var(--fs-2xs);
   padding: 1px 5px;
   border: 1px solid var(--border-strong);
   border-bottom-width: 2px;
@@ -376,9 +511,10 @@ hr {
   margin: 20px 0;
 }
 
+/* Every focusable element's ring; fields add --focus-ring (section 4). */
 :focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  outline: var(--focus-w) solid var(--focus);
+  outline-offset: var(--focus-offset);
 }
 
 [hidden] {
@@ -422,7 +558,7 @@ hr {
   grid-area: header;
   position: sticky;
   top: 0;
-  z-index: 40;
+  z-index: var(--z-header);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1930,20 +2066,20 @@ button.nav-status:hover {
   flex: none;
 }
 
-/* Buttons */
+/* Buttons: heights from the density tokens (--btn-h, --btn-h-sm, --btn-h-lg; 40 px and more on
+   touch screens). A view may set --btn-h on one button of its own (.sub-run-btn). */
 .btn {
-  --btn-h: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
   height: var(--btn-h);
-  padding: 0 14px;
+  padding: 0 var(--space-3);
   border: 1px solid transparent;
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   font: inherit;
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
   line-height: 1;
   white-space: nowrap;
   text-decoration: none;
@@ -1962,6 +2098,7 @@ button.nav-status:hover {
   cursor: not-allowed;
 }
 
+/* White labels sit on --accent-solid(-hover) only: ≥ 4.9:1 in both themes. */
 .btn-primary {
   background: var(--accent-solid);
   color: var(--on-accent);
@@ -1969,17 +2106,7 @@ button.nav-status:hover {
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-}
-
-:root[data-theme="dark"] .btn-primary:hover:not(:disabled) {
-  background: #3b78ea;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .btn-primary:hover:not(:disabled) {
-    background: #3b78ea;
-  }
+  background: var(--accent-solid-hover);
 }
 
 .btn-secondary {
@@ -2005,26 +2132,25 @@ button.nav-status:hover {
 }
 
 .btn-danger {
-  background: var(--error-solid);
-  color: #fff;
+  background: var(--danger-solid);
+  color: var(--on-accent);
 }
 
 .btn-danger:hover:not(:disabled) {
-  filter: brightness(0.93);
+  background: var(--danger-solid-hover);
 }
 
 .btn-sm {
-  --btn-h: 28px;
+  --btn-h: var(--btn-h-sm);
   padding: 0 10px;
   gap: 5px;
-  border-radius: var(--radius-sm);
-  font-size: 12.5px;
+  font-size: var(--fs-xs);
 }
 
 .btn-lg {
-  --btn-h: 40px;
+  --btn-h: var(--btn-h-lg);
   padding: 0 18px;
-  font-size: 14.5px;
+  font-size: var(--fs-md);
 }
 
 .btn-icon,
@@ -2088,8 +2214,8 @@ button.nav-status:hover {
 }
 
 .field-label {
-  font-size: 13px;
-  font-weight: 650;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   color: var(--text);
 }
 
@@ -2103,28 +2229,29 @@ button.nav-status:hover {
 }
 
 .field-hint {
-  font-size: 12.5px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
 }
 
 .field-error {
-  font-size: 12.5px;
-  font-weight: 550;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
   color: var(--error);
 }
 
+/* A field's border is --border-control (≥ 3:1, WCAG 1.4.11); its height --field-h (44 px on touch). */
 .input,
 .select,
 .textarea {
   width: 100%;
-  min-height: 36px;
+  min-height: var(--field-h);
   padding: 7px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--fs-md);
   transition: border-color var(--dur), box-shadow var(--dur);
 }
 
@@ -2144,7 +2271,7 @@ button.nav-status:hover {
 .select:focus,
 .textarea:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--focus);
   box-shadow: var(--focus-ring);
 }
 
@@ -2276,6 +2403,8 @@ button.nav-status:hover {
   opacity: 0;
 }
 
+/* Off: the track's border and a 1 px ring round the thumb are --border-control (the white thumb on
+   its track alone was 1.17:1). */
 .switch-track {
   position: relative;
   width: 34px;
@@ -2283,7 +2412,7 @@ button.nav-status:hover {
   flex: none;
   border-radius: var(--radius-pill);
   background: var(--surface-3);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   transition: background var(--dur), border-color var(--dur);
 }
 
@@ -2295,7 +2424,7 @@ button.nav-status:hover {
   height: 14px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0 0 1px var(--border-control), 0 1px 2px rgba(0, 0, 0, 0.3);
   transition: transform var(--dur) var(--ease);
 }
 
@@ -2305,22 +2434,23 @@ button.nav-status:hover {
 }
 
 .switch-input:checked + .check-label .switch-thumb {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   transform: translateX(14px);
 }
 
 .switch-input:focus-visible + .check-label .switch-track {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  outline: var(--focus-w) solid var(--focus);
+  outline-offset: var(--focus-offset);
 }
 
-/* Segmented control */
+/* Segmented control (modes: Files / GitHub, English / Türkçe; never a table filter) */
 .segmented {
   display: inline-flex;
   width: max-content;
   max-width: 100%;
   gap: 2px;
   padding: 2px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-control);
   border-radius: var(--radius);
   background: var(--surface-2);
 }
@@ -2332,12 +2462,12 @@ button.nav-status:hover {
   height: 28px;
   padding: 0 10px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-3);
   font: inherit;
-  font-size: 12.5px;
-  font-weight: 650;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
   cursor: pointer;
   transition: background var(--dur), color var(--dur), box-shadow var(--dur);
 }
@@ -2377,30 +2507,33 @@ button.nav-status:hover {
   width: 24px;
 }
 
-/* Badges */
-.badge {
-  --b-fg: var(--text-2);
-  --b-bg: var(--surface-2);
-  --b-bd: var(--border);
+/* Tags (ui/components.js Tag; Badge() renders one): static facts and statuses, 4 px rectangles
+   with a severity or neutral fill. A chip (below) is interactive and a pill: the shape tells a
+   filter from a status. Classes: .tag plus the .badge / .badge-<variant> hooks. */
+.badge,
+.tag {
+  --b-fg: var(--neutral);
+  --b-bg: var(--neutral-bg);
+  --b-bd: var(--neutral-border);
   display: inline-flex;
   align-items: center;
   gap: 4px;
   max-width: 100%;
-  height: 21px;
-  padding: 0 8px;
+  height: 20px;
+  padding: 0 6px;
   border: 1px solid var(--b-bd);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-xs);
   background: var(--b-bg);
   color: var(--b-fg);
-  font-size: 11.5px;
-  font-weight: 650;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
   line-height: 1;
   white-space: nowrap;
   vertical-align: middle;
 }
 
 .badge .icon {
-  margin-left: -2px;
+  margin-left: -1px;
 }
 
 .badge-text {
@@ -2413,7 +2546,7 @@ button.nav-status:hover {
 
 .badge.mono {
   font-family: var(--font-mono);
-  font-weight: 550;
+  font-weight: var(--fw-medium);
 }
 
 .badge-accent {
@@ -2497,6 +2630,70 @@ button.nav-status:hover {
   --b-fg: var(--k-dangling);
   --b-bg: var(--k-dangling-bg);
   --b-bd: var(--k-dangling-border);
+}
+
+/* Chips (ui/components.js Chip): interactive pills — an example to fill in, a filter
+   (aria-pressed), a job to start. Pressed is neutral (--surface-selected) with an accent dot, never
+   a 2 px accent border, which reads as keyboard focus. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: var(--btn-h-sm);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: 1.25;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--dur), border-color var(--dur), color var(--dur);
+}
+
+.chip:hover {
+  border-color: var(--border-control);
+  background: var(--surface-hover);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.chip .icon {
+  flex: none;
+  color: var(--text-3);
+}
+
+.chip-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chip.mono {
+  font-family: var(--font-mono);
+}
+
+.chip[aria-pressed="true"] {
+  border-color: var(--border-control);
+  background: var(--surface-selected);
+  color: var(--text);
+}
+
+.chip[aria-pressed="true"]::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Severity glyphs */
@@ -2616,7 +2813,8 @@ button.nav-status:hover {
   padding-block: 0;
 }
 
-/* Alerts */
+/* Alerts: at most one per region; inside a card they are compact. A privacy note is not an alert
+   any more: Alert({ variant: 'ok', icon: 'lock' }) renders the neutral one (.alert-neutral). */
 .alert {
   --a-fg: var(--info);
   --a-bg: var(--info-bg);
@@ -2635,6 +2833,12 @@ button.nav-status:hover {
   --a-fg: var(--ok);
   --a-bg: var(--ok-bg);
   --a-bd: var(--ok-border);
+}
+
+.alert-neutral {
+  --a-fg: var(--text-2);
+  --a-bg: var(--surface-2);
+  --a-bd: var(--border);
 }
 
 .alert-warn {
@@ -2660,7 +2864,7 @@ button.nav-status:hover {
 }
 
 .alert-title {
-  font-weight: 650;
+  font-weight: var(--fw-semibold);
 }
 
 .alert-message {
@@ -2694,16 +2898,19 @@ button.nav-status:hover {
   white-space: pre-wrap;
 }
 
-.alert-compact {
-  padding: 8px 12px;
-  font-size: 13px;
+/* Compact is the default inside a card (:where keeps a view's own one-class rule in charge). */
+.alert-compact,
+.card :where(.alert) {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-sm);
 }
 
 .alert .btn-icon {
   margin: -4px -6px -4px 0;
 }
 
-/* Cards & sections */
+/* Cards & sections: flat (a border and --shadow-sm, none in dark), a 44 px head. A card holds no
+   other card, a DataTable frame excepted. */
 .card {
   min-width: 0;
   border: 1px solid var(--border);
@@ -2716,7 +2923,8 @@ button.nav-status:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 13px 16px;
+  min-height: 44px;
+  padding: var(--space-2) var(--card-pad);
   border-bottom: 1px solid var(--border);
 }
 
@@ -2727,7 +2935,7 @@ button.nav-status:hover {
   display: grid;
   place-items: center;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--surface-2);
   color: var(--text-2);
 }
@@ -2739,13 +2947,13 @@ button.nav-status:hover {
 
 .card-title {
   margin: 0;
-  font-size: 14.5px;
-  font-weight: 650;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
 }
 
 .card-subtitle {
   margin-top: 1px;
-  font-size: 12.5px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
 }
 
@@ -2757,7 +2965,7 @@ button.nav-status:hover {
 }
 
 .card-body {
-  padding: 16px;
+  padding: var(--card-pad);
 }
 
 .card-body-flush {
@@ -2765,7 +2973,7 @@ button.nav-status:hover {
 }
 
 .card-foot {
-  padding: 11px 16px;
+  padding: 11px var(--card-pad);
   border-top: 1px solid var(--border);
   border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   background: var(--surface-2);
@@ -3143,12 +3351,54 @@ button.nav-status:hover {
   gap: 8px;
 }
 
-/* Tabs */
+/* Tabs: text and a count, no icons. The selected one is told by its colour and a 2 px bar, never
+   by a weight (Linux fonts render 500 as 400). Overflowing tabs scroll sideways with faded edges
+   and a "more" chevron (ui/components.js sets data-overflow). */
+.tabs {
+  position: relative;
+}
+
 .tablist-scroll {
   margin-bottom: 16px;
   overflow-x: auto;
   border-bottom: 1px solid var(--border);
   scrollbar-width: thin;
+}
+
+.tablist-scroll[data-overflow="end"] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+}
+
+.tablist-scroll[data-overflow="start"] {
+  -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent);
+  mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent);
+}
+
+.tablist-scroll[data-overflow="both"] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent);
+}
+
+/* The "more" chevron over the faded end: a click scrolls the tabs on (the keyboard has the
+   arrow keys, so it is no tab stop). Its height follows the tab row (set by the component). */
+.tablist-more {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.tablist-more:hover {
+  color: var(--text);
 }
 
 .tablist {
@@ -3164,12 +3414,12 @@ button.nav-status:hover {
   gap: 7px;
   padding: 9px 12px 11px;
   border: 0;
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   background: none;
   color: var(--text-3);
   font: inherit;
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
   white-space: nowrap;
   cursor: pointer;
   transition: color var(--dur), background var(--dur);
@@ -3204,6 +3454,8 @@ button.nav-status:hover {
   outline-offset: -2px;
 }
 
+/* A tab's count: neutral, on the selected tab too (selection is neutral); a status colour for
+   error and warn counts only — an OK count (.tab-badge-ok) reads as a plain one. */
 .tab-badge {
   display: inline-grid;
   place-items: center;
@@ -3213,17 +3465,16 @@ button.nav-status:hover {
   border-radius: var(--radius-pill);
   background: var(--surface-3);
   color: var(--text-2);
-  font-size: 11px;
-  font-weight: 700;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-bold);
   font-variant-numeric: tabular-nums;
 }
 
 .tab.is-selected .tab-badge {
-  background: var(--accent-soft);
-  color: var(--accent-text);
+  background: var(--surface-selected);
+  color: var(--text);
 }
 
-/* A status count keeps its colour on the selected tab too (the accent is for a plain count). */
 .tab-badge-warn,
 .tab.is-selected .tab-badge-warn {
   background: var(--warn-bg);
@@ -3234,12 +3485,6 @@ button.nav-status:hover {
 .tab.is-selected .tab-badge-error {
   background: var(--error-bg);
   color: var(--error);
-}
-
-.tab-badge-ok,
-.tab.is-selected .tab-badge-ok {
-  background: var(--ok-bg);
-  color: var(--ok);
 }
 
 .tabpanel:focus-visible {
@@ -3367,7 +3612,7 @@ button.nav-status:hover {
   position: fixed;
   right: 16px;
   bottom: 16px;
-  z-index: 300;
+  z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -4141,13 +4386,34 @@ button.nav-status:hover {
 }
 
 /* Forced colors (Windows high contrast): keep outlines and borders visible. */
+/* Forced colours drop background fills: whatever a fill marks (the selected nav link, a pressed
+   filter, the current tab) also gets a border or an outline; tags keep their 1 px border. */
 @media (forced-colors: active) {
   .badge,
+  .tag,
+  .chip,
   .btn,
   .seg-btn[aria-pressed="true"],
   .nav-link[aria-current="page"],
   .navmenu-link[aria-current="page"] {
     border: 1px solid CanvasText;
+  }
+
+  .chip[aria-pressed="true"],
+  .nav-link[aria-current="page"],
+  .navmenu-link[aria-current="page"] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  .chip[aria-pressed="true"]::before,
+  .tab.is-selected::after {
+    background: Highlight;
+  }
+
+  .tab.is-selected {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
   }
 }
 
@@ -4170,8 +4436,8 @@ button.nav-status:hover {
   :root {
     --bg: #fff;
     --surface: #fff;
-    --shadow-xs: none;
-    --shadow-sm: none;
+    --shadow-xs: 0 0 0 transparent;
+    --shadow-sm: 0 0 0 transparent;
     --shadow: none;
     --shadow-lg: none;
   }
@@ -4211,6 +4477,7 @@ button.nav-status:hover {
   .disclosure-chevron,
   .dt-sort-icon,
   .tab:not(.is-selected),
+  .tablist-more,
   .no-print {
     display: none !important;
   }
@@ -4256,6 +4523,8 @@ button.nav-status:hover {
   /* The selected tab names the panel below it; the other tabs are not printed. */
   .tablist-scroll {
     overflow: visible;
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
   }
 
   .tab.is-selected {

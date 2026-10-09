@@ -14,10 +14,12 @@
  *   import { h } from './dom.js';
  *   import * as C from './components.js';
  *
- *   // Icons & badges
+ *   // Icons, tags & chips
  *   C.Icon('globe', { size: 16 });                         // inline SVG, aria-hidden
- *   C.Badge('NOERROR', { variant: 'ok', icon: 'check' });  // variants: neutral accent ok info warn error
+ *   C.Tag('NOERROR', { variant: 'ok', icon: 'check' });    // static 4 px tag; variants: neutral accent ok info warn error
  *                                                           //   + kinds cloudflare cdn platform direct private unresolved nxdomain dangling
+ *   C.Badge('NOERROR', { variant: 'ok' });                  // the same Tag under its old name
+ *   C.Chip({ label: 'example.com', mono: true, onClick });  // interactive pill; `pressed` for a filter, `href` for a link
  *   C.KindBadge(host.classification);                       // 'Cloudflare' / 'CDN · Fastly' / 'Dangling CNAME' + tooltip reason
  *   C.SeverityIcon('warn', { label: true });  C.SeverityBadge('error');
  *
@@ -66,7 +68,7 @@
  *   C.SegmentedControl({ label: 'Size', options: [{ value: 's', label: 'S' }, …], value: 's', onChange });
  */
 
-import { h, svg, clear, uid, debounce, isNode } from './dom.js';
+import { h, svg, clear, uid, debounce, isNode, scrollBehavior } from './dom.js';
 import {
   t, formatNumber, formatBytes, formatPercent, getLang, localeTag
 } from '../i18n.js';
@@ -155,7 +157,9 @@ const ICONS = {
   layers: [['path', { d: 'M12 3l9 5-9 5-9-5z' }], ['path', { d: 'M3 13l9 5 9-5' }]],
   'git-branch': [['circle', { cx: 6, cy: 5.5, r: 2.5 }], ['circle', { cx: 6, cy: 18.5, r: 2.5 }], ['circle', { cx: 18, cy: 7.5, r: 2.5 }], ['path', { d: 'M6 8v8M18 10c0 4-4 4.5-12 6' }]],
   users: [['circle', { cx: 9, cy: 8, r: 3.5 }], ['path', { d: 'M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.2A6.5 6.5 0 0 1 21.5 20' }]],
-  bell: [['path', { d: 'M6 9a6 6 0 0 1 12 0c0 6 2.5 8 2.5 8h-17S6 15 6 9z' }], ['path', { d: 'M10 20.5a2.2 2.2 0 0 0 4 0' }]]
+  bell: [['path', { d: 'M6 9a6 6 0 0 1 12 0c0 6 2.5 8 2.5 8h-17S6 15 6 9z' }], ['path', { d: 'M10 20.5a2.2 2.2 0 0 0 4 0' }]],
+  home: [['path', { d: 'M3.5 11L12 4l8.5 7' }], ['path', { d: 'M5.5 9.5V20h5v-5.5h3V20h5V9.5' }]],
+  more: [DOT(5.5, 12, 1.6), DOT(12, 12, 1.6), DOT(18.5, 12, 1.6)]
 };
 
 /** Names of every built-in icon (for docs/tests). */
@@ -220,20 +224,59 @@ export function announce(message, { assertive = false } = {}) {
 /* Badges & status                                                          */
 /* ------------------------------------------------------------------------ */
 
-const BADGE_VARIANTS = new Set(['neutral', 'accent', 'ok', 'info', 'warn', 'error',
+/** Tag variants: the statuses, neutral, accent and the classification kinds (KindBadge's). */
+export const TAG_VARIANTS = Object.freeze(['neutral', 'accent', 'ok', 'info', 'warn', 'error',
   'cloudflare', 'cdn', 'platform', 'direct', 'private', 'unresolved', 'nxdomain', 'dangling']);
+const BADGE_VARIANTS = new Set(TAG_VARIANTS);
 
 /**
- * Small pill label. Classes: .badge .badge-<variant>.
+ * A static tag: a fact or a status, a 4 px rectangle with a severity, neutral or kind fill
+ * (docs/DESIGN.md §6.2; an interactive pill is a {@link Chip}). Classes: .tag, and .badge
+ * .badge-<variant> as the hooks the views and their styles use.
  * @param {string|number} text
  * @param {{ variant?: string, icon?: string, title?: string, className?: string, mono?: boolean }} [opts]
  * @returns {HTMLSpanElement}
  */
-export function Badge(text, { variant = 'neutral', icon = null, title = null, className = '', mono = false } = {}) {
+export function Tag(text, { variant = 'neutral', icon = null, title = null, className = '', mono = false } = {}) {
   const v = BADGE_VARIANTS.has(variant) ? variant : 'neutral';
-  return h('span', { class: ['badge', `badge-${v}`, { mono }, className], title: title || null },
+  return h('span', { class: ['tag', 'badge', `badge-${v}`, { mono }, className], title: title || null },
     icon ? Icon(icon, { size: 12, strokeWidth: 2.2 }) : null,
     h('span', { class: 'badge-text' }, text));
+}
+
+/**
+ * The tag under its old name: every caller of Badge() gets a {@link Tag} (the same options).
+ * @param {string|number} text
+ * @param {{ variant?: string, icon?: string, title?: string, className?: string, mono?: boolean }} [opts]
+ * @returns {HTMLSpanElement}
+ */
+export function Badge(text, opts = {}) {
+  return Tag(text, opts);
+}
+
+/**
+ * An interactive chip: a pill — an example that fills a field in, a filter (`pressed` makes it a
+ * toggle with aria-pressed), a job to start (`href` makes it a link). 28 px tall, 36 on a touch
+ * screen. Classes: .chip (.mono).
+ * @param {{ label: string, icon?: string|null, onClick?: ((e: MouseEvent) => void)|null, pressed?: boolean|null,
+ *   href?: string|null, title?: string|null, mono?: boolean, className?: string, dataset?: object, attrs?: object,
+ *   disabled?: boolean }} opts
+ * @returns {HTMLButtonElement|HTMLAnchorElement}
+ */
+export function Chip({ label, icon = null, onClick = null, pressed = null, href = null, title = null, mono = false,
+  className = '', dataset = {}, attrs = {}, disabled = false } = {}) {
+  const content = [icon ? Icon(icon, { size: 14 }) : null, h('span', { class: 'chip-label' }, label)];
+  const on = onClick ? { click: onClick } : null;
+  if (href) return h('a', { class: ['chip', { mono }, className], href, title, dataset, attrs, on }, content);
+  return h('button', {
+    type: 'button',
+    class: ['chip', { mono }, className],
+    title,
+    disabled,
+    dataset,
+    attrs: { 'aria-pressed': pressed === null || pressed === undefined ? null : String(!!pressed), ...attrs },
+    on
+  }, content);
 }
 
 const KIND_ICONS = {
@@ -570,17 +613,21 @@ export function ProgressBar({ label = '', value = 0, max = 100, indeterminate = 
   return api;
 }
 
-const ALERT_ICONS = { info: 'info', ok: 'check-circle', success: 'check-circle', warn: 'alert', error: 'x-circle' };
+const ALERT_ICONS = { info: 'info', ok: 'check-circle', success: 'check-circle', warn: 'alert', error: 'x-circle', neutral: 'info' };
 
 /**
- * Inline callout. Classes: .alert .alert-<variant>. Errors/warnings use role=alert.
- * @param {{ variant?: 'info'|'ok'|'warn'|'error', title?: string, message?: string|Node, children?: any,
+ * Inline callout. Classes: .alert .alert-<variant>. Errors/warnings use role=alert. Rules
+ * (docs/DESIGN.md §7): at most one alert per region; a hint is muted text, not an alert; inside
+ * a card an alert is compact. A privacy note is not good news: `variant: 'ok'` with the lock
+ * icon renders the neutral note (.alert-neutral), as `variant: 'neutral'` does.
+ * @param {{ variant?: 'info'|'ok'|'warn'|'error'|'neutral', title?: string, message?: string|Node, children?: any,
  *   actions?: Node[], icon?: string|null, dismissible?: boolean, onDismiss?: Function, compact?: boolean }} opts
  * @returns {HTMLDivElement}
  */
 export function Alert({ variant = 'info', title = null, message = null, children = null, actions = null, icon = undefined,
   dismissible = false, onDismiss = null, compact = false } = {}) {
-  const v = ALERT_ICONS[variant] ? (variant === 'success' ? 'ok' : variant) : 'info';
+  let v = ALERT_ICONS[variant] ? (variant === 'success' ? 'ok' : variant) : 'info';
+  if (v === 'ok' && icon === 'lock') v = 'neutral';
   const el = h('div', {
     class: ['alert', `alert-${v}`, { 'alert-compact': compact }],
     attrs: { role: v === 'error' || v === 'warn' ? 'alert' : 'status' }
@@ -853,8 +900,28 @@ export function Toolbar(...children) {
 /* ------------------------------------------------------------------------ */
 
 /**
+ * Which edges of a sideways scroller hide content: 'start', 'end', 'both' or '' (all in view).
+ * Pure; the Tabs component marks its tab row with it (data-overflow: faded edges, the "more"
+ * chevron).
+ * @param {{ scrollLeft: number, scrollWidth: number, clientWidth: number }} box
+ * @returns {''|'start'|'end'|'both'}
+ */
+export function overflowEdges({ scrollLeft = 0, scrollWidth = 0, clientWidth = 0 } = {}) {
+  const max = Number(scrollWidth) - Number(clientWidth);
+  if (!(max > 1)) return '';
+  const left = Math.max(0, Number(scrollLeft) || 0);
+  const start = left > 1;
+  const end = max - left > 1;
+  if (start && end) return 'both';
+  return start ? 'start' : end ? 'end' : '';
+}
+
+/**
  * Accessible tabs (WAI-ARIA tabs pattern, automatic activation, roving tabindex;
  * ←/→/Home/End). Panel content can be a Node or a function called lazily on first show.
+ * A tab is text and an optional count (an `icon` is not drawn: docs/DESIGN.md §7); a status
+ * count is coloured for warn and error only. Tabs that do not fit scroll sideways with faded
+ * edges and a "more" chevron that scrolls them on.
  * @param {Array<{ id: string, label: string, icon?: string, badge?: string|number|null, content?: Node|(() => Node),
  *   disabled?: boolean }>} items
  * @param {{ selected?: string, onChange?: (id: string) => void, label?: string, className?: string }} [opts]
@@ -866,7 +933,32 @@ export function Tabs(items, { selected = null, onChange = null, label = null, cl
   const base = uid('tabs');
   const tablist = h('div', { class: 'tablist', attrs: { role: 'tablist', 'aria-label': label || t('tabs.label') } });
   const panels = h('div', { class: 'tabpanels' });
-  const el = h('div', { class: ['tabs', className] }, h('div', { class: 'tablist-scroll' }, tablist), panels);
+  const scroller = h('div', { class: 'tablist-scroll' }, tablist);
+  // Not a tab stop and hidden from assistive technology: the arrow keys reach every tab.
+  const more = h('button', {
+    type: 'button',
+    class: 'tablist-more',
+    hidden: true,
+    title: t('tabs.more'),
+    attrs: { tabindex: -1, 'aria-hidden': 'true' },
+    on: { click: () => scroller.scrollBy({ left: Math.max(80, scroller.clientWidth * 0.8), behavior: scrollBehavior() }) }
+  }, Icon('chevron-right', { size: 16 }));
+  const el = h('div', { class: ['tabs', className] }, scroller, more, panels);
+  const syncOverflow = () => {
+    const edges = overflowEdges(scroller);
+    if (edges) scroller.dataset.overflow = edges;
+    else delete scroller.dataset.overflow;
+    const end = edges === 'end' || edges === 'both';
+    more.hidden = !end;
+    if (end) more.style.height = `${scroller.clientHeight}px`;
+  };
+  scroller.addEventListener('scroll', syncOverflow, { passive: true });
+  if (typeof globalThis.ResizeObserver === 'function') {
+    // The row's own width (a narrower screen) and the tabs' (a count or a label that changed).
+    const ro = new globalThis.ResizeObserver(syncOverflow);
+    ro.observe(scroller);
+    ro.observe(tablist);
+  }
   const entries = new Map();
   let current = null;
 
@@ -884,7 +976,7 @@ export function Tabs(items, { selected = null, onChange = null, label = null, cl
       dataset: { tab: item.id },
       attrs: { role: 'tab', 'aria-selected': 'false', 'aria-controls': panelId, tabindex: -1 },
       on: { click: () => select(item.id) }
-    }, item.icon ? Icon(item.icon, { size: 15 }) : null, labelEl, badge);
+    }, labelEl, badge);
     const panel = h('div', {
       class: 'tabpanel',
       id: panelId,

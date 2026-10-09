@@ -104,6 +104,9 @@ const JS = join(ASSETS, 'js');
  * files grew, by 400 bytes together: views/subdomains.js (388: `originExport`, the `origin` block of the JSON export that Subdomains and SSL Targets
  * share, with the Exclude box's tokens applied) and app.js (12: the Subdomains view's idle modulepreload names lib/originnow.js). The content audit
  * is a CLI; its card is in views/about.js, which loads on the first visit to About.
+ * UI redesign phase 1a (docs/DESIGN.md §8: the tokens and the base components): ≈ 341 KB (348,984 bytes), 29,896 bytes under the budget.
+ * style.css grew by 3,320 bytes (the type, spacing, density, layer and colour-role tokens in both themes, the compact and touch blocks,
+ * tags, chips and the tabs' faded overflow) and ui/components.js by 1,510 (Tag, Chip, the tabs' "more" chevron, two icons).
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

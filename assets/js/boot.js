@@ -1,9 +1,9 @@
 /*
  * boot.js — tiny classic (non-module) script loaded synchronously in <head>.
  *
- * 1. Applies the saved theme and language to <html> before the first paint, so a
- *    manually chosen dark theme never flashes white (the CSP forbids inline scripts),
- *    and links the web app manifest of that language.
+ * 1. Applies the saved theme, density and language to <html> before the first paint, so a
+ *    manually chosen dark theme never flashes white and a compact page never jumps (the CSP
+ *    forbids inline scripts), and links the web app manifest of that language.
  * 2. If the ES-module app has not signalled readiness (html[data-app-ready]) after a
  *    while — very old browser, blocked script, failed download — replaces the loading
  *    indicator with a readable message instead of spinning forever.
@@ -21,6 +21,8 @@
   }
   var theme = settings && settings.theme;
   if (theme === 'light' || theme === 'dark') root.setAttribute('data-theme', theme);
+  // Comfortable is the default (no attribute); style.css keeps touch targets large either way.
+  if (settings && settings.density === 'compact') root.setAttribute('data-density', 'compact');
 
   var nav = (window.navigator && (navigator.languages && navigator.languages[0] || navigator.language)) || '';
   var lang = settings && (settings.lang === 'tr' || settings.lang === 'en')

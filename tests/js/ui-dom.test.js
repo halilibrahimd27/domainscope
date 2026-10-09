@@ -18,7 +18,7 @@ import * as dom from '../../assets/js/ui/dom.js';
 import { sanitizeFilename, timestampedName, jsonReplacer } from '../../assets/js/ui/download.js';
 import {
   compareValues, ipSortValue, normalizeSearch, csvCell, rowsToCsv, decodeText, describeError, ICON_NAMES, KINDS, CliText,
-  folderOrder
+  folderOrder, Tag, Badge, Chip, Alert, TAG_VARIANTS, overflowEdges
 } from '../../assets/js/ui/components.js';
 import {
   parseRoute, buildRoute, sameParams, sameSearch, hasRepeatedKeys, VIEWS, REPO_URL, DEFAULT_VIEW
@@ -423,7 +423,7 @@ describe('state', () => {
 
   test('defaults with empty storage', () => {
     const s = make(new MemoryStorage());
-    assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: [...DEFAULT_CHAIN], concurrency: 12, startTasks: true });
+    assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: [...DEFAULT_CHAIN], concurrency: 12, startTasks: true, density: 'comfortable' });
     assert.equal(s.inventory.text, '');
     assert.deepEqual(s.inventory.servers, []);
     assert.equal(s.inventory.updatedAt, null);
@@ -461,7 +461,7 @@ describe('state', () => {
     const s = make(storage);
     await s.ready;
     assert.equal(s.inventory.text, '');
-    assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: ['google', 'cloudflare'], concurrency: 32, startTasks: true });
+    assert.deepEqual(s.settings, { lang: null, theme: 'auto', chain: ['google', 'cloudflare'], concurrency: 32, startTasks: true, density: 'comfortable' });
   });
 
   test('sanitizeSettings validates each field', () => {
@@ -477,6 +477,9 @@ describe('state', () => {
     assert.equal(sanitizeSettings({}).startTasks, true, 'a record from before the task picker keeps it');
     assert.equal(sanitizeSettings({ startTasks: false }).startTasks, false);
     assert.equal(sanitizeSettings({ startTasks: 'no' }).startTasks, true, 'only an explicit false turns it off');
+    assert.equal(sanitizeSettings({}).density, 'comfortable', 'comfortable by default');
+    assert.equal(sanitizeSettings({ density: 'compact' }).density, 'compact');
+    assert.equal(sanitizeSettings({ density: 'tiny' }).density, 'comfortable', 'an unknown density falls back');
   });
 
   test('write failures (quota / disabled storage) keep state in memory and report it', async () => {
@@ -1104,10 +1107,71 @@ describe('components.js helpers', () => {
 
   test('icon set covers every navigation and kind icon', () => {
     for (const v of VIEWS) assert.ok(ICON_NAMES.includes(v.icon), v.icon);
-    for (const name of ['cloud', 'zap', 'box', 'server', 'lock', 'help', 'x-circle', 'unlink', 'check-circle', 'alert', 'info', 'copy', 'download', 'upload']) {
+    for (const name of ['cloud', 'zap', 'box', 'server', 'lock', 'help', 'x-circle', 'unlink', 'check-circle', 'alert', 'info', 'copy', 'download', 'upload',
+      'home', 'more', 'play', 'stop']) {
       assert.ok(ICON_NAMES.includes(name), name);
     }
     assert.deepEqual([...KINDS].sort(), ['cdn', 'cloudflare', 'dangling', 'direct', 'nxdomain', 'platform', 'private', 'unresolved']);
+  });
+
+  test('Tag is the static tag; Badge() renders the same element with the .badge hooks; an unknown variant is neutral', () => withFakeDocument(() => {
+    const tag = Tag('NOERROR', { variant: 'ok', icon: 'check', title: 'answered' });
+    assert.equal(tag.tagName, 'SPAN');
+    assert.equal(tag.getAttribute('class'), 'tag badge badge-ok');
+    assert.equal(tag.getAttribute('title'), 'answered');
+    assert.equal(tag.textContent, 'NOERROR');
+    assert.equal(tag.childNodes[0].tagName, 'SVG', 'the icon first');
+    const badge = Badge('RSA 2048', { mono: true, className: 'x-key' });
+    assert.equal(badge.getAttribute('class'), 'tag badge badge-neutral mono x-key');
+    assert.equal(Badge('?', { variant: 'rainbow' }).getAttribute('class'), 'tag badge badge-neutral');
+    for (const v of TAG_VARIANTS) assert.equal(Tag('x', { variant: v }).getAttribute('class'), `tag badge badge-${v}`);
+    assert.equal(Tag('<b>x</b>').textContent, '<b>x</b>', 'text, never HTML');
+  }));
+
+  test('Chip is an interactive pill: a toggle with aria-pressed, a plain button, or a link', () => withFakeDocument(() => {
+    let clicks = 0;
+    const filter = Chip({ label: 'Not resolving', pressed: false, onClick: () => { clicks += 1; }, dataset: { filter: 'nx' } });
+    assert.equal(filter.tagName, 'BUTTON');
+    assert.equal(filter.getAttribute('type'), 'button');
+    assert.equal(filter.getAttribute('class'), 'chip');
+    assert.equal(filter.getAttribute('aria-pressed'), 'false');
+    assert.equal(filter.dataset.filter, 'nx');
+    filter.dispatch('click');
+    assert.equal(clicks, 1);
+    assert.equal(Chip({ label: 'on', pressed: true }).getAttribute('aria-pressed'), 'true');
+    const example = Chip({ label: 'example.com', mono: true, icon: 'search' });
+    assert.equal(example.getAttribute('aria-pressed'), null, 'no toggle without `pressed`');
+    assert.equal(example.getAttribute('class'), 'chip mono');
+    assert.equal(example.childNodes[0].tagName, 'SVG');
+    assert.equal(example.textContent, 'example.com');
+    const link = Chip({ label: 'Find every subdomain', href: '#/subdomains' });
+    assert.equal(link.tagName, 'A');
+    assert.equal(link.getAttribute('href'), '#/subdomains');
+    assert.equal(link.getAttribute('aria-pressed'), null);
+    assert.equal(Chip({ label: 'x', href: 'javascript:alert(1)' }).getAttribute('href'), null, 'a script URL is dropped');
+  }));
+
+  test('Alert: a privacy note (ok + lock) is neutral, not good news; the other variants keep their class and role', () => withFakeDocument(() => {
+    const note = Alert({ variant: 'ok', icon: 'lock', message: 'The file never leaves your browser.' });
+    assert.equal(note.getAttribute('class'), 'alert alert-neutral');
+    assert.equal(note.getAttribute('role'), 'status');
+    assert.equal(Alert({ variant: 'neutral', message: 'x' }).getAttribute('class'), 'alert alert-neutral');
+    assert.equal(Alert({ variant: 'ok', message: 'Done' }).getAttribute('class'), 'alert alert-ok', 'a real OK stays green');
+    assert.equal(Alert({ variant: 'success', icon: 'lock', message: 'x' }).getAttribute('class'), 'alert alert-neutral');
+    assert.equal(Alert({ variant: 'warn', icon: 'lock', message: 'x' }).getAttribute('class'), 'alert alert-warn', 'only an OK with the lock');
+    assert.equal(Alert({ variant: 'error', message: 'x' }).getAttribute('role'), 'alert');
+    assert.equal(Alert({ variant: 'bogus', message: 'x' }).getAttribute('class'), 'alert alert-info');
+  }));
+
+  test('overflowEdges: which ends of a sideways scroller hide tabs', () => {
+    assert.equal(overflowEdges({ scrollLeft: 0, scrollWidth: 300, clientWidth: 300 }), '', 'everything in view');
+    assert.equal(overflowEdges({ scrollLeft: 0, scrollWidth: 301, clientWidth: 300 }), '', 'a pixel of rounding is no overflow');
+    assert.equal(overflowEdges({ scrollLeft: 0, scrollWidth: 600, clientWidth: 300 }), 'end');
+    assert.equal(overflowEdges({ scrollLeft: 120, scrollWidth: 600, clientWidth: 300 }), 'both');
+    assert.equal(overflowEdges({ scrollLeft: 300, scrollWidth: 600, clientWidth: 300 }), 'start');
+    assert.equal(overflowEdges({ scrollLeft: 299.5, scrollWidth: 600, clientWidth: 300 }), 'start', 'sub-pixel scroll positions');
+    assert.equal(overflowEdges({}), '');
+    assert.equal(overflowEdges(), '');
   });
 });
 
@@ -2691,12 +2755,13 @@ describe('security & shell invariants', () => {
     for (const kind of KINDS) assert.ok(css.includes(`.badge-${kind}`), `.badge-${kind}`);
   });
 
-  test('a status count on a tab keeps its colour when the tab is selected (not the accent of a plain count)', async () => {
+  test('a tab\'s count is neutral, on the selected tab too; only a warn or error count has a status colour', async () => {
     const css = await readFile(path.join(ROOT, 'assets/css/style.css'), 'utf8');
-    assert.match(css, /\.tab\.is-selected \.tab-badge \{\s*background: var\(--accent-soft\);/);
-    for (const v of ['warn', 'error', 'ok']) {
+    assert.match(css, /\.tab\.is-selected \.tab-badge \{\s*background: var\(--surface-selected\);/, 'selection is neutral, not the accent');
+    for (const v of ['warn', 'error']) {
       assert.match(css, new RegExp(`\\.tab-badge-${v},\\s*\\.tab\\.is-selected \\.tab-badge-${v} \\{\\s*background: var\\(--${v}-bg\\);\\s*color: var\\(--${v}\\);`), v);
     }
+    assert.doesNotMatch(css, /\.tab-badge-ok\s*[,{]/, 'an OK count reads as a plain one (the class stays as a hook)');
   });
 });
 

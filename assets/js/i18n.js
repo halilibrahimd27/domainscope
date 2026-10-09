@@ -732,7 +732,8 @@ registerStrings('en', {
 
   'modal.close': 'Close dialog',
   'toast.dismiss': 'Dismiss notification',
-  'tabs.label': 'Sections'
+  'tabs.label': 'Sections',
+  'tabs.more': 'More tabs'
 });
 
 registerStrings('tr', {
@@ -1055,5 +1056,6 @@ registerStrings('tr', {
 
   'modal.close': 'Pencereyi kapat',
   'toast.dismiss': 'Bildirimi kapat',
-  'tabs.label': 'Bölümler'
+  'tabs.label': 'Bölümler',
+  'tabs.more': 'Diğer sekmeler'
 });

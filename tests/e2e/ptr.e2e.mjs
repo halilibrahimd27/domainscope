@@ -166,6 +166,19 @@ const typeTarget = (page, value) => page.evaluate((v) => {
   ta.value = v;
   ta.dispatchEvent(new Event('input', { bubbles: true }));
 }, value);
+/**
+ * Type into the focus domain. From the first sweep the input card is compact and the field sits
+ * behind its Edit (docs/DESIGN.md §5.1, region 2): open it first, as a user would.
+ */
+const typeFocus = async (page, value) => {
+  await page.evaluate(() => {
+    const card = document.querySelector('.ptr-form-card');
+    if (card && card.classList.contains('is-compact') && !card.classList.contains('is-editing')) card.querySelector('[data-action="tool-input-edit"]').click();
+  });
+  await page.type('[data-role="ptr-focus"]', value);
+};
+/** The metric strip's figures: { id: value }. */
+const metrics = (page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.ptr-stats .metric')].map((m) => [m.dataset.metric, m.querySelector('.metric-value').textContent])));
 const issues = (page) => page.evaluate(() => [...document.querySelectorAll('.ptr-issues .alert')].map((a) => a.dataset.issue));
 const dnsCount = (page) => page.evaluate(() => window.__fakeDnsLog.length);
 /** Table rows: [key cell text, PTR text, status] in display order. */
@@ -219,7 +232,7 @@ async function main() {
       });
       assertEqual(nav, ['ip', 'bulk', 'ptr'], 'Map IPs to servers group');
       assertEqual(await text(page, 'h1'), 'Reverse DNS', 'title');
-      assert(await page.evaluate(() => !!document.querySelector('.ptr-empty .empty')), 'empty state');
+      assert(await page.evaluate(() => !!document.querySelector('.ptr-empty .tool-empty')), 'empty state');
       assertEqual(await dnsCount(page), 0, 'no DNS query');
       await shot(page, opts, 'ptr-empty-desktop-light-en');
     });
@@ -255,7 +268,7 @@ async function main() {
 
     await run.step('sweep 192.0.2.0/28 with focus example.com: focus rows first, one pattern, statuses, operator, server', async () => {
       await typeTarget(page, '192.0.2.0/28');
-      await page.type('[data-role="ptr-focus"]', 'example.com');
+      await typeFocus(page, 'example.com');
       await sleep(200);
       assert(/16 addresses/.test(await text(page, '.ptr-parsed')), 'parsed count');
       await page.click('[data-action="ptr-run"]');
@@ -271,30 +284,36 @@ async function main() {
       assert(/Amazon CloudFront/.test(r[4].operator), `operator from the PTR name: ${r[4].operator}`);
       assert(/web01/.test(r[0].server), 'inventory match');
       assertEqual(r.slice(5).map((x) => x.status), ['nxdomain', 'nxdomain', 'no-ptr', 'servfail'], 'no name, then failures');
-      const stats = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.ptr-stats .stat')].filter((s) => !s.hidden).map((s) => [s.dataset.stat, s.querySelector('.stat-value').textContent])));
-      assertEqual(stats, { addresses: '16', named: '12', confirmed: '10', none: '3', failed: '1', focus: '2' }, 'stats');
-      assert(/Under example\.com/.test(await text(page, '.ptr-stats [data-stat="focus"]')), 'focus card');
+      assertEqual(await metrics(page), { addresses: '16', named: '12', confirmed: '10', none: '3', failed: '1', focus: '2' }, 'metrics');
+      assert(/Under example\.com/.test(await text(page, '.ptr-stats [data-metric="focus"]')), 'focus metric');
+      // The status summary: failed, not resolving back, confirmed, with a PTR name, none (DESIGN §5.6).
+      const status = await page.evaluate(() => [...document.querySelectorAll('.ptr-progress .status-item')].map((b) => `${b.dataset.status}:${b.dataset.count}`));
+      // (two do not resolve back: 192.0.2.2 and a member of the provider's pattern)
+      assertEqual(status, ['failed:1', 'mismatch:2', 'confirmed:10', 'named:12', 'none:3'], 'status summary');
       const queried = await page.evaluate(() => new Set(window.__fakeDnsLog.filter((q) => q.type === 'PTR').map((q) => q.name)).size);
       assertEqual(queried, 16, 'one reverse name per address');
       assert(/target=192\.0\.2\.0%2F28&focus=example\.com$/.test(await page.evaluate(() => location.hash)), 'the URL carries the run');
       // a focus edited after the sweep goes into the URL (and so into Copy link); an invalid one does not
-      await page.type('[data-role="ptr-focus"]', 'example.org');
+      await typeFocus(page, 'example.org');
       await page.waitFor(() => /target=192\.0\.2\.0%2F28&focus=example\.org$/.test(location.hash), { message: 'focus in the URL' });
-      await page.type('[data-role="ptr-focus"]', 'not a domain');
+      await typeFocus(page, 'not a domain');
       await sleep(400);
       assert(/focus=example\.org$/.test(await page.evaluate(() => location.hash)), 'an invalid focus is not put into the URL');
-      await page.type('[data-role="ptr-focus"]', 'example.com');
+      await typeFocus(page, 'example.com');
       await page.waitFor(() => /focus=example\.com$/.test(location.hash), { message: 'focus back' });
       await shot(page, opts, 'ptr-results-desktop-light-en');
     });
 
-    await run.step('filters, stat cards, "Expand patterns" and row details', async () => {
+    await run.step('filters, the status summary, "Expand patterns" and row details', async () => {
       await setSelect(page, '[data-role="ptr-filter"]', 'failed');
       await sleep(120);
       assertEqual((await rows(page)).map((x) => x.ip), ['192.0.2.5'], 'failed only');
-      await page.click('.ptr-stats [data-stat="named"]');
+      const pressed = () => page.evaluate(() => [...document.querySelectorAll('.ptr-progress .status-item[aria-pressed="true"]')].map((b) => b.dataset.status));
+      assertEqual(await pressed(), ['failed'], 'the Show select presses its status item');
+      await page.click('.ptr-progress .status-item[data-status="named"]');
       await sleep(120);
       assertEqual((await rows(page)).length, 5, 'with a PTR name (pattern collapsed)');
+      assertEqual([await pressed(), await page.evaluate(() => document.querySelector('[data-role="ptr-filter"]').value)], [['named'], 'ptr'], 'a status item sets the Show select');
       await jsClick(page, '[data-role="ptr-expand"]');
       await page.waitFor(() => document.querySelectorAll('.ptr-table tbody tr.dt-row').length === 12, { message: 'expanded' });
       await jsClick(page, '[data-role="ptr-expand"]');
@@ -310,7 +329,7 @@ async function main() {
       await setSelect(page, '[data-role="ptr-filter"]', 'ptr');
       await sleep(100);
       await takeDownloads(page);
-      await page.click('.ptr-table [data-export="json"]');
+      await jsClick(page, '.ptr-progress [data-export="json"]');
       await sleep(150);
       const j = JSON.parse((await takeDownloads(page)).find((f) => f.name.endsWith('.json')).text);
       assertEqual([j.planned, j.aborted, j.exported, j.results.length], [16, false, 12, 12], 'counts');
@@ -322,8 +341,8 @@ async function main() {
       const exported = async () => {
         await takeDownloads(page);
         // (a click from JS: the export toasts can sit over the table's footer)
-        await jsClick(page, '.ptr-table [data-export="csv"]');
-        await jsClick(page, '.ptr-table [data-export="json"]');
+        await jsClick(page, '.ptr-progress [data-export="csv"]');
+        await jsClick(page, '.ptr-progress [data-export="json"]');
         await sleep(150);
         const files = await takeDownloads(page);
         const csv = files.find((f) => f.name.endsWith('.csv')).text.trim().split(/\r?\n/).slice(1).map((l) => l.split(',').slice(0, 2).join(' '));
@@ -356,8 +375,8 @@ async function main() {
       await setSelect(page, '[data-role="ptr-filter"]', 'all');
       await sleep(100);
       await takeDownloads(page);
-      await jsClick(page, '.ptr-table [data-export="csv"]');
-      await jsClick(page, '.ptr-table [data-export="json"]');
+      await jsClick(page, '.ptr-progress [data-export="csv"]');
+      await jsClick(page, '.ptr-progress [data-export="json"]');
       await jsClick(page, '[data-action="ptr-names"]');
       await sleep(150);
       const files = await takeDownloads(page);
@@ -533,7 +552,7 @@ async function main() {
       await shot(page, opts, 'ptr-asn-picker-desktop-light-en');
       await page.click('[data-action="ptr-asn-sweep"]');
       await waitDone(page, 'AS sweep');
-      assertEqual(await page.evaluate(() => document.querySelector('.ptr-stats [data-stat="addresses"] .stat-value').textContent), '512', 'two /24s');
+      assertEqual((await metrics(page)).addresses, '512', 'two /24s');
       assert(/AS64496: 198\.51\.100\.0\/24, 203\.0\.113\.0\/24/.test(await text(page, '.ptr-results-title')), 'label');
       await setSelect(page, '[data-role="ptr-filter"]', 'ptr');
       await sleep(120);
@@ -646,7 +665,7 @@ async function main() {
 
     await run.step('"Under your domain" is off without a focus domain, and a table showing it goes back to the default', async () => {
       await typeTarget(page, '192.0.2.0/28');
-      await page.type('[data-role="ptr-focus"]', 'example.com');
+      await typeFocus(page, 'example.com');
       await sleep(200);
       await page.click('[data-action="ptr-run"]');
       await waitDone(page, 'sweep with a focus');
@@ -655,7 +674,7 @@ async function main() {
       await setSelect(page, '[data-role="ptr-filter"]', 'focus');
       await sleep(120);
       assertEqual((await rows(page)).map((x) => x.ip), ['192.0.2.1', '192.0.2.2'], 'under example.com');
-      await page.type('[data-role="ptr-focus"]', '');
+      await typeFocus(page, '');
       await page.waitFor(() => document.querySelector('[data-role="ptr-filter"]').value === 'ptr', { message: 'back to the default filter' });
       assertEqual(await option(), true, 'off without one');
       assert(!await page.evaluate(() => !!document.querySelector('.ptr-table .empty')), 'no "nothing matches"');
@@ -684,7 +703,7 @@ async function main() {
       const form = () => page.evaluate(() => [document.querySelector('[data-role="ptr-target"]').value, document.querySelector('[data-role="ptr-focus"]').value]);
       const linked = () => page.evaluate(() => !!document.querySelector('.ptr-prompt [data-prompt="link"]'));
       await typeTarget(page, '192.0.2.1');
-      await page.type('[data-role="ptr-focus"]', '');
+      await typeFocus(page, '');
       await sleep(200);
       await page.click('[data-action="ptr-run"]');
       await waitDone(page, 'a sweep without a focus');
@@ -721,7 +740,7 @@ async function main() {
       await page.evaluate(() => { window.__fakeDnsDelay = 250; });
       try {
         await typeTarget(page, '198.51.100.64/26');
-        await page.type('[data-role="ptr-focus"]', '');
+        await typeFocus(page, '');
         await sleep(200);
         await page.click('[data-action="ptr-run"]');
         await page.waitFor(() => !document.querySelector('[data-action="ptr-stop"]').hidden, { message: 'running' });
@@ -755,21 +774,24 @@ async function main() {
       await page.click('[data-action="ptr-run"]');
       await waitDone(page, 'phone sweep');
       await page.setViewport({ width: 375, height: 667, mobile: true });
-      // the forward check sits under the address, in view without scrolling the table sideways
+      // each row is a card of labelled lines (style.css .dt-cards): the forward check is one of its
+      // lines, in view without scrolling the table sideways
       await setSelect(page, '[data-role="ptr-filter"]', 'all');
       const phone = await page.evaluate(() => {
         const visible = (el) => !!el && getComputedStyle(el).display !== 'none';
         const scroller = document.querySelector('.ptr-table .dt-scroll');
-        const inline = [...document.querySelectorAll('.ptr-table tbody tr.dt-row .ptr-st-inline')];
+        const checks = [...document.querySelectorAll('.ptr-table tbody tr.dt-row td.ptr-col-check')];
         const box = scroller.getBoundingClientRect();
         return {
-          column: [...document.querySelectorAll('.ptr-table td.ptr-col-check')].some(visible),
-          inline: inline.length > 0 && inline.every(visible),
-          inView: inline.every((el) => el.getBoundingClientRect().right <= box.right + 1),
-          first: inline[0]?.querySelector('[data-status]')?.dataset.status || ''
+          cards: getComputedStyle(document.querySelector('.ptr-table tbody tr.dt-row')).display === 'grid' && !visible(document.querySelector('.ptr-table thead')),
+          check: checks.length > 0 && checks.every(visible),
+          label: checks[0]?.dataset.label || '',
+          inView: checks.every((el) => el.getBoundingClientRect().right <= box.right + 1),
+          wide: scroller.scrollWidth <= scroller.clientWidth + 1,
+          first: checks[0]?.querySelector('[data-status]')?.dataset.status || ''
         };
       });
-      assertEqual(phone, { column: false, inline: true, inView: true, first: 'confirmed' }, 'phone verdicts');
+      assertEqual(phone, { cards: true, check: true, label: 'Forward check', inView: true, wide: true, first: 'confirmed' }, 'phone cards');
       for (const lang of ['tr', 'en']) {
         await setLangUi(page, lang);
         await page.waitFor(() => document.querySelector('.ptr-progress')?.dataset.status === 'done', { message: 'results kept after the language switch' });

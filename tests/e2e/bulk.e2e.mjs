@@ -14,7 +14,8 @@
  *     NXDOMAIN) plus duplicates, an IP, invalid entries and a URL; the parse summary matches
  *     the Node parser; the inventory is seeded so dns.google (8.8.8.8) is "your" server
  *   - resolve with PTR: every row present, classification, inventory match, IP table with PTR,
- *     filters, row details, CSV / JSON export (captured in the page), copy buttons
+ *     filters, row details, the result header's Export ▾ (CSV / JSON of both tables, captured in
+ *     the page), copy buttons
  *   - ASN / owner lookups (RIPEstat) for two well-known IPs
  *   - Cancel, a job that keeps running while another tool is open (toast → back),
  *     "use the names of the last scan", #/bulk?names=… route params
@@ -215,9 +216,10 @@ async function main() {
       }
       const kinds = new Set(rows.map((r) => r.kind));
       assert(kinds.has('cdn') || kinds.has('platform'), `CDN / platform present: ${[...kinds]}`);
-      const stats = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.bulk-stats .stat')].map((s) => [s.dataset.stat, s.querySelector('.stat-value').textContent])));
-      assertEqual(Number(stats.names), expected.names.length, 'stat names');
-      assert(Number(stats.servers) >= 1, `servers stat ${stats.servers}`);
+      // The metric strips of both tabs (the IP addresses tab's is drawn while hidden).
+      const stats = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.bulk-stats .metric, .bulk-ip-stats .metric')].map((m) => [m.dataset.metric, m.querySelector('.metric-value').textContent])));
+      assertEqual(Number(stats.names), expected.names.length, 'names metric');
+      assert(Number(stats.servers) >= 1, `servers metric ${stats.servers}`);
       await page.evaluate(() => window.scrollTo(0, 0));
       await shot(page, opts, 'bulk-desktop-light-en-results');
     });
@@ -279,12 +281,14 @@ async function main() {
       await shot(page, opts, 'bulk-desktop-light-en-ips');
     });
 
-    await run.step('exports: hosts CSV / JSON and IP CSV (captured downloads)', async () => {
+    await run.step('exports: hosts CSV / JSON and IP CSV from the result header’s Export ▾ (captured downloads)', async () => {
       await takeDownloads(page);
-      await page.click('.bulk-ips [data-export="csv"]');
+      // The menu's items are in the page while it is closed: a click from JS picks one.
+      const pick = (what) => page.evaluate((w) => document.querySelector(`.bulk-progress [data-export="${w}"]`).click(), what);
+      await pick('ips-csv');
       await page.click('.bulk-tabs [data-tab="hosts"]');
-      await page.click('.bulk-hosts [data-export="csv"]');
-      await page.click('.bulk-hosts [data-export="json"]');
+      await pick('csv');
+      await pick('json');
       const files = await takeDownloads(page);
       const ipCsv = files.find((f) => /^bulk-ips-.*\.csv$/.test(f.name));
       const hostCsv = files.find((f) => /^bulk-resolve-.*\.csv$/.test(f.name));

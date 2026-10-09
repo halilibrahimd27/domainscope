@@ -403,8 +403,8 @@ function failureInfo() {
     chips: [...document.querySelectorAll('.ipi-sources .src-chip')].map((c) => ({
       id: c.dataset.source, state: c.dataset.state, value: c.querySelector('.src-chip-value')?.textContent || '', retry: !!c.querySelector('[data-action="retry-source"]')
     })),
-    shownStats: [...document.querySelectorAll('.ipi-stats .stat')].filter((s) => !s.hidden).map((s) => s.dataset.stat),
-    zero: document.querySelector('.ipi-zero')?.hidden ? null : document.querySelector('.ipi-zero')?.textContent
+    shownStats: [...document.querySelectorAll('.ipi-stats .metric')].map((s) => s.dataset.metric),
+    zero: document.querySelector('.ipi-stats .metric-zero')?.hidden ? null : document.querySelector('.ipi-stats .metric-zero')?.textContent
   };
 }
 
@@ -445,7 +445,7 @@ async function offlineGroup(browser, server) {
       assertEqual(i.chips.map((c) => [c.id, c.state, c.retry]), [['ripestat', 'failed', true], ['ipwhois', 'failed', true], ['ptr', 'ok', false]], 'chips');
       assert(/1 failed · rate limited — try again in a few minutes/.test(i.chips[0].value), `RIPEstat chip: ${i.chips[0].value}`);
       // Zero counts fold into one sentence (no server list saved: "your servers" is not claimed).
-      assertEqual(i.shownStats, ['ips', 'priv', 'nets', 'countries'], 'stat cards shown');
+      assertEqual(i.shownStats, ['ips', 'priv', 'nets', 'countries'], 'metrics shown');
       assertEqual(i.zero, 'None of these addresses is behind a CDN / proxy.', 'folded zero counts');
       await assertNoHorizontalScroll(page, 'failed sources');
       await shot(page, 'ip-offline-desktop-light-en-failed');
@@ -649,7 +649,7 @@ async function offlineGroup(browser, server) {
       assert(md.startsWith('**IP Intel · `203.0.113.7`**') && md.trim().endsWith('#/ip?ips=203.0.113.7'), `summary: ${md}`);
     });
 
-    await step('the header’s Copy link leaves out private and inventory addresses, as Copy summary’s link does', async () => {
+    await step('the result header’s Copy link leaves out private and inventory addresses, as Copy summary’s link does', async () => {
       await page.evaluate(async () => {
         (await import('./assets/js/state.js')).state.setInventory('origin-web 198.51.100.20\n');
         window.__ipFake.limited = [];
@@ -661,10 +661,10 @@ async function offlineGroup(browser, server) {
         await page.evaluate(() => document.querySelector('[data-action="run"]').click());
         await page.waitFor(ROWS_DONE, { timeout: 30000, message: 'rows looked up' });
         await stubClipboard(page);
-        await page.evaluate(() => document.querySelector('.page-actions .copy-btn').click());
+        await page.evaluate(() => document.querySelector('.ipi-results [data-action="copy-link"]').click());
         await page.waitFor(() => window.__clip.length === 1, { message: 'link copied' });
         const [link] = await takeClipboard(page);
-        assertEqual(new URL(link).hash, '#/ip?ips=203.0.113.7', 'the header’s Copy link');
+        assertEqual(new URL(link).hash, '#/ip?ips=203.0.113.7', 'the result header’s Copy link');
         const summary = await page.evaluate(async () => (await import('./assets/js/ui/summary-button.js')).resultPermalink(document.querySelector('#page-body')));
         assertEqual(new URL(summary).hash, '#/ip?ips=203.0.113.7', 'Copy summary’s link');
       } finally {
@@ -1708,7 +1708,7 @@ async function liveGroups(browser, server) {
 
   await step('empty state; "My servers’ IPs" button loads the inventory', async () => {
     await gotoHash(page, '#/ip', 'ip');
-    assert(await page.evaluate(() => !!document.querySelector('.ipi-empty .empty')), 'empty state');
+    assert(await page.evaluate(() => !!document.querySelector('.ipi-empty .tool-empty')), 'empty state');
     await page.click('[data-action="inventory"]');
     const text = await page.evaluate(() => document.querySelector('[data-role="ip-input"]').value);
     assertEqual(text.trim().split('\n'), ['8.8.8.8', '10.0.0.1'], 'inventory IPs');
@@ -1746,8 +1746,8 @@ async function liveGroups(browser, server) {
     }
     notes.push(`flags rendered as ${flagMode === 'is-code' ? 'ISO-code chips (no flag emoji on this platform)' : 'emoji'}`);
     assert(Object.values(rows).some((r) => /from github\.com/.test(r.text)), 'host name resolved and credited');
-    const mine = await page.evaluate(() => document.querySelector('.ipi-stats [data-stat="mine"] .stat-value').textContent);
-    assertEqual(mine, '2', 'your servers stat');
+    const mine = await page.evaluate(() => document.querySelector('.ipi-stats [data-metric="mine"] .metric-value').textContent);
+    assertEqual(mine, '2', 'your servers metric');
     await assertNoHorizontalScroll(page, 'rows');
     await shot(page, 'ip-desktop-light-en');
   });
@@ -1827,19 +1827,20 @@ async function liveGroups(browser, server) {
 
   await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
   await step('[dark] example list renders; language switch keeps rows (no re-query)', async () => {
-    await page.click('[data-action="example"]');
+    await page.click('.ipi-examples .example-chip');
     await page.click('[data-action="run"]');
     await page.waitFor(ROWS_DONE, { timeout: 60000 });
     await shot(page, 'ip-desktop-dark-en');
     const before = Object.keys(await page.evaluate(rowsInfo));
-    const shareLabel = () => page.evaluate(() => [...document.querySelectorAll('.page-actions button')].map((b) => b.textContent.trim()));
-    assertEqual(await shareLabel(), ['Copy link'], 'header action before the switch');
+    const shareLabel = () => page.evaluate(() => [...document.querySelectorAll('.ipi-results [data-action="copy-link"]')].map((b) => b.textContent.trim()));
+    assertEqual(await shareLabel(), ['Copy link'], 'the result header’s Copy link before the switch');
     await setLangUi(page, 'tr');
-    await page.waitFor(() => document.querySelector('[data-action="run"] .btn-label')?.textContent === 'Sorgula');
+    // The box still asks for the rows on screen: Run reads "Run again".
+    await page.waitFor(() => ['Sorgula', 'Yeniden çalıştır'].includes(document.querySelector('[data-action="run"] .btn-label')?.textContent));
     const after = await page.evaluate(rowsInfo);
     assertEqual(Object.keys(after), before, 'rows kept');
     assert(Object.values(after).every((r) => !/Looking up|Sorgulanıyor/.test(r.text)), 'no pending rows');
-    assertEqual(await shareLabel(), ['Bağlantıyı kopyala'], 'header "Copy link" kept (translated) for the restored rows');
+    assertEqual(await shareLabel(), ['Bağlantıyı kopyala'], '"Copy link" kept (translated) for the restored rows');
     await assertNoHorizontalScroll(page, 'dark tr');
     await shot(page, 'ip-desktop-dark-tr');
     await setLangUi(page, 'en');
@@ -1855,7 +1856,7 @@ async function liveGroups(browser, server) {
       await page.evaluate((sel) => document.querySelector(sel).click(), btn);
       await page.waitFor((sel) => document.querySelector(sel)?.getAttribute('aria-busy') === 'true', { args: [btn], message: 'reverse lookup running' });
       await setLangUi(page, 'tr');
-      await page.waitFor(() => document.querySelector('[data-action="run"] .btn-label')?.textContent === 'Sorgula');
+      await page.waitFor(() => ['Sorgula', 'Yeniden çalıştır'].includes(document.querySelector('[data-action="run"] .btn-label')?.textContent));
       await page.evaluate(() => new Promise((resolve) => { setTimeout(resolve, 300); }));
       const state = await page.evaluate((sel) => {
         const b = document.querySelector(sel);

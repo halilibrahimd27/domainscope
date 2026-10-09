@@ -1294,18 +1294,18 @@ async function main() {
       assert(info.same && info.hasQuery, `getDns: ${JSON.stringify(info)}`);
     });
 
-    await step('Servers: typing parses live (table, stats, warnings)', async () => {
+    await step('Servers: typing parses live (table, result header, warnings)', async () => {
       await gotoRoute(page, 'inventory');
       await page.type('[data-role="inventory-text"]', SAMPLE_INVENTORY);
       await page.waitFor((n) => document.querySelectorAll('.inv-results .dt-table tbody tr').length === n,
         { args: [expectedSample.servers.length], message: 'parsed rows' });
       const ui = await page.evaluate(() => ({
-        servers: document.querySelector('.inv-stats .stat .stat-value').textContent,
+        servers: document.querySelector('.inv-head').dataset.servers,
         warnings: [...document.querySelectorAll('.inv-warning')].map((w) => w.dataset.code),
         unsaved: !!document.querySelector('.inv-status .badge-warn'),
         saveEnabled: !document.querySelector('[data-action="save"]').disabled
       }));
-      assertEqual(ui.servers, String(expectedSample.servers.length), 'servers stat');
+      assertEqual(ui.servers, String(expectedSample.servers.length), 'servers in the result header');
       assertEqual(ui.warnings, expectedSample.warnings.map((w) => w.code), 'warning codes');
       assert(ui.unsaved && ui.saveEnabled, 'unsaved state');
     });

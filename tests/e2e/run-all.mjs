@@ -12,7 +12,8 @@
  *   own data), then investigate (offline: the page template the four tools of "Investigate a
  *   domain" share), then certificates (offline: the same template on the four tools of "Deploy &
  *   renew certificates"), then migrate (offline: the same template on the four tools of "Change &
- *   migrate DNS"), then the views in navigation order (domain, the
+ *   migrate DNS"), then network (offline: the same template on "Map IPs to servers" and the
+ *   workspace pages, Servers and About), then the views in navigation order (domain, the
  *   offline suite of the Domain overview, right after subdomains, then locales, the offline suite
  *   of the adaptive locale packs of Subdomains; verify, the offline suite of SSL
  *   Targets › Verify, right after scan, then renewal, SSL Targets with several certificates at
@@ -61,7 +62,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ORDER = ['shell', 'home', 'investigate', 'certificates', 'migrate', 'subdomains', 'domain', 'locales', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'lookup', 'explain', 'bulk', 'change', 'cutover', 'ip', 'ptr', 'retire', 'health', 'takeover', 'reports', 'dmarchistory', 'portfolio', 'secscore', 'regwatch', 'revocation', 'waivers', 'monitor', 'carry', 'workspaces', 'origins', 'privacy', 'integration'];
+const ORDER = ['shell', 'home', 'investigate', 'certificates', 'migrate', 'network', 'subdomains', 'domain', 'locales', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'lookup', 'explain', 'bulk', 'change', 'cutover', 'ip', 'ptr', 'retire', 'health', 'takeover', 'reports', 'dmarchistory', 'portfolio', 'secscore', 'regwatch', 'revocation', 'waivers', 'monitor', 'carry', 'workspaces', 'origins', 'privacy', 'integration'];
 const POSIX = process.platform !== 'win32';
 /** After SIGTERM, how long a timed-out suite gets before SIGKILL. */
 const KILL_GRACE_MS = 5000;

@@ -6502,13 +6502,14 @@ def trust_store_text(report: ScanReport) -> str:
 
 def render_trust_line(report: ScanReport, style: Style, width: int = 100) -> List[str]:
     """After the trust check, when some name is served with a chain the store does not trust:
-    how many, on how many endpoints (on Windows without --cafile: that its store may lack a
-    root it fetches on demand)."""
+    how many names, on how many endpoints (on Windows without --cafile: that its store may lack
+    a root it fetches on demand)."""
     untrusted = [row for row in report.results if row.trusted is False]
     if not report.trust_checked or not untrusted:
         return []
+    names = len({row.name for row in untrusted})
     endpoints = len({(row.ip, row.port) for row in untrusted})
-    text = 'Not trusted by %s: %s on %s' % (trust_store_text(report), _count_text(len(untrusted), 'name'),
+    text = 'Not trusted by %s: %s on %s' % (trust_store_text(report), _count_text(names, 'name'),
                                             _count_text(endpoints, 'endpoint'))
     if report.trust_store == 'windows':
         text += ' (%s: --cafile FILE checks against a CA bundle)' % WINDOWS_STORE_NOTE
@@ -7085,20 +7086,52 @@ def _checked_trust(doc: Dict[str, Any]) -> bool:
     return isinstance(options, dict) and isinstance(options.get('trust'), dict)
 
 
+def _trust_store_of(doc: Dict[str, Any]) -> Optional[str]:
+    """The store a report dict's trust check used (``options.trust.store``), or None."""
+    options = doc.get('options')
+    trust = options.get('trust') if isinstance(options, dict) else None
+    store = trust.get('store') if isinstance(trust, dict) else None
+    return store if isinstance(store, str) else None
+
+
+def _verdicts_before_failure(doc: Dict[str, Any]) -> Dict[Tuple[str, Any, Optional[str]], bool]:
+    """``{(ip, port, name): certTrusted}`` of the rows a report dict says failed in its run (its
+    own ``changes``: a FAILED row change keeps the row as it was before, with its verdict) - the
+    last verdict known of a row the report has none for."""
+    out = {}  # type: Dict[Tuple[str, Any, Optional[str]], bool]
+    changes = doc.get('changes')
+    for change in changes if isinstance(changes, list) else []:
+        if not (isinstance(change, dict) and change.get('scope') == 'row' and change.get('kind') == 'status'
+                and change.get('transition') == 'failed' and isinstance(change.get('ip'), str)):
+            continue
+        before = change.get('before')
+        verdict = before.get('certTrusted') if isinstance(before, dict) else None
+        if isinstance(verdict, bool):
+            out[(normalize_ip(change['ip']) or change['ip'], change.get('port'), change.get('name'))] = verdict
+    return out
+
+
 def _trust_change(old: Optional[Dict[str, Any]], new: Optional[Dict[str, Any]], ip: str,
-                  port: int, name: Optional[str]) -> Optional[Dict[str, Any]]:
+                  port: int, name: Optional[str], store: Optional[str] = None,
+                  last: Optional[bool] = None) -> Optional[Dict[str, Any]]:
     """A name now served with a chain this machine does not trust, where the baseline trusted
-    it or had no verdict (``untrusted``: counts, a bad change), or trusted again (``trusted``)."""
+    it or had no verdict (``untrusted``: counts, a bad change), or trusted again (``trusted``).
+    A baseline row whose handshake failed has no verdict: ``last``, the verdict before it failed
+    (:func:`_verdicts_before_failure`), stands for it, so a row back from a failed night with the
+    chain it had says nothing new (its RECOVERED is said). ``after.trustStore``: the store of the
+    verdict (``store``: system, windows or cafile)."""
     if new is None:
         return None
     after = new['view'].get('certTrusted')
     before = old['view'].get('certTrusted') if old is not None else None
+    if before is None and last is not None and old is not None and old['view'].get('status') in _FAILED_STATUSES:
+        before = last
     where = dict(servers=new['servers'], ip=ip, port=port, probe=new['probe'], name=name)
+    view = dict(new['view'], trustStore=store)
     if after is False and before is not False:
-        return _change('untrusted', 'row', before=old['view'] if old else None, after=new['view'],
-                       **where)
+        return _change('untrusted', 'row', before=old['view'] if old else None, after=view, **where)
     if after is True and before is False and old is not None:
-        return _change('trusted', 'row', before=old['view'], after=new['view'], **where)
+        return _change('trusted', 'row', before=old['view'], after=view, **where)
     return None
 
 
@@ -7274,7 +7307,9 @@ def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
       for the no-SNI probe, ``name`` None; a NOT_HOSTED row's fallback certificate is not
       a change), or a row only one report has; and when both runs checked trust, a name now
       served with a chain this machine does not trust (``untrusted``, where the baseline
-      trusted it or had no verdict) or trusted again (``trusted``), next to the row's own;
+      trusted it or had no verdict - a row that failed in the baseline run has the verdict it
+      had before, when the baseline's own FAILED change kept it) or trusted again
+      (``trusted``), next to the row's own;
     * scope ``certificate`` - with --ari / --revocation, a certificate served now
       (:func:`_status_changes`): ``renew-now``, ``moved-up``, ``ca-notice``, ``revoked``.
 
@@ -7284,6 +7319,8 @@ def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
     old_endpoints, old_names = _index_report(before)
     new_endpoints, new_names = _index_report(after)
     trust_compared = _checked_trust(before) and _checked_trust(after)
+    trust_store = _trust_store_of(after)
+    last_verdicts = _verdicts_before_failure(before) if trust_compared else {}
     old_set, new_set = set(old_names), set(new_names)
     added = [name for name in new_names if name not in old_set]
     removed = [name for name in old_names if name not in new_set]
@@ -7328,7 +7365,8 @@ def compare_reports(before: Dict[str, Any], after: Dict[str, Any]) -> List[Dict[
             if change is not None:
                 changes.append(change)
             if trust_compared:
-                change = _trust_change(old['rows'].get(name), new['rows'].get(name), ip, port, name)
+                change = _trust_change(old['rows'].get(name), new['rows'].get(name), ip, port, name,
+                                       trust_store, last_verdicts.get((ip, port, name)))
                 if change is not None:
                     changes.append(change)
     # --ari / --revocation: what the CAs say about the certificates served now
@@ -7538,6 +7576,17 @@ def _endpoint_state(view: Dict[str, Any]) -> str:
     return '%s (%s)' % (status, view['error']) if view.get('error') else status
 
 
+def _untrusted_by(store: Any) -> str:
+    """Who did not trust a chain, by the store of the verdict: ``not trusted by this machine``,
+    with the Windows note there (its store fetches the roots it lacks on demand, which Python
+    never asks for), ``not trusted by the CAs of --cafile``."""
+    if store == 'cafile':
+        return 'not trusted by the CAs of --cafile'
+    if store == 'windows':
+        return 'not trusted by this machine (%s)' % WINDOWS_STORE_NOTE
+    return 'not trusted by this machine'
+
+
 def _servers_label(servers: Sequence[str], ip: Any, limit: int = 3) -> str:
     named = [server for server in servers if server != ip]
     text = ', '.join(named[:limit])
@@ -7585,8 +7634,8 @@ def change_text(change: Dict[str, Any]) -> str:
     elif kind == 'disappeared':
         what = 'no longer reported; was ' + _row_state(before)
     elif kind == 'untrusted':
-        what = '%s, not trusted by this machine: %s' % (after.get('status'),
-                                                         after.get('trustDetail') or 'no reason given')
+        what = '%s, %s: %s' % (after.get('status'), _untrusted_by(after.get('trustStore')),
+                               after.get('trustDetail') or 'no reason given')
         if after.get('certSha256'):
             what += ', serving ' + _cert_brief(after)
     elif kind == 'trusted':
@@ -8436,6 +8485,17 @@ def _with_open_keys(doc: Dict[str, Any], open_keys: List[Dict[str, Any]]) -> Dic
     return out
 
 
+def pagerduty_severity(trigger: Dict[str, Any]) -> str:
+    """A trigger's PagerDuty severity: ``critical`` for :data:`PAGERDUTY_CRITICAL_TAGS` and
+    REVOKED, else ``error`` - and ``error`` for an UNTRUSTED of the Windows store without
+    --cafile (``after.trustStore`` windows), which may lack a root it has not fetched yet."""
+    tag = trigger.get('tag')
+    after = (trigger.get('details') or {}).get('after')
+    if tag == 'UNTRUSTED' and isinstance(after, dict) and after.get('trustStore') == 'windows':
+        return 'error'
+    return 'critical' if tag in PAGERDUTY_CRITICAL_TAGS or tag == 'REVOKED' else 'error'
+
+
 def pagerduty_events(url: str, plan: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]]:
     """``(URL to POST to, events)`` of a PagerDuty Events API v2 URL for a
     :func:`pagerduty_plan`: the triggers, then the resolves; ``routing_key`` moved from the
@@ -8450,8 +8510,7 @@ def pagerduty_events(url: str, plan: Dict[str, Any]) -> Tuple[str, List[Dict[str
                'payload': {'summary': _clip(display_text(t['summary']),
                                             _PAGERDUTY_SUMMARY_LIMIT),
                            'source': 'domainscope:scan',
-                           'severity': 'critical' if (t['tag'] in PAGERDUTY_CRITICAL_TAGS
-                                                      or t['tag'] == 'REVOKED') else 'error',
+                           'severity': pagerduty_severity(t),
                            'component': t['target'], 'group': 'scan',
                            'custom_details': t['details']},
                'client': 'DomainScope'} for t in plan['triggers']]
@@ -11819,8 +11878,9 @@ trust (every scan): the scan's handshakes read whatever is served and trust noth
   certificate covering the name, the no-SNI probe) and trustDetail, and options.trust the
   store; the CSV adds cert_trusted (yes / no) and trust_detail; --estate marks the
   certificate untrusted, with each endpoint's verdict. With --baseline, a name newly
-  served with an untrusted chain is UNTRUSTED (counted; PagerDuty: critical) and trusted
-  again TRUSTED; runs that did not both check it compare nothing of it.
+  served with an untrusted chain is UNTRUSTED (counted; PagerDuty: critical, error for a
+  verdict of the Windows store without --cafile) and trusted again TRUSTED; runs that did
+  not both check it compare nothing of it.
 
 estate (--estate): an inventory of every certificate the servers serve. Each ip:port is
   asked without SNI and for every -n name and every host name among the targets (a
@@ -11967,7 +12027,8 @@ Türkçe: yeni sertifikanın hangi sunuculara yüklenmesi gerektiğini bulur, ö
   depo eksik kökleri gerektiğinde indirdiğinden --cafile verilmedikçe "untrusted (Windows
   store may be incomplete)" denir. JSON'da certTrusted ve trustDetail, CSV'de
   cert_trusted ve trust_detail sütunları; --baseline ile yeni güvenilmeyen bir ad
-  UNTRUSTED değişikliğidir.
+  UNTRUSTED değişikliğidir. PagerDuty bunu critical düzeyinde açar; --cafile verilmeden
+  Windows deposuyla varılan bir sonuçta ise error düzeyinde.
   Cron ile izleme: --baseline önceki --json raporuyla karşılaştırıp değişenleri
   (sunulan sertifika, durum, yeni ya da kaybolan satırlar) listeler; --warn-days N,
   süresi N gün içinde dolan sertifikaları gösterir; --notify (ya da

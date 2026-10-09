@@ -2,7 +2,8 @@
 served for a name - and per chain sent with it, where Python reads it (3.10+) - against this
 machine's trust store or the CAs of --cafile; certTrusted / trustDetail in the JSON, the
 cert_trusted / trust_detail columns of the CSV and of --estate (with the certificate flagged
-untrusted), UNTRUSTED / TRUSTED against --baseline (PagerDuty: critical), and the summary's
+untrusted), UNTRUSTED / TRUSTED against --baseline (PagerDuty: critical, error for the Windows
+store; not said anew for a row back from a failed night), and the summary's and the changes'
 words, "untrusted (Windows store may be incomplete)" on Windows without --cafile.
 
 The scans run on a fake network with a fake verifier (run_scan's verify_fn); the last class
@@ -184,17 +185,26 @@ class CheckTrustTests(unittest.TestCase):
         self.assertNotIn('untrusted', sos.render_summary(fine, width=200))
         self.assertNotIn('Not trusted by', sos.render_summary(fine, width=200))
 
+    def test_the_trust_line_counts_names_not_rows(self):
+        # one name, served with the same untrusted chain by two servers
+        report = fleet({'192.0.2.10': serve(**{WWW: RSA_DER}), '192.0.2.11': serve(**{WWW: RSA_DER})},
+                       Verifier(default=(False, CODE20)), names=(WWW,))
+        report.trust_store = 'system'
+        self.assertIn("Not trusted by this machine's trust store: 1 name on 2 endpoints", sos.render_summary(report, width=200))
+
 
 class BaselineTests(unittest.TestCase):
     """UNTRUSTED and TRUSTED against --baseline, PagerDuty's trigger and resolve."""
 
-    def docs(self, *verdicts: Tuple[Optional[bool], str]) -> List[dict]:
+    def docs(self, *verdicts: Tuple[Optional[bool], str], windows: bool = False) -> List[dict]:
+        """A report per verdict, checked with this machine's store - Windows' with ``windows``."""
         out = []
-        for verdict in verdicts:
-            report = fleet({'192.0.2.10': serve(**{WWW: RSA_DER}), '192.0.2.11': serve(**{WWW: RSA_DER})},
-                           Verifier({('192.0.2.10', WWW): verdict}), names=(WWW,),
-                           servers=[sos.Server('web01', ['192.0.2.10'])])
-            out.append(sos.report_to_dict(report))
+        with mock.patch.object(sos, '_IS_WINDOWS', windows):
+            for verdict in verdicts:
+                report = fleet({'192.0.2.10': serve(**{WWW: RSA_DER}), '192.0.2.11': serve(**{WWW: RSA_DER})},
+                               Verifier({('192.0.2.10', WWW): verdict}), names=(WWW,),
+                               servers=[sos.Server('web01', ['192.0.2.10'])])
+                out.append(sos.report_to_dict(report))
         return out
 
     def test_a_name_newly_untrusted_counts_trusted_again_too(self):
@@ -224,6 +234,60 @@ class BaselineTests(unittest.TestCase):
         self.assertNotIn('trustCheckedIn', sos.baseline_info(trusted, untrusted))
         bad = dict(untrusted, results=[dict(untrusted['results'][0], certTrusted='no')])
         self.assertIn('"certTrusted" that is not true, false or null', sos.baseline_problem(bad))
+
+    def test_the_store_that_gave_the_verdict_is_said_on_windows_it_pages_error(self):
+        # Python never triggers Windows' on-demand root fetch: without --cafile the verdict may be a root not fetched yet
+        trusted, untrusted = self.docs((True, ''), (False, sos.trust_detail(19)), windows=True)
+        self.assertEqual(untrusted['options']['trust'], {'store': 'windows', 'cafile': None})
+        changes = sos.compare_reports(trusted, untrusted)
+        self.assertEqual([(sos.change_tag(c), c['after']['trustStore']) for c in changes], [('UNTRUSTED', 'windows')])
+        text = sos.change_text(changes[0])
+        self.assertIn('NEEDS_UPDATE, not trusted by this machine (Windows store may be incomplete): '
+                      'a root this machine does not trust (code 19), serving ', text)
+        plan = sos.pagerduty_plan(sos.MonitorResult(changes=sos.order_changes(changes)), trusted, '2026-10-09T03:00:00Z', doc=untrusted)
+        _url, events = sos.pagerduty_events('https://events.pagerduty.com/v2/enqueue?routing_key=' + 'K' * 32, plan)
+        self.assertEqual([(e['payload']['severity'], e['payload']['custom_details']['tag']) for e in events], [('error', 'UNTRUSTED')])
+        self.assertIn('(Windows store may be incomplete)', events[0]['payload']['summary'])
+        back = sos.compare_reports(untrusted, trusted)
+        self.assertEqual([(sos.change_tag(c), c['after']['trustStore']) for c in back], [('TRUSTED', 'windows')])
+        # the CAs of --cafile, and this machine's store elsewhere: critical
+        for store, cafile, words in (('cafile', 'bundle.pem', 'not trusted by the CAs of --cafile: '),
+                                     ('system', None, 'not trusted by this machine: ')):
+            before, after = (dict(doc, options=dict(doc['options'], trust={'store': store, 'cafile': cafile}))
+                             for doc in (trusted, untrusted))
+            changes = sos.compare_reports(before, after)
+            self.assertIn('NEEDS_UPDATE, ' + words, sos.change_text(changes[0]))
+            plan = sos.pagerduty_plan(sos.MonitorResult(changes=sos.order_changes(changes)), before, None, doc=after)
+            _url, events = sos.pagerduty_events('https://events.pagerduty.com/v2/enqueue?routing_key=' + 'K' * 32, plan)
+            self.assertEqual(events[0]['payload']['severity'], 'critical', store)
+
+    def test_a_row_back_from_a_failed_night_with_the_chain_it_had_is_not_untrusted_anew(self):
+        flaky = sos.TlsResult(status=sos.TLS_ERROR, error='alert')
+
+        def night(behaviour, baseline=None, verdict=(False, CODE20)):
+            report = fleet({'192.0.2.10': serve(**{WWW: behaviour})}, Verifier(default=verdict), names=(WWW,),
+                           servers=[sos.Server('web01', ['192.0.2.10'])])
+            return sos.report_to_dict(report, sos.build_monitor(report, baseline) if baseline else None)
+
+        untrusted = night(RSA_DER)
+        failed = night(flaky, untrusted)
+        self.assertEqual([sos.change_tag(c) for c in failed['changes']], ['FAILED'])
+        self.assertIs(failed['changes'][0]['before']['certTrusted'], False, 'the FAILED change keeps the verdict before it')
+        back = night(RSA_DER, failed)
+        self.assertEqual([sos.change_tag(c) for c in back['changes']], ['RECOVERED'], 'its problem is open already: not said again')
+        # the key PagerDuty opened for it stays open through the failed night and after it
+        opened = dict(failed, notify={'open': [{'key': sos.pagerduty_dedup_key('scan', '192.0.2.10:443', WWW, 'UNTRUSTED'),
+                                                  'target': '192.0.2.10:443', 'item': WWW, 'tag': 'UNTRUSTED', 'since': None}]})
+        still = sos.pagerduty_plan(sos.MonitorResult(changes=back['changes']), opened, None, doc=back)
+        self.assertEqual((still['triggers'], still['resolves'], [k['tag'] for k in still['open']]), ([], [], ['UNTRUSTED']))
+        # trusted before the failed night: untrusted after it is new
+        trusted_first = night(RSA_DER, verdict=(True, ''))
+        self.assertEqual([sos.change_tag(c) for c in night(RSA_DER, night(flaky, trusted_first))['changes']], ['RECOVERED', 'UNTRUSTED'])
+        # a first night that failed (no verdict was ever known): untrusted after it is new
+        self.assertEqual([sos.change_tag(c) for c in night(RSA_DER, night(flaky))['changes']], ['RECOVERED', 'UNTRUSTED'])
+        # back trusted from a failed night that followed an untrusted one: TRUSTED
+        fixed = night(RSA_DER, failed, verdict=(True, ''))
+        self.assertEqual([sos.change_tag(c) for c in fixed['changes']], ['RECOVERED', 'TRUSTED'])
 
     def test_pagerduty_pages_it_critical_and_resolves_it_once_trusted_again(self):
         trusted, untrusted = self.docs((True, ''), (False, CODE20))

@@ -32,6 +32,8 @@ export const CLI_PATH = 'cli/ssl_origin_scan.py';
 export const PARITY_CLI_PATH = 'cli/dns_parity.py';
 /** The reverse-IP CLI: the names an address serves or served, from inside your network. */
 export const IP_INTEL_CLI_PATH = 'cli/ip_intel.py';
+/** The self-audit CLI: exposed files on your own web servers (a page cannot read those answers). */
+export const CONTENT_AUDIT_CLI_PATH = 'cli/content_audit.py';
 
 /**
  * The wordlist and data licence texts, resolved from this module: the Pages bundle serves assets/ under
@@ -199,6 +201,8 @@ registerStrings('en', {
   'about.parityEx': 'Zone File › New name servers downloads the zone and gives this command',
   'about.ipIntelDesc': 'Reverse IP from inside your network: the names an address, a range or a list serves or served — its TLS certificates with and without SNI, PTR, free passive DNS (mnemonic too, which no browser can ask) and the services of your own keys, read from environment variables only — and where each name points now. A private address goes to no third party. Python 3.8+, a single file.',
   'about.ipIntelEx': 'The names of an address and of a range in your network, with a JSON report',
+  'about.auditDesc': 'Self-audit of the web servers you own or may test, for files that should never be public: an open .git, .env and config files, backups, status pages. About forty curated paths, each checked against what the server answers for a missing path so a catch-all page is not a finding, and a rate cap per host. It only reads. Python 3.8+, a single file.',
+  'about.auditEx': 'Two of your servers, version control and secrets only; exit code 1 on a finding (CI)',
   'about.statusesTitle': 'Result statuses',
   'about.st.UPDATED': 'Serves the new certificate for the name.',
   'about.st.NEEDS_UPDATE': 'Serves a certificate that covers the name, but not the new one — install it here.',
@@ -364,6 +368,8 @@ registerStrings('tr', {
   'about.parityEx': 'Zone File › Yeni ad sunucuları zone’u indirir ve bu komutu verir',
   'about.ipIntelDesc': 'Ağınızın içinden ters IP: bir adresin, aralığın ya da listenin bugün sunduğu veya geçmişte sunduğu adlar — SNI’li ve SNI’siz TLS sertifikaları, PTR, ücretsiz pasif DNS (hiçbir tarayıcının soramadığı mnemonic dahil) ve yalnızca ortam değişkenlerinden okunan anahtarlarınızla çalışan servisler — ve her adın bugün nereye çözümlendiği. Özel adresler hiçbir üçüncü tarafa gönderilmez. Python 3.8+, tek dosya.',
   'about.ipIntelEx': 'Bir adresin ve ağınızdaki bir aralığın adları, JSON raporuyla',
+  'about.auditDesc': 'Sahibi olduğunuz ya da test etmeye yetkili olduğunuz web sunucularında herkese açık olmaması gereken dosyaları arar: açık bir .git, .env ve yapılandırma dosyaları, yedekler, durum sayfaları. Seçilmiş yaklaşık kırk yolu dener; her şeye 200 dönen bir site bulgu sayılmasın diye önce her sunucunun var olmayan bir yola verdiği yanıtı öğrenir ve host başına hızı sınırlar. Yalnızca okur. Python 3.8+, tek dosya.',
+  'about.auditEx': 'İki sunucunuz; yalnızca sürüm kontrolü ile parola ve anahtar dosyaları, bir bulguda çıkış kodu 1 (CI için)',
   'about.statusesTitle': 'Sonuç durumları',
   'about.st.UPDATED': 'Bu ad için yeni sertifikayı sunuyor.',
   'about.st.NEEDS_UPDATE': 'Adı kapsayan bir sertifika sunuyor ama yenisi değil — buraya kurun.',
@@ -680,7 +686,15 @@ export function mount(container, ctx) {
           h('div', { class: 'muted text-sm' }, t('about.ipIntelDesc'))),
         h('div', { class: 'cluster' },
           ButtonLink({ href: IP_INTEL_CLI_PATH, label: t('common.download'), icon: 'download', variant: 'secondary', download: 'ip_intel.py' }))),
-      CodeBlock('python3 ip_intel.py domains 203.0.113.10 10.0.0.0/24 --json names.json', { label: t('about.ipIntelEx'), wrap: true }))
+      CodeBlock('python3 ip_intel.py domains 203.0.113.10 10.0.0.0/24 --json names.json', { label: t('about.ipIntelEx'), wrap: true }),
+      h('div', { class: 'about-cli-bar card' },
+        h('span', { class: 'about-cli-icon' }, Icon('folder', { size: 20 })),
+        h('div', { class: 'about-cli-text' },
+          h('div', { class: 'about-cli-file mono' }, 'content_audit.py'),
+          h('div', { class: 'muted text-sm' }, t('about.auditDesc'))),
+        h('div', { class: 'cluster' },
+          ButtonLink({ href: CONTENT_AUDIT_CLI_PATH, label: t('common.download'), icon: 'download', variant: 'secondary', download: 'content_audit.py' }))),
+      CodeBlock('python3 content_audit.py audit example.com www.example.com --only vcs,secret --fail-on-finding', { label: t('about.auditEx'), wrap: true }))
   });
 
   /* Self-hosting */

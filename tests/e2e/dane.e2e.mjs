@@ -45,7 +45,7 @@ import { SOURCES as LIB_SOURCES } from '../../assets/js/lib/sources.js';
 import { parseCertificates } from '../../assets/js/lib/x509.js';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions,
-  createRunner, csvHeader, gotoRoute, installDownloadCapture, openScanOptions, setLangUi, sleep, takeDownloads, waitReady
+  createRunner, csvHeader, gotoRoute, installDownloadCapture, openScanOptions, resultAction, setLangUi, sleep, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 /* ------------------------------------------------------------------------ */
@@ -518,7 +518,8 @@ async function main() {
 
     await run.step('the scan\'s full JSON carries the DANE report', async () => {
       await takeDownloads(page);
-      await page.click('.scan-exports [data-export="json"]');
+      await resultAction(page, '[data-export="json"]', '.scan-run');
+      await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'the full JSON' });
       const files = await takeDownloads(page);
       const scan = files.find((f) => /^scan.*\.json$/.test(f.name));
       assert(scan, `downloads: ${files.map((f) => f.name).join(', ')}`);

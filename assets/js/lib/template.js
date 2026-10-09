@@ -148,6 +148,48 @@ export function runBarFloats({ phone = false, inlineVisible = true, hasValue = f
   return !!hasValue;
 }
 
+/** A finding list shows at most this many rows before "n more" (DESIGN §5.1, region 7). */
+export const FINDINGS_MAX = 3;
+
+/**
+ * The rows of a finding list (DESIGN §5.1, region 7; it replaces stacked alerts): the worst first —
+ * error → warn → info → ok → neutral, the caller's order kept within a severity — split into the
+ * rows shown and those behind "n more". A finding without a key or with an unknown severity is
+ * dropped; a key seen before too (the first one stays).
+ * @template {{ key: string, severity: string }} T
+ * @param {T[]} findings
+ * @param {{ max?: number }} [opts]
+ * @returns {{ shown: T[], more: T[] }} the same objects
+ */
+export function findingRows(findings, { max = FINDINGS_MAX } = {}) {
+  const seen = new Set();
+  const valid = (Array.isArray(findings) ? findings : []).filter((x) => {
+    if (!x || typeof x.key !== 'string' || !x.key || rank(x.severity) < 0 || seen.has(x.key)) return false;
+    seen.add(x.key);
+    return true;
+  });
+  const sorted = valid.map((x, i) => ({ x, i })).sort((a, b) => rank(a.x.severity) - rank(b.x.severity) || a.i - b.i).map(({ x }) => x);
+  const cut = Math.max(0, Math.floor(Number.isFinite(Number(max)) ? Number(max) : FINDINGS_MAX));
+  // "1 more" would take the room of the row it hides: one row over the limit shows.
+  const limit = sorted.length === cut + 1 ? sorted.length : cut;
+  return { shown: sorted.slice(0, limit), more: sorted.slice(limit) };
+}
+
+/**
+ * Is a bottom-sticky bar stuck (floating over the page) rather than resting in its own place?
+ * The bar is the last child of its container, so it rests where the container ends: it floats
+ * while that end lies below the viewport and the container is still on screen (RunBar's sticky
+ * variant, SSL Targets' run bar).
+ * @param {{ sticky?: boolean, top?: number, bottom?: number, viewportHeight?: number }} m
+ *   `sticky`: the bar is position: sticky at this width; `top` / `bottom`: the container's
+ *   bounding rect (viewport coordinates); `viewportHeight`: innerHeight
+ * @returns {boolean}
+ */
+export function barStuck({ sticky = false, top = 0, bottom = 0, viewportHeight = 0 } = {}) {
+  const vh = Number(viewportHeight);
+  return !!sticky && Number(bottom) > vh + 0.5 && Number(top) < vh;
+}
+
 /**
  * A translated sentence split around its subject, so the subject can be drawn on its own (mono, a
  * link) inside the words the language puts around it: "Overview of {domain}" / "{domain} özeti".

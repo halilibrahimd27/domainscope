@@ -5,14 +5,18 @@
  *   1  .page-header        the shell's (app.js renderPageHeader)
  *   2  .tool-input         ToolInput — one card: the primary field first, optional fields, examples
  *                          (ExampleChips), options (OptionsDisclosure) and the PrivacyNote; compact
- *                          from the moment a run starts (one row: the field, a summary line with Edit, Run)
+ *                          from the moment a run starts (one row: the field, a summary line with Edit, Run).
+ *                          A file tool's is FileInput: the drop zone and the rest, then one compact row
+ *                          ("2 reports loaded · Add files · Forget all") once something is loaded
  *   3  .run-bar            RunBar — the page's primary button and its Stop in one slot; on a phone a
- *                          floating copy at the bottom while the inline one is out of view
+ *                          floating copy at the bottom while the inline one is out of view; a wizard's
+ *                          bar (SSL Targets) sticks itself, with its info lines
  *   4  .result-head        ResultHeader — title (a verdict, or "<subject> — <what>"), key metric, meta (time,
  *                          counts, the kept-result note, the progress while running), StatusSummary +
  *                          ResultActions, NextSteps, RelatedLinks ("Also check:")
  *   5  .result-tabs        components.js Tabs
  *   6  .metric-strip       MetricStrip — read-only figures; zeros fold into one sentence
+ *   7  .finding-list       FindingList — one card, one row per finding, the worst first, "n more"
  *   8  .result-body        the tool's own sections
  *   —  EmptyState          the empty result region: one line, the chips of what it checks, no card
  *
@@ -38,10 +42,10 @@
  */
 
 import { h, clear, uid, append } from './dom.js';
-import { Button, CopyButton, Icon, MenuButton, announce, copyText, toast } from './components.js';
+import { Button, CopyButton, Disclosure, Icon, MenuButton, announce, copyText, toast } from './components.js';
 import { registerStrings, t, formatNumber } from '../i18n.js';
 import {
-  actionPlan, PHONE_MAX_WIDTH, relatedLinks, runBarFloats, splitAtSubject, statusItems
+  actionPlan, barStuck, findingRows, FINDINGS_MAX, PHONE_MAX_WIDTH, relatedLinks, runBarFloats, splitAtSubject, statusItems
 } from '../lib/template.js';
 import { foldZeroStats } from '../lib/density.js';
 
@@ -63,7 +67,10 @@ registerStrings('en', {
   'result.checks': 'What it checks',
   'result.zero': 'None: {list}',
   'result.linkCopied': 'Link copied.',
-  'result.privacyMore': 'What is sent'
+  'result.privacyMore': 'What is sent',
+  'result.findings': 'Findings',
+  'result.moreFindings': { one: '{count} more', other: '{count} more' },
+  'result.fewerFindings': 'Show fewer'
 });
 
 registerStrings('tr', {
@@ -84,7 +91,10 @@ registerStrings('tr', {
   'result.checks': 'Neleri kontrol eder',
   'result.zero': 'Hiç yok: {list}',
   'result.linkCopied': 'Bağlantı kopyalandı.',
-  'result.privacyMore': 'Ne gönderilir'
+  'result.privacyMore': 'Ne gönderilir',
+  'result.findings': 'Bulgular',
+  'result.moreFindings': '{count} tane daha',
+  'result.fewerFindings': 'Daha az göster'
 });
 
 /** The status icons (DESIGN §6.2): every colour comes with an icon and a word. */
@@ -219,15 +229,24 @@ export function OptionsDisclosure({ label, summary = '', children = null, open =
  * clear of it (scroll-padding-bottom, style.css). It carries Stop while a run goes on and hides
  * once a result is on screen. It has no hook of its own but `data-role="run-bar-float"`: it clicks
  * the real buttons, whose data-action and data-shortcut stay the view's.
+ *
+ * `info` puts lines next to the buttons (a wizard's query estimate, its summary, an error): the
+ * bar becomes `.run-bar-buttons` + `.run-bar-info`. `sticky` (DESIGN §5.5, the wizard: SSL
+ * Targets) makes the bar itself stick to the bottom of the screen where its stylesheet makes it
+ * `position: sticky`: it is the last child of its container and rests where that ends;
+ * `data-stuck` says when it floats over the container (lib/template.js barStuck — the view's CSS
+ * draws the shadow), and its height goes to `--run-bar-h` while it is sticky, which keeps a focused
+ * field clear of it. A sticky bar has no floating copy (it is one).
  * @param {{ label: string, icon?: string, dataset?: object, title?: string|null, stopLabel?: string|null, stopDataset?: object,
- *   onRun?: Function|null, onStop?: Function|null, hasValue?: () => boolean, className?: string, size?: 'sm'|'md'|'lg' }} opts
+ *   onRun?: Function|null, onStop?: Function|null, hasValue?: () => boolean, className?: string, size?: 'sm'|'md'|'lg',
+ *   info?: Node[], sticky?: boolean, buttonsClass?: string, barDataset?: object }} opts `barDataset`: the bar's own hooks
  * @returns {{ el: HTMLElement, float: HTMLElement, run: HTMLButtonElement, stop: HTMLButtonElement,
  *   setRunning(on: boolean): void, setRerun(on: boolean): void, setPrimary(on: boolean): void, setLabel(text: string): void,
  *   setState(state: string): void, refresh(): void, isRunning(): boolean, isRerun(): boolean, dispose(): void }}
  */
 export function RunBar({
   label, icon = 'play', dataset = {}, title = null, stopLabel = null, stopDataset = {}, onRun = null, onStop = null,
-  hasValue = () => true, className = '', size = 'md'
+  hasValue = () => true, className = '', size = 'md', info = [], sticky = false, buttonsClass = '', barDataset = {}
 }) {
   let verb = label;
   let running = false;
@@ -247,7 +266,13 @@ export function RunBar({
     type: 'button', class: ['btn', 'btn-secondary', sizeClass, 'run-bar-stop'], hidden: true, dataset: stopDataset,
     on: { click: (e) => { if (typeof onStop === 'function') onStop(e); } }
   }, Icon('stop', { size: iconSize }), h('span', { class: 'btn-label' }, stopText()));
-  const el = h('div', { class: ['run-bar', className] }, run, stop);
+  const infoEls = (info || []).filter(Boolean);
+  const grouped = !!sticky || infoEls.length > 0;
+  const el = grouped
+    ? h('div', { class: ['run-bar', 'run-bar-group', { 'run-bar-sticky': !!sticky }, className], dataset: { ...barDataset, ...(sticky ? { stuck: 'false' } : {}) } },
+      h('div', { class: ['run-bar-buttons', buttonsClass] }, run, stop),
+      infoEls.length ? h('div', { class: 'run-bar-info' }, infoEls) : null)
+    : h('div', { class: ['run-bar', className], dataset: barDataset }, run, stop);
   // The phone's floating copy: both icons drawn once, the one that applies shown.
   const floatRunIcon = h('span', { class: 'run-bar-float-icon' }, Icon(icon, { size: 16 }));
   const floatStopIcon = h('span', { class: 'run-bar-float-icon', hidden: true }, Icon('stop', { size: 16 }));
@@ -272,6 +297,8 @@ export function RunBar({
   }
 
   function syncFloat() {
+    // A sticky bar is its own floating bar: --run-bar-h is its height (measureSticky).
+    if (sticky) return;
     const show = runBarFloats({ phone: !!(phone && phone.matches), inlineVisible, hasValue: !!hasValue(), state: running ? 'running' : state });
     float.hidden = !show;
     floatRunIcon.hidden = running;
@@ -285,7 +312,7 @@ export function RunBar({
   }
 
   let observer = null;
-  if (typeof globalThis.IntersectionObserver === 'function') {
+  if (!sticky && typeof globalThis.IntersectionObserver === 'function') {
     observer = new globalThis.IntersectionObserver((entries) => {
       for (const entry of entries) inlineVisible = entry.isIntersecting;
       syncFloat();
@@ -295,7 +322,46 @@ export function RunBar({
   const onMedia = () => {
     if (el.isConnected || float.isConnected) syncFloat();
   };
-  if (phone && typeof phone.addEventListener === 'function') phone.addEventListener('change', onMedia);
+  if (!sticky && phone && typeof phone.addEventListener === 'function') phone.addEventListener('change', onMedia);
+
+  /* The sticky variant: whether the bar floats (data-stuck) and its height (--run-bar-h), measured
+     once per frame after a scroll, a resize or a change of its own size or its container's. */
+  let stickyQueued = false;
+  let stickyStopped = false;
+  let resizer = null;
+  let watched = null;
+  const measureSticky = () => {
+    stickyQueued = false;
+    if (stickyStopped || !el.isConnected || typeof globalThis.getComputedStyle !== 'function') return;
+    const box = el.parentElement;
+    if (resizer && box && watched !== box) {
+      if (watched) resizer.unobserve(watched);
+      resizer.observe(box);
+      watched = box;
+    }
+    const isSticky = globalThis.getComputedStyle(el).position === 'sticky';
+    const r = box ? box.getBoundingClientRect() : { top: 0, bottom: 0 };
+    const stuck = barStuck({ sticky: isSticky, top: r.top, bottom: r.bottom, viewportHeight: globalThis.innerHeight });
+    if (el.dataset.stuck !== String(stuck)) el.dataset.stuck = String(stuck);
+    const rootEl = root();
+    if (!rootEl || !rootEl.style) return;
+    if (isSticky) rootEl.style.setProperty('--run-bar-h', `${Math.ceil(el.getBoundingClientRect().height)}px`);
+    else rootEl.style.removeProperty('--run-bar-h');
+  };
+  const queueSticky = () => {
+    if (stickyQueued || stickyStopped) return;
+    stickyQueued = true;
+    const raf = globalThis.requestAnimationFrame || ((cb) => setTimeout(cb, 16));
+    raf(measureSticky);
+  };
+  if (sticky && typeof globalThis.addEventListener === 'function') {
+    globalThis.addEventListener('scroll', queueSticky, { passive: true });
+    globalThis.addEventListener('resize', queueSticky);
+    if (typeof globalThis.ResizeObserver === 'function') {
+      resizer = new globalThis.ResizeObserver(queueSticky);
+      resizer.observe(el);
+    }
+  }
 
   return {
     el,
@@ -335,16 +401,27 @@ export function RunBar({
       state = next;
       syncFloat();
     },
-    /** The input changed (a value typed or cleared): the floating bar follows. */
+    /** The input changed (a value typed or cleared): the floating bar follows; a sticky bar measures itself again. */
     refresh() {
-      syncFloat();
+      if (sticky) queueSticky();
+      else syncFloat();
     },
     isRunning: () => running,
     isRerun: () => rerun && !running,
     dispose() {
       if (observer) observer.disconnect();
       observer = null;
-      if (phone && typeof phone.removeEventListener === 'function') phone.removeEventListener('change', onMedia);
+      if (!sticky && phone && typeof phone.removeEventListener === 'function') phone.removeEventListener('change', onMedia);
+      if (sticky) {
+        stickyStopped = true;
+        if (typeof globalThis.removeEventListener === 'function') {
+          globalThis.removeEventListener('scroll', queueSticky);
+          globalThis.removeEventListener('resize', queueSticky);
+        }
+        if (resizer) resizer.disconnect();
+        resizer = null;
+        watched = null;
+      }
       const r = root();
       if (r && r.style) r.style.removeProperty('--run-bar-h');
     }
@@ -365,14 +442,20 @@ export function RunBar({
  * From the moment a run starts the card is compact (`setCompact(true)`): one row of the primary
  * field — still an editable field —, a one-line summary of the non-default options (`summary()`)
  * with Edit (aria-expanded), which unfolds the rest, and Run. The privacy note stays.
+ *
+ * `runAt: 'foot'` (DESIGN §5.1, region 3: a tool with several fields, Renewal readiness) puts the
+ * run bar right-aligned in the footer, after the privacy note, in both states: the same element,
+ * so the focus stays on it.
  * @param {{ primary: Node, run?: ReturnType<typeof RunBar>|null, inline?: Node[], notes?: Node[], more?: Node[], extras?: Node[],
- *   privacy?: Node|null, summary?: (() => string)|null, label?: string|null, className?: string, fieldsClass?: string, dataset?: object }} opts
+ *   privacy?: Node|null, summary?: (() => string)|null, label?: string|null, className?: string, fieldsClass?: string, dataset?: object,
+ *   runAt?: 'row'|'foot' }} opts
  * @returns {{ el: HTMLElement, setCompact(on: boolean): void, isCompact(): boolean, setEditing(on: boolean): void, refresh(): void }}
  */
 export function ToolInput({
   primary, run = null, inline = [], notes = [], more = [], extras = [], privacy = null, summary = null, label = null,
-  className = '', fieldsClass = '', dataset = {}
+  className = '', fieldsClass = '', dataset = {}, runAt = 'row'
 }) {
+  const runInFoot = runAt === 'foot' && !!run;
   const moreId = uid('tool-input-more');
   const inlineEls = (inline || []).filter(Boolean);
   const moreEls = (more || []).filter(Boolean);
@@ -393,12 +476,12 @@ export function ToolInput({
     h('div', { class: 'tool-input-primary' }, primary),
     inlineEls.length ? h('div', { class: 'tool-input-inline', id: inlineId }, inlineEls) : null,
     summaryEl,
-    run ? run.el : null);
+    run && !runInFoot ? run.el : null);
   const notesEl = h('div', { class: 'tool-input-notes' }, (notes || []).filter(Boolean));
   const moreEl = h('div', { class: 'tool-input-more', id: moreId, hidden: !moreEls.length && !extraEls.length },
     moreEls,
     extraEls.length ? h('div', { class: 'tool-input-extras' }, extraEls) : null);
-  const foot = privacy ? h('div', { class: 'tool-input-foot' }, privacy) : null;
+  const foot = privacy || runInFoot ? h('div', { class: ['tool-input-foot', { 'has-run': runInFoot }] }, privacy, runInFoot ? run.el : null) : null;
   const el = h('div', {
     class: ['tool-input', 'card', className],
     dataset,
@@ -635,22 +718,27 @@ export function StatusSummary({ items = [], verdict = false, pressed = null, lab
  * last), Copy link. On a phone (lib/template.js PHONE_MAX_WIDTH) only Copy summary stays in the row
  * and the rest goes behind "⋯"; the row is drawn again when the screen crosses that width. The
  * menu items keep their data-action / data-export; Copy link is `data-action="copy-link"`.
- * Tool-specific actions are NextSteps, never here.
+ * Tool-specific actions are NextSteps, never here. A destructive action (Remove, Forget: `tail`,
+ * which keeps its own confirmation) goes last in the Export ▾ menu, after Print, and so last in
+ * "⋯" on a phone (DESIGN §5.3); it carries `data-tail`.
  * @param {{ summary?: { el: HTMLElement, plain?: HTMLElement, setDisabled?: Function, copy?: Function }|null,
  *   report?: HTMLButtonElement|null, exports?: Array<{ label: string, icon?: string, title?: string, onSelect: Function, dataset?: object }>,
- *   print?: boolean|Function, link?: (() => string|null)|null, className?: string }} [opts]
+ *   print?: boolean|Function, link?: (() => string|null)|null, tail?: Array<{ label: string, icon?: string, onSelect: Function, dataset?: object }>,
+ *   className?: string }} [opts]
  * @returns {{ el: HTMLElement, setDisabled(disabled: boolean): void, setExportsDisabled(disabled: boolean): void, dispose(): void }}
  *   `setDisabled`: every action but Copy link (a run goes on: the result on screen is the previous
  *   one); `setExportsDisabled`: the files alone (nothing to export yet)
  */
-export function ResultActions({ summary = null, report = null, exports = [], print = false, link = null, className = '' } = {}) {
+export function ResultActions({ summary = null, report = null, exports = [], print = false, link = null, tail = [], className = '' } = {}) {
   const el = h('div', { class: ['result-actions', className], attrs: { role: 'group', 'aria-label': t('result.actionsLabel') } });
   const files = (exports || []).filter((x) => x && x.label && typeof x.onSelect === 'function');
   const printItem = print ? {
     label: t('result.print'), icon: 'file-text', dataset: { action: 'print' },
     onSelect: () => (typeof print === 'function' ? print() : globalThis.print && globalThis.print())
   } : null;
-  const fileItems = [...files, printItem].filter(Boolean);
+  const tailItems = (tail || []).filter((x) => x && x.label && typeof x.onSelect === 'function')
+    .map((x) => ({ ...x, icon: x.icon || 'trash', dataset: { ...(x.dataset || {}), tail: '' } }));
+  const fileItems = [...files, printItem, ...tailItems].filter(Boolean);
   const hasLink = typeof link === 'function';
   let disabled = false;
   let exportsOff = false;
@@ -659,9 +747,9 @@ export function ResultActions({ summary = null, report = null, exports = [], pri
   /** The buttons drawn now follow the two switches (Copy summary and Report keep their own state). */
   function syncButtons() {
     if (typeof el.querySelectorAll !== 'function') return;
-    for (const btn of el.querySelectorAll('[data-menu="more"], [data-action="print"]')) btn.disabled = disabled;
+    for (const btn of el.querySelectorAll('[data-menu="more"], [data-action="print"], [data-tail]')) btn.disabled = disabled;
     for (const btn of el.querySelectorAll('[data-export]')) btn.disabled = disabled || exportsOff;
-    for (const btn of el.querySelectorAll('[data-menu="export"]')) btn.disabled = disabled || (exportsOff && !printItem);
+    for (const btn of el.querySelectorAll('[data-menu="export"]')) btn.disabled = disabled || (exportsOff && !printItem && !tailItems.length);
   }
 
   async function copyLinkFromMenu() {
@@ -683,7 +771,7 @@ export function ResultActions({ summary = null, report = null, exports = [], pri
     const focused = hasFocus(el) ? globalThis.document.activeElement : null;
     const key = focused ? focusKey(focused) : null;
     const plan = actionPlan({
-      summary: !!summary, report: !!report, files: files.length, print: !!printItem, link: hasLink, phone: !!(phone && phone.matches)
+      summary: !!summary, report: !!report, files: files.length + tailItems.length, print: !!printItem, link: hasLink, phone: !!(phone && phone.matches)
     });
     clear(el);
     if (summary && summary.plain) summary.plain.hidden = !plan.row.includes('plain');
@@ -843,4 +931,115 @@ export function EmptyState({ icon = 'inbox', message, checks = [], details = nul
         items.map((c) => h('li', { class: ['tool-empty-check', c.className || null], dataset: c.dataset || {} }, c.label))) : null,
       details,
       action ? h('p', { class: 'tool-empty-action' }, action) : null));
+}
+
+/* ------------------------------------------------------------------------ */
+/* Region 7: the findings (phase 3)                                         */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The findings of a result (DESIGN §5.1, region 7; §7 FindingList): one card, one row per finding
+ * — its status icon (not read out: the words say it), its text and an optional action — in place of
+ * stacked alerts. The worst first (lib/template.js findingRows); at most `max` rows show, then
+ * "n more" (aria-expanded) shows the rest and folds them again. A row keeps the finding's
+ * `dataset` (the view's hooks) next to `data-finding` (its key) and `data-severity`. `update`
+ * draws the rows again, "n more" left as it was; without a finding the card hides.
+ * @param {{ findings?: Array<{ key: string, severity: 'error'|'warn'|'info'|'ok'|'neutral', text: any, icon?: string|null,
+ *   action?: Node|null, dataset?: object }>, max?: number, label?: string|null, className?: string }} [opts]
+ * @returns {{ el: HTMLElement, update(findings: object[]): void, isOpen(): boolean }}
+ */
+export function FindingList({ findings = [], max = FINDINGS_MAX, label = null, className = '' } = {}) {
+  const listId = uid('finding-rows');
+  const list = h('ul', { class: 'finding-rows', id: listId });
+  let open = false;
+  let current = [];
+  const toggle = h('button', {
+    type: 'button',
+    class: 'link-btn finding-more',
+    hidden: true,
+    attrs: { 'aria-expanded': 'false', 'aria-controls': listId },
+    on: { click: () => { open = !open; draw(); } }
+  });
+  const el = h('div', { class: ['finding-list', 'card', className], hidden: true, attrs: { role: 'group', 'aria-label': label || t('result.findings') } }, list, toggle);
+
+  const row = (f, hidden) => h('li', {
+    class: ['finding', `finding-${f.severity}`],
+    hidden,
+    dataset: { ...(f.dataset || {}), finding: f.key, severity: f.severity }
+  },
+  h('span', { class: ['finding-icon', `sev-${f.severity}`], attrs: { 'aria-hidden': 'true' } }, Icon(f.icon || STATUS_ICONS[f.severity] || 'info', { size: 16 })),
+  h('span', { class: 'finding-text' }, f.text),
+  f.action ? h('span', { class: 'finding-action' }, f.action) : null);
+
+  function draw() {
+    const { shown, more } = findingRows(current, { max });
+    clear(list);
+    for (const f of shown) list.append(row(f, false));
+    for (const f of more) list.append(row(f, !open));
+    toggle.hidden = !more.length;
+    toggle.textContent = open ? t('result.fewerFindings') : t('result.moreFindings', { count: more.length });
+    toggle.setAttribute('aria-expanded', String(open && more.length > 0));
+    el.hidden = !shown.length;
+  }
+
+  const api = {
+    el,
+    update(next) {
+      current = (next || []).filter(Boolean);
+      draw();
+    },
+    isOpen: () => open
+  };
+  api.update(findings);
+  return api;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Region 2 of a file tool (phase 3)                                        */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * A file tool's input (DESIGN §5.5 "File", §7 FileInput): region 2 of Certificate and Certificate
+ * estate. With nothing loaded it is one card: an optional head (a 28 px icon, the title, a
+ * subtitle), the `body` the view hands in (the drop zone first, then paste, samples, how to) and the
+ * privacy note in the footer. Once something is loaded it is one compact row — a disclosure
+ * (`more`: "2 reports loaded", "Load another file"; `moreClass`: the view's hook) that holds the
+ * same body again, and the `actions` ("Add files", "Forget all") — over the privacy note, which
+ * stays. The view draws it again when what is loaded changes.
+ * @param {{ loaded?: boolean, icon?: string|null, title?: any, subtitle?: any, body?: Node[], more?: any, moreClass?: string,
+ *   moreOpen?: boolean, actions?: Node[], privacy?: Node|null, label?: string|null, className?: string, dataset?: object }} [opts]
+ * @returns {{ el: HTMLElement, more: HTMLDetailsElement|null }}
+ */
+export function FileInput({
+  loaded = false, icon = null, title = null, subtitle = null, body = [], more = '', moreClass = '', moreOpen = false, actions = [],
+  privacy = null, label = null, className = '', dataset = {}
+} = {}) {
+  const bodyEls = (body || []).filter(Boolean);
+  const actionEls = (actions || []).filter(Boolean);
+  const foot = privacy ? h('div', { class: 'tool-input-foot' }, privacy) : null;
+  const attrs = { role: 'group', 'aria-label': label || null };
+  if (!loaded) {
+    const head = title ? h('div', { class: 'file-input-head' },
+      icon ? h('span', { class: 'file-input-icon', attrs: { 'aria-hidden': 'true' } }, Icon(icon, { size: 16 })) : null,
+      h('div', { class: 'file-input-titles' },
+        h('h2', { class: 'file-input-title' }, title),
+        subtitle ? h('p', { class: 'file-input-subtitle' }, subtitle) : null)) : null;
+    return {
+      el: h('section', { class: ['tool-input', 'file-input', 'card', className], dataset, attrs },
+        head, h('div', { class: 'file-input-body' }, bodyEls), foot),
+      more: null
+    };
+  }
+  const details = Disclosure({
+    summary: more,
+    className: ['file-input-more', moreClass].filter(Boolean).join(' '),
+    open: moreOpen,
+    children: h('div', { class: 'file-input-body' }, bodyEls)
+  });
+  return {
+    el: h('section', { class: ['tool-input', 'file-input', 'is-compact', 'card', className], dataset, attrs },
+      h('div', { class: 'file-input-row' }, details, actionEls.length ? h('div', { class: 'file-input-actions' }, actionEls) : null),
+      foot),
+    more: details
+  };
 }

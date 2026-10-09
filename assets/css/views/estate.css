@@ -1,11 +1,14 @@
 /*
  * views/estate.css — "Certificate estate" view (.estate-*): the CLI's --json reports read in the
- * browser, the numbers, the certificate list (labelled cards on a phone), name conflicts and
- * shared keys.
+ * browser, the figures, the certificate list (labelled cards on a phone), name conflicts and
+ * shared keys. The file input, the result header, the figures and the empty state are the page
+ * template's (style.css § 4).
  */
 
 .estate-page {
-  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
   min-width: 0;
 }
 
@@ -67,46 +70,42 @@
   margin: 0;
 }
 
-/* ---- numbers ------------------------------------------------------------------- */
+/* ---- the figures (region 6): one band per kind of count, its name on the left ------------- */
 
-/* Two tiles a row on a phone: the labels wrap there instead of being cut. */
-.estate-stats {
-  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
-}
-
-.estate-stats .stat-label {
-  white-space: normal;
-}
-
-.estate-stats .stat-hint {
-  overflow-wrap: anywhere;
-}
-
-.estate-overview {
+.estate-metrics {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--card-pad);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
 }
 
-.estate-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
+.estate-metric-row {
+  display: grid;
+  grid-template-columns: 8rem minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-1) var(--space-4);
 }
 
-.estate-line-label {
-  min-width: 7.5rem;
-  color: var(--text-3);
-  font-size: 12.5px;
-  font-weight: 600;
+.estate-metric-row + .estate-metric-row {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
 }
 
-.estate-line-items {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  min-width: 0;
+.estate-metric-title {
+  padding-top: 2px;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-xs);
+}
+
+@media (max-width: 719px) {
+  .estate-metric-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* ---- certificates ---------------------------------------------------------------- */
@@ -430,10 +429,9 @@
   }
 }
 
-/* Paper: the lists read in full, no drop zone. */
+/* Paper: the lists read in full; the input (style.css) and the empty state are left out. */
 @media print {
-  .estate-drop,
-  .estate-how {
+  .estate-empty {
     display: none;
   }
 

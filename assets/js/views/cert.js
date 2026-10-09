@@ -48,8 +48,13 @@
 import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
 import {
   Alert, Badge, Button, ButtonLink, Card, CodeBlock, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
-  FileDrop, Icon, KeyValueList, Spinner, Tabs, TruncatedList, describeError, select, setButtonBusy, textInput, textarea, toast
+  FileDrop, Icon, KeyValueList, Spinner, Tabs, TruncatedList, announce, copyText, describeError, select, setButtonBusy, textInput, textarea, toast
 } from '../ui/components.js';
+// The page template (docs/DESIGN.md §5; phase 3): the file input, the result header and its parts.
+import {
+  EmptyState as ToolEmptyState, FileInput, NextSteps, PrivacyNote, ResultActions, ResultHeader, ResultTitle, StatusSummary
+} from '../ui/template.js';
+import { caaState, certChainState, certKeyMetric, certStatus } from '../lib/certtools.js';
 import { downloadText, sanitizeFilename } from '../ui/download.js';
 import {
   t, registerStrings, hasString, formatDate, formatDateTime, formatNumber, formatRegion, daysUntil
@@ -135,8 +140,31 @@ registerStrings('en', {
   'cert.loadedToast': '{name}: certificate loaded',
   'cert.fileInfo': '{name} · {count}',
   'cert.count': { one: '{count} certificate', other: '{count} certificates' },
-  'cert.emptyTitle': 'No certificate loaded',
-  'cert.emptyBody': 'Load the certificate to see its names, validity, key, chain order, CAA status and Certificate Transparency entries — and to find the servers it must be installed on.',
+  'cert.emptyLine': 'Its names, validity, key, chain order, CAA and Certificate Transparency entries — and the servers it must go on.',
+  'cert.emptyCheck.names': 'Names',
+  'cert.emptyCheck.validity': 'Validity',
+  'cert.emptyCheck.key': 'Key and fingerprints',
+  'cert.emptyCheck.chain': 'Chain order',
+  'cert.emptyCheck.caa': 'CAA',
+  'cert.emptyCheck.dane': 'DANE / TLSA',
+  'cert.emptyCheck.ct': 'CT logs',
+  'cert.key.left': { one: 'day left', other: 'days left' },
+  'cert.key.ago': { one: 'day since it expired', other: 'days since it expired' },
+  'cert.key.until': { one: 'day until it is valid', other: 'days until it is valid' },
+  'cert.st.valid': 'Valid',
+  'cert.st.chain.complete': 'Chain complete',
+  'cert.st.chain.incomplete': 'Chain incomplete',
+  'cert.st.chain.issues': 'Chain needs fixing',
+  'cert.st.chain.pending': 'Checking the chain…',
+  'cert.st.chain.unknown': 'Chain not known',
+  'cert.st.caa.unchecked': 'CAA not checked yet',
+  'cert.st.caa.running': 'Checking CAA…',
+  'cert.st.caa.error': 'CAA lookup failed',
+  'cert.st.caa.denied': 'CAA blocks this CA',
+  'cert.st.caa.unknown': 'CAA could not be evaluated',
+  'cert.st.caa.restricted': 'CAA allows it, with conditions',
+  'cert.st.caa.allowed': 'CAA allows this CA',
+  'cert.pemCopied': 'Certificate copied as PEM.',
 
   'cert.alt.title': 'No file? Load the public certificate of a host name',
   'cert.alt.placeholder': 'www.example.com',
@@ -462,8 +490,31 @@ registerStrings('tr', {
   'cert.loadedToast': '{name}: sertifika yüklendi',
   'cert.fileInfo': '{name} · {count}',
   'cert.count': { one: '{count} sertifika', other: '{count} sertifika' },
-  'cert.emptyTitle': 'Yüklü sertifika yok',
-  'cert.emptyBody': 'Adlarını, geçerliliğini, anahtarını, zincir sırasını, CAA durumunu ve Certificate Transparency kayıtlarını görmek — ve kurulması gereken sunucuları bulmak — için sertifikayı yükleyin.',
+  'cert.emptyLine': 'Adları, geçerliliği, anahtarı, zincir sırası, CAA’sı ve Certificate Transparency kayıtları — ve kurulması gereken sunucular.',
+  'cert.emptyCheck.names': 'Adlar',
+  'cert.emptyCheck.validity': 'Geçerlilik',
+  'cert.emptyCheck.key': 'Anahtar ve parmak izleri',
+  'cert.emptyCheck.chain': 'Zincir sırası',
+  'cert.emptyCheck.caa': 'CAA',
+  'cert.emptyCheck.dane': 'DANE / TLSA',
+  'cert.emptyCheck.ct': 'CT kayıtları',
+  'cert.key.left': 'gün kaldı',
+  'cert.key.ago': 'gün önce doldu',
+  'cert.key.until': 'gün sonra geçerli olacak',
+  'cert.st.valid': 'Geçerli',
+  'cert.st.chain.complete': 'Zincir tam',
+  'cert.st.chain.incomplete': 'Zincir eksik',
+  'cert.st.chain.issues': 'Zincir düzeltilmeli',
+  'cert.st.chain.pending': 'Zincir kontrol ediliyor…',
+  'cert.st.chain.unknown': 'Zincir bilinmiyor',
+  'cert.st.caa.unchecked': 'CAA henüz kontrol edilmedi',
+  'cert.st.caa.running': 'CAA kontrol ediliyor…',
+  'cert.st.caa.error': 'CAA sorgusu başarısız oldu',
+  'cert.st.caa.denied': 'CAA bu otoriteyi engelliyor',
+  'cert.st.caa.unknown': 'CAA değerlendirilemedi',
+  'cert.st.caa.restricted': 'CAA koşullu izin veriyor',
+  'cert.st.caa.allowed': 'CAA bu otoriteye izin veriyor',
+  'cert.pemCopied': 'Sertifika PEM olarak kopyalandı.',
 
   'cert.alt.title': 'Dosyanız yok mu? Bir host adının herkese açık sertifikasını yükleyin',
   'cert.alt.placeholder': 'www.example.com',
@@ -1977,14 +2028,26 @@ export function certWarningAlerts(result, { name = '', compact = true } = {}) {
  * @returns {HTMLAnchorElement|null}
  */
 export function RenewalLink(ctx, leaf, { size = 'md', variant = 'secondary' } = {}) {
-  const names = leaf && Array.isArray(leaf.hostnames) ? leaf.hostnames : [];
-  if (!names.length) return null;
+  const href = renewalHref(ctx, leaf);
+  if (!href) return null;
   return h('a', {
     class: ['btn', `btn-${variant}`, size !== 'md' ? `btn-${size}` : null],
-    href: ctx.href('renew', { names: names.join(','), [FILL_PARAM]: FILL_VALUE }),
+    href,
     title: t('cert.renewHint'),
     dataset: { action: 'renew-link' }
   }, Icon('refresh', { size: size === 'sm' ? 14 : 16 }), h('span', { class: 'btn-label' }, t('nav.renew')));
+}
+
+/**
+ * Where "Renewal readiness" for a certificate leads: the view with its names filled in (`run=0`),
+ * or null when the certificate names no host ({@link RenewalLink}; the Certificate view's next step).
+ * @param {{ href: (view: string, params: object) => string }} ctx
+ * @param {{ hostnames: string[] }} leaf
+ * @returns {string|null}
+ */
+export function renewalHref(ctx, leaf) {
+  const names = leaf && Array.isArray(leaf.hostnames) ? leaf.hostnames : [];
+  return names.length ? ctx.href('renew', { names: names.join(','), [FILL_PARAM]: FILL_VALUE }) : null;
 }
 
 /**
@@ -2222,23 +2285,31 @@ export function mount(container, ctx) {
       requireOnline: ctx.requireOnline,
       focusTarget: () => content.querySelector('.cert-source-note') || content.querySelector('.cert-overview-cn')
     });
+    // Region 2 (docs/DESIGN.md §5.5, "File"): the drop zone, paste, a host name's certificate and
+    // the sample; once a certificate is loaded, one row — "Load another file" (`.cert-reload`) —
+    // over the privacy note, which stays.
+    const privacy = PrivacyNote({ text: t('cert.privacy'), className: 'cert-privacy' });
     if (!load) {
-      loaderHost.append(Card({
+      loaderHost.append(FileInput({
         title: t('cert.loaderTitle'),
         subtitle: t('cert.loaderSubtitle'),
         icon: 'certificate',
         className: 'cert-loader-card',
-        children: h('div', { class: 'stack' }, loader.el,
-          h('p', { class: 'muted text-sm cert-privacy' }, Icon('lock', { size: 14 }), ' ', t('cert.privacy')),
-          alternatives.el)
-      }));
+        label: t('nav.cert'),
+        body: [loader.el, alternatives.el],
+        privacy
+      }).el);
       return;
     }
-    loaderHost.append(Disclosure({
-      summary: t('cert.loadAnother'),
-      className: 'cert-reload',
-      children: h('div', { class: 'stack-sm' }, loader.el, h('p', { class: 'muted text-sm' }, t('cert.privacy')), alternatives.el)
-    }));
+    loaderHost.append(FileInput({
+      loaded: true,
+      more: t('cert.loadAnother'),
+      moreClass: 'cert-reload',
+      className: 'cert-loader-compact',
+      label: t('nav.cert'),
+      body: [loader.el, alternatives.el],
+      privacy
+    }).el);
   }
 
   // The DANE panel on screen: it listens on its holder (kept across re-mounts), so a panel that
@@ -2254,17 +2325,33 @@ export function mount(container, ctx) {
     renderContent();
   }
 
+  /** The result header's actions (they follow the phone layout): taken back with the header they belong to. */
+  let headActions = null;
+  const disposeHead = () => {
+    if (headActions) headActions.dispose();
+    headActions = null;
+  };
+  /** The header's status summary, drawn again when the CAA check or the chain lookup moves on (null without a header). */
+  let refreshHeadStatus = null;
+
   /** The certificate's part of the view (everything but the loader and its "No file?" block). */
   function renderContent() {
     disposeDane();
+    disposeHead();
+    refreshHeadStatus = null;
     clear(content);
     if (!load) {
-      content.append(EmptyState({ icon: 'shield', title: t('cert.emptyTitle'), message: t('cert.emptyBody') }));
+      // The empty result region (docs/DESIGN.md §5.2): what the tool gives, the chips of what it checks.
+      content.append(h('div', { class: 'cert-empty' }, ToolEmptyState({
+        icon: 'shield',
+        message: t('cert.emptyLine'),
+        checks: ['names', 'validity', 'key', 'chain', 'caa', 'dane', 'ct'].map((k) => t(`cert.emptyCheck.${k}`))
+      })));
       return;
     }
     const { result } = load;
-    content.append(...certWarningAlerts(result, { name: load.name }));
     if (!result.leaf) {
+      content.append(...certWarningAlerts(result, { name: load.name }));
       // A bundle without a certificate still says what it held (a key, say).
       const heldOnly = CertPfxNote(load);
       if (heldOnly) content.append(heldOnly);
@@ -2277,34 +2364,16 @@ export function mount(container, ctx) {
     const analysis = analyzeChain(result.certificates, result.leaf);
     const certs = [...analysis.ordered, ...analysis.unrelated];
     if (viewState.selected >= result.certificates.length) viewState.selected = 0;
+    // Region 4 first (the answer), then what the file needs said.
+    content.append(overviewHead(result.leaf, analysis, certs).el);
     // A CT certificate is what a CA issued, not what a server sends: point at the check that knows.
     const sourceNote = CertSourceNote(load, {
       actions: load.source === 'ct' ? [Button({
         label: t('cert.src.verify'), icon: 'check-circle', size: 'sm', dataset: { action: 'ct-verify' }, onClick: openInTargets
       })] : []
     });
-    if (sourceNote) content.append(sourceNote);
-    const pfxNote = CertPfxNote(load);
-    if (pfxNote) content.append(pfxNote);
-    content.append(CertChainNotes(load));
-    content.append(overviewCard(result.leaf, analysis));
-    if (result.certificates.length > 1) {
-      const sel = select({
-        label: t('cert.showing'),
-        className: 'cert-picker',
-        value: String(viewState.selected),
-        options: certs.map((c) => ({
-          value: String(result.certificates.indexOf(c)),
-          label: t('cert.optionLabel', { role: t(`cert.role.${analysis.roles.get(c)}`), name: certDisplayName(c) })
-        })),
-        onChange: (v) => {
-          viewState.selected = Number(v);
-          renderTabs();
-        }
-      });
-      sel.input.dataset.role = 'cert-select';
-      content.append(sel.el);
-    }
+    content.append(h('div', { class: 'stack-sm cert-notes' },
+      ...certWarningAlerts(result, { name: load.name }), sourceNote, CertPfxNote(load), CertChainNotes(load)));
     const tabsHost = h('div', { class: 'cert-tabs-host' });
     content.append(tabsHost);
     let tabs = null;
@@ -2312,15 +2381,16 @@ export function mount(container, ctx) {
     function renderTabs() {
       clear(tabsHost);
       const cert = result.certificates[viewState.selected] || result.leaf;
+      // Text and count only (docs/DESIGN.md §7 Tabs).
       tabs = Tabs([
-        { id: 'names', label: t('cert.tab.names'), icon: 'globe', badge: cert.sans.length || null, content: () => namesPanel(cert) },
-        { id: 'details', label: t('cert.tab.details'), icon: 'list', content: () => detailsPanel(cert) },
-        { id: 'chain', label: t('cert.tab.chain'), icon: 'git-branch', badge: result.certificates.length, content: () => chainPanel(analysis) },
-        { id: 'caa', label: t('cert.tab.caa'), icon: 'shield', content: () => caaPanel(cert) },
-        { id: 'dane', label: t('dane.tab'), icon: 'key', content: () => danePanel(cert) },
-        { id: 'ct', label: t('cert.tab.ct'), icon: 'eye', content: () => ctPanel(cert) },
-        { id: 'pem', label: t('cert.tab.pem'), icon: 'terminal', content: () => pemPanel(cert, analysis) },
-        { id: 'compare', label: t('cert.tab.compare'), icon: 'swap', content: () => comparePanel() }
+        { id: 'names', label: t('cert.tab.names'), badge: cert.sans.length || null, content: () => namesPanel(cert) },
+        { id: 'details', label: t('cert.tab.details'), content: () => detailsPanel(cert) },
+        { id: 'chain', label: t('cert.tab.chain'), badge: result.certificates.length, content: () => chainPanel(analysis) },
+        { id: 'caa', label: t('cert.tab.caa'), content: () => caaPanel(cert) },
+        { id: 'dane', label: t('dane.tab'), content: () => danePanel(cert) },
+        { id: 'ct', label: t('cert.tab.ct'), content: () => ctPanel(cert) },
+        { id: 'pem', label: t('cert.tab.pem'), content: () => pemPanel(cert, analysis) },
+        { id: 'compare', label: t('cert.tab.compare'), content: () => comparePanel() }
       ], {
         selected: viewState.tab,
         label: t('nav.cert'),
@@ -2343,73 +2413,163 @@ export function mount(container, ctx) {
       tabsHost.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
     }
 
-    /* --- overview ------------------------------------------------------- */
-    function overviewCard(leaf, chain) {
+    /** A count of the header opens the tab that says more — about the server certificate, which it counts. */
+    function openTab(tabId) {
+      const leafIndex = result.certificates.indexOf(result.leaf);
+      viewState.tab = tabId;
+      if (viewState.selected !== leafIndex) {
+        viewState.selected = leafIndex;
+        const sel = content.querySelector('[data-role="cert-select"]');
+        if (sel) sel.value = String(leafIndex);
+        renderTabs();
+      }
+      if (tabs) tabs.select(tabId, { focus: true });
+      tabsHost.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+    }
+
+    /* --- region 4: the result header ----------------------------------------- */
+    /**
+     * The header of the certificate on screen (docs/DESIGN.md §5.6): its name as the title, the days
+     * left with the lifetime bar as the key metric, the issuer and the file, its facts and the
+     * certificate shown; the validity, the chain and CAA as counts that open their tab; Copy
+     * summary · Export ▾ (PEM, full chain, Copy PEM, Print, then Remove) · Copy link (a certificate
+     * from Certificate Transparency: its host name); the next steps.
+     */
+    function overviewHead(leaf, chain, certs) {
       const v = validityState(leaf);
       const variant = validityVariant(v);
+      const metric = certKeyMetric(v);
+      const head = ResultHeader({ className: 'cert-overview', dataset: { validity: v.state } });
+      head.setState('done');
+      head.title.classList.add('cert-overview-cn', 'mono');
+      head.set('title', ResultTitle({ text: certDisplayName(leaf) }));
       const fill = h('div', { class: ['cert-validity-fill', `cert-validity-${variant}`] });
       fill.style.width = `${(v.elapsed * 100).toFixed(1)}%`;
+      head.set('key', h('div', { class: 'cert-validity', dataset: { validity: v.state, severity: metric.severity } },
+        h('div', { class: 'cert-days', title: `${leaf.notBefore.toISOString()} → ${leaf.notAfter.toISOString()}` },
+          h('span', { class: 'cert-days-value num' }, formatNumber(metric.value)),
+          h('span', { class: 'cert-days-unit' }, t(`cert.key.${metric.unit}`, { count: metric.value }))),
+        h('div', {
+          class: 'cert-validity-track',
+          attrs: { role: 'img', 'aria-label': `${t('cert.validity.elapsed')}: ${Math.round(v.elapsed * 100)}%` }
+        }, fill),
+        h('div', { class: 'cert-validity-dates' },
+          h('span', { title: leaf.notBefore.toISOString() }, formatDate(leaf.notBefore)),
+          h('span', { title: leaf.notAfter.toISOString() }, formatDate(leaf.notAfter)))));
+      head.set('meta', [
+        h('span', { class: 'cert-overview-issuer cert-issuer-line' }, t('cert.issuedBy', { issuer: issuerDisplayName(leaf) }), ExpectedCaBadge(issuerOf(leaf))),
+        h('span', { class: 'cert-overview-file' }, t('cert.fileInfo', { name: load.name || '—', count: t('cert.count', { count: result.certificates.length }) })),
+        h('span', null, t('cert.validity.lifetime', { count: v.lifetimeDays }))
+      ]);
+      let picker = null;
+      if (result.certificates.length > 1) {
+        picker = select({
+          label: t('cert.showing'),
+          className: 'cert-picker',
+          size: 'sm',
+          value: String(viewState.selected),
+          options: certs.map((c) => ({
+            value: String(result.certificates.indexOf(c)),
+            label: t('cert.optionLabel', { role: t(`cert.role.${chain.roles.get(c)}`), name: certDisplayName(c) })
+          })),
+          onChange: (value) => {
+            viewState.selected = Number(value);
+            renderTabs();
+          }
+        });
+        picker.input.dataset.role = 'cert-select';
+      }
+      head.set('notes', [
+        h('div', { class: 'cluster cert-overview-badges' },
+          certSourceBadge(load),
+          Badge(t('cert.names.count', { count: leaf.dnsNames.length }), { variant: 'neutral', icon: 'globe' }),
+          leaf.hostnames.some((n) => n.startsWith('*.')) ? Badge(t('cert.badge.wildcard'), { variant: 'accent', icon: 'layers' }) : null,
+          leaf.validationLevel ? Badge(t(`cert.level.${leaf.validationLevel}`), { variant: 'info', icon: 'shield' }) : null,
+          leaf.selfSigned ? Badge(t('cert.badge.selfSigned'), { variant: 'warn', icon: 'alert' }) : null,
+          leaf.isCA ? Badge(t('cert.badge.ca'), { variant: 'neutral', icon: 'git-branch' }) : null,
+          leaf.isPrecertificate ? Badge(t('cert.badge.precert'), { variant: 'warn' }) : null,
+          leaf.mustStaple ? Badge(t('cert.badge.mustStaple'), { variant: 'neutral' }) : null,
+          Badge(`${leaf.keyAlgorithm}${leaf.keyBits ? ` ${leaf.keyBits}` : ''}${leaf.curve ? ` · ${leaf.curve}` : ''}`, { variant: 'neutral', icon: 'key', mono: true })),
+        picker ? picker.el : null
+      ]);
+
+      // The validity, the chain and CAA: each opens its tab; the chain and CAA follow their lookups.
+      const status = StatusSummary({ label: t('nav.cert'), className: 'cert-status' });
+      const caaNames = new Set(leaf.hostnames.map((n) => stripWildcard(n).base).filter(Boolean)).size;
+      const statusText = (item) => {
+        if (item.key === 'validity') return item.state === 'ok' ? t('cert.st.valid') : validityText(v);
+        if (item.key === 'chain') return t(`cert.st.chain.${item.state}`);
+        return t(`cert.st.caa.${item.state}`);
+      };
+      const watchStatus = () => {
+        if (refreshHeadStatus === renderStatus && head.el.isConnected) renderStatus();
+      };
+      function renderStatus() {
+        const job = startChainRepair(load);
+        const end = chainEndVerdict(job);
+        const caaEntry = caaCache.get(certKey(leaf)) || null;
+        const items = certStatus({
+          validity: v,
+          chain: certChainState({ issues: chain.issues, end, fromCt: load.source === 'ct' }),
+          caa: caaState(caaEntry, { names: caaNames })
+        });
+        status.update(items.map((item) => ({ ...item, text: statusText(item), onPress: () => openTab(item.tab) })));
+        if (end === 'pending') onChainRepairEnd(load, watchStatus);
+        if (caaEntry && caaEntry.status === 'running') caaEntry.watchers.add(watchStatus);
+      }
+      refreshHeadStatus = renderStatus;
+      renderStatus();
+      head.set('status', status.el);
+
       const full = fullchainCerts(chain);
-      const findBtn = Button({
-        label: t('cert.findTargets'),
-        icon: 'target',
-        variant: 'primary',
-        title: t('cert.findTargetsHint'),
-        dataset: { action: 'find-targets' },
-        onClick: openInTargets
-      });
-      const renewLink = RenewalLink(ctx, leaf);
-      const actions = h('div', { class: 'cluster cert-actions' },
-        findBtn,
-        renewLink,
-        Button({
-          label: t('cert.downloadPem'), icon: 'download', dataset: { action: 'download-pem' },
-          onClick: () => downloadText(pemFileName(leaf), pemEncode(leaf.der), 'application/x-pem-file')
+      const ctHost = ctHostOf(load);
+      headActions = ResultActions({
+        summary: SummaryButton({
+          kind: 'cert', plainLabel: t('result.plainTitle'), facts: () => certSummaryFacts(load), url: () => ctx.shareUrl(permalinkParams('cert', ctx.params))
         }),
-        // A PKCS#12 bundle's note offers fullchain.pem already.
-        full.length > 1 && !load.result.pkcs12 ? Button({
-          label: t('cert.downloadChain'), icon: 'download', dataset: { action: 'download-chain' }, title: t('cert.chain.fullchainHint'),
-          // with the intermediates the CCADB list added, once found
-          onClick: () => downloadFullchain(leaf, repairedFullchain(load) || full)
-        }) : null,
-        CopyButton(() => pemEncode(leaf.der), { label: t('cert.copyPem'), variant: 'ghost', size: 'md' }),
-        SummaryButton({ kind: 'cert', size: 'md', facts: () => certSummaryFacts(load), url: () => ctx.shareUrl(permalinkParams('cert', ctx.params)) }),
-        Button({
-          label: t('cert.remove'), icon: 'trash', variant: 'ghost', dataset: { action: 'cert-remove' },
-          onClick: () => {
+        exports: [
+          {
+            label: t('cert.downloadPem'), icon: 'download', dataset: { action: 'download-pem' },
+            onSelect: () => downloadText(pemFileName(leaf), pemEncode(leaf.der), 'application/x-pem-file')
+          },
+          // A PKCS#12 bundle's note offers fullchain.pem already.
+          full.length > 1 && !load.result.pkcs12 ? {
+            label: t('cert.downloadChain'), icon: 'download', title: t('cert.chain.fullchainHint'), dataset: { action: 'download-chain' },
+            // with the intermediates the CCADB list added, once found
+            onSelect: () => downloadFullchain(leaf, repairedFullchain(load) || full)
+          } : null,
+          {
+            label: t('cert.copyPem'), icon: 'copy', dataset: { action: 'copy-pem' },
+            onSelect: async () => {
+              if (await copyText(pemEncode(leaf.der))) {
+                announce(t('cert.pemCopied'));
+                toast(t('cert.pemCopied'), { type: 'success', timeout: 2000 });
+              } else toast(t('common.copyFailed'), { type: 'error' });
+            }
+          }
+        ].filter(Boolean),
+        print: true,
+        // Only a certificate looked up by its host name has a link: a file never goes in one.
+        link: ctHost ? () => ctx.shareUrl({ host: ctHost }) : null,
+        tail: [{
+          label: t('cert.remove'), icon: 'trash', dataset: { action: 'cert-remove' },
+          onSelect: () => {
             setLoad(null, { announce: false });
             toast(t('cert.removed'), { type: 'info', timeout: 2000 });
           }
-        }));
-      return h('div', { class: 'card cert-overview', dataset: { validity: v.state } },
-        h('div', { class: 'cert-overview-main' },
-          h('div', { class: 'cert-overview-id' },
-            h('span', { class: 'cert-overview-icon' }, Icon('certificate', { size: 26 })),
-            h('div', { class: 'cert-overview-titles' },
-              h('h2', { class: 'cert-overview-cn mono' }, certDisplayName(leaf)),
-              h('div', { class: 'cert-overview-issuer cert-issuer-line' }, t('cert.issuedBy', { issuer: issuerDisplayName(leaf) }), ExpectedCaBadge(issuerOf(leaf))),
-              h('div', { class: 'cluster cert-overview-badges' },
-                certSourceBadge(load),
-                Badge(t('cert.names.count', { count: leaf.dnsNames.length }), { variant: 'neutral', icon: 'globe' }),
-                leaf.hostnames.some((n) => n.startsWith('*.')) ? Badge(t('cert.badge.wildcard'), { variant: 'accent', icon: 'layers' }) : null,
-                leaf.validationLevel ? Badge(t(`cert.level.${leaf.validationLevel}`), { variant: 'info', icon: 'shield' }) : null,
-                leaf.selfSigned ? Badge(t('cert.badge.selfSigned'), { variant: 'warn', icon: 'alert' }) : null,
-                leaf.isCA ? Badge(t('cert.badge.ca'), { variant: 'neutral', icon: 'git-branch' }) : null,
-                leaf.isPrecertificate ? Badge(t('cert.badge.precert'), { variant: 'warn' }) : null,
-                leaf.mustStaple ? Badge(t('cert.badge.mustStaple'), { variant: 'neutral' }) : null,
-                Badge(`${leaf.keyAlgorithm}${leaf.keyBits ? ` ${leaf.keyBits}` : ''}${leaf.curve ? ` · ${leaf.curve}` : ''}`, { variant: 'neutral', icon: 'key', mono: true })))),
-          h('div', { class: 'cert-validity' },
-            h('div', { class: 'cert-validity-head' },
-              ValidityBadge(leaf),
-              h('span', { class: 'muted text-sm' }, t('cert.validity.lifetime', { count: v.lifetimeDays }))),
-            h('div', {
-              class: 'cert-validity-track',
-              attrs: { role: 'img', 'aria-label': `${t('cert.validity.elapsed')}: ${Math.round(v.elapsed * 100)}%` }
-            }, fill),
-            h('div', { class: 'cert-validity-dates text-sm' },
-              h('span', { title: leaf.notBefore.toISOString() }, formatDate(leaf.notBefore)),
-              h('span', { title: leaf.notAfter.toISOString() }, formatDate(leaf.notAfter))))),
-        h('div', { class: 'cert-overview-foot' }, actions));
+        }]
+      });
+      head.set('actions', headActions.el);
+      const renewHref = renewalHref(ctx, leaf);
+      // The next steps (docs/DESIGN.md §5.3): the servers this certificate must go on, its renewal.
+      head.set('next', NextSteps({
+        className: 'cert-actions',
+        steps: [
+          { label: t('cert.findTargets'), icon: 'target', title: t('cert.findTargetsHint'), dataset: { action: 'find-targets' }, onClick: openInTargets },
+          renewHref ? { label: t('nav.renew'), icon: 'refresh', href: renewHref, title: t('cert.renewHint'), dataset: { action: 'renew-link' } } : null
+        ]
+      }));
+      return head;
     }
 
     /* --- names ---------------------------------------------------------- */
@@ -2722,6 +2882,8 @@ export function mount(container, ctx) {
         clear(body);
         runBtn.querySelector('.btn-label').textContent = entry && entry.status !== 'running' ? t('cert.caa.rerun') : t('cert.caa.run');
         runBtn.disabled = !!entry && entry.status === 'running';
+        // The header's CAA count follows the check (it is the server certificate's).
+        if (refreshHeadStatus) refreshHeadStatus();
         if (!names.length) {
           body.append(EmptyState({ compact: true, icon: 'shield', message: t('cert.caa.noNames') }));
           return;
@@ -3193,6 +3355,8 @@ export function mount(container, ctx) {
   teardown = () => {
     off();
     disposeDane();
+    disposeHead();
+    refreshHeadStatus = null;
   };
   active = {
     result() {

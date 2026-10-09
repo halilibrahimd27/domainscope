@@ -44,7 +44,8 @@ import { launchBrowser } from './cdp.mjs';
 import { orderSuites } from './run-all.mjs';
 import {
   BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  gotoRoute, installDownloadCapture, setLangUi, sleep, takeDownloads, waitReady, zoneHandoffScript, ZONE_HANDOFF_APEX, ZONE_HANDOFF_DNS
+  gotoRoute, installDownloadCapture, resultAction, setLangUi, sleep, takeDownloads, unfoldScanSetup, waitReady, zoneHandoffScript,
+  ZONE_HANDOFF_APEX, ZONE_HANDOFF_DNS
 } from './scan.e2e.mjs';
 import { SOURCES } from '../../assets/js/lib/sources.js';
 
@@ -312,7 +313,7 @@ async function main() {
       assertEqual(back, { box: '192.0.2.10', cmd: excluded }, 'kept with the scan');
       // The JSON export: the same command and what the exclusion did.
       await takeDownloads(page);
-      await page.click('.scan-exports [data-export="json"]');
+      await resultAction(page, '[data-export="json"]', '.scan-run');
       const files = await page.waitFor(() => (window.__downloads || []).length > 0, { message: 'JSON downloaded' }).then(() => takeDownloads(page));
       const doc = JSON.parse(files.find((f) => f.name.endsWith('.json')).text);
       assertEqual(doc.origin.cliSuggestion, excluded, 'the exported command is the one shown, exclusion applied');
@@ -405,6 +406,8 @@ async function main() {
       try {
         await gotoRoute(page, 'scan');
         const prev = await page.evaluate(() => document.querySelector('.scan-run-ui')?.dataset.run || '');
+        // The kept scan folded the setup into one row: Edit shows the steps again.
+        await unfoldScanSetup(page);
         await page.type('[data-role="scan-domains"]', APEX);
         await page.click('[data-action="scan-run"]');
         await page.waitFor((p) => {

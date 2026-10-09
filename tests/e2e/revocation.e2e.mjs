@@ -44,7 +44,7 @@ import { CT_EXPORT_COLUMNS } from '../../assets/js/lib/ctwatch.js';
 import { ESTATE_ARI_COLUMNS, ESTATE_CSV_COLUMNS, ESTATE_REVOCATION_COLUMNS, ESTATE_TRUST_COLUMNS } from '../../assets/js/lib/estate.js';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  csvHeader, gotoRoute, installDownloadCapture, setLangUi, takeDownloads, waitReady
+  csvHeader, gotoRoute, installDownloadCapture, resultAction, setLangUi, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 /** The instant the expectations were written for; the page's clock starts here on every load. */
@@ -250,6 +250,13 @@ const estateCells = (page) => page.evaluate(() => Object.fromEntries([...documen
   }];
 })));
 
+/** The estate's figures (the Certificates tab), a line per row: its title, "label value" per figure, the zeros folded. */
+const estateFigures = (page) => page.evaluate(() => [...document.querySelectorAll('.estate-metric-row')].map((row) => [
+  row.querySelector('.estate-metric-title').textContent,
+  ...[...row.querySelectorAll('.metric')].map((m) => `${m.querySelector('.metric-label').textContent} ${m.querySelector('.metric-value').textContent}`),
+  ...[...row.querySelectorAll('.metric-zero:not([hidden])')].map((z) => z.textContent)
+].join(' · ')));
+
 async function main() {
   const opts = cliOptions();
   opts.shotsDir = path.resolve(opts.value('--shots-dir', SHOTS));
@@ -433,9 +440,9 @@ async function main() {
       await frames(page);
       const heads = await page.evaluate(() => [...document.querySelectorAll('.estate-table thead th')].map((th) => th.textContent.trim()));
       assert(heads.includes('Renewal window (ARI)') && heads.includes('Revocation'), heads.join(' | '));
-      const lines = await page.evaluate(() => [...document.querySelectorAll('.estate-line')].map((l) => l.textContent.replace(/\s+/g, ' ').trim()));
-      assert(lines.includes('Renewal window (ARI)renew now 1overdue 0not open yet 1not read 1'), lines.join(' / '));
-      assert(lines.includes('Revocationrevoked 1unknown 1not revoked 1'), lines.join(' / '));
+      const lines = await estateFigures(page);
+      assert(lines.includes('Renewal window (ARI) · renew now 1 · not open yet 1 · not read 1 · None: overdue'), lines.join(' / '));
+      assert(lines.includes('Revocation · revoked 1 · unknown 1 · not revoked 1'), lines.join(' / '));
       const cells = await estateCells(page);
       assertEqual([cells['legacy.example.org'].ari, cells['legacy.example.org'].rev], ['open', 'revoked'], 'legacy.example.org');
       assert(cells['legacy.example.org'].ariText.includes('open: renew now'), cells['legacy.example.org'].ariText);
@@ -445,7 +452,7 @@ async function main() {
       assertEqual(cells['legacy.example.net'], {
         ari: 'error', ariText: 'no ARI server known for this CA', rev: 'unknown', revText: 'Unknown The certificate names no CRL to read (OCSP is not asked).'
       }, 'legacy.example.net');
-      assertEqual(await page.evaluate(() => document.querySelector('.estate-stats [data-filter="all"] .stat-value')?.textContent), '9', 'all');
+      assert(/· 9 certificates on /.test(await page.evaluate(() => document.querySelector('.estate-overview .result-title')?.textContent || '')), 'all nine in the title');
       await shotPage(page, opts, 'revocation-estate-desktop-light-en');
     });
 
@@ -470,7 +477,8 @@ async function main() {
 
     await run.step('the CSV: the CLI\'s columns, then the ARI and revocation ones', async () => {
       await takeDownloads(page);
-      await page.click('.estate-table [data-export="csv"]');
+      await resultAction(page, '[data-export="csv"]', '.estate-overview');
+      await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'the CSV' });
       const [file] = await takeDownloads(page);
       // the fixture's scan checked trust: its two columns come last
       assertEqual(csvHeader(file.text), [...ESTATE_CSV_COLUMNS, ...ESTATE_ARI_COLUMNS, ...ESTATE_REVOCATION_COLUMNS, ...ESTATE_TRUST_COLUMNS].map((c) => c.key), 'columns');
@@ -480,22 +488,22 @@ async function main() {
 
     await run.step('a report without them shows none of it', async () => {
       await page.click('[data-action="estate-forget"]');
-      await page.waitFor(() => !document.querySelector('.estate-report') && document.querySelector('.estate-page .empty'), { message: 'forgotten' });
+      await page.waitFor(() => !document.querySelector('.estate-report') && document.querySelector('.estate-page .estate-empty'), { message: 'forgotten' });
       await page.setFileInput('.estate-page .estate-drop .filedrop-input', [path.join(FIXTURES, 'estate', 'report-a.json')]);
       await page.waitFor(() => document.querySelectorAll('.estate-table tbody tr.dt-row').length === 9, { message: 'report-a' });
       const info = await page.evaluate(() => ({
         heads: [...document.querySelectorAll('.estate-table thead th')].map((th) => th.textContent.trim()),
-        lines: document.querySelectorAll('.estate-line').length
+        lines: [...document.querySelectorAll('.estate-metric-row')].map((row) => row.dataset.metrics)
       }));
       assert(!info.heads.includes('Renewal window (ARI)') && !info.heads.includes('Revocation'), info.heads.join(' | '));
-      assertEqual(info.lines, 2, 'the expiry and kinds lines only');
+      assertEqual(info.lines, ['expiry', 'kinds'], 'the expiry and kinds figures only');
     });
 
     run.group('Turkish + dark, phones 375 and 320 px');
     await run.step('Certificate estate at 375 px (Turkish, dark): cards, no horizontal scroll', async () => {
       await removeToasts(page);
       await page.click('[data-action="estate-forget"]');
-      await page.waitFor(() => !document.querySelector('.estate-report') && document.querySelector('.estate-page .empty'), { message: 'forgotten again' });
+      await page.waitFor(() => !document.querySelector('.estate-report') && document.querySelector('.estate-page .estate-empty'), { message: 'forgotten again' });
       await setLangUi(page, 'tr');
       await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
       await page.setFileInput('.estate-page .estate-drop .filedrop-input', [report]);

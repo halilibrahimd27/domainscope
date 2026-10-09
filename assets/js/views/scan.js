@@ -14,18 +14,25 @@
  * One requirement line above the steps says what Start needs (a certificate or at least one
  * domain, lib/scanform.formProgress) and turns into a check once met; a completed step shows a
  * check in place of its number, a certificate the scan cannot use (a CA certificate, one without
- * DNS names) a warning sign. The run bar (Start / Cancel, the query estimate and a summary)
- * follows the steps; on narrow screens it sticks to the bottom of the viewport while the form is
- * scrolled, so Start is always within reach.
+ * DNS names) a warning sign. The run bar (ui/template.js RunBar, the wizard's sticky variant:
+ * Start / Cancel, the query estimate and a summary) follows the steps; on narrow screens it sticks
+ * to the bottom of the viewport while the form is scrolled, so Start is always within reach. Once
+ * a scan starts the steps fold into one row ("Certificate *.example.net · EC 256 · Domains
+ * example.net · 2 servers · recommended options — Edit", lib/scanform.setupSummary; DESIGN §5.5),
+ * and Start reads "Run again" while the setup still asks for the scan on screen.
  *
- * Run starts lib/scanner.runScan(); stages, per-source status and hosts stream into the
- * page. Results: stat cards, then tabs Hosts / Servers / Behind CDN / Verify (only with a
- * certificate: ui/verify-panel.js checks it from the internet) / Rollout (only with a certificate:
- * ui/rollout-panel.js, loaded on its first show, a checklist of the servers that need it kept in the
- * workspace, and deploy snippets per server and platform) / DANE (only with a certificate:
- * ui/dane-panel.js, on a click, compares the TLSA records of its mail servers, names and covered
- * hosts with it) / Sources / CT certificates,
- * plus exports (hosts CSV, servers CSV, full JSON, names.txt, targets.txt) and the ready-to-run command for the companion CLI (cli/ssl_origin_scan.py), which
+ * Run starts lib/scanner.runScan(); stages, per-source status and hosts stream into the page.
+ * The result header (ui/template.js ResultHeader) gives the title, the time, the servers to update
+ * (the key metric), the status summary (lib/certtools.js scanStatus: its host counts filter the
+ * Hosts table), the standard actions — Copy summary, Export ▾ (hosts CSV, servers CSV, full JSON,
+ * names.txt, targets.txt), Copy link — and, with a certificate, the next steps Verify and Rollout.
+ * Tabs: Hosts (the figures, the findings — lib/certtools.js scanFindings — and the table) / Servers
+ * / Behind CDN / Verify (only with a certificate: ui/verify-panel.js checks it from the internet) /
+ * Rollout (only with a certificate: ui/rollout-panel.js, loaded on its first show, a checklist of
+ * the servers that need it kept in the workspace, and deploy snippets per server and platform) /
+ * DANE (only with a certificate: ui/dane-panel.js, on a click, compares the TLSA records of its mail
+ * servers, names and covered hosts with it) / Sources (the stages and the per-source chips) / CT
+ * certificates, and the ready-to-run command for the companion CLI (cli/ssl_origin_scan.py), which
  * confirms origins behind Cloudflare from inside the network.
  *
  * A running scan is owned by this module, not by the mounted view: navigating to another
@@ -33,8 +40,8 @@
  * it finished). Everything stays in memory; nothing is uploaded except the DNS / CT
  * queries themselves.
  *
- * "Copy summary" next to the exports (ui/summary-button.js): the certificate, hosts, the inventory
- * servers that need it (by name, as the Servers tab shows them), CDN hosts and the Verify headline.
+ * "Copy summary" (ui/summary-button.js): the certificate, hosts, the inventory servers that need it
+ * (by name, as the Servers tab shows them), CDN hosts and the Verify headline.
  *
  * Route params: `#/scan?domain=example.com` (repeatable or comma-separated) pre-fills the
  * domains; `&run=1` (a shared link) also shows a note to press "Start scan" — a link never
@@ -45,12 +52,19 @@
  * or not the view is mounted.
  */
 
-import { h, clear, append, scrollBehavior } from '../ui/dom.js';
+import { h, clear, append, scrollBehavior, uid } from '../ui/dom.js';
 import {
   Alert, Badge, Button, ButtonLink, Card, CliText, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
-  FileDrop, Icon, KeyValueList, KindBadge, ProgressBar, SegmentedControl, StatCard, Tabs, TruncatedList, announce, checkbox,
+  FileDrop, Icon, KeyValueList, KindBadge, ProgressBar, SegmentedControl, Tabs, TruncatedList, announce, checkbox,
   checkboxGroup, ipSortValue, radioGroup, select, textInput, textarea, toast
 } from '../ui/components.js';
+// The page template (docs/DESIGN.md §5, §5.5 "Wizard"; phase 3): the sticky run bar, the result
+// header and its parts, the figures and the findings of the Hosts tab.
+import {
+  FindingList, MetricStrip, NextSteps, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, withSubject
+} from '../ui/template.js';
+import { toggleStatus } from '../lib/template.js';
+import { scanFindings, scanKeyMetric, scanStatus } from '../lib/certtools.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import {
   t, registerStrings, formatNumber, formatDate, formatDateTime, formatDuration, formatRelative, daysUntil
@@ -58,7 +72,7 @@ import {
 import { parseHostList, baseDomainsFromNames, certCovers, isPublicSuffix, stripWildcard } from '../lib/domain.js';
 import { SOURCES, sourceHealthSummary } from '../lib/sourceinfo.js';
 import { SCAN_STAGES } from '../lib/scanplan.js';
-import { FORM_STEPS, formProgress, optionChanges, barStuck } from '../lib/scanform.js';
+import { FORM_STEPS, formProgress, optionChanges, setupSignature, setupSummary } from '../lib/scanform.js';
 import {
   toCsv, toJson, scanHostRows, scanServerRows, namesForCli, targetsForCli, cliCommand, cliServerName, HOST_COLUMNS, SERVER_COLUMNS
 } from '../lib/export.js';
@@ -81,7 +95,7 @@ import {
 } from './cert.js';
 // Several certificates at once (a renewal week): sets, the per-server plan, the CLI's --cert files.
 import {
-  renewalBundle, withoutLeaf, primaryFile, fileForLeaf, leafKey, planRenewal, setOfName, cliCertFiles, certSetsJson
+  renewalBundle, withoutLeaf, primaryFile, fileForLeaf, leafKey, planRenewal, setOfName, cliCertFiles, certSetsJson, keyTypeOf
 } from '../lib/certsets.js';
 import { RenewalSets, RenewalPlanPanel, CertFileButtons, SetBadge, renewalSummaryText } from '../ui/renewal-panel.js';
 // Shared with the Subdomains view: wordlist sizes / estimates, source status texts, technique counts.
@@ -244,7 +258,6 @@ registerStrings('en', {
   'scan.optSum.noHints': 'no origin hints',
 
   'scan.run': 'Start scan',
-  'scan.runAgain': 'Scan again',
   'scan.cancel': 'Cancel',
   'scan.link.prompt': 'This link opens a scan of {domains}. Press “Start scan” when you are ready — it queries the passive sources and public DNS resolvers from your browser.',
   'scan.summary.domains': { one: '{count} domain', other: '{count} domains' },
@@ -261,6 +274,29 @@ registerStrings('en', {
   'scan.summary.certs': { one: 'with {count} certificate', other: 'with {count} certificates' },
   'scan.summary.noCert': 'no certificate',
   'scan.busy': 'Scanning…',
+  'scan.fold.label': 'The scan’s setup',
+  'scan.fold.cert': 'Certificate {name}',
+  'scan.fold.certs': { one: '{count} certificate', other: '{count} certificates' },
+  'scan.fold.noCert': 'No certificate',
+  'scan.fold.domains': 'Domains {list}',
+  'scan.fold.more': '+{count} more',
+  'scan.fold.domainsCert': 'Domains from the certificate',
+  'scan.fold.noDomains': 'No domain',
+  'scan.fold.servers': { zero: 'No server list', one: '{count} server', other: '{count} servers' },
+  'scan.fold.defaults': 'recommended options',
+  'scan.fold.editLabel': 'Edit the setup',
+  'scan.key.needs': { one: 'server to update', other: 'servers to update' },
+  'scan.key.matched': { one: 'matched server', other: 'matched servers' },
+  'scan.status.servers': { one: '{count} server to update', other: '{count} servers to update' },
+  'scan.status.matched': { one: '{count} matched server', other: '{count} matched servers' },
+  'scan.status.unresolved': { one: '{count} host not resolving', other: '{count} hosts not resolving' },
+  'scan.status.behind': { one: '{count} host behind a CDN', other: '{count} hosts behind a CDN' },
+  'scan.status.covered': { one: '{count} host covered', other: '{count} hosts covered' },
+  'scan.metrics': 'Hosts by kind',
+  'scan.findings': 'What the scan found',
+  'scan.stages.title': 'Stages',
+  'scan.next.verify': 'Check the servers from the internet',
+  'scan.next.rollout': 'Track the rollout',
 
   'scan.run.title': 'Scanning {domains}',
   'scan.run.titleDone': 'Scan of {domains}',
@@ -321,7 +357,6 @@ registerStrings('en', {
   'scan.stat.serversNoInv': 'no inventory saved',
   'scan.stat.unresolved': 'Not resolving',
   'scan.stat.unresolvedHint': { zero: 'no dangling CNAME', one: '{count} dangling CNAME', other: '{count} dangling CNAMEs' },
-  'scan.stat.filterHint': 'Show these hosts',
 
   'scan.sum.needs': { one: '{count} of your servers needs the new certificate.', other: '{count} of your servers need the new certificate.' },
   'scan.sum.needsNone': 'None of your saved servers serves a name the certificate covers.',
@@ -553,7 +588,6 @@ registerStrings('en', {
   'scan.export.json': 'Full JSON',
   'scan.export.names': 'names.txt',
   'scan.export.targets': 'targets.txt',
-  'scan.export.label': 'Export results',
   'scan.exported': '{file} downloaded'
 });
 
@@ -653,7 +687,6 @@ registerStrings('tr', {
   'scan.optSum.noHints': 'asıl sunucu ipuçları yok',
 
   'scan.run': 'Taramayı başlat',
-  'scan.runAgain': 'Yeniden tara',
   'scan.cancel': 'İptal et',
   'scan.link.prompt': 'Bu bağlantı {domains} için bir tarama açar. Hazır olduğunuzda “Taramayı başlat”a basın — pasif kaynaklar ve genel DNS çözümleyicileri tarayıcınızdan sorgulanır.',
   'scan.summary.domains': { one: '{count} alan adı', other: '{count} alan adı' },
@@ -670,6 +703,29 @@ registerStrings('tr', {
   'scan.summary.certs': { one: '{count} sertifikalı', other: '{count} sertifikalı' },
   'scan.summary.noCert': 'sertifikasız',
   'scan.busy': 'Taranıyor…',
+  'scan.fold.label': 'Taramanın kurulumu',
+  'scan.fold.cert': 'Sertifika {name}',
+  'scan.fold.certs': '{count} sertifika',
+  'scan.fold.noCert': 'Sertifika yok',
+  'scan.fold.domains': 'Alan adları {list}',
+  'scan.fold.more': '+{count} tane daha',
+  'scan.fold.domainsCert': 'Alan adları sertifikadan',
+  'scan.fold.noDomains': 'Alan adı yok',
+  'scan.fold.servers': { zero: 'Sunucu listesi yok', one: '{count} sunucu', other: '{count} sunucu' },
+  'scan.fold.defaults': 'önerilen seçenekler',
+  'scan.fold.editLabel': 'Kurulumu düzenle',
+  'scan.key.needs': 'güncellenecek sunucu',
+  'scan.key.matched': 'eşleşen sunucu',
+  'scan.status.servers': '{count} sunucu güncellenecek',
+  'scan.status.matched': '{count} eşleşen sunucu',
+  'scan.status.unresolved': '{count} host çözümlenmiyor',
+  'scan.status.behind': '{count} host CDN arkasında',
+  'scan.status.covered': '{count} host kapsanıyor',
+  'scan.metrics': 'Türlerine göre host’lar',
+  'scan.findings': 'Taramanın bulguları',
+  'scan.stages.title': 'Aşamalar',
+  'scan.next.verify': 'Sunucuları internetten kontrol et',
+  'scan.next.rollout': 'Dağıtımı takip et',
 
   'scan.run.title': '{domains} taranıyor',
   'scan.run.titleDone': '{domains} taraması',
@@ -730,7 +786,6 @@ registerStrings('tr', {
   'scan.stat.serversNoInv': 'kayıtlı envanter yok',
   'scan.stat.unresolved': 'Çözümlenmeyen',
   'scan.stat.unresolvedHint': { zero: 'sahipsiz CNAME yok', one: '{count} sahipsiz CNAME', other: '{count} sahipsiz CNAME' },
-  'scan.stat.filterHint': 'Bu host’ları göster',
 
   'scan.sum.needs': { one: '{count} sunucunuza yeni sertifika kurulmalı.', other: '{count} sunucunuza yeni sertifika kurulmalı.' },
   'scan.sum.needsNone': 'Kayıtlı sunucularınızın hiçbiri sertifikanın kapsadığı bir adı sunmuyor.',
@@ -962,7 +1017,6 @@ registerStrings('tr', {
   'scan.export.json': 'Tam JSON',
   'scan.export.names': 'names.txt',
   'scan.export.targets': 'targets.txt',
-  'scan.export.label': 'Sonuçları dışa aktar',
   'scan.exported': '{file} indirildi'
 });
 
@@ -1273,6 +1327,11 @@ const session = {
   cdnShell: 'posix',
   /** Results tab shown when the run UI is rebuilt (null = Hosts); the Verify toast sets it. */
   scanTab: null,
+  /**
+   * The setup is unfolded although a scan is on screen (DESIGN §5.5, "Wizard": the steps fold into
+   * one row once a scan starts): Edit, or a certificate, domain or zone brought in from elsewhere.
+   */
+  setupEditing: false,
   run: null
 };
 
@@ -1289,6 +1348,8 @@ let active = null;
 const lastRunDomains = () => (session.run && session.run.domainsInput) || null;
 /** The domains step 2 holds, as a scan reads them. */
 const stepDomains = (text) => parseDomainsInput(text).domains;
+/** The same names, in any order. */
+const sameList = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
 
 /**
  * A route without a domain (the nav link back to the kept scan): step 2 holding only a domain
@@ -1316,7 +1377,7 @@ stateSingleton.subscribe(({ key }) => {
     cancelVerify(run);
     cancelAllDane(run);
   }
-  Object.assign(session, { certLoads: [], domainsText: '', carried: null, domainsFromCert: false, certKeyForDomains: null, extraText: '', scanTab: null, run: null });
+  Object.assign(session, { certLoads: [], domainsText: '', carried: null, domainsFromCert: false, certKeyForDomains: null, extraText: '', scanTab: null, setupEditing: false, run: null });
   Object.assign(bundleCache, { loads: null, bundle: null }); // the parsed certificates go too
 });
 
@@ -1569,6 +1630,8 @@ export function mount(container, ctx) {
     // when the field holds older text; route params below still win.
     session.domainsFromCert = true;
     session.certKeyForDomains = null;
+    // A certificate brought in asks for a new scan: the setup unfolds over a kept one.
+    session.setupEditing = true;
   }
   let certLoad = getCurrentCert(state);
 
@@ -1595,6 +1658,8 @@ export function mount(container, ctx) {
   // holds (typed, or filled from the certificate) unless that is the last scan's domains or the
   // domain carried before.
   if (fromRoute.length && (!isFillOnly(ctx.params) || fillReplaces(session.domainsText, lastRunDomains(), stepDomains, session.carried))) {
+    // Other domains than the kept scan's: the setup unfolds on them.
+    if (session.run && !sameList(fromRoute, lastRunDomains() || [])) session.setupEditing = true;
     session.domainsText = fromRoute.join('\n');
     session.carried = isFillOnly(ctx.params) ? session.domainsText : null;
     session.domainsFromCert = false;
@@ -1610,6 +1675,7 @@ export function mount(container, ctx) {
       session.domainsFromCert = false;
     }
     zoneModes.set(state.getSession('zone'), zoneIntent.mode === 'discover' ? 'discover' : 'exact');
+    session.setupEditing = true;
   }
 
   /* --- step progress + the requirement line ------------------------------------ */
@@ -1869,6 +1935,8 @@ export function mount(container, ctx) {
     session.certLoads = (loads || []).filter(Boolean);
     certLoad = primaryFile(session.certLoads);
     setCurrentCert(state, certLoad);
+    // Another certificate asks for another scan: the setup shows it, over a kept scan too.
+    if (session.run) session.setupEditing = true;
     autoFillDomains();
     renderCertStep();
     renderDomainsHint();
@@ -2241,21 +2309,12 @@ export function mount(container, ctx) {
   });
 
   function renderOptSummary() {
-    const vocab = sharedVocabulary();
-    const changes = optionChanges(options, defaultOptions, {
-      totalSources: SOURCES.length,
-      extraNames: parseHostList(session.extraText || '', { allowWildcard: true }).valid.length,
-      locales: vocab.locales,
-      custom: vocab.custom.length,
-      learned: vocab.learnedOn ? Math.min(vocab.learned.length, LEARNED_TRY_MAX) : 0
-    });
+    const changes = currentChanges();
     optSummary.textContent = changes.length ? changes.map(optionChangeText).join(' · ') : t('scan.optSum.defaults');
     optSummary.dataset.changes = changes.map((c) => c.id).join(' ');
   }
 
-  /* --- run bar ----------------------------------------------------------------- */
-  const runBtn = Button({ label: t('scan.run'), icon: 'play', variant: 'primary', size: 'lg', dataset: { action: 'scan-run', shortcut: 'submit' }, onClick: () => start() });
-  const cancelBtn = Button({ label: t('scan.cancel'), icon: 'stop', variant: 'secondary', size: 'lg', dataset: { action: 'scan-cancel', shortcut: 'cancel' }, onClick: () => cancel() });
+  /* --- region 3: the run bar ----------------------------------------------------- */
   const runSummary = h('div', { class: 'scan-runbar-summary text-sm' });
   const runError = h('div', { class: 'scan-runbar-error', attrs: { 'aria-live': 'polite' } });
   const linkPrompt = h('div', { class: 'scan-link-prompt', hidden: true });
@@ -2296,60 +2355,135 @@ export function mount(container, ctx) {
       h('span', { class: 'scan-dot', attrs: { 'aria-hidden': 'true' } }, '·'),
       h('span', null, !certLeaf() ? t('scan.summary.noCert') : renewal() && renewal().leaves.length > 1
         ? t('scan.summary.certs', { count: renewal().leaves.length }) : t('scan.summary.cert')));
+    // The form changed: the folded row and Run follow it.
+    syncSetup();
+  }
+
+  /*
+   * Start ⇄ Cancel with the query estimate and the summary (ui/template.js RunBar, the wizard's
+   * sticky variant): in the flow on wide screens; on narrow ones it sticks to the bottom of the
+   * viewport while the form scrolls (scan.css), floating with a shadow (data-stuck) and keeping a
+   * focused field clear of it (--run-bar-h), so Start is always in reach. The keyboard focus goes
+   * Start ⇄ Cancel. Once a scan is on screen and the setup still asks for it, Start reads "Run
+   * again" and steps back to secondary (a tab's own run — Verify — leads then).
+   */
+  const runBar = RunBar({
+    label: t('scan.run'),
+    size: 'lg',
+    dataset: { action: 'scan-run', shortcut: 'submit' },
+    stopLabel: t('scan.cancel'),
+    stopDataset: { action: 'scan-cancel', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => cancel(),
+    className: 'scan-runbar card',
+    buttonsClass: 'scan-runbar-buttons',
+    barDataset: { role: 'scan-runbar' },
+    info: [planLine, runSummary, runError],
+    sticky: true
+  });
+  cleanups.push(() => runBar.dispose());
+
+  function setRunning(on) {
+    // Start ⇄ Cancel in one slot: the keyboard focus follows the one shown (never <body>).
+    runBar.setRunning(on);
+    if (on) ctx.setBusy(t('scan.busy'));
+    else ctx.setBusy(ctBusy);
+    syncSetup();
+  }
+
+  /* --- region 2: the wizard folds into one row once a scan starts (DESIGN §5.5) ---------------- */
+  // The form exists from the layout below on; until then syncSetup has nothing to fold.
+  let setupReady = false;
+  const setupId = uid('scan-setup');
+  const foldText = h('span', { class: 'scan-fold-text' });
+  const foldEdit = h('button', {
+    type: 'button',
+    class: 'link-btn scan-fold-edit',
+    dataset: { action: 'scan-setup-edit' },
+    attrs: { 'aria-expanded': 'false', 'aria-controls': setupId, 'aria-label': t('scan.fold.editLabel') },
+    on: {
+      click: () => {
+        session.setupEditing = !session.setupEditing;
+        syncSetup();
+      }
+    }
+  }, t('result.edit'));
+  const foldRow = h('div', { class: 'scan-fold card', hidden: true, attrs: { role: 'group', 'aria-label': t('scan.fold.label') } },
+    Icon('sliders', { size: 15, className: 'scan-fold-icon' }), foldText, foldEdit);
+
+  /** The options that differ from the defaults (lib/scanform optionChanges), as the Options line and the folded row say them. */
+  function currentChanges() {
+    const vocab = sharedVocabulary();
+    return optionChanges(options, defaultOptions, {
+      totalSources: SOURCES.length,
+      extraNames: parseHostList(session.extraText || '', { allowWildcard: true }).valid.length,
+      locales: vocab.locales,
+      custom: vocab.custom.length,
+      learned: vocab.learnedOn ? Math.min(vocab.learned.length, LEARNED_TRY_MAX) : 0
+    });
+  }
+
+  /** What a scan with the form as it is would scan (lib/scanform setupSignature). */
+  function currentSignature() {
+    const rw = renewal();
+    const leaf = certLeaf();
+    const zone = activeZone();
+    return setupSignature({
+      domains: parseDomainsInput(domainsField.value).domains,
+      certs: rw ? rw.leaves.map((l) => `${l.cert.serialHex}|${l.cert.issuerDN}`) : leaf ? [`${leaf.serialHex}|${leaf.issuerDN}`] : [],
+      extraNames: parseHostList(session.extraText || '', { allowWildcard: true }).valid,
+      options,
+      zone: zone ? zoneModes.get(zone) || 'discover' : null
+    });
+  }
+
+  /** "Certificate *.example.net · ECDSA P-256 · Domains example.net · 2 servers · recommended options" (lib/scanform setupSummary). */
+  function renderFold() {
+    const leaf = certLeaf();
+    const rw = renewal();
+    const changes = currentChanges();
+    const row = setupSummary({
+      cert: leaf ? { name: certDisplayName(leaf), key: keyTypeOf(leaf).label } : null,
+      certs: rw ? rw.leaves.length : 0,
+      domains: parseDomainsInput(domainsField.value).domains,
+      servers: state.inventory.servers.length,
+      changes
+    });
+    const parts = [];
+    if (row.cert && row.cert.many) parts.push(t('scan.fold.certs', { count: row.cert.many }));
+    else if (row.cert) {
+      parts.push(h('span', null, ...withSubject((p) => t('scan.fold.cert', p), row.cert.name, { name: 'name' })));
+      if (row.cert.key) parts.push(row.cert.key);
+    } else parts.push(t('scan.fold.noCert'));
+    if (row.domains.shown.length) {
+      const list = row.domains.shown.join(', ');
+      parts.push(h('span', null, ...withSubject((p) => t('scan.fold.domains', p), list, { name: 'list' }),
+        row.domains.more ? ` ${t('scan.fold.more', { count: row.domains.more })}` : null));
+    } else parts.push(t(row.domains.fromCert ? 'scan.fold.domainsCert' : 'scan.fold.noDomains'));
+    parts.push(t('scan.fold.servers', { count: row.servers }));
+    parts.push(row.options.length ? row.options.map(optionChangeText).join(' · ') : t('scan.fold.defaults'));
+    clear(foldText);
+    parts.forEach((part, i) => {
+      if (i) append(foldText, h('span', { class: 'scan-dot', attrs: { 'aria-hidden': 'true' } }, '·'));
+      append(foldText, typeof part === 'string' ? h('span', null, part) : part);
+    });
   }
 
   /**
-   * Narrow screens (the bar is position: sticky there): mark the run bar while it floats over the
-   * form (data-stuck → its shadow), and publish its height as --scan-runbar-h on the root, which
-   * keeps focus scrolling clear of it (scroll-padding-bottom in scan.css). Removed on unmount.
+   * The setup and Run follow the state: folded into one row from the moment a scan starts (Edit
+   * unfolds it, and so does a certificate, domain or zone brought in), and "Run again" while a
+   * scan is on screen and the setup still asks for it (DESIGN §5.1, region 3).
    */
-  function watchRunbar() {
-    const form = runbar.parentElement;
-    const doc = globalThis.document;
-    const root = doc && doc.documentElement;
-    if (!form || !root || typeof globalThis.getComputedStyle !== 'function') return;
-    let stopped = false;
-    const measure = frameThrottle(() => {
-      if (stopped || !runbar.isConnected) return;
-      const r = form.getBoundingClientRect();
-      const stuck = barStuck({
-        sticky: globalThis.getComputedStyle(runbar).position === 'sticky',
-        top: r.top,
-        bottom: r.bottom,
-        viewportHeight: globalThis.innerHeight
-      });
-      if (runbar.dataset.stuck !== String(stuck)) runbar.dataset.stuck = String(stuck);
-      root.style.setProperty('--scan-runbar-h', `${Math.ceil(runbar.getBoundingClientRect().height)}px`);
-    });
-    globalThis.addEventListener('scroll', measure, { passive: true });
-    globalThis.addEventListener('resize', measure);
-    cleanups.push(() => {
-      stopped = true;
-      globalThis.removeEventListener('scroll', measure);
-      globalThis.removeEventListener('resize', measure);
-      root.style.removeProperty('--scan-runbar-h');
-    });
-    // The form grows and shrinks without a scroll (Options opened, a certificate loaded, an error).
-    if (typeof globalThis.ResizeObserver === 'function') {
-      const ro = new globalThis.ResizeObserver(measure);
-      ro.observe(form);
-      ro.observe(runbar);
-      cleanups.push(() => ro.disconnect());
-    }
-    measure();
-  }
-
-  function setRunning(on) {
-    // The button just used hides itself: its keyboard focus moves to the one shown in its
-    // place (Start → Cancel, and back when the run ends) instead of falling to <body>.
-    const doc = globalThis.document;
-    const hadFocus = !!doc && (doc.activeElement === runBtn || doc.activeElement === cancelBtn);
-    runBtn.hidden = on;
-    cancelBtn.hidden = !on;
-    runBtn.querySelector('.btn-label').textContent = session.run && !on ? t('scan.runAgain') : t('scan.run');
-    if (hadFocus) (on ? cancelBtn : runBtn).focus({ preventScroll: true });
-    if (on) ctx.setBusy(t('scan.busy'));
-    else ctx.setBusy(ctBusy);
+  function syncSetup() {
+    if (!setupReady) return;
+    const run = session.run;
+    const folded = !!run && !session.setupEditing;
+    form.classList.toggle('is-folded', folded);
+    foldRow.hidden = !run;
+    foldEdit.setAttribute('aria-expanded', String(!!run && !folded));
+    if (run) renderFold();
+    runBar.setRerun(!!run && run.status !== 'running' && run.setupSig === currentSignature());
+    runBar.refresh();
   }
 
   /* --- layout ------------------------------------------------------------------ */
@@ -2372,26 +2506,21 @@ export function mount(container, ctx) {
     h('div', { class: 'scan-step-body' }, body));
   };
 
-  const setup = h('div', { class: 'scan-setup' },
+  const setup = h('div', { class: 'scan-setup', id: setupId },
     step('cert', 'certificate', certBody, 'scan-step-cert'),
     step('domains', 'globe', h('div', { class: 'stack-sm' }, domainsField.el, domainsHint, zoneHost), 'scan-step-domains'),
     step('inventory', 'server', invBody, 'scan-step-inventory'),
     h('section', { class: 'scan-step scan-step-options', dataset: { step: 'options' }, attrs: { 'aria-labelledby': 'scan-step-options' } }, optionsBox));
 
-  // Start / Cancel with the query estimate: in the flow on wide screens; on narrow ones it sticks
-  // to the bottom of the viewport while the form scrolls (scan.css), so Start is always in reach.
-  const runbar = h('div', { class: 'scan-runbar card', dataset: { role: 'scan-runbar', stuck: 'false' } },
-    h('div', { class: 'scan-runbar-buttons' }, runBtn, cancelBtn),
-    h('div', { class: 'scan-runbar-info' }, planLine, runSummary, runError));
-  cancelBtn.hidden = true;
-
+  // The link prompt, the folded row, the requirement line, the steps and the run bar — its last
+  // child, so the sticky bar rests at the form's end (scan.css).
+  const form = h('div', { class: 'scan-form' }, linkPrompt, foldRow, reqLine, setup, runBar.el);
   // The run's results are no part of the form: Ctrl/Cmd+Enter in a filter or a Verify option there
   // starts no new scan (the shell's shortcut; a data-shortcut-scope without a submit).
   const resultsHost = h('div', { class: 'scan-results-host', dataset: { shortcutScope: 'results' } });
-  container.append(h('div', { class: 'scan-view stack-lg' },
-    h('div', { class: 'scan-form' }, linkPrompt, reqLine, setup, runbar),
-    resultsHost));
-  watchRunbar();
+  container.append(h('div', { class: 'scan-view stack-lg' }, form, resultsHost));
+  setupReady = true;
+  runBar.refresh();
 
   renderCertStep();
   autoFillDomains();
@@ -2421,8 +2550,12 @@ export function mount(container, ctx) {
       const next = normalizeCertLoad(value.value);
       if (next !== certLoad) {
         certLoad = next;
-        // Another certificate chosen elsewhere (the Certificate view) replaces step 1's files.
-        if (!inRenewal(next)) session.certLoads = next ? [next] : [];
+        // Another certificate chosen elsewhere (the Certificate view) replaces step 1's files, and
+        // the setup shows it over a kept scan.
+        if (!inRenewal(next)) {
+          session.certLoads = next ? [next] : [];
+          if (session.run) session.setupEditing = true;
+        }
         autoFillDomains();
         renderCertStep();
         renderDomainsHint();
@@ -2460,6 +2593,11 @@ export function mount(container, ctx) {
       invalidField = domainsField;
     }
     if (invalidField) {
+      // A folded setup unfolds first: the field to fix has to be on screen to take the focus.
+      if (form.classList.contains('is-folded')) {
+        session.setupEditing = true;
+        syncSetup();
+      }
       if (invalidField === extraField) optionsBox.open = true;
       invalidField.input.focus();
       return null;
@@ -2533,9 +2671,13 @@ export function mount(container, ctx) {
       cancelAllDane(session.run);
     }
     run.domainsInput = v.domains.slice();
+    // What this scan scanned: Start reads "Run again" while the setup still says the same.
+    run.setupSig = currentSignature();
     session.carried = null;
     session.scanTab = null;
     session.run = run;
+    // The setup folds into one row (DESIGN §5.5): Edit unfolds it.
+    session.setupEditing = false;
     hideLinkPrompt();
     ctx.setParams(v.domains.length ? { domain: v.domains.join(',') } : {});
     ctx.runStarted(shownDomains[0] || null);
@@ -2563,7 +2705,12 @@ export function mount(container, ctx) {
       dns,
       ...zoneCfg
     }, state, ctx.checkOutdated);
-    resultsHost.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
+    // The setup folded into one row: that row, Cancel and the run's header usually fit the screen
+    // now. Only when the header is not in view (the page was scrolled down, a short window) does
+    // the page move, to the folded row — Cancel and the progress in view together.
+    const top = resultsHost.querySelector('.result-head');
+    const r = top ? top.getBoundingClientRect() : null;
+    if (!r || r.top < 0 || r.bottom > globalThis.innerHeight) form.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
   }
 
   function cancel() {
@@ -2615,6 +2762,8 @@ export function mount(container, ctx) {
           renderRunSummary();
         }
       } else if (!isFillOnly(p) || fillReplaces(domainsField.value, lastRunDomains(), stepDomains, session.carried)) {
+        // Other domains than the kept scan's: the setup unfolds on them.
+        if (session.run && !sameList(list, lastRunDomains() || [])) session.setupEditing = true;
         session.domainsText = list.join('\n');
         session.carried = isFillOnly(p) ? session.domainsText : null;
         session.domainsFromCert = false;
@@ -2717,9 +2866,14 @@ function buildRunUI(run, ctx, { onFinish }) {
     for (const fn of cdnShellRenders) fn();
   }
 
-  /* --- progress panel --------------------------------------------------------- */
-  const title = h('h2', { class: 'scan-run-title' });
-  const meta = h('div', { class: 'scan-run-meta text-sm' });
+  /* --- the run's result header (ui/template.js ResultHeader, region 4) --------------- */
+  // It stays above the tabs: the title, the time, the key metric (servers to update), the status
+  // summary, the actions and — while the scan runs — the progress bar, whose label names the current
+  // stage, are in view whichever tab is open. The stage pills and the per-source chips are in the
+  // Sources tab (DESIGN §5.6: no progress card left after the run).
+  const head = ResultHeader({ className: 'scan-run', dataset: { status: run.status } });
+  head.title.classList.add('scan-run-title');
+  const meta = h('span', { class: 'scan-run-meta' });
   const stageList = h('ol', { class: 'scan-stages', attrs: { 'aria-label': t('progress.label') } });
   const stageEls = {};
   for (const s of SCAN_STAGES) {
@@ -2731,12 +2885,22 @@ function buildRunUI(run, ctx, { onFinish }) {
     stageList.append(el);
   }
   const progress = ProgressBar({ label: t('scan.progress.starting'), indeterminate: true });
-  const chips = h('div', { class: 'scan-chips', attrs: { 'aria-label': t('scan.tab.sources') } });
+  progress.el.classList.add('scan-progress');
+  const chips = h('div', { class: 'scan-chips', attrs: { role: 'group', 'aria-label': t('scan.tab.sources') } });
   const chipEls = new Map();
   // "crt.sh still fetching (up to 12 s)" while the DNS sweep already runs (honest stage reporting).
-  const sourceWaitNote = h('div', { class: 'scan-src-wait', attrs: { 'aria-live': 'polite' }, hidden: true });
+  // It lives in the Sources tab, whose panel is hidden while another tab is open (and a hidden live
+  // region says nothing): sourceLive, in the run's header, speaks each new line once.
+  const sourceWaitNote = h('div', { class: 'scan-src-wait', hidden: true });
+  const sourceLive = h('div', { class: 'sr-only scan-src-live', attrs: { 'aria-live': 'polite' } });
+  const spoken = new Set();
+  const speakSource = (text) => {
+    if (!text || spoken.has(text)) return;
+    spoken.add(text);
+    sourceLive.append(h('p', null, text));
+  };
   const runNotice = h('div', { class: 'scan-run-notice' });
-  // The ProgressBar has its own throttled live region; the panel itself is not live (too chatty).
+  // The ProgressBar has its own throttled live region; the header itself is not live (too chatty).
   // How this run used an imported zone file (exact: its names only; discover: added as seeds).
   const zoneBanner = run.config.zoneMode === 'exact' || run.config.zoneMode === 'discover'
     ? Alert({ variant: 'info', compact: true, icon: 'file-text', message: t(`sub.zone.${run.config.zoneMode}`) })
@@ -2748,9 +2912,15 @@ function buildRunUI(run, ctx, { onFinish }) {
   // The market packs the scan's evidence added for a domain whose TLD has no pack of its own (the
   // plan line said it might): which and why, as soon as the wordlist stage starts, kept with the run.
   const localeBanner = LocaleEvidenceBanner(run);
-  const panel = h('section', { class: 'scan-run card', dataset: { status: run.status }, attrs: { 'aria-label': t('progress.label') } },
-    h('div', { class: 'scan-run-head' }, h('div', { class: 'scan-run-titles' }, title, meta), NotifyButton(() => run.job || null)),
-    zoneBanner, localeBanner.el, stageList, progress, sourceWaitNote, chips, runNotice);
+  head.set('meta', meta);
+  head.set('progress', progress.el);
+  head.set('notes', [zoneBanner, localeBanner.el, runNotice]);
+  // Outside the notes, which hide while none shows (and a hidden live region says nothing).
+  head.el.append(sourceLive);
+  // The counts (lib/certtools.js scanStatus): the servers to update open the Servers tab, the
+  // other three filter the Hosts table; the totals are said once, when the scan ends.
+  const status = StatusSummary({ items: [], className: 'scan-status' });
+  head.set('status', status.el);
 
   const SOURCE_GRACE_SECONDS = 12;
   function renderSourceWait() {
@@ -2761,12 +2931,39 @@ function buildRunUI(run, ctx, { onFinish }) {
     sourceWaitNote.hidden = !waiting.length;
     if (!waiting.length) return;
     const list = waiting.map((sid) => SOURCE_NAMES[sid] || sid).join(', ');
-    sourceWaitNote.append(Icon('clock', { size: 14 }), h('span', null, t('sub.srcWait', { list, seconds: SOURCE_GRACE_SECONDS, count: waiting.length })));
+    const text = t('sub.srcWait', { list, seconds: SOURCE_GRACE_SECONDS, count: waiting.length });
+    sourceWaitNote.append(Icon('clock', { size: 14 }), h('span', null, text));
+    speakSource(text);
   }
 
   function renderTitle() {
-    title.textContent = run.status === 'running' ? t('scan.run.title', { domains: domainsLabel }) : t('scan.run.titleDone', { domains: domainsLabel });
-    panel.dataset.status = run.status;
+    const running = run.status === 'running';
+    head.set('title', ResultTitle({
+      running,
+      text: withSubject((p) => t(running ? 'scan.run.title' : 'scan.run.titleDone', p), domainsLabel, { name: 'domains' })
+    }));
+    head.setState(running ? 'running' : 'done');
+    head.el.dataset.status = run.status;
+    el.dataset.status = run.status; // the stage pills in the Sources tab stop pulsing (scan.css)
+    // No progress card after the run (DESIGN §5.6): the meta line says how it ended.
+    if (!running) head.set('progress', null);
+  }
+
+  /**
+   * The key metric (lib/certtools.js scanKeyMetric): while the scan runs, "Notify me" in its place;
+   * once it has a result, the servers of the list to update (or, without a certificate, those the
+   * names point to) — nothing without a server list.
+   */
+  function renderKey() {
+    if (run.status === 'running') {
+      head.set('key', NotifyButton(() => run.job || null));
+      return;
+    }
+    const r = shown();
+    const metric = r ? scanKeyMetric({ stats: r.stats, cert: !!cert, inventory: run.config.inventoryServers > 0 }) : null;
+    head.set('key', metric ? h('span', { class: 'result-score scan-key', dataset: { metric: metric.kind, severity: metric.severity || 'none' } },
+      h('span', { class: 'result-score-value num' }, formatNumber(metric.value)),
+      h('span', { class: 'result-score-max scan-key-label' }, t(`scan.key.${metric.kind}`, { count: metric.value }))) : null);
   }
 
   function renderMeta() {
@@ -2866,12 +3063,14 @@ function buildRunUI(run, ctx, { onFinish }) {
     }
   }
 
-  /* --- results ---------------------------------------------------------------- */
-  const statsGrid = h('div', { class: 'stat-grid scan-stats' });
-  const summaryHost = h('div', { class: 'stack-sm scan-summary' });
-  const exportBar = h('div', { class: 'scan-exports', attrs: { role: 'group', 'aria-label': t('scan.export.label') } });
+  /* --- results: the Hosts tab's figures and findings (regions 6, 7) -------------------- */
+  // Read-only figures: the result filters through its status summary and the Show select.
+  const stats = MetricStrip({ className: 'scan-stats', label: t('scan.metrics') });
+  // What the scan found, worst first (lib/certtools.js scanFindings): each row keeps its old
+  // data-summary hook.
+  const findings = FindingList({ label: t('scan.findings'), className: 'scan-summary' });
 
-  // "Copy summary": the stat cards, the passive sources that failed, the servers that need the
+  // "Copy summary": the figures, the passive sources that failed, the servers that need the
   // certificate (by name, as the Servers tab lists them — the tooltip says so) and the Verify
   // headline (lib/summary.js). Only a finished scan has a result (a cancelled one keeps none).
   const VERIFY_MAIN = new Set(['vfy.head.all', 'vfy.head.some', 'vfy.head.none', 'vfy.head.partial', 'vfy.head.noAnswer']);
@@ -2906,6 +3105,7 @@ function buildRunUI(run, ctx, { onFinish }) {
   };
   const summary = SummaryButton({
     kind: 'scan',
+    plainLabel: t('result.plainTitle'),
     facts: summaryFacts,
     disabled: true,
     inventory: 'names',
@@ -2913,50 +3113,74 @@ function buildRunUI(run, ctx, { onFinish }) {
   });
   const filters = { kind: 'all', covered: false, resolving: false, hideWildcard: false, matched: false };
 
-  const stat = {
-    hosts: StatCard({ label: t('scan.stat.hosts'), icon: 'globe', variant: 'accent', onClick: () => applyKind('all'), pressed: true }),
-    cloudflare: StatCard({ label: t('scan.stat.cloudflare'), icon: 'cloud', variant: 'cloudflare', onClick: () => applyKind('cloudflare'), pressed: false }),
-    cdn: StatCard({ label: t('scan.stat.cdn'), icon: 'zap', variant: 'cdn', onClick: () => applyKind('cdnplatform'), pressed: false }),
-    direct: StatCard({ label: t('scan.stat.direct'), icon: 'server', variant: 'direct', onClick: () => applyKind('direct'), pressed: false }),
-    covered: cert ? StatCard({ label: t('scan.stat.covered'), icon: 'shield', variant: 'ok', onClick: () => applyCovered(), pressed: false }) : null,
-    servers: StatCard({ label: cert ? t('scan.stat.servers') : t('scan.stat.serversNoCert'), icon: 'server', variant: 'warn', onClick: () => tabs.select('servers', { focus: true }) }),
-    unresolved: StatCard({ label: t('scan.stat.unresolved'), icon: 'x-circle', variant: 'nxdomain', onClick: () => applyKind('unresolved'), pressed: false })
-  };
-  Object.entries(stat).forEach(([k, s]) => {
-    if (!s) return;
-    s.el.dataset.stat = k;
-    if (k !== 'servers') s.el.title = t('scan.stat.filterHint');
-    statsGrid.append(s.el);
-  });
-
-  const statKinds = { hosts: 'all', cloudflare: 'cloudflare', cdn: 'cdnplatform', direct: 'direct', unresolved: 'unresolved' };
-  function syncStatPressed() {
-    for (const [k, kind] of Object.entries(statKinds)) stat[k].set({ pressed: filters.kind === kind && !(k === 'hosts' && filters.covered) });
-    if (stat.covered) stat.covered.set({ pressed: filters.covered });
+  /** The status item the Hosts filters stand for now: a press sets exactly one of them. */
+  function pressedStatus() {
+    if (filters.covered) return filters.kind === 'all' ? 'covered' : null;
+    return { unresolved: 'unresolved', hidden: 'behind' }[filters.kind] || null;
   }
 
-  const renderStats = timeThrottle(() => {
-    // Live view includes streamed partials (task: stat cards update during the wordlist stage).
+  /** A status press: the servers open their tab; a host count filters the Hosts table (a second press shows every host). */
+  function pressStatus(item) {
+    if (item.tab !== 'hosts') {
+      tabs.select(item.tab, { focus: true });
+      return;
+    }
+    const on = toggleStatus(pressedStatus(), item.key) === item.key;
+    filters.kind = on && item.filter !== 'covered' ? item.filter : 'all';
+    filters.covered = on && item.filter === 'covered';
+    kindSelect.value = filters.kind;
+    fCovered.checked = filters.covered;
+    applyFilters();
+    tabs.select('hosts');
+  }
+
+  /** The result header's counts (lib/certtools.js scanStatus), live while hosts stream in. */
+  function renderStatus(c) {
+    const r = shown();
+    const items = scanStatus({ counts: c, stats: r ? r.stats : null, cert: !!cert, inventory: run.config.inventoryServers > 0 });
+    status.update(items.map((item) => ({
+      ...item,
+      text: t(item.key === 'servers' && !cert ? 'scan.status.matched' : `scan.status.${item.key}`, { count: item.count }),
+      title: item.key === 'covered' ? t('scan.stat.covered') : null,
+      filter: item.tab === 'hosts',
+      onPress: () => pressStatus(item)
+    })), { pressed: pressedStatus() });
+  }
+
+  function renderStatsNow() {
+    // Live view includes streamed partials (the figures grow during the wordlist stage).
     const live = liveHosts(run);
     const c = run.result ? { ...countHosts(run.result.hosts), ...pickStats(run.result.stats) } : countHosts(live);
-    stat.hosts.set({ value: c.total, hint: t('scan.stat.hostsHint', { count: formatNumber(c.resolved) }) });
-    stat.cloudflare.set({ value: c.cloudflare, hint: t('scan.stat.cloudflareHint') });
-    stat.cdn.set({ value: c.cdn + c.platform, hint: providerHint(run.result ? run.result.hosts : live) || t('scan.stat.cdnHint') });
-    stat.direct.set({ value: c.direct + c.private, hint: state.inventory.servers.length || run.config.inventoryServers ? t('scan.stat.directHint', { count: c.onServers }) : null });
-    if (stat.covered) stat.covered.set({ value: c.covered, hint: t('scan.stat.coveredHint', { total: formatNumber(c.total) }) });
+    const waiting = run.status === 'running' && !live.length;
+    const v = (n) => (waiting ? '…' : n);
+    const inv = run.config.inventoryServers > 0;
+    let servers = { value: '…', hint: run.status === 'running' ? t('scan.pending') : null, severity: null };
     if (run.result) {
       const st = shown().stats;
-      const inv = run.config.inventoryServers > 0;
-      stat.servers.set({
-        value: inv ? (cert ? st.needsCert : st.matchedServers) : '—',
+      const n = cert ? st.needsCert : st.matchedServers;
+      servers = {
+        value: inv ? n : '—',
         hint: inv ? t('scan.stat.serversHint', { count: st.hintedServers }) : t('scan.stat.serversNoInv'),
-        variant: inv && (cert ? st.needsCert : st.matchedServers) ? 'warn' : 'default'
-      });
-    } else {
-      stat.servers.set({ value: '…', hint: run.status === 'running' ? t('scan.pending') : null, variant: 'default' });
+        severity: inv && cert && n ? 'warn' : null
+      };
     }
-    stat.unresolved.set({ value: c.unresolved + c.nxdomain, hint: t('scan.stat.unresolvedHint', { count: c.dangling }), variant: c.dangling ? 'dangling' : 'nxdomain' });
-  }, 150);
+    // While the scan goes on no zero folds into the "None:" sentence: every count may still grow.
+    stats.update([
+      { id: 'hosts', label: t('scan.stat.hosts'), value: v(c.total), hint: t('scan.stat.hostsHint', { count: formatNumber(c.resolved) }) },
+      { id: 'cloudflare', label: t('scan.stat.cloudflare'), value: v(c.cloudflare), title: t('scan.stat.cloudflareHint') },
+      { id: 'cdn', label: t('scan.stat.cdn'), value: v(c.cdn + c.platform), hint: providerHint(run.result ? run.result.hosts : live), title: t('scan.stat.cdnHint') },
+      {
+        id: 'direct', label: t('scan.stat.direct'), value: v(c.direct + c.private),
+        hint: state.inventory.servers.length || inv ? t('scan.stat.directHint', { count: c.onServers }) : null
+      },
+      cert ? { id: 'covered', label: t('scan.stat.covered'), value: v(c.covered), hint: t('scan.stat.coveredHint', { total: formatNumber(c.total) }) } : null,
+      { id: 'servers', label: cert ? t('scan.stat.servers') : t('scan.stat.serversNoCert'), ...servers },
+      { id: 'unresolved', label: t('scan.stat.unresolved'), value: v(c.unresolved + c.nxdomain), hint: t('scan.stat.unresolvedHint', { count: c.dangling }) }
+    ].filter(Boolean), { foldable: run.status === 'running' ? [] : ['cloudflare', 'cdn', 'direct', 'unresolved'] });
+    renderStatus(c);
+  }
+  /** Streaming: at most every 150 ms (every host would otherwise walk the whole list). */
+  const renderStats = timeThrottle(renderStatsNow, 150);
 
   /* Hosts tab */
   const kindSelect = select({
@@ -2965,7 +3189,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     className: 'scan-filter-kind',
     value: 'all',
     options: KIND_FILTERS.map((k) => ({ value: k, label: t(`scan.filter.${k}`) })),
-    onChange: (v) => applyKind(v, false)
+    onChange: (v) => applyKind(v)
   });
   kindSelect.input.dataset.role = 'scan-filter-kind';
   const mkFilter = (key, labelKey, disabled = false) => {
@@ -3095,9 +3319,9 @@ function buildRunUI(run, ctx, { onFinish }) {
 
   function applyFilters() {
     hostsTable.setFilter(hostFilter(filters));
-    syncStatPressed();
+    status.setPressed(pressedStatus());
   }
-  function applyKind(kind, selectTab = true) {
+  function applyKind(kind) {
     filters.kind = kind;
     kindSelect.value = kind;
     if (kind === 'all') {
@@ -3105,16 +3329,9 @@ function buildRunUI(run, ctx, { onFinish }) {
       fCovered.checked = false;
     }
     applyFilters();
-    if (selectTab) tabs.select('hosts');
-  }
-  function applyCovered() {
-    filters.covered = !filters.covered;
-    fCovered.checked = filters.covered;
-    applyFilters();
-    tabs.select('hosts');
   }
 
-  const hostsPanel = h('div', { class: 'stack scan-tab-hosts' }, hostsTable.el);
+  const hostsPanel = h('div', { class: 'stack scan-tab-hosts' }, stats.el, findings.el, hostsTable.el);
   const serversPanel = h('div', { class: 'stack scan-tab-servers' });
   // Renewal plan (several certificates): the server × set matrix and the names none covers.
   const planPanel = sets ? h('div', { class: 'stack scan-tab-plan' }) : null;
@@ -3132,20 +3349,21 @@ function buildRunUI(run, ctx, { onFinish }) {
   let rolloutUi = null;
   let rolloutShown = false;
 
+  // Tabs are text and a count (DESIGN §7: no icons).
   const tabs = Tabs([
-    { id: 'hosts', label: t('scan.tab.hosts'), icon: 'list', content: hostsPanel },
-    { id: 'servers', label: t('scan.tab.servers'), icon: 'server', content: serversPanel },
-    sets ? { id: 'plan', label: t('rw.tab'), icon: 'layers', content: planPanel } : null,
-    { id: 'cdn', label: t('scan.tab.cdn'), icon: 'cloud', content: cdnPanel },
-    cert ? { id: 'verify', label: t('vfy.tab'), icon: 'check-circle', content: verifyPanel } : null,
-    cert ? { id: 'rollout', label: t('scan.tab.rollout'), icon: 'upload', content: () => {
+    { id: 'hosts', label: t('scan.tab.hosts'), content: hostsPanel },
+    { id: 'servers', label: t('scan.tab.servers'), content: serversPanel },
+    sets ? { id: 'plan', label: t('rw.tab'), content: planPanel } : null,
+    { id: 'cdn', label: t('scan.tab.cdn'), content: cdnPanel },
+    cert ? { id: 'verify', label: t('vfy.tab'), content: verifyPanel } : null,
+    cert ? { id: 'rollout', label: t('scan.tab.rollout'), content: () => {
       rolloutShown = true;
       Promise.resolve().then(renderRolloutTab);
       return rolloutPanel;
     } } : null,
-    cert ? { id: 'dane', label: t('dane.tabShort'), icon: 'key', content: danePanel } : null,
-    { id: 'sources', label: t('scan.tab.sources'), icon: 'database', content: sourcesPanel },
-    { id: 'ct', label: t('scan.tab.ct'), icon: 'certificate', content: ctPanel }
+    cert ? { id: 'dane', label: t('dane.tabShort'), content: danePanel } : null,
+    { id: 'sources', label: t('scan.tab.sources'), content: sourcesPanel },
+    { id: 'ct', label: t('scan.tab.ct'), content: ctPanel }
   ].filter(Boolean), {
     label: t('scan.results'), className: 'scan-tabs', selected: session.scanTab,
     onChange: (tabId) => {
@@ -3217,24 +3435,27 @@ function buildRunUI(run, ctx, { onFinish }) {
       });
     if (lines.length) healthNote.append(h('div', { class: 'scan-src-health-title' }, t('scan.src.healthTitle')), h('ul', { class: 'scan-src-health-list' }, lines));
   }
-  sourcesPanel.append(healthNote,
-    run.config.sources.length ? sourcesTable.el : EmptyState({ compact: true, icon: 'database', message: t('scan.src.none') }),
-    sourcesNote, wildcardNote);
+  // The stages and the per-source chips (the progress bar in the header names the current stage),
+  // then what each source returned.
+  const stagesId = uid('scan-stages');
+  const chipsId = uid('scan-chips');
+  sourcesPanel.append(
+    h('section', { class: 'sub-src-section scan-src-section card', dataset: { part: 'stages' }, attrs: { 'aria-labelledby': stagesId } },
+      h('h3', { class: 'sub-src-heading', id: stagesId }, t('scan.stages.title')),
+      stageList),
+    h('section', { class: 'sub-src-section scan-src-section card', dataset: { part: 'sources' }, attrs: { 'aria-labelledby': chipsId } },
+      h('h3', { class: 'sub-src-heading', id: chipsId }, t('scan.tab.sources')),
+      sourceWaitNote, chips, healthNote,
+      run.config.sources.length ? sourcesTable.el : EmptyState({ compact: true, icon: 'database', message: t('scan.src.none') }),
+      sourcesNote),
+    wildcardNote);
 
   const pendingState = () => EmptyState({ compact: true, icon: 'clock', message: t('scan.pending') });
   const unavailableState = () => EmptyState({ compact: true, icon: 'minus-circle', message: t('scan.notAvailable') });
   for (const p of [serversPanel, planPanel, cdnPanel, ctPanel, verifyPanel, rolloutPanel]) if (p) p.append(pendingState());
 
-  const results = h('section', { class: 'scan-results stack', attrs: { 'aria-labelledby': `scan-results-${run.id}` } },
-    h('div', { class: 'scan-results-head' },
-      h('h2', { class: 'scan-results-title', id: `scan-results-${run.id}` }, t('scan.results')),
-      exportBar,
-      summary.el),
-    statsGrid,
-    summaryHost,
-    tabs);
-
-  const el = h('div', { class: 'stack-lg scan-run-ui', dataset: { run: run.id } }, panel, results);
+  const results = h('div', { class: 'scan-results' }, tabs.el);
+  const el = h('div', { class: 'stack scan-run-ui', dataset: { run: run.id } }, head.el, results);
 
   /* --- exports ------------------------------------------------------------------ */
   const subject = run.config.domains[0] || '';
@@ -3250,26 +3471,27 @@ function buildRunUI(run, ctx, { onFinish }) {
     if (format === 'json') saveFile('hosts', 'json', `${toJson(list)}\n`, 'application/json;charset=utf-8');
     else saveFile('hosts', 'csv', toCsv(scanHostRows({ hosts: list }), HOST_COLUMNS), 'text/csv;charset=utf-8');
   }
-  const exportButtons = {
-    hosts: Button({ label: t('scan.export.hosts'), icon: 'download', size: 'sm', dataset: { export: 'hosts-csv' }, onClick: () => exportHosts('csv') }),
-    servers: Button({
-      label: t('scan.export.servers'), icon: 'download', size: 'sm', dataset: { export: 'servers-csv' },
-      onClick: () => saveFile('servers', 'csv', toCsv(scanServerRows(shown()), serverCsvColumns(shown().servers)), 'text/csv;charset=utf-8')
-    }),
-    json: Button({
-      label: t('scan.export.json'), icon: 'download', size: 'sm', dataset: { export: 'json' },
-      onClick: () => saveFile('scan', 'json', `${toJson(fullJson())}\n`, 'application/json;charset=utf-8')
-    }),
-    names: Button({
-      label: t('scan.export.names'), icon: 'file-text', size: 'sm', dataset: { export: 'names' },
-      onClick: () => downloadNames()
-    }),
-    targets: Button({
-      label: t('scan.export.targets'), icon: 'file-text', size: 'sm', dataset: { export: 'targets' },
-      onClick: () => downloadTargets()
-    })
-  };
-  exportBar.append(...Object.values(exportButtons));
+  /**
+   * The Export ▾ menu's files (DESIGN §5.6): the hosts and their names as they stream in; the
+   * servers, the full JSON and targets.txt once the scan has a result (a cancelled one has none).
+   */
+  const exportItems = (done) => [
+    { label: t('scan.export.hosts'), icon: 'download', dataset: { export: 'hosts-csv' }, onSelect: () => exportHosts('csv') },
+    done ? {
+      label: t('scan.export.servers'), icon: 'download', dataset: { export: 'servers-csv' },
+      onSelect: () => saveFile('servers', 'csv', toCsv(scanServerRows(shown()), serverCsvColumns(shown().servers)), 'text/csv;charset=utf-8')
+    } : null,
+    done ? {
+      label: t('scan.export.json'), icon: 'download', dataset: { export: 'json' },
+      onSelect: () => saveFile('scan', 'json', `${toJson(fullJson())}\n`, 'application/json;charset=utf-8')
+    } : null,
+    { label: t('scan.export.names'), icon: 'file-text', dataset: { export: 'names' }, onSelect: () => downloadNames() },
+    done ? { label: t('scan.export.targets'), icon: 'file-text', dataset: { export: 'targets' }, onSelect: () => downloadTargets() } : null
+  ].filter(Boolean);
+  // The standard actions (DESIGN §5.3): Copy summary with ¶, Export ▾, Copy link (a shared link asks
+  // for one click before it scans). Drawn again when the result arrives, which brings its files.
+  let actions = null;
+  let actionsDone = null;
 
   function fullJson() {
     return {
@@ -3318,81 +3540,80 @@ function buildRunUI(run, ctx, { onFinish }) {
 
   function syncExports() {
     const done = !!run.result;
-    const anyHosts = liveHosts(run).length > 0;
-    exportButtons.hosts.disabled = !anyHosts;
-    exportButtons.names.disabled = !anyHosts;
-    exportButtons.servers.disabled = !done;
-    exportButtons.json.disabled = !done;
-    exportButtons.targets.disabled = !done;
+    if (actionsDone !== done) {
+      if (actions) actions.dispose();
+      actions = ResultActions({
+        summary,
+        exports: exportItems(done),
+        link: () => ctx.shareUrl(permalinkParams('scan', { domain: run.config.domains.join(','), run: '1' }))
+      });
+      actionsDone = done;
+      head.set('actions', actions.el);
+    }
+    // While the scan runs, the files wait for its first host; a finished scan exports what it has.
+    actions.setExportsDisabled(!done && liveHosts(run).length === 0);
     summary.setDisabled(!done);
   }
 
-  /* --- finish: servers / CDN / CT tabs ---------------------------------------------- */
+  /** Words for a finding's numbers: the count is formatted by t(), the rest here ("1,204 through DNS"). */
+  const numberParams = (params) => Object.fromEntries(Object.entries(params || {})
+    .map(([k, v]) => [k, k !== 'count' && typeof v === 'number' ? formatNumber(v) : v]));
+
+  /* --- finish: the findings, servers / CDN / CT tabs ------------------------------------ */
   function renderSummary() {
-    clear(summaryHost);
     const r = shown();
-    if (!r) return;
+    if (!r) {
+      findings.update([]);
+      return;
+    }
     const st = r.stats;
     const inv = run.config.inventoryServers > 0;
-    const add = (variant, message, iconName = null, key = '') => {
-      const a = Alert({ variant, compact: true, message, icon: iconName || undefined });
-      a.dataset.summary = key;
-      summaryHost.append(a);
-    };
-    if (inv) {
-      if (cert) {
-        // Several certificates: the renewal line below says how many servers need one of the sets.
-        if (st.needsCert) {
-          if (!plan) add('warn', t('scan.sum.needs', { count: st.needsCert }), 'server', 'needs');
-        } else add('ok', t('scan.sum.needsNone'), 'check-circle', 'needs-none');
-      } else if (st.matchedServers) {
-        add('info', t('scan.sum.matched', { count: st.matchedServers }), 'server', 'matched');
-      }
-      // The inventory and DNS disagree (lib/topology.js): the certificate is planned anyway, and the summary says why.
-      const suspects = r.servers.filter((g) => g.topology && g.topology.suspect).length;
-      if (suspects) add('warn', t('topo.sum.suspect', { count: suspects }), 'alert', 'topology-suspect');
-      const nowhere = r.tlsNowhere || [];
-      if (nowhere.length) {
-        add('warn', t('topo.sum.nowhere', { count: nowhere.length, names: nowhere.slice(0, 3).join(', ') + (nowhere.length > 3 ? '…' : '') }), 'alert', 'topology-nowhere');
-      }
-    } else {
-      add('info', t('scan.sum.noInventory'), 'server', 'no-inventory');
-    }
-    // Several certificates: which set each server needs is on the Renewal plan tab.
-    if (plan) {
-      const openPlan = Button({ label: t('rw.sum.open'), icon: 'layers', size: 'sm', variant: 'ghost', dataset: { action: 'scan-open-plan' }, onClick: () => tabs.select('plan', { focus: true }) });
-      const need = plan.rows.filter((row) => row.needsCert && row.server).length;
-      const a = Alert({
-        variant: inv && need ? 'warn' : 'info', compact: true, icon: 'layers', actions: [openPlan],
-        message: renewalSummaryText({ sets: plan.sets, inventory: inv, need })
-      });
-      a.dataset.summary = 'renewal';
-      summaryHost.append(a);
-      if (plan.uncovered.length) add('info', t('rw.sum.uncovered', { count: plan.uncovered.length }), 'help', 'renewal-uncovered');
-    }
-    // Pairs to check exist for needs-cert servers and for public IPs outside the inventory.
-    if (cert && (st.needsCert || r.unmatchedIps.some((u) => !u.private))) add('info', t(plan ? 'scan.sum.verifyMany' : 'scan.sum.verify'), 'check-circle', 'verify');
-    // In-domain mail servers (mined from MX): a TLSA record there may pin the old certificate.
-    if (cert && r.hosts.some((x) => (x.origins || []).includes('dns-mine:MX'))) add('info', t('scan.sum.dane'), 'mail', 'dane');
-    if (st.hiddenOrigin) add('info', t('scan.sum.hidden', { count: st.hiddenOrigin }), 'cloud', 'hidden');
-    const nets = (r.originNetworks || []).map((n) => n.cidr);
-    if (st.hiddenOrigin && nets.length) {
-      add('info', t('scan.sum.networks', { count: nets.length, list: nets.slice(0, 3).join(', ') + (nets.length > 3 ? '…' : '') }), 'network', 'networks');
-    }
-    const tech = techniqueCounts(r.hosts);
-    // A zone-file run names where its hosts came from too (an exact run finds none by DNS or sources).
-    if (tech.total) {
-      const found = { dns: formatNumber(tech.dns), sources: formatNumber(tech.sources), zone: formatNumber(tech.zone || 0) };
-      add('info', t(tech.zone ? 'scan.sum.discoveryZone' : 'scan.sum.discovery', found), 'search', 'discovery');
-    }
-    if (inv && st.unmatchedIps) add('info', t('scan.sum.unmatched', { count: st.unmatchedIps }), 'help', 'unmatched');
-    if (st.dangling) add('error', t('scan.sum.dangling', { count: st.dangling }), 'unlink', 'dangling');
-    const wild = Object.entries(r.wildcards || {}).filter(([, w]) => w && w.wildcard).map(([d]) => `*.${d}`);
-    if (wild.length) add('info', t('scan.sum.wildcard', { list: wild.join(', ') }), 'layers', 'wildcard');
-    const failedSources = sourceHealthSummary(r.sources || run.sourceResults).filter((x) => !x.ok && x.errorKind !== 'abort').length;
-    if (failedSources) add('warn', t('scan.sum.sourcesFailed', { count: failedSources }), 'alert', 'sources-failed');
-    // A code without a sentence (a newer scanner) still reads as `CODE: detail`, never as a raw key.
-    for (const w of r.warnings || []) add('warn', WARNING_CODES.includes(w.code) ? t(`scan.warn.${w.code}`, { detail: w.detail }) : `${w.code}: ${w.detail}`, 'alert', w.code);
+    // Several certificates: the servers of the list that need one of the sets (the renewal row).
+    const need = plan ? plan.rows.filter((row) => row.needsCert && row.server).length : 0;
+    const list = scanFindings({
+      inventory: inv,
+      cert: !!cert,
+      stats: st,
+      // The inventory and DNS disagree (lib/topology.js): the certificate is planned anyway, and the findings say why.
+      suspects: r.servers.filter((g) => g.topology && g.topology.suspect).length,
+      nowhere: r.tlsNowhere || [],
+      plan: plan ? { need, uncovered: plan.uncovered.length } : null,
+      // Pairs to check exist for needs-cert servers and for public IPs outside the inventory.
+      verify: !!(st.needsCert || r.unmatchedIps.some((u) => !u.private)),
+      // In-domain mail servers (mined from MX): a TLSA record there may pin the old certificate.
+      mx: r.hosts.some((x) => (x.origins || []).includes('dns-mine:MX')),
+      networks: (r.originNetworks || []).map((n) => n.cidr),
+      tech: techniqueCounts(r.hosts),
+      wildcards: Object.entries(r.wildcards || {}).filter(([, w]) => w && w.wildcard).map(([d]) => `*.${d}`),
+      failedSources: sourceHealthSummary(r.sources || run.sourceResults).filter((x) => !x.ok && x.errorKind !== 'abort').length,
+      warnings: r.warnings || [],
+      knownWarnings: WARNING_CODES
+    });
+    findings.update(list.map((f) => ({
+      key: f.key,
+      severity: f.severity,
+      icon: f.icon,
+      dataset: { summary: f.key },
+      // Several certificates: which set each server needs is on the Renewal plan tab.
+      text: f.key === 'renewal' ? renewalSummaryText({ sets: plan.sets, inventory: inv, need })
+        : f.text ? t(f.text.key, numberParams(f.text.params)) : f.raw,
+      action: f.key === 'renewal' ? Button({
+        label: t('rw.sum.open'), icon: 'layers', size: 'sm', variant: 'ghost', dataset: { action: 'scan-open-plan' },
+        onClick: () => tabs.select('plan', { focus: true })
+      }) : null
+    })));
+  }
+
+  // The next steps of a finished scan with a certificate (DESIGN §5.6): install it and check it
+  // from the internet, then track the rollout.
+  function renderNext() {
+    head.set('next', run.status !== 'done' || !cert ? null : NextSteps({
+      className: 'scan-next',
+      steps: [
+        { label: t('scan.next.verify'), icon: 'check-circle', dataset: { action: 'scan-next-verify' }, onClick: () => tabs.select('verify', { focus: true }) },
+        { label: t('scan.next.rollout'), icon: 'upload', dataset: { action: 'scan-next-rollout' }, onClick: () => tabs.select('rollout', { focus: true }) }
+      ]
+    }));
   }
 
   function renderServersTab() {
@@ -4297,34 +4518,29 @@ function buildRunUI(run, ctx, { onFinish }) {
     renderSourceWait();
     localeBanner.render();
     clear(runNotice);
+    hostsTable.setLoading(false);
     if (run.status === 'done') {
-      const n = run.result.hosts.length;
-      progress.set(n, Math.max(1, n));
-      progress.done(t('scan.progress.done'));
-      progress.setVariant('ok');
-      hostsTable.setLoading(false);
       hostsTable.setRows(run.result.hosts);
-      announce(t('scan.doneToast', { count: run.result.hosts.length }));
     } else if (run.found && run.found.size) {
       // Cancelled / failed: redraw the streamed partials without their "resolving…" badge
       // (updateRow drops the table's cached row, which setRows with the same objects would keep).
       for (const partial of run.found.values()) hostsTable.updateRow(partial);
     }
     if (run.status === 'cancelled') {
-      progress.setVariant('warn');
-      progress.setIndeterminate(false);
-      progress.setLabel(t('scan.run.cancelledShort'));
-      hostsTable.setLoading(false);
       runNotice.append(Alert({ variant: 'warn', compact: true, message: t('scan.run.cancelled', { time: formatDuration(run.finishedAt - run.startedAt) }) }));
     } else if (run.status === 'error') {
-      progress.setVariant('error');
-      progress.setIndeterminate(false);
-      hostsTable.setLoading(false);
       runNotice.append(ErrorBanner(run.error, { title: t('scan.run.failed') }));
     }
-    // Several certificates: which set each server needs (the summary and the plan tab read it).
+    // Several certificates: which set each server needs (the findings and the plan tab read it).
     plan = sets && run.result ? planRenewal(run.result, sets) : null;
-    renderStats();
+    renderStatsNow();
+    renderKey();
+    renderNext();
+    // The totals, said once (the status summary is no live region): "Scan finished: 42 hosts · 2 servers to update · …".
+    if (run.status === 'done') {
+      const counts = [...status.el.querySelectorAll('.status-text')].map((x) => x.textContent).filter(Boolean);
+      announce([t('scan.doneToast', { count: run.result.hosts.length }), ...counts].join(' · '));
+    }
     renderSummary();
     renderSourceHealth();
     renderServersTab();
@@ -4414,7 +4630,8 @@ function buildRunUI(run, ctx, { onFinish }) {
   renderSourceWait();
   const replayHosts = liveHosts(run);
   if (replayHosts.length && !run.result) hostsTable.setRows(replayHosts);
-  renderStats();
+  renderStatsNow();
+  renderKey();
   renderTabBadges();
   syncExports();
   applyFilters();
@@ -4436,7 +4653,8 @@ function buildRunUI(run, ctx, { onFinish }) {
     if (!run.result || key !== 'workspaceData' || !value || !(value.parts || []).includes('origins')) return;
     if (!shownMemo || shownMemo.r !== run.result || shownMemo.sig !== staleSig(run.result)) {
       shownMemo = null;
-      renderStats();
+      renderStatsNow();
+      renderKey();
       renderSummary();
       renderServersTab();
       renderTabBadges();
@@ -4460,6 +4678,7 @@ function buildRunUI(run, ctx, { onFinish }) {
       if (verifyUi) verifyUi.dispose();
       if (daneUi) daneUi.dispose();
       if (rolloutUi) rolloutUi.dispose();
+      if (actions) actions.dispose();
     }
   };
 }

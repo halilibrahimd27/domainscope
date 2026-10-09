@@ -11,11 +11,14 @@
  * What is checked:
  *   - navigation: Certificate estate is the last tool of the Certificates group; the empty page
  *     offers the drop zone (focused by '/') and the command that makes a report;
- *   - a file that is not a report is listed with the reason; report-a.json gives the tiles (9
- *     certificates, 3 expiring, 5 in name conflicts, 2 with a shared key, 2 weak, 3 covering no
- *     name), the expiry and kind lines and a row per certificate; a tile filters the table and
- *     keeps the focus, the select does too; a row's details show the fingerprints and where it is
- *     served; the CSV holds the CLI's --estate --csv columns (the trust check's two last: report A's
+ *   - a file that is not a report is listed with the reason; report-a.json gives the result header
+ *     (docs/DESIGN.md §5.6: "Certificate estate · 9 certificates on 7 endpoints", the counts — 1
+ *     expired, 2 expiring within 30 days, 5 in name conflicts, 2 with a shared key, 2 weak — as
+ *     filters of the list), the expiry and kind figures and a row per certificate, and the input
+ *     folds to one row ("1 report loaded · Add files · Forget all"); a count filters the table
+ *     (pressed, the focus kept), the Show select does too and the count follows; a row's details
+ *     show the fingerprints and where it is served; the CSV (the header's Export ▾) holds the CLI's
+ *     --estate --csv columns (the trust check's two last: report A's
  *     scan checked trust), the rows of the filter only; the untrusted filter lists the three
  *     certificates an endpoint serves with a chain the CLI's machine does not trust, each flagged,
  *     and a row's details say why per endpoint (self-signed (code 18); in Turkish "eksik ara
@@ -47,7 +50,7 @@ import { pinnedClockScript } from './clock.mjs';
 import { orderSuites } from './run-all.mjs';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  csvHeader, gotoRoute, installDownloadCapture, setLangUi, stubClipboard, takeClipboard, takeDownloads, waitReady
+  csvHeader, gotoRoute, installDownloadCapture, resultAction, setLangUi, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 import { ESTATE_CSV_COLUMNS, ESTATE_TRUST_COLUMNS } from '../../assets/js/lib/estate.js';
 
@@ -111,22 +114,35 @@ const overflowingIn = (page, selector) => page.evaluate((sel) => {
   return out.slice(0, 8);
 }, selector);
 
-/** The reports open in the view, with the rows the certificate table shows. */
-const viewInfo = (page) => page.evaluate(() => {
-  const tile = (f) => document.querySelector(`.estate-stats [data-filter="${f}"]`);
-  const stat = (f) => tile(f)?.querySelector('.stat-value')?.textContent ?? null;
-  return {
-    reports: [...document.querySelectorAll('.estate-report')].map((li) => li.dataset.report),
-    stats: Object.fromEntries(['all', 'expiring', 'name-conflict', 'shared-key', 'weak', 'covers-none'].map((f) => [f, stat(f)])),
-    pressed: [...document.querySelectorAll('.estate-stats .stat-button[aria-pressed="true"]')].map((b) => b.dataset.filter),
-    rows: [...document.querySelectorAll('.estate-table tbody tr.dt-row')].length,
-    names: [...document.querySelectorAll('.estate-table tbody tr.dt-row .estate-cert-name')].map((e) => e.textContent),
-    notes: [...document.querySelectorAll('.estate-notes .alert')].map((a) => a.textContent),
-    errors: [...document.querySelectorAll('.estate-errors li')].map((li) => li.textContent),
-    tabs: [...document.querySelectorAll('.estate-tabs .tab')].map((b) => `${b.dataset.tab}:${b.querySelector('.tab-badge')?.textContent}`),
-    empty: !!document.querySelector('.estate-page > .empty')
-  };
+/**
+ * The reports open in the view, the result header (its title and counts: `status`, by key; the
+ * pressed one), the rows the certificate table shows, the notes and the empty state.
+ */
+const viewInfo = (page) => page.evaluate(() => ({
+  reports: [...document.querySelectorAll('.estate-report')].map((li) => li.dataset.report),
+  title: document.querySelector('.estate-overview .result-title')?.textContent || '',
+  status: Object.fromEntries([...document.querySelectorAll('.estate-overview .status-item')].map((b) => [b.dataset.status, Number(b.dataset.count)])),
+  pressed: [...document.querySelectorAll('.estate-overview .status-item[aria-pressed="true"]')].map((b) => b.dataset.status),
+  rows: [...document.querySelectorAll('.estate-table tbody tr.dt-row')].length,
+  names: [...document.querySelectorAll('.estate-table tbody tr.dt-row .estate-cert-name')].map((e) => e.textContent),
+  notes: [...document.querySelectorAll('.estate-notes .finding')].map((a) => a.textContent),
+  errors: [...document.querySelectorAll('.estate-errors li')].map((li) => li.textContent),
+  tabs: [...document.querySelectorAll('.estate-tabs .tab')].map((b) => `${b.dataset.tab}:${b.querySelector('.tab-badge')?.textContent}`),
+  empty: !!document.querySelector('.estate-page > .estate-empty')
+}));
+
+/** Open the compact input's "n reports loaded" disclosure (the reports, the drop zone, paste), when reports are loaded. */
+const openImport = (page) => page.evaluate(() => {
+  const more = document.querySelector('.estate-import-more');
+  if (more && !more.open) more.open = true;
 });
+
+/** Pick a value of the certificate list's Show select. */
+const showFilter = (page, value) => page.evaluate((v) => {
+  const s = document.querySelector('.estate-filter select');
+  s.value = v;
+  s.dispatchEvent(new Event('change', { bubbles: true }));
+}, value);
 
 /** Choose files in the view's drop zone and wait until `until` holds. */
 async function choose(page, files, until, message) {
@@ -241,18 +257,24 @@ async function main() {
         return {
           nav: group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '')) : [],
           title: document.querySelector('h1')?.textContent,
-          drop: !!document.querySelector('.estate-drop'),
+          drop: !!document.querySelector('.estate-import .estate-drop'),
           how: document.querySelector('.estate-how')?.open,
           cmd: document.querySelector('.estate-how pre, .estate-how code')?.textContent || '',
-          empty: document.querySelector('.estate-page .empty')?.textContent || ''
+          privacy: document.querySelector('.estate-import .tool-input-foot .privacy-note')?.textContent || '',
+          alert: !!document.querySelector('#page-body .alert-ok'),
+          empty: document.querySelector('.estate-page > .estate-empty .tool-empty-message')?.textContent || '',
+          checks: document.querySelectorAll('.estate-empty .tool-empty-check').length,
+          head: !!document.querySelector('.estate-overview')
         };
       });
       assertEqual(info.nav, ['scan', 'cert', 'renew', 'estate'], 'Deploy & renew certificates group');
       assertEqual(info.title, 'Certificate estate', 'title');
-      assert(info.drop, 'drop zone');
+      assert(info.drop, 'drop zone in the input card');
       assert(info.how, 'the command is shown while nothing is open');
       assert(info.cmd.includes('--estate --json estate.json'), `command: ${info.cmd}`);
-      assert(info.empty.includes('No report open yet'), 'empty state');
+      // The privacy note is one quiet line in the card's footer, not a green alert (docs/DESIGN.md §5.6).
+      assert(/^The reports are read here and kept only in this tab/.test(info.privacy) && !info.alert, `privacy note: ${info.privacy}`);
+      assert(info.empty.startsWith('Every certificate the scanned servers serve') && info.checks === 5 && !info.head, `empty state: ${JSON.stringify(info)}`);
       await page.evaluate(() => document.activeElement && document.activeElement.blur());
       await page.press('/');
       assert(await page.evaluate(() => document.activeElement?.classList.contains('estate-drop')), '/ focuses the drop zone');
@@ -268,46 +290,54 @@ async function main() {
       await removeToasts(page);
     });
 
-    await run.step('report-a.json: the tiles, the lines, a row per certificate', async () => {
+    await run.step('report-a.json: the result header and its counts, the figures, a row per certificate; the input folds to one row', async () => {
       await choose(page, [REPORT_A], () => document.querySelectorAll('.estate-table tbody tr.dt-row').length === 9, '9 rows');
       const info = await viewInfo(page);
       assertEqual(info.reports, ['report-a.json'], 'report list');
       assertEqual(info.errors, [], 'the error of the earlier file is gone');
-      assertEqual(info.stats, { all: '9', expiring: '3', 'name-conflict': '5', 'shared-key': '2', weak: '2', 'covers-none': '3' }, 'tiles');
-      assertEqual(info.pressed, ['all'], 'All pressed');
+      assert(/^Certificate estate · 9 certificates on \d+ endpoints$/.test(info.title), `title: ${info.title}`);
+      assertEqual(info.status, { expired: 1, soon: 2, 'name-conflict': 5, 'shared-key': 2, weak: 2 }, 'the counts, worst first');
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.estate-overview .status-item .status-text')].map((b) => b.textContent)),
+        ['1 expired', '2 expire within 30 days', '5 in a name conflict', '2 with a shared key', '2 weak'], 'their words');
+      assertEqual(info.pressed, [], 'nothing pressed: every certificate listed');
       assertEqual(info.tabs, ['certificates:9', 'conflicts:2', 'keys:3'], 'tab badges');
-      const hints = await page.evaluate(() => Object.fromEntries(['name-conflict', 'shared-key'].map((f) => {
-        const el = document.querySelector(`.estate-stats [data-filter="${f}"]`);
-        return [f, `${el.querySelector('.stat-label')?.textContent} | ${el.querySelector('.stat-hint')?.textContent}`];
-      })));
-      assertEqual(hints, {
-        'name-conflict': 'In a name conflict | 2 names, several certificates',
-        'shared-key': 'With a shared key | 1 key in several certificates or on 5+ addresses'
-      }, 'the tiles count certificates, the hints the names and keys behind them');
       assertEqual(info.names[0], 'old.example.net', 'soonest expiry first');
-      assert(await page.evaluate(() => document.activeElement?.dataset.filter === 'all'), 'the focus on the Certificates tile, not <body>');
-      const lines = await page.evaluate(() => [...document.querySelectorAll('.estate-line')].map((l) => l.textContent));
-      assert(lines[0].includes('expired 1') && lines[0].includes('< 7 days 1') && lines[0].includes('later 6'), `expiry line: ${lines[0]}`);
-      assert(lines[1].includes('Cloudflare Origin CA 1') && lines[1].includes('self-signed 6') && lines[1].includes('private CA 1'), `kinds: ${lines[1]}`);
+      assert(await page.evaluate(() => document.activeElement === document.querySelector('.estate-overview .result-title')), 'the focus on the result, not <body>');
+      // The figures (region 6) of the list: the expiry buckets, the kinds — read-only.
+      const figures = await page.evaluate(() => Object.fromEntries(['expiry', 'kinds'].map((id) => [id, [...document.querySelectorAll(`.estate-metrics-${id} .metric`)]
+        .map((m) => `${m.querySelector('.metric-label').textContent} ${m.querySelector('.metric-value').textContent}`)])));
+      assertEqual(figures.expiry, ['expired 1', '< 7 days 1', '< 30 days 1', '< 90 days 0', 'later 6'], 'expiry figures');
+      assert(['Cloudflare Origin CA 1', 'self-signed 6', 'private CA 1'].every((x) => figures.kinds.includes(x)), `kinds: ${figures.kinds}`);
+      assertEqual(await page.evaluate(() => document.querySelectorAll('.estate-metrics button, .estate-metrics a').length), 0, 'figures, not controls');
+      // Region 2 once a report is read: "1 report loaded" (a disclosure), Add files, Forget all; the privacy note stays.
+      const input = await page.evaluate(() => ({
+        more: document.querySelector('.estate-import .estate-import-more > summary')?.textContent.trim(),
+        open: document.querySelector('.estate-import-more')?.open,
+        actions: [...document.querySelectorAll('.estate-import .file-input-actions button')].map((b) => b.dataset.action),
+        privacy: !!document.querySelector('.estate-import .tool-input-foot .privacy-note')
+      }));
+      assertEqual(input, { more: '1 report loaded', open: false, actions: ['estate-add', 'estate-forget'], privacy: true }, 'the compact input');
       await removeToasts(page);
       await shotPage(page, opts, 'estate-report-desktop-light-en');
     });
 
-    await run.step('a tile filters the table and keeps the focus; the select filters too', async () => {
-      await page.click('.estate-stats [data-filter="weak"]');
+    await run.step('a count filters the table (pressed, the focus kept), a second press shows every row; the Show select filters too', async () => {
+      await page.click('.estate-overview .status-item[data-status="weak"]');
       await page.waitFor(() => document.querySelectorAll('.estate-table tbody tr.dt-row').length === 2, { message: 'weak rows' });
       let info = await viewInfo(page);
       assertEqual(info.pressed, ['weak'], 'Weak pressed');
-      assert(await page.evaluate(() => document.activeElement?.dataset.filter === 'weak'), 'focus stays on the tile');
+      assert(await page.evaluate(() => document.activeElement?.dataset.status === 'weak'), 'focus stays on the count');
       assertEqual(await page.evaluate(() => document.querySelector('.estate-filter select').value), 'weak', 'the select follows');
-      await page.evaluate(() => {
-        const s = document.querySelector('.estate-filter select');
-        s.value = 'covers-none';
-        s.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      await page.click('.estate-overview .status-item[data-status="weak"]');
+      await page.waitFor(() => document.querySelectorAll('.estate-table tbody tr.dt-row').length === 9, { message: 'every row again' });
+      assertEqual([(await viewInfo(page)).pressed, await page.evaluate(() => document.querySelector('.estate-filter select').value)], [[], 'all'], 'nothing pressed, All');
+      await showFilter(page, 'expired');
+      await page.waitFor(() => document.querySelectorAll('.estate-table tbody tr.dt-row').length === 1, { message: 'expired rows' });
+      assertEqual((await viewInfo(page)).pressed, ['expired'], 'the count follows the select');
+      await showFilter(page, 'covers-none');
       await page.waitFor(() => document.querySelectorAll('.estate-table tbody tr.dt-row').length === 3, { message: 'covers-none rows' });
       info = await viewInfo(page);
-      assertEqual(info.pressed, ['covers-none'], 'the tile follows the select');
+      assertEqual(info.pressed, [], 'no count for covering no name');
       assertEqual(info.names.sort(), ['legacy.example.net', 'legacy.example.org', 'old.example.net'], 'covering no name');
     });
 
@@ -319,9 +349,13 @@ async function main() {
       await shotEl(page, opts, 'estate-details-desktop-light-en', '.estate-table');
     });
 
-    await run.step('CSV: the CLI\'s --estate --csv columns, the rows of the filter', async () => {
+    await run.step('CSV (the header\'s Export ▾, with Print): the CLI\'s --estate --csv columns, the rows of the filter', async () => {
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.estate-overview .result-actions [data-menu="export"] ~ .menu-popover .menu-item')]
+        .map((i) => i.dataset.export || i.dataset.action)), ['csv', 'print'], 'Export ▾: the CSV, then Print');
+      assert(await page.evaluate(() => !document.querySelector('.estate-overview [data-action="copy-link"]') && !document.querySelector('.estate-table [data-export]')),
+        'no Copy link (the reports never go into a URL), no CSV button of the table');
       await takeDownloads(page);
-      await page.click('.estate-table [data-export="csv"]');
+      await resultAction(page, '[data-export="csv"]', '.estate-overview');
       const [file] = await takeDownloads(page);
       assert(file && /^estate-\d{8}-\d{4}\.csv$/.test(file.name), `file name: ${file && file.name}`);
       assert(file.bom, 'BOM for Excel');
@@ -332,11 +366,7 @@ async function main() {
     });
 
     await run.step('the CLI\'s trust check: the untrusted filter, the flag, each endpoint\'s verdict in its own words', async () => {
-      await page.evaluate(() => {
-        const s = document.querySelector('.estate-filter select');
-        s.value = 'untrusted';
-        s.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      await showFilter(page, 'untrusted');
       await page.waitFor(() => document.querySelectorAll('.estate-table tbody tr.dt-row').length === 3, { message: 'untrusted rows' });
       const info = await page.evaluate(() => ({
         option: [...document.querySelectorAll('.estate-filter option')].find((o) => o.value === 'untrusted')?.textContent,
@@ -379,15 +409,16 @@ async function main() {
     });
 
     await run.step('report-b.json joins: the overlap note, the report of each endpoint, a report column', async () => {
-      await page.click('.estate-stats [data-filter="all"]');
+      await showFilter(page, 'all');
       await choose(page, [REPORT_B], () => document.querySelectorAll('.estate-report').length === 2, 'two reports');
       await frames(page);
       const info = await viewInfo(page);
       assertEqual(info.reports, ['report-a.json', 'report-b.json'], 'two reports');
       assert(info.notes.some((n) => n.includes('192.0.2.11:443 was scanned by more than one report')), `notes: ${info.notes}`);
-      assertEqual(info.stats.all, '9', 'still nine certificates (report B has none of its own)');
+      assert(info.title.includes('· 9 certificates on'), `still nine certificates (report B has none of its own): ${info.title}`);
+      assertEqual(await page.evaluate(() => document.querySelector('.estate-import-more > summary').textContent.trim()), '2 reports loaded', 'the compact input counts both');
       await takeDownloads(page);
-      await page.click('.estate-table [data-export="csv"]');
+      await resultAction(page, '[data-export="csv"]', '.estate-overview');
       const [file] = await takeDownloads(page);
       assertEqual(csvHeader(file.text), [...CSV_A, 'report'], 'report column');
       assert(/,report-b\.json\r?\n/.test(file.text) && /,report-a\.json\r?\n/.test(file.text), 'rows name their report');
@@ -417,6 +448,8 @@ async function main() {
       const toast = await page.waitFor(() => [...document.querySelectorAll('.toast')].map((t) => t.textContent).find((t) => t.includes('already open')), { message: 'duplicate toast' });
       assert(toast.includes('report-a.json: the same report is already open'), toast);
       assertEqual((await viewInfo(page)).reports.length, 2, 'still two');
+      // Reports are loaded: the paste box is behind "2 reports loaded".
+      await openImport(page);
       await page.evaluate(() => { document.querySelector('.estate-paste').open = true; });
       await page.type('[data-role="estate-paste"]', '{"tool":"other"}');
       await page.press('Enter', { ctrl: true });
@@ -428,12 +461,15 @@ async function main() {
       await shotEl(page, opts, 'estate-import-desktop-light-en', '.estate-import');
     });
 
-    await run.step('removing a report, then Forget all', async () => {
+    await run.step('removing a report (the focus on the next Remove), then Forget all', async () => {
+      await openImport(page);
       await page.click('.estate-report[data-report="report-b.json"] .btn-icon');
       await page.waitFor(() => document.querySelectorAll('.estate-report').length === 1, { message: 'one report left' });
       assertEqual((await viewInfo(page)).notes.filter((n) => n.includes('more than one report')), [], 'no overlap note');
+      assert(await page.evaluate(() => document.activeElement === document.querySelector('.estate-report .btn-icon')), 'the focus on the Remove left, not <body>');
       await page.click('[data-action="estate-forget"]');
-      await page.waitFor(() => !document.querySelector('.estate-report') && document.querySelector('.estate-page .empty'), { message: 'forgotten' });
+      await page.waitFor(() => !document.querySelector('.estate-report') && document.querySelector('.estate-page > .estate-empty'), { message: 'forgotten' });
+      assert(await page.evaluate(() => document.activeElement?.classList.contains('estate-drop')), 'the focus on the drop zone of the whole card');
       await removeToasts(page);
     });
 
@@ -441,7 +477,7 @@ async function main() {
       await choose(page, [REPORT_A], () => document.querySelectorAll('.estate-table tbody tr.dt-row').length === 9, 'report read');
       await removeToasts(page);
       await deleteAllLocalData(page);
-      await page.waitFor(() => document.querySelector('.estate-page .empty') && !document.querySelector('.estate-report'), { message: 'emptied on screen' });
+      await page.waitFor(() => document.querySelector('.estate-page > .estate-empty') && !document.querySelector('.estate-report'), { message: 'emptied on screen' });
       assertEqual((await viewInfo(page)).reports, [], 'nothing open after the deletion');
       await setLangUi(page, 'en');
       await choose(page, [REPORT_A, REPORT_B], () => document.querySelectorAll('.estate-report').length === 2, 'two reports');
@@ -462,12 +498,12 @@ async function main() {
         await state.switchWorkspace(meta.id);
         return meta.id;
       }));
-      await page.waitFor(() => document.querySelector('.estate-page .empty') && !document.querySelector('.estate-report'), { message: 'emptied by the switch' });
+      await page.waitFor(() => document.querySelector('.estate-page > .estate-empty') && !document.querySelector('.estate-report'), { message: 'emptied by the switch' });
       await page.evaluate((wsId) => import('./assets/js/state.js').then(async ({ state }) => {
         await state.switchWorkspace(state.workspaces.find((w) => w.isDefault).id);
         await state.deleteWorkspace(wsId);
       }), id);
-      await page.waitFor(() => document.querySelector('.estate-page .empty'), { message: 'back in Default, still empty' });
+      await page.waitFor(() => document.querySelector('.estate-page > .estate-empty'), { message: 'back in Default, still empty' });
       assertEqual((await viewInfo(page)).reports, [], 'nothing came back with Default');
     });
 
@@ -481,7 +517,7 @@ async function main() {
       await page.press('Enter', { ctrl: true });
       await page.waitFor(() => document.querySelectorAll('.estate-report').length === 1, { message: 'the report read' });
       const info = await viewInfo(page);
-      assertEqual(info.stats.all, '0', 'no certificate');
+      assertEqual(info.title, 'Certificate estate · 0 certificates on 0 endpoints', 'no certificate');
       assert(!info.notes.some((n) => n.includes('older CLI')), `notes: ${info.notes}`);
       await page.click('.estate-tabs .tab[data-tab="keys"]');
       const text = await page.waitFor(() => document.querySelector('.estate-tabs .tabpanel[data-tab="keys"]:not([hidden]) .empty')?.textContent, { message: 'keys tab' });
@@ -610,7 +646,7 @@ async function main() {
       await setLangUi(page, 'en');
       await page.emulateMedia({ 'prefers-color-scheme': 'light' });
       await page.setViewport({ width: 320, height: 720, mobile: true });
-      await page.waitFor(() => document.documentElement.clientWidth === 320 && document.querySelector('.estate-stats'), { message: '320 px' });
+      await page.waitFor(() => document.documentElement.clientWidth === 320 && document.querySelector('.estate-overview'), { message: '320 px' });
       await frames(page);
       await removeToasts(page);
       await assertNoHorizontalScroll(page, 'estate 320 light EN');
@@ -623,7 +659,7 @@ async function main() {
       await page.setViewport({ width: 1440, height: 900 }); // also after a failed phone step
       await setLangUi(page, 'tr');
       await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
-      await page.waitFor(() => document.querySelector('.estate-stats'), { message: 'stats' });
+      await page.waitFor(() => document.querySelector('.estate-overview'), { message: 'the result header' });
       await assertNoHorizontalScroll(page, 'estate desktop dark TR');
       await shotPage(page, opts, 'estate-report-desktop-dark-tr');
       await gotoRoute(page, 'cert');

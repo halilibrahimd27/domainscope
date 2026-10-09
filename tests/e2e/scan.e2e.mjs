@@ -25,15 +25,16 @@
  *     (downloads are captured in the page, nothing is written to disk)
  *   - route params (#/scan?domain=…), language switch keeping the results, dark mode,
  *     390 px phone layout without horizontal scrolling, screenshots in tests/e2e/screenshots/
- *   - offline at 375×667: the sticky run bar keeps Start on screen without scrolling once a
- *     domain is entered, never covers the focused field, rests at the form's end, keeps focus
- *     Start ⇄ Cancel, floats with a shadow in both themes (TR too), no transition with reduced
- *     motion, stays compact on a tablet and in the flow on a wide screen; a CA certificate
- *     (tests/fixtures/ca.pem, no DNS names) leaves step 1 open with a warning sign, and the
- *     requirement line and Start's error say why
+ *   - offline at 375×667: the sticky run bar (ui/template.js RunBar, class scan-runbar) keeps Start
+ *     on screen without scrolling once a domain is entered, never covers the focused field
+ *     (--run-bar-h), rests at the form's end, keeps focus Start ⇄ Cancel, floats with a shadow in
+ *     both themes (TR too), no transition with reduced motion, stays compact on a tablet and in the
+ *     flow on a wide screen; a scan folds the setup into one row and Edit unfolds it; a CA
+ *     certificate (tests/fixtures/ca.pem, no DNS names) leaves step 1 open with a warning sign, and
+ *     the requirement line and Start's error say why
  *   - offline (emulated example.net, tests/fixtures/ec_wildcard.pem): keyboard focus moving
- *     Start ⇄ Cancel, a run cancelled mid-wordlist exporting its streamed hits (hosts CSV,
- *     names.txt with coverage; Copy summary stays off without a result), reduced motion (no
+ *     Start ⇄ Cancel, a run cancelled mid-wordlist exporting its streamed hits from Export ▾ (hosts
+ *     CSV, names.txt with coverage; Copy summary stays off without a result), reduced motion (no
  *     smooth scroll), Copy summary of the finished scan (the servers that need the certificate
  *     by name, the inventory tooltip, a link with only the domain), one shell choice shared
  *     by the Behind CDN quick sweep, its step 3 and the Verify CLI card, and a rescan with crt.sh
@@ -500,8 +501,21 @@ async function findDirectIp(page, domain) {
   }, domain);
 }
 
-/** Open the collapsed Options step (a <details>): its controls are not rendered while closed. */
+/**
+ * Unfold SSL Targets' setup where a scan folded it into one row (docs/DESIGN.md §5.5: "Certificate …
+ * · Domains … — Edit"): a click on Edit, as a person would, before typing into a step.
+ */
+export async function unfoldScanSetup(page) {
+  await page.evaluate(() => {
+    if (!document.querySelector('.scan-form.is-folded')) return;
+    document.querySelector('[data-action="scan-setup-edit"]').click();
+  });
+  await page.waitFor(() => !document.querySelector('.scan-form.is-folded'), { message: 'the setup unfolded' });
+}
+
+/** Open the collapsed Options step (a <details>, the setup unfolded first): its controls are not rendered while closed. */
 export async function openScanOptions(page) {
+  await unfoldScanSetup(page);
   await page.evaluate(() => {
     const box = document.querySelector('.scan-options-box');
     if (box && !box.open) box.open = true;
@@ -890,10 +904,9 @@ async function topologySteps(run, { browser, server, page, origin, opts }) {
 
     await run.step('the Servers CSV has a Topology column and targets.txt carries the keys the CLI reads', async () => {
       await takeDownloads(tab);
-      await tab.evaluate(() => {
-        document.querySelector('.scan-exports [data-export="servers-csv"]').click();
-        document.querySelector('.scan-exports [data-export="targets"]').click();
-      });
+      await resultAction(tab, '[data-export="servers-csv"]', '.scan-run');
+      await resultAction(tab, '[data-export="targets"]', '.scan-run');
+      await tab.waitFor(() => (window.__downloads || []).length === 2, { message: 'two downloads' });
       const files = await takeDownloads(tab);
       const csv = files.find((f) => /^servers.*\.csv$/.test(f.name));
       const targets = files.find((f) => f.name === 'targets.txt');
@@ -965,7 +978,7 @@ async function topologySteps(run, { browser, server, page, origin, opts }) {
           const ui = document.querySelector('.scan-run-ui');
           return ui && ui.dataset.run !== (prev && prev.id) && ui.querySelector('.scan-run').dataset.status === 'done';
         }, { args: [before], timeout: 90000, message: 'pair scan done' });
-        const summary = await pair.waitFor(() => document.querySelector('[data-summary="renewal"] .alert-message')?.textContent || false, { message: 'the renewal line' });
+        const summary = await pair.waitFor(() => document.querySelector('.scan-summary [data-summary="renewal"] .finding-text')?.textContent || false, { message: 'the renewal line' });
         assertEqual(summary, '1 certificate set (RSA 2048 + ECDSA P-256): 4 servers need it — see “Renewal plan”.', 'the summary does not count web01');
         await openPlan();
         const got = await plan();
@@ -1298,13 +1311,13 @@ async function main() {
         await page.waitFor(() => ![...document.querySelectorAll('.scan-mini-badge')].some((b) => /resolving/i.test(b.textContent)),
           { timeout: 5000, message: 'no "resolving…" badge left after Cancel' });
         assert(info.run && !info.busy, 'run button back, not busy');
-        // The export bar covers what the table keeps (the offline group checks the files).
+        // Export ▾ covers what the table keeps (the offline group checks the files).
         const bar = await page.evaluate(() => ({
           rows: document.querySelectorAll('.scan-hosts tbody tr.dt-row').length,
-          hosts: document.querySelector('.scan-exports [data-export="hosts-csv"]').disabled,
-          names: document.querySelector('.scan-exports [data-export="names"]').disabled
+          hosts: document.querySelector('.scan-run .result-actions [data-export="hosts-csv"]').disabled,
+          names: document.querySelector('.scan-run .result-actions [data-export="names"]').disabled
         }));
-        if (bar.rows) assert(!bar.hosts && !bar.names, `export bar enabled for the ${bar.rows} kept rows: ${JSON.stringify(bar)}`);
+        if (bar.rows) assert(!bar.hosts && !bar.names, `exports enabled for the ${bar.rows} kept rows: ${JSON.stringify(bar)}`);
       });
 
       await run.step('a scan keeps running on another page; the toast leads back to the results', async () => {
@@ -1366,13 +1379,13 @@ async function main() {
         process.stdout.write(`        sources: ${info.chips.map((c) => `${c.id}=${c.state}`).join(', ')}\n`);
       });
 
-      await run.step('results: hosts streamed, Cloudflare detected, stats and summary', async () => {
+      await run.step('results: hosts streamed, Cloudflare detected, figures and findings', async () => {
         const info = await page.evaluate(() => ({
           rows: document.querySelectorAll('.scan-hosts tbody tr.dt-row').length,
-          total: Number(document.querySelector('[data-stat="hosts"] .stat-value').textContent.replace(/\D/g, '')),
-          cloudflare: Number(document.querySelector('[data-stat="cloudflare"] .stat-value').textContent.replace(/\D/g, '')),
+          total: Number(document.querySelector('.scan-stats [data-metric="hosts"] .metric-value').textContent.replace(/\D/g, '')),
+          cloudflare: Number(document.querySelector('.scan-stats [data-metric="cloudflare"] .metric-value')?.textContent.replace(/\D/g, '') || 0),
           cfBadges: document.querySelectorAll('.scan-hosts [data-kind="cloudflare"]').length,
-          covered: document.querySelector('[data-stat="covered"] .stat-value')?.textContent,
+          covered: document.querySelector('.scan-stats [data-metric="covered"] .metric-value')?.textContent,
           summary: [...document.querySelectorAll('.scan-summary [data-summary]')].map((a) => a.dataset.summary),
           hostBadge: document.querySelector('.scan-tabs [data-tab="hosts"] .tab-badge').textContent
         }));
@@ -1391,23 +1404,27 @@ async function main() {
         if (!direct) return;
         const info = await page.evaluate((ip) => ({
           refs: [...document.querySelectorAll('.scan-hosts .scan-server-ref')].map((r) => `${r.textContent.trim()}@${r.title}`),
-          direct: document.querySelector('[data-stat="direct"] .stat-hint').textContent
+          direct: document.querySelector('.scan-stats [data-metric="direct"] .metric-hint').textContent
         }), direct.ip);
         assert(info.refs.some((r) => r.startsWith('web-origin') && r.endsWith(direct.ip)), `server refs: ${info.refs}`);
         assert(/on your servers/.test(info.direct), `direct hint: ${info.direct}`);
       });
 
-      await run.step('Hosts tab: kind filter, stat-card filter, checkboxes and search', async () => {
+      await run.step('Hosts tab: kind filter, status-summary filter, checkboxes and search', async () => {
         await page.evaluate(() => {
           const sel = document.querySelector('[data-role="scan-filter-kind"]');
           sel.value = 'cloudflare';
           sel.dispatchEvent(new Event('change', { bubbles: true }));
         });
         await page.waitFor(() => [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')].every((tr) => tr.querySelector('[data-kind]').dataset.kind === 'cloudflare'));
-        assert(await page.evaluate(() => document.querySelector('[data-stat="cloudflare"]').getAttribute('aria-pressed')) === 'true', 'stat pressed');
-        await page.click('[data-stat="unresolved"]');
-        await page.waitFor(() => [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')].every((tr) => ['nxdomain', 'unresolved', 'dangling'].includes(tr.querySelector('[data-kind]').dataset.kind)));
-        await page.click('[data-stat="hosts"]');
+        // "n hosts behind a CDN" in the result header filters the table; a second press shows every host.
+        await page.click('.scan-run .status-item[data-status="behind"]');
+        await page.waitFor(() => document.querySelector('.scan-run .status-item[data-status="behind"]').getAttribute('aria-pressed') === 'true'
+          && document.querySelector('[data-role="scan-filter-kind"]').value === 'hidden'
+          && [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')].every((tr) => ['cloudflare', 'cdn', 'platform'].includes(tr.querySelector('[data-kind]').dataset.kind)),
+        { message: 'behind a CDN pressed: the hidden hosts' });
+        await page.click('.scan-run .status-item[data-status="behind"]');
+        await page.waitFor(() => document.querySelector('[data-role="scan-filter-kind"]').value === 'all', { message: 'pressed again: every host' });
         await page.click('.scan-hosts input[data-filter="covered"]');
         const covered = await page.evaluate(() => [...document.querySelectorAll('.scan-hosts tbody tr.dt-row')].map((tr) => tr.querySelector('.scan-host-name').textContent));
         assert(covered.length >= 1 && covered.every((n) => n.endsWith('example-test.com.tr')), `covered: ${covered}`);
@@ -1526,7 +1543,7 @@ async function main() {
 
       await run.step('exports: hosts CSV, servers CSV, full JSON, names.txt, targets.txt, new-cert.pem', async () => {
         await takeDownloads(page);
-        for (const kind of ['hosts-csv', 'servers-csv', 'json', 'names', 'targets']) await page.click(`[data-export="${kind}"]`);
+        for (const kind of ['hosts-csv', 'servers-csv', 'json', 'names', 'targets']) await resultAction(page, `[data-export="${kind}"]`, '.scan-run');
         await page.click('.scan-tabs [data-tab="cdn"]');
         await page.click('[data-action="cli-cert"]');
         const files = await takeDownloads(page);
@@ -1557,7 +1574,7 @@ async function main() {
         await setLangUi(page, 'tr');
         await page.waitForSelector('.scan-run-ui');
         assertEqual((await runStatus(page)).id, id, 'same run after re-mount');
-        assertEqual(await page.evaluate(() => document.querySelector('.scan-results-title').textContent), 'Sonuçlar', 'Turkish');
+        assert(/taraması$/.test(await page.evaluate(() => document.querySelector('.scan-run .result-title').textContent)), 'Turkish');
         assertEqual(await page.evaluate(() => document.querySelector('[data-role="scan-domains"]').value), DOMAIN, 'domains kept');
         const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('ssds.scan.options')));
         assertEqual([...stored.sources].sort(), [...SOURCES].sort(), 'options remembered');
@@ -1838,7 +1855,7 @@ async function main() {
             req: document.querySelector('[data-role="scan-requirement"]').dataset.state,
             open: document.querySelector('.scan-options-box').open,
             opt: document.querySelector('[data-role="scan-opt-summary"]').textContent,
-            rootVar: document.documentElement.style.getPropertyValue('--scan-runbar-h'),
+            rootVar: document.documentElement.style.getPropertyValue('--run-bar-h'),
             // Every step title is an <h2> (heading navigation), the Options one inside its summary.
             headings: [...document.querySelectorAll('.scan-setup h2')].map((x) => (x.id || x.querySelector('[id]')?.id || '').replace('scan-step-', '')),
             optHeading: !!document.querySelector('.scan-options-box > summary > h2.disclosure-heading #scan-step-options')
@@ -1948,10 +1965,23 @@ async function main() {
           await tab.waitFor(() => document.querySelector('.scan-run')?.dataset.status === 'cancelled', { timeout: 15000, message: 'cancelled' });
           await tab.waitFor(() => document.activeElement?.dataset.action === 'scan-run', { timeout: 5000, message: 'keyboard focus back on Start' });
           await tab.evaluate(() => { window.__dnsDelay = 0; });
+          // The scan folded the setup into one row (DESIGN §5.5): what it scanned, and Edit.
+          const fold = await tab.evaluate(() => ({
+            folded: document.querySelector('.scan-form').classList.contains('is-folded'),
+            row: document.querySelector('.scan-fold')?.textContent || '',
+            expanded: document.querySelector('[data-action="scan-setup-edit"]').getAttribute('aria-expanded'),
+            steps: getComputedStyle(document.querySelector('.scan-setup')).display
+          }));
+          assertEqual([fold.folded, fold.expanded, fold.steps], [true, 'false', 'none'], 'folded once the scan started');
+          assert(/^No certificate · Domains example\.net · No server list · no passive sources · small wordlist · no permutations\s*Edit$/.test(fold.row.replace(/\s*·\s*/g, ' · ')), `folded row: ${fold.row}`);
         });
 
         await run.step('375 px in Turkish and dark: the bar floats with its shadow, no horizontal scroll; a tablet keeps it compact, wide screens in the flow', async () => {
           await setLangUi(tab, 'tr');
+          // Edit unfolds the setup again: the steps are back under the bar.
+          await tab.evaluate(() => document.querySelector('[data-action="scan-setup-edit"]').click());
+          await tab.waitFor(() => !document.querySelector('.scan-form.is-folded')
+            && document.querySelector('[data-action="scan-setup-edit"]').getAttribute('aria-expanded') === 'true', { message: 'unfolded by Edit' });
           for (const scheme of ['dark', 'light']) {
             await tab.emulateMedia({ 'prefers-color-scheme': scheme });
             await tab.evaluate(() => window.scrollTo(0, 0));
@@ -1986,7 +2016,7 @@ async function main() {
           await setLangUi(tab, 'en');
           // Leaving the view takes the bar's height off the root again.
           await gotoRoute(tab, 'about');
-          assertEqual(await tab.evaluate(() => document.documentElement.style.getPropertyValue('--scan-runbar-h')), '', 'root variable removed on unmount');
+          assertEqual(await tab.evaluate(() => document.documentElement.style.getPropertyValue('--run-bar-h')), '', 'root variable removed on unmount');
           assertEqual(await tab.evaluate(() => window.__zoneBlocked), [], 'nothing but DNS for the zone left the page');
           await assertClean(tab, 'setup form 375 px', origin);
         });
@@ -2030,7 +2060,7 @@ async function main() {
         await tab.waitFor((x) => document.querySelector(`.scan-tabs [data-tab="${x}"]`)?.getAttribute('aria-selected') === 'true', { args: [id], message: `tab ${id}` });
       };
       try {
-        await run.step('keyboard Start → focus on Cancel → Enter cancels mid-wordlist → focus back; the export bar exports the streamed hits', async () => {
+        await run.step('keyboard Start → focus on Cancel → Enter cancels mid-wordlist → focus back; Export ▾ exports the streamed hits', async () => {
           await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(OFFLINE_APEX, OFFLINE_DNS) });
           await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: dnsDelayScript });
           await installDownloadCapture(tab);
@@ -2049,6 +2079,9 @@ async function main() {
           await tab.waitFor(() => document.querySelector('.scan-step-cert .cert-summary'), { message: 'certificate loaded' });
           assertEqual(await tab.evaluate(() => document.querySelector('[data-role="scan-domains"]').value), OFFLINE_APEX, 'domain from the certificate');
           // Slow answers keep the wordlist stage running; the scroll log is the reduced-motion control.
+          // A short window: the folded setup and the run's header do not fit it, so Start moves the
+          // page to the folded row (a window where they fit does not move at all).
+          await tab.setViewport({ width: 1440, height: 420 });
           await armScrollLog();
           await tab.evaluate(() => {
             window.__dnsDelay = 250;
@@ -2069,17 +2102,14 @@ async function main() {
           assert(smooth.distinct >= 5 && smooth.last > 0, `the control run scrolls smoothly: ${JSON.stringify(smooth)}`);
           const kept = await tab.evaluate(() => ({
             names: [...document.querySelectorAll('.scan-hosts tbody tr.dt-row .scan-host-name')].map((n) => n.textContent),
-            hosts: document.querySelector('.scan-exports [data-export="hosts-csv"]').disabled,
-            names_: document.querySelector('.scan-exports [data-export="names"]').disabled,
-            json: document.querySelector('.scan-exports [data-export="json"]').disabled
+            files: [...document.querySelectorAll('.scan-run .result-actions [data-export]')].map((b) => `${b.dataset.export}:${b.disabled}`)
           }));
           assert(kept.names.length >= 2, `rows kept after Cancel: ${kept.names}`);
-          assertEqual([kept.hosts, kept.names_, kept.json], [false, false, true], 'hosts CSV and names.txt enabled, full JSON waits for a finished scan');
+          assertEqual(kept.files, ['hosts-csv:false', 'names:false'], 'Export ▾: hosts CSV and names.txt; the servers, the full JSON and targets.txt come with a finished scan');
           await takeDownloads(tab);
-          await tab.evaluate(() => {
-            document.querySelector('.scan-exports [data-export="hosts-csv"]').click();
-            document.querySelector('.scan-exports [data-export="names"]').click();
-          });
+          await resultAction(tab, '[data-export="hosts-csv"]', '.scan-run');
+          await resultAction(tab, '[data-export="names"]', '.scan-run');
+          await tab.waitFor(() => (window.__downloads || []).length === 2, { message: 'two downloads' });
           const files = await takeDownloads(tab);
           const csv = files.find((f) => /^hosts-.*\.csv$/.test(f.name));
           const names = files.find((f) => f.name === 'names.txt');
@@ -2108,6 +2138,16 @@ async function main() {
           const jump = await earlyScroll();
           assert(jump.last > 0 && jump.distinct <= 2, `one jump to the results, no animation: ${JSON.stringify(jump)}`);
           await tab.emulateMedia({ 'prefers-color-scheme': 'light' });
+          await tab.setViewport({ width: 1440, height: 900 });
+          // Where everything fits, Start leaves the page where it is.
+          await armScrollLog();
+          const again = await runStatus(tab);
+          await tab.evaluate(() => document.querySelector('[data-action="scan-run"]').click());
+          await tab.waitFor((prev) => {
+            const ui = document.querySelector('.scan-run-ui');
+            return ui && ui.dataset.run !== prev && ui.querySelector('.scan-run').dataset.status === 'done';
+          }, { args: [again.id], timeout: 60000, message: 'offline scan done (tall window)' });
+          assertEqual((await earlyScroll()).last, 0, 'no scroll where the folded setup and the results fit');
         });
 
         await run.step('Copy summary names the servers from the list that need the certificate (the tooltip says so); its link carries only the domain', async () => {

@@ -9,7 +9,14 @@
  * CAA (+ RFC 8657) against the CA and challenge, the same CAA lookup on four public resolvers,
  * `_acme-challenge`, DNSSEC, the DNS provider's DNS-01 plugin and the HTTP-01 / TLS-ALPN-01
  * prerequisites. Each name gets a verdict (ready / ready with warnings / will fail) with its
- * findings grouped by area; the summary has Copy summary, CSV and JSON.
+ * findings grouped by area.
+ *
+ * The page template (ui/template.js; docs/DESIGN.md §5, phase 3): the input card (`.rnw-form-card`:
+ * the names, then the certificate block, the CA and the challenge, the privacy note with Check
+ * readiness in its footer — a tool with several fields), compact from the moment a check starts;
+ * the result header `.rnw-hero` (the verdict as its title, when and against what, the counts per
+ * verdict as filters of the names, Copy summary, Export ▾ with CSV and JSON, Copy link, the HTTP-01
+ * test as the next step).
  *
  * HTTP-01 reachability: "Test …" sends, only after that click, a plain-HTTP GET of a made-up
  * token under /.well-known/acme-challenge/ from one Globalping probe on each of three continents
@@ -23,16 +30,21 @@
  * finished report is kept for the page session (`result()` / `snapshot()`).
  */
 
-import { h, clear } from '../ui/dom.js';
+import { h, clear, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, Disclosure, EmptyState, ErrorBanner, ExternalLink, Icon, KeyValueList, ProgressBar,
+  Alert, Badge, Button, Card, Disclosure, ErrorBanner, ExternalLink, Icon, KeyValueList, ProgressBar, RelativeTime,
   SeverityIcon, Spinner, TruncatedList, announce, describeError, select, textarea
 } from '../ui/components.js';
 import { registerStrings, formatNumber, formatRelative, formatDateTime, formatDuration } from '../i18n.js';
 import {
-  RENEWAL_I18N, RENEWAL_CHALLENGES, RENEWAL_CAS, RENEWAL_LIMITS, RENEWAL_AREAS, RENEWAL_VERDICTS, RENEWAL_CSV_COLUMNS,
+  EmptyState, NextSteps, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput
+} from '../ui/template.js';
+import { inputCompact, optionsSummary, templateState, toggleStatus } from '../lib/template.js';
+import {
+  RENEWAL_I18N, RENEWAL_CHALLENGES, RENEWAL_CAS, RENEWAL_LIMITS, RENEWAL_AREAS, RENEWAL_VERDICTS, RENEWAL_CSV_COLUMNS, RENEWAL_HEAD_SEVERITY,
   HTTP01_PATH_PREFIX, HTTP01_LOCATIONS, parseRenewalNames, renewalCa, caForIssuer, checkRenewal,
-  http01Plan, http01Request, http01Token, interpretHttp01, http01Families, applyHttp01, renewalSummary, renewalRows, renewalExport
+  http01Plan, http01Request, http01Token, interpretHttp01, http01Families, applyHttp01, renewalSummary, renewalRows, renewalExport,
+  renewalStatus
 } from '../lib/renewal.js';
 import { GP_LIMITS } from '../lib/globalping.js';
 import { getResolver } from '../lib/resolvers.js';
@@ -82,8 +94,10 @@ registerStrings('en', {
   'rnw.run': 'Check readiness',
   'rnw.privacy': 'Only DNS queries — names and record types — go to public DNS-over-HTTPS resolvers, four of them for the CAA comparison. Your servers are not contacted; the HTTP-01 test is optional and asks first.',
   'rnw.progress': 'Checking {done} of {total} names…',
-  'rnw.emptyTitle': 'Will the next renewal validate?',
-  'rnw.emptyBody': 'Enter the names of a certificate, or load it, and choose the CA and the ACME challenge. Each name gets a verdict — ready, ready with warnings, or will fail — with what to fix.',
+  'rnw.emptyLine': 'A verdict for each name — ready, ready with warnings or will fail — with what to fix first.',
+  'rnw.checking': { one: 'Checking {count} name…', other: 'Checking {count} names…' },
+  'rnw.next.http01': 'Test HTTP-01 reachability',
+  'rnw.namesShown': 'Showing {shown} of {total} names',
   'rnw.failed': 'The check could not be completed',
   'rnw.checkedAt': 'Checked {time}',
   'rnw.setup': 'CA: {ca} · challenge: {challenge}',
@@ -149,8 +163,10 @@ registerStrings('tr', {
   'rnw.run': 'Hazırlığı kontrol et',
   'rnw.privacy': 'Yalnızca DNS sorguları — adlar ve kayıt türleri — genel DNS-over-HTTPS çözümleyicilerine gider; CAA karşılaştırması için dört tanesine. Sunucularınıza bağlanılmaz; HTTP-01 testi isteğe bağlıdır ve önce sorar.',
   'rnw.progress': '{total} addan {done} tanesi kontrol ediliyor…',
-  'rnw.emptyTitle': 'Bir sonraki yenileme doğrulanacak mı?',
-  'rnw.emptyBody': 'Bir sertifikanın adlarını girin ya da sertifikayı yükleyin; otoriteyi ve ACME doğrulama yöntemini seçin. Her ad bir sonuç alır — hazır, uyarılarla hazır ya da başarısız olacak — ve neyin düzeltileceği söylenir.',
+  'rnw.emptyLine': 'Her ad için bir sonuç — hazır, uyarılarla hazır ya da başarısız olacak — ve önce neyin düzeltileceği.',
+  'rnw.checking': '{count} ad kontrol ediliyor…',
+  'rnw.next.http01': 'HTTP-01 erişilebilirliğini test et',
+  'rnw.namesShown': '{total} addan {shown} tanesi gösteriliyor',
   'rnw.failed': 'Kontrol tamamlanamadı',
   'rnw.checkedAt': 'Kontrol: {time}',
   'rnw.setup': 'Otorite: {ca} · doğrulama: {challenge}',
@@ -193,8 +209,6 @@ registerStrings('tr', {
 
 /** Verdict → Badge variant and icon. */
 const VERDICT_STYLE = Object.freeze({ fail: ['error', 'x-circle'], unknown: ['info', 'help'], warnings: ['warn', 'alert'], ready: ['ok', 'check-circle'] });
-/** Headline → Alert variant. */
-const HEADLINE_VARIANT = Object.freeze({ fail: 'error', incomplete: 'info', warnings: 'warn', ready: 'ok' });
 /** Finding severities, worst first. */
 const SEVERITIES = ['error', 'warn', 'info', 'ok'];
 
@@ -264,12 +278,14 @@ registerRunning('nav.renew', () => !!(active && active.testRunning()));
  */
 export function mount(container, ctx) {
   const { t } = ctx;
+  /** Set once the view is drawn: the run bar follows the form from then on (syncRunBar). */
+  let mounted = false;
   const restored = ctx.restored && typeof ctx.restored === 'object' ? ctx.restored : null;
   const routeNames = namesText(ctx.params.names ?? ctx.params.name ?? '');
   const routeCa = renewalCa(ctx.params.ca) ? ctx.params.ca : null;
   const routeChallenge = RENEWAL_CHALLENGES.includes(ctx.params.challenge) ? ctx.params.challenge : null;
 
-  /* --- form ------------------------------------------------------------------------ */
+  /* --- region 2: the names, the certificate, the CA and the challenge ---------------- */
   const namesField = textarea({
     label: t('rnw.names'),
     rows: 4,
@@ -280,6 +296,7 @@ export function mount(container, ctx) {
     onInput: () => {
       namesField.setError(null);
       renderNamesNote();
+      syncRunBar();
     }
   });
   const namesNote = h('div', { class: 'rnw-names-note', attrs: { 'aria-live': 'polite' } });
@@ -292,6 +309,7 @@ export function mount(container, ctx) {
     onChange: () => {
       setCaHint(null);
       if (planner) planner.refresh();
+      syncRunBar();
     }
   });
   caField.input.dataset.role = 'renew-ca';
@@ -300,7 +318,8 @@ export function mount(container, ctx) {
     options: RENEWAL_CHALLENGES.map((c) => ({ value: c, label: t(`renew.ch.${c}`) })),
     value: restored ? restored.challenge : routeChallenge || 'unknown',
     hint: t('rnw.challengeHint'),
-    className: 'rnw-challenge'
+    className: 'rnw-challenge',
+    onChange: () => syncRunBar()
   });
   challengeField.input.dataset.role = 'renew-challenge';
   /**
@@ -320,38 +339,56 @@ export function mount(container, ctx) {
     setCaHint(null);
   };
 
-  const runBtn = Button({ label: t('rnw.run'), icon: 'check-circle', variant: 'primary', dataset: { action: 'renew-run', shortcut: 'submit' }, onClick: () => start() });
-  const stopBtn = Button({
-    label: t('common.stop'), icon: 'stop', dataset: { action: 'renew-stop', shortcut: 'cancel' },
-    onClick: () => { if (current && current.controller) current.controller.abort(); }
+  /* --- region 3: Check readiness ⇄ Stop, in the card's footer (a tool with several fields) --- */
+  const runBar = RunBar({
+    label: t('rnw.run'),
+    dataset: { action: 'renew-run', shortcut: 'submit' },
+    stopDataset: { action: 'renew-stop', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => { if (current && current.controller) current.controller.abort(); },
+    hasValue: () => !!namesField.value.trim()
   });
-  stopBtn.hidden = true;
+  const runBtn = runBar.run;
 
   const certHost = h('div', { class: 'stack-sm rnw-cert' });
   const certBlock = Disclosure({ summary: t('rnw.fromCert'), className: 'rnw-cert-block', open: !!getCurrentCert(ctx.state), children: certHost });
-  const formCard = Card({
+  /** The compact card's one line: the CA and the challenge chosen (their defaults say nothing). */
+  const formSummary = () => optionsSummary([
+    { label: caField.value && renewalCa(caField.value) ? renewalCa(caField.value).name : '', isDefault: !caField.value },
+    { label: t(`renew.ch.${challengeField.value}`), isDefault: challengeField.value === 'unknown' }
+  ]);
+  const input = ToolInput({
     className: 'rnw-form-card',
-    children: h('div', { class: 'stack' },
-      h('div', { class: 'stack-sm' }, namesField.el, namesNote),
-      certBlock,
-      h('div', { class: 'rnw-options' }, caField.el, challengeField.el),
-      h('div', { class: 'rnw-form-foot' },
-        h('p', { class: 'muted text-sm rnw-privacy' }, Icon('lock', { size: 14 }), ' ', t('rnw.privacy')),
-        h('div', { class: 'rnw-buttons' }, stopBtn, runBtn)))
+    fieldsClass: 'rnw-form',
+    label: t('nav.renew'),
+    primary: namesField.el,
+    notes: [namesNote],
+    more: [certBlock, h('div', { class: 'rnw-options' }, caField.el, challengeField.el)],
+    privacy: PrivacyNote({ text: t('rnw.privacy'), className: 'rnw-privacy' }),
+    summary: formSummary,
+    run: runBar,
+    runAt: 'foot'
   });
 
-  /* --- results skeleton ------------------------------------------------------------ */
+  /* --- region 4 and the result's body ------------------------------------------------ */
   const progress = ProgressBar({ label: t('rnw.progress', { done: 0, total: 0 }) });
-  progress.el.hidden = true;
   const errorEl = h('div', { class: 'rnw-error' });
-  const emptyEl = h('div', { class: 'card rnw-empty' }, EmptyState({ icon: 'refresh', title: t('rnw.emptyTitle'), message: t('rnw.emptyBody') }));
+  const emptyEl = h('div', { class: 'rnw-empty' }, EmptyState({
+    icon: 'refresh',
+    message: t('rnw.emptyLine'),
+    checks: RENEWAL_AREAS.map((a) => t(`renew.area.${a}`))
+  }));
+  /** The result header (`.rnw-hero`): in the page only while a report or a check is. */
+  const head = ResultHeader({ className: 'rnw-hero', dataset: { renew: 'summary' } });
   const heroEl = h('div', { class: 'rnw-hero-wrap' });
   const testEl = h('div', { class: 'rnw-test-wrap' });
   const listEl = h('div', { class: 'stack rnw-names' });
+  /** "Showing 2 of 4 names" while a count of the header filters them. */
+  const namesShown = h('p', { class: 'muted text-sm rnw-names-shown', hidden: true });
   // A form of its own for the shell's Ctrl/Cmd+Enter: nothing in the results starts a new check.
   const results = h('div', { class: 'stack-lg rnw-results', hidden: true, dataset: { shortcutScope: 'results' } },
-    heroEl, testEl,
-    h('section', { class: 'stack rnw-names-section' }, h('h2', { class: 'section-title' }, t('rnw.namesTitle')), listEl));
+    testEl,
+    h('section', { class: 'stack rnw-names-section' }, h('h2', { class: 'section-title' }, t('rnw.namesTitle')), namesShown, listEl));
   // The Plan panel reads the certificate, the names and the CA above; nothing it shows is sent.
   const planHost = h('div', { class: 'rnw-plan-host' });
   const planBlock = Disclosure({ summary: t('rnw.plan'), className: 'card rnw-plan', heading: 2, children: planHost });
@@ -373,15 +410,21 @@ export function mount(container, ctx) {
     }).finally(() => { delete planHost.dataset.loading; });
   });
   ctx.onCleanup(() => { if (planner) planner.destroy(); });
-  container.append(h('div', { class: 'stack-lg rnw-view' }, formCard, progress.el, errorEl, emptyEl, results, planBlock));
+  container.append(h('div', { class: 'rnw-view' }, input.el, heroEl, errorEl, emptyEl, results, planBlock, runBar.float));
+  ctx.onCleanup(() => {
+    runBar.dispose();
+    if (actions) actions.dispose();
+  });
 
   /* --- state ----------------------------------------------------------------------- */
   // current = { names, ca, challenge, text, controller, report, finishedAt, test }
   //   test = { status: 'running'|'done'|'quota'|'error'|'stopped', phase: 'gate'|'fetch', names, controller,
   //     pending: [{ name, host, path, planned, families }], stopped, tested, partial, error, resetAt }
   let current = null;
-  /** The Copy summary of the hero (disabled while a check runs). */
-  let heroSummary = null;
+  /** The report's actions (ResultActions: Copy summary, Export ▾, Copy link), disabled while a check runs. */
+  let actions = null;
+  /** The verdict the names are filtered to (a pressed count of the header), or null for every name. */
+  let verdictFilter = restored && RENEWAL_VERDICTS.includes(restored.filter) ? restored.filter : null;
   /**
    * The button a running test was started from (`{ action, name }`, keyboard or click): every state
    * change of the test rebuilds it, and the consent dialog closes onto what had focus before it.
@@ -405,6 +448,8 @@ export function mount(container, ctx) {
     if (parsed.suffixWildcards.length) lines.push(t('rnw.suffixWildcard', { list: parsed.suffixWildcards.slice(0, 6).join(', ') + (parsed.suffixWildcards.length > 6 ? ' …' : '') }));
     if (parsed.overCap) lines.push(t('rnw.overCap', { max: formatNumber(RENEWAL_LIMITS.names), count: parsed.overCap }));
     for (const line of lines) namesNote.append(h('p', { class: 'text-sm rnw-note-warn' }, Icon('alert', { size: 14 }), ' ', line));
+    // The box changed (typed, a certificate's names, carried names): Run follows.
+    syncRunBar();
   }
 
   /* --- the certificate block ------------------------------------------------------- */
@@ -527,41 +572,98 @@ export function mount(container, ctx) {
     };
   }
 
-  function renderHero(report) {
-    clear(heroEl);
+  /**
+   * The result header (region 4) of the report on screen, or of the check that runs: "Checking 4
+   * names…" with its progress while it runs (the report under it is the previous one, its actions
+   * wait), else the verdict as the title, when and against what it was checked, the counts per
+   * verdict as filters of the names, Copy summary · Export ▾ (CSV, JSON) · Copy link and the HTTP-01
+   * test as the next step.
+   * @param {object|null} report
+   */
+  function renderHead(report) {
+    const running = !!(current && current.controller);
+    if (!report && !running) {
+      head.el.remove();
+      return;
+    }
+    if (!head.el.isConnected) heroEl.append(head.el);
+    head.setState(running ? 'running' : 'done');
+    if (running) {
+      head.set('title', ResultTitle({ running: true, text: t('rnw.checking', { count: current.names.length }) }));
+      for (const part of ['meta', 'status', 'next']) head.set(part, null);
+      head.set('progress', progress.el);
+      delete head.el.dataset.headline;
+      if (actions) actions.setDisabled(true);
+      else head.set('actions', null);
+      return;
+    }
+    head.set('progress', null);
     const s = renewalSummary(report);
-    const variant = HEADLINE_VARIANT[s.headline] || 'info';
-    const headline = Alert({ variant, compact: true, icon: s.headline === 'incomplete' ? 'help' : undefined, message: t(`renew.head.${s.headline}`) });
-    headline.dataset.renewHeadline = s.headline;
-    const counts = h('div', { class: 'cluster rnw-counts' }, RENEWAL_VERDICTS.filter((v) => s.counts[v]).map((v) => {
-      const b = Badge(t(`sum.renew.${v}`, { count: s.counts[v] }), { variant: VERDICT_STYLE[v][0], icon: VERDICT_STYLE[v][1] });
-      b.dataset.count = v;
-      return b;
-    }));
-    heroSummary = SummaryButton({
-      kind: 'renew',
-      facts: () => (current && current.report ? summaryFacts(current.report) : null),
-      url: () => ctx.shareUrl(permalinkParams('renew', checkParams(report)))
-    });
-    const subject = commonTarget(report.names.map((r) => r.base));
-    const file = (ext) => timestampedName('renewal-readiness', ext, subject ? subject.value : null, report.finishedAt);
-    heroEl.append(h('div', { class: ['card', 'rnw-hero', `rnw-hero-${s.headline}`], dataset: { renew: 'summary', headline: s.headline } },
-      headline,
-      counts,
-      h('p', { class: 'text-sm rnw-setup' }, setupText(report)),
-      h('p', { class: 'muted text-xs rnw-meta' },
-        h('span', { title: formatDateTime(report.finishedAt) }, t('rnw.checkedAt', { time: formatRelative(report.finishedAt) })), ' · ',
-        t('rnw.resolvers', { resolvers: report.resolvers.map((x) => (getResolver(x) ? getResolver(x).name : x)).join(', ') })),
-      h('div', { class: 'rnw-hero-actions' },
-        heroSummary,
-        Button({
-          label: t('common.exportCsv'), icon: 'download', size: 'sm', dataset: { action: 'renew-csv' },
-          onClick: () => downloadText(file('csv'), toCsv(renewalRows(current.report), RENEWAL_CSV_COLUMNS.map((key) => ({ key, header: key }))), 'text/csv;charset=utf-8')
+    head.el.dataset.headline = s.headline;
+    head.set('title', ResultTitle({ severity: RENEWAL_HEAD_SEVERITY[s.headline] || null, text: t(`renew.head.${s.headline}`) }));
+    head.set('meta', [
+      RelativeTime(report.finishedAt, { text: t('rnw.checkedAt', { time: formatRelative(report.finishedAt) }) }),
+      h('span', { class: 'rnw-setup' }, setupText(report)),
+      h('span', { class: 'rnw-meta' }, t('rnw.resolvers', { resolvers: report.resolvers.map((x) => (getResolver(x) ? getResolver(x).name : x)).join(', ') }))
+    ]);
+    // The counts are the names' filters: a press shows the names of that verdict, a second one every name.
+    head.set('status', StatusSummary({
+      verdict: true,
+      className: 'rnw-counts',
+      pressed: verdictFilter,
+      items: renewalStatus(s).map((item) => ({
+        ...item,
+        text: t(`sum.renew.${item.key}`, { count: item.count }),
+        filter: true,
+        onPress: (key) => setVerdictFilter(toggleStatus(verdictFilter, key), { scroll: true })
+      }))
+    }).el);
+    if (!actions) {
+      const subject = commonTarget(report.names.map((r) => r.base));
+      const file = (ext) => timestampedName('renewal-readiness', ext, subject ? subject.value : null, current.report.finishedAt);
+      actions = ResultActions({
+        summary: SummaryButton({
+          kind: 'renew',
+          plainLabel: t('result.plainTitle'),
+          facts: () => (current && current.report ? summaryFacts(current.report) : null),
+          url: () => ctx.shareUrl(permalinkParams('renew', checkParams(current.report)))
         }),
-        Button({
-          label: t('common.exportJson'), icon: 'download', size: 'sm', dataset: { action: 'renew-json' },
-          onClick: () => downloadText(file('json'), toJson(renewalExport(current.report, { version: ctx.version })), 'application/json;charset=utf-8')
-        }))));
+        exports: [
+          {
+            label: t('common.exportCsv'), icon: 'download', dataset: { action: 'renew-csv' },
+            onSelect: () => downloadText(file('csv'), toCsv(renewalRows(current.report), RENEWAL_CSV_COLUMNS.map((key) => ({ key, header: key }))), 'text/csv;charset=utf-8')
+          },
+          {
+            label: t('common.exportJson'), icon: 'download', dataset: { action: 'renew-json' },
+            onSelect: () => downloadText(file('json'), toJson(renewalExport(current.report, { version: ctx.version })), 'application/json;charset=utf-8')
+          }
+        ],
+        // Copy link shares the report on screen (not the box, which may hold carried names).
+        link: () => ctx.shareUrl(checkParams(current.report))
+      });
+      head.set('actions', actions.el);
+    }
+    actions.setDisabled(running);
+    // The HTTP-01 test sends requests of its own: it keeps its card (and its consent) in the body.
+    head.set('next', !running && testable(report) && testPlan(report.names).sent.length ? NextSteps({
+      steps: [{
+        label: t('rnw.next.http01'), icon: 'globe', dataset: { action: 'renew-next-http01' },
+        onClick: () => {
+          const card = testEl.querySelector('.rnw-test-card');
+          if (!card) return;
+          card.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
+          const btn = card.querySelector('[data-action="renew-http01"]');
+          if (btn && !btn.disabled) btn.focus({ preventScroll: true });
+        }
+      }]
+    }) : null);
+  }
+
+  /** The names the list shows: every name, or those of the verdict a pressed count names. */
+  function setVerdictFilter(next, { scroll = false } = {}) {
+    verdictFilter = RENEWAL_VERDICTS.includes(next) ? next : null;
+    renderReport();
+    if (scroll) listEl.closest('.rnw-names-section').scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
   }
 
   /* --- HTTP-01 reachability (Globalping, after a click) ----------------------------- */
@@ -948,35 +1050,48 @@ export function mount(container, ctx) {
   /** Re-render the results of the report on screen (keyboard focus on a button is put back). */
   function renderReport() {
     const report = current && current.report;
+    const running = !!(current && current.controller);
     results.hidden = !report;
-    emptyEl.hidden = !!report || !!(current && current.controller);
-    if (!report) return;
+    emptyEl.hidden = !!report || running || !!errorEl.firstChild;
     keepFocus(() => {
-      renderHero(report);
-      if (heroSummary) heroSummary.setDisabled(!!current.controller);
+      renderHead(report);
+      if (!report) return;
       renderTest();
+      const names = namesByVerdict(report.names);
+      const shown = verdictFilter ? names.filter((r) => r.verdict === verdictFilter) : names;
+      namesShown.hidden = !verdictFilter;
+      namesShown.textContent = verdictFilter ? t('rnw.namesShown', { shown: formatNumber(shown.length), total: formatNumber(names.length) }) : '';
       clear(listEl);
-      listEl.append(...namesByVerdict(report.names).map((r) => nameCard(r, report)));
+      listEl.append(...shown.map((r) => nameCard(r, report)));
     });
+    syncRunBar();
   }
 
   /* --- run --------------------------------------------------------------------------- */
   function setRunning(on) {
-    // Keyboard focus follows Check ⇄ Stop instead of falling to <body> when one is hidden.
-    const doc = globalThis.document;
-    const moveFocus = !!doc && doc.activeElement === (on ? runBtn : stopBtn);
-    runBtn.hidden = on;
-    stopBtn.hidden = !on;
-    if (moveFocus) (on ? stopBtn : runBtn).focus({ preventScroll: true });
+    // Check readiness ⇄ Stop in the run bar, the keyboard focus with them.
+    runBar.setRunning(on);
     namesField.input.readOnly = on;
     // The report on screen belongs to the previous check until this one finishes.
-    if (heroSummary) heroSummary.setDisabled(on);
+    if (actions) actions.setDisabled(on);
     ctx.setBusy(on);
+    syncRunBar();
   }
 
-  function setShareAction() {
-    ctx.setActions(CopyButton(() => ctx.shareUrl(current && current.report ? checkParams(current.report) : ctx.params),
-      { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+  /**
+   * The run bar and the input follow the state: compact from the moment a check starts, "Run
+   * again" while the box, the CA and the challenge still ask for the report on screen.
+   */
+  function syncRunBar() {
+    if (!mounted) return;
+    const report = current && current.report;
+    const running = !!(current && current.controller);
+    const state = templateState({ running, result: !!report });
+    runBar.setState(state);
+    runBar.setRerun(state === 'done' && sameNames(boxNames(namesField.value), report.names.map((r) => r.name))
+      && (caField.value || '') === (report.ca ? report.ca.id : '') && challengeField.value === report.challenge);
+    input.setCompact(inputCompact(state));
+    runBar.refresh();
   }
 
   /**
@@ -1015,6 +1130,7 @@ export function mount(container, ctx) {
     if (took && ca) setCa(ca);
     else if (!keepCa) takeSharedCa(changed);
     if (took && challenge) challengeField.value = challenge;
+    syncRunBar();
     return took;
   }
 
@@ -1034,7 +1150,6 @@ export function mount(container, ctx) {
     // `text`: the box as it was run (past the cap too), for a carried target to tell from a draft.
     const check = { names: parsed.names, ca: renewalCa(ca), challenge, text: namesField.value };
     ctx.setParams(checkParams(check));
-    setShareAction();
     const subject = commonTarget(parsed.names.map((n) => n.base));
     ctx.runStarted(subject ? subject.value : null);
     run(check);
@@ -1049,16 +1164,17 @@ export function mount(container, ctx) {
     const controller = new AbortController();
     const s = { ...check, controller, report: current ? current.report : null, finishedAt: null, test: null, lostTest };
     current = s;
+    // The counts of the next report are other counts: every name shows again.
+    verdictFilter = null;
     clear(errorEl);
-    progress.el.hidden = false;
     progress.setVariant('default');
     progress.setLabel(t('rnw.progress', { done: 0, total: formatNumber(check.names.length) }));
     progress.set(0, check.names.length);
     emptyEl.hidden = true;
     setRunning(true);
-    // The report on screen stays until this check ends, its test buttons off and the test card without
-    // a test that no longer runs.
-    if (s.report) renderReport();
+    // The header says what runs; the report under it stays until this check ends, its test buttons
+    // off and the test card without a test that no longer runs.
+    renderReport();
     if (lostTest) announce(t('rnw.h01.lost'));
     const startedAt = performance.now();
     try {
@@ -1078,12 +1194,12 @@ export function mount(container, ctx) {
       s.report = report;
       s.finishedAt = report.finishedAt;
       progress.done(`${t('common.done')} · ${formatDuration(performance.now() - startedAt)}`);
-      setTimeout(() => { if (current === s) progress.el.hidden = true; }, 1200);
+      // One announcement when the check ends: the verdict and the counts (the header is no live region).
       const summary = renewalSummary(report);
-      announce(t(`renew.head.${summary.headline}`));
+      const counts = RENEWAL_VERDICTS.filter((v) => summary.counts[v]).map((v) => t(`sum.renew.${v}`, { count: summary.counts[v] }));
+      announce([t(`renew.head.${summary.headline}`), ...counts].join(' · '));
     } catch (err) {
       if (current !== s) return;
-      progress.el.hidden = true;
       if (err && err.name === 'AbortError') {
         // Stopped: the previous report (if any) stays on screen.
         return;
@@ -1116,7 +1232,6 @@ export function mount(container, ctx) {
       test: test ? { ...test, controller: null, ...(interrupted ? { status: 'error', error: new DOMException('Interrupted', 'AbortError') } : {}) } : null
     };
     renderReport();
-    setShareAction();
     // GETs are free: read them now.
     if (interrupted) rereadTest({ auto: true });
     // A link back to the kept report names the report's CA: the form keeps its own.
@@ -1131,6 +1246,8 @@ export function mount(container, ctx) {
     // Shared link: run immediately. Names carried over from another tool (`run=0`) only fill the form.
     if (routeNames && !isFillOnly(ctx.params)) Promise.resolve().then(() => start({ auto: true }));
   }
+  mounted = true;
+  syncRunBar();
 
   active = {
     teardown() {
@@ -1158,7 +1275,8 @@ export function mount(container, ctx) {
         ranText: report && typeof current.text === 'string' ? current.text : null,
         test,
         lostTest: !!report && !!current.lostTest,
-        open: [...openState]
+        open: [...openState],
+        filter: report ? verdictFilter : null
       };
     },
     result() {

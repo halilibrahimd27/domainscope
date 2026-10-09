@@ -33,6 +33,8 @@ import {
   KeyValueList, Modal, ProgressBar, SegmentedControl, announce, checkbox, ipSortValue, setButtonBusy, toast
 } from './components.js';
 import { Flag } from './flag.js';
+// The tab's own run row keeps its privacy note (DESIGN §5.5: a panel that sends something says what).
+import { PrivacyNote } from './template.js';
 import { downloadText, timestampedName } from './download.js';
 import {
   t, registerStrings, formatNumber, formatDate, formatDateTime, formatRelative, formatRegion, daysUntil
@@ -1788,7 +1790,8 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
       if (origins) infoHost.append(origins);
     }
     if (idle && checkable) {
-      const privacy = Alert({ variant: 'info', compact: true, icon: 'eye', message: t('vfy.privacy') });
+      // A quiet line, not an alert: a privacy note is not news (Globalping probes connect to your servers).
+      const privacy = PrivacyNote({ text: t('vfy.privacy'), className: 'vfy-privacy' });
       privacy.dataset.vfy = 'privacy';
       infoHost.append(privacy);
     }

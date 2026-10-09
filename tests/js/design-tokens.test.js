@@ -89,8 +89,8 @@ describe('design tokens (style.css § 1)', () => {
         if (!used.has(m[1])) used.set(m[1], file.slice(ROOT.length + 1));
       }
     }
-    // Set from the scripts through the CSSOM (SSL Targets' run bar height).
-    for (const name of ['--scan-runbar-h']) defined.add(name);
+    // Set from the scripts through the CSSOM (ui/template.js RunBar: a floating or sticky run bar's height).
+    for (const name of ['--run-bar-h']) defined.add(name);
     assert.deepEqual([...used].filter(([name]) => !defined.has(name)), []);
   });
 });

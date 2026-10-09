@@ -9,7 +9,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   STATUS_SEVERITIES, STATUS_MAX, TEMPLATE_STATES, RESULT_ACTIONS, RELATED_MAX, PHONE_MAX_WIDTH,
-  statusItems, toggleStatus, actionPlan, relatedLinks, optionsSummary, templateState, inputCompact, runBarFloats, splitAtSubject
+  statusItems, toggleStatus, actionPlan, relatedLinks, optionsSummary, templateState, inputCompact, runBarFloats, splitAtSubject,
+  FINDINGS_MAX, findingRows, barStuck
 } from '../../assets/js/lib/template.js';
 import { PASSPORT_CARDS, passportStatus } from '../../assets/js/lib/passport.js';
 import { healthStatus } from '../../assets/js/lib/healthscore.js';
@@ -191,5 +192,42 @@ describe('the tools\' status items, as statusItems shows them', () => {
     assert.deepEqual(items[3].types, ['CAA', 'HTTPS']);
     assert.deepEqual(keys(statusItems(lookupStatus({ types: 2, records: 0 }))), ['types'], 'no "0 records" item, no "0 failed"');
     assert.deepEqual(statusItems(lookupStatus({ noRecords: 'CAA' })), []);
+  });
+});
+
+describe('findingRows (phase 3: the finding list)', () => {
+  const f = (key, severity) => ({ key, severity });
+
+  test('the worst first, the caller\'s order within a severity; the same objects', () => {
+    const list = [f('a', 'info'), f('b', 'warn'), f('c', 'ok'), f('d', 'error'), f('e', 'warn'), f('n', 'neutral')];
+    const { shown, more } = findingRows(list, { max: 10 });
+    assert.deepEqual(keys(shown), ['d', 'b', 'e', 'a', 'c', 'n']);
+    assert.deepEqual(more, []);
+    assert.equal(shown[0], list[3], 'not a copy');
+  });
+
+  test('at most three rows (FINDINGS_MAX), the rest behind "n more" — but never "1 more" for one row', () => {
+    assert.equal(FINDINGS_MAX, 3);
+    const five = ['a', 'b', 'c', 'd', 'e'].map((k) => f(k, 'info'));
+    assert.deepEqual([keys(findingRows(five).shown), keys(findingRows(five).more)], [['a', 'b', 'c'], ['d', 'e']]);
+    const four = five.slice(0, 4);
+    assert.deepEqual([keys(findingRows(four).shown), findingRows(four).more], [['a', 'b', 'c', 'd'], []], 'four rows show: "1 more" would hide one row behind a row');
+    assert.deepEqual(keys(findingRows(five, { max: 1 }).shown), ['a']);
+    assert.deepEqual(findingRows(five, { max: 0 }).shown, []);
+  });
+
+  test('a finding without a key, with an unknown severity or a key seen before is dropped', () => {
+    const list = [null, f('', 'warn'), f('x', 'fatal'), f('ok', 'ok'), f('ok', 'error'), { severity: 'warn' }];
+    assert.deepEqual(keys(findingRows(list).shown), ['ok']);
+    assert.deepEqual(findingRows('nope'), { shown: [], more: [] });
+  });
+});
+
+describe('barStuck (lib/template.js; lib/scanform.js re-exports it)', () => {
+  test('the sticky run bar\'s test lives here now; scanform hands out the same function', async () => {
+    const scanform = await import('../../assets/js/lib/scanform.js');
+    assert.equal(scanform.barStuck, barStuck);
+    assert.equal(barStuck({ sticky: true, top: -10, bottom: 900, viewportHeight: 800 }), true);
+    assert.equal(barStuck({ sticky: false, top: -10, bottom: 900, viewportHeight: 800 }), false);
   });
 });

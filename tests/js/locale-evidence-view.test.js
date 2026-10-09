@@ -152,7 +152,7 @@ describe('a run: how each domain got its packs, and why', () => {
     const scan = await source('views/scan.js');
     assert.match(scan, /import \{ LocaleEvidenceBanner \} from '\.\.\/ui\/locale-evidence\.js';/);
     assert.match(scan, /const localeBanner = LocaleEvidenceBanner\(run\);/);
-    assert.match(scan, /zoneBanner, localeBanner\.el, stageList,/, 'under the zone banner, above the stage pills');
+    assert.match(scan, /head\.set\('notes', \[zoneBanner, localeBanner\.el, runNotice\]\);/, 'in the result header\'s notes, under the zone banner');
     assert.match(scan, /if \(payload\.stage === 'bruteforce'\) localeBanner\.render\(\);/, 'as soon as the wordlist stage starts');
     // At the end, and when a kept run is drawn again (another view and back, a language switch).
     assert.ok((scan.match(/localeBanner\.render\(\);/g) || []).length >= 3, 'stage, finish and replay');

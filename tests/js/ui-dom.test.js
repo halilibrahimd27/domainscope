@@ -30,8 +30,8 @@ import { WORDLIST_SMALL } from '../../assets/js/lib/wordlist.js';
 import { NAV_GROUPS } from '../../assets/js/lib/shellnav.js';
 import { clearedMessage } from '../../assets/js/ui/workspace-ui.js';
 import {
-  EmptyState, ExampleChips, MetricStrip, NextSteps, OptionsDisclosure, PrivacyNote, RelatedLinks, ResultActions, ResultHeader,
-  ResultTitle, RunBar, STATUS_ICONS, StatusSummary, ToolInput, withSubject
+  EmptyState, ExampleChips, FileInput, FindingList, MetricStrip, NextSteps, OptionsDisclosure, PrivacyNote, RelatedLinks, ResultActions,
+  ResultHeader, ResultTitle, RunBar, STATUS_ICONS, StatusSummary, ToolInput, withSubject
 } from '../../assets/js/ui/template.js';
 import { SummaryButton } from '../../assets/js/ui/summary-button.js';
 import { keptSlotOf } from '../../assets/js/ui/session-ui.js';
@@ -2539,8 +2539,14 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     inLang('tr', () => {
       assert.equal(i18n.t('scan.sum.discoveryZone', { dns: '0', sources: '0', zone: '6' }), 'DNS ile bulunan: 0 · pasif kaynaklardan: 0 · zone dosyanızdan: 6');
     });
+    // The finding (lib/certtools.js scanFindings) picks the sentence; the view formats the numbers.
+    const { scanFindings } = await import('../../assets/js/lib/certtools.js');
+    const discovery = (tech) => scanFindings({ tech }).find((f) => f.key === 'discovery').text;
+    assert.deepEqual(discovery({ total: 6, dns: 0, sources: 0, zone: 6 }), { key: 'scan.sum.discoveryZone', params: { dns: 0, sources: 0, zone: 6 } });
+    assert.equal(discovery({ total: 6, dns: 4, sources: 2 }).key, 'scan.sum.discovery');
     const scanSrc = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
-    assert.match(scanSrc, /t\(tech\.zone \? 'scan\.sum\.discoveryZone' : 'scan\.sum\.discovery', found\)/);
+    assert.match(scanSrc, /tech: techniqueCounts\(r\.hosts\),/);
+    assert.match(scanSrc, /: f\.text \? t\(f\.text\.key, numberParams\(f\.text\.params\)\) : f\.raw,/);
   });
 
   test('scanner warnings never show a raw key in either view', async () => {
@@ -2653,7 +2659,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.match(src, /const exportScan = \(\) => \(\{ hosts: liveHosts\(run\) \}\);/);
     assert.match(src, /const namesText = \(\) => namesForCli\(run\.result \|\| \{ hosts: liveHosts\(run\) \}, \{ onlyCovered \}\);/);
     const sync = /function syncExports\(\) \{([\s\S]*?)\n {2}\}/.exec(src);
-    assert.ok(sync && /const anyHosts = liveHosts\(run\)\.length > 0;/.test(sync[1]), 'syncExports counts the streamed hits');
+    assert.ok(sync && /actions\.setExportsDisabled\(!done && liveHosts\(run\)\.length === 0\);/.test(sync[1]), 'syncExports counts the streamed hits');
     assert.match(src, /const record = partialScanRecord\(partial, coverCert\);/, 'startRun streams covered partials');
     // Several certificates: a streamed hit is covered by the union of their names, one certificate by its own.
     assert.match(src, /const coverCert = Array\.isArray\(scanConfig\.certs\) && scanConfig\.certs\.length\s*\? \{ hostnames: \[\.\.\.new Set\(scanConfig\.certs\.flatMap\(\(c\) => c\.hostnames \|\| \[\]\)\)\] \} : scanConfig\.cert;/);
@@ -2697,8 +2703,11 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     const src = await readFile(path.join(ROOT, 'assets/js/views/scan.js'), 'utf8');
     const running = /function setRunning\(on\) \{([\s\S]*?)\n {2}\}/.exec(src);
     assert.ok(running, 'setRunning found');
-    assert.match(running[1], /const hadFocus = [^\n]*activeElement === runBtn \|\| [^\n]*activeElement === cancelBtn/);
-    assert.match(running[1], /if \(hadFocus\) \(on \? cancelBtn : runBtn\)\.focus\(\{ preventScroll: true \}\);/);
+    // The page template's RunBar (its sticky variant, with the view's hooks) moves the focus.
+    assert.match(running[1], /runBar\.setRunning\(on\);/);
+    assert.match(src, /className: 'scan-runbar card',\s*buttonsClass: 'scan-runbar-buttons',\s*barDataset: \{ role: 'scan-runbar' \},\s*info: \[planLine, runSummary, runError\],\s*sticky: true/);
+    const tpl = await readFile(path.join(ROOT, 'assets/js/ui/template.js'), 'utf8');
+    assert.match(tpl, /if \(from\) \(running \? stop : run\)\.focus\(\);/);
   });
 
   test('SSL Targets Behind CDN: one shell choice for the sweep, step 3 and the Verify card', async () => {
@@ -3100,6 +3109,10 @@ describe('ui/template.js — the page template', () => {
       return this.childNodes[0] || null;
     }
 
+    get parentElement() {
+      return this.parentNode && this.parentNode.nodeType === 1 ? this.parentNode : null;
+    }
+
     contains(node) {
       for (let n = node; n; n = n.parentNode) if (n === this) return true;
       return false;
@@ -3400,6 +3413,65 @@ describe('ui/template.js — the page template', () => {
       assert.deepEqual(calls, ['run', 'stop']);
       bar.dispose();
     });
+
+    test('info lines (a wizard\'s estimate and summary) group the bar: the buttons, then the lines; the view\'s classes and hooks kept', () => {
+      const plan = new TplElement('div');
+      const summary = new TplElement('div');
+      const bar = RunBar({ label: 'Start scan', info: [plan, null, summary], className: 'scan-runbar card', buttonsClass: 'scan-runbar-buttons', barDataset: { role: 'scan-runbar' } });
+      assert.deepEqual(cls(bar.el).split(' '), ['run-bar', 'run-bar-group', 'scan-runbar', 'card']);
+      assert.deepEqual([bar.el.dataset.role, bar.el.dataset.stuck], ['scan-runbar', undefined], 'not sticky: no data-stuck');
+      const [buttons, info] = bar.el.childNodes;
+      assert.deepEqual([cls(buttons), buttons.childNodes[0], buttons.childNodes[1]], ['run-bar-buttons scan-runbar-buttons', bar.run, bar.stop]);
+      assert.deepEqual([cls(info), info.childNodes.length, info.childNodes[0], info.childNodes[1]], ['run-bar-info', 2, plan, summary], 'null lines dropped');
+      assert.deepEqual(cls(RunBar({ label: 'Run', className: 'x', barDataset: { role: 'y' } }).el).split(' '), ['run-bar', 'x'], 'no lines: the plain bar');
+    });
+
+    test('the sticky variant (SSL Targets): data-stuck while it floats over its container, --run-bar-h while it is sticky; no floating copy; dispose takes both off', async () => {
+      const listeners = new Map();
+      const saved = { gcs: globalThis.getComputedStyle, add: globalThis.addEventListener, remove: globalThis.removeEventListener, vh: globalThis.innerHeight };
+      let position = 'sticky';
+      globalThis.getComputedStyle = () => ({ position });
+      globalThis.addEventListener = (type, fn) => listeners.set(type, fn);
+      globalThis.removeEventListener = (type, fn) => { if (listeners.get(type) === fn) listeners.delete(type); };
+      globalThis.innerHeight = 667;
+      const settle = () => new Promise((r) => setTimeout(r, 40));
+      try {
+        const bar = tplOnPhone(() => RunBar({ label: 'Start scan', sticky: true, info: [new TplElement('div')], barDataset: { role: 'scan-runbar' } }));
+        assert.ok(cls(bar.el).includes('run-bar-sticky') && bar.el.dataset.stuck === 'false');
+        assert.deepEqual([...listeners.keys()].sort(), ['resize', 'scroll'], 'it follows the scroll and the window size');
+        const form = new TplElement('div');
+        form.getBoundingClientRect = () => ({ top: 40, bottom: 1800 });
+        bar.el.getBoundingClientRect = () => ({ height: 72.4 });
+        form.append(bar.el);
+        tplDocument.body.append(form);
+        const root = tplDocument.documentElement;
+        bar.refresh();
+        await settle();
+        assert.deepEqual([bar.el.dataset.stuck, root.styleProps.get('--run-bar-h')], ['true', '73px'], 'the form ends below the screen: it floats');
+        form.getBoundingClientRect = () => ({ top: -900, bottom: 500 });
+        listeners.get('scroll')();
+        await settle();
+        assert.equal(bar.el.dataset.stuck, 'false', 'the form ends on screen: it rests in its place');
+        position = 'static';
+        listeners.get('resize')();
+        await settle();
+        assert.equal(root.styleProps.has('--run-bar-h'), false, 'in the flow (a wide screen): no height published');
+        bar.setRunning(true);
+        assert.equal(bar.float.hidden, true, 'a sticky bar has no floating copy, even on a phone');
+        position = 'sticky';
+        bar.refresh();
+        await settle();
+        assert.equal(root.styleProps.get('--run-bar-h'), '73px');
+        bar.dispose();
+        assert.deepEqual([listeners.size, root.styleProps.has('--run-bar-h')], [0, false], 'listeners and the variable gone');
+      } finally {
+        for (const [name, value] of [['getComputedStyle', saved.gcs], ['addEventListener', saved.add], ['removeEventListener', saved.remove], ['innerHeight', saved.vh]]) {
+          if (value === undefined) delete globalThis[name];
+          else globalThis[name] = value;
+        }
+        tplDocument.documentElement.styleProps.clear();
+      }
+    });
   });
 
   /* ---- ToolInput --------------------------------------------------------------------------------- */
@@ -3462,6 +3534,20 @@ describe('ui/template.js — the page template', () => {
       assert.equal(input.el.querySelector('[data-action="tool-input-edit"]').hidden, true);
       assert.equal(input.el.querySelector('.tool-input-more').hidden, true);
       assert.equal(input.el.querySelector('.tool-input-foot'), null, 'no privacy note given');
+    });
+
+    test('runAt foot (several fields, Renewal readiness): Run sits after the privacy note in the footer, whole or compact — the same element', () => {
+      const { input, run } = build({ runAt: 'foot' });
+      const el = input.el;
+      const fields = el.querySelector('.tool-input-fields');
+      assert.deepEqual(fields.childNodes.map((n) => cls(n).split(' ')[0]), ['tool-input-primary', 'tool-input-inline', 'tool-input-summary'], 'no Run on the field row');
+      const foot = el.querySelector('.tool-input-foot');
+      assert.deepEqual([cls(foot), foot.childNodes.length, foot.childNodes[1]], ['tool-input-foot has-run', 2, run.el]);
+      assert.ok(cls(foot.childNodes[0]).includes('privacy-note'), 'the privacy note first');
+      input.setCompact(true);
+      assert.equal(el.querySelector('.tool-input-foot').childNodes[1], run.el, 'compact: still there');
+      const alone = ToolInput({ primary: new TplElement('div'), run: RunBar({ label: 'Check' }), runAt: 'foot' });
+      assert.deepEqual(alone.el.querySelector('.tool-input-foot').childNodes.map((n) => cls(n).split(' ')[0]), ['run-bar'], 'a footer for Run alone');
     });
   });
 
@@ -3695,6 +3781,30 @@ describe('ui/template.js — the page template', () => {
       a.dispose();
     });
 
+    test('a destructive tail (Remove) goes last, after Print, in Export ▾ — and last in "⋯" on a phone; it waits with the rest', () => {
+      let removed = 0;
+      const tail = [{ label: 'Remove', dataset: { action: 'cert-remove' }, onSelect: () => { removed += 1; } }, { label: 'no handler' }];
+      const a = ResultActions({ summary: summary(), exports: files(1), print: true, tail, link: () => 'x' });
+      assert.deepEqual(row(a), ['summary+plain', 'menu:export', 'copy-link']);
+      const items = a.el.querySelectorAll('.menu-item');
+      assert.deepEqual(items.map((i) => i.dataset.export || i.dataset.action), ['names', 'print', 'cert-remove']);
+      const remove = items[2];
+      assert.ok(remove.dataset.tail === '' && remove.querySelector('.icon-trash'), 'marked, with the trash icon');
+      remove.click();
+      assert.equal(removed, 1);
+      a.setDisabled(true);
+      assert.equal(a.el.querySelector('[data-tail]').disabled, true);
+      a.setDisabled(false);
+      a.setExportsDisabled(true);
+      assert.equal(a.el.querySelector('[data-tail]').disabled, false, 'no file to export: Remove stays');
+      // A tail alone counts as the one file: a plain button that keeps its hook and its mark.
+      const lone = ResultActions({ summary: summary(), tail: tail.slice(0, 1) });
+      assert.deepEqual(row(lone), ['summary+plain', 'cert-remove']);
+      assert.equal(lone.el.querySelector('[data-action="cert-remove"]').dataset.tail, '');
+      const phone = tplOnPhone(() => ResultActions({ summary: summary(), exports: files(1), print: true, tail, link: () => 'x' }));
+      assert.deepEqual(phone.el.querySelectorAll('.menu-item').map((i) => i.dataset.export || i.dataset.action), ['copy-summary-text', 'names', 'print', 'cert-remove', 'copy-link']);
+    });
+
     test('dispose removes the phone-layout listener (it would keep the page it drew alive): the actions\' and the run bar\'s', () => {
       const listeners = new Set();
       globalThis.matchMedia = () => ({ matches: false, addEventListener: (_type, fn) => listeners.add(fn), removeEventListener: (_type, fn) => listeners.delete(fn) });
@@ -3776,6 +3886,105 @@ describe('ui/template.js — the page template', () => {
       assert.deepEqual(checks.map((c) => [c.textContent, c.dataset.source || null, cls(c).includes('sub-intro-item')]), [['DNS first', null, false], ['CT logs', 'ct', true]]);
       assert.ok(empty.querySelector('details') && empty.contains(action));
       assert.equal(EmptyState({ message: 'x' }).querySelector('ul'), null, 'no list without checks');
+    });
+  });
+
+  /* ---- phase 3: FindingList, FileInput ---------------------------------------------------------- */
+
+  describe('FindingList', () => {
+    const finding = (key, severity, extra = {}) => ({ key, severity, text: `${key} text`, ...extra });
+
+    test('one card of rows, the worst first; three show, then "n more" (aria-expanded) and back; the view\'s hooks kept', () => {
+      const action = new TplElement('button');
+      const list = FindingList({
+        label: 'What the scan found',
+        className: 'scan-summary',
+        findings: [
+          finding('discovery', 'info', { dataset: { summary: 'discovery' } }),
+          finding('needs', 'warn', { icon: 'server', dataset: { summary: 'needs' }, action }),
+          finding('dangling', 'error', { dataset: { summary: 'dangling' } }),
+          finding('hidden', 'info'),
+          finding('wildcard', 'info'),
+          finding('needs', 'ok'),
+          finding('odd', 'purple')
+        ]
+      });
+      const el = list.el;
+      assert.ok(cls(el).includes('finding-list') && cls(el).includes('card') && cls(el).includes('scan-summary'));
+      assert.deepEqual([el.getAttribute('role'), el.getAttribute('aria-label'), el.hidden], ['group', 'What the scan found', false]);
+      const rows = el.querySelectorAll('li.finding');
+      assert.deepEqual(rows.map((r) => [r.dataset.finding, r.dataset.severity, r.hidden]),
+        [['dangling', 'error', false], ['needs', 'warn', false], ['discovery', 'info', false], ['hidden', 'info', true], ['wildcard', 'info', true]],
+        'duplicates and unknown severities dropped; past three hidden');
+      assert.deepEqual([rows[0].dataset.summary, rows[1].dataset.summary], ['dangling', 'needs'], 'data-summary kept');
+      assert.ok(rows[1].querySelector('.icon-server') && rows[1].querySelector('.finding-icon').getAttribute('aria-hidden') === 'true', 'its own icon, not read out');
+      assert.ok(rows[0].querySelector('.finding-icon.sev-error').querySelector('.icon-x-circle'), 'the status icon by default');
+      assert.equal(rows[1].querySelector('.finding-action').firstChild, action);
+      assert.equal(rows[0].querySelector('.finding-text').textContent, 'dangling text');
+      const more = el.querySelector('.finding-more');
+      assert.deepEqual([more.hidden, more.textContent, more.getAttribute('aria-expanded'), more.getAttribute('aria-controls')],
+        [false, '2 more', 'false', el.querySelector('.finding-rows').id]);
+      more.click();
+      assert.deepEqual([el.querySelectorAll('li.finding').filter((r) => r.hidden).length, more.textContent, more.getAttribute('aria-expanded'), list.isOpen()], [0, 'Show fewer', 'true', true]);
+      more.click();
+      assert.equal(el.querySelectorAll('li.finding').filter((r) => r.hidden).length, 2, 'folded again');
+    });
+
+    test('four findings show all four (never "1 more"); none: the card hides; update redraws, "n more" left as it was', () => {
+      const list = FindingList({ findings: ['a', 'b', 'c', 'd'].map((k) => finding(k, 'info')) });
+      assert.deepEqual([list.el.querySelectorAll('li.finding').filter((r) => !r.hidden).length, list.el.querySelector('.finding-more').hidden], [4, true]);
+      assert.equal(list.el.getAttribute('aria-label'), i18n.t('result.findings'));
+      list.update([]);
+      assert.equal(list.el.hidden, true);
+      list.update(['a', 'b', 'c', 'd', 'e'].map((k) => finding(k, 'warn')));
+      list.el.querySelector('.finding-more').click();
+      list.update(['a', 'b', 'c', 'd', 'e', 'f'].map((k) => finding(k, 'warn')));
+      assert.deepEqual([list.el.hidden, list.el.querySelectorAll('li.finding').filter((r) => r.hidden).length, list.isOpen()], [false, 0, true], 'still open');
+    });
+  });
+
+  describe('FileInput', () => {
+    const body = () => [new TplElement('div'), null, new TplElement('div')];
+
+    test('nothing loaded: one card — a head (28 px icon, h2 title, subtitle), the body, the privacy note in the footer; the view\'s hooks', () => {
+      const input = FileInput({
+        icon: 'certificate', title: 'Read a certificate', subtitle: 'PEM, DER, PKCS#7, PKCS#12', body: body(),
+        privacy: PrivacyNote({ text: 'Read in this browser.' }), className: 'cert-loader-card', dataset: { role: 'cert-input' }, label: 'Certificate'
+      });
+      const el = input.el;
+      assert.equal(input.more, null);
+      assert.equal(el.tagName, 'SECTION');
+      assert.deepEqual(cls(el).split(' '), ['tool-input', 'file-input', 'card', 'cert-loader-card']);
+      assert.deepEqual([el.dataset.role, el.getAttribute('role'), el.getAttribute('aria-label')], ['cert-input', 'group', 'Certificate']);
+      assert.deepEqual(el.childNodes.map((n) => cls(n)), ['file-input-head', 'file-input-body', 'tool-input-foot']);
+      const icon = el.querySelector('.file-input-icon');
+      assert.ok(icon.getAttribute('aria-hidden') === 'true' && icon.querySelector('.icon-certificate'));
+      assert.deepEqual([el.querySelector('h2.file-input-title').textContent, el.querySelector('.file-input-subtitle').textContent], ['Read a certificate', 'PEM, DER, PKCS#7, PKCS#12']);
+      assert.equal(el.querySelector('.file-input-body').childNodes.length, 2, 'null parts dropped');
+      assert.ok(el.querySelector('.tool-input-foot').querySelector('.privacy-note'));
+      assert.deepEqual(FileInput({ body: body() }).el.childNodes.map((n) => cls(n)), ['file-input-body'], 'no title, no privacy: the body alone');
+    });
+
+    test('loaded: one compact row — a disclosure (the view\'s class) holding the same body, then the actions — over the privacy note', () => {
+      const parts = body();
+      const add = new TplElement('button');
+      add.dataset.action = 'estate-add';
+      const input = FileInput({
+        loaded: true, title: 'Reports', more: '2 reports loaded', moreClass: 'estate-import-more', moreOpen: true, body: parts,
+        actions: [add, null], privacy: PrivacyNote({ text: 'Read in this browser.' }), className: 'estate-import'
+      });
+      const el = input.el;
+      assert.deepEqual(cls(el).split(' '), ['tool-input', 'file-input', 'is-compact', 'card', 'estate-import']);
+      assert.deepEqual(el.childNodes.map((n) => cls(n)), ['file-input-row', 'tool-input-foot']);
+      const [details, actions] = el.querySelector('.file-input-row').childNodes;
+      assert.equal(details, input.more);
+      assert.deepEqual([details.tagName, cls(details), details.open], ['DETAILS', 'disclosure file-input-more estate-import-more', true]);
+      assert.equal(details.querySelector('.disclosure-summary').textContent, '2 reports loaded');
+      assert.ok(details.querySelector('.file-input-body').contains(parts[0]), 'the body inside the disclosure');
+      assert.deepEqual([cls(actions), actions.childNodes.length, actions.firstChild], ['file-input-actions', 1, add]);
+      assert.equal(el.querySelector('.file-input-head'), null, 'no head once loaded');
+      const plain = FileInput({ loaded: true, more: 'Load another file', moreClass: 'cert-reload', body: body() });
+      assert.deepEqual([plain.el.querySelector('.file-input-row').childNodes.length, plain.more.open], [1, false], 'no actions, folded');
     });
   });
 

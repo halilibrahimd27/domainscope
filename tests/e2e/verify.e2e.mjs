@@ -58,7 +58,8 @@ import { orderSuites } from './run-all.mjs';
 import { SOURCES as LIB_SOURCES } from '../../assets/js/lib/sources.js';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions,
-  createRunner, csvHeader, gotoRoute, installDownloadCapture, openScanOptions, setLangUi, sleep, takeDownloads, waitReady
+  createRunner, csvHeader, gotoRoute, installDownloadCapture, openScanOptions, resultAction, setLangUi, sleep, takeDownloads,
+  unfoldScanSetup, waitReady
 } from './scan.e2e.mjs';
 
 /* ------------------------------------------------------------------------ */
@@ -672,7 +673,8 @@ async function main() {
       await takeDownloads(page);
       await page.click('.scan-tab-verify .vfy-table [data-export="csv"]');
       await page.click('.scan-tab-verify .vfy-table [data-export="json"]');
-      await page.click('.scan-exports [data-export="json"]');
+      await resultAction(page, '[data-export="json"]', '.scan-run');
+      await page.waitFor(() => (window.__downloads || []).length === 3, { message: 'three downloads' });
       const files = await takeDownloads(page);
       const csv = files.find((f) => /^verify.*\.csv$/.test(f.name));
       const json = files.find((f) => /^verify.*\.json$/.test(f.name));
@@ -1112,6 +1114,8 @@ async function main() {
     });
 
     await run.step('without a certificate there is no Verify tab, hint or summary line', async () => {
+      // The scan folded the setup into one row: Edit shows step 1 again.
+      await unfoldScanSetup(page);
       if (await page.evaluate(() => !!document.querySelector('[data-action="cert-remove"]'))) {
         await page.click('[data-action="cert-remove"]');
         await page.waitFor(() => !document.querySelector('.scan-step-cert .cert-summary'), { message: 'certificate removed' });

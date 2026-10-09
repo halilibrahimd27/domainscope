@@ -11,28 +11,36 @@
  *   so) and estateOf (the CLI's estate: expiry buckets, kinds, one name served with different
  *   certificates, one key on several hosts (addresses) or certificates, weak keys or signatures,
  *   certificates covering none of the names asked). Days left count from now.
- * - The page: the import card (a drop zone for .json files, the command that makes a report, the
- *   reports read so far), the numbers as tiles that filter the table (each counts certificates;
- *   its hint the names or keys behind them), the kinds, and three tabs:
- *   Certificates (filter, search, a row's details: fingerprints and where it is served; CSV of
- *   what the filter shows, the CLI's --estate --csv columns; a report made with --ari or
- *   --revocation adds a renewal-window (ARI) or a revocation column, its counts in the overview
- *   and its records in the details, ui/revocation.js; a report whose scan checked trust flags the
- *   certificates an endpoint serves with an untrusted chain, a filter of their own, and says why
- *   per endpoint in the details, OpenSSL's verify code in the page's words), Same name, different certificates,
- *   and Shared keys. "Copy summary" (lib/summary.js estateSummary) above the numbers: the counts,
- *   what expires first and what needs a look, by certificate name only — never an address or a
- *   server of the reports — and a link to the view without them.
+ * - The page template (ui/template.js; docs/DESIGN.md §5.5 "File", phase 3): the file input (a
+ *   drop zone for .json files, paste, the command that makes a report; once reports are read one
+ *   row — "2 reports loaded" with the reports behind it · Add files · Forget all — over the privacy
+ *   note), the result header `.estate-overview` ("Certificate estate · 9 certificates on 7
+ *   endpoints", when the newest report was scanned, the counts — expired, expiring within 30 days,
+ *   in a name conflict, with a shared key, weak — as filters of the certificate list, Copy summary
+ *   and Export ▾ with the CSV of what the list shows and Print), the notes as a finding list, and
+ *   three tabs: Certificates (the expiry buckets and kinds as figures, then filter, search, a row's
+ *   details: fingerprints and where it is served; the CLI's --estate --csv columns in the CSV; a
+ *   report made with --ari or --revocation adds a renewal-window (ARI) or a revocation column, its
+ *   counts in the figures and its records in the details, ui/revocation.js; a report whose scan
+ *   checked trust flags the certificates an endpoint serves with an untrusted chain, a filter of
+ *   their own, and says why per endpoint in the details, OpenSSL's verify code in the page's
+ *   words), Same name, different certificates, and Shared keys. "Copy summary" (lib/summary.js
+ *   estateSummary): the counts, what expires first and what needs a look, by certificate name only
+ *   — never an address or a server of the reports — and a link to the view without them.
  *
  * Pure helpers are exported for the unit tests (tests/js/estate-view.test.js); the module is
  * DOM-free at import time.
  */
 
-import { h, clear } from '../ui/dom.js';
+import { h, clear, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, DataTable, Disclosure, EmptyState, FileDrop, IconButton, StatCard, Tabs,
+  Alert, Badge, Button, CodeBlock, DataTable, Disclosure, EmptyState, FileDrop, IconButton, Tabs,
   TruncatedList, announce, select, textarea, toast
 } from '../ui/components.js';
+// The page template (docs/DESIGN.md §5; phase 3): the file input, the result header, the figures, the notes.
+import {
+  EmptyState as ToolEmptyState, FileInput, FindingList, MetricStrip, PrivacyNote, ResultActions, ResultHeader, ResultTitle, StatusSummary
+} from '../ui/template.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { permalinkParams } from '../ui/view-summaries.js';
@@ -40,7 +48,7 @@ import { AriCell, RevocationCell, statusDetails } from '../ui/revocation.js';
 import { formatDate, formatDateTime, formatNumber, registerStrings } from '../i18n.js';
 import {
   ESTATE_ARI_STATES, ESTATE_BUCKETS, ESTATE_FILTERS, ESTATE_KINDS, ESTATE_MAX_BYTES, ESTATE_MAX_REPORTS, ESTATE_REVOCATION_STATES,
-  SHARED_KEY_WIDE_HOSTS, estateCsv, estateFilterCounts, estateMatches, estateOf, estateStatusCounts, mergeReports, readEstateReport,
+  SHARED_KEY_WIDE_HOSTS, estateCsv, estateMatches, estateOf, estateStatus, estateStatusCounts, estateFilterCounts, mergeReports, readEstateReport,
   sharedKeyNeedsLook, trustDetailCode
 } from '../lib/estate.js';
 
@@ -65,8 +73,21 @@ const ROW_ENDPOINTS = 2;
 /* ------------------------------------------------------------------------ */
 
 registerStrings('en', {
-  'estate.privacyTitle': 'Read in your browser',
   'estate.privacy': 'The reports are read here and kept only in this tab: nothing is uploaded or stored, and a reload, Forget, another workspace or “Delete all local data” clears them.',
+  'estate.reportsSub': 'The JSON files ssl_origin_scan.py writes with --json',
+  'estate.loaded': { one: '{count} report loaded', other: '{count} reports loaded' },
+  'estate.addFiles': 'Add files',
+  'estate.emptyLine': 'Every certificate the scanned servers serve, what needs a look first, and a CSV of it.',
+  'estate.headTitle': 'Certificate estate · {certs} on {endpoints}',
+  'estate.scannedAt': 'Scanned {when}',
+  'estate.st.expired': { one: '{count} expired', other: '{count} expired' },
+  'estate.st.soon': { one: '{count} expires within 30 days', other: '{count} expire within 30 days' },
+  'estate.st.name-conflict': { one: '{count} in a name conflict', other: '{count} in a name conflict' },
+  'estate.st.shared-key': { one: '{count} with a shared key', other: '{count} with a shared key' },
+  'estate.st.weak': { one: '{count} weak', other: '{count} weak' },
+  'estate.metrics': 'Certificates by expiry and kind',
+  'estate.filter.expired': 'Expired ({count})',
+  'estate.filter.soon': 'Expiring within 30 days ({count})',
   'estate.drop.title': 'Drop the CLI’s JSON reports here',
   'estate.drop.hint': 'or click to choose · several at once (one per site or jump host) · the file written by --json',
   'estate.paste.summary': 'Paste a report',
@@ -97,26 +118,11 @@ registerStrings('en', {
   'estate.error.not-report': '{name}: not a report of ssl_origin_scan.py',
   'estate.error.version': '{name}: written by version {detail} of the CLI, which this page cannot read',
   'estate.error.no-results': '{name}: a report without result rows',
-  'estate.emptyTitle': 'No report open yet',
-  'estate.emptyBody': 'Drop one or more JSON reports of the CLI above: the certificates they found are listed here with their expiry, kind and key, and what needs a look first.',
   'estate.note.overlap': { one: '{sample} was scanned by more than one report: for each name, the newest report’s answer is used.', other: '{sample} and {more} more endpoints were scanned by more than one report: for each name, the newest report’s answer is used.' },
   'estate.note.overlapPrivate': 'Reports of separate networks that reuse the same private addresses should be opened one at a time.',
   'estate.note.noKeys': { one: '{names} was written by an older CLI without public-key hashes: key reuse is not checked for its certificates.', other: '{names} were written by an older CLI without public-key hashes: key reuse is not checked for their certificates.' },
   'estate.note.noNames': 'No names were asked, only each address without SNI: which certificate covers which name cannot be told. Give your host names to the CLI with -n.',
-  'estate.stat.certs': 'Certificates',
-  'estate.stat.certsHint': { one: 'on {count} endpoint', other: 'on {count} endpoints' },
-  'estate.stat.expiring': 'Expiring',
-  'estate.stat.expiringHint': 'expired, or within 30 days',
-  'estate.stat.conflicts': 'In a name conflict',
-  'estate.stat.conflictsHint': { one: '{count} name, several certificates', other: '{count} names, several certificates' },
-  'estate.stat.shared': 'With a shared key',
-  'estate.stat.sharedHint': { one: '{count} key in several certificates or on {hosts}+ addresses', other: '{count} keys in several certificates or on {hosts}+ addresses' },
   'estate.stat.weak': 'Weak',
-  'estate.stat.weakHint': 'RSA < 2048, SHA-1, MD5',
-  'estate.stat.coversNone': 'Covering no name',
-  'estate.stat.coversNoneHint': 'of the names asked',
-  'estate.stat.noNames': 'no names asked',
-  'estate.stat.filterTitle': 'Show these in the certificate list',
   'estate.kinds': 'Kinds',
   'estate.kind.origin-ca': 'Cloudflare Origin CA',
   'estate.kind.self-signed': 'self-signed',
@@ -222,8 +228,21 @@ registerStrings('en', {
 });
 
 registerStrings('tr', {
-  'estate.privacyTitle': 'Tarayıcınızda okunur',
   'estate.privacy': 'Raporlar burada okunur ve yalnızca bu sekmede tutulur: hiçbir yere yüklenmez ya da kaydedilmez; sayfayı yenilemek, Unut, başka bir çalışma alanı ya da “Tüm yerel verileri sil” onları siler.',
+  'estate.reportsSub': 'ssl_origin_scan.py’nin --json ile yazdığı JSON dosyaları',
+  'estate.loaded': '{count} rapor yüklendi',
+  'estate.addFiles': 'Dosya ekle',
+  'estate.emptyLine': 'Taranan sunucuların sunduğu her sertifika, önce bakılması gerekenler ve bunların CSV dosyası.',
+  'estate.headTitle': 'Sertifika envanteri · {endpoints} üzerinde {certs}',
+  'estate.scannedAt': '{when} tarandı',
+  'estate.st.expired': '{count} sertifikanın süresi doldu',
+  'estate.st.soon': '{count} sertifikanın süresi 30 gün içinde doluyor',
+  'estate.st.name-conflict': '{count} sertifika ad çakışmasında',
+  'estate.st.shared-key': '{count} sertifika anahtarını paylaşıyor',
+  'estate.st.weak': '{count} zayıf sertifika',
+  'estate.metrics': 'Bitişe ve türe göre sertifikalar',
+  'estate.filter.expired': 'Süresi dolmuş ({count})',
+  'estate.filter.soon': '30 gün içinde dolacak ({count})',
   'estate.drop.title': 'CLI’nin JSON raporlarını buraya bırakın',
   'estate.drop.hint': 'ya da seçmek için tıklayın · aynı anda birkaç dosya (her konum ya da atlama sunucusu için bir tane) · --json ile yazılan dosya',
   'estate.paste.summary': 'Bir raporu yapıştırın',
@@ -254,26 +273,11 @@ registerStrings('tr', {
   'estate.error.not-report': '{name}: ssl_origin_scan.py’nin bir raporu değil',
   'estate.error.version': '{name}: CLI’nin bu sayfanın okuyamadığı {detail} sürümüyle yazılmış',
   'estate.error.no-results': '{name}: sonuç satırı olmayan bir rapor',
-  'estate.emptyTitle': 'Henüz açık rapor yok',
-  'estate.emptyBody': 'CLI’nin bir ya da birkaç JSON raporunu yukarı bırakın: bulduğu sertifikalar süre dolumu, türü ve anahtarıyla burada listelenir; önce bakılması gerekenler en üstte.',
   'estate.note.overlap': { one: '{sample} birden çok raporda tarandı: her ad için en yeni raporun yanıtı kullanıldı.', other: '{sample} ve {more} uç nokta daha birden çok raporda tarandı: her ad için en yeni raporun yanıtı kullanıldı.' },
   'estate.note.overlapPrivate': 'Aynı özel adresleri kullanan ayrı ağların raporlarını tek tek açın.',
   'estate.note.noKeys': { one: '{names}, açık anahtar özetleri olmayan eski bir CLI ile yazılmış: sertifikalarında anahtarın yeniden kullanımı denetlenmez.', other: '{names}, açık anahtar özetleri olmayan eski bir CLI ile yazılmış: sertifikalarında anahtarın yeniden kullanımı denetlenmez.' },
   'estate.note.noNames': 'Hiçbir ad sorulmadı, her adres yalnızca SNI olmadan soruldu: hangi sertifikanın hangi adı kapsadığı söylenemez. Host adlarınızı CLI’ye -n ile verin.',
-  'estate.stat.certs': 'Sertifikalar',
-  'estate.stat.certsHint': { one: '{count} uç noktada', other: '{count} uç noktada' },
-  'estate.stat.expiring': 'Süresi dolan',
-  'estate.stat.expiringHint': 'dolmuş ya da 30 gün içinde dolacak',
-  'estate.stat.conflicts': 'Ad çakışmasında',
-  'estate.stat.conflictsHint': { one: '{count} ad, birden çok sertifika', other: '{count} ad, birden çok sertifika' },
-  'estate.stat.shared': 'Paylaşılan anahtarlı',
-  'estate.stat.sharedHint': { one: 'birden çok sertifikada ya da {hosts}+ adreste {count} anahtar', other: 'birden çok sertifikada ya da {hosts}+ adreste {count} anahtar' },
   'estate.stat.weak': 'Zayıf',
-  'estate.stat.weakHint': 'RSA < 2048, SHA-1, MD5',
-  'estate.stat.coversNone': 'Hiçbir adı kapsamayan',
-  'estate.stat.coversNoneHint': 'sorulan adlardan',
-  'estate.stat.noNames': 'ad sorulmadı',
-  'estate.stat.filterTitle': 'Sertifika listesinde bunları göster',
   'estate.kinds': 'Türler',
   'estate.kind.origin-ca': 'Cloudflare Origin CA',
   'estate.kind.self-signed': 'kendinden imzalı',
@@ -478,8 +482,11 @@ export function endpointLabel(ip, port) {
 /* View                                                                     */
 /* ------------------------------------------------------------------------ */
 
-/** Page-session state (module memory only; see the module comment). */
-const S = { reports: [], errors: [], paste: '', filter: 'all', tab: 'certificates', view: null };
+/**
+ * Page-session state (module memory only; see the module comment). `importOpen`: the compact
+ * input's "n reports loaded" disclosure is open (kept over a redraw).
+ */
+const S = { reports: [], errors: [], paste: '', filter: 'all', tab: 'certificates', view: null, importOpen: false };
 let subscribed = false;
 let rerender = null;
 
@@ -490,7 +497,11 @@ function forgetAll() {
   S.filter = 'all';
   S.tab = 'certificates';
   S.view = null;
+  S.importOpen = false;
 }
+
+/** The status items that are filters of the certificate list ({@link estateStatus}): their key is the filter. */
+const STATUS_FILTERS = Object.freeze(['expired', 'soon', 'name-conflict', 'shared-key', 'weak']);
 
 /**
  * Mount the view.
@@ -509,13 +520,21 @@ export function mount(container, ctx) {
       }
     });
   }
-  const root = h('div', { class: 'estate-page stack' });
-  container.append(
-    Alert({ variant: 'ok', icon: 'lock', title: t('estate.privacyTitle'), message: t('estate.privacy'), compact: true }),
-    root);
+  const root = h('div', { class: 'estate-page' });
+  container.append(root);
   rerender = () => render();
+  /** The result header's actions (they follow the phone layout), taken back with the header. */
+  let actions = null;
+  const disposeActions = () => {
+    if (actions) actions.dispose();
+    actions = null;
+  };
+  /** The header's status summary (its pressed item follows the list's filter), and the certificate table, while they are on screen. */
+  let status = null;
+  let table = null;
   ctx.onCleanup(() => {
     rerender = null;
+    disposeActions();
   });
 
   // several reports: the ones whose answers put this certificate on this endpoint
@@ -544,10 +563,12 @@ export function mount(container, ctx) {
       announce(msg);
       toast(msg, { type: 'success', timeout: 2500 });
     }
+    // A text to fix, or a file that was not read: the compact input opens on it; a clean import folds it.
+    S.importOpen = !!(S.paste || S.errors.length);
     render();
-    // The page is drawn again: the focus goes to the numbers of what was read, else back to where
-    // the text or the file came from (never to <body>).
-    const target = result.added ? root.querySelector('.estate-stats [data-filter="all"]')
+    // The page is drawn again: the focus goes to the result's title once something was read, else
+    // back to where the text or the file came from (never to <body>).
+    const target = result.added ? root.querySelector('.estate-overview .result-title')
       : pasted !== null ? root.querySelector('[data-role="estate-paste"]') : root.querySelector('.estate-drop');
     if (target) target.focus();
   }
@@ -557,7 +578,9 @@ export function mount(container, ctx) {
     recompute();
     toast(t('estate.reports.removed', { name: report.name }), { type: 'info' });
     render();
-    const target = root.querySelector('.filedrop');
+    // The list the Remove was in is drawn again: its first Remove left, else the drop zone (both
+    // in the open "n reports loaded" disclosure, or in the whole card once none is left).
+    const target = root.querySelector('.estate-report .btn-icon') || root.querySelector('.filedrop');
     if (target) target.focus({ preventScroll: true });
   }
 
@@ -569,36 +592,103 @@ export function mount(container, ctx) {
     if (target) target.focus({ preventScroll: true });
   }
 
-  function setFilter(filter) {
-    S.filter = S.filter === filter && filter !== 'all' ? 'all' : filter;
-    S.tab = 'certificates';
-    render();
-    // the tiles are drawn again: the focus stays on the one pressed
-    const tile = root.querySelector(`.estate-stats [data-filter="${filter}"]`);
-    if (tile) tile.focus({ preventScroll: true });
+  /** A filter of the certificate list (a pressed count of the header, or the Show select): the status and the select follow. */
+  function setFilter(filter, { fromStatus = false } = {}) {
+    S.filter = ESTATE_FILTERS.includes(filter) ? filter : 'all';
+    if (status) status.setPressed(STATUS_FILTERS.includes(S.filter) ? S.filter : null);
+    if (table) table.setFilter((c) => estateMatches(c, S.filter));
+    const sel = root.querySelector('.estate-filter select');
+    if (sel && sel.value !== S.filter) sel.value = S.filter;
+    if (!fromStatus) return;
+    // A count opens the tab that lists what it counts (docs/DESIGN.md §5.4).
+    if (S.tab !== 'certificates' && tabs) tabs.select('certificates');
+    const panel = root.querySelector('.estate-tabs');
+    if (panel) panel.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
   }
 
   /* --- render ------------------------------------------------------------ */
+  /** The result's tabs on screen (a count of the header opens Certificates). */
+  let tabs = null;
+
   function render() {
+    disposeActions();
+    status = null;
+    table = null;
+    tabs = null;
     clear(root);
     root.append(importCard());
     if (!S.view) {
-      root.append(EmptyState({ icon: 'certificate', title: t('estate.emptyTitle'), message: t('estate.emptyBody') }));
+      // The empty result region (docs/DESIGN.md §5.2): what the tool gives, the chips of what it reads.
+      root.append(h('div', { class: 'estate-empty' }, ToolEmptyState({
+        icon: 'certificate',
+        message: t('estate.emptyLine'),
+        checks: [t('estate.expiryLine'), t('estate.kinds'), t('estate.tab.conflicts'), t('estate.tab.keys'), t('estate.stat.weak')]
+      })));
       return;
     }
     const { estate, merged } = S.view;
-    const notes = notesOf(estate, merged);
+    root.append(resultHead(estate).el);
+    // What the reports need said (region 7: they concern the whole estate, so they come before the tabs).
+    root.append(FindingList({ className: 'estate-notes', findings: notesOf(estate, merged) }).el);
     // A scope without a submit: Ctrl/Cmd+Enter in the table's filter never re-reads a report.
-    const summary = SummaryButton({
-      kind: 'estate',
-      facts: () => (S.view ? estateSummaryFacts(S.view.estate, S.reports) : null),
-      // the view's bare link: the reports never go into a URL
-      url: () => ctx.shareUrl(permalinkParams('estate', {}))
+    root.append(h('div', { class: 'stack estate-results', dataset: { shortcutScope: 'results' } }, resultTabs(estate)));
+  }
+
+  /**
+   * The result header (region 4; docs/DESIGN.md §5.6): "Certificate estate · 9 certificates on 7
+   * endpoints", when the newest report was scanned, the counts as filters of the certificate list,
+   * then Copy summary and Export ▾ (CSV of what the list shows, Print). No Copy link: the reports
+   * never go into a URL.
+   * @param {object} estate
+   */
+  function resultHead(estate) {
+    const head = ResultHeader({ className: 'estate-overview' });
+    head.setState('done');
+    head.set('title', ResultTitle({
+      text: t('estate.headTitle', {
+        certs: t('estate.reports.certs', { count: estate.counts.certificates }),
+        endpoints: t('estate.reports.endpoints', { count: estate.counts.endpointsWithCertificate })
+      })
+    }));
+    const times = S.reports.map((r) => r.finishedAt).filter((d) => d instanceof Date && !Number.isNaN(d.getTime()));
+    const newest = times.length ? new Date(Math.max(...times.map((d) => d.getTime()))) : null;
+    head.set('meta', [
+      newest ? h('span', { class: 'estate-scanned', title: newest.toISOString() }, t('estate.scannedAt', { when: formatDateTime(newest, { utc: true }) })) : null,
+      h('span', null, t('estate.reports.count', { count: S.reports.length }))
+    ]);
+    status = StatusSummary({
+      className: 'estate-status',
+      pressed: STATUS_FILTERS.includes(S.filter) ? S.filter : null,
+      items: estateStatus(estate).map((item) => ({
+        ...item,
+        text: t(`estate.st.${item.key}`, { count: item.count }),
+        filter: true,
+        onPress: (key) => setFilter(S.filter === key ? 'all' : key, { fromStatus: true })
+      }))
     });
-    root.append(h('div', { class: 'stack estate-results', dataset: { shortcutScope: 'results' } },
-      notes.length ? h('div', { class: 'stack-sm estate-notes' }, notes) : null,
-      h('div', { class: 'cluster estate-summary' }, summary.el),
-      statTiles(estate), overviewLine(estate), resultTabs(estate)));
+    head.set('status', status.el);
+    actions = ResultActions({
+      summary: SummaryButton({
+        kind: 'estate',
+        plainLabel: t('result.plainTitle'),
+        facts: () => (S.view ? estateSummaryFacts(S.view.estate, S.reports) : null),
+        // the view's bare link: the reports never go into a URL
+        url: () => ctx.shareUrl(permalinkParams('estate', {}))
+      }),
+      exports: [{ label: t('estate.csv'), title: t('estate.csvTitle'), icon: 'download', dataset: { export: 'csv' }, onSelect: () => exportCsv(estate) }],
+      print: true
+    });
+    head.set('actions', actions.el);
+    return head;
+  }
+
+  /** The certificates the list shows (its filter and search), the CLI's --estate --csv rows. */
+  function exportCsv(estate) {
+    const rows = table ? table.getVisibleRows() : estate.certificates.filter((c) => estateMatches(c, S.filter));
+    const file = downloadText(timestampedName('estate', 'csv'), estateCsv(estate, {
+      certificates: rows, reportName: S.reports.length > 1 ? reportName : null
+    }), 'text/csv;charset=utf-8');
+    toast(t('estate.csvDone', { file }), { type: 'success', timeout: 2500 });
   }
 
   function importCard() {
@@ -650,14 +740,37 @@ export function mount(container, ctx) {
       open: !!S.paste,
       children: h('div', { class: 'stack-sm', dataset: { shortcutScope: 'estate-paste' } }, pasteArea.el, h('div', { class: 'cluster' }, pasteBtn))
     });
-    return Card({
-      title: t('estate.reports.title'),
-      subtitle: S.reports.length ? t('estate.reports.count', { count: S.reports.length }) : null,
-      icon: 'file-text',
+    // Region 2 (docs/DESIGN.md §5.5, "File"): the drop zone, paste and how to make a report; once
+    // reports are read, one row — "2 reports loaded" (the list and the rest behind it) · Add files ·
+    // Forget all — over the privacy note, which stays.
+    const privacy = PrivacyNote({ text: t('estate.privacy'), className: 'estate-privacy' });
+    if (!S.reports.length) {
+      return FileInput({
+        title: t('estate.reports.title'),
+        subtitle: t('estate.reportsSub'),
+        icon: 'file-text',
+        className: 'estate-import',
+        label: t('nav.estate'),
+        body: [drop.el, errors, paste, how],
+        privacy
+      }).el;
+    }
+    const input = FileInput({
+      loaded: true,
       className: 'estate-import',
-      actions: S.reports.length ? Button({ label: t('estate.forget'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'estate-forget' }, onClick: forget }) : null,
-      children: h('div', { class: 'stack-sm' }, drop.el, errors, list, paste, how)
+      label: t('nav.estate'),
+      more: t('estate.loaded', { count: S.reports.length }),
+      moreClass: 'estate-import-more',
+      moreOpen: S.importOpen,
+      body: [list, drop.el, errors, paste, how],
+      actions: [
+        Button({ label: t('estate.addFiles'), icon: 'plus', size: 'sm', dataset: { action: 'estate-add' }, onClick: () => drop.open() }),
+        Button({ label: t('estate.forget'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'estate-forget' }, onClick: forget })
+      ],
+      privacy
     });
+    input.more.addEventListener('toggle', () => { S.importOpen = input.more.open; });
+    return input.el;
   }
 
   function reportItem(report) {
@@ -682,75 +795,53 @@ export function mount(container, ctx) {
         IconButton({ icon: 'x', label: t('estate.reports.remove', { name: report.name }), size: 'sm', onClick: () => removeReport(report) })));
   }
 
+  /** What the reports need said, as findings (they were stacked alerts). */
   function notesOf(estate, merged) {
     const out = [];
     if (merged.overlaps.length) {
       const [ip, port] = merged.overlaps[0].split('|');
-      out.push(Alert({
-        variant: 'info',
-        compact: true,
-        message: `${t('estate.note.overlap', { count: merged.overlaps.length, sample: endpointLabel(ip, port), more: merged.overlaps.length - 1 })} ${t('estate.note.overlapPrivate')}`
-      }));
+      out.push({
+        key: 'overlap', severity: 'info',
+        text: `${t('estate.note.overlap', { count: merged.overlaps.length, sample: endpointLabel(ip, port), more: merged.overlaps.length - 1 })} ${t('estate.note.overlapPrivate')}`
+      });
     }
     const noKeys = S.reports.filter((r) => !r.keyHashes).map((r) => r.name);
-    if (noKeys.length) out.push(Alert({ variant: 'info', compact: true, message: t('estate.note.noKeys', { count: noKeys.length, names: noKeys.join(', ') }) }));
-    if (!estate.namesAsked.length) out.push(Alert({ variant: 'warn', compact: true, message: t('estate.note.noNames') }));
+    if (noKeys.length) out.push({ key: 'no-keys', severity: 'info', text: t('estate.note.noKeys', { count: noKeys.length, names: noKeys.join(', ') }) });
+    if (!estate.namesAsked.length) out.push({ key: 'no-names', severity: 'warn', text: t('estate.note.noNames') });
     return out;
   }
 
-  function statTiles(estate) {
-    const counts = estateFilterCounts(estate);
-    const noNames = !estate.namesAsked.length;
-    const tile = (filter, label, value, hint, variant) => {
-      const card = StatCard({
-        label,
-        value,
-        hint,
-        variant: value ? variant : 'default',
-        pressed: S.filter === filter,
-        onClick: () => setFilter(filter)
-      });
-      card.el.dataset.filter = filter;
-      card.el.title = t('estate.stat.filterTitle');
-      return card.el;
-    };
-    return h('div', { class: 'stat-grid estate-stats' },
-      tile('all', t('estate.stat.certs'), estate.counts.certificates, t('estate.stat.certsHint', { count: estate.counts.endpointsWithCertificate }), 'accent'),
-      tile('expiring', t('estate.stat.expiring'), counts.expiring, t('estate.stat.expiringHint'), 'error'),
-      tile('name-conflict', t('estate.stat.conflicts'), counts['name-conflict'], t('estate.stat.conflictsHint', { count: estate.nameConflicts.length }), 'warn'),
-      tile('shared-key', t('estate.stat.shared'), counts['shared-key'], t('estate.stat.sharedHint', {
-        count: estate.sharedKeys.filter((g) => sharedKeyNeedsLook(g)).length, hosts: SHARED_KEY_WIDE_HOSTS
-      }), 'warn'),
-      tile('weak', t('estate.stat.weak'), counts.weak, t('estate.stat.weakHint'), 'error'),
-      tile('covers-none', t('estate.stat.coversNone'), noNames ? '—' : counts['covers-none'], noNames ? t('estate.stat.noNames') : t('estate.stat.coversNoneHint'), 'warn'));
-  }
-
-  function overviewLine(estate) {
-    const status = estateStatusCounts(estate);
-    const part = (label, items) => h('div', { class: 'estate-line' },
-      h('span', { class: 'estate-line-label' }, label),
-      h('span', { class: 'estate-line-items' }, items));
-    return h('div', { class: 'estate-overview' },
-      part(t('estate.expiryLine'), ESTATE_BUCKETS.map((b) => Badge(`${t(`estate.bucket.${b}`)} ${formatNumber(estate.counts.expiry[b])}`, {
-        variant: estate.counts.expiry[b] ? bucketVariant(b) : 'neutral'
+  /**
+   * The figures of the certificate list (region 6, read-only; docs/DESIGN.md §5.6: "expiry/kind
+   * chips → metric strip"): the expiry buckets — each shown, a distribution —, the kinds (a zero
+   * folds into one sentence), and the CLI's --ari / --revocation states when a report has them.
+   */
+  function metricsOf(estate) {
+    const st = estateStatusCounts(estate);
+    const row = (id, label, metrics, foldable = []) => h('div', { class: 'estate-metric-row', dataset: { metrics: id } },
+      h('span', { class: 'estate-metric-title' }, label),
+      MetricStrip({ label, metrics, foldable, className: `estate-metrics-${id}` }).el);
+    const severityOf = (bucket, n) => (!n ? null : bucket === 'expired' || bucket === '7d' ? 'error' : bucket === '30d' ? 'warn' : null);
+    return h('div', { class: 'estate-metrics', attrs: { role: 'group', 'aria-label': t('estate.metrics') } },
+      row('expiry', t('estate.expiryLine'), ESTATE_BUCKETS.map((b) => ({
+        id: b, label: t(`estate.bucket.${b}`), value: estate.counts.expiry[b], severity: severityOf(b, estate.counts.expiry[b])
       }))),
-      part(t('estate.kinds'), ESTATE_KINDS.map((k) => Badge(`${t(`estate.kind.${k}`)} ${formatNumber(estate.counts.kinds[k])}`, {
-        variant: 'neutral', className: `estate-kind estate-kind-${k}`
-      }))),
+      row('kinds', t('estate.kinds'), ESTATE_KINDS.map((k) => ({ id: k, label: t(`estate.kind.${k}`), value: estate.counts.kinds[k] })), [...ESTATE_KINDS]),
       // the CLI's --ari / --revocation, when a report has them
-      status.ari ? part(t('rev.col.ari'), ESTATE_ARI_STATES.map((s) => Badge(`${t(`rev.sum.ari.${s}`)} ${formatNumber(status.ari[s])}`, {
-        variant: status.ari[s] && (s === 'open' || s === 'past') ? 'error' : 'neutral', className: `estate-ari estate-ari-${s}`
-      }))) : null,
-      status.revocation ? part(t('rev.col.revocation'), ESTATE_REVOCATION_STATES.map((s) => Badge(`${t(`rev.sum.rev.${s}`)} ${formatNumber(status.revocation[s])}`, {
-        variant: status.revocation[s] && s === 'revoked' ? 'error' : 'neutral', className: `estate-rev estate-rev-${s}`
-      }))) : null);
+      st.ari ? row('ari', t('rev.col.ari'), ESTATE_ARI_STATES.map((s) => ({
+        id: s, label: t(`rev.sum.ari.${s}`), value: st.ari[s], severity: st.ari[s] && (s === 'open' || s === 'past') ? 'error' : null
+      })), [...ESTATE_ARI_STATES]) : null,
+      st.revocation ? row('revocation', t('rev.col.revocation'), ESTATE_REVOCATION_STATES.map((s) => ({
+        id: s, label: t(`rev.sum.rev.${s}`), value: st.revocation[s], severity: st.revocation[s] && s === 'revoked' ? 'error' : null
+      })), [...ESTATE_REVOCATION_STATES]) : null);
   }
 
   function resultTabs(estate) {
-    const tabs = Tabs([
-      { id: 'certificates', label: t('estate.tab.certificates'), icon: 'certificate', badge: estate.counts.certificates, content: () => certificatesPanel(estate) },
-      { id: 'conflicts', label: t('estate.tab.conflicts'), icon: 'git-branch', badge: estate.nameConflicts.length, content: () => conflictsPanel(estate) },
-      { id: 'keys', label: t('estate.tab.keys'), icon: 'key', badge: estate.sharedKeys.length, content: () => keysPanel(estate) }
+    // Text and count only (docs/DESIGN.md §7 Tabs).
+    tabs = Tabs([
+      { id: 'certificates', label: t('estate.tab.certificates'), badge: estate.counts.certificates, content: () => certificatesPanel(estate) },
+      { id: 'conflicts', label: t('estate.tab.conflicts'), badge: estate.nameConflicts.length, content: () => conflictsPanel(estate) },
+      { id: 'keys', label: t('estate.tab.keys'), badge: estate.sharedKeys.length, content: () => keysPanel(estate) }
     ], {
       selected: S.tab,
       label: t('estate.tabsLabel'),
@@ -774,13 +865,11 @@ export function mount(container, ctx) {
       size: 'sm',
       value: S.filter,
       options: ESTATE_FILTERS.map((f) => ({ value: f, label: t(`estate.filter.${f}`, { count: formatNumber(counts[f]), hosts: SHARED_KEY_WIDE_HOSTS }) })),
-      onChange: (v) => {
-        S.filter = v;
-        table.setFilter((c) => estateMatches(c, S.filter));
-        root.querySelectorAll('.estate-stats .stat-button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === v)));
-      }
+      // The Show select and the header's counts are the same filter (docs/DESIGN.md §5.1, region 6).
+      onChange: (v) => setFilter(v)
     });
-    const table = DataTable({
+    // The CSV of what the list shows is the result header's Export (exportCsv reads this table).
+    table = DataTable({
       caption: t('estate.tab.certificates'),
       rows: estate.certificates,
       rowKey: (c) => c.sha256,
@@ -793,15 +882,6 @@ export function mount(container, ctx) {
       className: 'estate-table',
       rowClass: (c) => ({ 'estate-row-attention': estateMatches(c, 'attention') }),
       details: (c) => certDetails(c),
-      export: {
-        formats: ['csv'],
-        onExport: (_format, rows) => {
-          const file = downloadText(timestampedName('estate', 'csv'), estateCsv(estate, {
-            certificates: rows, reportName: S.reports.length > 1 ? reportName : null
-          }), 'text/csv;charset=utf-8');
-          toast(t('estate.csvDone', { file }), { type: 'success', timeout: 2500 });
-        }
-      },
       columns: [
         {
           key: 'cert', label: t('estate.col.cert'), sortable: true, wrap: true,
@@ -854,7 +934,7 @@ export function mount(container, ctx) {
         }
       ]
     });
-    return h('div', { class: 'stack-sm' }, table.el);
+    return h('div', { class: 'stack' }, metricsOf(estate), table.el);
   }
 
   function kindBadge(kind) {

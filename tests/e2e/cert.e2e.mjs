@@ -46,7 +46,7 @@ import { launchBrowser } from './cdp.mjs';
 import { pinnedClockScript } from './clock.mjs';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions,
-  createRunner, gotoRoute, installDownloadCapture, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady
+  createRunner, gotoRoute, installDownloadCapture, resultAction, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const fixture = (name) => path.join(FIXTURES, name);
@@ -261,11 +261,12 @@ async function main() {
       if (await page.evaluate(() => document.documentElement.lang) !== 'en') await setLangUi(page, 'en');
       await page.waitForSelector('.cert-loader-card .filedrop');
       const info = await page.evaluate(() => ({
-        empty: document.querySelector('.cert-content .empty-title')?.textContent,
-        privacy: document.querySelector('.cert-privacy')?.textContent || '',
+        empty: document.querySelector('.cert-content .tool-empty-message')?.textContent,
+        checks: document.querySelectorAll('.cert-content .tool-empty-check').length,
+        privacy: document.querySelector('.cert-loader-card .tool-input-foot .cert-privacy')?.textContent || '',
         accept: document.querySelector('.cert-loader-card .filedrop-input').getAttribute('accept')
       }));
-      assertEqual(info.empty, 'No certificate loaded', 'empty state');
+      assert(/^Its names, validity, key, chain order, CAA/.test(info.empty || '') && info.checks === 7, `empty state: ${JSON.stringify(info)}`);
       assert(/never uploaded/.test(info.privacy), 'privacy note');
       assert(info.accept.includes('.pem') && info.accept.includes('.p7b') && info.accept.includes('.pfx'), `accept: ${info.accept}`);
       await assertNoHorizontalScroll(page, 'empty');
@@ -416,7 +417,8 @@ async function main() {
       await page.click('[data-action="cdiff-remove"]');
       await page.waitForSelector('.cdiff .cdiff-box');
       assert(await page.evaluate(() => !document.querySelector('.cdiff-verdict')), 'no comparison');
-      await page.click('[data-action="cert-remove"]');
+      // Remove is the last item of the result header's Export ▾ menu (docs/DESIGN.md §5.3).
+      await resultAction(page, '[data-action="cert-remove"]', '.cert-overview');
       await page.waitFor(() => !!document.querySelector('.cert-loader-card'), { message: 'empty view' });
       await page.evaluate(() => {
         document.querySelectorAll('.toast').forEach((x) => x.remove());
@@ -906,7 +908,7 @@ async function main() {
       assert(info.cmd.includes('openssl pkey -in private.key -pubout -outform DER | openssl dgst -sha256'), 'key match command');
       await page.waitFor(() => !/Computing/.test(document.querySelector('.cert-spki-value').textContent));
       await takeDownloads(page);
-      await page.click('[data-action="download-pem"]');
+      await resultAction(page, '[data-action="download-pem"]', '.cert-overview');
       const [file] = await takeDownloads(page);
       assertEqual(file.name, 'www.example-test.com.tr.pem', 'PEM file name');
       assertEqual(file.text, info.pem, 'download = shown PEM');
@@ -958,7 +960,7 @@ async function main() {
         ? [...document.querySelectorAll('[data-chain-issue]')].map((a) => a.dataset.chainIssue) : false), { message: 'chain lookup' });
       assert(issues.includes('ends-at') && issues.includes('ok'), `issues ${issues}`);
       await takeDownloads(page);
-      await page.click('[data-action="download-chain"]');
+      await resultAction(page, '[data-action="download-chain"]', '.cert-overview');
       const [file] = await takeDownloads(page);
       assertEqual(file.text.match(/BEGIN CERTIFICATE/g).length, 3, 'three certificates');
     });

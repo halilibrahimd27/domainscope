@@ -107,16 +107,63 @@ export function optionChanges(options, defaults, { totalSources = 0, extraNames 
   return out;
 }
 
+/** The folded setup row names this many domains, then "+N". */
+export const SETUP_DOMAINS_SHOWN = 2;
+
 /**
- * Is a bottom-sticky bar stuck (floating over the page) rather than resting in its own place?
- * The bar is the last child of its container, so it rests where the container ends: it floats
- * while that end lies below the viewport and the container is still on screen.
- * @param {{ sticky?: boolean, top?: number, bottom?: number, viewportHeight?: number }} m
- *   `sticky`: the bar is position: sticky at this width; `top` / `bottom`: the container's
- *   bounding rect (viewport coordinates); `viewportHeight`: innerHeight
- * @returns {boolean}
+ * The folded setup (DESIGN §5.5 "Wizard": once a scan starts the steps fold into one row,
+ * "Certificate *.example.net · RSA 2048 · Domains example.net · 4 servers · recommended options —
+ * Edit"): what each part of that row says. `cert`: the certificate's name and key, or how many
+ * certificates (several), or null; `domains`: the first ones and how many more (none typed: the
+ * certificate's names are scanned, `fromCert`); `servers`: the server list's size; `options`: the
+ * changes from the defaults (lib/scanform optionChanges ids), empty for the recommended ones.
+ * @param {{ cert?: { name: string, key?: string|null }|null, certs?: number, domains?: string[], servers?: number,
+ *   changes?: Array<{ id: string }> }} [form]
+ * @returns {{ cert: { name: string, key: string|null }|{ many: number }|null,
+ *   domains: { shown: string[], more: number, fromCert: boolean }, servers: number, options: Array<{ id: string }> }}
  */
-export function barStuck({ sticky = false, top = 0, bottom = 0, viewportHeight = 0 } = {}) {
-  const vh = Number(viewportHeight);
-  return !!sticky && Number(bottom) > vh + 0.5 && Number(top) < vh;
+export function setupSummary({ cert = null, certs = 0, domains = [], servers = 0, changes = [] } = {}) {
+  const list = [...new Set((Array.isArray(domains) ? domains : []).filter((d) => typeof d === 'string' && d))];
+  const shown = list.slice(0, SETUP_DOMAINS_SHOWN);
+  let certPart = null;
+  if (count(certs) > 1) certPart = { many: count(certs) };
+  else if (cert && cert.name) certPart = { name: String(cert.name), key: cert.key ? String(cert.key) : null };
+  return {
+    cert: certPart,
+    domains: { shown, more: list.length - shown.length, fromCert: !list.length && !!certPart },
+    servers: count(servers),
+    options: (Array.isArray(changes) ? changes : []).filter((c) => c && c.id)
+  };
 }
+
+/**
+ * What a scan with this setup would scan, as one string: a finished scan whose setup has the same
+ * signature is what the form still asks for, so Run reads "Run again" (DESIGN §5.1, region 3) — any
+ * other domain, certificate, extra name, option or zone mode makes it the verb again. The order of
+ * the domains, names and sources does not count.
+ * @param {{ domains?: string[], certs?: string[], extraNames?: string[], options?: { sources?: string[], bruteforce?: string,
+ *   permutations?: boolean, permutationBudget?: number, includeExpired?: boolean, originHints?: boolean }, zone?: string|null }} [setup]
+ *   `certs`: a key per certificate (serial and issuer); `zone`: the zone file's mode, or null
+ * @returns {string}
+ */
+export function setupSignature({ domains = [], certs = [], extraNames = [], options = {}, zone = null } = {}) {
+  const sorted = (list) => [...new Set((Array.isArray(list) ? list : []).map(String))].sort();
+  const o = options || {};
+  return JSON.stringify({
+    domains: sorted(domains),
+    certs: sorted(certs),
+    extra: sorted(extraNames),
+    sources: sorted(o.sources),
+    bruteforce: o.bruteforce || null,
+    permutations: o.permutations ? Number(o.permutationBudget) || 0 : 0,
+    expired: !!o.includeExpired,
+    hints: !!o.originHints,
+    zone: zone || null
+  });
+}
+
+/**
+ * Is a bottom-sticky bar stuck (floating over the page)? The run bar is ui/template.js's sticky
+ * RunBar now, which asks lib/template.js barStuck; re-exported for the callers of this module.
+ */
+export { barStuck } from './template.js';

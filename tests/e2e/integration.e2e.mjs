@@ -421,7 +421,7 @@ async function main() {
       await waitDone(page, () => ['done', 'error', 'cancelled'].includes(document.querySelector('.scan-run')?.dataset.status), 'scan finished', 300000);
       assertEqual(await page.evaluate(() => document.querySelector('.scan-run').dataset.status), 'done', 'status');
       const info = await page.evaluate(() => {
-        const stat = (k) => Number((document.querySelector(`[data-stat="${k}"] .stat-value`)?.textContent || '').replace(/\D/g, '')) || 0;
+        const stat = (k) => Number((document.querySelector(`.scan-stats [data-metric="${k}"] .metric-value`)?.textContent || '').replace(/\D/g, '')) || 0;
         return {
           hosts: stat('hosts'), cloudflare: stat('cloudflare'), covered: stat('covered'),
           chips: [...document.querySelectorAll('.scan-chip')].map((c) => `${c.dataset.source}=${c.dataset.state}`),

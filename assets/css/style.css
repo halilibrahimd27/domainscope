@@ -5037,6 +5037,185 @@ button.status-item[aria-pressed="true"] {
   font-size: var(--fs-sm);
 }
 
+/* Region 3 in the footer (a tool with several fields): the privacy note on the left, Run on the right. */
+.tool-input-foot.has-run {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  margin-top: 0;
+}
+
+.tool-input-foot.has-run > .privacy-note {
+  flex: 1 1 18rem;
+}
+
+.tool-input-foot.has-run > .run-bar {
+  margin-left: auto;
+}
+
+/* A run bar with info lines (a wizard's): the buttons, then the estimate and the summary. */
+.run-bar-group {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-4);
+}
+
+.run-bar-buttons {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.run-bar-info {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 220px;
+}
+
+/* Region 7: the findings — one card, one row per finding, the worst first. */
+.finding-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--card-pad);
+}
+
+.finding-list[hidden] {
+  display: none;
+}
+
+.finding-rows {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.finding {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
+}
+
+.finding:first-child {
+  border-top: 0;
+}
+
+.finding[hidden] {
+  display: none;
+}
+
+.finding-icon {
+  display: inline-flex;
+  flex: none;
+  height: var(--lh-sm);
+  align-items: center;
+  color: var(--text-3);
+}
+
+.finding-icon.sev-error {
+  color: var(--error);
+}
+
+.finding-icon.sev-warn {
+  color: var(--warn);
+}
+
+.finding-icon.sev-info {
+  color: var(--info);
+}
+
+.finding-icon.sev-ok {
+  color: var(--ok);
+}
+
+.finding-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.finding-action {
+  flex: none;
+}
+
+.finding-more {
+  align-self: flex-start;
+  font-size: var(--fs-xs);
+}
+
+/* Region 2 of a file tool: the drop zone and the rest; one compact row once something is loaded. */
+.file-input-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.file-input-icon {
+  display: grid;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.file-input-titles {
+  min-width: 0;
+}
+
+.file-input-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-md);
+}
+
+.file-input-subtitle {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
+}
+
+.file-input-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.file-input-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2) var(--space-4);
+}
+
+.file-input-row > .file-input-more {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-input-more > .disclosure-body {
+  padding-top: var(--space-3);
+}
+
+.file-input-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 /* Phones: one column of fields with a full-width Run; compact, the field over the summary and Run;
    the figures two to a row. */
 @media (max-width: 719px) {
@@ -5122,6 +5301,33 @@ button.status-item[aria-pressed="true"] {
   .metric:nth-child(odd) {
     padding-left: 0;
     border-left: 0;
+  }
+
+  /* Run in the footer: the compact row is the field alone, then full width under the privacy note. */
+  .tool-input.is-compact .tool-input-fields:not(:has(> .run-bar)) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tool-input-foot.has-run > .run-bar {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+
+  .tool-input-foot.has-run > .run-bar > .btn {
+    flex: 1;
+  }
+
+  .run-bar-info {
+    min-width: 0;
+  }
+
+  /* A file tool's compact row: the disclosure, its actions under it. */
+  .file-input-row {
+    flex-wrap: wrap;
+  }
+
+  .file-input-row > .file-input-more {
+    flex: 1 1 100%;
   }
 }
 

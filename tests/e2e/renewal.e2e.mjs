@@ -60,7 +60,8 @@ import { orderSuites } from './run-all.mjs';
 import { SOURCES as LIB_SOURCES } from '../../assets/js/lib/sources.js';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions,
-  createRunner, csvHeader, gotoRoute, installDownloadCapture, openScanOptions, setLangUi, takeDownloads, waitReady
+  createRunner, csvHeader, gotoRoute, installDownloadCapture, openScanOptions, resultAction, setLangUi, takeDownloads, unfoldScanSetup,
+  waitReady
 } from './scan.e2e.mjs';
 
 /* ------------------------------------------------------------------------ */
@@ -287,12 +288,12 @@ async function runScan(page) {
     const ui = document.querySelector('.scan-run-ui');
     return ui && ui.dataset.run !== b && ui.querySelector('.scan-run')?.dataset.status === 'done';
   }, { args: [before], timeout: 90000, interval: 150, message: 'scan done' });
-  // The stat cards redraw on a short throttle after the end and may move what sits below them:
-  // wait for their final values (the servers card leaves '…') before clicking anything.
+  // The figures redraw on a short throttle after the end and may move what sits below them:
+  // wait for their final values (the servers figure leaves '…') before clicking anything.
   await page.waitFor(() => {
-    const v = document.querySelector('.scan-run-ui [data-stat="servers"] .stat-value');
+    const v = document.querySelector('.scan-run-ui .scan-stats [data-metric="servers"] .metric-value');
     return v && v.textContent !== '…';
-  }, { message: 'final stat cards' });
+  }, { message: 'final figures' });
   const ext = await page.evaluate((n) => window.__externalFetches.slice(n), ext0);
   assertEqual(ext, [], 'external requests during the scan');
 }
@@ -742,7 +743,7 @@ async function main() {
 
     await run.step('the scan\'s full JSON: the sets, the set of every host, the plan', async () => {
       await takeDownloads(page);
-      await page.click('.scan-exports [data-export="json"]');
+      await resultAction(page, '[data-export="json"]', '.scan-run');
       await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'full JSON' });
       const doc = JSON.parse((await takeDownloads(page))[0].text);
       assertEqual(doc.certificateSets.map((s) => `${s.id}:${s.keyTypes.join('+')}`), ['A:RSA 2048+ECDSA P-256', 'B:RSA 2048'], 'sets');
@@ -781,6 +782,8 @@ async function main() {
       await openTab(page, 'verify');
       await assertNoHorizontalScroll(page, 'verify tab, 375 px');
       await page.evaluate(() => window.scrollTo(0, 0));
+      // The scan folded the setup into one row: Edit shows step 1 again.
+      await unfoldScanSetup(page);
       await assertNoHorizontalScroll(page, 'step 1, 375 px');
       await shotEl(page, opts, 'renewal-step1-tr-dark-375', STEP1);
     });
@@ -795,14 +798,15 @@ async function main() {
       await waitStep1(page, 2, 'the pair');
       await runScan(page);
       const sum = await page.evaluate(() => ({
-        renewal: document.querySelector('[data-summary="renewal"] .alert-message')?.textContent || '',
-        verify: document.querySelector('[data-summary="verify"] .alert-message')?.textContent || ''
+        renewal: document.querySelector('.scan-summary [data-summary="renewal"] .finding-text')?.textContent || '',
+        verify: document.querySelector('.scan-summary [data-summary="verify"] .finding-text')?.textContent || ''
       }));
       assertEqual(sum.renewal, '1 certificate set (RSA 2048 + ECDSA P-256): 3 servers need it — see “Renewal plan”.', 'one-set summary');
       assertEqual(sum.verify, 'After installing the certificates, open the Verify tab to check them from the internet.', 'the verify line');
     });
 
     await run.step('one certificate alone is the classic flow: no plan tab, --cert new-cert.pem', async () => {
+      await unfoldScanSetup(page);
       await page.click(`${STEP1} [data-action="cert-remove-all"]`);
       await waitStep1(page, 0, 'renewal removed');
       await page.setFileInput(`${STEP1} .filedrop-input`, [FILES.bRsa]);

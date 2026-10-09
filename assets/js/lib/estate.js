@@ -54,8 +54,11 @@ export const SHARED_KEY_MIN_HOSTS = 2;
  * does; one certificate on the members of a load-balancer pool is only listed.
  */
 export const SHARED_KEY_WIDE_HOSTS = 5;
-/** The Certificate estate view's filters, in display order. */
-export const ESTATE_FILTERS = Object.freeze(['all', 'attention', 'expiring', 'name-conflict', 'shared-key', 'weak',
+/**
+ * The Certificate estate view's filters, in display order: `expiring` is expired or within 30 days,
+ * `expired` and `soon` (within 30 days, not expired) its two halves, the status summary's items.
+ */
+export const ESTATE_FILTERS = Object.freeze(['all', 'attention', 'expiring', 'expired', 'soon', 'name-conflict', 'shared-key', 'weak',
   'covers-none', 'untrusted', 'private', 'origin-ca']);
 /** Why a file is not a report ({@link readEstateReport}). */
 export const REPORT_ERRORS = Object.freeze(['too-large', 'not-json', 'not-report', 'version', 'no-results']);
@@ -717,6 +720,8 @@ export function estateMatches(cert, filter) {
     case 'attention': return soon || cert.flags.length > 0 || (isObject(cert.revocation) && cert.revocation.status === 'revoked')
       || (isObject(cert.ariWindow) && cert.ariWindow.state !== 'before');
     case 'expiring': return soon;
+    case 'expired': return cert.expiry === 'expired';
+    case 'soon': return cert.expiry === '7d' || cert.expiry === '30d';
     case 'private': return cert.kind === 'self-signed' || cert.kind === 'private-ca';
     case 'origin-ca': return cert.kind === 'origin-ca';
     case 'name-conflict': case 'shared-key': case 'weak': case 'covers-none': case 'untrusted': return cert.flags.includes(filter);
@@ -732,6 +737,25 @@ export function estateMatches(cert, filter) {
 export function estateFilterCounts(estate) {
   const certs = estate && Array.isArray(estate.certificates) ? estate.certificates : [];
   return Object.fromEntries(ESTATE_FILTERS.map((f) => [f, certs.filter((c) => estateMatches(c, f)).length]));
+}
+
+/**
+ * The status summary of an estate (DESIGN §5.6: "✕ expired ⚠ expiring · name conflicts · shared
+ * keys · weak"): certificates that expired (error), that expire within 30 days (warn), and those in
+ * a name conflict, with a shared key or weak (neutral), each a filter of the certificate list
+ * (`filter`: an {@link ESTATE_FILTERS} value). Not a verdict tool: a zero count is left out.
+ * @param {{ certificates: EstateCertificate[] }} estate
+ * @returns {Array<{ key: string, severity: string, count: number, filter: string }>}
+ */
+export function estateStatus(estate) {
+  const counts = estateFilterCounts(estate);
+  return [
+    { key: 'expired', severity: 'error', count: counts.expired, filter: 'expired' },
+    { key: 'soon', severity: 'warn', count: counts.soon, filter: 'soon' },
+    { key: 'name-conflict', severity: 'neutral', count: counts['name-conflict'], filter: 'name-conflict' },
+    { key: 'shared-key', severity: 'neutral', count: counts['shared-key'], filter: 'shared-key' },
+    { key: 'weak', severity: 'neutral', count: counts.weak, filter: 'weak' }
+  ];
 }
 
 /**

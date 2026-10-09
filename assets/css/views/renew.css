@@ -1,12 +1,33 @@
 /*
  * views/renew.css — "Renewal readiness" view (.rnw-*). The certificate block reuses the
- * Certificate view's loader (views/cert.css, loaded with this view).
+ * Certificate view's loader (views/cert.css, loaded with this view). The input card, the result
+ * header and the empty state are the page template's (style.css § 4); what is left here is the
+ * tool's own.
  */
+
+.rnw-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
+}
+
+.rnw-hero-wrap:empty,
+.rnw-error:empty {
+  display: none;
+}
 
 /* ---- form ------------------------------------------------------------------ */
 
 .rnw-names-note:empty {
   display: none;
+}
+
+/* Compact (a check ran): the names box keeps two lines, the rest waits behind Edit. */
+.rnw-form-card.is-compact:not(.is-editing) [data-role="renew-names"] {
+  /* two lines of text, its 7 px paddings and 1 px borders */
+  height: calc(2lh + 16px);
+  min-height: 0;
+  resize: none;
 }
 
 .rnw-note-warn {
@@ -40,88 +61,21 @@
   min-width: 0;
 }
 
-.rnw-form-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 10px 16px;
-}
-
-.rnw-privacy {
-  flex: 1 1 22rem;
-  margin: 0;
-  line-height: 1.5;
-}
-
-.rnw-privacy .icon {
-  vertical-align: -2px;
-}
-
-.rnw-buttons {
-  display: flex;
-  gap: 8px;
-}
-
 @media (max-width: 600px) {
   .rnw-options {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .rnw-buttons {
-    flex: 1 1 100%;
-  }
-
-  .rnw-buttons .btn {
-    flex: 1;
-    justify-content: center;
-  }
 }
 
-.rnw-empty {
-  padding: 8px 0;
-}
-
-.rnw-error:empty {
-  display: none;
-}
-
-/* ---- summary --------------------------------------------------------------- */
-
-.rnw-hero {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px;
-}
-
-.rnw-hero-fail {
-  border-color: var(--error-border);
-}
-
-.rnw-hero-incomplete {
-  border-color: var(--info-border);
-}
-
-.rnw-hero-warnings {
-  border-color: var(--warn-border);
-}
-
-.rnw-hero-ready {
-  border-color: var(--ok-border);
-}
+/* ---- the result header: the meta line wraps whole names ---------------------------- */
 
 .rnw-setup,
 .rnw-meta {
-  margin: 0;
   overflow-wrap: anywhere;
 }
 
-.rnw-hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+.rnw-names-shown {
+  margin: 0;
 }
 
 /* ---- HTTP-01 test ------------------------------------------------------------ */

@@ -23,20 +23,6 @@
   margin-top: -4px;
 }
 
-.cert-privacy {
-  display: flex;
-  align-items: flex-start;
-  gap: 4px;
-  margin: 0;
-}
-
-.cert-privacy .icon {
-  margin-top: 2px;
-}
-
-.cert-reload .disclosure-summary {
-  font-size: 13.5px;
-}
 
 /* "No file?": a host name's certificate from CT, or the sample */
 .cert-alt {
@@ -353,101 +339,64 @@
 }
 
 /* ------------------------------------------------------------------------ */
-/* Overview                                                                 */
+/* The result header (ui/template.js ResultHeader, `.cert-overview`)         */
 /* ------------------------------------------------------------------------ */
 
-.cert-overview {
-  overflow: hidden;
-}
-
-.cert-overview-main {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr);
-  gap: 18px 28px;
-  padding: 18px 20px;
-}
-
-@media (max-width: 900px) {
-  .cert-overview-main {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-.cert-overview-id {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  min-width: 0;
-}
-
-.cert-overview-icon {
-  width: 48px;
-  height: 48px;
-  flex: none;
-  display: grid;
-  place-items: center;
-  border-radius: 12px;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-soft-border);
-  color: var(--accent);
-}
-
-.cert-overview[data-validity="expired"] .cert-overview-icon {
-  background: var(--error-bg);
-  border-color: var(--error-border);
-  color: var(--error);
-}
-
-.cert-overview[data-validity="expiring"] .cert-overview-icon,
-.cert-overview[data-validity="notyet"] .cert-overview-icon {
-  background: var(--warn-bg);
-  border-color: var(--warn-border);
-  color: var(--warn);
-}
-
-.cert-overview-titles {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.cert-view {
+  gap: var(--stack-gap);
 }
 
 .cert-overview-cn {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
   overflow-wrap: anywhere;
 }
 
 .cert-overview-issuer {
-  color: var(--text-2);
-  font-size: 13.5px;
   overflow-wrap: anywhere;
 }
 
 .cert-overview-badges {
-  gap: 6px;
-  margin-top: 4px;
+  gap: var(--space-1) var(--space-2);
 }
 
+.cert-notes:not(:has(> :not(:empty))) {
+  display: none;
+}
+
+/* The key metric: the days left in the validity's colour, over the lifetime bar and its dates. */
 .cert-validity {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-2);
-  align-self: start;
+  gap: var(--space-1);
+  width: 220px;
+  max-width: 100%;
 }
 
-.cert-validity-head {
+.cert-days {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.cert-days-value {
+  color: var(--text);
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-2xl);
+}
+
+.cert-validity[data-severity="warn"] .cert-days-value {
+  color: var(--warn);
+}
+
+.cert-validity[data-severity="error"] .cert-days-value {
+  color: var(--error);
+}
+
+.cert-days-unit {
+  color: var(--text-3);
+  font-size: var(--fs-sm);
 }
 
 .cert-validity-track {
@@ -475,22 +424,25 @@
 .cert-validity-dates {
   display: flex;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--text-3);
+  font-size: var(--fs-xs);
 }
 
-.cert-overview-foot {
-  padding: 12px 20px;
-  border-top: 1px solid var(--border);
-  background: var(--surface-2);
-}
-
-.cert-actions {
-  gap: 8px;
-}
-
+/* The certificate shown (a file with its chain): under the facts, as wide as its longest name. */
 .cert-picker {
   max-width: 560px;
+}
+
+/* Phones: the key metric wraps under the title, as wide as the card. */
+@media (max-width: 719px) {
+  .cert-validity {
+    width: 100%;
+  }
+
+  .cert-days {
+    justify-content: flex-start;
+  }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -977,12 +929,10 @@
   }
 }
 
-/* Print (style.css hides the shell and every control): leave out the loader and the overview's
-   action bar. */
+/* Print (style.css hides the shell, every control and the template's input and actions): leave out
+   the empty state. */
 @media print {
-  .cert-loader-card,
-  .cert-reload,
-  .cert-overview-foot {
+  .cert-empty {
     display: none;
   }
 

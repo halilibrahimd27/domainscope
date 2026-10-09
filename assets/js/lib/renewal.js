@@ -1115,6 +1115,32 @@ export function renewalSummary(report) {
   return { total: list.length, counts, headline, tested: list.filter((r) => r.http01).length };
 }
 
+/**
+ * The severity of a summary's headline, for the result title's status icon (DESIGN §5.6): a name
+ * that will fail is an error, one that could not be checked is information (check again), warnings
+ * a warning, every name ready OK; no names, none.
+ */
+export const RENEWAL_HEAD_SEVERITY = Object.freeze({ fail: 'error', incomplete: 'info', warnings: 'warn', ready: 'ok', none: null });
+
+/**
+ * The status summary of a report (DESIGN §5.6: "✕ will fail ⚠ with warnings ✓ ready", plus the
+ * names that could not be checked): one item per verdict with its count, each a filter of the names
+ * (`filter`: the verdict). Renewal readiness is a verdict tool: "0 will fail" is the good news and
+ * stays (lib/template.js statusItems `verdict`).
+ * @param {{ counts?: { fail?: number, unknown?: number, warnings?: number, ready?: number } }} summary {@link renewalSummary}
+ * @returns {Array<{ key: string, severity: string, count: number, filter: string }>}
+ */
+export function renewalStatus(summary) {
+  const c = (summary && summary.counts) || {};
+  const n = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+  return [
+    { key: 'fail', severity: 'error', count: n(c.fail), filter: 'fail' },
+    { key: 'warnings', severity: 'warn', count: n(c.warnings), filter: 'warnings' },
+    { key: 'unknown', severity: 'info', count: n(c.unknown), filter: 'unknown' },
+    { key: 'ready', severity: 'ok', count: n(c.ready), filter: 'ready' }
+  ];
+}
+
 /** Columns of the CSV export (one line per name). */
 export const RENEWAL_CSV_COLUMNS = Object.freeze(['name', 'verdict', 'caa_at', 'caa_records', 'resolvers', 'acme_challenge', 'dnssec',
   'dns_provider', 'addresses', 'http01', 'errors', 'warnings']);

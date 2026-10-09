@@ -50,7 +50,7 @@ import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  gotoRoute, installDownloadCapture, setLangUi, shot, stubClipboard, takeClipboard, takeDownloads, waitReady
+  gotoRoute, installDownloadCapture, resultAction, setLangUi, shot, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 import { ariCertId, scheduleStep, validityDays } from '../../assets/js/lib/renewalplan.js';
 
@@ -235,6 +235,17 @@ const routeTo = (page, hash) => page.evaluate((to) => new Promise((resolve) => {
   location.hash = to;
 }), hash);
 const waitTestDone = (page, message = 'test done') => page.waitFor(() => ['done', 'error', 'quota'].includes(document.querySelector('.rnw-test')?.dataset.state), { timeout: 20000, message });
+/**
+ * The input card is compact once a check ran (docs/DESIGN.md §5.1, region 2): Edit unfolds the
+ * certificate block, the CA and the challenge again (nothing to do while the card is whole).
+ */
+async function unfoldForm(page) {
+  const folded = await page.evaluate(() => {
+    const card = document.querySelector('.rnw-form-card');
+    return !!card && card.classList.contains('is-compact') && !card.classList.contains('is-editing');
+  });
+  if (folded) await page.click('.rnw-form-card [data-action="tool-input-edit"]');
+}
 
 async function main() {
   const opts = cliOptions();
@@ -268,7 +279,8 @@ async function main() {
       });
       assertEqual(nav, ['scan', 'cert', 'renew', 'estate'], 'Deploy & renew certificates group');
       assertEqual(await text(page, 'h1'), 'Renewal readiness', 'title');
-      assert(await page.evaluate(() => !!document.querySelector('.rnw-empty .empty')), 'empty state');
+      assert(await page.evaluate(() => !!document.querySelector('.rnw-empty .tool-empty') && document.querySelectorAll('.rnw-empty .tool-empty-check').length === 8), 'empty state with what it checks');
+      assert(await page.evaluate(() => !document.querySelector('.rnw-hero')), 'no result header before a check');
       assertEqual(await page.evaluate(() => [document.querySelector('[data-role="renew-ca"]').value, document.querySelector('[data-role="renew-challenge"]').value]), ['', 'unknown'], 'defaults');
       assertEqual(await dnsCount(page), 0, 'no DNS query');
       await shot(page, opts, 'renew-empty-desktop-light-en');
@@ -296,6 +308,7 @@ async function main() {
       await waitDone(page);
       assertEqual(await page.evaluate(() => document.activeElement?.dataset.action), 'renew-run', 'focus back on Check readiness');
       assertEqual(await page.evaluate(() => document.querySelector('.rnw-hero').dataset.headline), 'fail', 'headline');
+      assertEqual(await text(page, '.rnw-hero .result-title'), 'At least one name will fail to renew', 'the verdict is the title');
       assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rnw-counts [data-count]')].map((b) => b.textContent)), ['2 will fail', '1 with warnings', '1 ready'], 'counts');
       const c = await cards(page);
       assertEqual(c.map((x) => [x.name, x.verdict, x.open]), [['*.example.com', 'fail', true], ['api.example.com', 'fail', true], ['shop.example.com', 'warnings', true], ['www.example.com', 'ready', false]], 'order');
@@ -328,8 +341,9 @@ async function main() {
       assert(lines.includes('- **Error:** `*.example.com` — CAA forbids every CA'), md);
       assert(lines.includes('- **Warning:** `shop.example.com` — Resolvers see different CAA records'), md);
       assert(/#\/renew\?names=www\.example\.com%2C/.test(lines[lines.length - 2]), 'permalink');
-      await page.click('[data-action="renew-csv"]');
-      await page.click('[data-action="renew-json"]');
+      // CSV and JSON are the Export ▾ menu of the result header.
+      await resultAction(page, '[data-action="renew-csv"]', '.rnw-hero');
+      await resultAction(page, '[data-action="renew-json"]', '.rnw-hero');
       const files = await takeDownloads(page);
       assertEqual(files.map((f) => f.name.replace(/-\d{8}-\d{4}/, '')), ['renewal-readiness-example.com.csv', 'renewal-readiness-example.com.json'], 'file names');
       assert(files[0].bom && files[0].text.startsWith('name,verdict,caa_at,caa_records,resolvers,acme_challenge,dnssec,dns_provider,addresses,http01,errors,warnings'), 'CSV header');
@@ -466,7 +480,7 @@ async function main() {
       assert(/^IPv4 · tested /.test(families[0][2]) && families[0][3] === 3, `IPv4 line: ${families[0]}`);
       assert(/^IPv6 · tested /.test(families[1][2]) && families[1][3] === 3, `IPv6 line: ${families[1]}`);
       // Each family carries the time it was measured: IPv6's is the earlier test's.
-      await page.click('[data-action="renew-json"]');
+      await resultAction(page, '[data-action="renew-json"]', '.rnw-hero');
       const [file] = await takeDownloads(page);
       const tested = JSON.parse(file.text).names.find((n) => n.name === 'www.example.com').http01;
       const [v4At, v6At] = tested.families.map((f) => Date.parse(f.at));
@@ -476,6 +490,9 @@ async function main() {
 
     await run.step('the certificate block: the sample fills the names; its CA is not in the list', async () => {
       await gotoRoute(page, 'renew');
+      // A report is on screen: the card is compact, its Edit shows the certificate block again.
+      await unfoldForm(page);
+      assertEqual(await page.evaluate(() => document.querySelector('.rnw-form-card [data-action="tool-input-edit"]').getAttribute('aria-expanded')), 'true', 'Edit unfolded the form');
       await page.evaluate(() => { document.querySelector('.rnw-cert-block').open = true; });
       await page.click('.rnw-cert-block [data-action="cert-sample"]');
       await page.waitFor(() => document.querySelector('[data-role="renew-names"]').value === 'example.com\n*.example.com\nexample.net\nwww.example.net', { message: 'sample names' });
@@ -608,8 +625,9 @@ async function main() {
       await page.waitFor(() => document.querySelector('.rnw-hero')?.dataset.headline === 'incomplete' && !document.querySelector('[data-action="renew-run"]').hidden,
         { message: 'check done', timeout: 30000 });
       await page.evaluate(() => { window.__dnsStatus = 0; });
-      assertEqual(await text(page, '.rnw-hero .alert'), 'At least one name could not be checked — check again', 'headline');
-      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rnw-counts [data-count]')].map((b) => b.textContent)), ['2 could not be checked'], 'counts');
+      assertEqual(await text(page, '.rnw-hero .result-title'), 'At least one name could not be checked — check again', 'headline');
+      // A verdict tool keeps its error count: "0 will fail" is said, the names that could not be checked next.
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.rnw-counts [data-count]')].map((b) => b.textContent)), ['0 will fail', '2 could not be checked'], 'counts');
       const c = await cards(page);
       assertEqual(c.map((x) => [x.name, x.verdict, x.open]), [['www.example.com', 'unknown', true], ['api.example.com', 'unknown', true]], 'verdicts');
       for (const x of c) {
@@ -638,6 +656,7 @@ async function main() {
     });
 
     await run.step('the sample: a lifetime over the limit it was issued under, two thirds of it as the window, no renewal before 2030, no ARI for its CA', async () => {
+      await unfoldForm(page);
       await page.evaluate(() => { document.querySelector('.rnw-cert-block').open = true; });
       if (await page.evaluate(() => !!document.querySelector('[data-action="renew-cert-remove"]'))) await page.click('[data-action="renew-cert-remove"]');
       await page.click('.rnw-cert-block [data-action="cert-sample"]');

@@ -51,7 +51,7 @@ import { zoneHandoffScript } from './scan.e2e.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
 const BASE = '/domainscope/';
-const ROUTES = ['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'reports', 'portfolio', 'inventory', 'about'];
+const ROUTES = ['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'reports', 'portfolio', 'monitor', 'inventory', 'about'];
 
 const argv = process.argv.slice(2);
 const opt = (name) => argv.includes(name);
@@ -2083,7 +2083,7 @@ async function main() {
       assertEqual(menu.title, 'Tools', 'dialog title');
       assertEqual(menu.groups, [
         ['Discover', ['subdomains', 'domain', 'zone']], ['Certificates', ['scan', 'cert', 'renew', 'estate']], ['DNS tools', ['global', 'lookup', 'bulk', 'change']],
-        ['IP addresses', ['ip', 'ptr', 'retire']], ['Mail & domain', ['health', 'reports', 'portfolio']], ['Setup & info', ['inventory', 'about']]
+        ['IP addresses', ['ip', 'ptr', 'retire']], ['Mail & domain', ['health', 'reports', 'portfolio']], ['Setup & info', ['monitor', 'inventory', 'about']]
       ], 'groups');
       assertEqual(menu.current, ['lookup'], 'current tool marked');
       assertEqual(menu.focused, 'lookup', 'focus starts on the current tool');
@@ -2601,7 +2601,7 @@ async function main() {
           title: document.querySelector('#page-offline .alert-title')?.textContent,
           tools: [...document.querySelectorAll('#page-offline a[data-view]')].map((a) => a.dataset.view)
         }));
-        assertEqual(note, { hidden: false, title: translate('shell.offlineTitle'), tools: ['zone', 'cert', 'estate', 'change', 'reports', 'inventory', 'about'] }, 'offline note');
+        assertEqual(note, { hidden: false, title: translate('shell.offlineTitle'), tools: ['zone', 'cert', 'estate', 'change', 'reports', 'monitor', 'inventory', 'about'] }, 'offline note');
         await pwa.type('[data-role="lookup-name"]', 'example.com');
         await pwa.click('[data-action="run"]');
         await pwa.waitFor((text) => [...document.querySelectorAll('.toast')].some((el) => el.textContent.includes(text)),

@@ -132,6 +132,28 @@ describe('health over four nights', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('a night its lookup fails: the accepted finding was not checked, so its waiver is kept, never "can go"; read again, accepted again', async () => {
+    const dir = tmp();
+    try {
+      const json = join(dir, 'health.json');
+      const w = join(dir, 'waivers.json');
+      writeFileSync(w, file([waiver()]));
+      const argv = ['health', 'example.com', '--waivers', w, '--json', json, '--baseline', json, '--fail-on-change'];
+      assert.equal((await runMain(argv, { fetchImpl: createFakeFetch(zoneTable()), now: NIGHT(9) })).code, EXIT.OK);
+      const down = await runMain(argv, { fetchImpl: createFakeFetch(zoneTable(), { rcodes: { 'example.com|MX': 'SERVFAIL' } }), now: NIGHT(10) });
+      const gone = JSON.parse(readFileSync(json, 'utf8')).changes.find((c) => c.item === 'mx.unresolvable');
+      assert.deepEqual([gone.tag, gone.counts, gone.text], ['GONE', false,
+        'example.com: error mx.unresolvable no longer reported — MX host does not resolve (its lookup failed this run: it may still be there)']);
+      assert.match(down.out, /\nAccepted risks · waivers\.json\n- 1 of 1 waiver is for health: 0 items accepted \(not counted\), 0 ending within 14 days, 0 expired \(counting again\), 1 not checked this run \(kept\)\n- Not checked this run \(kept: its item could not be read\):\n- example\.com: mx\.unresolvable until 2026-10-20\n/);
+      assert.ok(!/Matched nothing/.test(down.out), down.out);
+      const back = await runMain(argv, { fetchImpl: createFakeFetch(zoneTable()), now: NIGHT(11) });
+      assert.match(back.out, /- 1 of 1 waiver is for health: 1 item accepted \(not counted\), 1 ending within 14 days, 0 expired \(counting again\)\n/);
+      assert.ok(!/Matched nothing|Not checked this run/.test(back.out), back.out);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('audit: exit 4 and the status "waived"', () => {
@@ -166,6 +188,38 @@ describe('audit: exit 4 and the status "waived"', () => {
     }
   });
 
+  test('RDAP down: the accepted rules were not checked, so their waivers are kept, never "can go"; the night they end while it is still down, the rules count again (exit 4) and the summary says so', async () => {
+    const dir = tmp();
+    try {
+      const zone = portfolioZone({ now: NIGHT(9).getTime() });
+      const policy = join(dir, 'policy.json');
+      writeFileSync(policy, '{ "expiryDays": ">= 30", "transferLock": true }');
+      const w = join(dir, 'waivers.json');
+      writeFileSync(w, file([
+        waiver({ kind: 'rule', domain: 'example.org', ref: 'expiryDays', reason: 'Renewed by the reseller', owner: 'Ops', expires: '2026-10-15' }),
+        waiver({ kind: 'rule', domain: 'example.org', ref: 'transferLock', reason: 'Moving registrars', owner: 'Ops', expires: '2026-10-15' })
+      ]));
+      const json = join(dir, 'audit.json');
+      const argv = ['audit', '--policy', policy, 'example.org', '--no-dkim', '--waivers', w, '--json', json, '--baseline', json, '--fail-on-change'];
+      const first = await runMain(argv, { fetchImpl: createPortfolioFetch(zone), now: NIGHT(9) });
+      assert.equal(first.code, EXIT.OK, first.out + first.err);
+      const rdapDown = () => createPortfolioFetch(zone, { rdapStatus: { 'example.org': 503 } });
+      const down = await runMain(argv, { fetchImpl: rdapDown(), now: NIGHT(10) });
+      assert.equal(down.code, EXIT.OK, down.out + down.err);
+      assert.match(down.out, /- 2 of 2 waivers are for audit: 0 items accepted \(not counted\), 0 ending within 14 days, 0 expired \(counting again\), 2 not checked this run \(kept\)\n- Not checked this run \(kept: its item could not be read\):\n- example\.org: expiryDays until 2026-10-15\n- example\.org: transferLock until 2026-10-15\n/);
+      assert.ok(!/Matched nothing/.test(down.out), down.out);
+      // their end date passes while RDAP is still down: the rules' last status, a fail, counts again
+      const ended = await runMain(argv, { fetchImpl: rdapDown(), now: NIGHT(16) });
+      assert.equal(ended.code, EXIT.CHANGED, ended.out);
+      assert.match(ended.out, /- 2 of 2 waivers are for audit: 0 items accepted \(not counted\), 0 ending within 14 days, 2 expired \(counting again\)\n- Expired, counting again:\n- example\.org: expiryDays >= 30 — expired 2026-10-15 — Ops: Renewed by the reseller\n- example\.org: transferLock true — expired 2026-10-15 — Ops: Moving registrars\n/);
+      const rules = JSON.parse(readFileSync(json, 'utf8')).targets[0].rules;
+      assert.deepEqual(rules.map((r) => [r.id, r.status, r.last && r.last.status, r.waiverExpired && r.waiverExpired.expires]),
+        [['expiryDays', 'unknown', 'fail', '2026-10-15'], ['transferLock', 'unknown', 'fail', '2026-10-15']]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('diffs: newly accepted is WAIVED (listed only), accepted then passing is BETTER (listed only), accepted then not known is FAILED (listed only)', () => {
     const rule = (status, extra = {}) => ({ id: 'expiryDays', status, required: '>= 30', evidence: '9 days left', key: 'pol.ev.daysLeft', params: { count: 9, date: '2026-10-18' }, ...extra });
     const run = (b, a) => diffReports('audit', report('audit', [{ target: 'example.org', rules: [b] }]), report('audit', [{ target: 'example.org', rules: [a] }]), { t });
@@ -182,6 +236,34 @@ describe('audit: exit 4 and the status "waived"', () => {
   });
 });
 
+describe('ct: a night a source is down', () => {
+  test('a known certificate the read did not list: "can go" after a complete read, kept after one with crt.sh down', async () => {
+    const dir = tmp();
+    try {
+      const KEY = 'c3'.repeat(32);
+      let crtshDown = false;
+      const fetchImpl = async (url) => {
+        const u = String(url);
+        if (u.startsWith('https://crt.sh/')) return crtshDown ? new Response('busy', { status: 503, headers: { 'retry-after': '0' } }) : Response.json([]);
+        if (u.startsWith('https://api.certspotter.com/')) return Response.json([]);
+        return new Response('', { status: 404 });
+      };
+      const w = join(dir, 'waivers.json');
+      writeFileSync(w, file([waiver({ kind: 'cert', ref: KEY, reason: 'Our CDN', owner: 'Web', expires: '2026-12-31' })]));
+      const argv = ['ct', 'example.com', '--waivers', w];
+      const complete = await runMain(argv, { fetchImpl, now: NIGHT(9) });
+      assert.equal(complete.code, EXIT.OK, complete.err);
+      assert.match(complete.out, new RegExp(`- Matched nothing this run \\(fixed, or no longer reported: the waiver can go\\):\\n- example\\.com: ${KEY} until 2026-12-31\\n`));
+      crtshDown = true;
+      const partial = await runMain(argv, { fetchImpl, now: NIGHT(10) });
+      assert.match(partial.out, new RegExp(`, 1 not checked this run \\(kept\\)\\n- Not checked this run \\(kept: its item could not be read\\):\\n- example\\.com: ${KEY} until 2026-12-31\\n`));
+      assert.ok(!/Matched nothing/.test(partial.out), partial.out);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('health and ct diffs', () => {
   const check = (id, severity, extra = {}) => ({ id, severity, titleKey: `health.${id}.title`, params: {}, ...extra });
   const W = { id: 'w-1', reason: 'Q1', owner: '', expires: '2026-12-31' };
@@ -194,6 +276,10 @@ describe('health and ct diffs', () => {
     assert.match(changeText(changes[0]), /\(accepted until 2026-12-31: not counted\)$/);
     assert.match(changeText(changes[2]), /\(it was an accepted risk: its waiver can go\)$/);
     assert.ok(changes.every((c) => c.accepted));
+    // its lookup failed this run: out of sight, not fixed, so its waiver stays
+    const hidden = diffReports('health', report('health', [{ target: 'example.com', score: 80, checks: [check('mx.unresolvable', 'error', { waiver: W })] }]),
+      report('health', [{ target: 'example.com', score: 80, checks: [check('mx.error', 'warn')] }]), { t }).find((c) => c.item === 'mx.unresolvable');
+    assert.match(changeText(hidden), /^example\.com: error mx\.unresolvable no longer reported — .+ \(its lookup failed this run: it may still be there\)$/);
   });
 
   test('a known certificate in the baseline run that is not any more, from an unexpected CA: WAIVER-EXPIRED; a new issuer whose certificates are all known is listed only', () => {
@@ -248,6 +334,14 @@ describe('the summary, the tag column and PagerDuty', () => {
     const text = renderPlainText(doc);
     assert.match(text, /^Accepted risks · waivers\.json\n- 2 of 3 waivers are for health: 1 item accepted \(not counted\), 0 ending within 14 days, 0 expired \(counting again\)\n- Accepted:\n- example\.com: spf\.ptr until 2026-12-31 — @team: r <b>\n- Matched nothing this run/);
     assert.ok(!text.includes('transferLock'), 'a rule\'s waiver is not health\'s');
+  });
+
+  test('the waivers summary: a waiver whose item could not be read this run is kept, apart from those that matched nothing', () => {
+    const doc = waiversDoc('health', { file: 'waivers.json', list: [
+      { id: 'w-a', kind: 'finding', domain: 'example.com', ref: 'mx.unresolvable', reason: 'x', owner: '', expires: '2026-12-31' },
+      { id: 'w-b', kind: 'finding', domain: 'example.com', ref: 'caa.missing', reason: 'x', owner: '', expires: '2026-12-31' }
+    ] }, { checked: ['example.com'], applied: [], expired: [], unread: (w) => w.ref.startsWith('mx.') }, { t, now: NIGHT(9) });
+    assert.match(renderPlainText(doc), /, 1 not checked this run \(kept\)\n- Not checked this run \(kept: its item could not be read\):\n- example\.com: mx\.unresolvable until 2026-12-31\n- Matched nothing this run \(fixed, or no longer reported: the waiver can go\):\n- example\.com: caa\.missing until 2026-12-31\n/);
   });
 
   test('the tag column: 9 wide, wider only in a summary that shows WAIVER-EXPIRED; the note names the accepted risks only when one is listed', () => {

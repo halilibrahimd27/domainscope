@@ -278,8 +278,9 @@ function diffHealth(before, after, { t }) {
       // Carried by the baseline and carried again: nothing was read either night.
       if (hidden && !readBefore.has(id)) continue;
       const was = isObj(y.waiver);
+      // an accepted risk out of sight because its lookup failed is not fixed: its waiver stays
       out.push(change('GONE', domain, id, [`${y.severity} `, code(id), ' no longer reported — ', ...healthTitle(t, y),
-        ...(hidden ? [' (its lookup failed this run: it may still be there)'] : []), ...(was ? [' (it was an accepted risk: its waiver can go)'] : [])],
+        ...(hidden ? [' (its lookup failed this run: it may still be there)'] : []), ...(was && !hidden ? [' (it was an accepted risk: its waiver can go)'] : [])],
       { tone: hidden ? 'quiet' : 'good', counts: !hidden && !was, kind: 'disappeared', before: y.severity, accepted: was && !hidden }));
     }
   }

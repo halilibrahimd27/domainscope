@@ -8,8 +8,10 @@
  * - {@link waiversDoc}: one summary per run of `health`, `audit` or `ct` with --waivers: the items
  *   a waiver accepted (they do not count for --fail-on-change nor for audit's exit 4), those whose
  *   waiver ends within {@link WAIVER_SOON_DAYS} days, those whose waiver is over (they count again:
- *   WAIVER-EXPIRED in the changes), and the waivers of a domain the run checked that matched
- *   nothing (the item is fixed, or no longer checked: the waiver can go).
+ *   WAIVER-EXPIRED in the changes), the waivers whose item this run could not read (a failed
+ *   lookup, a registry or CT source that did not answer: kept, never "can go"), and the waivers of
+ *   a domain the run checked that matched nothing (the item is fixed, or no longer reported: the
+ *   waiver can go).
  * Pure apart from the injected file reader.
  */
 
@@ -87,7 +89,9 @@ const whoParts = (w) => [' — ', ...(w.owner ? [code(w.owner), ': '] : []), cod
  * @param {string} command 'health' | 'audit' | 'ct'
  * @param {{ file: string, list: object[] }} waivers the file's (readWaiversFile)
  * @param {{ applied: Array<{ target: string, what: Array, waiver: object }>, expired: Array<{ target: string, what: Array, waiver: object }>,
- *   checked: string[] }} use what this run's items took: `what` the item as parts; `checked`: the targets the run read
+ *   checked: string[], unread?: ((waiver: object) => boolean)|null }} use what this run's items took: `what` the item as parts;
+ *   `checked`: the targets the run read; `unread`: whether a waiver's item could not be read this run (its lookup failed, the
+ *   registry or a CT source did not answer in full), so matching nothing says nothing about it
  * @param {{ t: Function, now: Date }} opts
  * @returns {object} a SummaryDoc
  */
@@ -99,12 +103,16 @@ export function waiversDoc(command, waivers, use, { t, now }) {
   const soon = applied.filter((a) => waiverState(a.waiver, { now }) === 'expiring');
   const usedIds = new Set([...applied, ...expired].map((a) => a.waiver.id));
   const checked = new Set(use.checked || []);
-  const idle = (waivers.list || []).filter((w) => w.kind === kind && checked.has(w.domain) && !usedIds.has(w.id) && waiverState(w, { now }) !== 'expired');
+  const unread = typeof use.unread === 'function' ? use.unread : () => false;
+  const unused = (waivers.list || []).filter((w) => w.kind === kind && checked.has(w.domain) && !usedIds.has(w.id) && waiverState(w, { now }) !== 'expired');
+  // an item this run could not read may still be there: its waiver is kept, never "can go"
+  const kept = unused.filter((w) => unread(w));
+  const idle = unused.filter((w) => !unread(w));
   const ofKind = (waivers.list || []).filter((w) => w.kind === kind).length;
   const total = (waivers.list || []).length;
   lines.push([`${ofKind} of ${total} waiver${total === 1 ? '' : 's'} ${ofKind === 1 ? 'is' : 'are'} for ${command}: `,
     `${applied.length} item${applied.length === 1 ? '' : 's'} accepted (not counted), ${soon.length} ending within ${WAIVER_SOON_DAYS} days, `,
-    `${expired.length} expired (counting again)`]);
+    `${expired.length} expired (counting again)`, kept.length ? `, ${kept.length} not checked this run (kept)` : '']);
   const list = (items, head, each) => {
     if (!items.length) return;
     lines.push([strong(head)]);
@@ -114,6 +122,7 @@ export function waiversDoc(command, waivers, use, { t, now }) {
   list(expired, 'Expired, counting again:', (x) => [code(x.target), ': ', ...x.what, ` — expired ${x.waiver.expires}`, ...whoParts(x.waiver)]);
   list(soon, `Ending within ${WAIVER_SOON_DAYS} days:`, (x) => [code(x.target), ': ', ...x.what, ` ${endsText(x.waiver, now)}`, ...whoParts(x.waiver)]);
   list(applied.filter((x) => !soon.includes(x)), 'Accepted:', (x) => [code(x.target), ': ', ...x.what, ` ${endsText(x.waiver, now)}`, ...whoParts(x.waiver)]);
+  list(kept, 'Not checked this run (kept: its item could not be read):', (w) => [code(w.domain), ': ', code(w.ref), ` until ${w.expires}`]);
   list(idle, 'Matched nothing this run (fixed, or no longer reported: the waiver can go):', (w) => [code(w.domain), ': ', code(w.ref), ` until ${w.expires}`]);
   return summaryDoc(command, ['Accepted risks · ', code(waivers.file)], lines, { t, now });
 }

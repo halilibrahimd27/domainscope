@@ -17,13 +17,13 @@
 import { createHash } from 'node:crypto';
 import { NODE_UNREADABLE, CT_SOURCES, DS_DEFAULT_RADAR, DS_VERSION, UsageError } from './args.mjs';
 import { code, strong, isoDay, isoTime, summaryDoc, valueParts, localYesNo, sourceName, certCount } from './render.mjs';
-import { targetOf, carryHealth, carryHosts, carryCt, ctIssuers, ctCertOrder, lookupFailed } from './carry.mjs';
+import { targetOf, carryHealth, carryHosts, carryCt, ctIssuers, ctCertOrder, lookupFailed, failedAreas, checkAreas, isLookupError } from './carry.mjs';
 import { isSubdomainOf, sortHostnames } from '../../assets/js/lib/domain.js';
 import { chunk, throwIfAborted } from '../../assets/js/lib/util.js';
 import { textParts, renderParts, cleanText } from '../../assets/js/lib/summary.js';
 import { scoreHealth, countSeverities } from '../../assets/js/lib/healthscore.js';
 import { createCtCooldown, CT_COOLDOWN_MS } from '../../assets/js/lib/ctcert.js';
-import { healthWaivers, isWaivableCheck } from '../../assets/js/lib/waivers.js';
+import { healthWaivers, isWaivableCheck, matchWaiver } from '../../assets/js/lib/waivers.js';
 import { watchTarget, renewalOverdue } from './ctwatch.mjs';
 import { waiversDoc } from './waivers.mjs';
 
@@ -167,6 +167,8 @@ async function runHealth(targets, options, env) {
   const out = [];
   const docs = [];
   const use = { applied: [], expired: [], checked: [] };
+  /** Per target, the areas whose lookup failed this run (carry.mjs failedAreas). */
+  const hidden = new Map();
   const prevAt = env.baseline ? env.baseline.startedAt ?? null : null;
   for (const [i, domain] of targets.entries()) {
     env.progress(`health ${domain} (${i + 1}/${targets.length})`);
@@ -180,7 +182,10 @@ async function runHealth(targets, options, env) {
     use.checked.push(target.target);
     use.applied.push(...accepted.map((c) => ({ target: target.target, what: what(c), waiver: c.waiver })));
     use.expired.push(...target.checks.filter((c) => c.waiverExpired).map((c) => ({ target: target.target, what: what(c), waiver: c.waiverExpired })));
+    hidden.set(target.target, failedAreas(target));
   }
+  // A finding whose lookup failed this run was not read (diff.mjs: "it may still be there"): its waiver is kept.
+  use.unread = (w) => !isLookupError(w.ref) && checkAreas(w.ref).some((area) => (hidden.get(w.domain) || new Set()).has(area));
   if (waivers) docs.push(waiversDoc('health', waivers, use, { t: env.t, now: env.now() }));
   return { options: { resolvers: [...options.chain], ...(waivers ? { waivers: waivers.file } : {}) }, targets: out, docs, warnings: [] };
 }
@@ -631,7 +636,9 @@ async function runCt(targets, options, env) {
   const expected = [...(options.expectedCas || [])];
   // the known certificates (--waivers, kind 'cert'): never new nor unexpected while their waiver lasts
   const waivers = env.inputs && env.inputs.waivers ? env.inputs.waivers : null;
-  const use = { applied: [], expired: [], checked: [] };
+  /** The domains whose CT read was not complete this run. */
+  const partial = new Set();
+  const use = { applied: [], expired: [], checked: [], unread: (w) => partial.has(w.domain) };
   const breaker = createSourceBreaker({ now: env.now, spotterHint: sources.includes('crtsh') ? '--sources crtsh leaves it out' : '' });
   const prevAt = env.baseline ? env.baseline.startedAt ?? null : null;
   const out = [];
@@ -663,11 +670,15 @@ async function runCt(targets, options, env) {
     }
     out.push(target);
     docs.push(ctDoc(target, { t: env.t, now, baselined: !!options.baseline }));
-    if (waivers && target.answered) {
+    if (waivers) {
       const what = (c) => [...valueParts(env.t, c.names), ' (', code(c.ca), ')'];
       use.checked.push(domain);
-      use.applied.push(...target.certificates.filter((c) => c.known).map((c) => ({ target: domain, what: what(c), waiver: c.known })));
-      use.expired.push(...target.certificates.filter((c) => c.knownExpired).map((c) => ({ target: domain, what: what(c), waiver: c.knownExpired })));
+      // a read that is not complete (a source down, a partial list) may have missed a known certificate: its waiver is kept
+      if (!target.complete) partial.add(domain);
+      if (target.answered) {
+        use.applied.push(...target.certificates.filter((c) => c.known).map((c) => ({ target: domain, what: what(c), waiver: c.known })));
+        use.expired.push(...target.certificates.filter((c) => c.knownExpired).map((c) => ({ target: domain, what: what(c), waiver: c.knownExpired })));
+      }
     }
   }
   for (const entry of textual.filter((e) => !matched.has(e))) {
@@ -1116,9 +1127,17 @@ async function runAudit(targets, options, env) {
   audited.forEach((x, i) => { x.security = secscore.securityExport(scores[i]); });
   // A rule that failed when last checked and could not be checked tonight still fails the run: a
   // registry outage never closes the nightly issue (the carried status is the requirement's own) —
-  // unless a waiver accepts it now.
-  const carried = audited.flatMap((x) => x.rules.filter((r) => r.status === 'unknown' && r.last && r.last.status === 'fail' && !r.waiver)
-    .map((r) => ({ domain: x.target, id: r.id, required: r.required, from: r.last.from })));
+  // unless a waiver accepts it now. One whose waiver is over says so (`waiverExpired`): it counts again.
+  const carriedFail = (r) => r.status === 'unknown' && r.last && r.last.status === 'fail' && !r.waiver;
+  if (waivers) {
+    for (const x of audited) {
+      for (const r of x.rules.filter(carriedFail)) {
+        const m = matchWaiver(waivers.list, { kind: 'rule', domain: x.target, ref: r.id }, { now });
+        if (m && !m.active) r.waiverExpired = { id: m.waiver.id, expires: m.waiver.expires };
+      }
+    }
+  }
+  const carried = audited.flatMap((x) => x.rules.filter(carriedFail).map((r) => ({ domain: x.target, id: r.id, required: r.required, from: r.last.from })));
   const carriedFails = carried.map((x) => `${x.id} of ${x.domain} could not be checked this run and failed when last checked (${isoDay(x.from) || 'an earlier run'}): it still counts as failed`);
   const [runDoc, ...domainDocs] = auditDocs(audit, { t: env.t, now, at: startedAt, policy, carried });
   const docs = [runDoc, securityDoc(scores, { t: env.t }, secscore), ...domainDocs];
@@ -1127,10 +1146,13 @@ async function runAudit(targets, options, env) {
     const use = {
       checked: audited.map((x) => x.target),
       applied: audited.flatMap((x) => x.rules.filter((r) => r.status === 'waived' && r.waiver).map((r) => ({ target: x.target, what: what(r), waiver: r.waiver }))),
-      expired: audited.flatMap((x) => x.rules.filter((r) => r.status === 'fail' && r.waiverExpired).map((r) => {
+      // a failed rule whose waiver is over, checked tonight or carried as failed: it counts again
+      expired: audited.flatMap((x) => x.rules.filter((r) => (r.status === 'fail' || carriedFail(r)) && r.waiverExpired).map((r) => {
         const w = waivers.list.find((y) => y.id === r.waiverExpired.id) || r.waiverExpired;
         return { target: x.target, what: what(r), waiver: waiverOut({ reason: '', ...w }) };
-      }))
+      })),
+      // a rule not checked tonight (RDAP or a lookup failed): its waiver is kept, never "can go"
+      unread: (w) => audited.some((x) => x.target === w.domain && x.rules.some((r) => r.id === w.ref && r.status === 'unknown'))
     };
     docs.push(waiversDoc('audit', waivers, use, { t: env.t, now }));
   }

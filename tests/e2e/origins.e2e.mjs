@@ -419,6 +419,21 @@ async function main() {
         assertEqual(fresh, ['web04', 'web05'], 'the two servers the map ties (www\'s stale entry is no scan origin)');
         assertEqual((await servers()).map((r) => `${r.server} ${r.status} ${r.hosts.join(', ')}`),
           [`web04 serves shop.${APEX} · Origin map`, `web05 serves www.${APEX} · Origin map`], 'both serve the names');
+        // A map write that changes nothing this scan used (a batch's confirmations, another name's entry): the Servers
+        // tab stays as it is, its open details and the keyboard focus with it. state.js tells its subscribers inside
+        // setWorkspaceData, so the view has handled the write once setMap returns.
+        await page.click('.scan-servers-table tbody tr.dt-row .dt-expand-btn');
+        await page.waitFor(() => document.querySelector('.scan-servers-table .dt-expand-btn[aria-expanded="true"]'), { message: 'details open' });
+        await page.evaluate(() => document.querySelector('.scan-servers-table .dt-expand-btn[aria-expanded="true"]').focus());
+        const at0 = new Date().toISOString();
+        await setMap({ ...before, entries: [...before.entries, { name: `other.${APEX}`, ip: '203.0.113.77', port: 443, source: 'manual', firstSeen: at0, lastConfirmed: at0, server: null, stale: null }] });
+        assert((await mapOf(page)).entries.some((e) => e.name === `other.${APEX}`), 'the write landed');
+        const kept = await page.evaluate(() => ({
+          open: document.querySelectorAll('.scan-servers-table .dt-expand-btn[aria-expanded="true"]').length,
+          focus: !!document.activeElement && document.activeElement.matches('.scan-servers-table .dt-expand-btn[aria-expanded="true"]')
+        }));
+        assertEqual(kept, { open: 1, focus: true }, 'the open details and the focus kept');
+        await page.click('.scan-servers-table .dt-expand-btn[aria-expanded="true"]');
         // A Verify batch elsewhere finds shop no longer at 192.0.2.20: the tab follows at once.
         const at = new Date().toISOString();
         await setMap({ ...before, entries: before.entries.map((e) => (e.ip === '192.0.2.20' ? { ...e, stale: { reason: 'verify-not-hosted', at } } : e)) });
@@ -436,10 +451,26 @@ async function main() {
         await page.setViewport({ width: 375, height: 800, mobile: true });
         await shotPage(page, opts, 'origins-scan-servers-stale-phone375-light-en');
         await page.setViewport({ width: 1440, height: 900 });
+        // Behind CDN's origin hints say so too: Stale with why, no longer "Remembered" (and so does their CSV).
+        await page.click('.scan-tabs [data-tab="cdn"]');
+        const hint = await page.waitFor(() => {
+          const tr = [...document.querySelectorAll('.scan-hints-table tbody tr.dt-row')].find((x) => x.querySelector('td')?.textContent === '192.0.2.20');
+          return tr ? [...tr.querySelectorAll('.scan-hint-reason .badge')].map((b) => `${b.textContent.trim()} | ${b.title}`) : false;
+        }, { message: 'origin hints table' });
+        assertEqual(hint.length, 1, `one reason: ${hint.join(' / ')}`);
+        assert(/^Stale \| Verify found that this server no longer serves the name on /.test(hint[0]), `the hint: ${hint[0]}`);
+        await takeDownloads(page);
+        await page.click('.scan-hints-table [data-export="csv"]');
+        const csv = await page.waitFor(() => (window.__downloads || []).length > 0, { message: 'hints CSV' }).then(() => takeDownloads(page));
+        const line = csv[0].text.split(/\r?\n/).find((l) => l.includes(`origin map: shop.${APEX} -> 192.0.2.20`));
+        assert(line && line.includes(`origin map: shop.${APEX} -> 192.0.2.20 (stale: verify-not-hosted)`), `CSV: ${line}`);
+        await page.click('.scan-tabs [data-tab="servers"]');
         await setMap(before);
         await page.waitFor(() => document.querySelector('.scan-servers-table tbody tr.dt-row .scan-srv')?.dataset.server === 'web04'
           && !document.querySelector('.scan-srv-host[data-stale]'), { message: 'back as the map is again' });
       } finally {
+        // a failed check above leaves neither its map nor its inventory to the steps below
+        await setMap(before);
         await setInventory('');
       }
     });

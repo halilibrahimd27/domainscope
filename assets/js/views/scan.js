@@ -74,7 +74,7 @@ import { startJob, NotifyButton } from '../ui/jobs.js';
 import { expectedCasChanged } from '../ui/expected-ca.js';
 import { knownForScan, originIndex, originTarget } from '../lib/originmap.js';
 import { StaleBadge, staleText } from '../ui/origin-map.js';
-import { resultNow } from '../lib/originnow.js';
+import { resultNow, staleKnownUses } from '../lib/originnow.js';
 import {
   CertAlternatives, CertChainNotes, CertLoader, CertPfxNote, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad, pfxFocusTarget,
   certDisplayName, issuerDisplayName, openCertInputs, certFileInputs, ValidityBadge, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS, CERT_ACCEPT, CERT_MAX_BYTES
@@ -2693,13 +2693,16 @@ function buildRunUI(run, ctx, { onFinish }) {
   const cdnOwnerCache = new Map();
   // The finished result as the workspace's origin map reads now (lib/originnow.js): a remembered
   // origin it has since marked stale is flagged, and no longer makes its server need the
-  // certificate. What the Servers tab, the summary, the counts and the exports show; read again
-  // once the map changes (the subscription at the end).
+  // certificate. What the Servers tab, the summary, the counts, Behind CDN's origin hints and the
+  // exports show; read again once the map changes the marks of the origins the scan used (`sig`,
+  // the subscription at the end).
+  const staleSig = (r) => [...staleKnownUses(r, state.workspaceData('origins'))]
+    .map(([key, mark]) => `${key} ${JSON.stringify(mark)}`).sort().join('\n');
   let shownMemo = null;
   const shown = () => {
     const r = run.result;
     if (!r) return null;
-    if (!shownMemo || shownMemo.r !== r) shownMemo = { r, value: resultNow(r, state.workspaceData('origins')) };
+    if (!shownMemo || shownMemo.r !== r) shownMemo = { r, sig: staleSig(r), value: resultNow(r, state.workspaceData('origins')) };
     return shownMemo.value;
   };
   const cdnOwnerCtl = new AbortController();
@@ -3905,14 +3908,17 @@ function buildRunUI(run, ctx, { onFinish }) {
 
     cdnPanel.append(h('h3', { class: 'scan-subtitle' }, t('scan.cdn.hintsTitle')),
       h('p', { class: 'muted text-sm' }, t('scan.cdn.hintsDesc')));
-    if ((!r.options || r.options.originHints === false) && !(r.originHints || []).length) {
+    // The hints as the origin map reads them now (lib/originnow.js hintsNow): a remembered origin it
+    // has since marked stale says so, with why, where it read "Remembered".
+    const hintRows = shown().originHints || [];
+    if ((!r.options || r.options.originHints === false) && !hintRows.length) {
       cdnPanel.append(EmptyState({ compact: true, icon: 'minus-circle', message: t('scan.cdn.hintsOff') }));
     } else {
       cdnPanel.append(DataTable({
         caption: t('scan.cdn.hintsTitle'),
-        rows: r.originHints,
+        rows: hintRows,
         dense: true,
-        search: r.originHints.length > 10,
+        search: hintRows.length > 10,
         empty: t('scan.cdn.hintsEmpty'),
         rowKey: (o) => o.ip,
         className: 'scan-hints-table',
@@ -3921,10 +3927,11 @@ function buildRunUI(run, ctx, { onFinish }) {
           { key: 'ip', label: t('scan.cdn.col.ip'), mono: true, sortable: true, className: 'scan-col-ips', sortValue: (o) => ipSortValue(o.ip) },
           {
             key: 'reasons', label: t('scan.cdn.col.reasons'), wrap: true,
-            searchValue: (o) => o.reasons.map((x) => `${x.kind} ${reasonText(x)}`).join(' '),
-            exportValue: (o) => o.reasons.map((x) => `${x.kind}: ${x.detail}`).join(' | '),
+            searchValue: (o) => o.reasons.map((x) => `${x.kind} ${reasonText(x)}${x.stale ? ` ${t('om.stale')}` : ''}`).join(' '),
+            exportValue: (o) => o.reasons.map((x) => `${x.kind}: ${x.detail}${x.stale ? ` (stale: ${x.stale.reason})` : ''}`).join(' | '),
             render: (o) => h('div', { class: 'stack-sm scan-hint-reasons' }, o.reasons.slice(0, 4).map((x) => h('div', { class: 'scan-hint-reason' },
-              Badge(HINT_KINDS.includes(x.kind) ? t(`scan.hint.${x.kind}`) : x.kind, { variant: 'info', title: HINT_KINDS.includes(x.kind) ? t(`scan.hint.${x.kind}.title`) : null }),
+              x.stale ? StaleBadge(x)
+                : Badge(HINT_KINDS.includes(x.kind) ? t(`scan.hint.${x.kind}`) : x.kind, { variant: 'info', title: HINT_KINDS.includes(x.kind) ? t(`scan.hint.${x.kind}.title`) : null }),
               h('span', { class: 'mono text-xs scan-hint-detail' }, reasonText(x)))),
             o.reasons.length > 4 ? h('span', { class: 'muted text-xs' }, t('common.moreCount', { count: o.reasons.length - 4 })) : null)
           },
@@ -4420,15 +4427,20 @@ function buildRunUI(run, ctx, { onFinish }) {
     finish();
   }
 
-  // The origin map changed (a Verify batch here, another tab, "Delete all local data"): Behind CDN,
-  // the Servers tab, the summary, the counts and Verify's rows of remembered origins follow at once.
+  // The origin map changed (a Verify batch here, another tab, "Delete all local data"): Behind CDN
+  // follows at once, and so do the Servers tab, the summary and the counts once the marks of the
+  // remembered origins this scan used changed — a write that changes none of them (a batch's
+  // confirmations, another name's entry) leaves them as they are, open details and the focus
+  // with them — and Verify's rows of remembered origins once one of their marks did.
   const offOrigins = state.subscribe(({ key, value }) => {
     if (!run.result || key !== 'workspaceData' || !value || !(value.parts || []).includes('origins')) return;
-    shownMemo = null;
-    renderStats();
-    renderSummary();
-    renderServersTab();
-    renderTabBadges();
+    if (!shownMemo || shownMemo.r !== run.result || shownMemo.sig !== staleSig(run.result)) {
+      shownMemo = null;
+      renderStats();
+      renderSummary();
+      renderServersTab();
+      renderTabBadges();
+    }
     renderCdnTab();
     if (verifyUi && verifyUi.refreshOrigins) verifyUi.refreshOrigins();
   });

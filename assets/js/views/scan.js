@@ -2478,12 +2478,17 @@ export function mount(container, ctx) {
     if (!setupReady) return;
     const run = session.run;
     const folded = !!run && !session.setupEditing;
+    const doc = globalThis.document;
+    // A step folded away under the keyboard focus (Ctrl+Enter in the domains field starts the scan).
+    const lost = folded && !!doc && !form.classList.contains('is-folded') && setup.contains(doc.activeElement);
     form.classList.toggle('is-folded', folded);
     foldRow.hidden = !run;
     foldEdit.setAttribute('aria-expanded', String(!!run && !folded));
     if (run) renderFold();
     runBar.setRerun(!!run && run.status !== 'running' && run.setupSig === currentSignature());
     runBar.refresh();
+    // …goes to Cancel while the scan runs, else to Edit: never to <body>.
+    if (lost) (runBar.isRunning() ? runBar.stop : foldEdit).focus({ preventScroll: true });
   }
 
   /* --- layout ------------------------------------------------------------------ */

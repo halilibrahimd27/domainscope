@@ -2449,6 +2449,9 @@ async function main() {
         return document.querySelector('.scan-run')?.dataset.status === 'running' && cancel && !cancel.hidden && window.__heldFetches > 0;
       }, { message: 'the scan started from the domains field' });
       assertEqual(await kb.evaluate(() => document.querySelector('[data-role="scan-domains"]').value), 'example.com\nexample.net', 'no new line typed');
+      // The steps fold into one row under the keyboard focus: it goes to Cancel, never to <body>.
+      assertEqual(await kb.evaluate(() => [document.querySelector('.scan-form').classList.contains('is-folded'), document.activeElement?.dataset.action]),
+        [true, 'scan-cancel'], 'folded, the focus on Cancel');
       await kb.press('Escape');
       await kb.waitFor(() => document.querySelector('.scan-run')?.dataset.status === 'cancelled'
         && !document.getElementById('app-header').classList.contains('is-busy'), { message: 'cancelled with Esc' });

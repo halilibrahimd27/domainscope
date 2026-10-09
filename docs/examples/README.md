@@ -35,7 +35,9 @@ both the baseline and the new report) and:
 - commits `results/*.json` (the reports) and `results/*.md` (the summaries), so git history
   keeps every night, and `results/history/YYYY-MM.jsonl` (`--history`): one line per domain and
   check a night — whether it completed, the health score and grade, the soonest certificate
-  expiry and what changed (its tags and items, never a record's value) —, 13 months of it. Open the
+  expiry and what changed (each change's tag and item: a finding, a host, a record set, an
+  issuer, a certificate, an endpoint's address or a takeover risk; never its words or the values
+  before and after) —, 13 months of it. Open the
   `results` folder in DomainScope's **Monitoring** view (read in the browser, nothing uploaded), or
   this repository there with a fine-grained token that can only read its contents: a row per
   domain with its trend, the certificates under 21 days, the checks that did not complete and the

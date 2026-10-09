@@ -2,8 +2,11 @@
  * tools/ds/history.mjs — the runner's `--history DIR`: one JSON line per target of a run appended
  * to DIR/YYYY-MM.jsonl (the month of the run's end, UTC), the line the Monitoring view reads
  * (lib/monitor.js historyLines: the score, the soonest certificate expiry, whether the check
- * completed, the changes' tags; never a record value or an address the report holds). The nightly
- * template writes results/history, which its commit step keeps with the reports.
+ * completed, the changes' tags, tones and items). An item names what moved — a finding or rule id,
+ * a host, an RRset key, an issuer, a certificate's CT id or SHA-256, an endpoint's `address|port`,
+ * a takeover risk's key —; nothing else of the report is kept: no change's words, no value before
+ * or after. The nightly template writes results/history, which its commit step keeps with the
+ * reports.
  *
  * - Whole or not at all, like `--json`: the month file is read, the run's lines added after it, and
  *   the result written to a temporary file in DIR that is renamed over it — a run stopped half-way

@@ -235,6 +235,8 @@ const SERVFAIL_SUBNETS = [GEO_VANTAGES[0].subnet, GEO_VANTAGES[1].subnet];
  *   Cloudflare's anycast addresses, so every resolver and location outside China agrees;
  * - china-bare.example.com: Fastly's anycast address everywhere, a bare Cloudflare-range address
  *   with no name in front only for the China rows: the shape of a forged answer;
+ * - china-partner.example.com: as china.example.com, but Alibaba Cloud CDN hands the China rows on
+ *   to a cache name nobody here knows: still different, worded as the CDN's possible partner;
  * - isp.example.com: the new address everywhere (the ISP resolvers group asks it of a fake Globalping);
  * - txt.example.com TXT: eight records; AliDNS would give three of them (it cuts large answers short
  *   without TC), so the China rows are not asked for TXT at all.
@@ -324,6 +326,12 @@ const fakeGlobalDnsScript = () => `(() => {
       return { answers: [{ ...cn(qname, ali), ttl: 600 }, a(ali, h % 2 ? '198.51.100.17' : '198.51.100.18')] };
     }
     if (qname === 'china-bare.example.com') return { answers: [a(qname, resolver === 'alidns' && CN_SUBNETS.includes(ecs) ? '104.16.5.5' : FASTLY[0])] };
+    if (qname === 'china-partner.example.com') {
+      const world = { answers: [cn(qname, 'd444444abcdef8.cloudfront.net'), a('d444444abcdef8.cloudfront.net', CLOUDFRONT[h % 4])] };
+      if (resolver !== 'alidns' || !CN_SUBNETS.includes(ecs)) return world;
+      const ali = qname + '.w.kunluncan.com';
+      return { answers: [cn(qname, ali), cn(ali, 'cache01.partner.example.net'), a('cache01.partner.example.net', '198.51.100.66')] };
+    }
     if (qname === 'txt.example.com') {
       const all = ['example-verification=aaaa0001', 'example-verification=aaaa0002', 'example-verification=aaaa0003', 'example-verification=aaaa0004',
         'example-verification=aaaa0005', 'example-verification=aaaa0006', 'example-verification=aaaa0007', 'v=spf1 -all'];
@@ -671,6 +679,33 @@ async function offlineVerdicts(browser, server) {
     assertEqual([bare.state, bare.findings.map((f) => f.code)], ['differ', ['operators']], `bare: ${bare.title}: ${bare.message}`);
     assert(/point to different providers depending on the source \(Fastly, Cloudflare\)/.test(bare.findings[0].text), `bare: ${bare.findings[0].text}`);
     assertEqual([line.external, stale.external, unsure.external, bare.external], [[], [], [], []], 'nothing left the page');
+  });
+
+  await step('mainland China: a CDN handing over to a cache name nobody knows still differs, and the finding says it may be the partner (EN / TR)', async () => {
+    await gotoHash(page, '#/global?name=china-partner.example.com&type=A', 'global');
+    await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
+    const info = await page.evaluate(verdictInfo);
+    assertEqual(info.state, 'differ', `the verdict is kept (${info.title}: ${info.message})`);
+    assertEqual(info.findings.map((f) => f.code), ['cname'], 'one finding');
+    const partner = await page.evaluate(() => document.querySelector('.glb-summary .glb-finding[data-partner="true"]')?.lastElementChild.textContent || '');
+    assertEqual(partner, 'Beijing, China; Shanghai, China; Guangzhou, China: the China answer ends at a cache name this tool does not recognise '
+      + '(cache01.partner.example.net), after Alibaba Cloud CDN; it may be the CDN’s partner. It is not counted as the CDN’s own edge, so the answers still differ.', 'worded as a partner');
+    assertEqual(info.findings[0].marks.length, 1, 'marked with the China group only');
+    await stubClipboard(page);
+    await page.click('[data-summary="global"] [data-action="copy-summary"]');
+    await page.waitFor(() => window.__clip.length === 1, { message: 'summary copied' });
+    const copied = (await takeClipboard(page))[0];
+    assert(copied.includes('\n- The China answer ends at a cache name not recognised, maybe the CDN’s partner (3 sources)\n'), `Copy summary: ${copied}`);
+    await shot(page, 'global-offline-desktop-light-en-china-partner');
+    await setLangUi(page, 'tr');
+    const tr = await page.waitFor(() => {
+      const text = document.querySelector('.glb-summary .glb-finding[data-partner="true"]')?.lastElementChild.textContent || '';
+      return /iş ortağı olabilir/.test(text) ? text : false;
+    }, { message: 'TR partner finding' });
+    assertEqual(tr, 'Pekin, Çin; Şanghay, Çin; Guangzhou, Çin: Çin’deki yanıt, Alibaba Cloud CDN üzerinden geçtikten sonra bu aracın tanımadığı bir önbellek adında '
+      + '(cache01.partner.example.net) bitiyor; bu CDN’in iş ortağı olabilir. CDN’in kendi uç sunucusu sayılmadığı için yanıtlar yine farklı görünüyor.', 'TR wording');
+    await setLangUi(page, 'en');
+    assertEqual(info.external, [], 'nothing left the page');
   });
 
   await step('mainland China: an AliDNS SERVFAIL is a failure there, never a DNSSEC validation failure', async () => {

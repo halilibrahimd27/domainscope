@@ -239,6 +239,16 @@ describe('global', () => {
     assert.equal(lines(md(doc)).pop(), `DomainScope · checked 2026-09-27 14:03 UTC · ${URL_BASE}#/global?name=www.example.com&type=A`, 'no check time: the copy time');
   });
 
+  test('differ: a China answer ending at a partner\'s cache name is said as that, with the China sources', () => {
+    const partner = { names: ['cache01.partner.example.net'], cdns: ['Alibaba Cloud CDN'], members: ['c', 'd'], groups: ['x'] };
+    const verdict = { state: 'differ', groups: [{ key: 'a' }, { key: 'x' }], operators: [], findings: [{ code: 'cname', members: ['a', 'b', 'c', 'd'], regionalOnly: true, partner }] };
+    const en = md(S.globalSummary({ ...base, failed: 0, verdict }, opts()));
+    assert.ok(en.includes('- The China answer ends at a cache name not recognised, maybe the CDN’s partner (2 sources)'), en);
+    assert.ok(!en.includes('The CNAME differs'), en);
+    const tr = md(S.globalSummary({ ...base, failed: 0, verdict }, opts('tr')));
+    assert.ok(tr.includes('- Çin’deki yanıt tanınmayan bir önbellek adında bitiyor, CDN’in iş ortağı olabilir (2 kaynak)'), tr);
+  });
+
   test('the time the check ended; a name with underscores stays one code span', () => {
     const verdict = { state: 'agree', groups: [{ key: 'a' }], operators: [], findings: [] };
     const doc = S.globalSummary({ ...base, name: '_dmarc.example.com', type: 'TXT', verdict, at: new Date('2026-09-27T11:15:00Z') }, opts());

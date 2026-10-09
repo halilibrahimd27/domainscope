@@ -156,6 +156,7 @@ registerStrings('en', {
   'glb.find.direct': 'Different addresses, none on a CDN, platform or steering service this tool knows: typically a recent change that is still propagating (old answers stay cached until their TTL expires), or GeoDNS / round-robin by an operator it does not recognise.',
   'glb.find.records': 'Different records: typically a recent change that is still propagating (old answers stay cached until their TTL expires), or name servers that disagree.',
   'glb.find.more': '+{count} more',
+  'glb.find.partner': '{sources}: the China answer ends at a cache name this tool does not recognise ({names}), after {cdn}; it may be the CDN’s partner. It is not counted as the CDN’s own edge, so the answers still differ.',
 
   'glb.stat.answered': 'Answered',
   'glb.stat.failed': '{count} failed',
@@ -359,6 +360,7 @@ registerStrings('tr', {
   'glb.find.direct': 'Farklı adresler; hiçbiri bu aracın tanıdığı bir CDN’de, platformda ya da yönlendirme hizmetinde değil: genellikle hâlâ yayılmakta olan yeni bir değişiklik (eski yanıtlar TTL dolana kadar önbellekte kalır) ya da tanımadığı bir sağlayıcının GeoDNS / round-robin dağıtımı.',
   'glb.find.records': 'Farklı kayıtlar: genellikle hâlâ yayılmakta olan yeni bir değişiklik (eski yanıtlar TTL dolana kadar önbellekte kalır) ya da birbiriyle çelişen ad sunucuları.',
   'glb.find.more': '+{count} tane daha',
+  'glb.find.partner': '{sources}: Çin’deki yanıt, {cdn} üzerinden geçtikten sonra bu aracın tanımadığı bir önbellek adında ({names}) bitiyor; bu CDN’in iş ortağı olabilir. CDN’in kendi uç sunucusu sayılmadığı için yanıtlar yine farklı görünüyor.',
 
   'glb.stat.answered': 'Yanıtlanan',
   'glb.stat.failed': '{count} başarısız',
@@ -1884,7 +1886,12 @@ export function mount(container, ctx) {
     const sources = sourceNames(f.members);
     const providers = shortList((f.operators || []).map((op) => op.name));
     let text;
-    switch (f.code) {
+    switch (f.partner ? 'partner' : f.code) {
+      case 'partner':
+        // A China answer whose chain enters a CDN this tool knows and only its last name is unknown
+        // (lib/propagation.js `partner`): likely the CDN's partner cache; the verdict stays.
+        text = t('glb.find.partner', { sources: sourceNames(f.partner.members), names: shortList(f.partner.names), cdn: shortList(f.partner.cdns) });
+        break;
       case 'rcode':
         // SERVFAIL is a failure to resolve; REFUSED and the rest a resolver's own choice.
         // Only sources that do not validate DNSSEC (AliDNS) give it: no signature problem then.
@@ -1916,11 +1923,11 @@ export function mount(container, ctx) {
     if (f.filtering) text = `${text} ${t('glb.find.filtering')}`;
     // Marks in legend order; none when the finding is about every answer group ('direct',
     // 'records', a CNAME that differs everywhere), where they would only repeat the legend.
-    const keys = groups.filter((g) => f.groups.includes(g.key)).map((g) => g.key);
+    const keys = groups.filter((g) => (f.partner ? f.partner.groups : f.groups).includes(g.key)).map((g) => g.key);
     const everyGroup = f.code === 'direct' || f.code === 'records' || keys.length === groups.filter((g) => g.letter).length;
     const marks = everyGroup ? [] : keys.slice(0, 4).map((key) => groupMark(groupByKey.get(key)));
     if (!everyGroup && keys.length > 4) marks.push(h('span', { class: 'glb-finding-more' }, `+${keys.length - 4}`));
-    return h('li', { class: 'glb-finding', dataset: { finding: f.code } },
+    return h('li', { class: 'glb-finding', dataset: f.partner ? { finding: f.code, partner: 'true' } : { finding: f.code } },
       marks.length ? h('span', { class: 'glb-finding-marks' }, marks) : null,
       h('span', null, text));
   }

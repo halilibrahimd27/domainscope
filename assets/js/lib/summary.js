@@ -122,8 +122,9 @@ export function globalSummary(facts, opts) {
   const sources = answered ? [t('sum.global.answers', { count: groups, answered: k.num(answered), total: k.num(facts.total) })] : [];
   if (facts.failed > 0) sources.push(`${sources.length ? ' · ' : ''}${t('sum.global.errors', { count: facts.failed })}`);
   const findings = (v.state === 'differ' || v.state === 'unresolved') ? (v.findings || []) : [];
-  const findingLines = findings.slice(0, 3).map((f) => [t(`sum.global.find.${f.code}`, {
-    count: (f.members || []).length, rcode: f.rcode || '', type: facts.type
+  // A China answer that ends at a partner's cache name (lib/propagation.js `partner`) is said as that, with its sources.
+  const findingLines = findings.slice(0, 3).map((f) => [t(f.partner ? 'sum.global.find.partner' : `sum.global.find.${f.code}`, {
+    count: ((f.partner ? f.partner.members : f.members) || []).length, rcode: f.rcode || '', type: facts.type
   })]);
   if (findings.length > 3) findingLines.push([t('sum.moreFindings', { count: findings.length - 3 })]);
   // Global DNS › Expected value (lib/expected.js): how many of the sources that answered serve it.
@@ -940,6 +941,9 @@ const STRINGS = [
     'Ad farklı sağlayıcılara işaret ediyor ({count} kaynak)']],
   ['sum.global.find.direct', [{ one: 'Different direct addresses ({count} source)', other: 'Different direct addresses ({count} sources)' }, 'Farklı doğrudan adresler ({count} kaynak)']],
   ['sum.global.find.records', [{ one: 'Different records ({count} source)', other: 'Different records ({count} sources)' }, 'Farklı kayıtlar ({count} kaynak)']],
+  ['sum.global.find.partner', [{ one: 'The China answer ends at a cache name not recognised, maybe the CDN’s partner ({count} source)',
+    other: 'The China answer ends at a cache name not recognised, maybe the CDN’s partner ({count} sources)' },
+  'Çin’deki yanıt tanınmayan bir önbellek adında bitiyor, CDN’in iş ortağı olabilir ({count} kaynak)']],
 
   ['sum.scan.cert', ['Certificate', 'Sertifika']],
   ['sum.scan.sets', [{ one: '{count} certificate set:', other: '{count} certificate sets:' }, '{count} sertifika seti:']],

@@ -737,6 +737,10 @@ function judgeGroups(groups, address, controls = new Map()) {
           const split = code === 'cname' ? locationSplit(c, controls) : null;
           if (split) geoSplits.push(split);
           const extra = { operators: c.move ? operatorsOf(c.groups) : [], regionalOnly: !split && regionalBranch(c) };
+          // Only a partner hop keeps the branch from being the region's line: the finding says so (the verdict stays).
+          const partner = extra.regionalOnly && code === 'cname' && locationSplit(c, controls, { partner: true })
+            ? partnerOf(c.groups.filter((g) => g.regional)) : null;
+          if (partner) extra.partner = partner;
           add(code, c.groups, code === 'cname' ? { owner: c.owner, targets: c.targets, ...extra, byLocation: split } : extra);
         }
       }
@@ -757,7 +761,11 @@ function judgeGroups(groups, address, controls = new Map()) {
   // is marked `regionalOnly` like a branch without a split.
   for (const f of findings.filter((x) => x.code === 'nodata')) {
     const list = f.groups.map((k) => groupOf.get(k));
-    if (list.every((g) => g.regional) && list.some((g) => !ownEdge(g) || controlEnters(g, controls))) f.regionalOnly = true;
+    if (list.every((g) => g.regional) && list.some((g) => !ownEdge(g) || controlEnters(g, controls))) {
+      f.regionalOnly = true;
+      const partner = list.every((g) => (ownEdge(g) || partnerHop(g)) && !controlEnters(g, controls)) ? partnerOf(list) : null;
+      if (partner) f.partner = partner;
+    }
   }
   const answerEntries = new Set(answers.map((g) => entryOf(g)?.dest).filter(Boolean));
   // Empty answers whose chains enter a provider (an IPv4-only edge name) next to addresses other
@@ -781,6 +789,12 @@ function judgeGroups(groups, address, controls = new Map()) {
   // about the region.
   const edgeGroups = answers.filter((g) => g.operators.some((op) => op.managed));
   const edgesOnlyRegional = edgeGroups.length > 0 && edgeGroups.every((g) => g.regional && ownEdge(g) && !controlEnters(g, controls));
+  // The same edges, were a partner hop the CDN's own: the 'mixed' finding stays, and says that.
+  if (resolversAgree && !edgesOnlyRegional && edgeGroups.length > 0
+    && edgeGroups.every((g) => g.regional && (ownEdge(g) || partnerHop(g)) && !controlEnters(g, controls))) {
+    const partner = partnerOf(edgeGroups);
+    if (partner) for (const f of findings.filter((x) => x.code === 'mixed' && !x.regionalOnly)) f.partner = partner;
+  }
   const locationOnly = (f) => !!f.byLocation
     || (resolversAgree && !f.regionalOnly && (chainFinding(f) || edgeNodata(f) || (f.code === 'mixed' && edgesOnlyRegional)));
   const serious = findings.filter((f) => f.code !== 'direct' && f.code !== 'records' && !locationOnly(f));
@@ -808,6 +822,39 @@ function ownEdge(g) {
   const last = g.chain.length ? matchProviderByCname(g.chain[g.chain.length - 1]) : null;
   const managed = g.operators.filter((op) => op.managed);
   return !!last && !last.dnsOnly && managed.length > 0 && managed.every((op) => op.id === last.id);
+}
+
+/**
+ * A regional answer a recognised CDN hands on to a cache name this tool does not know: its chain
+ * enters a CDN or WAF it recognises, and only the last CNAME — the name the addresses come from —
+ * is unrecognised (a mainland CDN's partner cache; about 4.5 % of the genuine China answers).
+ * `{ cdn, name }`, else null. It is not {@link ownEdge}, so the verdict does not change; the
+ * finding it leads to says why ({@link partnerOf}).
+ */
+function partnerHop(g) {
+  const chain = g.chain;
+  if (chain.length < 2 || matchProviderByCname(chain[chain.length - 1])) return null;
+  const at = chain.findIndex((c) => matchProviderByCname(c));
+  if (at < 0) return null;
+  const p = matchProviderByCname(chain[at]);
+  if (p.dnsOnly || (p.category !== 'cdn' && p.category !== 'waf')) return null;
+  if (chain.slice(at + 1, -1).some((c) => !matchProviderByCname(c))) return null;
+  return { cdn: p.name, name: chain[chain.length - 1] };
+}
+
+/**
+ * A finding's `partner` (the regional groups that end at a partner hop, not at their CDN's own
+ * name): `{ names, cdns, members, groups }`, or null when none does.
+ */
+function partnerOf(list) {
+  const hops = list.map((g) => [g, ownEdge(g) ? null : partnerHop(g)]).filter(([, hop]) => hop);
+  if (!hops.length) return null;
+  return {
+    names: uniqueList(hops.map(([, hop]) => hop.name)),
+    cdns: uniqueList(hops.map(([, hop]) => hop.cdn)),
+    members: membersOf(hops.map(([g]) => g)),
+    groups: hops.map(([g]) => g.key)
+  };
 }
 
 /**
@@ -849,7 +896,7 @@ function controlEnters(g, controls) {
  * whatever the subnet (an older one it still holds, or a line by the resolver's own address), not
  * the region's.
  */
-function locationSplit(c, controls) {
+function locationSplit(c, controls, { partner = false } = {}) {
   const sideOf = (g) => [...g.chain, null][c.depth];
   const home = [];
   for (const g of c.groups) {
@@ -857,7 +904,7 @@ function locationSplit(c, controls) {
   }
   if (home.length > 1) return null;
   const away = c.groups.filter((g) => g.regional && !home.some((x) => sameName(x, sideOf(g))));
-  if (!away.length || away.some((g) => typeof sideOf(g) !== 'string' || !ownEdge(g))) return null;
+  if (!away.length || away.some((g) => typeof sideOf(g) !== 'string' || !(ownEdge(g) || (partner && partnerHop(g))))) return null;
   const targets = uniqueList(away.map(sideOf));
   let line = home.length > 0;
   for (const id of new Set(away.flatMap((g) => [...g.via]))) {

@@ -14,6 +14,7 @@
  *   node tools/ds.mjs audit --policy policy.json domains.txt --json audit.json --md audit.md
  *   node tools/ds.mjs tls --list tls-hosts.txt --ct ct.json --ari --revocation --json tls.json
  *   node tools/ds.mjs takeover --list domains.txt --from-subdomains subs.json --json takeover.json
+ *   node tools/ds.mjs watch --list domains.txt --authoritative --baseline watch.json --json watch.json
  *
  * Commands, options and exit codes: tools/ds/args.mjs (USAGE, `--help`). The checks:
  * tools/ds/commands.mjs; "Changes since the baseline": tools/ds/diff.mjs; the summary and the
@@ -236,16 +237,17 @@ export function withOpenKeys(doc, open) {
  * @param {string[]} argv arguments after the script
  * @param {{ stdout?: { write: Function, isTTY?: boolean }, stderr?: { write: Function },
  *   fetchImpl?: typeof fetch, env?: Record<string, string|undefined>, now?: () => Date,
- *   signal?: AbortSignal, tls?: object, notifyTiming?: { timeoutMs?: number, retryDelayMs?: number, sleep?: Function } }} [io]
+ *   signal?: AbortSignal, tls?: object, authoritative?: object, notifyTiming?: { timeoutMs?: number, retryDelayMs?: number, sleep?: Function } }} [io]
  *   injected streams, fetch and clock (tests), the notifications' timeout and retry delay (`notifyTiming`); `tls`: the
  *   `tls` command's hooks (tools/ds/tls.mjs runTls: a trust store, the issuer → CA mapping, ARI directories, node:http's
- *   request, the intermediates list)
+ *   request, the intermediates list);
+ *   `authoritative`: `watch --authoritative`'s (tools/ds/authoritative.mjs: the name servers' port, timeouts, sockets)
  * @returns {Promise<number>}
  */
 export async function main(argv, io = {}) {
   const {
     stdout = process.stdout, stderr = process.stderr, fetchImpl = globalThis.fetch,
-    env = process.env, now = () => new Date(), signal, tls: tlsHooks, notifyTiming = {}
+    env = process.env, now = () => new Date(), signal, tls: tlsHooks, authoritative: authHooks, notifyTiming = {}
   } = io;
   const say = (stream, text) => stream.write(text.endsWith('\n') ? text : `${text}\n`);
   const fail = (err) => {
@@ -335,6 +337,11 @@ export async function main(argv, io = {}) {
       const { takeoverInputs } = await import('./ds/takeover.mjs');
       inputs.takeover = await takeoverInputs(options, { read: async (path, option) => decodeText(await readInput(path, option)), warn, skipped: skippedWarnings });
     }
+    if (command === 'watch') {
+      // --names: more host names whose record sets are watched (tools/ds/watch.mjs)
+      const { watchInputs } = await import('./ds/watch.mjs');
+      inputs.watch = await watchInputs(options, { read: async (path, option) => decodeText(await readInput(path, option)), warn, skipped: skippedWarnings });
+    }
     await checkOutputPath(options.json, '--json');
     await checkOutputPath(options.md, '--md');
     if (options.baseline) baseline = await loadBaseline(options.baseline, command, { allowMissing: jsonIsBaseline });
@@ -360,7 +367,9 @@ export async function main(argv, io = {}) {
   };
   try {
     const { runCommand } = await import('./ds/commands.mjs');
-    result = await runCommand(command, targets, options, { dns, fetchImpl, signal, now, t, progress, baseline, inputs, ...(tlsHooks ? { tls: tlsHooks } : {}) });
+    result = await runCommand(command, targets, options, {
+      dns, fetchImpl, signal, now, t, progress, baseline, inputs, ...(tlsHooks ? { tls: tlsHooks } : {}), ...(authHooks ? { authoritative: authHooks } : {})
+    });
   } catch (err) {
     if (errorKind(err) === 'abort' || (signal && signal.aborted)) return interrupted();
     return fail(err);

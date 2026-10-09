@@ -42,7 +42,7 @@ export const DS_VERSION = '1.0.0';
 export const EXIT = Object.freeze({ OK: 0, FAILED: 1, USAGE: 2, WRITE: 3, CHANGED: 4, NOTIFY: 5, INTERRUPTED: 130 });
 
 /** The subcommands, in help order. */
-export const COMMANDS = Object.freeze(['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit', 'tls', 'takeover']);
+export const COMMANDS = Object.freeze(['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit', 'tls', 'takeover', 'watch']);
 
 /**
  * What each subcommand takes: `targets` 'domains' (host names, also from --list), 'names'
@@ -58,7 +58,8 @@ export const COMMAND_SPECS = Object.freeze({
   dane: Object.freeze({ targets: 'file', options: Object.freeze([]) }),
   audit: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'policy', 'preset', 'no-dkim', 'waivers']) }),
   tls: Object.freeze({ targets: 'endpoints', options: Object.freeze(['list', 'ari', 'revocation', 'from-subdomains', 'skip-cdn', 'warn-days', 'ct', 'http', 'max-endpoints']) }),
-  takeover: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'names', 'from-subdomains', 'dkim-selectors']) })
+  takeover: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'names', 'from-subdomains', 'dkim-selectors']) }),
+  watch: Object.freeze({ targets: 'domains', options: Object.freeze(['list', 'names', 'types', 'ttl', 'authoritative', 'max-queries']) })
 });
 
 /** What a target of each kind is, for "not …" messages. */
@@ -136,6 +137,29 @@ export const TLS_MAX_MAX_ENDPOINTS = 10000;
 /** `takeover --dkim-selectors`: at most this many selectors besides the common ones. */
 export const DS_MAX_DKIM_SELECTORS = 20;
 
+/** `watch --types`: the record types a snapshot asks (every one by default), in this order. */
+export const WATCH_TYPES = Object.freeze(['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'CAA', 'SOA', 'DS', 'DNSKEY', 'HTTPS']);
+/** `watch --names`: at most this many host names (besides each domain's apex, www and _dmarc). */
+export const WATCH_MAX_NAMES = 200;
+/** `watch --max-queries`: the questions to each domain's name servers (--authoritative), default and most. */
+export const WATCH_DEFAULT_QUERIES = 2000;
+export const WATCH_MAX_QUERIES = 10000;
+
+/**
+ * `watch --types A,MX`: the record types to snapshot ({@link WATCH_TYPES}), upper case, each once, in
+ * that order; every one without it.
+ * @param {string|undefined} value
+ * @returns {string[]}
+ */
+export function watchTypesOption(value) {
+  if (value === undefined) return [...WATCH_TYPES];
+  const list = [...new Set(splitList(String(value)).map((s) => s.toUpperCase()))];
+  if (!list.length) throw new UsageError(`--types needs at least one record type (${WATCH_TYPES.join(',')})`);
+  const bad = list.filter((x) => !WATCH_TYPES.includes(x));
+  if (bad.length) throw new UsageError(`--types: not a type the watch reads: ${bad.map((x) => `"${x}"`).join(', ')} (one of ${WATCH_TYPES.join(', ')})`);
+  return WATCH_TYPES.filter((x) => list.includes(x));
+}
+
 /**
  * An `audit` target that names a file of domains rather than a domain: a path (a separator in
  * it) or a list's extension (`domains.txt`, `.csv`, `.list`, `.lst` — none is a TLD). A URL (a
@@ -208,6 +232,9 @@ const OPTION_SPEC = Object.freeze({
   ari: { type: 'boolean' },
   revocation: { type: 'boolean' },
   names: { type: 'string' },
+  types: { type: 'string' },
+  ttl: { type: 'boolean' },
+  authoritative: { type: 'boolean' },
   'from-subdomains': { type: 'string' },
   'dkim-selectors': { type: 'string' },
   waivers: { type: 'string' },
@@ -248,7 +275,7 @@ const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'res
  * @property {string[]} expectedCas ct: the CAs expected to issue (lib/expectedca.js entries; none: no issuer is unexpected)
  * @property {string|null} origin drift: the zone name
  * @property {boolean} includeOrigins drift: keep origin addresses in the reports
- * @property {number} maxQueries drift: query budget
+ * @property {number} maxQueries drift: query budget; watch: the questions to each domain's name servers
  * @property {string|null} ca renew: RENEWAL_CAS id
  * @property {string} challenge renew: RENEWAL_CHALLENGES
  * @property {string|null} policy audit: the policy file (lib/policy.js)
@@ -271,6 +298,9 @@ const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'fail-on-change', 'res
  *   hosts with an address are checked
  * @property {string[]} dkimSelectors takeover: DKIM selectors followed besides the common ones
  * @property {string|null} waivers health, audit, ct: the accepted risks (lib/waivers.js waivers.json)
+ * @property {string[]} types watch: the record types snapshotted ({@link WATCH_TYPES})
+ * @property {boolean} ttl watch: compare TTLs too (the name servers' own: needs authoritative)
+ * @property {boolean} authoritative watch: ask every name server of each zone directly (UDP / TCP 53)
  */
 
 /**
@@ -436,7 +466,8 @@ export function parseTargets(command, tokens) {
   const targets = [];
   const invalid = [];
   for (const token of list) {
-    const host = command === 'audit' ? (passportDomain(token) || {}).domain : normalizeHostname(token);
+    // audit and watch read a registration: the registrable domain (www.example.com is example.com)
+    const host = command === 'audit' || command === 'watch' ? (passportDomain(token) || {}).domain : normalizeHostname(token);
     if (!host) invalid.push(token);
     else if (!targets.includes(host)) targets.push(host);
   }
@@ -607,6 +638,16 @@ export function parseCommandLine(argv) {
     options.fromSubdomains = v['from-subdomains'] ?? null;
     options.dkimSelectors = dkimSelectorOption(v['dkim-selectors']);
   }
+  if (command === 'watch') {
+    options.names = v.names ?? null;
+    options.types = watchTypesOption(v.types);
+    options.authoritative = v.authoritative === true;
+    // a resolver's cache counts TTLs down: only the name servers' own TTLs compare
+    if (v.ttl === true && !options.authoritative) throw new UsageError("--ttl compares the TTLs the name servers give: it needs --authoritative (a resolver's cache counts TTLs down)");
+    options.ttl = v.ttl === true;
+    if (v['max-queries'] !== undefined && !options.authoritative) throw new UsageError('--max-queries bounds the questions to the name servers: it needs --authoritative');
+    options.maxQueries = intOption(v['max-queries'], 'max-queries', 1, WATCH_MAX_QUERIES, WATCH_DEFAULT_QUERIES);
+  }
 
   let targets = command === 'audit' ? rest.filter((x) => !isListArgument(x)) : rest;
   if (spec.targets === 'file') {
@@ -651,7 +692,7 @@ function defaults() {
     origin: null, includeOrigins: false, maxQueries: DRIFT_DEFAULT_BUDGET, ca: null, challenge: 'unknown',
     policy: null, preset: null, dkim: true, ari: false, revocation: false,
     warnDays: TLS_DEFAULT_WARN_DAYS, ct: null, http: false, skipCdn: false, maxEndpoints: TLS_DEFAULT_MAX_ENDPOINTS,
-    names: null, fromSubdomains: null, dkimSelectors: [], waivers: null,
+    names: null, fromSubdomains: null, dkimSelectors: [], waivers: null, types: [...WATCH_TYPES], ttl: false, authoritative: false,
     notify: [], notifyBad: [], notifyFormat: 'auto', notifyAlways: false, failOnNotifyError: false
   };
 }
@@ -726,11 +767,24 @@ commands:
       [--names FILE]             also the CNAME chains of these host names, or
       [--from-subdomains FILE]   of the hosts with a CNAME in a subdomains --json report
       [--dkim-selectors a,b]     DKIM selectors besides the ${TAKEOVER_DKIM_SELECTORS.length} common ones
+  watch DOMAIN...                the registration, delegation and record change watch (a hijack
+                                 watch): the registrar, transfer locks and statuses, the expiry, the
+                                 name servers (the registry's and the zone's), the DS records, and the
+                                 record sets of the apex, www, _dmarc and the names you give
+      [--names FILE]             also these host names under the domains (at most ${WATCH_MAX_NAMES})
+      [--types A,MX,...]         the record types to watch (default: every one of
+                                 ${WATCH_TYPES.join(',')})
+      [--authoritative]          ask every name server directly (UDP, TCP port 53): lame servers,
+                                 lagging secondaries, servers that answer one serial differently
+      [--ttl]                    compare the TTLs the name servers give too (with --authoritative)
+      [--max-queries N]          questions to each domain's name servers (default ${WATCH_DEFAULT_QUERIES},
+                                 at most ${WATCH_MAX_QUERIES}; with --authoritative)
 
 targets: DOMAIN / NAME / HOST[:PORT] on the command line, and --list FILE (repeatable) with one or more per
   line (# comments). An invalid entry is an error on the command line and a warning in a file.
   audit takes a file of domains as a target too (a path, or a name ending .txt, .csv, .list,
-  .lst), and audits each domain's registrable domain (www.example.com is example.com).
+  .lst), and audits each domain's registrable domain (www.example.com is example.com); watch
+  watches each one's registrable domain too.
 
 options:
   --json FILE          write the report (JSON); give it to --baseline next time
@@ -780,7 +834,9 @@ what is sent: names and record types to the DoH resolvers (renew also asks Cloud
   CertID (the issuer's key identifier and the serial number, both public) to the issuing CA's ARI
   server, --revocation downloads the CRLs the certificates name from their CAs (at most 20 MB each).
   takeover asks the same, each registrable domain once a run; a service only its page can tell
-  (S3, GitHub Pages ...) is listed "to check": the page check stays in the app.
+  (S3, GitHub Pages ...) is listed "to check": the page check stays in the app. watch asks the DoH
+  resolvers and RDAP as audit does; with --authoritative it also sends DNS questions over UDP and
+  TCP port 53 to each domain's own name servers (their addresses asked over DoH).
 
 tls changes: a served certificate entering --warn-days (EXPIRING) or expiring (EXPIRED); a host
   some address of which now serves an untrusted chain (UNTRUSTED: a missing intermediate is named
@@ -818,6 +874,18 @@ takeover watch: a new risk (RISK) counts at medium severity or above - a domain 
   that no longer exists - and so do a risk gone (GONE; "registered now - make sure it is yours"
   when its lapsed domain is registered again), worse or better (WORSE, BETTER). A risk whose lookup
   gave no answer is carried from the last run that read it, never gone.
+
+watch changes: REGISTRAR (another registrar), LOCK (a transfer prohibition removed: bad; added:
+  good), STATUS (a hold, pending delete, redemption or pending transfer arriving: bad; others
+  listed), NS (the registry's or the zone's name servers), DS (removed or changed: bad), EXPIRY
+  (renewed: good; not renewed with less than 30 days left: bad, said once) and RECORD: MX, NS, CAA,
+  the SPF and DMARC records count as bad; A, AAAA and CNAME as info unless the name moves to another
+  kind of provider (a CDN, a direct address, a dangling CNAME: bad). Not counted: a CDN's edge
+  addresses rotating, a new SOA serial (SERIAL) and a record set that changed 3 times or more in
+  the last 7 runs (FLAPPING, said once). With --authoritative: SYNC (servers answer one serial
+  differently: bad; a lagging secondary is listed) and LAME (no authority, REFUSED, SERVFAIL, no
+  answer). A verification token (google-site-verification= ...) is named by its service, never
+  printed. A lookup that failed is carried from the last run that read it, never a change.
 
 notifications: a webhook URL works as a password (whoever has it can post), so it is never
   printed or written: messages name its host only. Keep it in the environment (the nightly
@@ -858,4 +926,6 @@ examples:
   node tools/ds.mjs tls --from-subdomains subs.json --skip-cdn --max-endpoints 200
   node tools/ds.mjs tls www.example.com example.com:8443 --ari
   node tools/ds.mjs takeover --list domains.txt --from-subdomains subs.json --baseline takeover.json --json takeover.json
+  node tools/ds.mjs watch --list domains.txt --baseline watch.json --json watch.json --fail-on-change
+  node tools/ds.mjs watch example.com --names hosts.txt --authoritative --ttl
 `;

@@ -245,6 +245,50 @@ const STANDINGS = Object.freeze({
     if (risk.carried) return 'unknown';
     const paged = TAKEOVER_SEVERITIES.indexOf(e.state);
     return paged !== -1 && takeoverRank(risk.severity) > paged ? 'over' : 'bad';
+  },
+
+  /**
+   * The change watch's states (tools/ds/watchdiff.mjs): a transfer lock removed (LOCK, the item its
+   * status) is over once the registry lists a transfer prohibition again; a hold, a pending delete,
+   * redemption or transfer (STATUS, the item the status) once it is gone; the registry losing the
+   * domain (STATUS `registration`) once it holds it again; an expiry not renewed (EXPIRY) once it is
+   * renewed (the report no longer marks it); a lame server (LAME, its address) once it answers with
+   * authority or is no longer asked; a record set out of sync (SYNC, its key) once the servers agree.
+   * A registration not read this run (carried) or name servers not asked say nothing. The events —
+   * another registrar, other name servers, other DS records, a record changed — stay open until
+   * someone resolves them in PagerDuty: nothing in a later report says the change was wanted.
+   */
+  watch(x, e) {
+    const r = x.registration && typeof x.registration === 'object' ? x.registration : null;
+    const read = !!r && !r.carried;
+    const statuses = read && Array.isArray(r.statuses) ? r.statuses : null;
+    switch (e.tag) {
+      case 'LOCK':
+        if (!statuses) return 'unknown';
+        return statuses.some((s) => /transfer prohibited$/.test(s)) ? 'over' : 'bad';
+      case 'STATUS':
+        if (e.item === 'registration') return read ? (r.state === 'ok' ? 'over' : 'bad') : 'unknown';
+        if (!statuses || typeof e.item !== 'string') return 'unknown';
+        return statuses.includes(e.item) ? 'bad' : 'over';
+      case 'EXPIRY':
+        if (!read || r.state !== 'ok') return 'unknown';
+        return r.soon ? 'bad' : 'over';
+      case 'LAME': {
+        const a = x.authoritative;
+        if (!a || a.view !== 'authoritative') return 'unknown';
+        const s = (a.servers || []).find((y) => y && y.address === e.item);
+        if (!s) return 'over';
+        return s.status === 'ok' ? 'over' : s.status === 'skipped' ? 'unknown' : 'bad';
+      }
+      case 'SYNC': {
+        const a = x.authoritative;
+        if (!a || a.view !== 'authoritative') return 'unknown';
+        if ((a.mismatches || []).some((m) => m && m.key === e.item)) return 'bad';
+        return (a.compared || []).includes(e.item) ? 'over' : 'unknown';
+      }
+      default:
+        return 'unknown';
+    }
   }
 });
 

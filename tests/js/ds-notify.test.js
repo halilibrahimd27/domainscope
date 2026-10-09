@@ -436,12 +436,16 @@ describe('PagerDuty', () => {
     for (const c of [{ tag: 'WORSE', after: 'error' }, { tag: 'DANGLING' }, { tag: 'TAKEOVER', after: 'high' }, { tag: 'NEW', after: null }]) assert.equal(eventSeverity(c), 'error', c.tag);
     // what today's commands page for those: drift's name servers, the audit's registrar, lock,
     // registry status, DNSSEC and expiry rules (also a domain added that fails one), health's
-    // registration expired, held or being deleted and DNSSEC broken, ct's certificate in use revoked
+    // registration expired, held or being deleted and DNSSEC broken, ct's certificate in use revoked,
+    // watch's hold, pending delete, redemption or pending transfer arriving and the registry losing the domain
     assert.deepEqual(CRITICAL_ITEMS, {
       health: ['rdap.expired', 'rdap.hold', 'rdap.pending-delete', 'dnssec.broken'],
       drift: ['NS'],
-      audit: ['registrar', 'transferLock', 'status.critical', 'dnssec', 'expiryDays', 'nsExpiryDays']
+      audit: ['registrar', 'transferLock', 'status.critical', 'dnssec', 'expiryDays', 'nsExpiryDays'],
+      watch: ['server hold', 'client hold', 'pending delete', 'redemption period', 'pending transfer', 'registration']
     });
+    for (const id of CRITICAL_ITEMS.watch) assert.equal(eventSeverity({ tag: 'STATUS', item: id, after: id }, 'watch'), 'critical', id);
+    assert.equal(eventSeverity({ tag: 'STATUS', item: 'client update prohibited', after: 'client update prohibited' }, 'watch'), 'error');
     assert.equal(eventSeverity({ tag: 'WORSE', item: 'NS', after: 'disjoint' }, 'drift'), 'critical');
     assert.equal(eventSeverity({ tag: 'WORSE', item: 'mail.example.com|A', after: 'differs' }, 'drift'), 'error');
     for (const id of CRITICAL_ITEMS.audit) assert.equal(eventSeverity({ tag: 'WORSE', item: id, after: 'fail' }, 'audit'), 'critical', id);

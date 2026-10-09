@@ -1178,7 +1178,9 @@ const RUNNERS = Object.freeze({
   health: runHealth, subdomains: runSubdomains, drift: runDrift, ct: runCt, renew: runRenew, dane: runDane, audit: runAudit,
   tls: runTlsCommand,
   // the takeover and dependency-expiry watch: tools/ds/takeover.mjs
-  takeover: (targets, options, env) => import('./takeover.mjs').then((m) => m.runTakeover(targets, options, env))
+  takeover: (targets, options, env) => import('./takeover.mjs').then((m) => m.runTakeover(targets, options, env)),
+  // the registration, delegation and record change watch: tools/ds/watch.mjs
+  watch: (targets, options, env) => import('./watch.mjs').then((m) => m.runWatch(targets, options, env))
 });
 
 /**
@@ -1188,7 +1190,8 @@ const RUNNERS = Object.freeze({
  * @param {import('./args.mjs').DsOptions} options
  * @param {{ dns: object, fetchImpl: typeof fetch, signal?: AbortSignal, now: () => Date, t: Function,
  *   progress: (text: string) => void, baseline: object|null,
- *   inputs: { file?: { name: string, bytes: Uint8Array }, exactNames?: string[], exactFile?: string } }} env
+ *   inputs: { file?: { name: string, bytes: Uint8Array }, exactNames?: string[], exactFile?: string, takeover?: object, watch?: object },
+ *   tls?: object, authoritative?: object }} env
  * @returns {Promise<{ options: object, targets: object[], docs: object[], warnings: string[], failed?: boolean }>}
  *   `failed` (audit): a rule of the policy failed, exit 4; rejects with a UsageError for an input it cannot check (a zone without a name, no
  *   certificate), with an AbortError when `signal` aborts

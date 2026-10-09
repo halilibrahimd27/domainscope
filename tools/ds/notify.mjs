@@ -58,14 +58,18 @@ export const CRITICAL_TAGS = Object.freeze(['REGISTRAR', 'NS', 'DS', 'LOCK', 'EX
 /**
  * The same problems as today's commands report them, by item: health's registration expired,
  * held or being deleted and DNSSEC broken; drift's name servers; the audit's registrar, transfer
- * lock, registry status, DNSSEC and expiry rules (also a domain added that fails one). And ct's
- * certificate in use revoked (REVOKED), tls's too (a revoked certificate still served) and a
- * served certificate that turned expired or untrusted.
+ * lock, registry status, DNSSEC and expiry rules (also a domain added that fails one); watch's hold,
+ * pending delete, redemption period or pending transfer arriving and the registry no longer holding
+ * the domain (its REGISTRAR, NS, DS and LOCK are critical by tag). And ct's certificate in use
+ * revoked (REVOKED), tls's too (a revoked certificate still served) and a served certificate that
+ * turned expired or untrusted.
  */
 export const CRITICAL_ITEMS = Object.freeze({
   health: Object.freeze(['rdap.expired', 'rdap.hold', 'rdap.pending-delete', 'dnssec.broken']),
   drift: Object.freeze(['NS']),
-  audit: Object.freeze(['registrar', 'transferLock', 'status.critical', 'dnssec', 'expiryDays', 'nsExpiryDays'])
+  audit: Object.freeze(['registrar', 'transferLock', 'status.critical', 'dnssec', 'expiryDays', 'nsExpiryDays']),
+  // watch's STATUS of a hold, a pending delete, a redemption period or a pending transfer arriving, the registry losing the domain
+  watch: Object.freeze(['server hold', 'client hold', 'pending delete', 'redemption period', 'pending transfer', 'registration'])
 });
 /** The environment the runner reads (the nightly template sets them from Actions secrets; empty is unset). */
 export const NOTIFY_ENV = Object.freeze({
@@ -73,7 +77,8 @@ export const NOTIFY_ENV = Object.freeze({
 });
 /** What a target of each command is, for the message's footer. */
 const TARGET_NOUNS = Object.freeze({
-  health: 'domain', subdomains: 'domain', drift: 'zone', ct: 'domain', renew: 'name', dane: 'certificate', audit: 'domain', tls: 'host', takeover: 'domain'
+  health: 'domain', subdomains: 'domain', drift: 'zone', ct: 'domain', renew: 'name', dane: 'certificate', audit: 'domain', tls: 'host', takeover: 'domain',
+  watch: 'domain'
 });
 
 const DISCORD_HOSTS = new Set(['discord.com', 'discordapp.com', 'ptb.discord.com', 'canary.discord.com']);

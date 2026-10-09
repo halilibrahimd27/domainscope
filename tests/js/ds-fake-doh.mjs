@@ -14,12 +14,18 @@
  * and their RDAP registry ({@link portfolioZone}, {@link createPortfolioFetch}: the `audit`
  * command); DS_FAKE_DOH=takeover two domains whose records name other people's domains, with their
  * registry ({@link takeoverZone}, {@link createTakeoverFetch}: the `takeover` command);
+ * DS_FAKE_DOH=watch two domains with their registry for the change watch ({@link watchZone},
+ * {@link createWatchFetch}: the `watch` command, whose `--authoritative` tests run
+ * {@link startAuthServer}, a fake authoritative name server over UDP and TCP on 127.0.0.x);
  * DS_FAKE_DOH=hang a network that never answers ({@link createHangingFetch}, the
  * Ctrl-C test). Documentation data only (example.com / .net / .org, example-test.com.tr,
- * 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32, the fake Cloudflare edge 104.16.1.1).
+ * 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32, loopback, the fake Cloudflare edges
+ * 104.16.1.1 … 104.16.3.3).
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
+import dgram from 'node:dgram';
+import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encodeMessage, decodeMessage, base64UrlDecode } from '../../assets/js/lib/dnswire.js';
@@ -322,6 +328,223 @@ export function createTakeoverFetch(zone, { log = [], rdapLog = [], rdapStatus =
   };
 }
 
+/* ------------------------------------------------------------------------ */
+/* The change watch (the runner's `watch`)                                  */
+/* ------------------------------------------------------------------------ */
+
+/** The Cloudflare edges the watch's apex rotates over (the provider's published ranges). */
+export const CF_EDGES_V4 = Object.freeze(['104.16.1.1', '104.16.2.2', '104.16.3.3']);
+
+/**
+ * Two domains for the change watch. example.com: signed (a DS and its KSK), its registrar's transfer
+ * and delete locks, the apex on Cloudflare's edges, www a CNAME to Cloudflare, mail at mx.example.com
+ * with SPF and DMARC p=reject, a Google verification token, CAA, shop.example.com a direct address,
+ * name servers ns1 / ns2.example.net (at 127.0.0.1 and 127.0.0.2: the fake authoritative servers of
+ * {@link startAuthServer}); example.org parked (null MX, -all, p=reject). RDAP from the registry at
+ * {@link PORTFOLIO_RDAP_BASE} with the registrar (IANA ID 9999) and the name servers. `table` and
+ * `registry` can be changed between runs; dates count from `now`.
+ * @param {{ now?: number }} [opts]
+ * @returns {{ table: Record<string, Record<string, any>>, registry: Record<string, object|null>, rdapJson: Function, dnskey: object, keyTag: number }}
+ */
+export function watchZone({ now = Date.now() } = {}) {
+  const iso = (days) => new Date(now + days * DAY_MS + DAY_MS / 2).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const dnskey = { flags: 257, protocol: 3, algorithm: 13, publicKey: Buffer.alloc(64, 7).toString('base64') };
+  const keyTag = decodeMessage(encodeMessage({ answers: [{ name: 'example.com', type: 'DNSKEY', ttl: 300, data: dnskey }] })).answers[0].data.keyTag;
+  // a verification token: built in parts (never a value that looks like a real one)
+  const token = ['google-site-verification=', 'e2e', '-token-', 'watch'].join('');
+  const soa = (serial) => ({ mname: 'ns1.example.net', rname: 'hostmaster.example.com', serial, refresh: 7200, retry: 900, expire: 1209600, minimum: 300 });
+  const table = {
+    'example.com': {
+      SOA: [soa(2026100901)], NS: ['ns1.example.net', 'ns2.example.net'], A: [CF_EDGES_V4[0], CF_EDGES_V4[1]],
+      MX: [{ preference: 10, exchange: 'mx.example.com' }], TXT: [['v=spf1 include:_spf.example.net -all'], [token]],
+      CAA: [{ flags: 0, tag: 'issue', value: 'letsencrypt.org' }],
+      DS: [{ keyTag, algorithm: 13, digestType: 2, digest: 'ab'.repeat(32) }], DNSKEY: [dnskey]
+    },
+    'www.example.com': { CNAME: 'example.com.cdn.cloudflare.net' },
+    'example.com.cdn.cloudflare.net': { A: [CF_EDGES_V4[0]] },
+    'mx.example.com': { A: ['192.0.2.25'] },
+    'shop.example.com': { A: ['192.0.2.10'] },
+    '_dmarc.example.com': { TXT: [['v=DMARC1; p=reject; rua=mailto:dmarc@example.com']] },
+    'ns1.example.net': { A: ['127.0.0.1'] },
+    'ns2.example.net': { A: ['127.0.0.2'] },
+    'example.org': {
+      SOA: [{ ...soa(2026100101), mname: 'ns1.example.net' }], NS: ['ns1.example.net', 'ns2.example.net'],
+      MX: [{ preference: 0, exchange: '.' }], TXT: [['v=spf1 -all']]
+    },
+    '_dmarc.example.org': { TXT: [['v=DMARC1; p=reject']] }
+  };
+  const rdapJson = (domain, { status = ['client transfer prohibited', 'client delete prohibited'], days = 400, registrar = 'Example Registrar, Inc.', ianaId = '9999',
+    nameservers = ['ns1.example.net', 'ns2.example.net'], signed = false } = {}) => ({
+    objectClassName: 'domain', ldhName: domain.toUpperCase(), status,
+    events: [{ eventAction: 'registration', eventDate: '2001-05-01T00:00:00Z' }, { eventAction: 'expiration', eventDate: iso(days) }],
+    entities: [{ objectClassName: 'entity', roles: ['registrar'], vcardArray: ['vcard', [['version', {}, 'text', '4.0'], ['fn', {}, 'text', registrar]]], publicIds: [{ type: 'IANA Registrar ID', identifier: ianaId }] }],
+    nameservers: nameservers.map((n) => ({ objectClassName: 'nameserver', ldhName: n.toUpperCase() })),
+    secureDNS: { delegationSigned: signed }
+  });
+  return {
+    table,
+    registry: { 'example.com': rdapJson('example.com', { signed: true }), 'example.org': rdapJson('example.org', { status: ['active'], days: 200 }) },
+    rdapJson, dnskey, keyTag, token
+  };
+}
+
+/**
+ * A fetch for {@link watchZone}: DoH answers from the table with CNAME chains followed (a recursive
+ * resolver's answer; NXDOMAIN for a name with nothing at or below it; AD on example.com's names), the
+ * IANA RDAP bootstrap naming {@link PORTFOLIO_RDAP_BASE} for .com, .net and .org, the registry
+ * answering from `zone.registry`. Every other request is a 404.
+ * @param {{ table: object, registry: object }} zone
+ * @param {{ log?: Array<{ name: string, type: string }>, rdapLog?: string[], rcodes?: Record<string, string>, rdapStatus?: Record<string, number> }} [opts]
+ *   `rcodes`: 'name|TYPE' → a forced rcode; `rdapStatus`: domain → an HTTP status (both read on every request)
+ * @returns {typeof fetch}
+ */
+export function createWatchFetch(zone, { log = [], rdapLog = [], rcodes = {}, rdapStatus = {} } = {}) {
+  const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/rdap+json' } });
+  const below = (name) => Object.keys(zone.table).some((k) => k.endsWith(`.${name}`));
+  const answer = (qname, type) => {
+    const answers = [];
+    let name = qname;
+    for (let hop = 0; hop < 8; hop += 1) {
+      const node = zone.table[name];
+      if (!node) return { rcode: hop || below(name) ? 'NOERROR' : 'NXDOMAIN', answers };
+      if (node.CNAME && type !== 'CNAME') {
+        answers.push({ name, type: 'CNAME', ttl: 300, data: node.CNAME });
+        name = node.CNAME;
+        continue;
+      }
+      for (const data of (type === 'CNAME' && node.CNAME ? [node.CNAME] : node[type]) || []) answers.push({ name, type, ttl: 300, data });
+      return { rcode: 'NOERROR', answers };
+    }
+    return { rcode: 'SERVFAIL', answers };
+  };
+  return async (input) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (url.startsWith('https://data.iana.org/rdap/dns.json')) return json({ services: [[['com', 'net', 'org'], [PORTFOLIO_RDAP_BASE]]] });
+    if (url.startsWith(PORTFOLIO_RDAP_BASE) || url.startsWith('https://rdap.org/')) {
+      const domain = decodeURIComponent(url.split('/domain/')[1] || '');
+      rdapLog.push(domain);
+      if (rdapStatus[domain]) return json({ errorCode: rdapStatus[domain] }, rdapStatus[domain]);
+      return zone.registry[domain] ? json(zone.registry[domain]) : json({ errorCode: 404 }, 404);
+    }
+    const m = /[?&]dns=([^&]+)/.exec(url);
+    if (!m) return new Response('not found', { status: 404 });
+    const q = decodeMessage(base64UrlDecode(decodeURIComponent(m[1]))).questions[0];
+    const name = String(q.name).toLowerCase().replace(/[.]$/, '');
+    log.push({ name, type: q.type });
+    const forced = rcodes[`${name}|${q.type}`];
+    const out = forced ? { rcode: forced, answers: [] } : answer(name, q.type);
+    const ad = name === 'example.com' || name.endsWith('.example.com');
+    return new Response(encodeMessage({
+      id: 0, flags: { qr: true, rd: true, ra: true, ad }, rcode: out.rcode, questions: [{ name: q.name, type: q.type }], answers: out.answers, edns: {}
+    }), { headers: { 'content-type': 'application/dns-message' } });
+  };
+}
+
+/**
+ * A fake authoritative name server on `address` (127.0.0.x): UDP (node:dgram) and TCP (node:net, the
+ * 2-byte length prefix) on one port, answering from a zone table with lib/dnswire.js encodeMessage —
+ * AA set, NXDOMAIN outside the table, a CNAME as itself. `behave` changes how it answers (read on
+ * every question): `rcode` (REFUSED, SERVFAIL …), `aa: false` (a lame server), `udpLimit` (answers
+ * larger than that many bytes go out over UDP truncated, TC=1: the client must ask over TCP),
+ * `silent` (never answers), `serial` (its SOA serial), `table` (another zone: out of sync).
+ * @param {{ address?: string, apex?: string, table: object, behave?: object }} opts
+ * @returns {Promise<{ address: string, port: number, log: Array<{ transport: string, name: string, type: string, do: boolean }>, behave: object, close: () => Promise<void> }>}
+ */
+export async function startAuthServer({ address = '127.0.0.1', apex = 'example.com', table, behave = {} }) {
+  const log = [];
+  const respond = (bytes, transport) => {
+    const query = decodeMessage(bytes);
+    const q = query.questions[0];
+    const name = String(q.name).toLowerCase().replace(/[.]$/, '');
+    log.push({ transport, name, type: q.type, do: !!(query.edns && query.edns.dnssecOk) });
+    if (behave.silent) return null;
+    const zoneTable = behave.table || table;
+    const node = zoneTable[name];
+    const inZone = name === apex || name.endsWith(`.${apex}`);
+    const rcode = behave.rcode || (!inZone ? 'REFUSED' : node || Object.keys(zoneTable).some((k) => k.endsWith(`.${name}`)) ? 'NOERROR' : 'NXDOMAIN');
+    const answers = [];
+    if (rcode === 'NOERROR' && node) {
+      // a name with a CNAME answers every question with it (an authoritative server follows nothing out of its zone)
+      const type = node.CNAME ? 'CNAME' : q.type;
+      for (const data of node.CNAME ? [node.CNAME] : node[q.type] || []) {
+        answers.push({ name, type, ttl: behave.ttl ?? 3600, data: type === 'SOA' && Number.isFinite(behave.serial) ? { ...data, serial: behave.serial } : data });
+      }
+    }
+    const answered = rcode === 'NOERROR' || rcode === 'NXDOMAIN';
+    const msg = { id: query.id, flags: { qr: true, aa: behave.aa !== false && answered }, rcode, questions: [{ name: q.name, type: q.type }], answers: answered ? answers : [], edns: {} };
+    const full = encodeMessage(msg);
+    if (transport === 'udp' && Number.isFinite(behave.udpLimit) && full.length > behave.udpLimit) {
+      return encodeMessage({ ...msg, flags: { ...msg.flags, tc: true }, answers: [] });
+    }
+    return full;
+  };
+  const onDatagram = (udp) => (bytes, rinfo) => {
+    let out = null;
+    try {
+      out = respond(new Uint8Array(bytes), 'udp');
+    } catch {
+      out = null;
+    }
+    if (out) udp.send(out, rinfo.port, rinfo.address);
+  };
+  const onConnection = (socket) => {
+    let buf = Buffer.alloc(0);
+    socket.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      while (buf.length >= 2 && buf.length >= 2 + buf.readUInt16BE(0)) {
+        const len = buf.readUInt16BE(0);
+        const bytes = new Uint8Array(buf.subarray(2, 2 + len));
+        buf = buf.subarray(2 + len);
+        let out = null;
+        try {
+          out = respond(bytes, 'tcp');
+        } catch {
+          out = null;
+        }
+        if (!out) continue;
+        const head = Buffer.alloc(2);
+        head.writeUInt16BE(out.length, 0);
+        socket.write(Buffer.concat([head, Buffer.from(out)]));
+      }
+    });
+    socket.on('error', () => {});
+  };
+  // One port for both transports, as a name server has: TCP takes a free one, UDP the same. Windows
+  // keeps ranges of ports out of reach of one transport or the other (excluded port ranges): try again.
+  for (let attempt = 0; ; attempt += 1) {
+    const tcp = net.createServer(onConnection);
+    await new Promise((resolve, reject) => {
+      tcp.once('error', reject);
+      tcp.listen(0, address, () => resolve());
+    });
+    const port = tcp.address().port;
+    const udp = dgram.createSocket('udp4');
+    udp.on('message', onDatagram(udp));
+    try {
+      await new Promise((resolve, reject) => {
+        udp.once('error', reject);
+        udp.bind(port, address, () => resolve());
+      });
+    } catch (err) {
+      try {
+        udp.close();
+      } catch {
+        /* never bound */
+      }
+      await new Promise((resolve) => tcp.close(() => resolve()));
+      if (attempt >= 20) throw err;
+      continue;
+    }
+    return {
+      address, port, log, behave,
+      close: () => new Promise((resolve) => {
+        udp.close();
+        tcp.close(() => resolve());
+      })
+    };
+  }
+}
+
 /**
  * A fetch that never answers: each request waits for its signal (a request without one waits
  * for ever) and `onRequest(url)` hears of it. The Ctrl-C test's network.
@@ -358,6 +581,13 @@ if (process.env.DS_FAKE_DOH === '1') {
   const log = [];
   const rdapLog = [];
   globalThis.fetch = createTakeoverFetch(takeoverZone(), { log, rdapLog });
+  if (process.env.DS_FAKE_DOH_LOG) {
+    process.on('exit', () => writeFileSync(process.env.DS_FAKE_DOH_LOG, JSON.stringify({ dns: log, rdap: rdapLog })));
+  }
+} else if (process.env.DS_FAKE_DOH === 'watch') {
+  const log = [];
+  const rdapLog = [];
+  globalThis.fetch = createWatchFetch(watchZone(), { log, rdapLog });
   if (process.env.DS_FAKE_DOH_LOG) {
     process.on('exit', () => writeFileSync(process.env.DS_FAKE_DOH_LOG, JSON.stringify({ dns: log, rdap: rdapLog })));
   }

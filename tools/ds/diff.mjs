@@ -7,8 +7,9 @@
  * - `tag`: render.mjs CHANGE_TAGS (NEW, GONE, WORSE, BETTER, CHANGED, FAILED, RECOVERED, FAILING,
  *   SCORE, ISSUER, NAME, CERT, CA, EXPIRING, REVOKED, EXPOSED, DANGLING; tls's EXPIRED, UNTRUSTED,
  *   MISMATCH, NOT-LIVE, HTTP, REDIRECT, HSTS, RENEW-NOW, MOVED-UP and CA-NOTICE, tools/ds/tlsdiff.mjs;
- *   takeover's RISK, tools/ds/takeover.mjs diffTakeover; the accepted risks' WAIVED and LAPSED);
- *   `tone`: 'bad' | 'good' | 'info' | 'quiet';
+ *   takeover's RISK, tools/ds/takeover.mjs diffTakeover; watch's REGISTRAR, LOCK, STATUS, NS, DS,
+ *   EXPIRY, RECORD, SERIAL, FLAPPING, SYNC and LAME, tools/ds/watchdiff.mjs; the accepted risks'
+ *   WAIVED and LAPSED); `tone`: 'bad' | 'good' | 'info' | 'quiet';
  * - accepted risks (`--waivers`, lib/waivers.js): an item a waiver accepts in this run — a health
  *   finding, an audit rule, a known certificate — is never counted: its changes are listed only, and
  *   one newly accepted is WAIVED (listed only). An item accepted in the baseline run whose waiver is
@@ -35,6 +36,7 @@ import { isLookupError, checkAreas, failedAreas, knownChecks, carriedFrom, lastF
 import { seenOf, radarCrossing } from './ctwatch.mjs';
 import { diffTls, tlsTargetProblem, tlsNotes } from './tlsdiff.mjs';
 import { diffTakeover, takeoverTargetProblem, takeoverNotes } from './takeover.mjs';
+import { diffWatch, watchTargetProblem, watchNotes } from './watchdiff.mjs';
 import { SEVERITY_RANK, notable, checksById, resolves, DIRECT, driftSev } from './states.mjs';
 import { textParts } from '../../assets/js/lib/summary.js';
 import { DANE_SEVERITY } from '../../assets/js/lib/dane.js';
@@ -125,7 +127,8 @@ const TARGET_CHECKS = Object.freeze({
   },
   audit: (x) => itemsProblem(x.rules, 'rules', (r) => (!isStr(r.id) ? 'has no "id"' : !AUDIT_STATUSES.includes(r.status) ? 'has no "status" (pass, fail, unknown or waived)' : null)),
   tls: tlsTargetProblem,
-  takeover: takeoverTargetProblem
+  takeover: takeoverTargetProblem,
+  watch: watchTargetProblem
 });
 
 /** A cell's outcome in an audit report (lib/policy.js POLICY_STATUSES). */
@@ -852,12 +855,13 @@ export function baselineNotes(command, before, after) {
   }
   if (command === 'tls') notes.push(...tlsNotes(o, n));
   if (command === 'takeover') notes.push(...takeoverNotes(o, n));
+  if (command === 'watch') notes.push(...watchNotes(o, n));
   return notes;
 }
 
 const DIFFS = Object.freeze({
   health: diffHealth, subdomains: diffSubdomains, ct: diffCt, drift: diffDrift, renew: diffRenew, dane: diffDane, audit: diffAudit,
-  tls: diffTls, takeover: diffTakeover
+  tls: diffTls, takeover: diffTakeover, watch: diffWatch
 });
 
 /**

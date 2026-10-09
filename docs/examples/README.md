@@ -20,11 +20,12 @@ issue step are given it.
 1. Create a private repository with a `domains.txt`: one domain per line, `#` comments.
 2. Copy `nightly-domainscope.yml` to its `.github/workflows/`, and pin `ref:` to a DomainScope
    commit SHA (or to a release tag once there is one).
-3. Switch on the steps you want (health, the Certificate Transparency watch and the takeover
-   watch run by default, and the served-certificate monitor when the repository has a
-   `tls-hosts.txt`; subdomain discovery, an exact host list, the takeover watch over the hosts
-   discovery found, zone drift, renewal readiness, the policy audit and the served certificates'
-   renewal windows, revocation and HTTP answers are commented out).
+3. Switch on the steps you want (health, the Certificate Transparency watch, the takeover watch
+   and the change watch run by default, and the served-certificate monitor when the repository
+   has a `tls-hosts.txt`; subdomain discovery, an exact host list, the takeover watch over the
+   hosts discovery found, the change watch with more names and the name servers asked directly,
+   zone drift, renewal readiness, the policy audit and the served certificates' renewal windows,
+   revocation and HTTP answers are commented out).
 4. Run it once by hand (Actions › DomainScope nightly › Run workflow): the first night has no
    baseline to compare with, so it only writes `results/`.
 
@@ -60,7 +61,10 @@ is not set is empty, and then nothing is sent:
   is `critical` for registration, delegation, DNSSEC and trust problems — the audit's registrar,
   transfer lock, registry status, DNSSEC and expiry rules, drift's name servers, health's expired,
   held or deleted registration and broken DNSSEC, ct's certificate in use revoked, tls's untrusted
-  chain and expired or revoked certificate still served — and `error` for the rest.
+  chain and expired or revoked certificate still served, the change watch's registrar, name
+  servers, DS records, a transfer lock removed and a hold — and `error` for the rest. The change
+  watch's events (another registrar, other name servers or DS records, a record changed) stay open
+  until you resolve them: nothing a later night reads says the change was wanted.
   `results/NAME.json` keeps the incidents still open (`notify.open`); at most 50 events a night.
 - `DOMAINSCOPE_NOTIFY_SECRET`: signs the JSON webhook. `X-DomainScope-Timestamp` carries the Unix
   time and `X-DomainScope-Signature` is `sha256=` and the hex HMAC-SHA256 of the timestamp, a dot
@@ -144,6 +148,31 @@ yours"). A risk whose lookup gave no answer is carried from the last night that 
 gone. Hosts on a service only its page can tell (S3, GitHub Pages …) are listed "to check": the
 page check stays in the app, behind a click.
 
+**The registration and record change watch.** `watch` is a hijack watch: for each domain of the
+list it reads what the registry says (over RDAP, paced per registry as the audit is) — the
+registrar and its IANA ID, the statuses, the expiry, the name servers — and the DS records at the
+parent, the zone's own NS records, and the record sets of the domain, its `www` and `_dmarc`
+(and with `--names watch-hosts.txt` up to 200 more host names under the domains) of each of
+`--types` (A, AAAA, CNAME, MX, NS, TXT, CAA, SOA, DS, DNSKEY and HTTPS by default). Another
+registrar (`REGISTRAR`), a client or server transfer prohibition removed (`LOCK`), a hold, a
+pending delete, a redemption period or a pending transfer arriving (`STATUS`), other name servers
+(`NS`, the registry's or the zone's), a DS record removed or changed (`DS`), an expiry not renewed
+with less than 30 days left (`EXPIRY`, said once; renewed is good news) and an MX, NS, CAA, SPF or
+DMARC record that changed (`RECORD`) count as bad. An A, AAAA or CNAME change counts as info,
+unless the name moved to another kind of provider — off its CDN to a direct address, or to a
+CNAME that ends nowhere — which is bad. A verification token (`google-site-verification=` …) is
+named by its service, never printed. Not counted: a CDN's edge addresses rotating, a new SOA
+serial (`SERIAL`), a zone-signing key rolling, and a record set that changed 3 times or more in the
+last 7 nights (`FLAPPING`, said once; its later changes are not listed while it keeps changing,
+unless one is bad). With `--authoritative` every name server is asked directly over UDP (and TCP
+when an answer is truncated) on port 53: servers that answer the same SOA serial differently
+(`SYNC`) and servers that answer without authority, REFUSED or SERVFAIL, or not at all (`LAME`)
+count; a secondary still on an older serial is listed. When port 53 is blocked on the runner's
+network the report says so and the record sets come from DoH alone; an IPv6 address the runner
+cannot reach is skipped. `--ttl` compares the TTLs the name servers give too (with
+`--authoritative`: a resolver's cache counts TTLs down). The app's Domain portfolio says the same
+of the registration on its next **Check portfolio**: "Changed since your last check".
+
 **Served certificates: the monitor.** `tls` runs when the repository has a `tls-hosts.txt` (a host
 or `host:port` per line). It connects to every address of each host and reads the certificate it
 serves: the expiry, whether a client's root store trusts the chain (a missing intermediate is named
@@ -198,6 +227,7 @@ node tools/ds.mjs tls www.example.com example.com:8443 --ari --revocation --json
 node tools/ds.mjs tls --list tls-hosts.txt --ct ct.json --http --warn-days 30 --baseline tls.json --json tls.json
 node tools/ds.mjs tls --from-subdomains subs.json --skip-cdn --max-endpoints 200
 node tools/ds.mjs takeover --list domains.txt --from-subdomains subs.json --baseline takeover.json --json takeover.json
+node tools/ds.mjs watch --list domains.txt --names watch-hosts.txt --authoritative --baseline watch.json --json watch.json
 ```
 
 Alerts outside the template: put the URLs in the environment rather than on the command line

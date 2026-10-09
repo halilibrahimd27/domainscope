@@ -2,11 +2,12 @@
 #
 # Copy this file to .github/workflows/ of a PRIVATE repository of yours, next to a domains.txt
 # (one domain per line, # comments). Every night it runs Domain Health, the Certificate
-# Transparency watch and the takeover watch for those domains, and the served-certificate monitor
-# for the hosts of a tls-hosts.txt when there is one (subdomain discovery, zone drift, renewal
-# readiness and the policy audit are there to switch on), commits the JSON reports and
-# Markdown summaries under results/, and keeps ONE issue: opened or updated when something changed
-# since the night before, closed on a night with no change when every check completed. The
+# Transparency watch, the takeover watch and the registration and record change watch for those
+# domains, and the served-certificate monitor for the hosts of a tls-hosts.txt when there is one
+# (subdomain discovery, zone drift, renewal readiness and the policy audit are there to switch on),
+# commits the JSON reports and Markdown summaries under results/, and keeps ONE issue: opened or
+# updated when something changed since the night before, closed on a night with no change when
+# every check completed. The
 # results/*.json of one night are the next night's baseline; git history keeps every night.
 #
 # Read this before you switch it on:
@@ -147,6 +148,13 @@ jobs:
           ds takeover takeover --list domains.txt
           # The same with the CNAMEs of the hosts subdomain discovery found (switch that line on first):
           # ds takeover takeover --list domains.txt --from-subdomains results/subdomains.json
+          # The registration, delegation and record change watch (DNS and RDAP only): another registrar,
+          # a transfer lock removed, a hold, other name servers or DS records, an expiry not renewed, and
+          # the MX, NS, CAA, SPF, DMARC and address records of each domain, its www and _dmarc:
+          ds watch watch --list domains.txt
+          # The same with more host names (watch-hosts.txt, one a line) and every name server asked
+          # directly over UDP and TCP port 53 (lame servers, secondaries out of sync):
+          # ds watch watch --list domains.txt --names watch-hosts.txt --authoritative
           # Zone drift: only if the zone export belongs in this repository (see above).
           # ds drift-example drift zones/example.com.zone --origin example.com
           # Renewal readiness of the names you renew (a wildcard too):

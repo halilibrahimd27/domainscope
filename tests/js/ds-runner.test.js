@@ -57,7 +57,7 @@ describe('command line', () => {
   test('the default chain is the app\'s, without the resolvers Node\'s fetch cannot read', () => {
     assert.deepEqual([...NODE_CHAIN], DEFAULT_CHAIN.filter((id) => !NODE_UNREADABLE[id]));
     assert.ok(!NODE_CHAIN.includes('cznic') && NODE_CHAIN.includes('cloudflare'));
-    assert.deepEqual(COMMANDS, ['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit', 'tls', 'takeover']);
+    assert.deepEqual(COMMANDS, ['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit', 'tls', 'takeover', 'watch']);
     for (const c of COMMANDS) assert.match(USAGE, new RegExp(`\\n  ${c} `), c);
   });
 
@@ -94,7 +94,7 @@ describe('command line', () => {
   test('an option of another subcommand is refused, naming where it belongs', () => {
     assert.throws(() => parseCommandLine(['health', 'example.com', '--level', 'small']), /--level applies to subdomains only, not to health/);
     assert.throws(() => parseCommandLine(['renew', 'example.com', '--sources', 'crtsh']), /--sources applies to subdomains and ct only/);
-    assert.throws(() => parseCommandLine(['dane', 'cert.pem', '--list', 'x.txt']), /--list applies to health, subdomains, ct, renew, audit, tls and takeover only, not to dane/);
+    assert.throws(() => parseCommandLine(['dane', 'cert.pem', '--list', 'x.txt']), /--list applies to health, subdomains, ct, renew, audit, tls, takeover and watch only, not to dane/);
     assert.throws(() => parseCommandLine(['health', 'example.com', '--no-dkim']), /--no-dkim applies to audit only, not to health/);
     assert.throws(() => parseCommandLine(['ct', 'example.com', '--policy', 'p.json']), /--policy applies to audit only, not to ct/);
   });
@@ -1750,7 +1750,7 @@ describe('the documented commands', () => {
     const yml = readFileSync(join(ROOT, 'docs', 'examples', 'nightly-domainscope.yml'), 'utf8').replace(/\r\n/g, '\n');
     // a check of a file the repository may not have runs only when it is there: `[ -f FILE ] && ds …`
     const lines = [...yml.matchAll(/^ *#? *(?:\[ -f [^\s\]]+ \] && )?ds ([a-z][\w-]*) ([a-z]+)((?: [^\s#]+)*) *$/gm)];
-    assert.equal(lines.length, 12, `${lines.length} ds lines`);
+    assert.equal(lines.length, 14, `${lines.length} ds lines`);
     assert.match(yml, /\n {10}ds ct ct --list domains\.txt\n(?: {10}#[^\n]*\n)+ {10}\[ -f tls-hosts\.txt \] && ds tls tls --list tls-hosts\.txt --ct results\/ct\.json\n/,
       'the tls check reads the ct report the ct line writes first');
     for (const [, name, command, rest] of lines) {

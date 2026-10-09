@@ -111,9 +111,12 @@ const NOT_COUNTED_TLS = 'moves between failure states, a DNS lookup that failed 
   + 'renewed certificates, certificates within --warn-days before their automatic renewal is overdue, a weaker HSTS header';
 /** The takeover watch's (tools/ds/takeover.mjs diffTakeover): what stays below medium severity. */
 const NOT_COUNTED_TAKEOVER = 'risks of low severity and the ones only the page can tell (to check in the app), and their moves';
+/** The change watch's (tools/ds/watchdiff.mjs diffWatch): what moves on its own, and what was not read. */
+const NOT_COUNTED_WATCH = "a CDN's edges rotating, new SOA serials, a zone-signing key rolling, record sets that keep changing, "
+  + 'lagging secondaries, what could not be read this run';
 /** What is listed but not counted, for the run's command; the accepted risks named when a change listed is about one. */
 const notCounted = (command, changes = []) => (command === 'audit' ? NOT_COUNTED_AUDIT : command === 'tls' ? NOT_COUNTED_TLS
-  : command === 'takeover' ? NOT_COUNTED_TAKEOVER : NOT_COUNTED)
+  : command === 'takeover' ? NOT_COUNTED_TAKEOVER : command === 'watch' ? NOT_COUNTED_WATCH : NOT_COUNTED)
   + (changes.some((c) => c && !c.counts && c.accepted) ? ', accepted risks (--waivers)' : '');
 
 /** Change lines in the summary without --show-all (the CLI's MAX_SUMMARY_CHANGES). */
@@ -121,7 +124,8 @@ export const MAX_SUMMARY_CHANGES = 50;
 /** Every tag a change can carry, widest first for the column. */
 export const CHANGE_TAGS = Object.freeze(['NEW', 'GONE', 'WORSE', 'BETTER', 'CHANGED', 'FAILED', 'RECOVERED', 'FAILING', 'SCORE',
   'ISSUER', 'NAME', 'CERT', 'CA', 'EXPIRING', 'REVOKED', 'EXPOSED', 'DANGLING', 'RENEW-NOW', 'MOVED-UP', 'CA-NOTICE', 'RISK', 'WAIVED', 'LAPSED',
-  'EXPIRED', 'UNTRUSTED', 'MISMATCH', 'NOT-LIVE', 'HTTP', 'REDIRECT', 'HSTS']);
+  'EXPIRED', 'UNTRUSTED', 'MISMATCH', 'NOT-LIVE', 'HTTP', 'REDIRECT', 'HSTS',
+  'REGISTRAR', 'LOCK', 'STATUS', 'NS', 'DS', 'EXPIRY', 'RECORD', 'SERIAL', 'FLAPPING', 'SYNC', 'LAME']);
 const TAG_WIDTH = Math.max(...CHANGE_TAGS.map((tag) => tag.length));
 
 const ANSI = { red: '31', green: '32', yellow: '33', cyan: '36', dim: '2', bold: '1' };

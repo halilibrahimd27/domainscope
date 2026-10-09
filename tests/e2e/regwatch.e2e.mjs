@@ -16,8 +16,11 @@
  * "renewed" on example.org, nothing on example.net; the tile counts them and filters, as the Show
  * select does; Copy summary names them; a third check says nothing (the baseline moved on); the
  * baseline travels in the workspace hand-over file (exported, imported as another workspace, where a
- * check finds nothing changed). 375 / 320 px without horizontal scroll, TR / EN × light / dark;
- * zero console errors / CSP violations / missing i18n keys, nothing sent outside the page.
+ * check finds nothing changed); a check that a switch to another workspace drops (the registry holds
+ * an answer back meanwhile) writes nothing into the new workspace's baseline; a registration that
+ * failed (HTTP 503) is written into it by its Retry. 375 / 320 px without horizontal scroll, TR / EN
+ * × light / dark; zero console errors / CSP violations / missing i18n keys, nothing sent outside the
+ * page.
  *
  * Data is documentation space only (example.com / .net / .org, 192.0.2.0/24).
  */
@@ -56,12 +59,18 @@ const RDAP_AFTER = {
   'example.org': rdapJson('example.org', { days: 665 })
 };
 
-/** In-page stubs: DoH from the zone (NXDOMAIN outside it), the RDAP bootstrap and a registry the test can change (`window.__rdap`). */
+/**
+ * In-page stubs: DoH from the zone (NXDOMAIN outside it), the RDAP bootstrap and a registry the test
+ * can change (`window.__rdap`), hold an answer back until the check stops (`window.__rdapHold`: a
+ * domain) or fail with HTTP 503 (`window.__rdapFail`: domains).
+ */
 const fakeScript = () => `(() => {
   const Z = ${JSON.stringify(ZONE)};
   window.__rdap = ${JSON.stringify(RDAP)};
   window.__dnsLog = [];
   window.__rdapLog = [];
+  window.__rdapHold = null;
+  window.__rdapFail = [];
   let wire = null;
   const realFetch = window.fetch.bind(window);
   const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/rdap+json' } });
@@ -71,6 +80,17 @@ const fakeScript = () => `(() => {
     if (url.startsWith('https://rdap.example.net/') || url.startsWith('https://rdap.org/')) {
       const name = decodeURIComponent(url.split('/domain/')[1] || '');
       window.__rdapLog.push(name);
+      if (window.__rdapHold === name) {
+        // a slow registry: no answer until the check is stopped
+        await new Promise((resolve, reject) => {
+          const signal = init && init.signal;
+          if (!signal) return;
+          const stop = () => reject(signal.reason || new DOMException('The operation was aborted.', 'AbortError'));
+          if (signal.aborted) stop();
+          else signal.addEventListener('abort', stop, { once: true });
+        });
+      }
+      if (window.__rdapFail.includes(name)) return json({ errorCode: 503 }, 503);
       return window.__rdap[name] ? json(window.__rdap[name]) : json({ errorCode: 404 }, 404);
     }
     const m = /[?&]dns=([^&]+)/.exec(url);
@@ -245,6 +265,48 @@ async function main() {
         await state.switchWorkspace('default');
         await state.deleteWorkspace(wid);
       }, id);
+    });
+
+    run.group('The baseline belongs to its workspace');
+    let otherId = null;
+    const portfolioRuns = () => page.evaluate(() => import('./assets/js/ui/jobs.js').then((m) => m.runningWork().includes('nav.portfolio')));
+    await run.step('a check that a switch to another workspace drops writes nothing into the new workspace\'s baseline', async () => {
+      await gotoRoute(page, '#/about');
+      await gotoRoute(page, `#/portfolio?domains=${DOMAINS.join(',')}`);
+      await page.waitFor(() => !!document.querySelector('[data-action="pf-run"]'), { message: 'the view' });
+      // the registry holds example.net's answer back: the check still runs, example.com read, when the workspace changes
+      await page.evaluate(() => { window.__rdapLog.length = 0; window.__rdapHold = 'example.net'; });
+      await page.click('[data-action="pf-run"]');
+      await page.waitFor(() => window.__rdapLog.includes('example.com') && window.__rdapLog.includes('example.net'), { message: 'example.com read, example.net held', timeout: 20000 });
+      assert(await portfolioRuns(), 'the check is running');
+      otherId = await page.evaluate(async () => {
+        const { state } = await import('./assets/js/state.js');
+        const { meta } = await state.createWorkspace('Beta');
+        await state.switchWorkspace(meta.id);
+        return meta.id;
+      });
+      await page.waitFor(() => import('./assets/js/ui/jobs.js').then((m) => !m.runningWork().includes('nav.portfolio')), { message: 'the dropped check ended' });
+      assertEqual(await seenOf(page), '', 'nothing the dropped check read went into the new workspace');
+    });
+
+    await run.step('a Retry of a registration that failed writes it into the baseline', async () => {
+      await page.evaluate(() => { window.__rdapHold = null; window.__rdapFail = ['example.net']; });
+      await gotoRoute(page, '#/about');
+      await gotoRoute(page, `#/portfolio?domains=${DOMAINS.join(',')}`);
+      await page.waitFor(() => !!document.querySelector('[data-action="pf-run"]'), { message: 'the view' });
+      await check(page);
+      assertEqual(Object.keys(JSON.parse(await seenOf(page)).domains).sort(), ['example.com', 'example.org'], 'the registry that failed is not in it');
+      await page.evaluate(() => { window.__rdapFail = []; });
+      await page.click('button[data-cell="registrar"][data-domain="example.net"]');
+      await page.waitFor(() => import('./assets/js/state.js').then(({ state }) => /"example\.net"/.test(state.workspaceData('rdapSeen') || '')),
+        { message: 'example.net written after its Retry', timeout: 20000 });
+      const seen = JSON.parse(await seenOf(page));
+      assertEqual([seen.domains['example.net'].registrar, seen.domains['example.net'].ianaId], ['Example Registrar, Inc.', '9999'], 'what the Retry read');
+      await page.evaluate(async (wid) => {
+        const { state } = await import('./assets/js/state.js');
+        await state.switchWorkspace('default');
+        await state.deleteWorkspace(wid);
+      }, otherId);
     });
 
     run.group('Quality');

@@ -23,7 +23,7 @@ import { isPrivateIP, normalizeIP } from './ip.js';
 
 /** Views with a summary, in navigation order. */
 export const SUMMARY_KINDS = Object.freeze(['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'change', 'ip', 'retire',
-  'health', 'reports', 'portfolio']);
+  'health', 'reports', 'portfolio', 'monitor']);
 
 /** Output formats of {@link renderSummary}. */
 export const SUMMARY_FORMATS = Object.freeze(['markdown', 'text']);
@@ -35,7 +35,7 @@ export const SUMMARY_MAX_VALUE = 96;
 
 /**
  * Route params a view's permalink may carry (app.js buildRoute keys). Zone File, Certificate,
- * Certificate estate and DMARC & TLS reports carry none: the file never goes into a URL. The DNS
+ * Certificate estate, DMARC & TLS reports and Monitoring carry none: the file never goes into a URL. The DNS
  * change request's summary links its check page (the check link itself), never its form.
  */
 export const PERMALINK_PARAMS = Object.freeze({
@@ -53,7 +53,8 @@ export const PERMALINK_PARAMS = Object.freeze({
   retire: Object.freeze(['ips', 'domains']),
   health: Object.freeze(['domain', 'selectors']),
   reports: Object.freeze([]),
-  portfolio: Object.freeze(['domains'])
+  portfolio: Object.freeze(['domains']),
+  monitor: Object.freeze([])
 });
 
 /* ------------------------------------------------------------------------ */

@@ -1,7 +1,7 @@
 {
   "name": "DomainScope — SSL & DNS araç kutusu",
   "short_name": "DomainScope",
-  "description": "Bir sertifikanın ait olduğu alt alan adlarını, IP’leri ve sunucuları tarayıcınızda bulun. Sertifika, Sertifika envanteri, Zone Dosyası, DNS değişiklik talebi, DMARC ve TLS raporları, Sunucular ve Hakkında çevrimdışı da çalışır.",
+  "description": "Bir sertifikanın ait olduğu alt alan adlarını, IP’leri ve sunucuları tarayıcınızda bulun. Sertifika, Sertifika envanteri, Zone Dosyası, DNS değişiklik talebi, DMARC ve TLS raporları, İzleme, Sunucular ve Hakkında çevrimdışı da çalışır.",
   "lang": "tr",
   "dir": "ltr",
   "start_url": "./",

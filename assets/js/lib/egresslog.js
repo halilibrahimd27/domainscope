@@ -21,8 +21,8 @@ export const MAX_NOTES = 8;
 const WORD_RE = /^[a-z][a-z_-]{0,39}$/;
 const PARAM_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const NOTE_RE = /^[a-z][a-z0-9-]{0,31}$/;
-/** Path words an API puts a value after (domain/<name>, domains/<zone>, measurements/<id> …): the next segment is '*'. */
-const VALUE_AFTER = new Set(['domain', 'domains', 'ip', 'autnum', 'entity', 'nameserver', 'measurements', 'subdomains']);
+/** Path words an API puts a value after (domain/<name>, measurements/<id> …): the next segment is '*' (after repos/ the next two). */
+const VALUE_AFTER = new Set(['domain', 'domains', 'ip', 'autnum', 'entity', 'nameserver', 'measurements', 'subdomains', 'repos']);
 
 /**
  * Where a request went and the shape of what it asked: the path's plain lower-case words (an
@@ -47,7 +47,7 @@ export function requestSignature(url, base = undefined) {
   const segments = [];
   for (const s of parts.slice(0, 8)) {
     const low = s.toLowerCase();
-    const afterValueWord = segments.length > 0 && VALUE_AFTER.has(segments[segments.length - 1]);
+    const afterValueWord = VALUE_AFTER.has(segments[segments.length - 1]) || segments[segments.length - 2] === 'repos';
     segments.push(low === '' || (WORD_RE.test(low) && !afterValueWord) ? low : '*');
   }
   const path = `/${segments.join('/')}${parts.length > 8 ? OVERFLOW_PATH : ''}`;

@@ -40,17 +40,22 @@ import { requestSignature, requestCount } from './egresslog.js';
  * - certSerial: a certificate's serial number;
  * - keyHash: the SHA-256 of a certificate's public key;
  * - measurementIds: ids the service gave out, sent back to read the results;
+ * - repository: the user's own repository's path, owner/repo (Monitoring › GitHub);
  * - apiToken: the user's own API token for that service, in a request header (Zone File › Fetch
- *   from deSEC / DigitalOcean: for one fetch, never stored) or in the query (IP Intel › Domains on
- *   this IP: Shodan's and WhoisXML's key, for one request per address, never stored).
+ *   from deSEC / DigitalOcean: for one fetch, never stored; Monitoring › GitHub: for one read of a
+ *   repository's results, never stored) or in the query (IP Intel › Domains on this IP: Shodan's and
+ *   WhoisXML's key, for one request per address, never stored).
  */
 export const DATA_KINDS = Object.freeze([
   'appFiles', 'nothing', 'dnsQuestions', 'nameServers', 'domains', 'hostnames', 'ipNamePairs', 'ipAddresses', 'asNumbers', 'certSerial',
-  'keyHash', 'measurementIds', 'apiToken'
+  'keyHash', 'measurementIds', 'repository', 'apiToken'
 ]);
 
-/** What a service is for (the ledger's second line). `dnsHosting`: the user's own DNS provider. */
-export const EGRESS_ROLES = Object.freeze(['site', 'dns', 'ct', 'passive', 'ip', 'registration', 'probes', 'dnsHosting', 'ca']);
+/**
+ * What a service is for (the ledger's second line). `dnsHosting`: the user's own DNS provider;
+ * `repository`: the user's own code host (the nightly repository the Monitoring view reads).
+ */
+export const EGRESS_ROLES = Object.freeze(['site', 'dns', 'ct', 'passive', 'ip', 'registration', 'probes', 'dnsHosting', 'repository', 'ca']);
 
 /**
  * What this page never sends anywhere, whatever the user does (About › What this page sent). The
@@ -224,6 +229,16 @@ export const EGRESS_SERVICES = Object.freeze([
   service({
     id: 'digitalocean', name: 'DigitalOcean', role: 'dnsHosting', hosts: ['api.digitalocean.com'],
     endpoints: [ep('records', ['domains', 'apiToken'], { path: '/*/domains/*/records' })]
+  }),
+  // Monitoring › GitHub (lib/monitorfetch.js): the nightly repository's results with the user's
+  // fine-grained token, only after a click — the listing and the files of results/, and when asked
+  // the open issue labelled domainscope. The repository's path in the URL, the token in a header.
+  service({
+    id: 'github', name: 'GitHub', role: 'repository', hosts: ['api.github.com'],
+    endpoints: [
+      ep('contents', ['repository', 'apiToken'], { path: '/repos/*/*/contents/**' }),
+      ep('issues', ['repository', 'apiToken'], { path: '/repos/*/*/issues' })
+    ]
   })
 ]);
 

@@ -68,6 +68,7 @@ export const TOOL_KEYWORDS = Object.freeze({
   health: 'health spf dmarc dkim mx dnssec',
   reports: 'dmarc rua tls-rpt reports',
   portfolio: 'portfolio expiry registrar',
+  monitor: 'monitor history trend nightly runner github results jsonl',
   inventory: 'servers inventory csv',
   about: 'about help privacy sources cli'
 });

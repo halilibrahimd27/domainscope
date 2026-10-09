@@ -36,7 +36,7 @@ const subdomainsSource = async () => [
   await readFile(path.join(ROOT, 'assets', 'js', 'ui', 'subdomains-run.js'), 'utf8')
 ].join('\n');
 const SPEC_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
-const VIEW_IDS = ['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'reports', 'portfolio', 'inventory', 'about'];
+const VIEW_IDS = ['subdomains', 'domain', 'zone', 'scan', 'cert', 'renew', 'estate', 'global', 'lookup', 'bulk', 'change', 'ip', 'ptr', 'retire', 'health', 'reports', 'portfolio', 'monitor', 'inventory', 'about'];
 
 /* ------------------------------------------------------------------------ */
 /* Minimal fake DOM (just enough for dom.js)                                */

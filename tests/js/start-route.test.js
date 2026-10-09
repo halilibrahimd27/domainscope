@@ -93,6 +93,10 @@ const JS = join(ASSETS, 'js');
  * radar): ≈ 335 KB (342,873 bytes), 36,007 bytes under the budget. The one start-route file that grew is assets/css/style.css
  * (223 bytes): the Takeover risks table's styles, which Subdomains' results and the Dependencies card share. The revocation card and
  * its libraries load with the Certificate view and the portfolio's CT tab, and the runner's modules are not in the Pages bundle.
+ * The Monitoring view's navigation entry (app.js) and its two strings in both languages (i18n.js), its Copy summary kind
+ * (lib/summarycore.js, ui/summary-button.js) and the masking of a GitHub repository's owner and name in request signatures
+ * (lib/egresslog.js) added 344 bytes: ≈ 335 KB (343,217 bytes), 35,663 bytes under the budget. The view, its libraries
+ * (lib/monitor.js, lib/monitorfetch.js, lib/monitorsummary.js, lib/runreport.js) and its stylesheet load on its first visit.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

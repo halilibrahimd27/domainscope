@@ -286,7 +286,7 @@ describe('web app manifests', () => {
   test('the texts that name the offline tools name exactly VIEWS[].offline', async () => {
     await import('../../assets/js/views/about.js'); // registers about.privOffline
     const offline = VIEWS.filter((v) => v.offline).map((v) => v.id);
-    assert.deepEqual(offline, ['zone', 'cert', 'estate', 'change', 'reports', 'inventory', 'about']);
+    assert.deepEqual(offline, ['zone', 'cert', 'estate', 'change', 'reports', 'monitor', 'inventory', 'about']);
     const prev = getLang();
     try {
       for (const [m, lang] of [[en, 'en'], [tr, 'tr']]) {

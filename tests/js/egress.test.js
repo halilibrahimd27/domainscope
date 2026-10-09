@@ -36,6 +36,7 @@ import { IANA_BOOTSTRAP, RDAP_ORG, rdapDomain } from '../../assets/js/lib/rdap.j
 import { GLOBALPING_API, createGlobalping, httpsGetRequest, dnsQueryRequest } from '../../assets/js/lib/globalping.js';
 import { crtshKeyUrl } from '../../assets/js/lib/keycontinuity.js';
 import { ZONE_PROVIDERS, getZoneProvider } from '../../assets/js/lib/zonefetch.js';
+import { GITHUB_API } from '../../assets/js/lib/monitorfetch.js';
 import { startEgressMeter, egressLog, egressMeterStatus } from '../../assets/js/ui/egress-meter.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -79,6 +80,9 @@ describe('requestSignature', () => {
     // a zone name at a DNS provider's API, even one without a dot
     assert.equal(requestSignature('https://desec.io/api/v1/domains/intranet/rrsets/?type=A').key, 'https://desec.io/api/*/domains/*/rrsets/?type');
     assert.equal(requestSignature('https://api.digitalocean.com/v2/domains/example.com/records?per_page=200&page=1').path, '/*/domains/*/records');
+    // a GitHub repository's owner and name, plain words both: the two segments after repos
+    assert.equal(requestSignature('https://api.github.com/repos/acme/nightly/contents/results/history/2026-10.jsonl').path, '/repos/*/*/contents/results/history/*');
+    assert.equal(requestSignature('https://api.github.com/repos/acme/nightly/issues?labels=domainscope&state=open').key, 'https://api.github.com/repos/*/*/issues?labels&state');
   });
 
   test('relative URLs resolve against the page; anything but http(s) is not a request of the page', () => {
@@ -333,7 +337,14 @@ describe('the registry', () => {
       ['https://desec.io/api/v1/domains/example.com/rrsets/?type=A&cursor=', 'desec', 'rrsets', ['domains', 'apiToken']],
       ['https://api.digitalocean.com/v2/domains/example.com/records?per_page=200&page=2', 'digitalocean', 'records', ['domains', 'apiToken']],
       // the token page, a link on the API host: no endpoint
-      [getZoneProvider('desec').tokenUrl, 'desec', null, ['domains', 'apiToken']]
+      [getZoneProvider('desec').tokenUrl, 'desec', null, ['domains', 'apiToken']],
+      // Monitoring › GitHub: the repository's path and the user's token, to GitHub's API only
+      [`${GITHUB_API}/repos/acme/nightly/contents/results`, 'github', 'contents', ['repository', 'apiToken']],
+      [`${GITHUB_API}/repos/acme/nightly/contents/results/history`, 'github', 'contents', ['repository', 'apiToken']],
+      [`${GITHUB_API}/repos/acme/nightly/contents/results/history/2026-10.jsonl`, 'github', 'contents', ['repository', 'apiToken']],
+      [`${GITHUB_API}/repos/acme/nightly/issues?labels=domainscope&state=open&per_page=5`, 'github', 'issues', ['repository', 'apiToken']],
+      // GitHub's meta API (lib/netinfo.js links it): no endpoint of the page
+      ['https://api.github.com/meta', 'github', null, ['repository', 'apiToken']]
     ];
     for (const [url, service, endpoint, sends, notes = []] of cases) {
       const c = classifyUrl(url, { notes });
@@ -601,6 +612,8 @@ const CALL_SITES = {
   'assets/js/lib/sct.js': ['ctloglist', 'self'],
   // Zone File › Fetch from deSEC / DigitalOcean, with the user's token
   'assets/js/lib/zonefetch.js': ['desec', 'digitalocean'],
+  // Monitoring › GitHub: the nightly repository's results, with the user's token
+  'assets/js/lib/monitorfetch.js': ['github'],
   // the CCADB intermediate list, from this site (assets/data/intermediates/)
   'assets/js/lib/chainfix.js': ['self'],
   'assets/js/lib/wordlist.js': ['self'],
@@ -655,6 +668,8 @@ const LINK_HOSTS = {
   // where a DNS provider's read-only token is made, and how (deSEC's token page is on its API host,
   // desec.io/tokens: a desec URL the registry gives no endpoint)
   'assets/js/lib/zonefetch.js': ['desec.readthedocs.io', 'cloud.digitalocean.com', 'docs.digitalocean.com'],
+  // where a fine-grained GitHub token is made, and how; the repository's issues and runs (opened by the user)
+  'assets/js/lib/monitorfetch.js': ['github.com', 'docs.github.com'],
   // the SVG namespace, a name and never a request
   'assets/js/ui/dom.js': ['www.w3.org'],
   'assets/js/ui/verify-panel.js': ['globalping.io'],
@@ -663,6 +678,13 @@ const LINK_HOSTS = {
   'assets/js/ui/renewal-planner.js': ['cabforum.org'],
   'assets/js/views/about.js': ['about.rdap.org', 'datatracker.ietf.org', 'developer.mozilla.org', 'globalping.io', 'googlechrome.github.io', 'hackertarget.com', 'letsencrypt.org', 'sslmate.com', 'www.robtex.com', 'www.shodan.io', 'www.whoisxmlapi.com'],
   'assets/js/views/ip.js': ['bgp.he.net']
+};
+/**
+ * Link hosts that are also a registry service's API host, and why a link there is no request: the
+ * test checks that none of the links is one of the service's endpoints.
+ */
+const SERVICE_LINK_HOSTS = {
+  'api.github.com': 'GitHub publishes its Pages ranges at /meta (lib/netinfo.js names the list it copied); the page calls only the repository endpoints of Monitoring › GitHub'
 };
 /**
  * Files with a URL whose host is data (a template's `${…}` there), and why the page never
@@ -838,8 +860,12 @@ function urlLiteralProblems(lexed) {
         bad.push(`${file}: unparseable ${lit}`);
         continue;
       }
-      if (links.includes(host)) continue;
       const c = classifyUrl(lit);
+      // A link host may also be a service's API host (lib/netinfo.js links api.github.com/meta, where
+      // GitHub publishes the ranges it copied; the page calls api.github.com for Monitoring › GitHub
+      // only): a link is skipped only when it is none of the service's endpoints, so a call to one
+      // cannot hide behind a declared link.
+      if (links.includes(host) && !(c && c.endpoint)) continue;
       if (!c || !c.service) bad.push(`${file}: ${lit} is not in lib/egress.js`);
       else if (ids && !ids.includes(c.service.id)) bad.push(`${file}: ${lit} is ${c.service.id}, not declared for this file`);
       else seen.add(c.service.id);
@@ -950,13 +976,17 @@ describe('the code scan', () => {
     assert.equal((lexed.get('assets/js/lib/ipintel.js').code.match(/`IPWHOIS_BASE`/g) || []).length, 1, 'one ipwho.is request built');
   });
 
-  test('the declared links and data-built hosts are still there, and no link host is a service the page calls', () => {
+  test('the declared links and data-built hosts are still there, and no link host is a service the page calls (but for an API host, never at an endpoint)', () => {
     for (const [file, hosts] of Object.entries(LINK_HOSTS)) {
       assert.ok(lexed.has(file), `${file} is gone`);
-      const present = new Set(lexed.get(file).literals.filter((l) => /^https?:\/\/[^/?#$]+(?:[/?#]|$)/.test(l)).map((l) => new URL(l).host));
+      const urls = lexed.get(file).literals.filter((l) => /^https?:\/\/[^/?#$]+(?:[/?#]|$)/.test(l));
+      const present = new Set(urls.map((l) => new URL(l).host));
       for (const host of hosts) {
         assert.ok(present.has(host), `${file}: ${host} is no longer linked`);
-        assert.equal(classifyUrl(`https://${host}/`).service, null, host);
+        if (!classifyUrl(`https://${host}/`).service) continue;
+        // an API host the page also calls: only where it says why, and no link of it is one of its endpoints
+        assert.ok(Object.hasOwn(SERVICE_LINK_HOSTS, host), `${file}: ${host} is a service the page calls`);
+        for (const url of urls.filter((l) => new URL(l).host === host)) assert.equal(classifyUrl(url).endpoint, null, url);
       }
     }
     for (const file of Object.keys(BUILT_HOSTS)) {

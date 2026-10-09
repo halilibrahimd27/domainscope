@@ -332,6 +332,9 @@ describe('i18n coverage', () => {
     // DMARC & TLS reports: its summary texts, registered by views/reports.js (lib/reportsummary.js).
     const reportsummary = await imp('assets/js/lib/reportsummary.js');
     for (const k of Object.keys(reportsummary.REPORTS_SUMMARY_I18N.en)) add(k);
+    // Monitoring: its summary texts, registered by views/monitor.js (lib/monitorsummary.js), and every key it builds from a code.
+    for (const k of Object.keys((await imp('assets/js/lib/monitorsummary.js')).MONITOR_SUMMARY_I18N.en)) add(k);
+    for (const k of views.monitor.generatedKeys()) add(k);
     for (const kind of summary.SUMMARY_KINDS) add(`nav.${kind}`);
     // No silent dashes (lib/sourcestatus.js through ui/source-status.js): every reason, source and
     // chip state; IP Intel's folded zero counts (lib/density.js).

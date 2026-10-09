@@ -71,7 +71,7 @@ const permalinks = new WeakMap();
 /** Tooltip key per `inventory` option of {@link SummaryButton}. */
 const TIPS = { names: 'sum.btn.tipInventory', count: 'sum.btn.tipCount' };
 /** Views whose result comes from files the user loaded: their tooltip says the link leaves them out. */
-const FILE_KINDS = new Set(['zone', 'cert', 'estate', 'reports']);
+const FILE_KINDS = new Set(['zone', 'cert', 'estate', 'reports', 'monitor']);
 
 /**
  * The permalink of the result shown under `root`: the link the first shown SummaryButton (not

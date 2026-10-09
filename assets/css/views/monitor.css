@@ -1,0 +1,441 @@
+/*
+ * views/monitor.css — "Monitoring" view (.mon-*): the runner's results read in the browser or from
+ * GitHub, the tiles, the target table with its sparklines (labelled cards on a phone) and the
+ * change timeline.
+ */
+
+.mon-page {
+  margin-top: 16px;
+  min-width: 0;
+}
+
+/* ---- the source ---------------------------------------------------------------- */
+
+.mon-source-card .filedrop-compact {
+  padding: 10px 14px;
+}
+
+.mon-source {
+  align-self: flex-start;
+}
+
+.mon-how .codeblock {
+  margin: 0;
+}
+
+.mon-errors {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+.mon-gh-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: 8px 12px;
+}
+
+.mon-gh-options {
+  align-items: flex-end;
+  gap: 8px 16px;
+}
+
+.mon-gh-months.field {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mon-gh-months .field-label {
+  margin: 0;
+}
+
+.mon-gh-months .select {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mon-gh-issue {
+  min-width: 0;
+}
+
+.mon-gh-links {
+  gap: 6px 16px;
+}
+
+.mon-gh-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.mon-gh-status[data-state="error"] {
+  display: block;
+}
+
+.mon-gh-status > .stack-xs {
+  min-width: 0;
+}
+
+/* ---- the numbers and the links -------------------------------------------------- */
+
+/* Two tiles a row on a phone: the labels wrap there instead of being cut. */
+.mon-stats {
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+}
+
+.mon-stats .stat-label {
+  white-space: normal;
+}
+
+.mon-stats .stat-hint {
+  overflow-wrap: anywhere;
+}
+
+.mon-summary {
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.mon-links {
+  gap: 6px 16px;
+  min-width: 0;
+}
+
+/* ---- the targets ------------------------------------------------------------------ */
+
+.mon-target {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  max-width: 15rem;
+}
+
+.mon-target-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mon-target-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.mon-target-filter {
+  flex: 0 0 auto;
+}
+
+.mon-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+  max-width: 13rem;
+}
+
+/* a check not run since a date (a long badge, longer in Turkish) wraps inside its cell; the others keep one line */
+.mon-cell .mon-incomplete {
+  max-width: 100%;
+  height: auto;
+  min-height: 21px;
+  white-space: normal;
+}
+
+.mon-trend {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mon-spark {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+}
+
+.mon-spark-svg {
+  display: block;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.mon-spark-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.mon-spark-dot {
+  fill: currentColor;
+}
+
+.mon-spark-value {
+  min-width: 2.5ch;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.mon-spark-ok {
+  color: var(--ok-solid);
+}
+
+.mon-spark-warn {
+  color: var(--warn-solid);
+}
+
+.mon-spark-error {
+  color: var(--error-solid);
+}
+
+.mon-spark-neutral {
+  color: var(--text-3);
+}
+
+.mon-table td.mon-col-trend {
+  white-space: nowrap;
+}
+
+.mon-table .dt-row.mon-row-attention td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn-solid);
+}
+
+.mon-details {
+  padding: 4px 2px;
+  overflow-x: auto;
+}
+
+.mon-d-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.mon-d-table th,
+.mon-d-table td {
+  padding: 4px 10px 4px 0;
+  text-align: start;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.mon-d-table thead th {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mon-d-table tbody th {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* A phone: each target is a card of labelled lines (the column headers come from data-label). */
+@media (max-width: 640px) {
+  .mon-table .dt-tools {
+    flex: 1 1 100%;
+  }
+
+  .mon-table .dt-table,
+  .mon-table .dt-table tbody {
+    display: block;
+  }
+
+  .mon-table .dt-table thead {
+    display: none;
+  }
+
+  .mon-table .dt-table tbody tr.dt-row {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 6px 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .mon-table .dt-table td {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    justify-items: start;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .mon-table .dt-table td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  /* the expander of the row's details: a plain button above the card's lines */
+  .mon-table .dt-table td.dt-expander {
+    display: block;
+  }
+
+  .mon-table .dt-table tr.dt-details {
+    display: block;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .mon-table .dt-table tr.dt-details td {
+    display: block;
+    padding: 4px 12px 10px;
+  }
+
+  .mon-table .dt-table tr.dt-details td::before {
+    content: none;
+  }
+
+  .mon-table .dt-row.mon-row-attention td:first-child {
+    box-shadow: none;
+  }
+
+  .mon-table .dt-table tbody tr.dt-row.mon-row-attention {
+    box-shadow: inset 3px 0 0 var(--warn-solid);
+  }
+
+  .mon-target,
+  .mon-cell {
+    max-width: none;
+  }
+
+  /* a longer label (Turkish) wraps inside its badge */
+  .mon-table .badge {
+    height: auto;
+    min-height: 21px;
+    white-space: normal;
+  }
+
+  .mon-d-table thead {
+    display: none;
+  }
+
+  .mon-d-table tr {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 10px;
+    padding: 6px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .mon-d-table th,
+  .mon-d-table td {
+    padding: 0;
+  }
+}
+
+/* ---- the timeline ------------------------------------------------------------------ */
+
+.mon-tl-filters {
+  align-items: flex-end;
+  gap: 8px 12px;
+}
+
+.mon-tl-filter.field {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mon-tl-filter .field-label {
+  margin: 0;
+}
+
+.mon-tl-filter .select {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mon-tl-tone {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.mon-tl-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mon-tl-day + .mon-tl-entry,
+.mon-tl-entry + .mon-tl-entry {
+  border-top: 1px solid var(--border);
+}
+
+.mon-tl-day:not(:first-child) {
+  margin-top: 10px;
+}
+
+.mon-tl-date {
+  margin: 0 0 4px;
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.mon-tl-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0 6px 10px;
+  border-left: 3px solid var(--border);
+  min-width: 0;
+}
+
+.mon-tl-entry.mon-tl-bad {
+  border-left-color: var(--error-solid);
+}
+
+.mon-tl-entry.mon-tl-good {
+  border-left-color: var(--ok-solid);
+}
+
+.mon-tl-entry.mon-tl-info {
+  border-left-color: var(--info-solid);
+}
+
+.mon-tl-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.mon-tl-target {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.mon-tl-text,
+.mon-tl-item {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}

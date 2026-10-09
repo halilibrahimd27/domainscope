@@ -20,6 +20,8 @@ import '../../assets/js/views/ptr.js';
 import '../../assets/js/ui/verify-panel.js';
 import '../../assets/js/ui/parity-panel.js';
 import '../../assets/js/ui/origin-compare.js';
+import '../../assets/js/views/reports.js';
+import '../../assets/js/views/change.js';
 
 after(() => setLang('en'));
 
@@ -165,7 +167,7 @@ describe('the shell', () => {
   });
 
   test('a switch names what it would stop: the long jobs and the registered work, each once', () => {
-    assert.deepEqual(runningWork(), [], 'nothing runs (a Reverse DNS sweep, a Verify batch and the two Globalping comparisons are registered, idle)');
+    assert.deepEqual(runningWork(), [], 'nothing runs (a Reverse DNS sweep, a Verify batch, the two Globalping comparisons, a DMARC report read and a change check are registered, idle)');
     let busy = true;
     registerRunning('nav.ptr.test', () => busy);
     registerRunning('nav.broken.test', () => {
@@ -180,7 +182,7 @@ describe('the shell', () => {
       registerRunning('nav.broken.test', () => false);
     }
     for (const lang of LANGS) {
-      for (const key of ['vfy.switchRunning', 'nav.ptr', 'par.switchRunning', 'oc.switchRunning']) assert.ok(hasString(key, lang), `${key} ${lang}`);
+      for (const key of ['vfy.switchRunning', 'nav.ptr', 'par.switchRunning', 'oc.switchRunning', 'rpt.switchRunning', 'chg.switchRunning']) assert.ok(hasString(key, lang), `${key} ${lang}`);
     }
   });
 });

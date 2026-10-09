@@ -68,6 +68,7 @@ import { mergeSignals, onceAsync, sharePercent } from '../lib/util.js';
 import { registerSummaryBuilder } from '../lib/summarycore.js';
 import { reportsSummary, REPORTS_SUMMARY_I18N } from '../lib/reportsummary.js';
 import { NaMark } from '../ui/source-status.js';
+import { registerRunning } from '../ui/jobs.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { ReportButton } from '../ui/report-button.js';
 import {
@@ -135,6 +136,7 @@ registerStrings('en', {
   'rpt.reading': { one: 'Reading {count} file…', other: 'Reading {count} files…' },
   'rpt.queued': { one: '{count} more file will be read next.', other: '{count} more files will be read next.' },
   'rpt.stop': 'Stop reading',
+  'rpt.switchRunning': 'Reading DMARC & TLS report files',
   'rpt.stopped': 'Reading stopped.',
   'rpt.stoppedKept': { one: 'Reading stopped. The report read before it is kept.', other: 'Reading stopped. The {count} reports read before it are kept.' },
   'rpt.stoppedNone': 'Reading stopped. No report had been read yet.',
@@ -507,6 +509,7 @@ registerStrings('tr', {
   'rpt.reading': '{count} dosya okunuyor…',
   'rpt.queued': 'Sırada {count} dosya daha var; ardından okunacak.',
   'rpt.stop': 'Okumayı durdur',
+  'rpt.switchRunning': 'DMARC ve TLS rapor dosyalarının okunması',
   'rpt.stopped': 'Okuma durduruldu.',
   'rpt.stoppedKept': 'Okuma durduruldu. O ana kadar okunan {count} rapor korundu.',
   'rpt.stoppedNone': 'Okuma durduruldu. Henüz hiçbir rapor okunmamıştı.',
@@ -1304,6 +1307,9 @@ let intelDns = null;
 let active = null;
 /** ui/report-history.js once the History tab loaded it (its choices are reset with the reports). */
 let historyModule = null;
+/** Dropped files being read now (the view on screen): another workspace drops the read, so the shell names it first. */
+let readInFlight = false;
+registerRunning('rpt.switchRunning', () => readInFlight);
 
 /** Forget every report (Forget, another workspace, "Delete all local data"). */
 function resetReports() {
@@ -1584,6 +1590,7 @@ export function mount(container, ctx) {
       return;
     }
     busy = true;
+    readInFlight = true;
     reading = new AbortController();
     readDone = 0;
     readTotal = queue.length;
@@ -1621,6 +1628,7 @@ export function mount(container, ctx) {
     }
     const stopped = reading.signal.aborted && !ctx.signal.aborted;
     busy = false;
+    readInFlight = false;
     queue = [];
     reading = null;
     progress = null;

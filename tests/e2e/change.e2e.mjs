@@ -22,7 +22,9 @@
  * with the negative TTL waited for, no answer), the next check never before a cached answer
  * expires, Check now after the change reaches the lagging resolver, "done on every resolver that
  * answered", then done everywhere and the loop stopped, and Check again asks every resolver once
- * more (from the keyboard: the focus moves to Stop while a round runs, then to Check again); a check with the old value known (not yet vs wrong value), Esc stops it, Check again; Esc
+ * more (from the keyboard: the focus moves to Stop while a round runs, then to Check again); a check with the old value known (not yet vs wrong value), Esc stops it, Check again; a
+ * switch to another workspace while a check goes on (named in the confirmation, Cancel keeps it, a
+ * stopped one is not named); Esc
  * while a slow round runs (its answers shown, nothing scheduled after it); no resolver answering
  * at all (said so after the first round, stopped as failed after three); a language switch that
  * resumes the check without asking again; a check opened offline (it says so, schedules nothing and
@@ -350,6 +352,35 @@ async function main() {
       await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.state === 'done', { message: 'done after Check again', timeout: 10000 });
       assert((await dnsLog(page)).length > before, 'asked again');
       await shot(page, opts, 'change-check-done-desktop-light-en');
+    });
+
+    await run.step('a switch to another workspace while the check goes on names it first; Cancel keeps it going, a stopped one is not named', async () => {
+      // Every resolver serves 192.0.2.10 for www: "not yet", so the next round is scheduled (a link of its own:
+      // the next step opens 192.0.2.99's afresh).
+      await openCheck(page, 'z=example.com&r=is+www+A+192.0.2.98');
+      assertEqual((await checkInfo(page)).state, 'waiting', 'scheduled');
+      const otherId = await page.evaluate(() => import('./assets/js/state.js').then(async ({ state }) => (await state.createWorkspace('Change e2e')).meta.id));
+      try {
+        await page.click('[data-control="workspace"]');
+        await page.waitFor(() => document.querySelector('dialog.ws-modal[open] .ws-list li'), { message: 'workspaces dialog', timeout: 15000 });
+        await page.click(`dialog.ws-modal li[data-ws-id="${otherId}"] [data-action="ws-switch"]`);
+        const message = await page.waitFor(() => {
+          const d = [...document.querySelectorAll('dialog.modal-sm[open]')].pop();
+          return d ? d.querySelector('.modal-message').textContent : false;
+        }, { message: 'confirmation' });
+        assert(/^Still running here: The DNS change request’s “is it live\?” check\. Switching to “Change e2e” stops the work in progress/.test(message), message);
+        // Cancel: the check goes on, here.
+        await page.evaluate(() => [...document.querySelectorAll('dialog.modal-sm[open]')].pop().querySelector('.modal-foot .btn').click());
+        await page.waitFor(() => !document.querySelector('dialog.modal-sm[open]'), { message: 'confirmation closed' });
+        await page.click('dialog.ws-modal[open] .modal-head .btn');
+        await page.waitFor(() => !document.querySelector('dialog.ws-modal'), { message: 'dialog closed' });
+        assertEqual((await checkInfo(page)).state, 'waiting', 'still going after Cancel');
+        await page.click('[data-action="check-stop"]');
+        await page.waitFor(() => document.querySelector('[data-page="check"]').dataset.state === 'user', { message: 'stopped' });
+        assertEqual(await page.evaluate(() => import('./assets/js/ui/jobs.js').then(({ runningWork }) => runningWork())), [], 'a stopped check is no work in progress');
+      } finally {
+        await page.evaluate((id) => import('./assets/js/state.js').then(({ state }) => state.deleteWorkspace(id)), otherId);
+      }
     });
 
     await run.step('Esc while a slow round runs: the round\'s answers are shown, nothing is scheduled after it', async () => {

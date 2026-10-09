@@ -2,10 +2,10 @@
 // and back, the field a carried domain fills. DOM-free at import; no network.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { routeForm, subjectField, errorLabel } from '../../assets/js/views/change.js';
+import { routeForm, subjectField, errorLabel, checkInProgress } from '../../assets/js/views/change.js';
 import { builderParams, checkHash, problemText } from '../../assets/js/ui/fix-panel.js';
 import { TEMPLATE_IDS, templateInput, buildChange } from '../../assets/js/lib/fixes.js';
-import { t, setLang } from '../../assets/js/i18n.js';
+import { t, setLang, hasString } from '../../assets/js/i18n.js';
 
 describe('the form in the route', () => {
   test('builderParams keeps the template and what differs from the defaults; routeForm reads it back', () => {
@@ -74,5 +74,18 @@ describe('the form in the route', () => {
     setLang('tr');
     assert.equal(problemText({ key: 'fix.p.cname-one' }), 'Bir adın en fazla bir CNAME kaydı olur.');
     setLang('en');
+  });
+
+  test('a check in progress (a round asking, the next one due, or waiting for the connection) on the page on screen; a switch names it', () => {
+    const memo = (extra) => ({ mounted: true, stop: null, running: false, timer: null, offline: null, ...extra });
+    assert.equal(checkInProgress(null), false);
+    assert.equal(checkInProgress(memo({ running: true })), true, 'a round asking now');
+    assert.equal(checkInProgress(memo({ timer: 7 })), true, 'the next round due');
+    assert.equal(checkInProgress(memo({ offline: { only: null } })), true, 'waiting for the connection');
+    assert.equal(checkInProgress(memo({})), false, 'between a failed round and Check now');
+    assert.equal(checkInProgress(memo({ timer: 7, stop: 'done' })), false, 'stopped by itself');
+    assert.equal(checkInProgress(memo({ running: true, stop: 'user' })), false, 'stopped by Stop');
+    assert.equal(checkInProgress(memo({ offline: { only: null }, mounted: false })), false, 'the page left: nothing runs');
+    for (const lang of ['en', 'tr']) assert.ok(hasString('chg.switchRunning', lang), lang);
   });
 });

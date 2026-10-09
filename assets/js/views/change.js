@@ -49,6 +49,7 @@ import { isFillOnly } from '../lib/session.js';
 import { onceAsync } from '../lib/util.js';
 import { ChangeOutputs, ProblemList, builderParams, checkUrl } from '../ui/fix-panel.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { registerRunning } from '../ui/jobs.js';
 import '../ui/view-summaries.js'; // the check page's Copy summary: lib/summary.js changeSummary and its texts
 
 /** The check page's cutover assistant: watch mode, the cache countdowns, the TTL planner (loaded with the page). */
@@ -95,6 +96,7 @@ registerStrings('en', {
   'chg.check.running': 'Checking…',
   'chg.check.now': 'Check now',
   'chg.check.stop': 'Stop',
+  'chg.switchRunning': 'The DNS change request’s “is it live?” check',
   'chg.check.again': 'Check again',
   'chg.check.copy': 'Copy link',
   'chg.check.mode.is': 'must be exactly',
@@ -169,6 +171,7 @@ registerStrings('tr', {
   'chg.check.running': 'Kontrol ediliyor…',
   'chg.check.now': 'Şimdi kontrol et',
   'chg.check.stop': 'Durdur',
+  'chg.switchRunning': 'DNS değişiklik talebinin “yayında mı?” kontrolü',
   'chg.check.again': 'Yeniden kontrol et',
   'chg.check.copy': 'Bağlantıyı kopyala',
   'chg.check.mode.is': 'tam olarak bu olmalı',
@@ -231,6 +234,18 @@ stateSingleton.subscribe(({ key }) => {
   if (checkMemo && checkMemo.timer) clearTimeout(checkMemo.timer);
   checkMemo = null;
 });
+
+/**
+ * Is the "is it live?" check of the page on screen still going — a round asking now, the next one
+ * scheduled, or one waiting for the connection — until it stops by itself or by Stop? A switch to
+ * another workspace forgets it (above), so the shell names it first.
+ * @param {object|null} memo the check's state (`checkMemo`)
+ * @returns {boolean}
+ */
+export function checkInProgress(memo) {
+  return !!(memo && memo.mounted && !memo.stop && (memo.running || memo.timer || memo.offline));
+}
+registerRunning('chg.switchRunning', () => checkInProgress(checkMemo));
 
 /* ------------------------------------------------------------------------ */
 /* Pure helpers (exported for tests)                                        */
@@ -610,6 +625,7 @@ function mountCheck(container, ctx) {
     checkMemo = { query, latest: new Map(), startedAt: Date.now(), round: 0, errorRounds: 0, lastAt: null, nextAt: null, pairs: null, stop: null, cachedUntil: null, timer: null, running: false };
   }
   const memo = checkMemo;
+  memo.mounted = true;
   let ticker = null;
 
   const headEl = h('div', { class: 'chg-check-head-wrap', attrs: { 'aria-live': 'polite' } });
@@ -860,6 +876,7 @@ function mountCheck(container, ctx) {
     clearTimeout(memo.timer);
     memo.timer = null;
     memo.running = false;
+    memo.mounted = false;
   });
 
   ctx.runStarted(check.zone);

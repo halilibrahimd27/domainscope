@@ -24,7 +24,8 @@
  * first 200 listed, "+5 more", and Forget offered for them alone; files dropped while reading wait their turn,
  * the bar counts them, and Stop (Esc) before a report was read keeps nothing; a zipped mailbox
  * folder of 300 reports counted report by report and stopped in its middle, the reports read before
- * the Stop kept and counted in its toast; an SPF record with a
+ * the Stop kept and counted in its toast; a switch to another workspace while files are read names
+ * the read in its confirmation, and Cancel keeps reading; an SPF record with a
  * syntax error: the SPF line, the note and the verdict say receivers get a permanent error, the
  * server it lists stays yours and its mail that passed through SPF alone is to fix, refused now once
  * p=reject is in force; offline, a dropped
@@ -679,6 +680,59 @@ async function main() {
           await page.evaluate(() => { TextDecoder.prototype.decode = window.__realDecode; });
         }
       } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    await run.step('a switch to another workspace while files are read names the read first; Cancel keeps reading', async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'ds-reports-switch-'));
+      const otherId = await page.evaluate(() => import('./assets/js/state.js').then(async ({ state }) => (await state.createWorkspace('Reports e2e')).meta.id));
+      try {
+        const zip = path.join(dir, 'mailbox.zip');
+        await writeFile(zip, storedZip(Array.from({ length: 500 }, (_, day) => [`dmarc/google.com!example.com!${1790294400 + day * 86400}.xml`, dailyReport(day)])));
+        // Every report decodes slowly (10 ms): the read (5 s) is still going while the switch is asked.
+        await page.evaluate(() => {
+          const real = TextDecoder.prototype.decode;
+          window.__realDecode = real;
+          TextDecoder.prototype.decode = function slowDecode(input, options) {
+            if (input && input.byteLength > 400) {
+              const until = performance.now() + 10;
+              while (performance.now() < until) { /* a long report */ }
+            }
+            return real.call(this, input, options);
+          };
+          document.querySelectorAll('.toast').forEach((el) => el.remove());
+        });
+        try {
+          await page.setFileInput('.rpt-load .filedrop-input', [zip]);
+          await page.waitFor(() => {
+            const m = /^(\d+) \/ 500\b/.exec(document.querySelector('[data-role="rpt-busy"] .progress-value')?.textContent || '');
+            return !!m && Number(m[1]) >= 2;
+          }, { message: 'reading the archive' });
+          await page.click('[data-control="workspace"]');
+          await page.waitFor(() => document.querySelector('dialog.ws-modal[open] .ws-list li'), { message: 'workspaces dialog', timeout: 15000 });
+          await page.click(`dialog.ws-modal li[data-ws-id="${otherId}"] [data-action="ws-switch"]`);
+          const message = await page.waitFor(() => {
+            const d = [...document.querySelectorAll('dialog.modal-sm[open]')].pop();
+            return d ? d.querySelector('.modal-message').textContent : false;
+          }, { message: 'confirmation' });
+          assert(/^Still running here: Reading DMARC & TLS report files\. Switching to “Reports e2e” stops the work in progress/.test(message), message);
+          await page.evaluate(() => [...document.querySelectorAll('dialog.modal-sm[open]')].pop().querySelector('.modal-foot .btn').click());
+          await page.waitFor(() => !document.querySelector('dialog.modal-sm[open]'), { message: 'confirmation closed' });
+          await page.click('dialog.ws-modal[open] .modal-head .btn');
+          await page.waitFor(() => !document.querySelector('dialog.ws-modal'), { message: 'dialog closed' });
+          assert(await page.evaluate(() => !!document.querySelector('[data-role="rpt-busy"]')), 'still reading after Cancel, in this workspace');
+          await page.click('[data-action="rpt-stop"]');
+          await page.waitFor(() => !document.querySelector('[data-role="rpt-busy"]'), { message: 'stopped' });
+          assertEqual(await page.evaluate(() => import('./assets/js/ui/jobs.js').then(({ runningWork }) => runningWork())), [], 'nothing read now: nothing named');
+        } finally {
+          await page.evaluate(() => { TextDecoder.prototype.decode = window.__realDecode; });
+        }
+        await waitDmarc(page, 'the kept reports classified');
+        await page.click('[data-action="rpt-forget"]');
+        await page.waitFor(() => !!document.querySelector('.rpt-page .empty'), { message: 'forgotten' });
+      } finally {
+        await page.evaluate((id) => import('./assets/js/state.js').then(({ state }) => state.deleteWorkspace(id)), otherId);
         await rm(dir, { recursive: true, force: true }).catch(() => {});
       }
     });

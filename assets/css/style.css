@@ -4414,22 +4414,25 @@ button.nav-status:hover {
 /* DataTable card mode (docs/DESIGN.md §7, phase 5): a table with the `dt-cards` class and its cells'
    labels (DataTable({ cellLabels: true })) turns each row into a card of labelled lines on a phone,
    never a table wider than the screen. The first cell heads its card, unlabelled, with the row's
-   details button at its right; an empty cell ("—") takes no line; the page scrolls, not the table. */
+   details button at its right; an empty cell ("—") takes no line; below 360 px each label sits above
+   its value, which gets the card's whole width; the page scrolls, not the table. Every rule reaches
+   the card table's own rows and cells only (the table is the child of the `dt-cards` scroller, or of
+   the scroller inside it): a table in a row's details, such as IP Intel's Blocklists, keeps its own. */
 @media (max-width: 719px) {
-  .dt-cards .dt-scroll {
+  .dt-cards > .dt-scroll {
     max-height: none;
   }
 
-  .dt-cards .dt-table,
-  .dt-cards .dt-table tbody {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table,
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody {
     display: block;
   }
 
-  .dt-cards .dt-table thead {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > thead {
     display: none;
   }
 
-  .dt-cards .dt-table tbody tr.dt-row {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row {
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr) auto;
     gap: var(--space-1) var(--space-3);
@@ -4437,11 +4440,11 @@ button.nav-status:hover {
     border-bottom: 1px solid var(--border);
   }
 
-  .dt-cards .dt-table tbody tr:last-child {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr:last-child {
     border-bottom: 0;
   }
 
-  .dt-cards .dt-table td {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr > td {
     display: grid;
     grid-column: 1 / 3;
     grid-template-columns: subgrid;
@@ -4450,11 +4453,13 @@ button.nav-status:hover {
     min-width: 0;
     padding: 0;
     border: 0;
+    /* A number column's right alignment means nothing in a card. */
+    text-align: start;
     white-space: normal;
     overflow-wrap: anywhere;
   }
 
-  .dt-cards .dt-table td::before {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row > td::before {
     content: attr(data-label);
     max-width: 9rem;
     color: var(--text-3);
@@ -4464,55 +4469,82 @@ button.nav-status:hover {
     line-height: var(--lh-sm);
   }
 
-  .dt-cards .dt-table td:has(> .dt-null:only-child) {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row > td:has(> .dt-null:only-child) {
     display: none;
   }
 
-  .dt-cards .dt-table tbody tr.dt-row > :is(td:first-child:not(.dt-expander), td.dt-expander + td) {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row > :is(td:first-child:not(.dt-expander), td.dt-expander + td) {
     display: block;
     grid-row: 1;
     padding-bottom: var(--space-1);
     font-weight: var(--fw-semibold);
   }
 
-  .dt-cards .dt-table tbody tr.dt-row > :is(td:first-child:not(.dt-expander), td.dt-expander + td)::before {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row > :is(td:first-child:not(.dt-expander), td.dt-expander + td)::before {
     content: none;
   }
 
-  .dt-cards .dt-table td.dt-expander {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row > td.dt-expander {
     display: block;
     grid-row: 1;
     grid-column: 3;
     width: auto;
   }
 
-  .dt-cards .dt-table td.dt-expander::before {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row > td.dt-expander::before {
     content: none;
   }
 
-  .dt-cards .dt-table tbody .dt-row:hover td {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row:hover > td {
     background: none;
   }
 
-  .dt-cards .dt-table tr.dt-details {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-details {
     display: block;
     border-bottom: 1px solid var(--border);
   }
 
-  .dt-cards .dt-table tr.dt-details > td {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-details > td {
     display: block;
   }
 
-  .dt-cards .dt-details-body {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-details > td > .dt-details-body {
     padding: var(--space-1) var(--space-3) var(--space-3);
   }
 
-  /* A tag in a card wraps rather than widening it. */
-  .dt-cards .dt-table .badge {
+  /* A tag in a card wraps rather than widening it (one in a row's details keeps its own rules). */
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row > td .badge {
     max-width: 100%;
     height: auto;
     min-height: 20px;
     white-space: normal;
+  }
+}
+
+/* Below 360 px a label beside its value would leave the value about 70 px (IP Intel's "Find domains"
+   would push the card wider): each label goes above its value, the head cell keeps the details button. */
+@media (max-width: 359px) {
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: var(--space-2);
+  }
+
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr > td {
+    display: block;
+    grid-column: 1 / -1;
+  }
+
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row > td::before {
+    display: block;
+    max-width: none;
+  }
+
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row > :is(td:first-child:not(.dt-expander), td.dt-expander + td) {
+    grid-column: 1;
+  }
+
+  :is(.dt-cards > .dt-scroll, .dt-scroll.dt-cards) > .dt-table > tbody > tr.dt-row > td.dt-expander {
+    grid-column: 2;
   }
 }
 

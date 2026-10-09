@@ -9,7 +9,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   IP_METRICS, IP_FOLDABLE, IP_FILTERS, ipFigures, ipMetricIds, ipStatus, ipRowMatches,
-  BULK_METRICS, BULK_FOLDABLE, HANDOFF_MAX_IPS, BULK_LINK_MAX_NAMES, bulkStatus, bulkLinkParams, handoffIps, bulkSummaryFacts,
+  BULK_METRICS, BULK_FOLDABLE, HANDOFF_MAX_IPS, BULK_LINK_MAX_NAMES, bulkStatus, bulkLookupFailed, bulkLinkParams, handoffIps, bulkSummaryFacts,
   PTR_METRICS, PTR_FOLDABLE, ptrStatus, ptrStatusOfFilter, ptrSummaryFacts,
   inventoryFigures, inventoryStatus, exportColumns, exportObjects
 } from '../../assets/js/lib/netresults.js';
@@ -94,9 +94,16 @@ describe('Bulk Resolve', () => {
     assert.deepEqual(shown(bulkStatus(null)), []);
   });
 
-  test('the metrics and their zeros', () => {
-    assert.deepEqual(BULK_METRICS, ['names', 'hidden', 'direct', 'unresolved']);
+  test('the metrics and their zeros: "not resolving" and "lookup failed" apart, as the status summary has them', () => {
+    assert.deepEqual(BULK_METRICS, ['names', 'hidden', 'direct', 'unresolved', 'failed']);
     assert.ok(BULK_FOLDABLE.every((id) => BULK_METRICS.includes(id)) && !BULK_FOLDABLE.includes('names'));
+    assert.ok(BULK_FOLDABLE.includes('failed'), 'no failed lookup: folded once the job ends');
+  });
+
+  test('a lookup failed when the resolver gave no answer to tell (SERVFAIL, REFUSED, a timeout): never "not resolving"', () => {
+    const failed = (status) => bulkLookupFailed({ resolution: { status } });
+    assert.deepEqual(['NOERROR', 'NXDOMAIN', 'SERVFAIL', 'REFUSED', 'ERROR'].map(failed), [false, false, true, true, true]);
+    assert.equal(bulkLookupFailed({ resolution: null }), true, 'no answer at all');
   });
 
   test('a link carries at most 40 host names (each once), else none', () => {
@@ -122,12 +129,15 @@ describe('Bulk Resolve', () => {
     const row = (name, kind, ips, extra = {}) => ({
       name, ips, servers: extra.servers || [],
       resolution: { status: extra.status || (ips.length ? 'NOERROR' : 'NXDOMAIN') },
-      classification: { kind, hidesOrigin: kind === 'cloudflare' || kind === 'cdn' }
+      classification: { kind, hidesOrigin: extra.hidesOrigin ?? (kind === 'cloudflare' || kind === 'cdn') }
     });
     const rows = [
       row('example.net', 'direct', ['203.0.113.10'], { servers: [{ name: 'web02' }] }),
       row('www.example.net', 'cloudflare', ['104.16.5.5']),
       row('shop.example.net', 'cdn', ['198.51.100.7']),
+      // A hosting platform (GitHub Pages, Vercel …) does not hide an origin; a load balancer (AWS ELB) does.
+      row('docs.example.net', 'platform', ['192.0.2.80']),
+      row('lb.example.net', 'platform', ['198.51.100.8'], { hidesOrigin: true }),
       row('vpn.example.net', 'private', ['10.0.0.6']),
       row('staging.example.net', 'nxdomain', []),
       row('broken.example.net', 'unresolved', [], { status: 'SERVFAIL' })
@@ -136,6 +146,8 @@ describe('Bulk Resolve', () => {
       ['203.0.113.10', { ip: '203.0.113.10', version: 4, servers: [{ name: 'web02' }] }],
       ['104.16.5.5', { ip: '104.16.5.5', version: 4, servers: [] }],
       ['198.51.100.7', { ip: '198.51.100.7', version: 4, servers: [] }],
+      ['192.0.2.80', { ip: '192.0.2.80', version: 4, servers: [] }],
+      ['198.51.100.8', { ip: '198.51.100.8', version: 4, servers: [] }],
       ['10.0.0.6', { ip: '10.0.0.6', version: 4, servers: [] }],
       ['2001:db8::10', { ip: '2001:db8::10', version: 6, servers: [] }]
     ]);
@@ -146,9 +158,11 @@ describe('Bulk Resolve', () => {
   test('the facts of Copy summary: counts by class, the names that do not resolve or failed, the addresses, never a server\'s name', () => {
     const f = bulkSummaryFacts(job(), { inventory: true });
     assert.deepEqual(f, {
-      names: 6, one: null, status: 'done', done: 6, resolved: 4, cloudflare: 1, cdn: 1, direct: 2, private: 1,
-      notFound: ['staging.example.net'], failed: ['broken.example.net'], ips: 5, v4: 4, v6: 1, mine: 1, at: new Date('2026-10-09T15:47:00Z')
+      names: 8, one: null, status: 'done', done: 8, resolved: 6, cloudflare: 1, cdn: 3, direct: 2, private: 1,
+      notFound: ['staging.example.net'], failed: ['broken.example.net'], ips: 7, v4: 6, v6: 1, mine: 1, at: new Date('2026-10-09T15:47:00Z')
     });
+    // "Other CDN / platform" is every other provider, whether it hides the origin or not (as Subdomains counts it).
+    assert.equal(f.cloudflare + f.cdn + f.direct, f.resolved, 'each name that resolves in one class');
     assert.doesNotMatch(JSON.stringify(f), /web02/, 'no server name');
     assert.equal(bulkSummaryFacts(job()).mine, null, 'no server list: nothing said about one');
     assert.equal(bulkSummaryFacts(job({ names: ['example.net'] })).one, 'example.net');

@@ -2890,6 +2890,18 @@ describe('security & shell invariants', () => {
     }
     assert.doesNotMatch(css, /\.tab-badge-ok\s*[,{]/, 'an OK count reads as a plain one (the class stays as a hook)');
   });
+
+  test('DataTable card mode reaches the card table\'s own rows and cells only: a table in a row\'s details keeps its layout', async () => {
+    const css = await readFile(path.join(ROOT, 'assets/css/style.css'), 'utf8');
+    const start = css.indexOf('/* DataTable card mode');
+    const block = css.slice(start, css.indexOf('/* ---- Page template', start)).replace(/\/\*[\s\S]*?\*\//g, '');
+    const selectors = [...block.matchAll(/([^{}]+)\{[^{}]*\}/g)].map((m) => m[1].trim().replace(/\s+/g, ' '));
+    assert.ok(selectors.length >= 15, `${selectors.length} rules`);
+    // A descendant combinator before a table part would reach a nested table (IP Intel's Blocklists in a row's details).
+    const loose = selectors.filter((sel) => /[\w\])] (?:thead|tbody|tr|td|\.dt-table|\.dt-details-body)(?![\w-])/.test(sel));
+    assert.deepEqual(loose, []);
+    assert.ok(selectors.every((sel) => sel.includes('dt-cards')), 'every rule is a card rule');
+  });
 });
 
 describe('renewal-panel: the scan summary line about certificate sets', () => {

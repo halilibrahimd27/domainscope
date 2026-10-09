@@ -50,7 +50,7 @@ import { NaMark } from '../ui/source-status.js';
 import { startJob as trackJob, NotifyButton } from '../ui/jobs.js';
 import { EmptyState, MetricStrip, NextSteps, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput } from '../ui/template.js';
 import { inputCompact, optionsSummary, templateState } from '../lib/template.js';
-import { BULK_FOLDABLE, bulkLinkParams, bulkStatus, bulkSummaryFacts, exportColumns, exportObjects, handoffIps } from '../lib/netresults.js';
+import { BULK_FOLDABLE, bulkLinkParams, bulkLookupFailed, bulkStatus, bulkSummaryFacts, exportColumns, exportObjects, handoffIps } from '../lib/netresults.js';
 import { toCsv, toJson } from '../lib/export.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { permalinkParams } from '../ui/view-summaries.js';
@@ -106,7 +106,7 @@ registerStrings('en', {
   'bulk.opt.concurrency': 'Parallel queries: {n} (Settings)',
   'bulk.run': 'Resolve',
   'bulk.cancel': 'Cancel',
-  'bulk.privacy': 'Host names go to your DoH resolvers; with the options, reverse names too and public addresses to RIPEstat or ipwho.is. Your server list stays in this browser.',
+  'bulk.privacy': 'Host names go to your DoH resolvers; with the options on, public addresses go there (reverse DNS) and to RIPEstat or ipwho.is. Your server list stays in this browser.',
   'bulk.sum.ptr': 'reverse DNS',
   'bulk.sum.asn': 'network owners',
   'bulk.sum.noCache': 'no cache',
@@ -146,7 +146,7 @@ registerStrings('en', {
   'bulk.stat.direct': 'Direct IP',
   'bulk.stat.directHint': { zero: 'none on your servers', one: '{count} on your servers', other: '{count} on your servers' },
   'bulk.stat.unresolved': 'Not resolving',
-  'bulk.stat.unresolvedHint': { zero: 'no lookup errors', one: '{count} lookup error', other: '{count} lookup errors' },
+  'bulk.stat.failed': 'Lookup failed',
   'bulk.stat.ips': 'Unique IPs',
   'bulk.stat.ipsHint': '{v4} IPv4 · {v6} IPv6',
   'bulk.stat.servers': 'Your servers',
@@ -236,7 +236,7 @@ registerStrings('tr', {
   'bulk.opt.concurrency': 'Paralel sorgu: {n} (Ayarlar)',
   'bulk.run': 'Çözümle',
   'bulk.cancel': 'İptal et',
-  'bulk.privacy': 'Host adları DoH çözümleyicilerinize gider; seçeneklerle ters adlar da, genel adresler de RIPEstat’a ya da ipwho.is’e. Sunucu listeniz bu tarayıcıda kalır.',
+  'bulk.privacy': 'Host adları DoH çözümleyicilerinize gider; seçenekler açıksa genel adresler de oraya (ters DNS) ve RIPEstat’a ya da ipwho.is’e gider. Sunucu listeniz bu tarayıcıda kalır.',
   'bulk.sum.ptr': 'ters DNS',
   'bulk.sum.asn': 'ağ sahipleri',
   'bulk.sum.noCache': 'önbelleksiz',
@@ -276,7 +276,7 @@ registerStrings('tr', {
   'bulk.stat.direct': 'Doğrudan IP',
   'bulk.stat.directHint': { zero: 'hiçbiri sunucularınızda değil', one: '{count} tanesi sunucularınızda', other: '{count} tanesi sunucularınızda' },
   'bulk.stat.unresolved': 'Çözümlenmeyen',
-  'bulk.stat.unresolvedHint': { zero: 'sorgu hatası yok', one: '{count} sorgu hatası', other: '{count} sorgu hatası' },
+  'bulk.stat.failed': 'Sorgu başarısız',
   'bulk.stat.ips': 'Benzersiz IP',
   'bulk.stat.ipsHint': '{v4} IPv4 · {v6} IPv6',
   'bulk.stat.servers': 'Sunucularınız',
@@ -448,22 +448,22 @@ export function sanitizeBulkOptions(input) {
 }
 
 /**
- * Does a bulk row match a "Show" filter?
+ * Does a bulk row match a "Show" filter? "Not resolving" (no address, the DNS said so) and "lookup
+ * errors" never hold the same row.
  * @param {{ resolution: object, classification: object, servers: object[], ips: string[] }} row
  * @param {string} filter one of {@link BULK_FILTERS}
  * @returns {boolean}
  */
 export function bulkRowMatches(row, filter) {
   const c = row.classification || {};
-  const res = row.resolution || {};
   switch (filter) {
     case 'resolving': return row.ips.length > 0;
     case 'hidden': return !!c.hidesOrigin;
     case 'direct': return c.kind === 'direct' || c.kind === 'private';
     case 'mine': return row.servers.length > 0;
     case 'unknown': return (c.kind === 'direct') && row.servers.length === 0;
-    case 'unresolved': return row.ips.length === 0;
-    case 'errors': return res.status !== 'NOERROR' && res.status !== 'NXDOMAIN';
+    case 'unresolved': return row.ips.length === 0 && !bulkLookupFailed(row);
+    case 'errors': return bulkLookupFailed(row);
     case 'dangling': return !!c.dangling;
     default: return true;
   }
@@ -491,7 +491,9 @@ export function ipRowMatches(row, filter) {
  * @param {Map<string, object>|object[]} ipRows
  * @returns {{ total: number, resolved: number, hidden: number, cloudflare: number, direct: number, onServers: number,
  *   unresolved: number, errors: number, ips: number, v4: number, v6: number, servers: number, mine: number }}
- *   `mine`: the host names that point at one of your servers (the 'mine' filter)
+ *   `unresolved`: the names without an address whose lookup did not fail; `errors`: the lookups that
+ *   failed (never counted as not resolving); `mine`: the host names that point at one of your servers
+ *   (the 'mine' filter)
  */
 export function bulkStats(rows, ipRows) {
   const s = { total: 0, resolved: 0, hidden: 0, cloudflare: 0, direct: 0, onServers: 0, unresolved: 0, errors: 0, ips: 0, v4: 0, v6: 0, servers: 0, mine: 0 };
@@ -500,14 +502,14 @@ export function bulkStats(rows, ipRows) {
     s.total += 1;
     const c = r.classification || {};
     if (r.ips.length) s.resolved += 1;
-    else s.unresolved += 1;
+    else if (!bulkLookupFailed(r)) s.unresolved += 1;
     if (c.hidesOrigin) s.hidden += 1;
     if (c.kind === 'cloudflare') s.cloudflare += 1;
     if (c.kind === 'direct' || c.kind === 'private') {
       s.direct += 1;
       if (r.servers.length) s.onServers += 1;
     }
-    if (r.resolution.status !== 'NOERROR' && r.resolution.status !== 'NXDOMAIN') s.errors += 1;
+    if (bulkLookupFailed(r)) s.errors += 1;
     if (r.servers.length) s.mine += 1;
     for (const m of r.servers) servers.add(m.serverId);
   }
@@ -1576,10 +1578,8 @@ function buildJobUI(job, ctx, { onFinish }) {
       { id: 'names', label: t('bulk.stat.names'), value: s.total, hint: t('bulk.stat.namesHint', { count: formatNumber(s.resolved) }) },
       { id: 'hidden', label: t('bulk.stat.hidden'), value: s.hidden, hint: s.hidden ? t('bulk.stat.hiddenHint', { count: formatNumber(s.cloudflare) }) : null },
       { id: 'direct', label: t('bulk.stat.direct'), value: s.direct, hint: inv && s.direct ? t('bulk.stat.directHint', { count: s.onServers }) : null },
-      {
-        id: 'unresolved', label: t('bulk.stat.unresolved'), value: s.unresolved, severity: s.errors ? 'error' : s.unresolved ? 'warn' : null,
-        hint: s.unresolved ? t('bulk.stat.unresolvedHint', { count: s.errors }) : null
-      }
+      { id: 'unresolved', label: t('bulk.stat.unresolved'), value: s.unresolved, severity: s.unresolved ? 'warn' : null },
+      { id: 'failed', label: t('bulk.stat.failed'), value: s.errors, severity: s.errors ? 'error' : null }
     ], { foldable: done ? [...BULK_FOLDABLE] : [] });
     ipStats.update([
       { id: 'ips', label: t('bulk.stat.ips'), value: s.ips, hint: t('bulk.stat.ipsHint', { v4: formatNumber(s.v4), v6: formatNumber(s.v6) }) },

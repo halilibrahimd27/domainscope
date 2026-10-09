@@ -975,6 +975,20 @@ describe('bulk (Bulk Resolve)', () => {
     assert.match(md(S.bulkSummary(facts({ status: 'cancelled', done: 5 }), opts('tr'))), /^- İptal edildi: 8 host adından 5 tanesi çözümlendi$/m);
   });
 
+  test('from a job (lib/netresults.js bulkSummaryFacts): a name on a hosting platform or behind a load balancer is "other CDN / platform"', async () => {
+    const { bulkSummaryFacts } = await imp('assets/js/lib/netresults.js');
+    const row = (name, kind, ip, hidesOrigin = false) => ({ name, ips: [ip], servers: [], resolution: { status: 'NOERROR' }, classification: { kind, hidesOrigin } });
+    const rows = [row('docs.example.net', 'platform', '192.0.2.80'), row('lb.example.net', 'platform', '198.51.100.8', true), row('www.example.net', 'direct', '192.0.2.1')];
+    const ips = new Map(rows.map((r) => [r.ips[0], { ip: r.ips[0], version: 4, servers: [] }]));
+    const job = { names: rows.map((r) => r.name), status: 'done', done: 3, rows, ips, finishedAt: new Date('2026-10-09T15:47:00Z') };
+    assert.deepEqual(lines(md(S.bulkSummary(bulkSummaryFacts(job), opts()))).slice(0, 4), [
+      '**Bulk Resolve · 3 host names**',
+      '- 3 resolve',
+      '- 2 other CDN / platform · 1 direct IP',
+      '- 3 unique IP addresses'
+    ]);
+  });
+
   test('buildSummary dispatches it', () => {
     assert.equal(S.buildSummary('bulk', facts(), opts()).kind, 'bulk');
   });

@@ -114,11 +114,15 @@ export function ipRowMatches(row, filter) {
 /* Bulk Resolve                                                             */
 /* ------------------------------------------------------------------------ */
 
-/** Bulk Resolve's metric strip over the host names (views/bulk.js), in its order. */
-export const BULK_METRICS = Object.freeze(['names', 'hidden', 'direct', 'unresolved']);
+/**
+ * Bulk Resolve's metric strip over the host names (views/bulk.js), in its order: "not resolving"
+ * (the DNS answered: no such name, no address) and "lookup failed" (no answer to tell) never
+ * overlap, as in the status summary, the Show filters and Copy summary.
+ */
+export const BULK_METRICS = Object.freeze(['names', 'hidden', 'direct', 'unresolved', 'failed']);
 
 /** The host-name metrics whose zero folds once a job has ended (they grow while it runs). */
-export const BULK_FOLDABLE = Object.freeze(['hidden', 'direct', 'unresolved']);
+export const BULK_FOLDABLE = Object.freeze(['hidden', 'direct', 'unresolved', 'failed']);
 
 /** At most this many addresses go to IP Intel ("Use in IP Intel": views/ip.js MAX_IPS). */
 export const HANDOFF_MAX_IPS = 250;
@@ -129,10 +133,11 @@ export const BULK_LINK_MAX_NAMES = 40;
 /**
  * Bulk Resolve's status summary (docs/DESIGN.md §5.6: "· resolving ⓘ behind CDN · direct ⚠ not
  * resolving · your servers"), with the lookups that failed first (a resolver error is never a
- * silent "not resolving"). Each item's `filter` is the host table's "Show" filter it presses
- * (views/bulk.js BULK_FILTERS).
+ * silent "not resolving": the two never count the same name). Each item's `filter` is the host
+ * table's "Show" filter it presses (views/bulk.js BULK_FILTERS).
  * @param {{ resolved?: number, hidden?: number, direct?: number, unresolved?: number, errors?: number, mine?: number }} [stats]
- *   views/bulk.js bulkStats; `mine`: the host names that point at one of your servers
+ *   views/bulk.js bulkStats (`unresolved`: no address and no lookup error; `errors`: the lookups
+ *   that failed); `mine`: the host names that point at one of your servers
  * @param {{ inventory?: boolean }} [opts] `inventory`: the job matched a server list
  * @returns {Array<{ key: string, severity: string, count: number, filter: string }>}
  */
@@ -146,6 +151,18 @@ export function bulkStatus(stats, { inventory = false } = {}) {
     { key: 'direct', severity: 'neutral', count: n(s.direct), filter: 'direct' },
     { key: 'mine', severity: 'neutral', count: inventory ? n(s.mine) : 0, filter: 'mine' }
   ];
+}
+
+/**
+ * Did a Bulk Resolve row's lookup fail: a resolver error (SERVFAIL, a timeout …), no answer to tell
+ * whether the name resolves? Such a name is a failed lookup, never "not resolving": the status
+ * summary, the Show filters, the metrics and Copy summary all count it so (views/bulk.js).
+ * @param {{ resolution?: { status?: string }|null }} row views/bulk.js createJob's row
+ * @returns {boolean}
+ */
+export function bulkLookupFailed(row) {
+  const status = row && row.resolution ? row.resolution.status : null;
+  return status !== 'NOERROR' && status !== 'NXDOMAIN';
 }
 
 /**
@@ -173,7 +190,9 @@ export function handoffIps(ips) {
 /**
  * The facts of Bulk Resolve's Copy summary (lib/summary.js bulkSummary) of a finished or
  * cancelled job: what the result header and the tables show, never a server's name (how many
- * addresses are in the server list, as IP Intel says it).
+ * addresses are in the server list, as IP Intel says it). Each name that resolves is in one class:
+ * Cloudflare, another CDN or platform (any other provider, whether it hides the origin or not, as
+ * Subdomains counts them), or direct (private addresses among them).
  * @param {{ names: string[], status: string, done?: number, rows: object[], ips: Map<string, object>|object[], finishedAt?: Date|null }} job
  *   views/bulk.js createJob: `rows` (name, resolution.status, classification, ips, servers),
  *   `ips` (ip, version, servers)
@@ -184,7 +203,6 @@ export function bulkSummaryFacts(job, { inventory = false } = {}) {
   if (!job || job.status === 'running' || !Array.isArray(job.names)) return null;
   const rows = Array.isArray(job.rows) ? job.rows : [];
   const ipRows = job.ips instanceof Map ? [...job.ips.values()] : Array.isArray(job.ips) ? job.ips : [];
-  const failed = (r) => r.resolution && r.resolution.status !== 'NOERROR' && r.resolution.status !== 'NXDOMAIN';
   const resolving = rows.filter((r) => Array.isArray(r.ips) && r.ips.length);
   const kind = (r) => (r.classification ? r.classification.kind : null);
   const notResolving = rows.filter((r) => !(Array.isArray(r.ips) && r.ips.length));
@@ -196,11 +214,11 @@ export function bulkSummaryFacts(job, { inventory = false } = {}) {
     done: n(job.done ?? rows.length),
     resolved: resolving.length,
     cloudflare: rows.filter((r) => kind(r) === 'cloudflare').length,
-    cdn: rows.filter((r) => r.classification && r.classification.hidesOrigin && kind(r) !== 'cloudflare').length,
+    cdn: rows.filter((r) => kind(r) === 'cdn' || kind(r) === 'platform').length,
     direct: rows.filter((r) => kind(r) === 'direct' || kind(r) === 'private').length,
     private: rows.filter((r) => kind(r) === 'private').length,
-    notFound: notResolving.filter((r) => !failed(r)).map((r) => r.name),
-    failed: notResolving.filter(failed).map((r) => r.name),
+    notFound: notResolving.filter((r) => !bulkLookupFailed(r)).map((r) => r.name),
+    failed: notResolving.filter(bulkLookupFailed).map((r) => r.name),
     ips: ipRows.length,
     v4: ipRows.length - v6,
     v6,

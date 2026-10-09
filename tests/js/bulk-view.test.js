@@ -6,7 +6,10 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseBulkInput, createJob, runJob, ipCellNa, exportCell } from '../../assets/js/views/bulk.js';
+import { parseBulkInput, createJob, runJob, ipCellNa, exportCell, bulkStats, bulkRowMatches } from '../../assets/js/views/bulk.js';
+import { bulkStatus, bulkSummaryFacts } from '../../assets/js/lib/netresults.js';
+import { classifyResolution } from '../../assets/js/lib/netinfo.js';
+import { getLang, setLang, t } from '../../assets/js/i18n.js';
 
 const tick = () => new Promise((resolve) => { setTimeout(resolve, 0); });
 
@@ -156,5 +159,39 @@ describe('bulk view: job runner', () => {
     dns.calls.length = 0;
     await runJob(auto, { dns, index: null, concurrency: 2, fetchImpl });
     assert.deepEqual(dns.calls, [{ ip: '192.0.2.1', resolver: undefined }], 'no resolver chosen: the Settings chain');
+  });
+});
+
+describe('bulk view: what the page and Copy summary say', () => {
+  /** A row as the job keeps it, classified as views/bulk.js does. */
+  const row = (name, status, ips = []) => {
+    const resolution = { status, ipv4: ips, ipv6: [], cnames: [] };
+    return { name, ips, servers: [], resolution, classification: classifyResolution(resolution) };
+  };
+
+  test('"not resolving" and "lookup failed" never overlap: the status items, the Show filters, the metrics and Copy summary count a failed lookup once', () => {
+    const rows = [row('www.example.com', 'NOERROR', ['192.0.2.1']), row('missing.example.com', 'NXDOMAIN'), row('empty.example.com', 'NOERROR'), row('broken.example.com', 'SERVFAIL')];
+    const ips = new Map([['192.0.2.1', { ip: '192.0.2.1', version: 4, servers: [] }]]);
+    const s = bulkStats(rows, ips);
+    assert.deepEqual([s.total, s.resolved, s.unresolved, s.errors], [4, 1, 2, 1]);
+    const pick = (filter) => rows.filter((r) => bulkRowMatches(r, filter)).map((r) => r.name);
+    assert.deepEqual([pick('unresolved'), pick('errors')], [['missing.example.com', 'empty.example.com'], ['broken.example.com']], 'the Show filters');
+    const items = Object.fromEntries(bulkStatus(s).map((x) => [x.key, x.count]));
+    assert.deepEqual([items.unresolved, items.errors, items.resolving], [2, 1, 1], 'the status items');
+    const facts = bulkSummaryFacts({ names: rows.map((r) => r.name), status: 'done', rows, ips });
+    assert.deepEqual([facts.notFound, facts.failed], [['missing.example.com', 'empty.example.com'], ['broken.example.com']], 'Copy summary: the same split');
+  });
+
+  test('the privacy note says where each thing goes: host names to the DoH resolvers, public addresses there (reverse DNS) and to RIPEstat or ipwho.is; EN and TR', () => {
+    const prev = getLang();
+    try {
+      setLang('en');
+      assert.equal(t('bulk.privacy'), 'Host names go to your DoH resolvers; with the options on, public addresses go there (reverse DNS) and to RIPEstat or ipwho.is. Your server list stays in this browser.');
+      setLang('tr');
+      // The reverse lookups go to the resolvers, never to RIPEstat or ipwho.is.
+      assert.equal(t('bulk.privacy'), 'Host adları DoH çözümleyicilerinize gider; seçenekler açıksa genel adresler de oraya (ters DNS) ve RIPEstat’a ya da ipwho.is’e gider. Sunucu listeniz bu tarayıcıda kalır.');
+    } finally {
+      setLang(prev);
+    }
   });
 });

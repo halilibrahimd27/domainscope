@@ -337,6 +337,41 @@ export function checkState(check, latest, resolvers = CHECK_RESOLVERS) {
 }
 
 /**
+ * How bad each headline is: the status icon of the check page's result header (docs/DESIGN.md §6.2).
+ * `unknown` (still asking) has none: a spinner or nothing takes its place.
+ */
+export const CHECK_HEADLINE_SEVERITY = Object.freeze({
+  done: 'ok', 'done-partial': 'ok', wrong: 'error', pending: 'warn', 'no-answer': 'warn', unknown: null
+});
+
+/** The status summary's items of a check page, in their order (lib/template.js statusItems sorts them by severity). */
+export const CHECK_STATUS_KEYS = Object.freeze(['wrong', 'pending', 'done', 'noanswer', 'waiting']);
+
+/**
+ * The status summary of a check page (docs/DESIGN.md §5.4): its record sets by state — ✕ a wrong
+ * value somewhere, ⚠ not live everywhere yet, ✓ live on every resolver that answered, · no
+ * resolver answered, · still asking — and the key metric, the sets done of all.
+ * @param {ExpectedCheck} check
+ * @param {Map<string, PairResult>|Record<string, PairResult>} latest
+ * @param {string[]} [resolvers]
+ * @returns {{ items: Array<{ key: string, severity: string, count: number }>, done: number, total: number }}
+ */
+export function checkStatus(check, latest, resolvers = CHECK_RESOLVERS) {
+  const st = checkState(check, latest, resolvers);
+  const n = Object.fromEntries(CHECK_STATUS_KEYS.map((k) => [k, 0]));
+  for (const s of st.sets) {
+    if (s.state === 'unknown') n[s.counts.waiting ? 'waiting' : 'noanswer'] += 1;
+    else n[s.state] += 1;
+  }
+  const severity = { wrong: 'error', pending: 'warn', done: 'ok', noanswer: 'neutral', waiting: 'neutral' };
+  return {
+    items: CHECK_STATUS_KEYS.map((key) => ({ key, severity: severity[key], count: n[key] })),
+    done: n.done,
+    total: check.sets.length
+  };
+}
+
+/**
  * When to ask again, and which pairs: never sooner than the backoff of this round, and a pair only
  * once its resolver's cached copy can have expired (its TTL after it answered, at most
  * `maxTtlWait`). Stops when every pair is settled (`done`; a pair that failed three rounds in a row

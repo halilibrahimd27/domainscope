@@ -1,36 +1,58 @@
 /*
- * views/retire.css — "Retire an IP" view (.retire-*). The form (addresses | domains) with the
- * known host names and the discovery offer, then the results: the head card (verdict, Copy
- * summary, exports, progress, evidence chips), stat cards, the owners and one card per group
- * of the change list. Uses the design tokens from style.css only.
+ * views/retire.css — "Retire an IP" view (.retire-*) on the page template (style.css § 4, "Page
+ * template"): the input card (addresses | domains, the parsed counts, the known host names and the
+ * discovery offer), the result header's notes and next steps, the change list's group cards; and
+ * its sub-page, "Compare the old and the new server" (#/retire/compare, ui/origin-compare.js,
+ * .oc-*). Uses the design tokens from style.css only.
  */
 
-/* Form: the addresses next to the domains on wide screens, stacked on phones. */
-.retire-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
-  gap: 14px 24px;
-  align-items: start;
+.retire-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
 }
 
-@media (max-width: 760px) {
-  .retire-form {
-    grid-template-columns: minmax(0, 1fr);
+.retire-results-host:empty,
+.retire-prompt-slot[hidden] {
+  display: none;
+}
+
+/* ---- region 2: the form ------------------------------------------------------- */
+
+/* The addresses next to the domains on wide screens (the domains box as wide as its column, not the
+   template's narrow inline field), stacked on phones (the template's own rule). */
+@media (min-width: 720px) {
+  .retire-form-card .tool-input-fields {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
   }
+}
+
+.retire-form-card .tool-input-inline > .field {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
 }
 
 .retire-ips .textarea,
 .retire-domains .textarea {
   min-height: 84px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
+}
+
+/* Compact (a check ran): the address box is one line high and stays a box; the domains wait behind Edit. */
+.retire-form-card.is-compact:not(.is-editing) .retire-ips .textarea {
+  height: var(--field-h);
+  min-height: var(--field-h);
+  padding-block: 6px;
+  resize: none;
 }
 
 .retire-parsed {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 10px;
+  gap: var(--space-1) var(--space-3);
   color: var(--text-2);
 }
 
@@ -48,7 +70,7 @@
 /* Which host names each domain gets, and the discovery offer. */
 .retire-hosts-list {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
   margin: 0;
   padding-left: 18px;
   color: var(--text-2);
@@ -60,8 +82,8 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px 16px;
-  padding: 10px 12px;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3);
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius);
   background: var(--surface-2);
@@ -77,12 +99,12 @@
   vertical-align: -2px;
 }
 
-/* The button with its cost under it. The label may wrap (a long Turkish one on a phone): the
-   button grows in height rather than out of its box. */
+/* A button with its cost under it (the discovery offer, the passive lookup). The label may wrap (a
+   long Turkish one on a phone): the button grows in height rather than out of its box. */
 .retire-discover-go {
   display: grid;
   justify-items: start;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   max-width: 100%;
 }
@@ -90,7 +112,7 @@
 .retire-discover-go .btn {
   max-width: 100%;
   height: auto;
-  min-height: var(--btn-h);
+  min-height: var(--btn-h-sm);
   padding-block: 5px;
   line-height: 1.3;
   white-space: normal;
@@ -108,84 +130,40 @@
   }
 }
 
-.retire-actions {
+/* ---- region 4: the result header ------------------------------------------------ */
+
+/* What could not be checked, the stop and what is never covered: quiet lines with their icon. */
+.retire-note {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 16px;
-}
-
-.retire-privacy {
-  display: flex;
-  flex: 1 1 20rem;
-  align-items: flex-start;
-  gap: 6px;
-  min-width: 0;
-  margin: 0;
-}
-
-.retire-privacy .icon {
-  flex: none;
-  margin-top: 2px;
-}
-
-.retire-run {
-  margin-left: auto;
-}
-
-@media (max-width: 600px) {
-  .retire-run {
-    width: 100%;
-  }
-
-  .retire-run .btn {
-    flex: 1;
-  }
-}
-
-/* Results: the head card */
-.retire-head {
-  display: grid;
-  gap: 10px;
-}
-
-.retire-head-row {
-  display: flex;
-  flex-wrap: wrap;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 4px 12px;
-}
-
-.retire-head-title {
-  min-width: 0;
+  gap: var(--space-2);
   margin: 0;
-  font-size: 17px;
-  overflow-wrap: anywhere;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
 }
 
-.retire-tools {
-  flex-wrap: wrap;
+.retire-note > .icon {
+  flex: none;
+  transform: translateY(2px);
+  color: var(--text-3);
 }
 
-.retire-progress[hidden],
-.retire-status:empty {
-  display: none;
-}
-
-.retire-status {
-  margin: 0;
+.retire-note-warn > .icon {
+  color: var(--warn);
 }
 
 .retire-chips .src-chip-value {
   overflow-wrap: anywhere;
 }
 
-/* Under the chips: the passive lookup's button and its cost (.retire-discover-go), and a note
-   per address whose ip.thc.org list was cut off. */
-.retire-passive:empty {
-  display: none;
+/* The next steps: the passive lookup with its cost written under it, the comparison of the servers. */
+.retire-next {
+  align-items: flex-start;
+}
+
+.retire-passive-cost {
+  max-width: 34rem;
+  padding-left: var(--space-2);
 }
 
 .retire-passive-note {
@@ -197,25 +175,13 @@
   vertical-align: -2px;
 }
 
-.retire-stats {
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-}
-
-.retire-stats:empty {
-  display: none;
-}
-
-/* The servers of the list that own the addresses: one line in the head card. */
+/* The servers of the list that own the addresses: one line of the notes. */
 .retire-owners {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px 8px;
+  gap: var(--space-1) var(--space-2);
   color: var(--text-2);
-}
-
-.retire-owners:empty {
-  display: none;
 }
 
 .retire-owners > .icon {
@@ -224,14 +190,14 @@
 }
 
 .retire-owners-title {
-  font-weight: 650;
+  font-weight: var(--fw-semibold);
 }
 
 .retire-owner-list {
   display: flex;
   flex: 1 1 16rem;
   flex-wrap: wrap;
-  gap: 2px 14px;
+  gap: 2px var(--space-3);
   min-width: 0;
   margin: 0;
   padding: 0;
@@ -241,11 +207,31 @@
 
 .retire-owner-name {
   color: var(--text);
-  font-weight: 650;
+  font-weight: var(--fw-semibold);
 }
 
-/* The change list: one card per group. On a narrow card the count goes under the title
-   rather than squeezing it into a column. */
+/* A status item pressed: the change list shows the records it counts, and says so. */
+.retire-filter-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  color: var(--text-2);
+}
+
+.retire-filter-note[hidden] {
+  display: none;
+}
+
+.retire-job {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
+}
+
+/* ---- region 8: the change list, one card per group --------------------------- */
+
+/* On a narrow card the count goes under the title rather than squeezing it into a column. */
 .retire-group .card-head {
   flex-wrap: wrap;
 }
@@ -255,7 +241,7 @@
 }
 
 .retire-group .card-title .mono {
-  font-size: 14px;
+  font-size: var(--fs-md);
   overflow-wrap: anywhere;
 }
 
@@ -282,13 +268,13 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 6px;
+  gap: var(--space-1) 6px;
   min-width: 9rem;
 }
 
 .retire-name,
 .retire-value .mono {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   overflow-wrap: anywhere;
 }
 
@@ -318,7 +304,7 @@
 
 .retire-gone-list {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
   margin: 0;
   padding-left: 18px;
   overflow-wrap: anywhere;
@@ -340,8 +326,8 @@
   .retire-table .dt-table tbody tr {
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr);
-    gap: 6px 12px;
-    padding: 10px 12px;
+    gap: 6px var(--space-3);
+    padding: var(--space-2) var(--space-3);
     border-bottom: 1px solid var(--border);
   }
 
@@ -367,8 +353,8 @@
   .retire-table .dt-table td::before {
     content: attr(data-label);
     color: var(--text-3);
-    font-size: 12px;
-    font-weight: 600;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
   }
 
   .retire-table .dt-table tbody .dt-row:hover td {
@@ -393,49 +379,67 @@
   }
 }
 
-/* Compare the old and the new server (ui/origin-compare.js) */
+/* ---- #/retire/compare: the old and the new server (ui/origin-compare.js) --------- */
+
+.oc-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
+}
+
+.oc-results-host:empty {
+  display: none;
+}
+
 .oc-card p {
   margin: 0;
 }
 
-.oc-form {
+/* The addresses beside the host name hold an IPv6 address; the path and the port under them. */
+.oc-form .tool-input-inline > .field {
+  min-width: 11rem;
+  max-width: 16rem;
+}
+
+.oc-more {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.6fr);
-  gap: 10px 14px;
-  align-items: start;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-3);
+  max-width: 30rem;
 }
 
 .oc-issues {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   margin: 0;
   padding: 0;
   list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
   overflow-wrap: anywhere;
 }
 
-.oc-privacy {
+.oc-shared {
   display: flex;
-  align-items: flex-start;
-  gap: 4px;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--text-2);
 }
 
-.oc-privacy .icon {
+.oc-shared > .icon {
   flex: none;
-  margin-top: 2px;
+  transform: translateY(2px);
+  color: var(--warn);
 }
 
-.oc-actions {
-  align-items: center;
+.oc-measurements::before {
+  content: "· ";
 }
 
 /* a long label (Linux fonts, Turkish, a long host name) wraps inside the button on a phone instead of widening the page */
-.oc-actions .btn,
 .oc-remember .btn {
   max-width: 100%;
   height: auto;
-  min-height: 36px;
+  min-height: var(--btn-h-sm);
   white-space: normal;
   text-align: start;
 }
@@ -444,17 +448,18 @@
   overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  background: var(--surface);
 }
 
 .oc-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .oc-table th,
 .oc-table td {
-  padding: 7px 10px;
+  padding: 7px var(--space-2);
   border-top: 1px solid var(--border);
   text-align: start;
   vertical-align: top;
@@ -465,13 +470,13 @@
   border-top: 0;
   background: var(--surface-2);
   color: var(--text-2);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
 }
 
 .oc-table tbody th {
   width: 30%;
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 
 .oc-field-name {
@@ -484,7 +489,7 @@
   display: block;
   margin-top: 2px;
   color: var(--text-2);
-  font-weight: 400;
+  font-weight: var(--fw-regular);
 }
 
 .oc-sev-error > td.oc-new-differs,
@@ -500,13 +505,23 @@
   color: var(--text);
 }
 
-@media (max-width: 760px) {
-  .oc-form {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+.retire-compare-back {
+  margin: 0;
+}
+
+.retire-compare-back a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+@media (max-width: 719px) {
+  .oc-form .tool-input-inline > .field {
+    max-width: none;
   }
 
-  .oc-field-host {
-    grid-column: 1 / -1;
+  .oc-more {
+    max-width: none;
   }
 }
 
@@ -536,12 +551,12 @@
   .oc-table th,
   .oc-table td {
     border-top: 0;
-    padding: 4px 10px;
+    padding: var(--space-1) var(--space-2);
   }
 
   .oc-table tbody th {
     width: auto;
-    padding-top: 8px;
+    padding-top: var(--space-2);
   }
 
   .oc-table td::before {
@@ -549,30 +564,26 @@
     display: block;
     color: var(--text-3);
     font-family: var(--font-sans);
-    font-size: 11.5px;
-    font-weight: 600;
+    font-size: var(--fs-2xs);
+    font-weight: var(--fw-semibold);
   }
 
   .oc-table td:last-child {
-    padding-bottom: 8px;
+    padding-bottom: var(--space-2);
   }
 }
 
-/* Paper: the evidence and the change text read in full, rows never split. */
+/* Paper: the evidence and the change text read in full, rows never split; no offer or link. */
 @media print {
   .retire-table .dt-table tr {
     break-inside: avoid;
   }
 
-  .oc-form,
-  .oc-actions,
-  .oc-privacy {
-    display: none;
-  }
-
   .retire-discover,
-  .retire-passive-go,
-  .retire-actions {
+  .retire-next,
+  .retire-filter-note,
+  .retire-compare-back,
+  .retire-empty {
     display: none;
   }
 }

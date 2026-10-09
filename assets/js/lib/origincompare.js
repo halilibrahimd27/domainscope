@@ -29,6 +29,12 @@ export const COMPARE_FIELDS = Object.freeze(['reach', 'status', 'location', 'con
   'certSubject', 'certCovers', 'certTrusted', 'certIssuer', 'certExpires', 'certFingerprint']);
 /** What a comparison says overall (`oc.verdict.<v>`). */
 export const COMPARE_VERDICTS = Object.freeze(['same', 'differs', 'broken', 'incomplete', 'unreachable']);
+/**
+ * How bad each verdict is (the status icon of its result header, docs/DESIGN.md §6.2): the same
+ * answer is good news, a difference or no answer a warning, a new server that is not ready an
+ * error, an old server that did not answer leaves nothing to compare (info).
+ */
+export const COMPARE_SEVERITY = Object.freeze({ same: 'ok', differs: 'warn', broken: 'error', incomplete: 'info', unreachable: 'warn' });
 /** Notes a field row can carry (`oc.note.<n>`). */
 export const COMPARE_NOTES = Object.freeze(['new-unreachable', 'old-unreachable', 'both-unreachable', 'new-error-status', 'dynamic-body',
   'body-cut', 'hsts-lost', 'hsts-invalid', 'hsts-off', 'hsts-weaker', 'hsts-new', 'cert-name', 'cert-untrusted', 'cert-untrusted-other', 'cert-expiring', 'new-cert', 'same-cert']);

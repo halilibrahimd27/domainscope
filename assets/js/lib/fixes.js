@@ -1083,6 +1083,54 @@ export function requestSummaryFacts(req, { problems = null, templateName = null,
 }
 
 /**
+ * What a set's action counts as in a change request's result header (docs/DESIGN.md §5.6: added,
+ * changed, removed); an unread family edit (`set`, "add or change") is a change, an unchanged set
+ * none.
+ */
+export const CHANGE_STATUS_OF = Object.freeze({ add: 'added', replace: 'changed', ttl: 'changed', rewrite: 'changed', set: 'changed', delete: 'removed' });
+
+/** The sign a set's action is written with in the result title: + added, ~ changed, − removed. */
+export const CHANGE_SIGNS = Object.freeze({ added: '+', changed: '~', removed: '−' });
+
+/**
+ * The status summary of a change request (docs/DESIGN.md §5.4, §5.6: · added · changed · removed),
+ * after the errors and warnings shown with it — which a press brings into view. From
+ * {@link requestSummaryFacts}.
+ * @param {{ sets?: Array<{ action: string }>, errors?: number, warnings?: number }|null} facts
+ * @returns {Array<{ key: string, severity: string, count: number }>}
+ */
+export function changeStatus(facts) {
+  const n = { added: 0, changed: 0, removed: 0 };
+  for (const s of arr(facts && facts.sets)) {
+    const kind = s && CHANGE_STATUS_OF[s.action];
+    if (kind) n[kind] += 1;
+  }
+  const num = (v) => Math.max(0, Number(v) || 0);
+  return [
+    { key: 'error', severity: 'error', count: num(facts && facts.errors) },
+    { key: 'warn', severity: 'warn', count: num(facts && facts.warnings) },
+    { key: 'added', severity: 'neutral', count: n.added },
+    { key: 'changed', severity: 'neutral', count: n.changed },
+    { key: 'removed', severity: 'neutral', count: n.removed }
+  ];
+}
+
+/**
+ * The result title of a change request (docs/DESIGN.md §5.6: "What changes: + TXT
+ * _acme-challenge.example.com"): the first set that changes something, with its sign
+ * ({@link CHANGE_SIGNS}), and how many more change. A request that changes nothing has no set.
+ * @param {{ sets?: Array<{ name: string, type: string, family?: string|null, action: string }> }|null} facts
+ * @returns {{ set: { sign: string, kind: string, name: string, type: string, family: string|null }|null, more: number }}
+ */
+export function changeHeadline(facts) {
+  const changing = arr(facts && facts.sets).filter((s) => s && CHANGE_STATUS_OF[s.action]);
+  if (!changing.length) return { set: null, more: 0 };
+  const first = changing[0];
+  const kind = CHANGE_STATUS_OF[first.action];
+  return { set: { sign: CHANGE_SIGNS[kind], kind, name: first.name, type: first.type, family: first.family || null }, more: changing.length - 1 };
+}
+
+/**
  * The admin's instructions in one language (either, whatever the UI language): one numbered step
  * per set (add / replace / delete / change the TTL), the template's notes and, when given, the
  * check link.

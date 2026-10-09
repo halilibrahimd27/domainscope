@@ -21,6 +21,7 @@ import { Alert, Badge, Button, DataTable, announce, checkbox, select, setButtonB
 import { t, registerStrings, formatNumber, formatRegion, formatDate } from '../i18n.js';
 import { Flag } from './flag.js';
 import { registerRunning } from './jobs.js';
+import { PrivacyNote } from './template.js';
 import { gateProbes, noteQuota, sharedQuota, liveQuota, whenText, measurementUrl } from './globalping-gate.js';
 import {
   ISP_PURPOSE, ISP_PROBE_CHOICES, ISP_DEFAULT_PROBES, ISP_MAX_PICKS, parsePicks, planIspMeasurement, mapIspResults, pendingIspRows, longestTtl
@@ -183,8 +184,10 @@ export function ispLabel(row) {
  *   cells: { group: Function, answer: Function, status: Function, ad: Function, latency: Function, rowClass: Function,
  *   groupSort: Function, answerText: Function } }} host
  * @returns {{ refresh: () => void, setFilter: (fn: Function|null) => void, reset: () => void, label: (row: object) => string,
- *   staleAlert: (verdict: object, opts: object) => HTMLElement, note: (verdict: object, opts: object) => string|null,
- *   snapshot: () => object, teardown: () => void }}
+ *   staleSummary: (verdict: object, opts: object) => { title: string, body: string[], lines: string[] },
+ *   note: (verdict: object, opts: object) => string|null, snapshot: () => object, teardown: () => void }}
+ *   `staleSummary`: the words of the 'stale' state for the host's result header (its title and what it
+ *   rests on) and its findings list (one line per ISP answer that looks cached)
  */
 export function mountIspPanel(el, host, { restored = null } = {}) {
   const { ctx } = host;
@@ -270,10 +273,14 @@ export function mountIspPanel(el, host, { restored = null } = {}) {
   });
   const tableWrap = h('div', { class: 'glb-isp-table', hidden: true }, table.el || table);
 
+  // The tab's own run (docs/DESIGN.md §5.5: a panel that sends something has its run row and its
+  // privacy note): what Globalping and the ISPs' resolvers receive, next to Ask.
+  const privacyText = h('span', { class: 'glb-isp-privacy-text' });
   el.append(h('div', { class: 'stack glb-isp-panel', dataset: { role: 'isp-panel', shortcutScope: 'isp' } },
     h('p', { class: 'section-desc' }, t('isp.intro')),
     h('div', { class: 'glb-isp-form' }, probesField.el, placesField.el, h('div', { class: 'glb-buttons' }, runBtn, stopBtn)),
     eyeballField.el,
+    PrivacyNote({ text: privacyText, className: 'glb-isp-privacy' }),
     quotaEl,
     statusEl,
     tableWrap));
@@ -291,6 +298,7 @@ export function mountIspPanel(el, host, { restored = null } = {}) {
   function renderStatus() {
     clear(statusEl);
     const chk = host.check();
+    privacyText.textContent = t('isp.privacy', { name: chk ? chk.name : '—' });
     runBtn.hidden = running();
     stopBtn.hidden = !running();
     setButtonBusy(runBtn, P.status === 'gate');
@@ -498,22 +506,16 @@ export function mountIspPanel(el, host, { restored = null } = {}) {
      * The summary of the 'stale' state: what the public sources say, the ISP answers that look
      * cached, with the longest TTL each still has.
      */
-    staleAlert(verdict, { extra = '', shortList }) {
+    staleSummary(verdict, { shortList }) {
       const parts = staleParts(verdict.isp.stale, verdict, shortList);
       const count = verdict.isp.stale.reduce((n, s) => n + s.members.length, 0);
       const ref = ['agree', 'by-design', 'geo'].includes(verdict.isp.reference) ? t(`isp.sum.ref.${verdict.isp.reference}`) : null;
-      return Alert({
-        variant: 'warn',
-        icon: 'clock',
+      return {
         title: t('isp.sum.staleTitle', { count }),
-        message: [ref, t('isp.sum.staleWhy')].filter(Boolean).join(' '),
-        children: [
-          h('ul', { class: 'glb-findings' }, parts.map((p) => h('li', { class: 'glb-finding', dataset: { finding: 'isp-stale' } },
-            h('span', null, p.ttl === null ? t('isp.sum.lineNoTtl', p)
-              : t('isp.sum.line', { ...p, ttl: humanTtl(p.ttl), time: p.expiresAt ? clock(p.expiresAt) : '—' }))))),
-          extra ? h('div', { class: 'alert-message' }, extra) : null
-        ]
-      });
+        body: [ref, t('isp.sum.staleWhy')].filter(Boolean),
+        lines: parts.map((p) => (p.ttl === null ? t('isp.sum.lineNoTtl', p)
+          : t('isp.sum.line', { ...p, ttl: humanTtl(p.ttl), time: p.expiresAt ? clock(p.expiresAt) : '—' })))
+      };
     },
     /** A sentence for the other states: ISP-only answers that are GeoDNS or cached (unsure), or cached next to a fault. */
     note(verdict, { shortList }) {

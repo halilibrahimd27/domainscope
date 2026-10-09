@@ -3,7 +3,20 @@
  * The outputs are ui/fix-panel.js (views/fix.css, loaded with this view).
  */
 
-/* ---- form ------------------------------------------------------------------ */
+/* ---- the page ---------------------------------------------------------------- */
+
+.chg-view,
+.chg-result-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
+}
+
+.chg-result-wrap[hidden] {
+  display: none;
+}
+
+/* ---- region 2: the form (whole: the output is built as you type) ---------------- */
 
 .chg-template {
   max-width: 32rem;
@@ -17,7 +30,7 @@
 .chg-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px 16px;
+  gap: var(--space-3) var(--space-4);
   align-items: start;
 }
 
@@ -30,32 +43,26 @@
 }
 
 .chg-field .choice-inline .choice-list {
-  gap: 4px 14px;
+  gap: var(--space-1) var(--space-3);
 }
 
-.chg-form-foot {
+/* What the last read found, then Read (the run bar) at the end of the row. */
+.chg-run-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 10px 16px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2) var(--space-4);
 }
 
-.chg-privacy {
+.chg-run-row .chg-read-note {
   flex: 1 1 22rem;
-  margin: 0;
-  line-height: 1.5;
+  min-width: 0;
 }
 
-.chg-privacy .icon,
 .chg-read-note .icon,
-.chg-check-privacy .icon {
+.chg-head-note .icon {
   vertical-align: -2px;
-}
-
-.chg-buttons {
-  display: flex;
-  gap: 8px;
 }
 
 .chg-read-note:empty {
@@ -67,54 +74,70 @@
   line-height: 1.5;
 }
 
+/* ---- region 4: the change's result header ---------------------------------------- */
+
+.chg-sign {
+  font-family: var(--font-mono);
+  font-weight: var(--fw-bold);
+}
+
+.chg-head-more {
+  color: var(--text-2);
+  font-weight: var(--fw-regular);
+}
+
+.chg-head-note {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+
 .chg-problems:empty,
 .chg-outputs:empty {
   display: none;
 }
 
-/* The result's Copy summary, above what the change writes. */
-.chg-result-actions {
-  justify-content: flex-end;
-  margin-bottom: 12px;
-}
-
 .chg-problems {
   display: grid;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 .chg-problems-card {
-  padding: 14px 16px;
+  padding: var(--card-pad);
+}
+
+.chg-problems-card:focus {
+  outline: none;
+}
+
+.chg-problems-card:focus-visible {
+  outline: var(--focus-w) solid var(--focus);
+  outline-offset: var(--focus-offset);
 }
 
 .chg-problems-card .section-title {
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
 }
 
 .chg-blocked {
   margin: 0;
 }
 
-/* ---- check page ------------------------------------------------------------------- */
+/* ---- check page: its result header and the record sets ----------------------------- */
 
-.chg-hero {
-  display: grid;
-  gap: 10px;
-  padding: 16px 18px;
+/* The notes row only while there is a stop to say or a watch line to show. */
+.chg-hero .result-notes:not(:has(.chg-stopped, .chg-cut-strip:not([hidden]))) {
+  display: none;
 }
 
-.chg-hero-top {
+.chg-hero .result-next {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px 12px;
-}
-
-.chg-hero-title {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 650;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
 }
 
 .chg-zone {
@@ -123,8 +146,29 @@
 }
 
 .chg-check-meta,
-.chg-stopped {
+.chg-stopped,
+.chg-own {
   margin: 0;
+}
+
+.chg-stopped {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.chg-stopped > .icon {
+  flex: none;
+  transform: translateY(2px);
+}
+
+.chg-set:focus {
+  outline: none;
+}
+
+.chg-set:focus-visible {
+  outline: var(--focus-w) solid var(--focus);
+  outline-offset: var(--focus-offset);
 }
 
 .chg-set {
@@ -233,30 +277,15 @@
   word-break: break-all;
 }
 
-.chg-check-privacy {
-  margin: 0;
-  line-height: 1.5;
-}
-
 @media (max-width: 600px) {
   .chg-fields,
   .chg-set-values {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .chg-buttons {
-    flex: 1 1 100%;
-  }
-
-  .chg-buttons .btn {
-    flex: 1;
-    justify-content: center;
-  }
-
-  .chg-hero,
   .chg-set,
   .chg-problems-card {
-    padding: 12px;
+    padding: var(--space-3);
   }
 
   .chg-res {

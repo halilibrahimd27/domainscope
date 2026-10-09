@@ -6,34 +6,28 @@
  * and .glb-gblk (blocked). Letter circles use white text on the solid colour (all ≥ 4.5:1).
  */
 
-/* ---- form ------------------------------------------------------------------ */
+/* ---- regions: the input card, the result header, the expected value, the tabs ------------- */
 
-.glb-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 10.5rem auto;
-  gap: 12px;
-  align-items: end;
+.glb-view,
+.glb-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
 }
 
-.glb-form .field {
-  min-width: 0;
+.glb-results[hidden] {
+  display: none;
+}
+
+/* The record type beside the name box is a short select. */
+.glb-form .tool-input-inline > .field {
+  min-width: 8rem;
+  max-width: 10.5rem;
 }
 
 .glb-buttons {
   display: flex;
-  gap: 8px;
-}
-
-.glb-form-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 20px;
-}
-
-.glb-examples .link-btn {
-  font-size: 12.5px;
+  gap: var(--space-2);
 }
 
 .glb-how-list {
@@ -57,14 +51,13 @@
   min-width: 0;
 }
 
-@media (max-width: 700px) {
-  .glb-form,
-  .glb-expect {
-    grid-template-columns: minmax(0, 1fr);
+@media (max-width: 719px) {
+  .glb-form .tool-input-inline > .field {
+    max-width: none;
   }
 
-  .glb-buttons .btn {
-    width: 100%;
+  .glb-expect {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -176,9 +169,6 @@
   margin-right: 6px;
 }
 
-.glb-empty {
-  padding: 8px 0;
-}
 
 /* ---- group colours ----------------------------------------------------------- */
 
@@ -588,13 +578,56 @@
   max-width: 22rem;
 }
 
-/* ---- summary ------------------------------------------------------------------ */
+/* ---- the result header and the Answer groups tab -------------------------------------- */
 
-/* Verdict findings: which groups look like propagation or a misconfiguration, and why. */
+/* What the verdict rests on, then the rest worth saying (failed queries, blocked answers …). */
+.glb-verdict-body,
+.glb-verdict-extra {
+  margin: 0;
+  max-width: 100ch;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
+  overflow-wrap: anywhere;
+}
+
+.glb-verdict-extra {
+  color: var(--text-2);
+}
+
+.glb-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
+}
+
+/* Region 6: the figures, flat on their own surface. */
+.glb-stats {
+  padding: var(--space-2) var(--card-pad);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+/* Region 7: why the answers differ — one card, one row per finding (icon, group marks, text). */
+.glb-findings-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--card-pad);
+}
+
+.glb-findings-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
 .glb-findings {
   display: grid;
-  gap: 6px;
-  margin: 6px 0 0;
+  gap: var(--space-2);
+  align-self: stretch;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
@@ -602,9 +635,31 @@
 .glb-finding {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
   overflow-wrap: anywhere;
+}
+
+.glb-finding:focus {
+  outline: none;
+}
+
+.glb-finding:focus-visible {
+  outline: var(--focus-w) solid var(--focus);
+  outline-offset: var(--focus-offset);
+}
+
+.glb-finding-icon {
+  display: inline-flex;
+  flex: none;
+  height: var(--lh-sm);
+  align-items: center;
+}
+
+.glb-finding-text {
+  min-width: 0;
 }
 
 .glb-finding-marks {
@@ -616,42 +671,17 @@
 .glb-finding .glb-mark {
   min-width: 20px;
   height: 20px;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 
 .glb-finding-more {
   align-self: center;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   white-space: nowrap;
 }
 
-.glb-stats {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-@media (max-width: 760px) {
-  .glb-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-.glb-links a {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-/* "More about this name" links, then Copy summary at the end of the row */
-.glb-results-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 16px;
-}
-
-.glb-progress[hidden] {
+.glb-filter-note[hidden] {
   display: none;
 }
 
@@ -700,17 +730,23 @@
   }
 }
 
-/* Print (style.css hides the shell and every control): leave out the form, the empty state and the links to other tools. */
+/* Print (style.css hides the shell, every control and the template's input, actions and links):
+   every tab's panel on paper, without the tab row; no empty state or ISP form. */
 @media print {
-  .glb-form-card,
   .glb-empty,
-  .glb-links,
   .glb-isp-form,
   .glb-isp-quota,
   .glb-exp-actions,
   .glb-exp-flush,
-  .glb-exp-soa .btn {
+  .glb-exp-soa .btn,
+  .glb-tabs .tablist-scroll,
+  .glb-tabs .tablist-more,
+  .glb-filter-note {
     display: none;
+  }
+
+  .glb-tabs .tabpanel[hidden] {
+    display: block !important;
   }
 
   /* Addresses and host names stay whole on paper (answers and the address table). */

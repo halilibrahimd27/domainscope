@@ -29,24 +29,39 @@
  * change request" of Domain Health and Zone File); a carried target fills the domain
  * (`domain=…&run=0`). The form and a check's answers are kept for the page session (module
  * state), and forgotten on "Delete all local data" and a workspace switch.
+ *
+ * The page template (ui/template.js, docs/DESIGN.md §5.5, Editor): the form is the input card, whole
+ * (the output is built as you type), with "Read the current records" as its run bar; the change's
+ * result header `.chg-result` — "What changes: + TXT _acme-challenge.example.com", the zone and the
+ * template, the errors and warnings and the sets added, changed and removed (lib/fixes.js
+ * changeStatus), Copy summary and Copy link (the check page), the next step "Check propagation
+ * (Global DNS)" —, the problems and the outputs. The check page's result header `.chg-hero`: the
+ * headline as its title, the sets live as its key metric (lib/changecheck.js checkStatus), Copy
+ * summary and Copy link, its run row (Check now / Stop / Check again, Watch until live) with what
+ * it sends.
  */
 
-import { h, clear, debounce } from '../ui/dom.js';
+import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, EmptyState, Icon, announce, checkbox, checkboxGroup, describeError, select, setButtonBusy,
-  textInput, textarea
+  Alert, Badge, Button, Icon, announce, checkbox, checkboxGroup, describeError, select, textInput, textarea
 } from '../ui/components.js';
 import { registerStrings, hasString, localeTag, formatDateTime, formatDuration, formatNumber } from '../i18n.js';
 import { state as stateSingleton } from '../state.js';
 import {
+  EmptyState, NextSteps, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput
+} from '../ui/template.js';
+import {
   CHANGE_TEMPLATES, FIX_FIELDS, FIX_CAS, TEMPLATE_IDS, TXT_FAMILIES, buildChange, changeTemplate, templateInput, validateChange, hasErrors,
-  readCurrent, countSpfLookups, valueText, requestSummaryFacts
+  readCurrent, countSpfLookups, valueText, requestSummaryFacts, changeStatus, changeHeadline
 } from '../lib/fixes.js';
-import { CHECK_RESOLVERS, CHECK_LIMITS, decodeCheck, linkQuery, checkRound, checkState, nextCheck, pairKey, checkFromRequest, encodeCheck } from '../lib/changecheck.js';
+import {
+  CHECK_RESOLVERS, CHECK_LIMITS, CHECK_HEADLINE_SEVERITY, decodeCheck, linkQuery, checkRound, checkState, checkStatus, nextCheck, pairKey,
+  checkFromRequest, encodeCheck
+} from '../lib/changecheck.js';
 import { normalizeHostname, registrableDomain } from '../lib/domain.js';
 import { getResolver } from '../lib/resolvers.js';
 import { isFillOnly } from '../lib/session.js';
-import { onceAsync } from '../lib/util.js';
+import { mergeSignals, onceAsync } from '../lib/util.js';
 import { ChangeOutputs, ProblemList, builderParams, checkUrl } from '../ui/fix-panel.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { registerRunning } from '../ui/jobs.js';
@@ -62,9 +77,11 @@ export const titleKey = 'nav.change';
 /** Icon name (ui/components.js Icon). */
 export const icon = 'edit';
 
+/** The record types Global DNS asks for that a change can hold: its next step "Check propagation" names the first such set. */
+const GLOBAL_CHECK_TYPES = Object.freeze(['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'CAA']);
+
 registerStrings('en', {
   'chg.template': 'Template',
-  'chg.form': 'The change',
   'chg.read': 'Read the current records',
   'chg.readAgain': 'Read again',
   'chg.privacy': 'Nothing is sent while you fill in the form. “Read the current records” sends only the names and record types of the change to your DNS-over-HTTPS resolvers.',
@@ -77,9 +94,28 @@ registerStrings('en', {
   'chg.spfStale': 'The SPF record changed after its lookups were counted: read again to count them.',
   'chg.problems': 'Before you send it',
   'chg.blocked': 'Fix the errors above: the change is written out once it has none.',
-  'chg.emptyTitle': 'A DNS change, written once for everyone',
-  'chg.emptyBody': 'Fill in the form: the instructions for the DNS admin, the code for BIND, Route 53, Cloudflare, octoDNS and Terraform, and a link that shows when the change is live appear here.',
+  'chg.emptyLine': 'Fill in the form: the instructions for the DNS admin, the change as BIND, Route 53, the Cloudflare API, octoDNS and Terraform, and a link that shows when it is live appear here.',
+  'chg.result.lead': 'What changes:',
+  'chg.result.more': 'and {count} more',
+  'chg.result.none': 'Nothing changes: the records are already like this',
+  'chg.kind.added': 'added',
+  'chg.kind.changed': 'changed',
+  'chg.kind.removed': 'removed',
+  'chg.count.error': { one: '{count} error', other: '{count} errors' },
+  'chg.count.warn': { one: '{count} warning', other: '{count} warnings' },
+  'chg.count.added': '{count} added',
+  'chg.count.changed': '{count} changed',
+  'chg.count.removed': '{count} removed',
+  'chg.next.global': 'Check propagation (Global DNS)',
+  'chg.next.globalTitle': 'Ask 12 public resolvers and 30+ locations for {name} {type}',
   'chg.check.title': 'Is the change live?',
+  'chg.check.purpose': 'Four public resolvers, asked again until every record set is live.',
+  'chg.check.keyTitle': '{done} of {count} record sets live everywhere',
+  'chg.check.count.wrong': { one: '{count} record set has a wrong value', other: '{count} record sets have a wrong value' },
+  'chg.check.count.pending': { one: '{count} record set not live everywhere yet', other: '{count} record sets not live everywhere yet' },
+  'chg.check.count.done': { one: '{count} record set live everywhere', other: '{count} record sets live everywhere' },
+  'chg.check.count.noanswer': { one: '{count} record set with no answer', other: '{count} record sets with no answer' },
+  'chg.check.count.waiting': { one: '{count} record set being asked', other: '{count} record sets being asked' },
   'chg.check.zone': 'Zone {zone}',
   'chg.check.head.done': 'Done: every resolver sees the change.',
   'chg.check.head.done-partial': { one: 'Done on every resolver that answered; {count} resolver did not answer.', other: 'Done on every resolver that answered; {count} resolvers did not answer.' },
@@ -98,7 +134,6 @@ registerStrings('en', {
   'chg.check.stop': 'Stop',
   'chg.switchRunning': 'The DNS change request’s “is it live?” check',
   'chg.check.again': 'Check again',
-  'chg.check.copy': 'Copy link',
   'chg.check.mode.is': 'must be exactly',
   'chg.check.mode.has': 'must include',
   'chg.check.mode.none': 'must be gone',
@@ -139,7 +174,6 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'chg.template': 'Şablon',
-  'chg.form': 'Değişiklik',
   'chg.read': 'Mevcut kayıtları oku',
   'chg.readAgain': 'Yeniden oku',
   'chg.privacy': 'Formu doldururken hiçbir şey gönderilmez. “Mevcut kayıtları oku” yalnızca değişikliğin adlarını ve kayıt türlerini DNS-over-HTTPS çözümleyicilerinize gönderir.',
@@ -152,9 +186,28 @@ registerStrings('tr', {
   'chg.spfStale': 'SPF kaydı, sorguları sayıldıktan sonra değişti: saymak için yeniden okuyun.',
   'chg.problems': 'Göndermeden önce',
   'chg.blocked': 'Yukarıdaki hataları düzeltin: hata kalmayınca değişiklik yazılır.',
-  'chg.emptyTitle': 'Bir DNS değişikliği, herkes için bir kez yazılır',
-  'chg.emptyBody': 'Formu doldurun: DNS yöneticisi için talimatlar, BIND, Route 53, Cloudflare, octoDNS ve Terraform kodu ve değişikliğin ne zaman yayında olduğunu gösteren bir bağlantı burada belirir.',
+  'chg.emptyLine': 'Formu doldurun: DNS yöneticisi için talimatlar, değişikliğin BIND, Route 53, Cloudflare API, octoDNS ve Terraform hâli ve ne zaman yayında olduğunu gösteren bir bağlantı burada belirir.',
+  'chg.result.lead': 'Ne değişiyor:',
+  'chg.result.more': 've {count} tane daha',
+  'chg.result.none': 'Hiçbir şey değişmiyor: kayıtlar zaten böyle',
+  'chg.kind.added': 'eklenecek',
+  'chg.kind.changed': 'değişecek',
+  'chg.kind.removed': 'silinecek',
+  'chg.count.error': '{count} hata',
+  'chg.count.warn': '{count} uyarı',
+  'chg.count.added': '{count} eklenecek',
+  'chg.count.changed': '{count} değişecek',
+  'chg.count.removed': '{count} silinecek',
+  'chg.next.global': 'Yayılmayı kontrol et (Global DNS)',
+  'chg.next.globalTitle': '12 genel çözümleyiciye ve 30’dan fazla konuma {name} {type} sorulur',
   'chg.check.title': 'Değişiklik yayında mı?',
+  'chg.check.purpose': 'Dört genel çözümleyiciye, her kayıt kümesi yayında olana kadar yeniden sorulur.',
+  'chg.check.keyTitle': '{count} kayıt kümesinden {done} tanesi her yerde yayında',
+  'chg.check.count.wrong': '{count} kayıt kümesinde yanlış değer var',
+  'chg.check.count.pending': '{count} kayıt kümesi henüz her yerde yayında değil',
+  'chg.check.count.done': '{count} kayıt kümesi her yerde yayında',
+  'chg.check.count.noanswer': '{count} kayıt kümesine yanıt yok',
+  'chg.check.count.waiting': '{count} kayıt kümesi soruluyor',
   'chg.check.zone': 'Zone {zone}',
   'chg.check.head.done': 'Tamam: tüm çözümleyiciler değişikliği görüyor.',
   'chg.check.head.done-partial': 'Yanıt veren tüm çözümleyicilerde tamam; {count} çözümleyici yanıt vermedi.',
@@ -173,7 +226,6 @@ registerStrings('tr', {
   'chg.check.stop': 'Durdur',
   'chg.switchRunning': 'DNS değişiklik talebinin “yayında mı?” kontrolü',
   'chg.check.again': 'Yeniden kontrol et',
-  'chg.check.copy': 'Bağlantıyı kopyala',
   'chg.check.mode.is': 'tam olarak bu olmalı',
   'chg.check.mode.has': 'bunları içermeli',
   'chg.check.mode.none': 'kalkmış olmalı',
@@ -350,23 +402,48 @@ function mountBuilder(container, ctx) {
   tplSelect.input.dataset.role = 'change-template';
   const tplDesc = h('p', { class: 'muted text-sm chg-template-desc' });
   const fieldsEl = h('div', { class: 'chg-fields' });
-  // The form's one action: Ctrl/Cmd+Enter reads the current records (nothing else is ever sent).
-  const readBtn = Button({ label: t('chg.read'), icon: 'search', dataset: { action: 'change-read', shortcut: 'submit' }, onClick: () => readNow() });
-  const readNote = h('div', { class: 'chg-read-note text-sm', attrs: { 'aria-live': 'polite' } });
-  const formCard = Card({
-    className: 'chg-form-card',
-    children: h('div', { class: 'stack' },
-      h('div', { class: 'stack-sm' }, tplSelect.el, tplDesc),
-      fieldsEl,
-      h('div', { class: 'chg-form-foot' },
-        h('p', { class: 'muted text-sm chg-privacy' }, Icon('lock', { size: 14 }), ' ', t('chg.privacy')),
-        h('div', { class: 'chg-buttons' }, readBtn)),
-      readNote)
+  // The editor's run bar (DESIGN §5.5, Editor): "Read the current records" — the one thing the form
+  // sends — with Ctrl/Cmd+Enter; the outputs are built as you type. It is the primary button while
+  // the change still needs a read, and steps back once the outputs stand without one.
+  const runBar = RunBar({
+    label: t('chg.read'),
+    icon: 'search',
+    dataset: { action: 'change-read', shortcut: 'submit' },
+    stopDataset: { action: 'change-read-stop', shortcut: 'cancel' },
+    onRun: () => readNow(),
+    onStop: () => { if (reading) reading.abort(); },
+    className: 'chg-run'
   });
+  const readNote = h('div', { class: 'chg-read-note text-sm', attrs: { 'aria-live': 'polite' } });
+  // Region 2: one card — the template and what it does, its fields, what was read and Read, what is
+  // sent. An editor's form stays whole: it is the input of a result built live.
+  const input = ToolInput({
+    className: 'chg-form-card',
+    fieldsClass: 'chg-form-head',
+    label: t('nav.change'),
+    primary: h('div', { class: 'stack-sm chg-template-wrap' }, tplSelect.el, tplDesc),
+    more: [fieldsEl, h('div', { class: 'chg-run-row' }, readNote, runBar.el)],
+    privacy: PrivacyNote({ text: t('chg.privacy'), className: 'chg-privacy' })
+  });
+  // Region 4: the change's result header; region 7: its problems; region 8: its outputs (the tabs).
+  const head = ResultHeader({ className: 'chg-result' });
+  /** The result header's actions (Copy summary, Copy link: the check page), drawn per change. */
+  let actions = null;
   const problemsEl = h('div', { class: 'chg-problems' });
   // A form of its own for the shell's Ctrl/Cmd+Enter: nothing in the outputs reads the records.
   const outputsEl = h('div', { class: 'chg-outputs', dataset: { shortcutScope: 'results' } });
-  container.append(h('div', { class: 'stack-lg chg-view', dataset: { page: 'builder' } }, formCard, problemsEl, outputsEl));
+  const emptyEl = h('div', { class: 'chg-empty' }, EmptyState({
+    icon: 'edit',
+    message: t('chg.emptyLine'),
+    checks: [t('fixp.admin'), 'BIND', 'Route 53', 'Cloudflare API', 'octoDNS', 'Terraform']
+  }));
+  const resultEl = h('div', { class: 'chg-result-wrap', hidden: true }, head.el, problemsEl, outputsEl);
+  container.append(h('div', { class: 'chg-view', dataset: { page: 'builder' } }, input.el, emptyEl, resultEl, runBar.float));
+  ctx.onCleanup(() => {
+    runBar.dispose();
+    if (actions) actions.dispose();
+    if (reading) reading.abort();
+  });
 
   /** The widgets of the fields on screen: id → { el, get() }. */
   let widgets = {};
@@ -472,6 +549,23 @@ function mountBuilder(container, ctx) {
     return draft.read && draft.read.zone === zone && draft.read.template === draft.template ? draft.read : null;
   }
 
+  /** "What changes: + TXT _acme-challenge.example.com and 2 more" (lib/fixes.js changeHeadline). */
+  function headTitle(facts) {
+    const { set, more } = changeHeadline(facts);
+    if (!set) return ResultTitle({ severity: 'ok', text: t('chg.result.none') });
+    return ResultTitle({
+      icon: 'edit',
+      text: [
+        h('span', { class: 'chg-head-lead' }, t('chg.result.lead')), ' ',
+        h('span', { class: 'chg-sign', dataset: { kind: set.kind }, attrs: { 'aria-hidden': 'true' } }, set.sign),
+        h('span', { class: 'sr-only' }, t(`chg.kind.${set.kind}`)), ' ',
+        h('span', { class: 'chg-head-type' }, set.family ? `${set.type} · ${set.family}` : set.type), ' ',
+        h('span', { class: 'result-subject mono' }, set.name),
+        more ? h('span', { class: 'chg-head-more' }, ` ${t('chg.result.more', { count: more })}`) : null
+      ]
+    });
+  }
+
   function rebuild() {
     const form = formOf(draft.template);
     const first = buildChange(draft.template, form, {});
@@ -485,37 +579,82 @@ function mountBuilder(container, ctx) {
     clear(outputsEl);
     const tpl = changeTemplate(draft.template);
     const unread = tpl.needsCurrent && !read && first.zone;
-    if (unread) problemsEl.append(Alert({ variant: 'info', compact: true, message: t('chg.needsRead') }));
     const shown = problems.filter((p) => !(unread && p.key === 'fix.p.read-first'));
     const started = !first.problems.some((p) => p.key === 'fix.p.domain-missing' || p.key === 'fix.p.name-missing');
-    if (!started) {
-      outputsEl.append(h('div', { class: 'card chg-empty' }, EmptyState({ icon: 'edit', title: t('chg.emptyTitle'), message: t('chg.emptyBody') })));
-      return;
-    }
+    emptyEl.hidden = started;
+    resultEl.hidden = !started;
+    // While the change needs a read, Read leads; once its outputs stand, it steps back.
+    runBar.setPrimary(!started || !!unread || hasErrors({ problems }));
+    if (!started) return;
+    const built = req;
+    const facts = requestSummaryFacts(built, { problems: shown, templateName: t(`fix.tpl.${built.template}`), at: new Date() });
+    const blocked = hasErrors({ problems });
+    head.setState('done');
+    head.el.dataset.blocked = String(blocked);
+    head.set('title', headTitle(facts));
+    head.set('meta', [
+      h('span', { class: 'chg-head-zone' }, t('chg.check.zone', { zone: built.zone || '—' })),
+      h('span', { class: 'chg-head-template' }, t(`fix.tpl.${built.template}`))
+    ]);
+    head.set('notes', unread ? h('p', { class: 'chg-head-note', dataset: { role: 'needs-read' } }, Icon('info', { size: 14 }), h('span', null, t('chg.needsRead'))) : null);
+    // The counts: a press of the errors or the warnings brings the problems into view.
+    head.set('status', StatusSummary({
+      items: changeStatus(facts).map((item) => ({
+        ...item,
+        text: t(`chg.count.${item.key}`, { count: item.count }),
+        onPress: item.key === 'error' || item.key === 'warn' ? () => focusProblems() : null
+      }))
+    }).el);
     if (shown.length) {
       problemsEl.append(h('section', { class: 'card chg-problems-card', dataset: { problems: shown.length } },
-        h('h2', { class: 'section-title' }, t('chg.problems')), ProblemList(shown)));
+        h('h3', { class: 'section-title' }, t('chg.problems')), ProblemList(shown)));
     }
-    if (hasErrors({ problems })) {
+    if (actions) actions.dispose();
+    actions = null;
+    if (blocked) {
+      head.set('actions', null);
+      head.set('next', null);
       outputsEl.append(h('p', { class: 'muted text-sm chg-blocked' }, t('chg.blocked')));
       return;
     }
     // Copy summary for the ticket: the template, each set and what is done to it, the problems; the
-    // change's check link as its URL (lib/summary.js changeSummary), never the form's.
-    const built = req;
+    // change's check link as its URL (lib/summary.js changeSummary), never the form's. Copy link
+    // shares that check page too.
     const link = encodeCheck(checkFromRequest(built));
-    const summary = SummaryButton({
-      kind: 'change',
-      facts: () => requestSummaryFacts(built, { problems: shown, templateName: t(`fix.tpl.${built.template}`), at: new Date() }),
-      url: () => (link.ok ? checkUrl(link.query) : null)
+    const checkLink = () => (link.ok ? checkUrl(link.query) : null);
+    actions = ResultActions({
+      summary: SummaryButton({
+        kind: 'change',
+        plainLabel: t('result.plainTitle'),
+        facts: () => requestSummaryFacts(built, { problems: shown, templateName: t(`fix.tpl.${built.template}`), at: new Date() }),
+        url: checkLink
+      }),
+      link: link.ok ? checkLink : null,
+      className: 'chg-result-actions'
     });
-    outputsEl.append(h('div', { class: 'cluster chg-result-actions' }, summary.el),
-      ChangeOutputs(req, { fileStem: `dns-change-${req.zone}`, choice: draft.choice }));
+    head.set('actions', actions.el);
+    const firstSet = built.rrsets.find((r) => GLOBAL_CHECK_TYPES.includes(r.type));
+    head.set('next', firstSet ? NextSteps({
+      steps: [{
+        label: t('chg.next.global'), icon: 'globe', title: t('chg.next.globalTitle', { name: firstSet.name, type: firstSet.type }),
+        href: ctx.href('global', { name: firstSet.name, type: firstSet.type }), dataset: { role: 'change-global' }
+      }]
+    }) : null);
+    outputsEl.append(ChangeOutputs(req, { fileStem: `dns-change-${req.zone}`, choice: draft.choice }));
+  }
+
+  /** The status summary's errors and warnings: the problems card in view, the keyboard on it. */
+  function focusProblems() {
+    const card = problemsEl.querySelector('.chg-problems-card');
+    if (!card) return;
+    card.setAttribute('tabindex', '-1');
+    card.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+    card.focus({ preventScroll: true });
   }
 
   function renderReadNote(read, spfStale = false) {
     clear(readNote);
-    readBtn.querySelector('.btn-label').textContent = read ? t('chg.readAgain') : t('chg.read');
+    runBar.setLabel(read ? t('chg.readAgain') : t('chg.read'));
     if (!read) return;
     const lines = [t('chg.readDone', { time: clockTime(read.at), count: read.count })];
     if (read.failed) lines.push(t('chg.readFailed', { count: read.failed }));
@@ -526,25 +665,31 @@ function mountBuilder(container, ctx) {
   }
 
   /* --- read the current records ----------------------------------------------------- */
+  /** The read that goes on (its controller), or null. */
+  let reading = null;
+
   async function readNow() {
     const base = buildChange(draft.template, formOf(draft.template), {});
     if (!base.zone || !base.reads.length) {
       rebuild();
       return;
     }
-    if (!ctx.requireOnline()) return;
+    if (reading || !ctx.requireOnline()) return;
     ctx.runStarted(base.zone);
-    setButtonBusy(readBtn, true);
+    const controller = new AbortController();
+    reading = controller;
+    runBar.setRunning(true);
     ctx.setBusy(t('chg.read'));
     try {
       const dns = await ctx.getDns();
+      const signal = mergeSignals(ctx.signal, controller.signal);
       // What the template looks at (the SPF record it edits, the records whose TTL it lowers) and
       // what its records collide with; then what the change built from those answers adds.
-      const current = await readCurrent(base.reads, { dns, signal: ctx.signal });
+      const current = await readCurrent(base.reads, { dns, signal });
       const next = buildChange(draft.template, formOf(draft.template), { current });
       const extra = next.reads.filter((q) => !Object.hasOwn(current, `${q.name}|${q.type}`));
-      if (extra.length) Object.assign(current, await readCurrent(extra, { dns, signal: ctx.signal }));
-      const spf = await countSpfLookups(buildChange(draft.template, formOf(draft.template), { current }), { dns, signal: ctx.signal });
+      if (extra.length) Object.assign(current, await readCurrent(extra, { dns, signal }));
+      const spf = await countSpfLookups(buildChange(draft.template, formOf(draft.template), { current }), { dns, signal });
       const values = Object.values(current);
       draft.read = { template: draft.template, zone: base.zone, current, spf, at: new Date(), count: values.length, failed: values.filter((c) => c.status === 'error').length };
       rebuild();
@@ -555,7 +700,8 @@ function mountBuilder(container, ctx) {
       clear(readNote);
       readNote.append(Alert({ variant: 'warn', compact: true, message: t('chg.readError', { reason: err && err.message ? err.message : String(err) }) }));
     } finally {
-      if (readBtn.isConnected) setButtonBusy(readBtn, false);
+      if (reading === controller) reading = null;
+      if (!ctx.signal.aborted) runBar.setRunning(false);
       ctx.setBusy(false);
     }
   }
@@ -567,7 +713,6 @@ function mountBuilder(container, ctx) {
 /* --- the check page --------------------------------------------------------------- */
 
 const VERDICT_BADGE = Object.freeze({ done: ['ok', 'check-circle'], pending: ['warn', 'clock'], wrong: ['error', 'x-circle'], error: ['neutral', 'help'], waiting: ['neutral', 'clock'] });
-const HEAD_VARIANT = Object.freeze({ done: 'ok', 'done-partial': 'ok', wrong: 'error', pending: 'warn', 'no-answer': 'warn', unknown: 'info' });
 
 /**
  * The check page's headline: its i18n key and params (the sets done of all; done-partial: the
@@ -612,12 +757,14 @@ export function checkSummaryFacts(check, memo, { timeText = (ms) => new Date(ms)
 
 function mountCheck(container, ctx) {
   const { t } = ctx;
+  // A sub-page of its own (#/change/check): the heading names what it does.
+  ctx.setHeading({ title: t('chg.check.title'), purpose: t('chg.check.purpose') });
   // The link as it was opened (its readable form): what its length limit counts, Copy link, and
   // resuming the same check.
   const hash = String(globalThis.location ? globalThis.location.hash : '');
   const query = hash.startsWith('#/change/check?') ? hash.slice('#/change/check?'.length) : linkQuery(ctx.searchParams);
   const decoded = decodeCheck(query);
-  const view = h('div', { class: 'stack-lg chg-view chg-check', dataset: { page: 'check' } });
+  const view = h('div', { class: 'chg-view chg-check', dataset: { page: 'check' } });
   container.append(view);
   if (!decoded.ok) {
     view.dataset.state = 'bad';
@@ -638,33 +785,43 @@ function mountCheck(container, ctx) {
   memo.mounted = true;
   let ticker = null;
 
-  const headEl = h('div', { class: 'chg-check-head-wrap', attrs: { 'aria-live': 'polite' } });
-  const metaEl = h('p', { class: 'muted text-sm chg-check-meta' });
+  /*
+   * Region 4: the check's result header — the headline as its title (its status icon), the record
+   * sets live as its key metric, the zone and when it asked, why it stopped, the status summary,
+   * Copy summary and Copy link; then its own run row (Check now / Stop / Check again, and the
+   * cutover assistant's Watch until live) with what it sends. There is no input: the link is it.
+   */
+  const head = ResultHeader({ className: 'chg-hero' });
+  const metaEl = h('span', { class: 'chg-check-meta' });
   const nowBtn = Button({ label: t('chg.check.now'), icon: 'refresh', size: 'sm', variant: 'primary', dataset: { action: 'check-now', shortcut: 'submit' }, onClick: () => checkNow() });
   const stopBtn = Button({ label: t('chg.check.stop'), icon: 'stop', size: 'sm', dataset: { action: 'check-stop', shortcut: 'cancel' }, onClick: () => stop() });
   const againBtn = Button({ label: t('chg.check.again'), icon: 'refresh', size: 'sm', variant: 'primary', dataset: { action: 'check-again' }, onClick: () => again() });
-  const copyBtn = CopyButton(() => checkUrl(query), { label: t('chg.check.copy'), size: 'sm', variant: 'ghost', toastOnCopy: true });
-  // Copy summary for the ticket: the headline and each set's answers, with this check's link.
-  const summary = SummaryButton({
-    kind: 'change',
-    facts: () => checkSummaryFacts(check, memo, { timeText: (ms) => formatDateTime(ms) }),
-    url: () => checkUrl(query)
-  });
   const actionBtns = [nowBtn, stopBtn, againBtn];
-  const setsEl = h('div', { class: 'stack chg-sets' });
-  const actionsEl = h('div', { class: 'cluster chg-hero-actions' }, nowBtn, stopBtn, againBtn, copyBtn, summary.el);
-  // Slots of the cutover assistant (ui/cutover.js): the watch line, the TTL planner.
+  const runRow = h('div', { class: 'cluster chg-hero-actions', attrs: { role: 'group', 'aria-label': t('result.nextLabel') } }, nowBtn, stopBtn, againBtn);
+  const status = StatusSummary({ className: 'chg-check-status' });
+  // Copy summary for the ticket: the headline and each set's answers, with this check's link (also Copy link's).
+  const actions = ResultActions({
+    summary: SummaryButton({
+      kind: 'change',
+      plainLabel: t('result.plainTitle'),
+      facts: () => checkSummaryFacts(check, memo, { timeText: (ms) => formatDateTime(ms) }),
+      url: () => checkUrl(query)
+    }),
+    link: () => checkUrl(query)
+  });
+  // Slots of the cutover assistant (ui/cutover.js): the watch line (a note), the TTL planner (the body).
   const watchSlot = h('div', { class: 'chg-cut-slot' });
+  const stopHost = h('div', { class: 'chg-stop-host' });
   const planSlot = h('div', { class: 'chg-cut-slot' });
   let cut = null;
-  const hero = h('section', { class: 'card chg-hero' },
-    h('div', { class: 'chg-hero-top' },
-      h('h2', { class: 'chg-hero-title' }, t('chg.check.title')),
-      Badge(t('chg.check.zone', { zone: check.zone }), { variant: 'neutral', mono: true, className: 'chg-zone' })),
-    headEl, metaEl, watchSlot, actionsEl);
-  view.append(hero, setsEl, planSlot,
-    h('p', { class: 'muted text-sm chg-check-privacy' }, Icon('lock', { size: 14 }), ' ', t('chg.check.privacy')),
-    h('p', { class: 'text-sm' }, h('a', { href: ctx.href('change') }, Icon('edit', { size: 14 }), ' ', t('chg.check.own'))));
+  head.set('meta', [Badge(t('chg.check.zone', { zone: check.zone }), { variant: 'neutral', mono: true, className: 'chg-zone' }), metaEl]);
+  head.set('notes', [stopHost, watchSlot]);
+  head.set('status', status.el);
+  head.set('actions', actions.el);
+  head.set('next', [runRow, PrivacyNote({ text: t('chg.check.privacy'), className: 'chg-check-privacy' })]);
+  const setsEl = h('div', { class: 'stack chg-sets' });
+  view.append(head.el, setsEl, planSlot,
+    h('p', { class: 'text-sm chg-own' }, h('a', { href: ctx.href('change') }, Icon('edit', { size: 14 }), ' ', t('chg.check.own'))));
 
   const resolverName = (rid) => (getResolver(rid) || { name: rid }).name;
   const values = (type, list) => (list.length ? list.map((v) => h('li', { class: 'mono chg-value' }, valueText(type, v))) : [h('li', { class: 'muted chg-value' }, t('chg.check.nothing'))]);
@@ -718,6 +875,16 @@ function mountCheck(container, ctx) {
     cards[i].dataset.state = st.sets[0].state;
   }
 
+  /** A status item pressed: the first record set it counts, in view with the keyboard on it. */
+  function focusSet(key) {
+    const state = key === 'noanswer' || key === 'waiting' ? 'unknown' : key;
+    const card = cards.find((c) => c.dataset.state === state);
+    if (!card) return;
+    card.setAttribute('tabindex', '-1');
+    card.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+    card.focus({ preventScroll: true });
+  }
+
   let lastHeadline = null;
   function renderHead() {
     const st = checkState(check, memo.latest);
@@ -727,16 +894,32 @@ function mountCheck(container, ctx) {
     view.dataset.round = String(memo.round);
     view.dataset.nextAt = memo.nextAt && !memo.stop ? String(memo.nextAt) : '';
     view.dataset.nextPairs = memo.nextAt && !memo.stop ? (memo.pairs || []).join(' ') : '';
-    clear(headEl);
-    const head = checkHeadline(check, memo.latest, st);
-    const headline = Alert({ variant: HEAD_VARIANT[st.headline], compact: true, message: t(head.key, head.params) });
-    headline.dataset.headline = st.headline;
-    headEl.append(headline);
+    const head0 = checkHeadline(check, memo.latest, st);
+    const words = t(head0.key, head0.params);
+    const severity = CHECK_HEADLINE_SEVERITY[st.headline];
+    head.setState(memo.running ? 'running' : 'done');
+    head.set('title', ResultTitle({
+      severity,
+      running: !severity && memo.running,
+      icon: severity ? null : 'clock',
+      text: h('span', { class: 'chg-check-head-wrap', dataset: { headline: st.headline } }, words)
+    }));
+    const counts = checkStatus(check, memo.latest);
+    head.set('key', h('span', { class: 'result-score chg-check-key', title: t('chg.check.keyTitle', { done: counts.done, count: counts.total }) },
+      h('span', { class: 'result-score-value num' }, formatNumber(counts.done)),
+      h('span', { class: 'result-score-max' }, `/${formatNumber(counts.total)}`)));
+    status.update(counts.items.map((item) => ({
+      ...item,
+      text: t(`chg.check.count.${item.key}`, { count: item.count }),
+      onPress: item.key === 'waiting' ? null : (key) => focusSet(key)
+    })));
+    clear(stopHost);
     if (memo.stop && memo.stop !== 'done') {
-      headEl.append(h('p', { class: 'text-sm chg-stopped', dataset: { stop: memo.stop } },
-        t(`chg.check.stop.${memo.stop}`, { time: memo.cachedUntil ? formatDateTime(memo.cachedUntil) : '' })));
+      stopHost.append(h('p', { class: 'text-sm chg-stopped', dataset: { stop: memo.stop } }, Icon('stop', { size: 14 }),
+        h('span', null, t(`chg.check.stop.${memo.stop}`, { time: memo.cachedUntil ? formatDateTime(memo.cachedUntil) : '' }))));
     }
-    if (lastHeadline !== null && lastHeadline !== st.headline) announce(headline.textContent);
+    // The headline is said when it changes (the header is no live region).
+    if (lastHeadline !== null && lastHeadline !== st.headline) announce(words);
     lastHeadline = st.headline;
     renderMeta();
     const stopped = !!memo.stop;
@@ -882,6 +1065,7 @@ function mountCheck(container, ctx) {
   ctx.onCleanup(() => {
     globalThis.removeEventListener?.('online', onOnline);
     clearInterval(ticker);
+    actions.dispose();
     // The memo keeps the answers; its timer only runs while the page is on screen.
     clearTimeout(memo.timer);
     memo.timer = null;
@@ -894,8 +1078,8 @@ function mountCheck(container, ctx) {
   loadCutover().then((m) => {
     if (!view.isConnected) return;
     cut = m.mountCutover({
-      ctx, check, memo, view, actions: actionsEl, before: copyBtn, strip: watchSlot, planner: planSlot, url: () => checkUrl(query),
-      headline: () => (headEl.firstChild ? headEl.firstChild.textContent : ''), resume: () => schedule()
+      ctx, check, memo, view, actions: runRow, before: null, strip: watchSlot, planner: planSlot, url: () => checkUrl(query),
+      headline: () => head.title.textContent, resume: () => schedule()
     });
     renderAll();
   }, () => ctx.checkOutdated());

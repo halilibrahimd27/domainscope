@@ -17,7 +17,16 @@
  * - "IP addresses worldwide" lists every address any source returned, who operates it
  *   (Cloudflare / CDN / platform / direct / private) and whether it is one of the user's
  *   servers (inventory) — the "Global DNS should give us the IPs too" request.
- * - "Copy summary" next to the links row (ui/summary-button.js): the verdict, the answers and who
+ * - The page template (ui/template.js, docs/DESIGN.md §5): the input card (compact once a check
+ *   runs: the name box, the options off their default in one line with Edit, Run), the result
+ *   header `.glb-summary` — the verdict as its title (lib/propagation.js propagationOutcome), the
+ *   record type and the time, what the verdict rests on, the status summary (DNS errors, failed
+ *   queries, different answers — by design or not —, blocked answers, how many answered; the
+ *   first and the blocked ones filter the tables), Copy summary, Export (the IP addresses as CSV /
+ *   JSON) and Copy link, "Also check:" DNS Lookup · Domain Health —, then three tabs: Answer
+ *   groups (the figures as a metric strip, the findings as a list, the groups), IP addresses,
+ *   Resolvers & locations (the public resolvers, the locations, mainland China, ISP resolvers).
+ * - "Copy summary" in the result header (ui/summary-button.js): the verdict, the answers and who
  *   operates them, and the findings, as Markdown for Jira / Slack or plain text.
  * - "ISP resolvers" (ui/isp-resolvers.js, loaded on first use): Globalping probes ask their own
  *   resolvers — the ISPs' — for the same name and type; their rows join the check (kind 'isp'),
@@ -37,18 +46,24 @@
  *   (`result()` / `snapshot()`).
  */
 
-import { h, clear, append, debounce } from '../ui/dom.js';
+import { h, clear, append, debounce, scrollBehavior, uid } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink, Icon, KindBadge, ProgressBar,
-  Section, StatCard, TruncatedList, checkbox, ipSortValue, select, setButtonBusy, textInput
+  Alert, Badge, Button, Card, CopyButton, DataTable, Disclosure, ErrorBanner, ExternalLink, Icon, KindBadge, ProgressBar, RelativeTime,
+  Section, SeverityIcon, Tabs, TruncatedList, announce, checkbox, ipSortValue, select, setButtonBusy, textInput
 } from '../ui/components.js';
 import { registerStrings, hasString, formatNumber, formatDuration, formatRegion, formatDateTime, formatRelative, localeTag } from '../i18n.js';
+import {
+  EmptyState, ExampleChips, MetricStrip, PrivacyNote, RelatedLinks, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput, withSubject
+} from '../ui/template.js';
+import { inputCompact, optionsSummary, statusItems, templateState, toggleStatus } from '../lib/template.js';
 import {
   EXPECT_MAX_LENGTH, EXPECT_MODES, FLUSH_LINKS, cacheEnd, expectedEta, expectedTally, expectedVerdict, parseExpected, probeQuestion
 } from '../lib/expected.js';
 import { RESOLVERS, GEO_VANTAGES, getAnyResolver } from '../lib/resolvers.js';
 import { Flag } from '../ui/flag.js';
-import { checkPropagation, propagationVerdict, splitChain } from '../lib/propagation.js';
+import {
+  checkPropagation, propagationVerdict, propagationOutcome, propagationStatus, propagationStatusMatch, splitChain
+} from '../lib/propagation.js';
 import { classifyResolution, ipVersion, isPrivateIP, normalizeIP } from '../lib/netinfo.js';
 import { normalizeHostname } from '../lib/domain.js';
 import { lookupServers } from '../lib/inventory.js';
@@ -82,17 +97,14 @@ const EXAMPLES = [
 ];
 
 registerStrings('en', {
-  'glb.formTitle': 'Query',
   'glb.name': 'Host name',
   'glb.namePlaceholder': 'www.example.com',
   'glb.type': 'Record type',
   'glb.geo': 'Also ask on behalf of {count} locations (EDNS Client Subnet)',
   'glb.run': 'Check worldwide',
-  'glb.examples': 'Try:',
   'glb.invalidName': 'Enter a valid host name, e.g. www.example.com.',
   'glb.ipGiven': 'That is an IP address. Use IP Intel for addresses, or enter a host name here.',
   'glb.progress': 'Asking resolvers and locations',
-  'glb.progressDone': 'All answers received',
   'glb.cancelled': 'Stopped — showing the answers received so far.',
   'glb.how.title': 'Why can answers differ?',
   'glb.how.ecs': 'Locations use EDNS Client Subnet (ECS): Google Public DNS — AliDNS for the mainland China ones — is asked on behalf of a typical home-internet subnet in each place, so the authoritative server answers as if a user there had asked.',
@@ -101,8 +113,29 @@ registerStrings('en', {
   'glb.how.ttl': 'Right after a DNS change, resolvers keep the old answer until its TTL expires — that is what “DNS propagation” means.',
   'glb.how.filter': 'Filtering resolvers (Quad9, Cloudflare Family, CleanBrowsing) may block a name on purpose; that is shown as “Blocked”, not as a different answer. A SafeSearch rewrite (a search engine’s name sent to its safe-search name, such as forcesafesearch.google.com) is their policy too and is not counted as a difference.',
   'glb.how.browser': 'A web page can only read resolvers that send a CORS header. Quad9 leaves it out over HTTP/3 — which Chrome, Edge and other browsers use for Quad9 — so its rows usually show “Not readable in browsers” instead of an answer.',
-  'glb.emptyTitle': 'Compare DNS answers around the world',
-  'glb.emptyBody': 'Enter a host name to ask 12 public resolvers and {count} locations at once — after a DNS change, to check CDN/GeoDNS steering, or to collect every IP address a name uses.',
+  'glb.emptyLine': 'Every answer with its TTL and DNSSEC flag, grouped by what it says and who operates its addresses — and why they differ.',
+  'glb.check.locations': 'Locations (ECS)',
+  'glb.privacy': 'Sends the name and the record type, from your browser, to {count} public resolvers and — with a client subnet per location — to Google Public DNS and AliDNS. Globalping only from its own buttons.',
+  'glb.optNoGeo': 'without the locations',
+  'glb.optExpect': 'expected: {value}',
+  'glb.checkedAt': 'Checked {time}',
+  'glb.typeMeta': '{type} records',
+  'glb.metricsLabel': 'The check in numbers',
+  'glb.count.servfail': { one: '{count} source answered SERVFAIL', other: '{count} sources answered SERVFAIL' },
+  'glb.count.rcode': { one: '{count} source answered with an error ({rcodes})', other: '{count} sources answered with an error ({rcodes})' },
+  'glb.count.failed': { one: '{count} query failed', other: '{count} queries failed' },
+  'glb.count.differ': '{count} different answers',
+  'glb.count.design': '{count} answers, different by design',
+  'glb.count.blocked': { one: '{count} answer blocked', other: '{count} answers blocked' },
+  'glb.count.answered': '{count} of {total} answered',
+  'glb.statusFilterOn': 'Showing only the sources counted in “{what}”',
+  'glb.tab.groups': 'Answer groups',
+  'glb.tab.ips': 'IP addresses',
+  'glb.tab.resolvers': 'Resolvers & locations',
+  'glb.findings.label': 'Why the answers differ',
+  'glb.findings.more': 'Show {count} more',
+  'glb.export.ipsCsv': 'IP addresses (CSV)',
+  'glb.export.ipsJson': 'IP addresses (JSON)',
 
   'glb.sum.running': 'Collecting answers…',
   'glb.sum.stoppedTitle': 'Stopped',
@@ -233,7 +266,6 @@ registerStrings('en', {
   'glb.value.aliasOf': 'alias',
   'glb.scopeTitle': 'ECS scope returned by the authoritative server: /24 means the answer is specific to this subnet, /0 means everyone gets the same answer.',
   'glb.scopeNone': 'Not reported',
-  'glb.links': 'More about this name:',
   'glb.ttlTitle': 'Cached for {human}',
 
   'glb.exp.label': 'Expected value (optional)',
@@ -286,17 +318,14 @@ registerStrings('en', {
 });
 
 registerStrings('tr', {
-  'glb.formTitle': 'Sorgu',
   'glb.name': 'Host adı',
   'glb.namePlaceholder': 'www.ornek.com.tr',
   'glb.type': 'Kayıt türü',
   'glb.geo': '{count} konum adına da sor (EDNS Client Subnet)',
   'glb.run': 'Dünya genelinde kontrol et',
-  'glb.examples': 'Deneyin:',
   'glb.invalidName': 'Geçerli bir host adı girin, ör. www.ornek.com.tr.',
   'glb.ipGiven': 'Bu bir IP adresi. Adresler için IP Bilgisi aracını kullanın ya da buraya bir host adı girin.',
   'glb.progress': 'Çözümleyicilere ve konumlara soruluyor',
-  'glb.progressDone': 'Tüm yanıtlar alındı',
   'glb.cancelled': 'Durduruldu — o ana kadar gelen yanıtlar gösteriliyor.',
   'glb.how.title': 'Yanıtlar neden farklı olabilir?',
   'glb.how.ecs': 'Konumlar EDNS Client Subnet (ECS) kullanır: Google Public DNS’e — anakara Çin’dekiler için AliDNS’e — her yerdeki tipik bir ev interneti alt ağı adına sorulur; yetkili sunucu, oradaki bir kullanıcı sormuş gibi yanıt verir.',
@@ -305,8 +334,29 @@ registerStrings('tr', {
   'glb.how.ttl': 'Bir DNS değişikliğinden hemen sonra çözümleyiciler eski yanıtı TTL süresi dolana kadar tutar — “DNS yayılması” (propagation) budur.',
   'glb.how.filter': 'Filtreleyen çözümleyiciler (Quad9, Cloudflare Family, CleanBrowsing) bir adı bilerek engelleyebilir; bu farklı bir yanıt olarak değil “Engellendi” olarak gösterilir. SafeSearch yönlendirmesi de (bir arama motorunun adının forcesafesearch.google.com gibi güvenli arama adına gönderilmesi) onların politikasıdır ve farklılık sayılmaz.',
   'glb.how.browser': 'Bir web sayfası yalnızca CORS başlığı gönderen çözümleyicileri okuyabilir. Quad9 bu başlığı HTTP/3’te göndermiyor — Chrome, Edge ve diğer tarayıcılar Quad9 için HTTP/3 kullanıyor — bu yüzden satırlarında genellikle yanıt yerine “Tarayıcıda okunamıyor” görünür.',
-  'glb.emptyTitle': 'DNS yanıtlarını dünya genelinde karşılaştırın',
-  'glb.emptyBody': 'Bir host adı girin; 12 genel çözümleyiciye ve {count} konuma aynı anda sorulsun — DNS değişikliğinden sonra, CDN/GeoDNS yönlendirmesini kontrol etmek ya da bir adın kullandığı tüm IP adreslerini toplamak için.',
+  'glb.emptyLine': 'Her yanıt TTL’i ve DNSSEC bayrağıyla; söylediğine ve adreslerini kimin işlettiğine göre gruplanmış — ve neden farklı oldukları.',
+  'glb.check.locations': 'Konumlar (ECS)',
+  'glb.privacy': 'Adı ve kayıt türünü tarayıcınızdan {count} genel çözümleyiciye ve — her konum için bir istemci alt ağıyla — Google Public DNS ile AliDNS’e gönderir. Globalping’e yalnızca kendi düğmelerinden.',
+  'glb.optNoGeo': 'konumlar olmadan',
+  'glb.optExpect': 'beklenen: {value}',
+  'glb.checkedAt': 'Kontrol: {time}',
+  'glb.typeMeta': '{type} kayıtları',
+  'glb.metricsLabel': 'Sayılarla kontrol',
+  'glb.count.servfail': '{count} kaynak SERVFAIL yanıtı verdi',
+  'glb.count.rcode': '{count} kaynak hata yanıtı verdi ({rcodes})',
+  'glb.count.failed': '{count} sorgu başarısız oldu',
+  'glb.count.differ': '{count} farklı yanıt',
+  'glb.count.design': '{count} yanıt, tasarım gereği farklı',
+  'glb.count.blocked': '{count} yanıt engellendi',
+  'glb.count.answered': '{total} kaynaktan {count} tanesi yanıtladı',
+  'glb.statusFilterOn': 'Yalnızca “{what}” içinde sayılan kaynaklar gösteriliyor',
+  'glb.tab.groups': 'Yanıt grupları',
+  'glb.tab.ips': 'IP adresleri',
+  'glb.tab.resolvers': 'Çözümleyiciler ve konumlar',
+  'glb.findings.label': 'Yanıtlar neden farklı',
+  'glb.findings.more': '{count} tane daha göster',
+  'glb.export.ipsCsv': 'IP adresleri (CSV)',
+  'glb.export.ipsJson': 'IP adresleri (JSON)',
 
   'glb.sum.running': 'Yanıtlar toplanıyor…',
   'glb.sum.stoppedTitle': 'Durduruldu',
@@ -437,7 +487,6 @@ registerStrings('tr', {
   'glb.value.aliasOf': 'takma ad',
   'glb.scopeTitle': 'Yetkili sunucunun döndürdüğü ECS kapsamı: /24 yanıtın bu alt ağa özel olduğunu, /0 herkesin aynı yanıtı aldığını gösterir.',
   'glb.scopeNone': 'Bildirilmedi',
-  'glb.links': 'Bu ad hakkında daha fazlası:',
   'glb.ttlTitle': '{human} boyunca önbellekte tutulur',
 
   'glb.exp.label': 'Beklenen değer (isteğe bağlı)',
@@ -732,24 +781,28 @@ export function mount(container, ctx) {
   /** Whether the tables carry the export-only "Expected value" column now. */
   let columnsWithExpected = false;
   const expectSoon = debounce(() => applyExpected(), 250);
-  const runBtn = Button({ label: t('glb.run'), icon: 'play', variant: 'primary', className: 'glb-run', dataset: { action: 'run', shortcut: 'submit' }, onClick: () => start() });
-  const stopBtn = Button({ label: t('common.stop'), icon: 'stop', variant: 'secondary', className: 'glb-stop', dataset: { action: 'stop', shortcut: 'cancel' }, onClick: () => stop() });
-  stopBtn.hidden = true;
-
-  const examples = h('div', { class: 'glb-examples cluster text-sm' },
-    h('span', { class: 'muted' }, t('glb.examples')),
-    EXAMPLES.map((ex) => h('button', {
-      type: 'button',
-      class: 'link-btn mono',
-      dataset: { example: ex.name },
-      on: {
-        click: () => {
-          nameField.value = ex.name;
-          typeField.value = ex.type;
-          start();
-        }
-      }
-    }, `${ex.name} ${ex.type}`)));
+  // Region 3: Run and Stop take turns in one slot (the keyboard focus goes with them).
+  const runBar = RunBar({
+    label: t('glb.run'),
+    dataset: { action: 'run', shortcut: 'submit' },
+    stopDataset: { action: 'stop', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => stop(),
+    hasValue: () => !!nameField.value.trim()
+  });
+  const runBtn = runBar.run;
+  // An example fills the form and leaves the keyboard on Run: nothing is sent before that click.
+  const examples = ExampleChips({
+    className: 'glb-examples',
+    examples: EXAMPLES.map((ex) => ({ value: ex.name, label: `${ex.name} ${ex.type}`, ex })),
+    onPick: (value, { ex }) => {
+      nameField.value = ex.name;
+      typeField.value = ex.type;
+      nameField.setError(null);
+      syncRunBar();
+    },
+    focus: () => runBtn
+  });
 
   const how = Disclosure({
     summary: t('glb.how.title'),
@@ -758,29 +811,54 @@ export function mount(container, ctx) {
       ['ecs', 'geo', 'anycast', 'ttl', 'filter', 'browser'].map((k) => h('li', null, t(`glb.how.${k}`))))
   });
 
-  const formCard = Card({
+  /** The compact card's line: the choices off their default (the record type, no locations, an expected value). */
+  const optionsLine = () => {
+    const expect = String(expectField.value || '').trim();
+    return optionsSummary([
+      { label: typeField.value, isDefault: typeField.value === 'A' },
+      { label: t('glb.optNoGeo'), isDefault: geoField.checked },
+      { label: t('glb.optExpect', { value: expect.length > 40 ? `${expect.slice(0, 39)}…` : expect }), isDefault: !expect }
+    ]);
+  };
+  // Region 2: one card — the name box with the type and Run on its row, the expected value, the
+  // locations and the examples behind Edit once a check ran, what is sent in its footer.
+  const input = ToolInput({
     className: 'glb-form-card',
-    children: h('div', { class: 'stack' },
-      h('div', { class: 'glb-form' }, nameField.el, typeField.el, h('div', { class: 'glb-buttons' }, runBtn, stopBtn)),
-      h('div', { class: 'glb-expect' }, expectField.el, matchField.el),
-      h('div', { class: 'glb-form-foot' }, geoField.el, examples),
-      how)
+    fieldsClass: 'glb-form',
+    label: t('nav.global'),
+    primary: nameField.el,
+    inline: [typeField.el],
+    run: runBar,
+    more: [h('div', { class: 'glb-expect' }, expectField.el, matchField.el), geoField.el],
+    extras: [examples, how],
+    privacy: PrivacyNote({ text: t('glb.privacy', { count: formatNumber(RESOLVERS.length) }), className: 'glb-privacy' }),
+    summary: optionsLine
   });
+  // Any change of the form: Run is the verb (and primary) again, or "Run again" while it asks for the check on screen.
+  input.el.addEventListener('input', () => syncRunBar());
+  input.el.addEventListener('change', () => syncRunBar());
 
   /* --- results skeleton ------------------------------------------------- */
   const progress = ProgressBar({ label: t('glb.progress') });
   progress.el.classList.add('glb-progress');
-  progress.el.hidden = true;
-  const summaryEl = h('div', { class: 'glb-summary', attrs: { 'aria-live': 'polite' } });
-  const stats = {
-    answered: StatCard({ label: t('glb.stat.answered'), icon: 'check-circle', variant: 'accent' }),
-    groups: StatCard({ label: t('glb.stat.groups'), icon: 'layers' }),
-    ips: StatCard({ label: t('glb.stat.ips'), icon: 'network' }),
-    latency: StatCard({ label: t('glb.stat.latency'), icon: 'clock', hint: t('glb.stat.latencyHint') })
-  };
+  /**
+   * The result header (region 4): the verdict as its title, the record type and the time, what the
+   * verdict rests on, the status summary, the actions and "Also check". Not a live region: the
+   * totals are said once, when the check ends.
+   */
+  const head = ResultHeader({ className: 'glb-summary' });
+  const status = StatusSummary({ className: 'glb-status' });
+  head.set('status', status.el);
+  /** The status item whose sources the tables show (rcode, failed, blocked), or null. */
+  let statusFilter = null;
+  /** Region 6 of the Answer groups tab: the figures, read-only. */
+  const metrics = MetricStrip({ className: 'glb-stats', label: t('glb.metricsLabel') });
+  /** Region 7 of the Answer groups tab: why the answers differ, one row per finding (the stacked alert's list before). */
+  const findingsEl = h('div', { class: 'glb-findings-host' });
+  /** The findings list shows them all once "Show n more" was pressed (until the next check). */
+  let findingsOpen = false;
   const legendEl = h('div', { class: 'glb-legend', attrs: { role: 'group', 'aria-label': t('glb.groups.title') } });
   const filterNote = h('div', { class: 'glb-filter-note', hidden: true });
-  const linksEl = h('div', { class: 'glb-links cluster text-sm' });
 
   /* --- the expected value's card (lib/expected.js; the name server probe: ui/soa-probe.js) ---- */
   const expValueEl = h('p', { class: 'glb-exp-value' });
@@ -1105,7 +1183,7 @@ export function mount(container, ctx) {
   const isChinaRow = (r) => r.kind === 'geo' && r.vantage.group === 'cn';
   const chinaGroup = h('div', { class: 'glb-geo-group stack-sm', dataset: { group: 'cn' } },
     // The heading names the region: its flag is decorative.
-    h('h3', { class: 'glb-geo-group-title' }, flag('CN'), h('span', null, t('glb.cn.title'))),
+    h('h4', { class: 'glb-geo-group-title' }, flag('CN'), h('span', null, t('glb.cn.title'))),
     h('p', { class: 'section-desc' }, t('glb.cn.desc', { count: formatNumber(CHINA.length) })),
     chinaTable.el || chinaTable);
 
@@ -1202,32 +1280,33 @@ export function mount(container, ctx) {
     return { vantages, resolvers, countries: [...new Set(vantages.map((v) => v.countryCode))] };
   }
 
-  /* --- sections ----------------------------------------------------------- */
-  const statsGrid = h('div', { class: 'stat-grid glb-stats' }, stats.answered, stats.groups, stats.ips, stats.latency);
+  /* --- sections (in the tabs' panels: regions 6–8 sit with the data they count) ------------ */
   const legendCard = Card({
     title: t('glb.groups.title'), subtitle: t('glb.groups.desc'), icon: 'layers', className: 'glb-legend-card',
-    children: h('div', { class: 'stack-sm' }, legendEl, filterNote)
+    children: h('div', { class: 'stack-sm' }, legendEl)
   });
-  const ipSection = Section({ title: t('glb.ips.title'), description: t('glb.ips.desc'), className: 'glb-ips', children: ipTable });
+  const ipSection = Section({ title: t('glb.ips.title'), description: t('glb.ips.desc'), className: 'glb-ips', level: 3, children: ipTable });
   const resSection = Section({
     title: t('glb.res.title'),
     description: t('glb.res.desc', { count: formatNumber(RESOLVERS.length) }),
     className: 'glb-resolvers',
+    level: 3,
     children: resolverTable
   });
   const geoSection = Section({
     title: t('glb.geo.title'),
     description: t('glb.geo.desc', { count: formatNumber(GEO_VANTAGES.length - CHINA.length) }),
     className: 'glb-geo',
+    level: 3,
     children: [geoTable.el || geoTable, CHINA.length ? chinaGroup : null]
   });
   /* --- ISP resolvers: ui/isp-resolvers.js, loaded on first use (Globalping) ---------- */
   const loadIsp = onceAsync(() => import('../ui/isp-resolvers.js'));
-  /** The mounted panel (null until first use): refresh / setFilter / reset / staleAlert / note / snapshot. */
+  /** The mounted panel (null until first use): refresh / setFilter / reset / staleSummary / note / snapshot. */
   let ispPanel = null;
   const ispBody = h('div', { class: 'glb-isp-body' });
   const ispOpen = Button({ label: t('glb.isp.open'), icon: 'globe', dataset: { action: 'isp-open' }, onClick: () => openIsp() });
-  const ispSection = Section({ title: t('glb.isp.title'), description: t('glb.isp.desc'), className: 'glb-isp-section', children: [ispOpen, ispBody] });
+  const ispSection = Section({ title: t('glb.isp.title'), description: t('glb.isp.desc'), className: 'glb-isp-section', level: 3, children: [ispOpen, ispBody] });
   const ispRows = () => (current ? current.rows.filter((r) => r.kind === 'isp') : []);
   const ispName = (row) => (ispPanel ? ispPanel.label(row) : [row.isp && row.isp.network, row.isp && row.isp.city].filter(Boolean).join(', ') || row.key);
   /** What the panel may do to the check on screen: its rows are a row group of the check. */
@@ -1329,11 +1408,12 @@ export function mount(container, ctx) {
     }
   }
 
-  const emptyEl = EmptyState({
+  // The empty result region: what a check gives and what it asks, no card (DESIGN §5.2).
+  const emptyWrap = h('div', { class: 'glb-empty' }, EmptyState({
     icon: 'globe',
-    title: t('glb.emptyTitle'),
-    message: t('glb.emptyBody', { count: formatNumber(GEO_VANTAGES.length) })
-  });
+    message: t('glb.emptyLine'),
+    checks: [t('glb.res.title'), t('glb.check.locations'), t('glb.cn.title'), t('glb.isp.title'), t('glb.exp.title')]
+  }));
   // No part of the form: Ctrl/Cmd+Enter in a table's filter here starts no new check.
   // "Copy summary": the verdict, the answer groups and their operators, the findings (lib/summary.js).
   const summaryFacts = () => {
@@ -1356,16 +1436,48 @@ export function mount(container, ctx) {
   };
   const summary = SummaryButton({
     kind: 'global',
+    plainLabel: t('result.plainTitle'),
     facts: summaryFacts,
     disabled: true,
     url: () => (current ? ctx.shareUrl(permalinkParams('global', checkParams(current))) : null)
   });
-  const results = h('div', { class: 'stack-lg glb-results', hidden: true, dataset: { shortcutScope: 'results' } },
-    h('div', { class: 'stack' }, progress, summaryEl, expectCard, statsGrid, h('div', { class: 'glb-results-bar' }, linksEl, summary.el)),
-    legendCard, ipSection, resSection, geoSection, ispSection);
+  /** One of the IP table's own files (its filter and order), from the result header's Export menu. */
+  const ipExport = (format) => () => {
+    const btn = ipTable.el.querySelector(`.dt-export [data-export="${format}"]`);
+    if (btn) btn.click();
+  };
+  // The standard actions (DESIGN §5.3): Copy summary with ¶, Export ▾ (the IP addresses), Copy link.
+  const actions = ResultActions({
+    summary,
+    exports: [
+      { label: t('glb.export.ipsCsv'), icon: 'download', dataset: { export: 'ips-csv' }, onSelect: ipExport('csv') },
+      { label: t('glb.export.ipsJson'), icon: 'download', dataset: { export: 'ips-json' }, onSelect: ipExport('json') }
+    ],
+    // Copy link shares the check on screen (its name, type, locations and expected value), not the box.
+    link: () => (current ? ctx.shareUrl(checkParams(current)) : null)
+  });
+  head.set('actions', actions.el);
 
-  container.append(h('div', { class: 'stack-lg glb-view' }, formCard, h('div', { class: 'glb-empty card' }, emptyEl), results));
-  const emptyWrap = container.querySelector('.glb-empty');
+  /** Region 5: three tabs; every section stays in the page, only the panels of the others hide. */
+  const TAB_IDS = ['groups', 'ips', 'resolvers'];
+  let tabNow = TAB_IDS.includes(restored?.tab) ? restored.tab : 'groups';
+  const tabs = Tabs([
+    { id: 'groups', label: t('glb.tab.groups') },
+    { id: 'ips', label: t('glb.tab.ips') },
+    { id: 'resolvers', label: t('glb.tab.resolvers') }
+  ], { selected: tabNow, label: t('nav.global'), className: 'glb-tabs', onChange: (tabId) => { tabNow = tabId; } });
+  tabs.panel('groups').append(h('div', { class: 'glb-panel' }, metrics.el, findingsEl, legendCard));
+  tabs.panel('ips').append(h('div', { class: 'glb-panel' }, ipSection));
+  tabs.panel('resolvers').append(h('div', { class: 'glb-panel' }, resSection, geoSection, ispSection));
+  const results = h('div', { class: 'glb-results', hidden: true, dataset: { shortcutScope: 'results' } },
+    head.el, expectCard, filterNote, tabs.el);
+
+  container.append(h('div', { class: 'glb-view' }, input.el, emptyWrap, results, runBar.float));
+  // Their phone-layout listeners would keep this page alive once it is left.
+  ctx.onCleanup(() => {
+    runBar.dispose();
+    actions.dispose();
+  });
 
   /* --- run state ----------------------------------------------------------------- */
   /** @type {null|{ name: string, type: string, geo: boolean, rows: object[], rowByKey: Map, ips: Map,
@@ -1454,10 +1566,29 @@ export function mount(container, ctx) {
     if (ispPanel) ispPanel.refresh();
     renderLegend();
     renderStats();
-    renderSummary();
+    renderHead();
     renderExpected();
     const done = current.rows.filter((r) => !r.pending).length;
     if (!current.done) progress.set(done, current.rows.length);
+  }
+
+  /**
+   * The run bar and the input follow the state: compact from the moment a check starts and while
+   * one is on screen; "Run again" while the form asks for the check on screen (its name, type and
+   * locations).
+   */
+  function syncRunBar() {
+    const running = !!(current && current.controller);
+    const stateNow = templateState({ running, result: !!current });
+    let same = false;
+    if (stateNow === 'done') {
+      const name = normalizeHostname(nameField.value.trim(), { allowSingleLabel: true });
+      same = name === current.name && typeField.value === current.type && geoField.checked === current.geo;
+    }
+    runBar.setState(stateNow);
+    runBar.setRerun(same);
+    input.setCompact(inputCompact(stateNow));
+    input.refresh();
   }
 
   /* --- the expected value ------------------------------------------------------------- */
@@ -1514,14 +1645,16 @@ export function mount(container, ctx) {
     else if (missingOnly) applyFilters();
     if (!current) return;
     ctx.setParams(checkParams(current));
-    setHeaderActions();
     renderAll();
   }
 
   /** Show only the rows that do not serve the expected value yet (or every row again). */
   function setMissingOnly(on) {
     missingOnly = !!on && !!expectedNow;
-    if (missingOnly) filterKey = null;
+    if (missingOnly) {
+      filterKey = null;
+      statusFilter = null;
+    }
     applyFilters();
     if (current) renderExpected();
   }
@@ -1637,28 +1770,51 @@ export function mount(container, ctx) {
     }
   }
 
-  /** Show only the rows of one answer group (or every row again): the expected value's filter goes. */
+  /** Show only the rows of one answer group (or every row again): the other filters go. */
   function setFilter(key) {
     filterKey = key;
-    if (key) missingOnly = false;
+    if (key) {
+      missingOnly = false;
+      statusFilter = null;
+    }
     applyFilters();
     if (key && current) renderExpected();
   }
 
-  /** The tables' filter: one answer group's rows, or the rows not serving the expected value yet, or none. */
+  /**
+   * A status item pressed (lib/propagation.js propagationStatusMatch): the tables show the sources
+   * it counts, on the Resolvers & locations tab; pressed again, every source. The other filters go.
+   */
+  function setStatusFilter(key) {
+    statusFilter = key;
+    if (key) {
+      filterKey = null;
+      missingOnly = false;
+      tabs.select('resolvers');
+    }
+    status.setPressed(key);
+    applyFilters();
+    if (current) renderExpected();
+  }
+
+  /** The tables' filter: one answer group's rows, the rows not serving the expected value yet, a status item's rows, or none. */
   function applyFilters() {
     const g = filterKey ? groupByKey.get(filterKey) : null;
     let fn = null;
     let ipFn = null;
+    const rowsOf = (test) => (ipRow) => [...ipRow.members].some((k) => {
+      const row = current && current.rowByKey.get(k);
+      return !!row && test(row);
+    });
     if (g) {
       fn = (row) => !row.pending && !isSkipped(row) && row.values.join('\n') === filterKey;
       ipFn = (ipRow) => [...ipRow.members].some((k) => g.members.includes(k));
     } else if (missingOnly && expectedNow) {
       fn = (row) => expectedVerdict(row, expectedNow) === 'mismatch';
-      ipFn = (ipRow) => [...ipRow.members].some((k) => {
-        const row = current && current.rowByKey.get(k);
-        return !!row && fn(row);
-      });
+      ipFn = rowsOf(fn);
+    } else if (statusFilter) {
+      fn = (row) => propagationStatusMatch(statusFilter, row);
+      ipFn = rowsOf(fn);
     }
     resolverTable.setFilter(fn);
     geoTable.setFilter(fn);
@@ -1672,11 +1828,17 @@ export function mount(container, ctx) {
         Icon('filter', { size: 14 }),
         h('span', null, g.letter ? t('glb.group.filterOn', { letter: g.letter }) : t(g.error ? 'glb.group.error' : 'glb.group.blocked')),
         Button({ label: t('glb.group.showAll'), size: 'sm', variant: 'ghost', onClick: () => setFilter(null) }));
-    } else if (fn) {
+    } else if (missingOnly && fn) {
       filterNote.append(
         Icon('filter', { size: 14 }),
         h('span', null, t('glb.exp.filterOn')),
         Button({ label: t('glb.group.showAll'), size: 'sm', variant: 'ghost', onClick: () => setMissingOnly(false) }));
+    } else if (fn) {
+      const item = status.el.querySelector(`[data-status="${statusFilter}"] .status-text`);
+      filterNote.append(
+        Icon('filter', { size: 14 }),
+        h('span', null, t('glb.statusFilterOn', { what: item ? item.textContent : statusFilter })),
+        Button({ label: t('glb.group.showAll'), size: 'sm', variant: 'ghost', dataset: { action: 'glb-filter-clear' }, onClick: () => setStatusFilter(null) }));
     }
     legendEl.querySelectorAll('.glb-chip').forEach((b) => {
       const on = b.title === (g ? g.values.join('\n') : null) && !!g;
@@ -1685,28 +1847,17 @@ export function mount(container, ctx) {
     });
   }
 
+  /** The figures of the check (the Answer groups tab's metric strip): read-only, only an error or warning coloured. */
   function renderStats() {
     const rows = current.rows;
     const notAsked = rows.filter(isNotAsked).length;
     const finished = rows.filter((r) => !r.pending && !isNotAsked(r));
     const unavailable = finished.filter(isBrowserBlocked).length;
     const failed = finished.filter((r) => isErrorValues(r.values)).length - unavailable;
-    stats.answered.set({
-      value: `${formatNumber(finished.length - failed - unavailable)} / ${formatNumber(rows.length - notAsked)}`,
-      hint: [
-        failed ? t('glb.stat.failed', { count: failed }) : null,
-        unavailable ? t('glb.stat.unavailable', { count: unavailable }) : null,
-        notAsked ? t('glb.stat.notAsked', { count: notAsked }) : null
-      ].filter(Boolean).join(' · ') || null,
-      variant: failed && failed + unavailable === finished.length && current.done ? 'error' : 'accent'
-    });
     const answerGroups = groups.filter((g) => g.letter).length;
     // Several answers are a warning only when they are not explained (by design, GeoDNS, or a
     // filtering resolver's own answer next to answers that agree).
     const explained = verdict && ['agree', 'by-design', 'geo'].includes(verdict.state);
-    const variant = verdict && verdict.state === 'unresolved' ? 'error'
-      : answerGroups > 1 ? (explained ? 'info' : 'warn') : answerGroups === 1 ? 'ok' : 'default';
-    stats.groups.set({ value: answerGroups, variant });
     const ipRows = [...current.ips.values()];
     const mine = ipRows.filter((r) => r.servers.length).length;
     const kinds = new Map();
@@ -1714,109 +1865,234 @@ export function mount(container, ctx) {
       const label = r.classification.kind === 'cloudflare' ? 'Cloudflare' : r.classification.provider ? r.classification.provider.name : t(`kind.${r.classification.kind}`);
       kinds.set(label, (kinds.get(label) || 0) + 1);
     }
-    const hint = [...kinds.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => `${formatNumber(n)} ${k}`).join(' · ');
-    stats.ips.set({ value: ipRows.length, hint: mine ? `${hint} · ${t('glb.stat.inventory', { count: mine })}` : (hint || null) });
+    const ipHint = [...kinds.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => `${formatNumber(n)} ${k}`).join(' · ');
     const lat = median(rows.filter((r) => r.kind === 'resolver' && !r.pending && r.response && r.response.ok).map((r) => r.response.elapsedMs));
-    stats.latency.set({ value: lat === null ? '—' : ms(lat) });
+    metrics.update([
+      {
+        id: 'answered',
+        label: t('glb.stat.answered'),
+        value: `${formatNumber(finished.length - failed - unavailable)} / ${formatNumber(rows.length - notAsked)}`,
+        severity: failed && failed + unavailable === finished.length && current.done ? 'error' : null,
+        hint: [
+          failed ? t('glb.stat.failed', { count: failed }) : null,
+          unavailable ? t('glb.stat.unavailable', { count: unavailable }) : null,
+          notAsked ? t('glb.stat.notAsked', { count: notAsked }) : null
+        ].filter(Boolean).join(' · ') || null
+      },
+      {
+        id: 'groups',
+        label: t('glb.stat.groups'),
+        value: answerGroups,
+        severity: verdict && verdict.state === 'unresolved' ? 'error' : answerGroups > 1 && !explained ? 'warn' : null
+      },
+      { id: 'ips', label: t('glb.stat.ips'), value: ipRows.length, hint: mine ? `${ipHint} · ${t('glb.stat.inventory', { count: mine })}` : (ipHint || null) },
+      { id: 'latency', label: t('glb.stat.latency'), value: lat === null ? '—' : ms(lat), hint: t('glb.stat.latencyHint') }
+    ]);
+    tabs.setBadge('groups', answerGroups || null, verdict && verdict.state === 'unresolved' ? 'error' : answerGroups > 1 && !explained ? 'warn' : null);
+    tabs.setBadge('ips', ipRows.length || null);
   }
 
-  function renderSummary() {
-    clear(summaryEl);
+  /**
+   * What the verdict says of the check on screen (lib/propagation.js propagationVerdict and
+   * propagationOutcome): the title's words, what it rests on (the body), what else is worth saying
+   * (failed queries, blocked or rewritten answers, sources not readable or not asked, ISP answers
+   * that linger, a stop) and the findings — or the ISP lines of the 'stale' state.
+   * @param {ReturnType<typeof propagationOutcome>} outcome
+   * @returns {{ state: string, title: string|null, body: string[], extra: string[], findings: object[], ispLines: string[] }}
+   */
+  function verdictParts(outcome) {
     const rows = current.rows;
     const finished = rows.filter((r) => !r.pending);
-    if (!current.done && !current.cancelled) {
-      if (!finished.length) return;
-    }
     const unavailable = finished.filter(isBrowserBlocked);
     const notAsked = finished.filter(isNotAsked);
-    const failed = finished.filter((r) => isErrorValues(r.values)).length - unavailable.length;
-    const blocked = finished.filter((r) => r.filtered).length;
     const usable = finished.filter((r) => !r.filtered && !isNotAsked(r) && !isErrorValues(r.values));
     const distinct = (list) => new Set(list.map((r) => r.values.join('\n'))).size;
     const extra = [
-      failed ? t('glb.sum.errors', { count: failed }) : null,
-      blocked ? t('glb.sum.blocked', { count: blocked }) : null,
+      outcome.failed ? t('glb.sum.errors', { count: outcome.failed }) : null,
+      outcome.blocked ? t('glb.sum.blocked', { count: outcome.blocked }) : null,
       verdict.rewritten.length ? t('glb.sum.rewritten', { names: sourceNames(verdict.rewritten), targets: verdict.rewriteTargets.join(', ') }) : null,
       unavailable.length ? t('glb.sum.unavailable', { names: unavailable.map((r) => r.resolver.name).join(', ') }) : null,
       notAsked.length ? t('glb.sum.notAsked', { names: sourceNames(notAsked.map((r) => r.key)), type: current.type }) : null,
       ispPanel ? ispPanel.note(verdict, { shortList }) : null,
       current.cancelled ? t('glb.cancelled') : null
-    ].filter(Boolean).join(' ');
-    const state = !current.done && !current.cancelled ? 'running'
-      : !usable.length ? (current.cancelled ? 'stopped' : 'failed')
-        : verdict.state;
+    ].filter(Boolean);
     const operators = shortList(verdict.operators.map((op) => op.name));
-    let alert;
-    if (state === 'running') {
-      alert = Alert({ variant: 'info', icon: 'activity', compact: true, title: t('glb.sum.running'), message: null });
-    } else if (state === 'stopped') {
-      alert = Alert({ variant: 'info', icon: 'stop', compact: true, title: t('glb.sum.stoppedTitle'), message: extra || null });
-    } else if (state === 'failed') {
-      alert = failed
-        ? Alert({ variant: 'error', title: t('glb.sum.failedTitle'), message: [t('glb.sum.failedBody'), extra].filter(Boolean).join(' ') })
-        : Alert({ variant: 'warn', title: t('glb.sum.differTitle'), message: extra || null });
-    } else if (state === 'agree') {
-      const agreeing = usable.length - verdict.rewritten.length;
-      alert = Alert({ variant: 'ok', title: t('glb.sum.agreeTitle'), message: [t('glb.sum.agreeBody', { count: agreeing }), extra].filter(Boolean).join(' ') });
-    } else if (state === 'unresolved') {
-      alert = Alert({
-        variant: 'error',
-        title: t('glb.sum.unresolvedTitle'),
-        message: null,
-        children: [
-          h('ul', { class: 'glb-findings' }, verdict.findings.map(renderFinding)),
-          extra ? h('div', { class: 'alert-message' }, extra) : null
-        ]
-      });
-    } else if (state === 'by-design') {
-      // No records of the type anywhere (AAAA of an IPv4-only CDN name): only the chains differ.
-      const type = current.type;
-      const steered = verdict.steering[0];
-      const { split, unsure } = splitOfVerdict();
-      const body = verdict.noRecords
-        ? (unsure ? [t('glb.sum.nodataNone', { type }), splitText(split)] : [t('glb.sum.nodataBody', { type, operators }), split ? splitText(split) : null]).filter(Boolean).join(' ')
-        : split ? t(split.line ? 'glb.sum.designGeo' : 'glb.sum.designGeoUnsure', splitParams(split))
-          : steered ? t('glb.sum.designSteered', { owner: steered.owner || current.name, targets: shortList(steered.targets) })
-            : t('glb.sum.designBody');
-      // An operator only those locations get is explained above: "multi-CDN" only for the others.
-      const away = new Set(verdict.geoSplits.flatMap((s) => s.members));
-      const multi = verdict.operators.filter((op) => !op.members.every((m) => away.has(m))).length > 1;
-      alert = Alert({
-        variant: 'info',
-        icon: 'globe',
-        title: verdict.noRecords ? t(unsure ? 'glb.sum.nodataTitleUnsure' : 'glb.sum.nodataTitle', { type, operators })
-          : t(unsure ? 'glb.sum.designTitleUnsure' : 'glb.sum.designTitle', { operators }),
-        message: [body, multi ? t('glb.sum.designMulti') : null, extra].filter(Boolean).join(' ')
-      });
-    } else if (state === 'stale' && ispPanel) {
-      // Only ISP resolvers (ui/isp-resolvers.js) still give an answer: when it expires there.
-      alert = ispPanel.staleAlert(verdict, { extra, shortList });
-    } else if (state === 'geo') {
-      const geoGroups = distinct(usable.filter((r) => r.kind === 'geo'));
-      const { split, unsure } = splitOfVerdict();
-      alert = Alert({
-        variant: 'info',
-        icon: 'map-pin',
-        title: t(unsure ? 'glb.sum.geoTitleUnsure' : 'glb.sum.geoTitle'),
-        message: [t(unsure ? 'glb.sum.geoBodyUnsure' : 'glb.sum.geoBody', { groups: formatNumber(geoGroups) }), split ? splitText(split) : null, extra].filter(Boolean).join(' ')
-      });
-    } else {
-      alert = Alert({
-        variant: 'warn',
-        title: t('glb.sum.differTitle'),
-        message: [
+    const out = { state: outcome.state, title: null, body: [], extra, findings: [], ispLines: [] };
+    switch (outcome.state) {
+      case 'running':
+        break;
+      case 'stopped':
+        out.title = t('glb.sum.stoppedTitle');
+        break;
+      case 'failed':
+        out.title = t('glb.sum.failedTitle');
+        out.body = [t('glb.sum.failedBody')];
+        break;
+      case 'none':
+        out.title = t('glb.sum.differTitle');
+        break;
+      case 'agree':
+        out.title = t('glb.sum.agreeTitle');
+        out.body = [t('glb.sum.agreeBody', { count: usable.length - verdict.rewritten.length })];
+        break;
+      case 'unresolved':
+        out.title = t('glb.sum.unresolvedTitle');
+        out.findings = verdict.findings;
+        break;
+      case 'by-design': {
+        // No records of the type anywhere (AAAA of an IPv4-only CDN name): only the chains differ.
+        const type = current.type;
+        const steered = verdict.steering[0];
+        const { split, unsure } = splitOfVerdict();
+        const body = verdict.noRecords
+          ? (unsure ? [t('glb.sum.nodataNone', { type }), splitText(split)] : [t('glb.sum.nodataBody', { type, operators }), split ? splitText(split) : null]).filter(Boolean).join(' ')
+          : split ? t(split.line ? 'glb.sum.designGeo' : 'glb.sum.designGeoUnsure', splitParams(split))
+            : steered ? t('glb.sum.designSteered', { owner: steered.owner || current.name, targets: shortList(steered.targets) })
+              : t('glb.sum.designBody');
+        // An operator only those locations get is explained above: "multi-CDN" only for the others.
+        const away = new Set(verdict.geoSplits.flatMap((s) => s.members));
+        const multi = verdict.operators.filter((op) => !op.members.every((m) => away.has(m))).length > 1;
+        out.title = verdict.noRecords ? t(unsure ? 'glb.sum.nodataTitleUnsure' : 'glb.sum.nodataTitle', { type, operators })
+          : t(unsure ? 'glb.sum.designTitleUnsure' : 'glb.sum.designTitle', { operators });
+        out.body = [body, multi ? t('glb.sum.designMulti') : null].filter(Boolean);
+        break;
+      }
+      case 'geo': {
+        const geoGroups = distinct(usable.filter((r) => r.kind === 'geo'));
+        const { split, unsure } = splitOfVerdict();
+        out.title = t(unsure ? 'glb.sum.geoTitleUnsure' : 'glb.sum.geoTitle');
+        out.body = [t(unsure ? 'glb.sum.geoBodyUnsure' : 'glb.sum.geoBody', { groups: formatNumber(geoGroups) }), split ? splitText(split) : null].filter(Boolean);
+        break;
+      }
+      default:
+        if (outcome.state === 'stale' && ispPanel) {
+          // Only ISP resolvers (ui/isp-resolvers.js) still give an answer: when it expires there.
+          const stale = ispPanel.staleSummary(verdict, { shortList });
+          out.title = stale.title;
+          out.body = stale.body;
+          out.ispLines = stale.lines;
+          break;
+        }
+        out.title = t('glb.sum.differTitle');
+        out.body = [
           t('glb.sum.differBody', { groups: formatNumber(verdict.groups.filter((g) => !g.rewritten).length) }),
           verdict.designPart ? t('glb.sum.designPart', { operators }) : null
-        ].filter(Boolean).join(' '),
-        children: [
-          verdict.findings.length ? h('ul', { class: 'glb-findings' }, verdict.findings.map(renderFinding)) : null,
-          extra ? h('div', { class: 'alert-message' }, extra) : null
-        ]
-      });
+        ].filter(Boolean);
+        out.findings = verdict.findings;
     }
-    alert.dataset.state = state;
-    summaryEl.append(alert);
-    summary.setDisabled(!summaryFacts());
+    return out;
+  }
+
+  /** A status item's words: "2 sources answered SERVFAIL", "1 query failed", "46 of 46 answered" … */
+  function statusText(item) {
+    if (item.key === 'rcode') {
+      return item.rcodes.length === 1 && item.rcodes[0] === 'SERVFAIL' ? t('glb.count.servfail', { count: item.count })
+        : t('glb.count.rcode', { count: item.count, rcodes: item.rcodes.join(', ') });
+    }
+    if (item.key === 'answered') return t('glb.count.answered', { count: item.count, total: formatNumber(item.total) });
+    return t(`glb.count.${item.key}`, { count: item.count });
+  }
+
+  /** The check whose totals were said (once, when it ended: the status summary is no live region). */
+  let announcedFor = null;
+
+  /**
+   * The result header of the check on screen (region 4): while it runs "Checking <name>…" with the
+   * progress and the counts so far; then the verdict and the name, the record type and the time,
+   * what the verdict rests on, the status summary — the DNS errors, the failed queries and the
+   * blocked answers filter the tables, the different answers open their groups —, the actions and
+   * "Also check". Region 7, the findings, goes with it.
+   */
+  function renderHead() {
+    const running = !current.done && !current.cancelled;
+    const outcome = propagationOutcome(current.rows, verdict, { done: current.done, cancelled: current.cancelled });
+    const parts = verdictParts(outcome);
+    head.setState(running ? 'running' : 'done');
+    head.el.dataset.verdict = outcome.state;
+    head.set('title', running
+      ? ResultTitle({ running: true, text: withSubject((p) => t('result.checking', p), current.name) })
+      // The dot stays with the verdict when the title wraps on a phone (a no-break space before it).
+      : ResultTitle({ severity: outcome.severity, text: [h('span', { class: 'glb-verdict' }, parts.title), ' · ', h('span', { class: 'result-subject mono' }, current.name)] }));
+    head.set('meta', [
+      h('span', { class: 'glb-meta-type' }, t('glb.typeMeta', { type: current.type })),
+      !running && current.finishedAt ? RelativeTime(current.finishedAt, { text: t('glb.checkedAt', { time: formatRelative(current.finishedAt) }) }) : null
+    ]);
+    head.set('progress', running ? progress.el : null);
+    head.set('notes', running ? null : [
+      parts.body.length ? h('p', { class: 'glb-verdict-body' }, parts.body.join(' ')) : null,
+      parts.extra.length ? h('p', { class: 'glb-verdict-extra' }, parts.extra.join(' ')) : null
+    ]);
+    const items = propagationStatus(outcome).map((item) => ({
+      ...item,
+      text: statusText(item),
+      ...(item.key === 'rcode' || item.key === 'failed' || item.key === 'blocked'
+        ? { filter: true, onPress: (key) => setStatusFilter(toggleStatus(statusFilter, key)) }
+        : item.key === 'differ' || item.key === 'design'
+          ? { onPress: () => openGroups() }
+          : {})
+    }));
+    if (statusFilter && !items.some((x) => x.key === statusFilter && x.count > 0)) {
+      statusFilter = null;
+      applyFilters();
+    }
+    status.update(items, { pressed: statusFilter });
+    head.set('related', RelatedLinks({
+      self: 'global',
+      links: [
+        { view: 'lookup', icon: 'search', label: t('nav.lookup'), href: ctx.href('lookup', { name: current.name, type: current.type }) },
+        { view: 'health', icon: 'activity', label: t('nav.health'), href: ctx.href('health', { domain: current.name }) }
+      ]
+    }));
+    actions.setDisabled(running);
+    actions.setExportsDisabled(!current.ips.size);
+    renderFindings(running ? [] : parts.findings, running ? [] : parts.ispLines);
+    if (!running && announcedFor !== current) {
+      announcedFor = current;
+      announce([`${parts.title} · ${current.name}`, ...statusItems(items).map((x) => x.text)].join(' · '));
+    }
+  }
+
+  /** "n different answers": the Answer groups tab, its groups in view. */
+  function openGroups() {
+    tabs.select('groups');
+    legendEl.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+    const first = legendEl.querySelector('.glb-chip');
+    if (first) first.focus({ preventScroll: true });
+  }
+
+  /** How bad a finding is: its icon in the list (an rcode is a fault, a regional line by design is a fact). */
+  const findingSeverity = (f) => (f.partner || (f.code === 'cname' && f.byLocation) ? 'info' : f.code === 'rcode' ? 'error' : 'warn');
+
+  /**
+   * Region 7: the findings, one row each (the warning alert's list before): at most three, then
+   * "Show n more". The ISP answers that linger are its rows in the 'stale' state.
+   */
+  function renderFindings(findings, ispLines = []) {
+    clear(findingsEl);
+    const rows = [
+      ...findings.map((f) => renderFinding(f, findingSeverity(f))),
+      ...ispLines.map((text) => h('li', { class: 'glb-finding', dataset: { finding: 'isp-stale' } },
+        h('span', { class: 'glb-finding-icon' }, SeverityIcon('warn')), h('span', { class: 'glb-finding-text' }, text)))
+    ];
+    if (!rows.length) return;
+    const limit = findingsOpen ? rows.length : 3;
+    const titleId = uid('glb-findings');
+    const more = rows.length > limit ? Button({
+      label: t('glb.findings.more', { count: rows.length - limit }), size: 'sm', variant: 'ghost', icon: 'chevron-down', dataset: { action: 'glb-findings-more' },
+      onClick: () => {
+        findingsOpen = true;
+        renderFindings(findings, ispLines);
+        const next = findingsEl.querySelectorAll('.glb-finding')[limit];
+        if (next) {
+          next.setAttribute('tabindex', '-1');
+          next.focus({ preventScroll: true });
+        }
+      }
+    }) : null;
+    findingsEl.append(h('section', { class: 'card glb-findings-card', attrs: { 'aria-labelledby': titleId } },
+      h('h3', { class: 'glb-findings-title', id: titleId }, t('glb.findings.label')),
+      h('ul', { class: 'glb-findings finding-list' }, rows.slice(0, limit)),
+      more));
   }
 
   /** "a, b, c +2 more" — the first `max` entries of a list. */
@@ -1881,8 +2157,8 @@ export function mount(container, ctx) {
     return shortList([...new Set(names)], 3, '; ');
   }
 
-  /** One verdict finding: the groups it is about (letter marks) and what it most likely means. */
-  function renderFinding(f) {
+  /** One verdict finding, a row of the findings list: its icon, the groups it is about (letter marks) and what it most likely means. */
+  function renderFinding(f, severity = 'warn') {
     const sources = sourceNames(f.members);
     const providers = shortList((f.operators || []).map((op) => op.name));
     let text;
@@ -1927,38 +2203,20 @@ export function mount(container, ctx) {
     const everyGroup = f.code === 'direct' || f.code === 'records' || keys.length === groups.filter((g) => g.letter).length;
     const marks = everyGroup ? [] : keys.slice(0, 4).map((key) => groupMark(groupByKey.get(key)));
     if (!everyGroup && keys.length > 4) marks.push(h('span', { class: 'glb-finding-more' }, `+${keys.length - 4}`));
-    return h('li', { class: 'glb-finding', dataset: f.partner ? { finding: f.code, partner: 'true' } : { finding: f.code } },
+    return h('li', { class: 'glb-finding', dataset: f.partner ? { finding: f.code, partner: 'true', severity } : { finding: f.code, severity } },
+      h('span', { class: 'glb-finding-icon' }, SeverityIcon(severity)),
       marks.length ? h('span', { class: 'glb-finding-marks' }, marks) : null,
-      h('span', null, text));
+      h('span', { class: 'glb-finding-text' }, text));
   }
 
-  function renderLinks(name, type) {
-    clear(linksEl);
-    linksEl.append(
-      h('span', { class: 'muted' }, t('glb.links')),
-      h('a', { href: ctx.href('lookup', { name, type }) }, Icon('search', { size: 14 }), ' ', t('nav.lookup')),
-      h('a', { href: ctx.href('health', { domain: name }) }, Icon('activity', { size: 14 }), ' ', t('nav.health')));
-  }
-
+  /** A check starts (true) or ends: Stop takes Run's slot (the keyboard focus goes with it); the form waits. */
   function setRunning(on) {
-    runBtn.hidden = on;
-    stopBtn.hidden = !on;
-    setButtonBusy(stopBtn, false);
+    runBar.setRunning(on);
     nameField.input.readOnly = on;
     typeField.input.disabled = on;
     geoField.input.disabled = on;
     ctx.setBusy(on ? t('glb.progress') : false);
-  }
-
-  function setHeaderActions() {
-    if (!current) {
-      ctx.setActions();
-      return;
-    }
-    const params = checkParams(current);
-    ctx.setActions(
-      CopyButton(() => ctx.shareUrl(params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }),
-      Button({ label: t('common.rerun'), icon: 'refresh', size: 'sm', dataset: { action: 'rerun' }, onClick: () => rerunCheck() }));
+    syncRunBar();
   }
 
   /** The route params of a check (what a shared link runs), with the expected value judged against it. */
@@ -2051,6 +2309,8 @@ export function mount(container, ctx) {
     };
     filterKey = null;
     missingOnly = false;
+    statusFilter = null;
+    findingsOpen = false;
     groups = [];
     groupByKey = new Map();
     // The expected value for this check's type; the name server's answer belonged to the last one.
@@ -2065,6 +2325,7 @@ export function mount(container, ctx) {
     ipTable.setSearch('');
     clear(filterNote);
     filterNote.hidden = true;
+    status.setPressed(null);
     resolverTable.setRows(rows.filter((r) => r.kind === 'resolver'));
     geoTable.setRows(rows.filter((r) => r.kind === 'geo' && !isChinaRow(r)));
     chinaTable.setRows(rows.filter(isChinaRow));
@@ -2074,9 +2335,7 @@ export function mount(container, ctx) {
     for (const o of Object.values(exportOpts)) o.subject = name;
     emptyWrap.hidden = true;
     results.hidden = false;
-    renderLinks(name, type);
-    setHeaderActions();
-    summary.setDisabled(true);
+    actions.setDisabled(true);
   }
 
   async function runCheck(name, type, geo) {
@@ -2084,12 +2343,11 @@ export function mount(container, ctx) {
     const run = current;
     const controller = new AbortController();
     run.controller = controller;
-    progress.el.hidden = false;
     progress.setVariant('default');
     progress.setLabel(t('glb.progress'));
     progress.set(0, run.rows.length);
-    renderAll();
     setRunning(true);
+    renderAll();
     try {
       const shared = await ctx.getDns();
       // A one-shot comparison: ask every source once, with a short timeout, so an unreachable
@@ -2125,10 +2383,9 @@ export function mount(container, ctx) {
       clearTimeout(renderTimer);
       renderTimer = null;
     }
-    if (run.done) progress.done(t('glb.progressDone'));
-    else progress.setVariant('warn');
+    // The progress goes with the run (the result header's meta held it); the totals are said once.
     renderAll();
-    if (run.done) setTimeout(() => { if (current === run && run.done) progress.el.hidden = true; }, 900);
+    syncRunBar();
   }
 
   /** Re-render a finished run kept across a language re-mount (no network). */
@@ -2157,8 +2414,10 @@ export function mount(container, ctx) {
       clearTimeout(renderTimer);
       renderTimer = null;
     }
-    progress.el.hidden = true;
+    // Shown again, not run: its totals were said when it ended.
+    announcedFor = current;
     renderAll();
+    syncRunBar();
   }
 
   /* --- initial state --------------------------------------------------------- */
@@ -2178,6 +2437,7 @@ export function mount(container, ctx) {
     // from another tool (`run=0`) only fills the form.
     Promise.resolve().then(() => start({ auto: true }));
   }
+  syncRunBar();
 
   active = {
     teardown() {
@@ -2198,13 +2458,13 @@ export function mount(container, ctx) {
       }));
       return {
         name: current.name, type: current.type, geo: current.geo, items, controls: current.controls, done: current.done, at: current.finishedAt,
-        draft: nameField.value, carried, isp: ispPanel ? ispPanel.snapshot() : null, soa: soaPanel ? soaPanel.snapshot() : null, ...expect
+        draft: nameField.value, carried, isp: ispPanel ? ispPanel.snapshot() : null, soa: soaPanel ? soaPanel.snapshot() : null, tab: tabNow, ...expect
       };
     },
     result() {
       if (!current || current.controller || !current.finishedAt || !current.rows.some((r) => !r.pending)) return null;
-      // The page header already has Re-run next to Copy link: the note offers no second one.
-      return { subject: current.name, at: current.finishedAt, params: checkParams(current), rerun: false };
+      // Its note sits in the result header and offers "Run again": the same name, type and locations.
+      return { subject: current.name, at: current.finishedAt, params: checkParams(current) };
     },
     rerun() {
       rerunCheck();
@@ -2247,8 +2507,8 @@ export function snapshot() {
 
 /**
  * The finished (or stopped) check on screen (kept by the shell when the view is left), or null.
- * `rerun: false`: its note offers no "Run again" (the page header has Re-run).
- * @returns {{ subject: string, at: Date, rerun: boolean }|null}
+ * Its note ("Result from …") sits in the result header and offers "Run again" ({@link rerun}).
+ * @returns {{ subject: string, at: Date, params: Record<string, string> }|null}
  */
 export function result() {
   return active ? active.result() : null;

@@ -1090,3 +1090,122 @@ export async function checkPropagation(name, type = 'A', {
     finishedAt: new Date()
   };
 }
+
+/* ------------------------------------------------------------------------ */
+/* The result header of Global DNS (docs/DESIGN.md §5.6; ui/template.js)      */
+/* ------------------------------------------------------------------------ */
+
+/** A row's values that are not a DNS rcode: a transport failure, a name that does not exist, an empty answer. */
+const NO_RCODE = new Set(['ERROR', 'NXDOMAIN', 'NODATA']);
+
+/**
+ * The DNS rcode a source answered with when it is no answer (SERVFAIL, REFUSED …: answerValues
+ * gives it as the row's only value), else null.
+ * @param {{ pending?: boolean, values?: string[]|null }|null} row
+ * @returns {string|null}
+ */
+export function rowRcode(row) {
+  const v = row && !row.pending && Array.isArray(row.values) && row.values.length === 1 ? row.values[0] : null;
+  return typeof v === 'string' && /^[A-Z][A-Z0-9]*$/.test(v) && !NO_RCODE.has(v) ? v : null;
+}
+
+/**
+ * The severity of each outcome of a check (its result title's status icon, docs/DESIGN.md §6.2):
+ * the verdict's states (VERDICT_STATES), and `running`, `stopped` (before any usable answer),
+ * `failed` (every query failed). Still asking has none: a spinner takes its place.
+ */
+export const OUTCOME_SEVERITY = Object.freeze({
+  running: null, stopped: 'info', failed: 'error', none: 'warn',
+  unresolved: 'error', agree: 'ok', 'by-design': 'info', geo: 'info', stale: 'warn', differ: 'warn'
+});
+
+/** The status summary's items of a check, in their order (lib/template.js statusItems sorts them by severity). */
+export const OUTCOME_STATUS_KEYS = Object.freeze(['rcode', 'failed', 'differ', 'design', 'blocked', 'answered']);
+
+const finishedValues = (row) => !!row && !row.pending && Array.isArray(row.values);
+
+/**
+ * What a Global DNS check comes to, for its result header, status summary and metric strip: the
+ * state — `running`; before any usable answer `stopped` (by Stop), `failed` (a query failed) or
+ * `none` (blocked or unreadable everywhere); else the verdict's — its severity and the counts.
+ * Rows as views/global.js keeps them: `pending`, `values` (answerValues), `filtered` (a filtering
+ * resolver blocked the name), `notAsked` (a location not asked for the type), `skipped` (a resolver
+ * a browser cannot read: no answer, no failure).
+ * @param {Array<{ pending?: boolean, values?: string[]|null, filtered?: boolean, notAsked?: boolean, skipped?: boolean }>} rows
+ * @param {{ state?: string }|null} verdict propagationVerdict of the readable rows
+ * @param {{ done?: boolean, cancelled?: boolean }} [run]
+ * @returns {{ state: string, severity: string|null, total: number, answered: number, failed: number, unavailable: number,
+ *   notAsked: number, blocked: number, rcodes: Record<string, number>, rcodeRows: number, groups: number }}
+ *   `total`: the sources asked (every row but those not asked); `answered`: those that gave an answer
+ *   or a DNS status; `groups`: the distinct answers among them (a blocked answer is none)
+ */
+export function propagationOutcome(rows, verdict, { done = false, cancelled = false } = {}) {
+  const list = (Array.isArray(rows) ? rows : []).filter(Boolean);
+  const finished = list.filter((r) => finishedValues(r) && !r.notAsked);
+  const notAsked = list.filter((r) => !r.pending && r.notAsked).length;
+  const unavailable = finished.filter((r) => r.skipped).length;
+  const failed = finished.filter((r) => !r.skipped && isErrorValues(r.values)).length;
+  const answers = finished.filter((r) => !r.skipped && !isErrorValues(r.values));
+  const usable = answers.filter((r) => !r.filtered);
+  const rcodes = {};
+  for (const r of usable) {
+    const rc = rowRcode(r);
+    if (rc) rcodes[rc] = (rcodes[rc] || 0) + 1;
+  }
+  let state;
+  if (!done && !cancelled) state = 'running';
+  else if (!usable.length) state = cancelled ? 'stopped' : failed ? 'failed' : 'none';
+  else state = verdict && VERDICT_STATES.includes(verdict.state) ? verdict.state : 'differ';
+  return {
+    state,
+    severity: OUTCOME_SEVERITY[state] ?? null,
+    total: list.length - notAsked,
+    answered: answers.length,
+    failed,
+    unavailable,
+    notAsked,
+    blocked: answers.length - usable.length,
+    rcodes,
+    rcodeRows: Object.values(rcodes).reduce((n, v) => n + v, 0),
+    groups: new Set(usable.map((r) => r.values.join('\n'))).size
+  };
+}
+
+/**
+ * The status summary of a check (docs/DESIGN.md §5.6: ⚠ differ ✕ SERVFAIL ⓘ by design · answered
+ * x/y): the sources that answered with a DNS error (`rcodes` names them) and those whose query
+ * failed, the distinct answers when they differ — by design or not —, the answers a filtering
+ * resolver blocked, and how many answered of all. Zero counts are left out by lib/template.js
+ * statusItems.
+ * @param {ReturnType<typeof propagationOutcome>} outcome
+ * @returns {Array<{ key: string, severity: string, count: number, rcodes?: string[], total?: number }>}
+ */
+export function propagationStatus(outcome) {
+  const o = outcome || {};
+  const groups = Number(o.groups) || 0;
+  const differ = (o.state === 'differ' || o.state === 'stale') && groups > 1 ? groups : 0;
+  const design = (o.state === 'by-design' || o.state === 'geo') && groups > 1 ? groups : 0;
+  return [
+    { key: 'rcode', severity: 'error', count: Number(o.rcodeRows) || 0, rcodes: Object.keys(o.rcodes || {}).sort() },
+    { key: 'failed', severity: 'error', count: Number(o.failed) || 0 },
+    { key: 'differ', severity: 'warn', count: differ },
+    { key: 'design', severity: 'info', count: design },
+    { key: 'blocked', severity: 'info', count: Number(o.blocked) || 0 },
+    { key: 'answered', severity: 'neutral', count: Number(o.answered) || 0, total: Number(o.total) || 0 }
+  ];
+}
+
+/**
+ * Whether a row is one a status item counts: the filter of the tables that a press of the item sets
+ * (`rcode`, `failed`, `blocked`); the others filter nothing (false).
+ * @param {string} key an {@link OUTCOME_STATUS_KEYS} key
+ * @param {object|null} row
+ * @returns {boolean}
+ */
+export function propagationStatusMatch(key, row) {
+  if (!finishedValues(row) || row.notAsked) return false;
+  if (key === 'rcode') return !row.filtered && !!rowRcode(row);
+  if (key === 'failed') return !row.skipped && isErrorValues(row.values);
+  if (key === 'blocked') return !!row.filtered && !row.skipped && !isErrorValues(row.values);
+  return false;
+}

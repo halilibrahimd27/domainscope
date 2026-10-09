@@ -45,16 +45,19 @@
 import { h, clear, uid } from '../ui/dom.js';
 import {
   Alert, Badge, Button, Card, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, FileDrop, Icon, ProgressBar,
-  SegmentedControl, SeverityIcon, Spinner, StatCard, Tabs, announce, checkbox, copyText, radioGroup, select,
+  SegmentedControl, SeverityIcon, Spinner, Tabs, announce, checkbox, copyText, radioGroup, select,
   textInput, textarea, toast
 } from '../ui/components.js';
 import { downloadText } from '../ui/download.js';
+import {
+  EmptyState as ResultEmpty, MetricStrip, PrivacyNote, ResultActions, ResultHeader, ResultTitle, StatusSummary, ToolInput
+} from '../ui/template.js';
 import { formatBytes, formatNumber, registerStrings, t as tt } from '../i18n.js';
 import {
   parseZone, mergeZones, detectZoneFormat, zoneNames, ZONE_FORMATS, ZONE_DIALECTS, ZONE_LIMITS, ISSUE_CODES,
   NOT_A_ZONE_HINTS
 } from '../lib/zoneparse.js';
-import { lintZone, LINT_RULES, LINT_I18N } from '../lib/zonelint.js';
+import { lintZone, zoneStatus, LINT_RULES, LINT_I18N } from '../lib/zonelint.js';
 import {
   proxiedOriginMap, addressMap, zoneSweep, handoffFiles, zoneScanInput, privateLookingNames, looksInternalName, referenceRecords, ORIGIN_KINDS,
   ZONE_NAMES_FILE, ZONE_TARGETS_FILE
@@ -179,10 +182,18 @@ export const SAMPLES = Object.freeze([
 /* ------------------------------------------------------------------------ */
 
 const EN = {
-  'zone.privacyTitle': 'Stays in this tab',
+  'zone.privacyMore': 'What is kept and what is sent',
+  'zone.privacyShort': 'Read in this browser and kept in this tab only; nothing is sent until you click a check, a scan or a fetch.',
   'zone.privacy': 'Read in this browser and kept only in this tab’s memory — nothing is uploaded or saved, except the exact origins you choose to remember in this workspace’s origin map. A reload forgets it. Only what you click sends anything: the live check, or a scan of these names, sends record names (never the file or its addresses) to your DNS resolvers; the comparison with new name servers sends them to Globalping probes, after you confirm. Fetch from deSEC or DigitalOcean sends only the zone name and your API token, to that provider.',
   'zone.import.title': 'Import a zone file',
-  'zone.import.subtitle': 'Drop it, choose it or paste it — the format is detected',
+  'zone.dropAnother': 'Import another file: drop it here, choose it or paste it',
+  'zone.emptyLine': 'Every record, the real origins behind proxied names, the zone’s mistakes and its drift from live DNS — the file never leaves this browser.',
+  'zone.exportConvert': 'Convert to another format…',
+  'zone.metricsLabel': 'The zone in numbers',
+  'zone.count.error': { one: '{count} error', other: '{count} errors' },
+  'zone.count.warn': { one: '{count} warning', other: '{count} warnings' },
+  'zone.count.names': { one: '{count} name', other: '{count} names' },
+  'zone.count.proxied': '{count} proxied',
   'zone.drop.title': 'Drop a zone export here, choose a file or paste it',
   'zone.drop.hint': 'BIND / Cloudflare export, Cloudflare, deSEC or DigitalOcean API JSON, Route 53 JSON, octoDNS YAML, cPanel, GoDaddy, Plesk',
   'zone.paste.summary': '…or paste the text',
@@ -218,7 +229,6 @@ const EN = {
   'zone.sum.noOrigin': 'Zone (unknown)',
   'zone.sum.files': '{files} · {size}',
   'zone.forget': 'Forget',
-  'zone.replace': 'Import another file or change the zone name',
   'zone.forgotten': 'Zone forgotten',
   'zone.imported': 'Zone {origin} imported: {records} records',
   'zone.internalZone': 'This looks like an internal zone ({private} of {total} addresses are private). Public resolvers do not know it: its names will show as missing, and checking sends them to public resolvers.',
@@ -461,10 +471,18 @@ const EN = {
 };
 
 const TR = {
-  'zone.privacyTitle': 'Bu sekmede kalır',
+  'zone.privacyMore': 'Ne tutulur, ne gönderilir',
+  'zone.privacyShort': 'Bu tarayıcıda okunur ve yalnızca bu sekmede tutulur; bir kontrole, taramaya ya da getirmeye tıklayana kadar hiçbir şey gönderilmez.',
   'zone.privacy': 'Bu tarayıcıda okunur ve yalnızca bu sekmenin belleğinde tutulur — bu çalışma alanının origin haritasında hatırlamayı seçtiğiniz kesin origin’ler dışında hiçbir şey yüklenmez ya da kaydedilmez. Sayfayı yenilemek onu unutturur. Yalnızca tıkladığınız işlemler bir şey gönderir: canlı kontrol ya da bu adların taranması, kayıt adlarını (dosyayı ya da içindeki adresleri asla) DNS çözümleyicilerinize gönderir; yeni ad sunucularıyla karşılaştırma ise onayınızdan sonra onları Globalping ölçüm noktalarına gönderir. deSEC ya da DigitalOcean’dan getir ise yalnızca zone adını ve API anahtarınızı o sağlayıcıya gönderir.',
   'zone.import.title': 'Zone dosyası içe aktar',
-  'zone.import.subtitle': 'Bırakın, seçin ya da yapıştırın — biçim otomatik algılanır',
+  'zone.dropAnother': 'Başka bir dosya içe aktarın: buraya bırakın, seçin ya da yapıştırın',
+  'zone.emptyLine': 'Her kayıt, proxy’li adların arkasındaki gerçek sunucular, zone’daki hatalar ve canlı DNS’ten farkları — dosya bu tarayıcıdan hiç çıkmaz.',
+  'zone.exportConvert': 'Başka bir biçime dönüştür…',
+  'zone.metricsLabel': 'Sayılarla zone',
+  'zone.count.error': '{count} hata',
+  'zone.count.warn': '{count} uyarı',
+  'zone.count.names': '{count} ad',
+  'zone.count.proxied': '{count} proxy’li',
   'zone.drop.title': 'Zone dışa aktarımını buraya bırakın, dosya seçin ya da yapıştırın',
   'zone.drop.hint': 'BIND / Cloudflare dışa aktarımı, Cloudflare, deSEC ya da DigitalOcean API JSON, Route 53 JSON, octoDNS YAML, cPanel, GoDaddy, Plesk',
   'zone.paste.summary': '…ya da metni yapıştırın',
@@ -500,7 +518,6 @@ const TR = {
   'zone.sum.noOrigin': 'Zone (bilinmiyor)',
   'zone.sum.files': '{files} · {size}',
   'zone.forget': 'Unut',
-  'zone.replace': 'Başka dosya içe aktar ya da zone adını değiştir',
   'zone.forgotten': 'Zone unutuldu',
   'zone.imported': '{origin} zone’u içe aktarıldı: {records} kayıt',
   'zone.internalZone': 'Bu bir iç zone’a benziyor ({total} adresin {private} tanesi özel). Genel çözümleyiciler onu bilmez: adları “canlıda yok” görünür ve kontrol, bu adları genel çözümleyicilere gönderir.',
@@ -1293,10 +1310,18 @@ export function mount(container, ctx) {
   }
   if (ZONE_TABS.includes(ctx.params.tab)) S.tab = ctx.params.tab;
 
-  const root = h('div', { class: 'zone-page stack' });
-  container.append(
-    Alert({ variant: 'ok', icon: 'lock', title: t('zone.privacyTitle'), message: t('zone.privacy'), compact: true }),
-    root);
+  // The page template (DESIGN §5.5, File): the import card (what is kept and sent in its footer,
+  // compact once a zone is loaded), then the zone's result header, kept for the life of the view —
+  // the shell's kept-result note ("Live check from …") sits in it — and the tabs.
+  const root = h('div', { class: 'zone-page' });
+  container.append(root);
+  const head = ResultHeader({ className: 'zone-summary' });
+  /** The result header's actions (Copy summary, Export ▾ with Forget last), drawn with the zone. */
+  let actions = null;
+  ctx.onCleanup(() => {
+    if (actions) actions.dispose();
+    actions = null;
+  });
 
   const fmtLabel = (zone) => (zone.format === 'bind' && zone.dialect ? t(`zone.dialect.${zone.dialect}`) : t(`zone.format.${zone.format}`));
   const secrets = () => originSecrets(S.origins);
@@ -1356,8 +1381,8 @@ export function mount(container, ctx) {
       if (announceIt && !zone.fatal) {
         const msg = t('zone.imported', { origin: zone.origin || '?', records: formatNumber(zone.records.length) });
         announce(msg);
-        const head = root.querySelector('.zone-summary-title');
-        if (head) head.focus({ preventScroll: true });
+        // The keyboard goes to the zone's result header: the outline reads tool → result.
+        if (head.el.isConnected) head.focusTitle();
       }
     }, 0);
   }
@@ -1399,7 +1424,8 @@ export function mount(container, ctx) {
   /* --- render ------------------------------------------------------------ */
   function render() {
     clear(root);
-    root.append(importCard());
+    const loaded = !!(S.zone && !S.zone.fatal && !S.busy);
+    root.append(importInput(loaded));
     if (S.busy) {
       const size = (S.files || []).reduce((n, f) => n + f.size, 0);
       root.append(h('div', { class: 'zone-busy' }, Spinner({ label: t('zone.reading', { size: formatBytes(size) }), showLabel: true })));
@@ -1407,12 +1433,20 @@ export function mount(container, ctx) {
     }
     if (S.fileError) root.append(Alert({ variant: 'error', title: t('zone.fatal.title'), message: S.fileError }));
     const z = S.zone;
-    if (!z) return;
+    if (!z) {
+      root.append(h('div', { class: 'zone-empty' }, ResultEmpty({
+        icon: 'file-text',
+        message: t('zone.emptyLine'),
+        checks: [t('zone.tab.records'), t('zone.tab.origins'), t('zone.tab.problems'), t('zone.tab.live'), t('zone.tab.parity'), t('zone.tab.convert')]
+      })));
+      return;
+    }
     if (z.fatal) {
       root.append(fatalBanner(z.fatal));
       return;
     }
-    root.append(summaryBar(z), ...pinnedAlerts(z));
+    resultHead(z);
+    root.append(head.el);
     const tabs = Tabs([
       { id: 'overview', label: t('zone.tab.overview'), content: () => overviewTab(z) },
       { id: 'records', label: t('zone.tab.records'), badge: S.counts.records, content: () => recordsTab(z) },
@@ -1429,6 +1463,7 @@ export function mount(container, ctx) {
       onChange: (tab) => {
         S.tab = tab;
         ctx.setParams({ tab: tab === 'overview' ? null : tab });
+        syncStatus();
       }
     });
     if (S.counts.errors) tabs.setBadge('problems', S.counts.errors, 'error');
@@ -1438,7 +1473,14 @@ export function mount(container, ctx) {
   }
   rerender = render;
 
-  function importCard() {
+  /**
+   * Region 2 of a file tool (DESIGN §5.5, File): the drop zone (it also takes a pasted export), the
+   * zone name and the format, Paste, Fetch from deSEC or DigitalOcean, the samples and how to export a
+   * zone, what is kept and sent in the footer. Once a zone is loaded it is one row: the drop zone,
+   * folded to a line, the files loaded and Edit — open again while the zone name was only guessed.
+   * @param {boolean} loaded
+   */
+  function importInput(loaded) {
     // A file over the limit is skipped and FileDrop reads the others on: what it said stays in the
     // banner with the zone they make (parseNow clears it). An error repaints, so a new FileDrop
     // takes the next drop with nothing kept.
@@ -1446,9 +1488,9 @@ export function mount(container, ctx) {
     const drop = FileDrop({
       accept: ACCEPT,
       multiple: true,
-      compact: !!S.zone,
+      compact: loaded,
       icon: 'upload',
-      title: t('zone.drop.title'),
+      title: loaded ? t('zone.dropAnother') : t('zone.drop.title'),
       hint: t('zone.drop.hint'),
       maxBytes: ZONE_LIMITS.maxBytes,
       className: 'zone-drop',
@@ -1470,10 +1512,11 @@ export function mount(container, ctx) {
     // '/' lands on the drop zone, which also takes a pasted export (Ctrl+V).
     drop.el.dataset.shortcut = 'focus';
     const pasteArea = textarea({ label: t('zone.paste.label'), rows: 8, attrs: { 'data-role': 'zone-paste' } });
+    // With a zone on screen, Import steps back: the Overview's Scan now leads (one primary at a time).
     const pasteBtn = Button({
       label: t('zone.import'),
       icon: 'arrow-down',
-      variant: 'primary',
+      variant: loaded ? 'secondary' : 'primary',
       size: 'sm',
       dataset: { action: 'zone-paste-import', shortcut: 'submit' },
       onClick: () => {
@@ -1509,8 +1552,8 @@ export function mount(container, ctx) {
         if (S.files) parseNow();
       }
     });
-    const samples = h('div', { class: 'zone-samples cluster' },
-      h('span', { class: 'muted text-sm' }, t('zone.samples')),
+    const samples = h('div', { class: 'zone-samples cluster', attrs: { role: 'group', 'aria-label': t('zone.samples') } },
+      h('span', { class: 'example-chips-label', attrs: { 'aria-hidden': 'true' } }, t('zone.samples')),
       SAMPLES.map((s) => Button({
         label: t(`zone.sample.${s.id}`),
         size: 'sm',
@@ -1536,30 +1579,35 @@ export function mount(container, ctx) {
           'gcloud dns record-sets export example.com.txt --zone=ZONE --zone-file-format'
         ].join('\n'), { wrap: true }))
     });
-    // A form of its own for the shell's Ctrl/Cmd+Enter: Import answers the paste box, the zone name and the
-    // format (nothing while the paste box is closed); a field of the live check never imports.
-    const body = h('div', { class: 'stack-sm', dataset: { shortcutScope: 'zone-import' } },
-      drop.el || drop,
-      h('div', { class: 'zone-import-fields' }, originField.el, formatSel.el),
-      pasteBox,
-      ZoneFetchPanel({
-        domainHint: S.originInput || (S.zone && S.zone.origin) || '',
-        onZone: (z) => importFiles([{ name: z.name, size: z.text.length, text: z.text }], { origin: z.origin }),
-        requireOnline: ctx.requireOnline
-      }),
-      S.zone ? null : samples,
-      S.zone ? null : howto);
-    // With a zone loaded the importer folds away (open while the zone name still needs a look).
-    if (S.zone && !S.zone.fatal) {
-      return Disclosure({ summary: t('zone.replace'), className: 'zone-import zone-import-folded card', open: !originConfirmed(S.zone, S.confirmed), children: body });
-    }
-    return Card({
-      title: S.zone ? null : t('zone.import.title'),
-      subtitle: S.zone ? null : t('zone.import.subtitle'),
-      icon: S.zone ? null : 'file-text',
+    // The whole of what is kept and sent, one click away (the footer says it in one line).
+    const privacyFull = Disclosure({ summary: t('zone.privacyMore'), className: 'zone-privacy-full', children: h('p', { class: 'text-sm' }, t('zone.privacy')) });
+    const files = S.files || [];
+    const input = ToolInput({
       className: 'zone-import',
-      children: body
+      fieldsClass: 'zone-import-head',
+      label: t('zone.import.title'),
+      // A form of its own for the shell's Ctrl/Cmd+Enter: Import answers the paste box, the zone name
+      // and the format (nothing while the paste box is closed); a field of the live check never imports.
+      dataset: { shortcutScope: 'zone-import' },
+      primary: drop.el || drop,
+      more: [
+        h('div', { class: 'zone-import-fields' }, originField.el, formatSel.el),
+        pasteBox,
+        ZoneFetchPanel({
+          domainHint: S.originInput || (S.zone && S.zone.origin) || '',
+          onZone: (zz) => importFiles([{ name: zz.name, size: zz.text.length, text: zz.text }], { origin: zz.origin }),
+          requireOnline: ctx.requireOnline
+        })
+      ],
+      // The samples only while no zone is on screen (the Compare tab offers its own for the second file).
+      extras: [S.zone ? null : samples, howto, privacyFull],
+      privacy: PrivacyNote({ text: t('zone.privacyShort'), className: 'zone-privacy' }),
+      summary: () => (files.length ? t('zone.sum.files', { files: files.map((f) => f.name).join(', '), size: formatBytes(files.reduce((n, f) => n + f.size, 0)) }) : '')
     });
+    input.setCompact(loaded);
+    // Open while the zone name still needs a look (it was only guessed).
+    if (loaded && !originConfirmed(S.zone, S.confirmed)) input.setEditing(true);
+    return input.el;
   }
 
   function fatalBanner(fatal) {
@@ -1577,21 +1625,39 @@ export function mount(container, ctx) {
     }));
   }
 
-  function summaryBar(z) {
+  /**
+   * The zone's result header (region 4): "Zone example.com · <format>", the counts and the files,
+   * what the file needs said (an incomplete export, a mostly internal zone, a guessed zone name with
+   * Confirm), the status summary — the errors and warnings filter the Problems tab, the names open
+   * the Records tab, the proxied records filter it — Copy summary, and Export ▾: Convert to another
+   * format, Print, and Forget last. No Copy link: nothing of a file goes into a URL.
+   */
+  function resultHead(z) {
     const c = S.counts;
     const files = S.files || [];
     const size = files.reduce((n, f) => n + f.size, 0);
     const lowOrigin = z.origin && !originConfirmed(z, S.confirmed);
-    return h('div', { class: 'zone-summary card', dataset: { format: z.format || '', dialect: z.dialect || '' } },
-      h('div', { class: 'zone-summary-main' },
-        h('h2', { class: 'zone-summary-title', tabindex: -1 }, z.origin ? t('zone.sum.zone', { origin: z.origin }) : t('zone.sum.noOrigin')),
-        h('div', { class: 'cluster zone-summary-meta' },
-          Badge(fmtLabel(z), { variant: 'accent', title: (z.markers || []).join(' · ') || null, className: 'zone-format-badge' }),
-          h('span', { class: 'zone-counts', dataset: { role: 'zone-counts' } },
-            t('zone.sum.counts', { records: formatNumber(c.records), names: formatNumber(c.names), proxied: formatNumber(c.proxied) })),
-          h('span', { class: 'muted text-sm zone-files' }, t('zone.sum.files', { files: files.map((f) => f.name).join(', '), size: formatBytes(size) })))),
-      h('div', { class: 'zone-summary-actions cluster' },
-        lowOrigin ? Button({
+    head.setState('done');
+    Object.assign(head.el.dataset, { format: z.format || '', dialect: z.dialect || '' });
+    head.set('title', ResultTitle({
+      icon: 'file-text',
+      text: [
+        h('span', { class: 'zone-summary-title' }, z.origin ? t('zone.sum.zone', { origin: z.origin }) : t('zone.sum.noOrigin')),
+        ' · ',
+        Badge(fmtLabel(z), { variant: 'neutral', title: (z.markers || []).join(' · ') || null, className: 'zone-format-badge' })
+      ]
+    }));
+    head.set('meta', [
+      h('span', { class: 'zone-counts', dataset: { role: 'zone-counts' } },
+        t('zone.sum.counts', { records: formatNumber(c.records), names: formatNumber(c.names), proxied: formatNumber(c.proxied) })),
+      h('span', { class: 'zone-files' }, t('zone.sum.files', { files: files.map((f) => f.name).join(', '), size: formatBytes(size) }))
+    ]);
+    const partial = z.warnings.find((w) => w.code === 'PARTIAL_EXPORT' || w.code === 'RECORDS_TRUNCATED');
+    head.set('notes', [
+      partial ? h('div', { class: 'zone-partial' }, Alert({ variant: 'error', compact: true, title: t('zone.partial.title'), message: t(issueKey(partial.code, partial.params), partial.params) })) : null,
+      internalAlert({ compact: true }),
+      lowOrigin ? h('div', { class: 'zone-guessed text-sm' }, Icon('alert', { size: 14 }), h('span', null, t('zone.origin.guessed')),
+        Button({
           label: t('zone.origin.confirm'),
           icon: 'check',
           size: 'sm',
@@ -1602,26 +1668,58 @@ export function mount(container, ctx) {
             publish();
             render();
           }
-        }) : null,
-        // "Copy summary": counts and problems only; the link is a bare #/zone (the file never goes into a URL).
-        SummaryButton({
-          kind: 'zone',
-          facts: () => ({ origin: z.origin, format: fmtLabel(z), counts: S.counts, problems: S.problems.map((p) => ({ severity: p.severity, ...problemText(p) })) }),
-          url: () => ctx.shareUrl(permalinkParams('zone', ctx.params))
-        }),
-        Button({ label: t('zone.forget'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'zone-forget' }, onClick: forget })),
-      lowOrigin ? h('p', { class: 'zone-guessed text-sm' }, Icon('alert', { size: 14 }), ' ', t('zone.origin.guessed')) : null);
+        })) : null
+    ]);
+    head.set('status', status.el);
+    syncStatus();
+    if (actions) actions.dispose();
+    actions = ResultActions({
+      // "Copy summary": counts and problems only; the link is a bare #/zone (the file never goes into a URL).
+      summary: SummaryButton({
+        kind: 'zone',
+        plainLabel: t('result.plainTitle'),
+        facts: () => ({ origin: z.origin, format: fmtLabel(z), counts: S.counts, problems: S.problems.map((p) => ({ severity: p.severity, ...problemText(p) })) }),
+        url: () => ctx.shareUrl(permalinkParams('zone', ctx.params))
+      }),
+      exports: [
+        // The zone as another tool's or provider's file: the Convert tab writes it.
+        { label: t('zone.exportConvert'), icon: 'swap', dataset: { action: 'zone-open-convert-menu' }, onSelect: () => goTab('convert') },
+        { label: t('result.print'), icon: 'file-text', dataset: { action: 'print' }, onSelect: () => globalThis.print && globalThis.print() },
+        // Destructive, last (DESIGN §5.3).
+        { label: t('zone.forget'), icon: 'trash', dataset: { action: 'zone-forget' }, onSelect: () => forget() }
+      ]
+    });
+    head.set('actions', actions.el);
   }
 
-  function pinnedAlerts(z) {
-    const out = [];
-    const partial = z.warnings.find((w) => w.code === 'PARTIAL_EXPORT' || w.code === 'RECORDS_TRUNCATED');
-    if (partial) {
-      out.push(h('div', { class: 'zone-partial' }, Alert({ variant: 'error', title: t('zone.partial.title'), message: t(issueKey(partial.code, partial.params), partial.params) })));
-    }
-    const internal = internalAlert();
-    if (internal) out.push(internal);
-    return out;
+  /** The status summary of the zone on screen (lib/zonelint.js zoneStatus): updated in place, its toggles following the filters. */
+  const status = StatusSummary({ className: 'zone-status' });
+  function syncStatus() {
+    if (!S.counts) return;
+    const problemsOn = S.tab === 'problems' && (S.probFilter === 'error' || S.probFilter === 'warn') ? S.probFilter : null;
+    const pressed = problemsOn || (S.tab === 'records' && S.rec.proxiedOnly ? 'proxied' : null);
+    status.update(zoneStatus(S.counts).map((item) => ({
+      ...item,
+      text: t(`zone.count.${item.key}`, { count: item.count }),
+      ...(item.key === 'names'
+        ? { onPress: () => showRecords({ proxiedOnly: false }) }
+        : {
+          filter: true,
+          onPress: (key) => (key === 'proxied' ? showRecords({ proxiedOnly: !(S.tab === 'records' && S.rec.proxiedOnly) }) : showProblems(key))
+        })
+    })), { pressed });
+  }
+
+  /** The status summary's errors or warnings: the Problems tab, filtered (a second press shows them all). */
+  function showProblems(severity) {
+    S.probFilter = S.tab === 'problems' && S.probFilter === severity ? 'all' : severity;
+    goTab('problems');
+  }
+
+  /** The status summary's names or proxied records: the Records tab, every record or the proxied ones. */
+  function showRecords({ proxiedOnly }) {
+    S.rec = { group: 'all', proxiedOnly, search: '', line: 0 };
+    goTab('records');
   }
 
   /** "This looks like an internal zone" when at least half of the addresses are private, else null. */
@@ -1635,27 +1733,19 @@ export function mount(container, ctx) {
   function overviewTab(z) {
     const c = S.counts;
     const exact = S.origins.filter((r) => r.kind === 'ip' || r.kind === 'host').length;
-    const stat = (key, label, value, iconName, variant, onClick) => {
-      const s = StatCard({ label, value, icon: iconName, variant, onClick });
-      s.el.dataset.stat = key;
-      return s.el;
-    };
-    const stats = h('div', { class: 'stat-grid zone-stats' },
-      stat('names', t('zone.stat.names'), c.names, 'list', 'accent', () => goTab('records')),
-      stat('proxied', t('zone.stat.proxied'), c.proxied, 'cloud', 'default', () => {
-        S.rec = { ...S.rec, proxiedOnly: true };
-        goTab('records');
-      }),
-      stat('dnsOnly', t('zone.stat.dnsOnly'), c.dnsOnly, 'globe', 'default', null),
-      stat('origins', t('zone.stat.origins'), exact, 'server', exact ? 'ok' : 'default', () => goTab('origins')),
-      stat('errors', t('zone.stat.errors'), c.errors, 'x-circle', c.errors ? 'error' : 'default', () => {
-        S.probFilter = 'error';
-        goTab('problems');
-      }),
-      stat('warnings', t('zone.stat.warnings'), c.warnings, 'alert', c.warnings ? 'warn' : 'default', () => {
-        S.probFilter = 'warn';
-        goTab('problems');
-      }));
+    // Region 6 of the Overview tab: the zone's figures, read-only (the status summary filters).
+    const stats = MetricStrip({
+      className: 'zone-stats',
+      label: t('zone.metricsLabel'),
+      metrics: [
+        { id: 'names', label: t('zone.stat.names'), value: c.names },
+        { id: 'proxied', label: t('zone.stat.proxied'), value: c.proxied },
+        { id: 'dnsOnly', label: t('zone.stat.dnsOnly'), value: c.dnsOnly },
+        { id: 'origins', label: t('zone.stat.origins'), value: exact },
+        { id: 'errors', label: t('zone.stat.errors'), value: c.errors, severity: c.errors ? 'error' : null },
+        { id: 'warnings', label: t('zone.stat.warnings'), value: c.warnings, severity: c.warnings ? 'warn' : null }
+      ]
+    }).el;
 
     const confirmed = originConfirmed(z, S.confirmed);
     const priv = privateLookingNames(z);
@@ -1867,6 +1957,7 @@ export function mount(container, ctx) {
       onChange: (on) => {
         S.rec = { ...S.rec, proxiedOnly: !!on };
         table.setFilter((r) => recordMatches(r, S.rec));
+        syncStatus();
       }
     });
     prox.input.dataset.role = 'zone-proxied-only';
@@ -2096,6 +2187,7 @@ export function mount(container, ctx) {
       onChange: (v) => {
         S.probFilter = v;
         fill();
+        syncStatus();
       }
     });
     fill();
@@ -2223,7 +2315,8 @@ export function mount(container, ctx) {
         children: h('div', { class: 'stack-sm' },
           h('p', { class: 'zone-live-lead', dataset: { role: 'zone-live-lead', queries: plan.queries } },
             t('zone.live.lead', { rrsets: formatNumber(plan.rrsets), queries: formatNumber(plan.queries), resolvers: chain.join(', ') })),
-          h('p', { class: 'text-sm muted' }, t('zone.live.sent')),
+          // The tab's own run and what it sends (DESIGN §5.5): the file never leaves, the names do.
+          PrivacyNote({ text: t('zone.live.sent'), className: 'zone-live-privacy' }),
           internalAlert({ compact: true }),
           plan.overBudget ? Alert({ variant: 'info', compact: true, message: t('zone.live.budget', { max: formatNumber(plan.maxQueries) }) }) : null,
           h('div', { class: 'cluster' }, skipBox.el, wildBox.el),

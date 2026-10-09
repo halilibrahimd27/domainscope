@@ -39,6 +39,26 @@ import {
 /** Severity order used to sort findings. */
 export const SEVERITY_ORDER = Object.freeze(['error', 'warn', 'info']);
 
+/**
+ * The status summary of an imported zone (docs/DESIGN.md §5.6, Zone File: ✕ errors ⚠ warnings ·
+ * names · proxied): its problems by severity — the parse issues and these findings together, as
+ * the Problems tab lists them —, then its names and its proxied records. The view makes errors and
+ * warnings the Problems tab's filters, names and proxied the Records tab's (lib/template.js
+ * statusItems leaves a zero count out, but the errors of a verdict).
+ * @param {{ errors?: number, warnings?: number, names?: number, proxied?: number }|null} counts views/zone.js zoneCounts
+ * @returns {Array<{ key: 'error'|'warn'|'names'|'proxied', severity: string, count: number }>}
+ */
+export function zoneStatus(counts) {
+  const c = counts || {};
+  const n = (v) => Math.max(0, Math.floor(Number(v) || 0));
+  return [
+    { key: 'error', severity: 'error', count: n(c.errors) },
+    { key: 'warn', severity: 'warn', count: n(c.warnings) },
+    { key: 'names', severity: 'neutral', count: n(c.names) },
+    { key: 'proxied', severity: 'neutral', count: n(c.proxied) }
+  ];
+}
+
 const rule = (severity, scopes, extra = {}) => Object.freeze({ severity, scopes: Object.freeze(scopes), ...extra });
 
 /**

@@ -4,55 +4,63 @@
  */
 
 .zone-page {
-  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
   min-width: 0;
 }
 
+/* ---- region 2: the import card (a file tool: compact once a zone is loaded) ------------ */
+
 .zone-import .filedrop-compact {
-  padding: 10px 14px;
+  padding: var(--space-2) var(--space-3);
 }
 
 .zone-import-fields {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-  gap: 12px;
+  gap: var(--space-3);
   align-items: start;
 }
 
-.zone-import-folded {
-  padding: 4px 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
+/* Compact: the drop zone, folded to a line, beside the files loaded and Edit. */
+.zone-import.is-compact .tool-input-fields {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
 }
 
-.zone-import-folded > .disclosure-body {
-  padding-bottom: 12px;
+.zone-import .tool-input-summary {
+  max-width: 28rem;
 }
 
 .zone-samples {
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1) var(--space-2);
+}
+
+.zone-privacy-full p {
+  margin: 0;
+  max-width: 100ch;
 }
 
 /* Fetch from deSEC / DigitalOcean (ui/zone-fetch.js) */
 .zone-fetch-fields {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
+  gap: var(--space-3);
   align-items: start;
 }
 
 .zone-fetch-links {
-  gap: 4px 16px;
-  font-size: 13px;
+  gap: var(--space-1) var(--space-4);
+  font-size: var(--fs-sm);
 }
 
 .zone-fetch-status[data-state="running"] {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  font-size: 13px;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
 }
 
 .zone-fetch-status .alert-message,
@@ -62,74 +70,62 @@
 
 .zone-howto .code-block,
 .zone-command {
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .zone-busy {
   display: flex;
   justify-content: center;
-  padding: 32px 0;
+  padding: var(--space-8) 0;
 }
 
-/* Summary bar */
-.zone-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 16px;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-}
+/* ---- region 4: the zone's result header ---------------------------------------- */
 
-.zone-summary-main {
-  flex: 1 1 320px;
-  min-width: 0;
-}
-
-.zone-summary-title {
-  width: fit-content;
-  max-width: 100%;
-  margin: 0 0 6px;
-  font-size: 1.1rem;
-  overflow-wrap: anywhere;
-}
-
-.zone-summary-title:focus {
-  outline: none;
-}
-
-.zone-summary-title:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-  border-radius: var(--radius-xs);
-}
-
-.zone-summary-meta {
-  align-items: center;
-  gap: 6px 12px;
+.zone-format-badge {
+  vertical-align: 2px;
 }
 
 .zone-counts {
-  font-weight: 600;
+  color: var(--text-2);
+  font-weight: var(--fw-semibold);
 }
 
 .zone-files {
   overflow-wrap: anywhere;
 }
 
-.zone-summary-actions {
-  gap: 8px;
-}
-
 .zone-guessed {
-  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
   margin: 0;
   color: var(--warn);
-  display: flex;
-  align-items: center;
-  gap: 4px;
+}
+
+.zone-guessed > span {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+/* Region 6 of the Overview tab: the figures, flat on their own surface. */
+.zone-stats {
+  padding: var(--space-2) var(--card-pad);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+/* The compact import: the drop zone is its title (the formats it reads are in the open card). */
+.zone-import.is-compact:not(.is-editing) .filedrop-hint {
+  display: none;
+}
+
+@media (max-width: 719px) {
+  .zone-import-fields,
+  .zone-fetch-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* Overview */
@@ -494,23 +490,6 @@
 }
 
 @media (max-width: 640px) {
-  .zone-import-fields,
-  .zone-fetch-fields {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .zone-summary {
-    padding: 12px;
-  }
-
-  .zone-summary-actions {
-    width: 100%;
-  }
-
-  .zone-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .zone-next {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -16,33 +16,46 @@
  *   only on a click: a small free quota) whose names stay "unverified until checked" — "Check these
  *   too" adds their domains and checks them. Known host names come from the page session's last scan
  *   or the zone; a domain without any gets a quick Small-wordlist discovery OFFERED, never run by itself.
- * - Output: one card per domain (the zone's origin, other zones reached, passive hits), each record
- *   with its severity, current value, what to change and the evidence; CSV / JSON and Copy summary.
- * - Below it, "Compare the old and the new server" (ui/origin-compare.js): before the names move to
- *   a new address, one HTTPS GET of a name from one Globalping probe to the old and the new address,
- *   side by side (status, redirect, title, body hash, HSTS, certificate); only on its own click,
- *   behind the consent dialog, and for private addresses the CLI's `--compare` command instead.
+ * - Output, on the page template (ui/template.js, docs/DESIGN.md §5): the input card (compact from
+ *   the moment a check starts: the address box, the domains in one line with Edit, Run), then the
+ *   result header `.retire-head` — the verdict as its title, the domains and the time, what could
+ *   not be checked and what is never covered, the owners; the status summary (breaks mail, breaks
+ *   DNS, cannot tell, zone file only, must change, unverified: each filters the change list), Copy
+ *   summary, Export (CSV, JSON) and Copy link; the next steps (the passive lookup with its cost,
+ *   the comparison below); the evidence chips — and one card per domain (the zone's origin, other
+ *   zones reached, passive hits), each record with its severity, current value, what to change and
+ *   the evidence. A shared link's ready prompt waits for one click in the result header's place.
+ * - "Compare the old and the new server" (ui/origin-compare.js) has a page of its own,
+ *   `#/retire/compare` (the old in-page anchor `#/retire?section=compare` opens it): before the
+ *   names move to a new address, one HTTPS GET of a name from one Globalping probe to the old and
+ *   the new address, side by side (status, redirect, title, body hash, HSTS, certificate); only on
+ *   its own click, behind the consent dialog, and for private addresses the CLI's `--compare`
+ *   command instead. The result's next step and the empty page link to it.
  *
  * The job belongs to this module (like Reverse DNS): it keeps running while another tool is open,
  * and a language switch keeps it. Shareable: `#/retire?ips=192.0.2.10&domains=example.com` fills the
  * form and waits for a click (a check sends hundreds of DNS queries; a link never starts one).
  */
 
-import { h, clear, debounce } from '../ui/dom.js';
+import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, Disclosure, EmptyState, ErrorBanner, Icon, ProgressBar, StatCard, announce, textarea, toast
+  Alert, Badge, Button, Card, Disclosure, ErrorBanner, Icon, ProgressBar, RelativeTime, announce, textarea, toast
 } from '../ui/components.js';
-import { t, registerStrings, formatNumber, formatDateTime, getLang } from '../i18n.js';
+import { t, registerStrings, formatNumber, formatRelative, getLang } from '../i18n.js';
+import {
+  EmptyState, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput, withSubject
+} from '../ui/template.js';
+import { inputCompact, templateState, toggleStatus } from '../lib/template.js';
 import {
   parseRetireTargets, parseDomainList, retireTokens, knownHostsFor, zoneCandidates, runRetireCheck, retireGaps, buildChanges, breakingChanges,
-  inventoryOwners, passiveNewNames, retireExportRows, retireExportJson, RETIRE_CSV_COLUMNS, RETIRE_MAX_DOMAINS,
-  RETIRE_MAX_HOSTS, RETIRE_MAX_ZONE_REFS, PASSIVE_MAX_ADDRESSES, PASSIVE_SOURCES, FAILURE_KINDS
+  inventoryOwners, passiveNewNames, retireExportRows, retireExportJson, retireStatus, retireStatusMatch, retireVerdict, retireFormMatches,
+  RETIRE_CSV_COLUMNS, RETIRE_MAX_DOMAINS, RETIRE_MAX_HOSTS, RETIRE_MAX_ZONE_REFS, PASSIVE_MAX_ADDRESSES, PASSIVE_SOURCES, FAILURE_KINDS
 } from '../lib/retire.js';
 import { createIpIntel, THC_REVERSE_LIMIT } from '../lib/ipintel.js';
 import { estimateQueries } from '../lib/scanplan.js';
 import { WORDLIST_SMALL } from '../lib/wordlist.js';
-import { isPrivateIP } from '../lib/netinfo.js';
-import { isSubdomainOf, registrableDomain } from '../lib/domain.js';
+import { isPrivateIP, normalizeIP } from '../lib/netinfo.js';
+import { isSubdomainOf, normalizeHostname, registrableDomain } from '../lib/domain.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { errorKind, throwIfAborted } from '../lib/util.js';
 import { toCsv, toJson } from '../lib/export.js';
@@ -50,7 +63,7 @@ import { permalinkParams } from '../ui/view-summaries.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { registerRunning } from '../ui/jobs.js';
-import { OriginCompareCard } from '../ui/origin-compare.js';
+import { OriginComparePage } from '../ui/origin-compare.js';
 import { state as stateSingleton } from '../state.js';
 
 /** Route id (`#/retire`). */
@@ -102,7 +115,7 @@ registerStrings('en', {
   'retire.filled.zone': 'the imported zone',
   'retire.filled.target': 'the current target',
   'retire.filledInternal': '{name}, the imported zone’s own domain, looks internal, so it was not filled in: nothing about it goes to public DNS. Type it in to check it anyway.',
-  'retire.link.prompt': 'Filled in from a link. Nothing has been sent yet: press Check references.',
+  'retire.optDomains': 'Domains: {list}',
   'retire.hosts.title': 'Host names checked besides each domain’s own records',
   'retire.hosts.from': '{domain}: {list}',
   'retire.hosts.none': '{domain}: none known — only its own name, MX, NS, SPF and HTTPS record are checked',
@@ -162,15 +175,13 @@ registerStrings('en', {
 
   'retire.progress': 'Checking {domain} ({done} of {total} domains)',
   'retire.progressZone': 'Verifying the zone file’s records',
-  'retire.progressDone': { one: 'Checked {count} domain', other: 'Checked {count} domains' },
   'retire.stopped': 'Stopped — the domains that were not finished are not listed.',
   'retire.failed': 'The check failed',
   'retire.domainFailed': '{domain} could not be checked: {error}',
   'retire.doneToast': { one: 'Retire an IP: {count} record to change', other: 'Retire an IP: {count} records to change' },
   'retire.showResults': 'Show',
 
-  'retire.head.title': 'What still points at {label}',
-  'retire.head.checked': 'checked {time}',
+  'retire.head.checkedAt': 'Checked {time}',
   'retire.head.breaking': { one: '{count} record breaks something once {label} is gone', other: '{count} records break something once {label} is gone' },
   'retire.head.cleanup': { one: 'Nothing breaks: {count} record to clean up', other: 'Nothing breaks: {count} records to clean up' },
   'retire.head.none': 'Nothing in the checked domains points at {label}',
@@ -182,11 +193,16 @@ registerStrings('en', {
   'retire.head.missing': { one: '{count} domain does not exist', other: '{count} domains do not exist' },
   'retire.head.unresolved': { one: '{count} host name not resolved (only the first {max} are)', other: '{count} host names not resolved (only the first {max} are)' },
   'retire.head.scope': 'Not covered: internal (split-horizon) DNS and domains that are not in the list. A record found only in the zone file is not live, but a restore of the file brings it back.',
-  'retire.stat.breaking': 'Must change',
-  'retire.stat.mail': 'Breaks mail',
-  'retire.stat.file': 'Zone file only',
-  'retire.stat.unknown': 'Cannot tell',
-  'retire.stat.unverified': 'Unverified',
+  'retire.count.mail': { one: '{count} record breaks mail', other: '{count} records break mail' },
+  'retire.count.ns': { one: '{count} record breaks DNS', other: '{count} records break DNS' },
+  'retire.count.unknown': { one: '{count} record cannot be told', other: '{count} records cannot be told' },
+  'retire.count.file': { one: '{count} record only in the zone file', other: '{count} records only in the zone file' },
+  'retire.count.breaking': { one: '{count} record must change', other: '{count} records must change' },
+  'retire.count.unverified': { one: '{count} name unverified', other: '{count} names unverified' },
+  'retire.filterOn': 'Only these records: {what}',
+  'retire.filterAll': 'Show all',
+  'retire.compare.open': 'Compare the old and the new server',
+  'retire.compare.title': 'Before the names move: the same HTTPS request to the old and the new address, side by side (2 Globalping probes, only on a click there).',
   'retire.owners.title': 'Owned by',
   'retire.owners.others': 'also {list}',
   'retire.owners.hint': 'From your server list. Its other addresses are where a renumbered service may already live.',
@@ -293,8 +309,7 @@ registerStrings('en', {
   'retire.ev.wildcard': 'a wildcard: checked through the random name {name}',
   'retire.chips.label': 'Evidence sources',
 
-  'retire.emptyTitle': 'What still points at this address?',
-  'retire.emptyBody': 'Before you switch a server off or give it a new address: DNS records, CNAME chains, SPF, MX and NS hosts and your zone file, checked live. A forgotten SPF ip4 breaks mail a week later.'
+  'retire.emptyLine': 'A change list, grouped by domain and worst first: what to change in each record, with the evidence. A forgotten SPF ip4 breaks mail a week later.'
 });
 
 registerStrings('tr', {
@@ -327,7 +342,7 @@ registerStrings('tr', {
   'retire.filled.zone': 'içe aktarılan zone',
   'retire.filled.target': 'geçerli hedef',
   'retire.filledInternal': 'İçe aktarılan zone’un kendi alan adı {name} iç ağa ait görünüyor; bu yüzden kutuya eklenmedi ve onunla ilgili hiçbir şey genel DNS’e gönderilmez. Yine de kontrol etmek için kutuya yazın.',
-  'retire.link.prompt': 'Bir bağlantıdan dolduruldu. Henüz hiçbir şey gönderilmedi: Referansları kontrol et’e basın.',
+  'retire.optDomains': 'Alan adları: {list}',
   'retire.hosts.title': 'Her alan adının kendi kayıtlarının yanında kontrol edilen host adları',
   'retire.hosts.from': '{domain}: {list}',
   'retire.hosts.none': '{domain}: bilinen host adı yok — yalnızca kendi adı, MX, NS, SPF ve HTTPS kaydı kontrol edilir',
@@ -390,15 +405,13 @@ registerStrings('tr', {
 
   'retire.progress': '{domain} kontrol ediliyor ({total} alan adının {done} tanesi)',
   'retire.progressZone': 'Zone dosyasının kayıtları doğrulanıyor',
-  'retire.progressDone': '{count} alan adı kontrol edildi',
   'retire.stopped': 'Durduruldu — bitmeyen alan adları listelenmiyor.',
   'retire.failed': 'Kontrol başarısız',
   'retire.domainFailed': '{domain} kontrol edilemedi: {error}',
   'retire.doneToast': 'IP emekliye ayırma: değiştirilecek {count} kayıt',
   'retire.showResults': 'Göster',
 
-  'retire.head.title': '{label} adresini hâlâ gösterenler',
-  'retire.head.checked': 'kontrol edildi: {time}',
+  'retire.head.checkedAt': 'Kontrol: {time}',
   'retire.head.breaking': '{label} kalkınca {count} kayıt bir şeyi bozar',
   'retire.head.cleanup': 'Hiçbir şey bozulmaz: temizlenecek {count} kayıt',
   'retire.head.none': 'Kontrol edilen alan adlarında {label} adresini gösteren bir şey yok',
@@ -410,11 +423,16 @@ registerStrings('tr', {
   'retire.head.missing': '{count} alan adı mevcut değil',
   'retire.head.unresolved': '{count} host adı çözümlenmedi (yalnızca ilk {max} ad çözümlenir)',
   'retire.head.scope': 'Kapsam dışı: iç (split-horizon) DNS ve listede olmayan alan adları. Yalnızca zone dosyasında bulunan bir kayıt canlı değildir, ama dosya geri yüklenirse geri gelir.',
-  'retire.stat.breaking': 'Değişmeli',
-  'retire.stat.mail': 'E-postayı bozar',
-  'retire.stat.file': 'Yalnızca zone’da',
-  'retire.stat.unknown': 'Anlaşılamıyor',
-  'retire.stat.unverified': 'Doğrulanmadı',
+  'retire.count.mail': '{count} kayıt e-postayı bozar',
+  'retire.count.ns': '{count} kayıt DNS’i bozar',
+  'retire.count.unknown': '{count} kayıt anlaşılamıyor',
+  'retire.count.file': '{count} kayıt yalnızca zone dosyasında',
+  'retire.count.breaking': '{count} kayıt değişmeli',
+  'retire.count.unverified': '{count} ad doğrulanmadı',
+  'retire.filterOn': 'Yalnızca şu kayıtlar: {what}',
+  'retire.filterAll': 'Tümünü göster',
+  'retire.compare.open': 'Eski ve yeni sunucuyu karşılaştır',
+  'retire.compare.title': 'Adlar taşınmadan önce: eski ve yeni adrese aynı HTTPS isteği, yan yana (2 Globalping ölçümü, yalnızca oradaki bir tıklamayla).',
   'retire.owners.title': 'Sahibi',
   'retire.owners.others': 'ayrıca {list}',
   'retire.owners.hint': 'Sunucu listenizden. Diğer adresleri, adresi değişen bir servisin zaten bulunabileceği yerlerdir.',
@@ -521,8 +539,7 @@ registerStrings('tr', {
   'retire.ev.wildcard': 'joker kayıt: rastgele {name} adıyla kontrol edildi',
   'retire.chips.label': 'Kanıt kaynakları',
 
-  'retire.emptyTitle': 'Bu adresi hâlâ ne gösteriyor?',
-  'retire.emptyBody': 'Bir sunucuyu kapatmadan ya da ona yeni bir adres vermeden önce: DNS kayıtları, CNAME zincirleri, SPF, MX ve NS sunucuları ve zone dosyanız, canlı kontrol edilmiş. Unutulan bir SPF ip4 bir hafta sonra e-postayı bozar.'
+  'retire.emptyLine': 'Alan adına göre gruplanmış, en kötüsü önde bir değişiklik listesi: her kayıtta neyin değişmesi gerektiği ve kanıtı. Unutulan bir SPF ip4 bir hafta sonra e-postayı bozar.'
 });
 
 /* ------------------------------------------------------------------------ */
@@ -956,11 +973,53 @@ function buildFor(job) {
 /* ------------------------------------------------------------------------ */
 
 /**
- * Mount the Retire an IP view.
+ * What the compare page fills its boxes with while nobody has typed in them: the link's host and
+ * old address (`#/retire/compare?host=…&old=…`, the result's next step), else the form's one
+ * address and first domain.
+ * @param {Record<string, string>} params
+ * @returns {{ ip: string|null, host: string|null }}
+ */
+export function compareDefaults(params = {}) {
+  const old = typeof params.old === 'string' ? normalizeIP(params.old.trim()) : null;
+  const host = typeof params.host === 'string' ? normalizeHostname(params.host.trim()) : null;
+  const single = parseRetireTargets(session.ips || '').blocks.filter((b) => b.single);
+  return {
+    ip: old || (single.length === 1 ? single[0].first : null),
+    host: host || parseDomainList(session.domains || '').domains[0] || null
+  };
+}
+
+/**
+ * Mount Retire an IP: the check (`#/retire`), or the comparison of the old and the new server on
+ * its own page (`#/retire/compare`, ui/origin-compare.js). The compare card's old in-page anchor
+ * (`#/retire?section=compare`) opens that page.
  * @param {HTMLElement} container
  * @param {import('../app.js').ViewContext} ctx
  */
 export function mount(container, ctx) {
+  if (ctx.sub === 'compare') return mountCompare(container, ctx);
+  if (ctx.params.section === 'compare') {
+    const { section: _section, ...rest } = ctx.params;
+    Promise.resolve().then(() => {
+      if (!ctx.signal.aborted) ctx.navigate('retire/compare', rest, { replace: true });
+    });
+    return undefined;
+  }
+  return mountCheck(container, ctx);
+}
+
+/** `#/retire/compare`: the page heading names the comparison; a link leads back to the check. */
+function mountCompare(container, ctx) {
+  ctx.setHeading({ title: t('oc.title'), purpose: t('oc.purpose') });
+  const page = OriginComparePage({ ctx, defaults: () => compareDefaults(ctx.params) });
+  container.append(h('div', { class: 'retire-view retire-compare', dataset: { page: 'compare' } },
+    page.el,
+    h('p', { class: 'retire-compare-back text-sm' },
+      h('a', { href: ctx.href('retire'), dataset: { role: 'compare-back' } }, Icon('chevron-left', { size: 14 }), h('span', null, t('oc.back'))))));
+  return () => page.dispose();
+}
+
+function mountCheck(container, ctx) {
   const { state } = ctx;
   const cleanups = [];
   // The last check's entries, as each box is read (blocks as CIDRs, domains normalized).
@@ -972,7 +1031,7 @@ export function mount(container, ctx) {
   if (session.domains === null) session.domains = '';
   if (!session.domains.trim() && !checkRunning()) prefill();
 
-  /* --- form ---------------------------------------------------------------- */
+  /* --- region 2: the form -------------------------------------------------- */
   const ipsField = textarea({
     label: t('retire.ips.label'),
     value: session.ips,
@@ -1007,37 +1066,53 @@ export function mount(container, ctx) {
   const parsedEl = h('div', { class: 'retire-parsed text-sm', attrs: { 'aria-live': 'polite' } });
   const issuesEl = h('div', { class: 'stack-sm retire-issues' });
   const hostsEl = h('div', { class: 'retire-hosts text-sm' });
-  const promptEl = h('div', { class: 'retire-prompt', hidden: true });
-  const runBtn = Button({ label: t('retire.run'), icon: 'search', variant: 'primary', dataset: { action: 'retire-run', shortcut: 'submit' }, onClick: () => start() });
-  const stopBtn = Button({ label: t('retire.stop'), icon: 'stop', dataset: { action: 'retire-stop', shortcut: 'cancel' }, onClick: () => stop() });
-  stopBtn.hidden = true;
-  const formCard = Card({
+  const runBar = RunBar({
+    label: t('retire.run'),
+    dataset: { action: 'retire-run', shortcut: 'submit' },
+    stopLabel: t('retire.stop'),
+    stopDataset: { action: 'retire-stop', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => stop(),
+    hasValue: () => !!ipsField.value.trim()
+  });
+  /** The compact card's line: the domains the check covers (the addresses stay in their box). */
+  const domainsLine = () => {
+    const list = parseDomainList(domainsField.value).domains;
+    return list.length ? t('retire.optDomains', { list: list.length > 3 ? `${list.slice(0, 3).join(', ')} ${t('common.moreCount', { count: list.length - 3 })}` : list.join(', ') }) : '';
+  };
+  const input = ToolInput({
     className: 'retire-form-card',
-    children: h('div', { class: 'stack' },
-      h('div', { class: 'retire-form' }, ipsField.el, domainsField.el),
-      parsedEl,
-      issuesEl,
-      hostsEl,
-      promptEl,
-      h('div', { class: 'retire-actions' },
-        h('p', { class: 'muted text-xs retire-privacy' }, Icon('lock', { size: 12 }), h('span', null, t('retire.privacy'))),
-        h('div', { class: 'cluster retire-run' }, stopBtn, runBtn)))
+    fieldsClass: 'retire-form',
+    label: t('nav.retire'),
+    primary: ipsField.el,
+    inline: [domainsField.el],
+    run: runBar,
+    // The address box's issues always show; the parsed counts and the host names each domain gets
+    // (with the discovery offer, which a result also offers as a next step) wait behind Edit once
+    // a check ran.
+    notes: [issuesEl],
+    more: [parsedEl, hostsEl],
+    privacy: PrivacyNote({ text: t('retire.privacy'), className: 'retire-privacy' }),
+    summary: domainsLine
   });
-  const resultsHost = h('div', { class: 'retire-results-host stack', dataset: { shortcutScope: 'results' } });
-  const emptyEl = Card({
-    padded: false,
-    className: 'retire-empty',
-    children: EmptyState({ icon: 'unlink', title: t('retire.emptyTitle'), message: t('retire.emptyBody') })
-  });
-  // Before the names move: does the new server answer like the old one? (ui/origin-compare.js)
-  const compare = OriginCompareCard({
-    ctx,
-    defaults: () => {
-      const single = parseRetireTargets(session.ips || '').blocks.filter((b) => b.single);
-      return { ip: single.length === 1 ? single[0].first : null, host: parseDomainList(session.domains || '').domains[0] || null };
-    }
-  });
-  container.append(h('div', { class: 'stack-lg retire-view' }, formCard, emptyEl, resultsHost, compare.el));
+
+  /* --- region 4: a link's ready prompt; the check's result header (the job UI) ---------- */
+  // A shared link fills the form and waits for one click (a check sends hundreds of DNS queries).
+  // No kept-result slot: the prompt is about the addresses in the box.
+  const prompt = ResultHeader({ className: 'result-ready retire-prompt', kept: false });
+  prompt.setState('ready');
+  const promptSlot = h('div', { class: 'retire-prompt-slot', hidden: true }, prompt.el);
+  const resultsHost = h('div', { class: 'retire-results-host', dataset: { shortcutScope: 'results' } });
+  const emptyEl = h('div', { class: 'retire-empty' }, EmptyState({
+    icon: 'unlink',
+    message: t('retire.emptyLine'),
+    checks: ['A · AAAA', 'CNAME', 'SPF', 'MX · NS', 'HTTPS', t('retire.chip.zone')],
+    action: h('a', { class: 'retire-compare-link', href: ctx.href('retire/compare'), dataset: { role: 'compare-open' } },
+      Icon('swap', { size: 14 }), ' ', t('retire.compare.open'))
+  }));
+  container.append(h('div', { class: 'retire-view' }, input.el, promptSlot, emptyEl, resultsHost, runBar.float));
+  // The run bar's phone-layout listener would keep this page alive once it is left.
+  ctx.onCleanup(() => runBar.dispose());
 
   /* --- parsing ------------------------------------------------------------- */
   let parsed = parseRetireTargets(ipsField.value);
@@ -1082,7 +1157,7 @@ export function mount(container, ctx) {
       issuesEl.append(Alert({ variant: 'warn', compact: true, message: t('retire.domainsTruncated', { max: formatNumber(RETIRE_MAX_DOMAINS), count: domainList.truncated }) }));
     }
     renderHosts();
-    compare.render();
+    syncRunBar();
   }
   const renderParsedSoon = debounce(renderParsed, 150);
 
@@ -1143,36 +1218,56 @@ export function mount(container, ctx) {
     });
   }
 
-  /* --- prompt ---------------------------------------------------------------- */
+  /* --- the ready prompt ------------------------------------------------------ */
   function showPrompt() {
-    clear(promptEl);
-    promptEl.hidden = false;
-    const alert = Alert({ variant: 'info', icon: 'link', compact: true, message: t('retire.link.prompt') });
-    alert.dataset.prompt = 'link';
-    promptEl.append(alert);
+    promptSlot.hidden = false;
+    prompt.el.dataset.prompt = 'link';
+    const label = parseRetireTargets(ipsField.value).label || ipsField.value.trim();
+    prompt.set('title', ResultTitle({ icon: 'link', text: withSubject((p) => t('result.ready', p), label) }));
+    prompt.set('actions', h('div', { class: 'result-actions' },
+      Button({ label: t('retire.run'), icon: 'play', variant: 'primary', size: 'sm', dataset: { action: 'retire-link-start' }, onClick: () => start() })));
+    // One primary button at a time: the prompt's leads, the form's steps back.
+    runBar.setPrimary(false);
+    syncRunBar();
   }
 
   function hidePrompt() {
     session.prompt = false;
-    clear(promptEl);
-    promptEl.hidden = true;
+    if (promptSlot.hidden) return;
+    promptSlot.hidden = true;
+    delete prompt.el.dataset.prompt;
+    prompt.set('title', null);
+    prompt.set('actions', null);
+    runBar.setPrimary(true);
+    syncRunBar();
   }
 
   /* --- run ----------------------------------------------------------------- */
   let ui = null;
   let starting = false;
 
+  /**
+   * The run bar and the input follow the state: compact from the moment a check (or a discovery)
+   * starts and while a result is on screen; "Run again" while the boxes ask for the check on screen.
+   */
+  function syncRunBar() {
+    const running = checkRunning() || discoveryRunning();
+    const stateNow = templateState({ running, result: !!session.job, ready: !promptSlot.hidden });
+    runBar.setState(stateNow);
+    runBar.setRerun(stateNow === 'done' && retireFormMatches({ blocks: parsed.blocks, domains: domainList.domains }, session.job));
+    input.setCompact(inputCompact(stateNow));
+    input.refresh();
+    emptyEl.hidden = !!session.job || !promptSlot.hidden;
+  }
+
   function syncControls() {
     const busy = checkRunning() || discoveryRunning() || passiveRunning();
-    const doc = globalThis.document;
-    const moveFocus = doc && doc.activeElement === (busy ? runBtn : stopBtn);
-    runBtn.hidden = busy;
-    stopBtn.hidden = !busy;
+    // Stop takes Run's slot while anything of this view runs (the keyboard focus goes with it).
+    runBar.setRunning(busy);
     ipsField.input.readOnly = checkRunning() || discoveryRunning();
     domainsField.input.readOnly = checkRunning() || discoveryRunning();
-    if (moveFocus) (busy ? stopBtn : runBtn).focus({ preventScroll: true });
     ctx.setBusy(checkRunning() ? t('retire.busy') : discoveryRunning() ? t('retire.busyDiscover') : passiveRunning() ? t('retire.busyPassive') : false);
-    renderHeaderActions();
+    syncRunBar();
   }
 
   function stop() {
@@ -1196,6 +1291,8 @@ export function mount(container, ctx) {
     }
     const zone = state.getSession('zone') || null;
     if (!domainList.domains.length && !(zone && zone.records && zone.records.length)) {
+      // The domains box waits behind Edit in a compact card: unfold it to say what is missing.
+      input.setEditing(true);
       domainsField.setError(t('retire.noDomains'));
       domainsField.focus();
       return;
@@ -1238,9 +1335,14 @@ export function mount(container, ctx) {
     // (or another workspace) ends this one even before its first query.
     const controller = new AbortController();
     const disc = { status: 'running', error: null, controller, current: domains[0], domains };
+    // The result's offer goes while the discovery runs: its keyboard focus moves to Stop, never to <body>.
+    const doc = globalThis.document;
+    const fromNext = !!(doc && doc.activeElement && doc.activeElement.dataset && doc.activeElement.dataset.action === 'retire-discover-next');
     session.discovery = disc;
     syncControls();
     renderHosts();
+    if (ui) ui.render();
+    if (fromNext && runBar.isRunning()) runBar.stop.focus({ preventScroll: true });
     let runScan;
     let dns;
     try {
@@ -1251,6 +1353,7 @@ export function mount(container, ctx) {
       Object.assign(disc, { status: 'error', error: err, controller: null, current: null });
       syncControls();
       renderHosts();
+      if (ui) ui.render();
       return;
     }
     try {
@@ -1289,7 +1392,7 @@ export function mount(container, ctx) {
     session.passive = p;
     syncControls();
     if (ui) ui.render();
-    if (fromButton && !stopBtn.hidden) stopBtn.focus({ preventScroll: true });
+    if (fromButton && runBar.isRunning()) runBar.stop.focus({ preventScroll: true });
     try {
       for (const address of addresses) {
         const [hackertarget, thc] = await Promise.all([
@@ -1337,10 +1440,10 @@ export function mount(container, ctx) {
   function attach(job) {
     if (ui) ui.dispose();
     clear(resultsHost);
-    emptyEl.hidden = true;
     ui = buildJobUI(job, ctx, {
       onPassive: () => lookupPassive(),
       onCheckToo: () => checkPassiveToo(),
+      onDiscover: (domains) => discover(domains),
       onFinish: () => {
         syncControls();
         renderHosts();
@@ -1348,19 +1451,6 @@ export function mount(container, ctx) {
     });
     resultsHost.append(ui.el);
     syncControls();
-  }
-
-  function renderHeaderActions() {
-    const job = session.job;
-    const params = job ? shareParams(job.addresses.length === job.blocks.length ? job.addresses.join('\n') : job.blocks.map((b) => b.cidr).join('\n'), job.domains.join('\n')) : null;
-    if (!params) {
-      ctx.setActions();
-      return;
-    }
-    // Like Copy summary's link, it leaves out private and inventory addresses (the address bar
-    // keeps them: a reload fills in the same check).
-    ctx.setActions(CopyButton(() => ctx.shareUrl(permalinkParams('retire', params, { exclude: [...ctx.getInventoryIndex().keys()] })),
-      { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
   }
 
   /** Fill an empty domain box from what the page session knows (the last scan, the imported zone). */
@@ -1376,9 +1466,9 @@ export function mount(container, ctx) {
   /* --- initial state --------------------------------------------------------- */
   renderParsed();
   if (session.job) attach(session.job);
-  else renderHeaderActions();
   if (session.prompt) showPrompt();
-  if (discoveryRunning()) syncControls();
+  if (discoveryRunning() || passiveRunning()) syncControls();
+  syncRunBar();
 
   cleanups.push(state.subscribe(({ key, value }) => {
     if (key === 'inventory' && ui) ui.render();
@@ -1390,6 +1480,7 @@ export function mount(container, ctx) {
     afterDiscovery(disc) {
       syncControls();
       renderHosts();
+      if (ui) ui.render();
       if (disc.status === 'done') start();
     },
     afterPassive() {
@@ -1452,11 +1543,14 @@ export function mount(container, ctx) {
 }
 
 /**
- * Take new route params (`#/retire?ips=…&domains=…`) without re-mounting.
+ * Take new route params (`#/retire?ips=…&domains=…`) without re-mounting. The compare page and
+ * the old anchor of its card re-mount.
  * @param {Record<string, string>} params
+ * @param {import('../app.js').ViewContext} [ctx]
  * @returns {boolean}
  */
-export function update(params) {
+export function update(params, ctx) {
+  if ((ctx && ctx.sub) || (params && params.section === 'compare')) return false;
   return active ? active.applyParams(params) : false;
 }
 
@@ -1496,36 +1590,49 @@ function chip(idChip, name, stateName, value, action = null) {
     iconEl, h('span', { class: 'src-chip-name' }, name), h('span', { class: 'src-chip-value' }, value), action);
 }
 
-function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
+/**
+ * The result of one check (docs/DESIGN.md §5.1): the result header — the verdict as its title, the
+ * domains and the time, the notes (what could not be checked, the stop, what is never covered, the
+ * owners from the server list), the status summary whose items filter the change list, Copy
+ * summary, Export (CSV, JSON) and Copy link, the next steps (the passive lookup with its cost, the
+ * comparison of the old and the new server) and the evidence chips —, then one card per group.
+ */
+function buildJobUI(job, ctx, { onPassive, onCheckToo, onDiscover, onFinish }) {
   const { state } = ctx;
+  const head = ResultHeader({ className: ['retire-head', 'retire-head-card'] });
+  head.title.dataset.role = 'retire-verdict';
   const chipsEl = h('div', { class: 'src-chips retire-chips', attrs: { role: 'group', 'aria-label': t('retire.chips.label') } });
-  // Under the chips: the passive lookup's button with its cost written out, and what a service left out.
-  const passiveEl = h('div', { class: 'retire-passive stack-sm' });
   const progress = ProgressBar({ label: t('retire.busy'), value: 0, max: 1, showCount: false });
   progress.el.classList.add('retire-progress');
-  const statusEl = h('p', { class: 'muted text-sm retire-status', attrs: { 'aria-live': 'polite' } });
-  const headEl = h('div', { class: 'retire-head' });
-  const statsEl = h('div', { class: 'stat-grid retire-stats' });
-  const ownersEl = h('div', { class: 'retire-owners text-sm' });
   const groupsEl = h('div', { class: 'stack retire-groups' });
   const goneEl = h('div', { class: 'retire-gone' });
+  const filterNote = h('div', { class: 'retire-filter-note text-sm', hidden: true });
   const expanded = new Set();
-  const summary = SummaryButton({
-    kind: 'retire',
-    inventory: 'count',
-    facts: () => (job.status === 'running' ? null : summaryFacts(job, buildFor(job), { owners: ownersCount(), passive: !!passiveFor(job) })),
-    url: () => ctx.shareUrl(permalinkParams('retire', shareParams(job.blocks.map((b) => b.label).join('\n'), job.domains.join('\n')) || {},
-      { exclude: [...ctx.getInventoryIndex().keys()] })),
-    disabled: job.status === 'running'
-  });
-  const exportCsv = Button({ label: t('common.exportCsv'), icon: 'download', size: 'sm', dataset: { export: 'csv' }, onClick: () => doExport('csv') });
-  const exportJson = Button({ label: t('common.exportJson'), icon: 'download', size: 'sm', dataset: { export: 'json' }, onClick: () => doExport('json') });
-  const el = h('div', { class: 'stack retire-job', dataset: { job: String(job.id) } },
-    Card({
-      className: 'retire-head-card',
-      children: h('div', { class: 'stack-sm' }, headEl, h('div', { class: 'retire-tools cluster' }, summary.el, exportCsv, exportJson), progress.el, statusEl, chipsEl, passiveEl, ownersEl)
+  /** The status item whose rows the change list shows (null: every row). */
+  let filter = null;
+  const status = StatusSummary({ className: 'retire-status' });
+  const shareLink = () => ctx.shareUrl(permalinkParams('retire', shareParams(job.blocks.map((b) => b.label).join('\n'), job.domains.join('\n')) || {},
+    { exclude: [...ctx.getInventoryIndex().keys()] }));
+  const actions = ResultActions({
+    summary: SummaryButton({
+      kind: 'retire',
+      inventory: 'count',
+      plainLabel: t('result.plainTitle'),
+      facts: () => (job.status === 'running' ? null : summaryFacts(job, buildFor(job), { owners: ownersCount(), passive: !!passiveFor(job) })),
+      url: shareLink
     }),
-    statsEl, groupsEl, goneEl);
+    exports: [
+      { label: t('common.exportCsv'), icon: 'download', dataset: { export: 'csv' }, onSelect: () => doExport('csv') },
+      { label: t('common.exportJson'), icon: 'download', dataset: { export: 'json' }, onSelect: () => doExport('json') }
+    ],
+    // Like Copy summary's link, it leaves out private and inventory addresses (the address bar
+    // keeps them: a reload fills in the same check).
+    link: shareLink
+  });
+  head.set('status', status.el);
+  head.set('actions', actions.el);
+  head.set('sources', chipsEl);
+  const el = h('div', { class: 'retire-job', dataset: { job: String(job.id) } }, head.el, filterNote, groupsEl, goneEl);
 
   function ownersCount() {
     const servers = state.inventory.servers;
@@ -1601,7 +1708,6 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
         : t('retire.chip.serversNot')));
     }
     chipsEl.append(passiveChip());
-    renderPassive();
   }
 
   /** Whether the passive lookup can be offered for this job's addresses (few and public, not asked yet). */
@@ -1613,33 +1719,62 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     return publicAddresses;
   }
 
+  /** The checked domains no host name was known for (nor discovered since): their A records and CNAMEs were not found. */
+  const bareDomains = () => job.domains.filter((d) => job.checks.has(d) && !(job.hosts.get(d) || []).length && !session.discovered.has(d));
+
   /**
-   * The passive lookup's button with its cost as visible text (not a tooltip: touch and keyboard
-   * users read it too; aria-describedby links them), and a note per address whose ip.thc.org list
-   * was cut off (one page of {@link THC_REVERSE_LIMIT} names).
+   * The next steps of the result: the passive lookup's and the discovery's buttons, each with its
+   * cost as visible text (not a tooltip: touch and keyboard users read it too; aria-describedby
+   * links them), and the comparison of the old and the new server on its own page, with the one
+   * address and the first domain.
    */
-  function renderPassive() {
-    clear(passiveEl);
+  function nextSteps() {
+    const steps = [];
+    const bare = discoveryRunning() ? [] : bareDomains();
+    if (bare.length) {
+      const est = estimateQueries({ bruteforce: 'small', domains: bare, locales: [], permutationBudget: 0, recursive: false, originHints: false, resolverLeak: false });
+      const costId = `retire-discover-cost-${++discoverSeq}`;
+      steps.push(h('div', { class: 'retire-discover-go retire-discover-next' },
+        Button({
+          label: t('retire.discover.button'), icon: 'layers', size: 'sm', variant: 'ghost', className: 'next-step', dataset: { action: 'retire-discover-next' },
+          attrs: { 'aria-describedby': costId }, onClick: () => onDiscover(bare)
+        }),
+        h('span', { class: 'muted text-xs retire-discover-cost', id: costId },
+          t('retire.discover.cost', { count: bare.length, words: formatNumber(WORDLIST_SMALL.length), min: formatNumber(est.min), max: formatNumber(est.max) }))));
+    }
     const offer = passiveOffer();
     if (offer) {
       const costId = `retire-passive-cost-${++passiveSeq}`;
-      passiveEl.append(h('div', { class: 'retire-discover-go retire-passive-go' },
+      steps.push(h('div', { class: 'retire-discover-go retire-passive-go' },
         Button({
-          label: t('retire.passive.button'), icon: 'search', size: 'sm', variant: 'secondary', dataset: { action: 'retire-passive' },
+          label: t('retire.passive.button'), icon: 'search', size: 'sm', variant: 'ghost', className: 'next-step', dataset: { action: 'retire-passive' },
           attrs: { 'aria-describedby': costId }, disabled: job.status === 'running' || passiveRunning(), onClick: onPassive
         }),
         h('span', { class: 'muted text-xs retire-passive-cost', id: costId }, t('retire.passive.cost', { count: offer.length }))));
     }
+    const single = job.blocks.length === 1 && job.blocks[0].single ? job.blocks[0].first : null;
+    steps.push(h('a', {
+      class: 'btn btn-ghost btn-sm next-step retire-compare-step',
+      href: ctx.href('retire/compare', { old: single, host: job.domains[0] || null }),
+      title: t('retire.compare.title'),
+      dataset: { role: 'compare-open' }
+    }, Icon('swap', { size: 14 }), h('span', { class: 'btn-label' }, t('retire.compare.open'))));
+    return h('div', { class: 'next-steps retire-next', attrs: { role: 'group', 'aria-label': t('result.nextLabel') } }, steps);
+  }
+
+  /** A note per address whose ip.thc.org list was cut off (one page of {@link THC_REVERSE_LIMIT} names). */
+  function passiveNotes() {
+    const out = [];
     for (const r of passiveFor(job) || []) {
       const thc = r.thc;
       if (!thc || !thc.ok || !thc.truncated) continue;
       const params = { address: r.address, count: formatNumber(THC_REVERSE_LIMIT) };
-      const note = h('p', { class: 'muted text-xs retire-passive-note', dataset: { address: r.address } }, Icon('info', { size: 12 }), ' ',
+      out.push(h('p', { class: 'muted text-xs retire-passive-note', dataset: { address: r.address } }, Icon('info', { size: 12 }), ' ',
         Number.isFinite(thc.total) && thc.total > 0
           ? t('retire.passive.truncated', { ...params, total: formatNumber(thc.total) })
-          : t('retire.passive.truncatedMore', params));
-      passiveEl.append(note);
+          : t('retire.passive.truncatedMore', params)));
     }
+    return out;
   }
 
   function passiveChip() {
@@ -1667,73 +1802,94 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     return chip('passive', t('retire.chip.passive'), 'idle', t('retire.chip.passiveIdle'));
   }
 
-  /* the headline, the stat cards and the owners */
-  let headKey = null;
-  function renderHead(built) {
-    const gaps = job.status === 'running' ? null : jobGaps(job, built);
-    // Drawn again only when what it says changes: its verdict is an alert a screen reader announces.
-    const key = JSON.stringify([job.status, job.finishedAt && job.finishedAt.getTime(), built.counts, gaps, getLang()]);
-    if (key === headKey) return;
-    headKey = key;
-    clear(headEl);
-    const title = h('h2', { class: 'retire-head-title' }, t('retire.head.title', { label: job.label }));
-    const when = job.finishedAt ? h('span', { class: 'muted text-sm' }, t('retire.head.checked', { time: formatDateTime(job.finishedAt) })) : null;
-    headEl.append(h('div', { class: 'retire-head-row' }, title, when));
-    if (job.status === 'running') return;
-    const { breaking, total } = built.counts;
-    // Passive hits nobody checked and "cannot tell" rows are said apart, never counted as pointing here.
-    const listed = total - (built.counts.passive || 0) - (built.counts.bySeverity.unknown || 0);
-    const open = gapTexts(gaps);
-    const incomplete = open.length ? t('retire.head.incomplete', { list: open.join(' · ') }) : null;
-    let alert;
-    if (job.status === 'error') alert = ErrorBanner(job.error, { title: t('retire.failed') });
-    else if (breaking) alert = Alert({ variant: built.counts.bySeverity.mail || built.counts.bySeverity.ns ? 'error' : 'warn', title: t('retire.head.breaking', { count: breaking, label: job.label }), message: t('retire.head.scope') });
-    else if (listed > 0) alert = Alert({ variant: 'info', title: t('retire.head.cleanup', { count: listed }), message: t('retire.head.scope') });
-    // A failed lookup, a "cannot tell" or a stop leaves the list open: never the green "nothing".
-    else if (!gaps.settled) alert = Alert({ variant: 'warn', title: t('retire.head.open', { label: job.label }), message: [incomplete, t('retire.head.scope')].filter(Boolean).join(' ') });
-    else alert = Alert({ variant: 'ok', title: t('retire.head.none', { label: job.label }), message: t('retire.head.scope') });
-    alert.dataset.role = 'retire-verdict';
-    headEl.append(alert);
-    if (incomplete && job.status !== 'error' && (breaking || listed > 0)) {
-      const note = Alert({ variant: 'warn', compact: true, message: incomplete });
-      note.dataset.role = 'retire-incomplete';
-      headEl.append(note);
-    }
-    if (job.status === 'cancelled') headEl.append(Alert({ variant: 'warn', compact: true, message: t('retire.stopped') }));
-  }
-
-  function renderStats(built) {
-    clear(statsEl);
-    if (job.status === 'running' && !job.checks.size) return;
-    const c = built.counts;
-    // "Must change: 0" is green only when the check settled everything (no failed lookup, no stop).
-    const settled = job.status !== 'running' && jobGaps(job, built).settled;
-    const cards = [
-      ['breaking', c.breaking, c.breaking ? 'error' : settled ? 'ok' : 'default', 'alert'],
-      ['mail', c.bySeverity.mail || 0, c.bySeverity.mail ? 'error' : 'ok', 'mail'],
-      ['file', c.bySeverity.file || 0, 'info', 'file-text'],
-      ['unknown', c.bySeverity.unknown || 0, c.bySeverity.unknown ? 'warn' : 'default', 'help'],
-      ['unverified', c.byVerified.unverified || 0, 'default', 'eye']
-    ];
-    for (const [key, value, variant, iconName] of cards) {
-      if (!value && key !== 'breaking') continue;
-      const card = StatCard({ label: t(`retire.stat.${key}`), value, variant, icon: iconName });
-      card.el.dataset.stat = key;
-      statsEl.append(card.el);
-    }
-  }
-
-  function renderOwners() {
-    clear(ownersEl);
+  /** The owners of the addresses from the server list, with their other addresses (a note of the header). */
+  function ownersLine() {
     const servers = state.inventory.servers;
-    if (!servers || !servers.length) return;
+    if (!servers || !servers.length) return null;
     const owners = inventoryOwners(job.blocks, servers);
-    if (!owners.length) return;
-    ownersEl.append(Icon('server', { size: 14 }), h('span', { class: 'retire-owners-title' }, `${t('retire.owners.title')}:`),
+    if (!owners.length) return null;
+    return h('div', { class: 'retire-owners text-sm' }, Icon('server', { size: 14 }), h('span', { class: 'retire-owners-title' }, `${t('retire.owners.title')}:`),
       h('ul', { class: 'retire-owner-list', title: t('retire.owners.hint') }, owners.map((o) => h('li', { dataset: { server: o.name } },
         h('span', { class: 'retire-owner-name' }, o.name), ' ',
         h('span', { class: 'mono' }, o.addresses.join(', ')),
         o.others.length ? h('span', { class: 'muted' }, ` · ${t('retire.owners.others', { list: o.others.join(', ') })}`) : null))));
+  }
+
+  /** A quiet line of the header's notes, with its icon. */
+  const noteLine = (role, text, iconName, className = '') => h('p', { class: ['retire-note', className], dataset: { role } },
+    iconName ? Icon(iconName, { size: 14 }) : null, h('span', null, text));
+
+  /** The verdict's words: its key in `retire.head.*` (or "The check failed"), the label as the subject. */
+  function verdictTitle(v) {
+    if (v.key === 'failed') return t('retire.failed');
+    if (v.key === 'cleanup') return t('retire.head.cleanup', { count: v.count });
+    return withSubject((p) => t(`retire.head.${v.key}`, { ...p, count: v.count }), job.label, { name: 'label' });
+  }
+
+  /* the header: the verdict, the meta line, the notes, the status summary, the next steps */
+  let headKey = null;
+  function renderHead(built) {
+    const running = job.status === 'running';
+    const gaps = running ? null : jobGaps(job, built);
+    const v = retireVerdict({ status: job.status, counts: built.counts, gaps });
+    head.setState(running ? 'running' : 'done');
+    head.set('progress', running ? progress.el : null);
+    // The status summary updates in place, each item a filter of the change list.
+    const items = retireStatus(built.counts).map((item) => ({
+      ...item,
+      text: t(`retire.count.${item.key}`, { count: item.count }),
+      filter: true,
+      onPress: (key) => setFilter(toggleStatus(filter, key))
+    }));
+    if (filter && !items.some((x) => x.key === filter && x.count > 0)) filter = null;
+    status.update(items, { pressed: filter });
+    // The rest is drawn again only when what it says changes (the keyboard focus on a next step stays).
+    const key = JSON.stringify([job.status, job.finishedAt && job.finishedAt.getTime(), built.counts, gaps, getLang(),
+      !!passiveOffer(), passiveRunning(), (passiveFor(job) || []).length, ownersCount(), session.discovery && session.discovery.status, session.discovered.size]);
+    if (key === headKey) return;
+    headKey = key;
+    el.dataset.verdict = v.key;
+    head.title.dataset.severity = v.severity || '';
+    head.set('title', running ? ResultTitle({ running: true, text: withSubject((p) => t('result.checking', p), job.label) })
+      : ResultTitle({ severity: v.severity, text: verdictTitle(v) }));
+    head.set('meta', running ? null : [
+      h('span', { class: 'retire-meta-domains' }, t('retire.parsedDomains', { count: job.domains.length })),
+      job.finishedAt ? RelativeTime(job.finishedAt, { text: t('retire.head.checkedAt', { time: formatRelative(job.finishedAt) }) }) : null
+    ]);
+    const notes = [];
+    if (job.status === 'error') notes.push(ErrorBanner(job.error, { title: t('retire.failed'), compact: true }));
+    if (!running && v.incomplete) {
+      const open = gapTexts(gaps);
+      if (open.length) notes.push(noteLine('retire-incomplete', t('retire.head.incomplete', { list: open.join(' · ') }), 'alert', 'retire-note-warn'));
+    }
+    if (job.status === 'cancelled') notes.push(noteLine('retire-stopped', t('retire.stopped'), 'stop'));
+    // A discovery the result offered failed: said here too (the form's offer may be folded away).
+    if (!running && session.discovery && session.discovery.status === 'error') {
+      notes.push(ErrorBanner(session.discovery.error, { title: t('retire.discover.failed'), compact: true }));
+    }
+    if (!running && job.status !== 'error') notes.push(noteLine('retire-scope', t('retire.head.scope'), 'info', 'muted'));
+    notes.push(ownersLine(), ...passiveNotes());
+    head.set('notes', notes);
+    head.set('next', running ? null : nextSteps());
+  }
+
+  /** Show only the records a status item counts (or every record again). */
+  function setFilter(key) {
+    filter = key;
+    status.setPressed(key);
+    const built = buildFor(job);
+    renderGroups(built);
+    if (key) groupsEl.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+  }
+
+  function renderFilterNote(built) {
+    clear(filterNote);
+    filterNote.hidden = !filter;
+    if (!filter) return;
+    const item = retireStatus(built.counts).find((x) => x.key === filter);
+    filterNote.append(Icon('filter', { size: 14 }),
+      h('span', null, t('retire.filterOn', { what: t(`retire.count.${filter}`, { count: item ? item.count : 0 }) })),
+      Button({ label: t('retire.filterAll'), size: 'sm', variant: 'ghost', dataset: { action: 'retire-filter-clear' }, onClick: () => setFilter(null) }));
   }
 
   /* the change list, one card per group */
@@ -1843,7 +1999,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
       if (plan.names.length) {
         // In the body, not the card head: on a phone the head keeps its width for the title.
         parts.push(h('div', { class: 'retire-check-too' }, Button({
-          label: plan.add.length ? t('retire.passive.checkToo') : t('retire.passive.checkNames'), icon: 'search', size: 'sm', variant: 'primary',
+          label: plan.add.length ? t('retire.passive.checkToo') : t('retire.passive.checkNames'), icon: 'search', size: 'sm', variant: 'secondary',
           title: plan.add.length ? t('retire.passive.checkTooTitle', { domains: plan.add.join(', ') }) : null,
           disabled: job.status === 'running', dataset: { action: 'retire-check-too' }, onClick: onCheckToo
         })));
@@ -1898,8 +2054,11 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
   function renderGroups(built) {
     clear(groupsEl);
     // While a check runs, a domain's card appears once it is finished.
-    const groups = built.groups.filter((g) => g.kind !== 'domain' || job.status !== 'running' || job.checks.has(g.key) || job.errors.some((e) => e.domain === g.key));
+    let groups = built.groups.filter((g) => g.kind !== 'domain' || job.status !== 'running' || job.checks.has(g.key) || job.errors.some((e) => e.domain === g.key));
+    // A status filter: the groups with records it counts, those records only.
+    if (filter) groups = groups.map((g) => ({ ...g, changes: g.changes.filter((c) => retireStatusMatch(filter, c)) })).filter((g) => g.changes.length);
     groupsEl.append(...groups.map((g) => groupCard(g)));
+    renderFilterNote(built);
   }
 
   function renderGone(built) {
@@ -1916,12 +2075,9 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
 
   function renderProgress() {
     if (job.status !== 'running') {
-      progress.el.hidden = true;
-      statusEl.textContent = job.status === 'done' ? t('retire.progressDone', { count: job.checks.size }) : '';
       el.dataset.status = job.status;
       return;
     }
-    progress.el.hidden = false;
     let done = 0;
     for (const d of job.domains) {
       if (job.checks.has(d) || job.errors.some((e) => e.domain === d)) done += 1;
@@ -1936,22 +2092,26 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
     progress.setLabel(finishedDomains && job.zoneRefs.length
       ? t('retire.progressZone')
       : t('retire.progress', { domain: job.current || job.domains[0] || '', done: job.checks.size, total: job.domains.length }));
-    statusEl.textContent = '';
     el.dataset.status = 'running';
   }
 
   function render() {
     const built = buildFor(job);
-    renderHead(built);
     renderProgress();
+    renderHead(built);
     renderChips(built);
-    renderStats(built);
-    renderOwners();
     renderGroups(built);
     renderGone(built);
-    summary.setDisabled(job.status === 'running');
-    exportCsv.disabled = job.status === 'running';
-    exportJson.disabled = job.status === 'running';
+    actions.setDisabled(job.status === 'running');
+  }
+
+  /** The totals of a finished check, said once (the status summary is no live region). */
+  function announceTotals() {
+    const built = buildFor(job);
+    const v = retireVerdict({ status: job.status, counts: built.counts, gaps: jobGaps(job, built) });
+    const title = head.title.textContent;
+    const counts = retireStatus(built.counts).filter((x) => x.count).map((x) => t(`retire.count.${x.key}`, { count: x.count }));
+    announce([title || t(`retire.head.${v.key}`, { label: job.label, count: v.count }), ...counts].join(' · '));
   }
 
   const renderSoon = throttle(render, 250);
@@ -1963,9 +2123,8 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
       renderSoon.cancel();
       render();
       if (type === 'done') {
-        const built = buildFor(job);
-        announce(t('retire.head.title', { label: job.label }));
-        el.dataset.breaking = String(built.counts.breaking);
+        announceTotals();
+        el.dataset.breaking = String(buildFor(job).counts.breaking);
       }
       onFinish();
     }
@@ -1981,6 +2140,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onFinish }) {
       job.listeners.delete(listener);
       renderSoon.cancel();
       renderProgressSoon.cancel();
+      actions.dispose();
     }
   };
 }

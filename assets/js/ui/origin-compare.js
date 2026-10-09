@@ -1,10 +1,13 @@
 /**
- * ui/origin-compare.js — "Compare the old and the new server" in Retire an IP: before DNS moves a
- * name to a new address, does the new server answer like the old one? The logic is
- * lib/origincompare.js; this module only renders it.
+ * ui/origin-compare.js — "Compare the old and the new server", Retire an IP's sub-page
+ * `#/retire/compare`: before DNS moves a name to a new address, does the new server answer like
+ * the old one? The logic is lib/origincompare.js; this module only renders it.
  *
- * It lives next to Retire an IP because that is where a server gets a new address: the old
- * address is the one being retired, and the names the reference check finds are the ones to move.
+ * It belongs to Retire an IP because that is where a server gets a new address: the old address
+ * is the one being retired, and the names the reference check finds are the ones to move. It has a
+ * page of its own (docs/DESIGN.md §8 phase 4: two tools no longer share one page), on the page
+ * template (ui/template.js): the input card, Compare in the run bar, what is sent in the card's
+ * footer, then the verdict as the result header and the table.
  *
  * - Nothing is sent until "Compare" is clicked. Then, behind the shared Globalping gate
  *   (ui/globalping-gate.js: the free quota read, the consent + cost dialog on the first send of
@@ -12,8 +15,8 @@
  *   the SNI and the Host header, the second from the first one's probe.
  * - Private, documentation and reserved addresses are never sent: the card gives the CLI's
  *   `ssl_origin_scan.py --compare` command instead, which does the same from inside the network.
- * - The form and the last comparison live in this module (the page session): leaving the view
- *   or switching the language keeps them (a run goes on, and ends on the card shown when it
+ * - The form and the last comparison live in this module (the page session): leaving the page
+ *   or switching the language keeps them (a run goes on, and ends on the page shown when it
  *   ends); "Delete all local data" and another workspace drop them.
  * - A comparison whose new server answered with a certificate covering the name offers "Remember
  *   <address> as the origin of <name>": one click puts it into the workspace's origin map
@@ -26,16 +29,18 @@
 
 import { h, clear } from './dom.js';
 import {
-  Alert, Button, Card, CodeBlock, ErrorBanner, Icon, SegmentedControl, SeverityIcon, Spinner, announce, textInput
+  Alert, Button, CodeBlock, Disclosure, ErrorBanner, Icon, SegmentedControl, SeverityIcon, announce, textInput
 } from './components.js';
 import { downloadJson, timestampedName } from './download.js';
 import { gateProbes, noteQuota, whenText, measurementUrl } from './globalping-gate.js';
 import { registerRunning } from './jobs.js';
+import { EmptyState, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, ToolInput } from './template.js';
 import { t, registerStrings, formatNumber, formatDateTime } from '../i18n.js';
 import {
   checkCompare, runCompare, buildCompareCommand, sideFields, COMPARE_FIELDS, COMPARE_VERDICTS, COMPARE_NOTES, COMPARE_SHARED, COMPARE_ISSUES,
-  COMPARE_PROBES
+  COMPARE_PROBES, COMPARE_SEVERITY
 } from '../lib/origincompare.js';
+import { inputCompact, optionsSummary, templateState } from '../lib/template.js';
 import { FAILURE_KINDS } from '../lib/verify.js';
 import { errorKind } from '../lib/util.js';
 import { state } from '../state.js';
@@ -46,12 +51,21 @@ import { OriginMapOffNote, recordOrigins, recordText, rememberOn } from './origi
 /** Consent purpose of the gate (one per feature: each sends different data). */
 export const COMPARE_PURPOSE = 'origin-compare';
 
+/** The compared fields the empty page names (what a comparison looks at). */
+const EMPTY_CHECKS = Object.freeze(['status', 'location', 'title', 'body', 'hsts', 'certSubject']);
+
 const SEV_ICON = Object.freeze({ ok: 'ok', info: 'info', warn: 'warn', error: 'error' });
-const VERDICT_VARIANT = Object.freeze({ same: 'ok', differs: 'warn', broken: 'error', incomplete: 'info', unreachable: 'warn' });
 const QUOTA_CODES = new Set(['rate-limit', 'insufficient-credits']);
 
 registerStrings('en', {
   'oc.title': 'Compare the old and the new server',
+  'oc.purpose': 'The same HTTPS request to the old and the new server, side by side.',
+  'oc.emptyLine': 'Each answer’s status, redirect, title, body, HSTS and certificate, side by side, with what differs marked.',
+  'oc.how': 'How it works',
+  'oc.portSummary': 'port {port}',
+  'oc.partialTitle': 'Only the old server’s answer',
+  'oc.jsonTitle': 'Download the comparison as JSON',
+  'oc.back': 'Back to Retire an IP',
   'oc.lead': 'Before you point a name at a new address: does the new server answer like the old one? The same HTTPS request, with the name as SNI and Host header, goes to both addresses from one Globalping probe, and the two answers are compared side by side.',
   'oc.host': 'Host name',
   'oc.host.placeholder': 'www.example.com',
@@ -155,6 +169,13 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'oc.title': 'Eski ve yeni sunucuyu karşılaştırın',
+  'oc.purpose': 'Eski ve yeni sunucuya aynı HTTPS isteği, yan yana.',
+  'oc.emptyLine': 'Her yanıtın durum kodu, yönlendirmesi, başlığı, gövdesi, HSTS’i ve sertifikası yan yana; farklı olanlar işaretli.',
+  'oc.how': 'Nasıl çalışır',
+  'oc.portSummary': 'port {port}',
+  'oc.partialTitle': 'Yalnızca eski sunucunun yanıtı',
+  'oc.jsonTitle': 'Karşılaştırmayı JSON olarak indir',
+  'oc.back': 'IP emekliye ayırmaya dön',
   'oc.lead': 'Bir adı yeni bir adrese yönlendirmeden önce: yeni sunucu eskisi gibi yanıt veriyor mu? Adın SNI ve Host başlığı olduğu aynı HTTPS isteği tek bir Globalping ölçüm noktasından iki adrese de gider ve iki yanıt yan yana karşılaştırılır.',
   'oc.host': 'Host adı',
   'oc.host.placeholder': 'www.example.com',
@@ -326,125 +347,136 @@ export function displayValue(key, value, side) {
 }
 
 /* ------------------------------------------------------------------------ */
-/* The card                                                                 */
+/* The page (#/retire/compare)                                              */
 /* ------------------------------------------------------------------------ */
 
 /**
- * The comparison card for Retire an IP.
+ * The comparison on a page of its own, Retire an IP's sub-page `#/retire/compare`, on the page
+ * template (docs/DESIGN.md §5): one input card — the host name with Compare on its row, the old and
+ * the new address beside it, the path and the port under them (behind Edit once a comparison has
+ * run), the form's problems and the CLI command for addresses a probe cannot reach under it, what is
+ * sent in its footer —, then the result header (the verdict, when and from where, a certificate
+ * problem both servers share, the JSON file, "Remember …") and the table. Compare and Stop take
+ * turns in the run bar, the keyboard focus going with them.
  * @param {{ ctx: object, defaults?: () => { ip?: string|null, host?: string|null } }} opts
- *   `defaults`: what the view knows (the single address being retired, a domain being checked),
- *   filled into boxes nobody has typed in
- * @returns {{ el: HTMLElement, render(): void }}
+ *   `defaults`: what the page knows (the link's host and old address, else Retire an IP's single
+ *   address and first domain), filled into boxes nobody has typed in
+ * @returns {{ el: HTMLElement, render(): void, dispose(): void }}
  */
-export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
-  // A form of its own for the shell's shortcuts: Ctrl/Cmd+Enter in its fields compares, never
-  // Retire an IP's own check (lib/shellnav.js pickShortcutTarget).
-  const el = h('div', { class: 'oc-card-host', dataset: { shortcutScope: 'origin-compare' } });
-
-  function fillDefaults() {
-    if (S.touched) return;
+export function OriginComparePage({ ctx, defaults = () => ({}) }) {
+  if (!S.touched) {
     const d = defaults() || {};
     if (d.ip) S.oldIp = d.ip;
     if (d.host) S.host = d.host;
   }
 
-  function field(key, label, opts = {}) {
-    const input = textInput({
-      label,
-      value: S[key],
-      placeholder: opts.placeholder || '',
-      mono: true,
-      inputmode: opts.inputmode || 'url',
-      className: `oc-field oc-field-${key}`,
-      attrs: { 'data-role': `oc-${key}` },
-      onInput: (v) => {
-        S[key] = v;
-        S.touched = true;
-        renderSoon();
-      },
-      onEnter: () => start()
-    });
-    return input.el;
-  }
+  const field = (key, label, opts = {}) => textInput({
+    label,
+    value: S[key],
+    placeholder: opts.placeholder || '',
+    mono: true,
+    inputmode: opts.inputmode || 'url',
+    className: `oc-field oc-field-${key}`,
+    attrs: { 'data-role': `oc-${key}`, ...(opts.focus ? { 'data-shortcut': 'focus' } : {}) },
+    onInput: (v) => {
+      S[key] = v;
+      S.touched = true;
+      syncSoon();
+    },
+    onEnter: () => start()
+  }).el;
 
-  let timer = null;
-  function renderSoon() {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      const active = document.activeElement;
-      const role = active && el.contains(active) ? active.dataset.role : null;
-      const sel = role && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
-      render();
-      const again = role ? el.querySelector(`[data-role="${role}"]`) : null;
-      if (again) {
-        again.focus();
-        if (sel) again.setSelectionRange(sel[0], sel[1]);
-      }
-    }, 250);
-  }
+  /** Whether Compare can run with what the boxes hold (an address a probe cannot reach goes to the CLI). */
+  let canRun = false;
+  const runBar = RunBar({
+    label: t('oc.run', { probes: COMPARE_PROBES }),
+    dataset: { action: 'oc-run', shortcut: 'submit' },
+    stopLabel: t('oc.stop'),
+    stopDataset: { action: 'oc-stop', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => { if (S.controller) S.controller.abort(); },
+    hasValue: () => canRun || !!S.controller
+  });
+  const notesEl = h('div', { class: 'stack-sm oc-notes' });
+  const privacyText = h('span', { class: 'oc-privacy-text' });
+  // A form of its own for the shell's shortcuts: Ctrl/Cmd+Enter in its fields compares (lib/shellnav.js pickShortcutTarget).
+  const input = ToolInput({
+    className: 'oc-card',
+    fieldsClass: 'oc-form',
+    label: t('oc.title'),
+    dataset: { shortcutScope: 'origin-compare' },
+    primary: field('host', t('oc.host'), { placeholder: t('oc.host.placeholder'), focus: true }),
+    inline: [field('oldIp', t('oc.old'), { placeholder: '192.0.2.10' }), field('newIp', t('oc.new'), { placeholder: '198.51.100.20' })],
+    run: runBar,
+    notes: [notesEl],
+    more: [h('div', { class: 'oc-more' }, field('path', t('oc.path'), { placeholder: '/' }), field('port', t('oc.port'), { placeholder: '443', inputmode: 'numeric' }))],
+    privacy: PrivacyNote({ text: privacyText, className: 'oc-privacy' }),
+    summary: () => optionsSummary([
+      [S.oldIp.trim(), S.newIp.trim()].filter(Boolean).join(' → '),
+      { label: S.path.trim(), isDefault: !S.path.trim() || S.path.trim() === '/' },
+      { label: t('oc.portSummary', { port: S.port.trim() }), isDefault: !S.port.trim() || S.port.trim() === '443' }
+    ])
+  });
+  const emptyEl = h('div', { class: 'oc-empty' }, EmptyState({
+    icon: 'swap',
+    message: t('oc.emptyLine'),
+    checks: EMPTY_CHECKS.map((f) => t(`oc.field.${f}`)),
+    details: Disclosure({ summary: t('oc.how'), className: 'oc-how', children: h('p', { class: 'text-sm' }, t('oc.lead')) })
+  }));
+  const resultsEl = h('div', { class: 'oc-results-host' });
+  const el = h('div', { class: 'oc-page' }, input.el, emptyEl, resultsEl, runBar.float);
+  /** The result header's actions (the JSON file), disposed with the header they belong to. */
+  let actions = null;
+  /** The form as the result on screen was compared: Compare reads "Run again" while the boxes still ask for it. */
+  const askedOf = (r) => (r ? [r.host, r.old && r.old.ip, r.new && r.new.ip, r.path, String(r.port)].join('\n') : null);
 
-  /** The control that takes over keyboard focus from `role` after a rebuild: Compare ⇄ Stop as a run starts or ends. */
-  const focusSuccessor = (role, running) => (role === 'oc-run' && running ? 'oc-stop' : role === 'oc-stop' && !running ? 'oc-run' : role);
-
-  function render() {
-    const doc = globalThis.document;
-    const active = doc && doc.activeElement;
-    const focusRole = active && el.contains(active) && active.dataset ? active.dataset.role || active.dataset.action || null : null;
-    fillDefaults();
-    clear(el);
-    renderCard();
-    // Keyboard focus stays on its control, rebuilt; from Compare to Stop and back as a run starts
-    // and ends (a disabled or removed button would drop it to the page).
-    const want = focusRole ? focusSuccessor(focusRole, !!S.controller) : null;
-    const again = want ? el.querySelector(`[data-role="${want}"], [data-action="${want}"]`) : null;
-    if (again && !again.disabled) again.focus({ preventScroll: true });
-  }
-
-  function renderCard() {
+  /** The form's problems, the CLI command or the run bar, what is sent, the compact line and Run's state. */
+  function sync() {
     const check = checkCompare({ host: S.host, oldIp: S.oldIp, newIp: S.newIp, path: S.path, port: S.port });
     const typed = !!(S.host.trim() || S.newIp.trim());
     const issues = typed ? check.issues.filter((i) => (i.code === 'host' ? S.host.trim() : true) && (i.code !== 'new-ip' || S.newIp.trim())) : [];
     const running = !!S.controller;
-    const body = h('div', { class: 'stack-sm' },
-      h('p', { class: 'text-sm' }, t('oc.lead')),
-      h('div', { class: 'oc-form' },
-        field('host', t('oc.host'), { placeholder: t('oc.host.placeholder') }),
-        field('oldIp', t('oc.old'), { placeholder: '192.0.2.10' }),
-        field('newIp', t('oc.new'), { placeholder: '198.51.100.20' }),
-        field('path', t('oc.path'), { placeholder: '/' }),
-        field('port', t('oc.port'), { placeholder: '443', inputmode: 'numeric' })));
+    const cli = check.ok && !check.probeable;
+    clear(notesEl);
     if (issues.length) {
-      body.append(h('ul', { class: 'oc-issues text-sm', dataset: { role: 'oc-issues' } },
+      notesEl.append(h('ul', { class: 'oc-issues text-sm', dataset: { role: 'oc-issues' } },
         issues.map((i) => h('li', { dataset: { code: i.code } }, SeverityIcon('warn'), ' ', t(`oc.issue.${i.code}`, { value: i.value })))));
     }
-    if (check.ok && !check.probeable) {
-      body.append(cliBlock(check));
-    } else {
-      body.append(h('div', { class: 'cluster oc-actions' },
-        Button({
-          label: t('oc.run', { probes: COMPARE_PROBES }),
-          icon: 'swap',
-          variant: 'primary',
-          disabled: running || !check.ok,
-          dataset: { action: 'oc-run', shortcut: 'submit' },
-          onClick: () => start()
-        }),
-        running ? Button({ label: t('oc.stop'), icon: 'stop', variant: 'secondary', dataset: { action: 'oc-stop', shortcut: 'cancel' }, onClick: () => S.controller && S.controller.abort() }) : null,
-        running ? Spinner({ size: 'sm', label: t('oc.running'), showLabel: true }) : null),
-      h('p', { class: 'muted text-xs oc-privacy' }, Icon('lock', { size: 12 }), ' ',
-        t('oc.privacy', { host: check.host || t('oc.host.placeholder'), path: check.path })));
-    }
-    if (S.status === 'quota') body.append(Alert({ variant: 'warn', compact: true, icon: 'clock', message: t('oc.quota', { when: whenText(S.resetAt) }) }));
+    if (cli) notesEl.append(cliBlock(check));
+    for (const note of statusNotes()) notesEl.append(note);
+    canRun = !cli && check.ok;
+    runBar.el.hidden = cli && !running;
+    privacyText.textContent = t('oc.privacy', { host: check.host || t('oc.host.placeholder'), path: check.path });
+    const shownResult = S.result || S.partial;
+    const stateNow = templateState({ running, result: !!shownResult });
+    // Compare is disabled until the form is complete; it stays enabled while it leaves (a run starts): Stop takes its focus.
+    if (!running) runBar.run.disabled = !check.ok || cli;
+    runBar.setRunning(running);
+    runBar.setState(stateNow);
+    const asked = S.result ? askedOf(S.result) : null;
+    runBar.setRerun(stateNow === 'done' && !!asked && asked === [check.host, check.oldIp, check.newIp, check.path, String(check.port)].join('\n'));
+    input.setCompact(inputCompact(stateNow));
+    input.refresh();
+  }
+
+  let timer = null;
+  function syncSoon() {
+    clearTimeout(timer);
+    timer = setTimeout(sync, 150);
+  }
+
+  /** What the last run left to say: the quota, a failure (after the old server was asked or not), a stop. */
+  function statusNotes() {
+    const out = [];
+    if (S.status === 'quota') out.push(Alert({ variant: 'warn', compact: true, icon: 'clock', message: t('oc.quota', { when: whenText(S.resetAt) }) }));
     if (S.status === 'failed' && S.error) {
       const quotaAfter = S.partial && QUOTA_CODES.has(S.error.code);
-      body.append(quotaAfter ? Alert({ variant: 'warn', compact: true, icon: 'clock', message: t('oc.quotaAfter', { when: whenText(S.error.resetAt) }) })
+      out.push(quotaAfter ? Alert({ variant: 'warn', compact: true, icon: 'clock', message: t('oc.quotaAfter', { when: whenText(S.error.resetAt) }) })
         : S.partial ? Alert({ variant: 'warn', compact: true, message: t('oc.failedAfter') })
           : ErrorBanner(S.error, { title: t('oc.failed'), compact: true }));
     }
-    if (S.status === 'stopped' && S.partial) body.append(Alert({ variant: 'info', compact: true, message: t('oc.stopped') }));
-    if (S.partial) body.append(partialResults(S.partial));
-    if (S.result) body.append(results(S.result));
-    el.append(Card({ title: t('oc.title'), icon: 'swap', className: 'oc-card', children: body }));
+    if (S.status === 'stopped' && S.partial) out.push(Alert({ variant: 'info', compact: true, message: t('oc.stopped') }));
+    return out;
   }
 
   function cliBlock(check) {
@@ -454,7 +486,8 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
       options: [{ value: 'posix', label: t('oc.cli.posix') }, { value: 'powershell', label: t('oc.cli.powershell') }],
       onChange: (v) => {
         S.shell = v === 'powershell' ? 'powershell' : 'posix';
-        render();
+        sync();
+        notesEl.querySelector('.oc-shell [aria-pressed="true"]')?.focus();
       }
     });
     const lead = check.private.length ? t('oc.private', { count: check.private.length, list: check.private.join(', ') }) : t('oc.cliPort', { port: check.port });
@@ -507,7 +540,7 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
     } finally {
       if (S.controller === ac) S.controller = null;
       ctx.setBusy(false);
-      // The card on screen now, which may not be the one that started the run.
+      // The page on screen now, which may not be the one that started the run.
       if (shown && shown.connected()) shown.render();
     }
   }
@@ -518,16 +551,71 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
 
   function measurementLinks(ids) {
     const links = ids.map((id) => measurementUrl(id)).filter(Boolean);
-    return links.length ? h('span', null, ' · ', ...links.flatMap((href, i) => [i ? ', ' : '',
+    return links.length ? h('span', { class: 'oc-measurements' }, ...links.flatMap((href, i) => [i ? ', ' : '',
       h('a', { href, class: 'link', attrs: { target: '_blank', rel: 'noopener noreferrer' } }, t('oc.measurement', { n: i + 1 }))])) : null;
   }
 
+  /**
+   * The result region: the result header — while a run goes on "Asking both servers…" over the
+   * previous result, whose actions wait — and the table. A control redrawn under the keyboard
+   * focus (Remember) keeps it, by its data-action / data-role.
+   */
+  function renderResult() {
+    const doc = globalThis.document;
+    const active = doc && doc.activeElement;
+    const focusKey = active && resultsEl.contains(active) && active.dataset ? active.dataset.action || active.dataset.role || null : null;
+    if (actions) actions.dispose();
+    actions = null;
+    clear(resultsEl);
+    const running = !!S.controller;
+    const r = S.result;
+    const p = !r ? S.partial : null;
+    emptyEl.hidden = !!(r || p || running);
+    if (!r && !p && !running) return;
+    const head = ResultHeader({ className: 'oc-head' });
+    head.setState(running ? 'running' : 'done');
+    const out = h('div', { class: ['stack', 'oc-results', { 'oc-partial': !!p }], dataset: { verdict: r ? r.comparison.verdict : p ? 'partial' : 'running' } }, head.el);
+    if (running) head.set('title', ResultTitle({ running: true, text: t('oc.running') }));
+    if (p) {
+      if (!running) head.set('title', ResultTitle({ severity: 'info', text: t('oc.partialTitle') }));
+      head.set('meta', [h('span', { class: 'oc-at' }, t('oc.oldAt', { time: formatDateTime(p.at), where: probeWhere(p.side.probe) })),
+        measurementLinks(p.side.measurementId ? [p.side.measurementId] : [])]);
+      out.append(partialTable(p));
+    } else if (r) {
+      const c = r.comparison;
+      if (!running) head.set('title', ResultTitle({ severity: COMPARE_SEVERITY[c.verdict] || 'info', text: t(`oc.verdict.${c.verdict}`) }));
+      head.set('meta', [h('span', { class: 'oc-at' }, t('oc.at', { time: formatDateTime(r.at), where: probeWhere(r.old.probe || r.new.probe), count: r.spent })),
+        measurementLinks(r.ids)]);
+      // A certificate problem both servers share: no difference, but worth knowing before the move.
+      head.set('notes', (c.shared || []).map((note) => h('p', { class: 'oc-shared text-sm', dataset: { shared: note } },
+        Icon('lock', { size: 14 }), ' ', t(`oc.shared.${note}`))));
+      actions = ResultActions({
+        exports: [{
+          label: t('result.export'), title: t('oc.jsonTitle'), icon: 'download', dataset: { action: 'oc-json' },
+          onSelect: () => downloadJson(timestampedName('compare', 'json', r.host), {
+            schema: 'domainscope.compare/1', name: r.host, path: r.path, port: r.port, at: r.at, verdict: c.verdict, shared: c.shared || [], fields: c.fields,
+            old: sideJson(r.old), new: sideJson(r.new), measurements: r.ids
+          })
+        }]
+      });
+      actions.setDisabled(running);
+      head.set('actions', actions.el);
+      // The new server serves the name: it can go into the workspace's origin map (one click).
+      const observed = compareObservations(r);
+      if (observed.length && !running) head.set('next', rememberBlock(r, observed));
+      out.append(fullTable(r));
+    }
+    resultsEl.append(out);
+    if (focusKey) {
+      const again = resultsEl.querySelector(`[data-action="${focusKey}"], [data-role="${focusKey}"]`);
+      if (again && !again.disabled) again.focus({ preventScroll: true });
+      else head.focusTitle();
+    }
+  }
+
   /** The old server's answer alone: a stop or a failure came before the new one was asked. */
-  function partialResults(p) {
+  function partialTable(p) {
     const side = p.side;
-    const out = h('div', { class: 'stack-sm oc-results oc-partial', dataset: { verdict: 'partial' } });
-    out.append(h('p', { class: 'muted text-sm oc-at' }, t('oc.oldAt', { time: formatDateTime(p.at), where: probeWhere(side.probe) }),
-      measurementLinks(side.measurementId ? [side.measurementId] : [])));
     const label = t('oc.col.old', { ip: side.ip });
     const table = h('table', { class: 'oc-table oc-table-one', dataset: { role: 'oc-table' } },
       h('thead', null, h('tr', null,
@@ -536,20 +624,11 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
       h('tbody', null, sideFields(side).map((f) => h('tr', { class: 'oc-row', dataset: { field: f.key } },
         h('th', { attrs: { scope: 'row' } }, h('span', { class: 'oc-field-name' }, t(`oc.field.${f.key}`))),
         h('td', { class: 'mono', dataset: { label } }, displayValue(f.key, f.value, side))))));
-    out.append(h('div', { class: 'oc-table-wrap' }, table));
-    return out;
+    return h('div', { class: 'oc-table-wrap' }, table);
   }
 
-  function results(r) {
+  function fullTable(r) {
     const c = r.comparison;
-    const out = h('div', { class: 'stack-sm oc-results', dataset: { verdict: c.verdict } });
-    out.append(Alert({ variant: VERDICT_VARIANT[c.verdict], message: t(`oc.verdict.${c.verdict}`) }));
-    // A certificate problem both servers share: no difference, but worth knowing before the move.
-    for (const note of c.shared || []) {
-      out.append(Alert({ variant: 'warn', compact: true, message: t(`oc.shared.${note}`), icon: 'lock' }));
-    }
-    out.append(h('p', { class: 'muted text-sm oc-at' }, t('oc.at', { time: formatDateTime(r.at), where: probeWhere(r.old.probe || r.new.probe), count: r.spent }),
-      measurementLinks(r.ids)));
     const table = h('table', { class: 'oc-table', dataset: { role: 'oc-table' } },
       h('thead', null, h('tr', null,
         h('th', { attrs: { scope: 'col' } }, t('oc.col.field')),
@@ -565,21 +644,10 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
           h('td', { class: 'mono', dataset: { label: t('oc.col.old', { ip: r.old.ip }) } }, oldText),
           h('td', { class: ['mono', { 'oc-new-differs': !f.same }], dataset: { label: t('oc.col.new', { ip: r.new.ip }) } }, newText));
       })));
-    out.append(h('div', { class: 'oc-table-wrap' }, table));
-    // The new server serves the name: it can go into the workspace's origin map (one click).
-    const observed = compareObservations(r);
-    if (observed.length) out.append(rememberBlock(r, observed));
-    out.append(h('div', { class: 'cluster' }, Button({
-      label: t('oc.json'), icon: 'download', size: 'sm', variant: 'secondary', dataset: { action: 'oc-json' },
-      onClick: () => downloadJson(timestampedName('compare', 'json', r.host), {
-        schema: 'domainscope.compare/1', name: r.host, path: r.path, port: r.port, at: r.at, verdict: c.verdict, shared: c.shared || [], fields: c.fields,
-        old: sideJson(r.old), new: sideJson(r.new), measurements: r.ids
-      })
-    })));
-    return out;
+    return h('div', { class: 'oc-table-wrap' }, table);
   }
 
-  /** "Remember <address> as the origin of <name>", or why nothing is written. */
+  /** "Remember <address> as the origin of <name>", or why nothing is written: a next step of the result. */
   function rememberBlock(r, observed) {
     const box = h('div', { class: 'stack-sm oc-remember', dataset: { role: 'oc-remember' } });
     if (!rememberOn()) {
@@ -587,12 +655,13 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
       return box;
     }
     const target = originTarget({ ip: observed[0].ip, port: observed[0].port });
-    box.append(h('div', { class: 'cluster' }, Button({
-      label: t('oc.remember', { target, host: r.host }), icon: 'map-pin', size: 'sm', dataset: { action: 'oc-remember' },
+    box.append(h('div', { class: 'next-steps' }, Button({
+      label: t('oc.remember', { target, host: r.host }), icon: 'map-pin', size: 'sm', variant: 'ghost', className: 'next-step',
+      dataset: { action: 'oc-remember' },
       onClick: () => {
         const res = recordOrigins(observed, { source: 'compare', at: r.at || new Date() });
         r.remembered = res.off ? null : recordText(res);
-        render();
+        renderResult();
         if (r.remembered) announce(r.remembered);
       }
     })), h('p', { class: 'muted text-sm' }, t('oc.rememberHint')));
@@ -600,9 +669,25 @@ export function OriginCompareCard({ ctx, defaults = () => ({}) }) {
     return box;
   }
 
-  shown = { render, connected: () => el.isConnected };
+  function render() {
+    sync();
+    renderResult();
+  }
+
+  const api = {
+    el,
+    render,
+    dispose() {
+      clearTimeout(timer);
+      runBar.dispose();
+      if (actions) actions.dispose();
+      actions = null;
+      if (shown && shown.el === el) shown = null;
+    }
+  };
+  shown = { el, render, connected: () => el.isConnected };
   render();
-  return { el, render };
+  return api;
 }
 
 /** A side for the JSON export: no probe network details beyond the summary, dates as ISO text. */

@@ -1521,3 +1521,97 @@ export function retireExportJson({
     failures: failures.map((f) => ({ ...f }))
   };
 }
+
+/* ------------------------------------------------------------------------ */
+/* The result header (docs/DESIGN.md §5.6; the page template, ui/template.js) */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The status summary's items of a check, in their order, each with its severity (DESIGN §5.6:
+ * ✕ breaks mail ✕ breaks DNS · must change ⚠ cannot tell), plus the records found only in the
+ * zone file and the passive names nobody checked.
+ */
+export const RETIRE_STATUS = Object.freeze([
+  Object.freeze({ key: 'mail', severity: 'error' }), Object.freeze({ key: 'ns', severity: 'error' }),
+  Object.freeze({ key: 'unknown', severity: 'warn' }), Object.freeze({ key: 'file', severity: 'info' }),
+  Object.freeze({ key: 'breaking', severity: 'neutral' }), Object.freeze({ key: 'unverified', severity: 'neutral' })
+]);
+
+/** The severities of the records that break something once the address is gone ({@link breakingChanges}). */
+const BREAKING_SEVERITIES = new Set(SEVERITIES.filter((s) => s !== 'stale' && s !== 'unknown' && s !== 'file'));
+
+/**
+ * The status summary of a check (lib/template.js statusItems leaves the zero counts out): how many
+ * records break mail, break DNS, cannot be told, are only in the zone file, must change in all, and
+ * how many passive names are unverified. Each is a filter of the change list ({@link retireStatusMatch}).
+ * @param {{ breaking?: number, bySeverity?: Record<string, number>, byVerified?: Record<string, number> }|null} counts buildChanges `counts`
+ * @returns {Array<{ key: string, severity: string, count: number }>}
+ */
+export function retireStatus(counts) {
+  const c = counts || {};
+  const by = c.bySeverity || {};
+  const count = (key) => {
+    if (key === 'breaking') return Number(c.breaking) || 0;
+    if (key === 'unverified') return Number((c.byVerified || {}).unverified) || 0;
+    return Number(by[key]) || 0;
+  };
+  return RETIRE_STATUS.map(({ key, severity }) => ({ key, severity, count: Math.max(0, count(key)) }));
+}
+
+/**
+ * Whether a change is one of those a status item counts: the item's filter of the change list.
+ * @param {string} key a {@link RETIRE_STATUS} key
+ * @param {{ severity?: string, verified?: string }|null} change
+ * @returns {boolean}
+ */
+export function retireStatusMatch(key, change) {
+  if (!change) return false;
+  if (key === 'breaking') return BREAKING_SEVERITIES.has(change.severity);
+  if (key === 'unverified') return change.verified === 'unverified';
+  return RETIRE_STATUS.some((s) => s.key === key) && change.severity === key;
+}
+
+/**
+ * The verdict of a check, as its result header says it (DESIGN §5.6: "8 records break something
+ * once 192.0.2.10 is gone"): which one (`retire.head.<key>`), its severity and count, and whether
+ * "the list may be incomplete" goes with it. Passive hits nobody checked and "cannot tell" rows are
+ * never counted as pointing at the address; "nothing points at it" (ok) only for a check that
+ * settled everything ({@link retireGaps}): a failed lookup, a "cannot tell", a stop or a domain that
+ * does not exist leaves it open (warn).
+ * @param {{ status: string, counts?: object|null, gaps?: { settled: boolean }|null }} job `status`:
+ *   'running' | 'done' | 'cancelled' | 'error'
+ * @returns {{ key: 'running'|'failed'|'breaking'|'cleanup'|'open'|'none', severity: 'error'|'warn'|'info'|'ok'|null,
+ *   count: number, incomplete: boolean }}
+ */
+export function retireVerdict({ status, counts = null, gaps = null } = {}) {
+  if (status === 'running') return { key: 'running', severity: null, count: 0, incomplete: false };
+  if (status === 'error') return { key: 'failed', severity: 'error', count: 0, incomplete: false };
+  const c = counts || {};
+  const by = c.bySeverity || {};
+  const breaking = Number(c.breaking) || 0;
+  const listed = (Number(c.total) || 0) - (Number(c.passive) || 0) - (Number(by.unknown) || 0);
+  const open = !gaps || !gaps.settled;
+  if (breaking > 0) return { key: 'breaking', severity: by.mail || by.ns ? 'error' : 'warn', count: breaking, incomplete: open };
+  if (listed > 0) return { key: 'cleanup', severity: 'info', count: listed, incomplete: open };
+  if (open) return { key: 'open', severity: 'warn', count: 0, incomplete: true };
+  return { key: 'none', severity: 'ok', count: 0, incomplete: false };
+}
+
+/**
+ * Whether the form asks for the check on screen: the same address blocks and the same domains, in
+ * any order. Its Run then reads "Run again" (DESIGN §5.1, region 3).
+ * @param {{ blocks?: Array<{ cidr: string }>, domains?: string[] }|null} form parseRetireTargets' blocks, parseDomainList's domains
+ * @param {{ blocks?: Array<{ cidr: string }>, domains?: string[] }|null} job
+ * @returns {boolean}
+ */
+export function retireFormMatches(form, job) {
+  if (!job || !form) return false;
+  const same = (a, b) => {
+    const x = [...new Set(a)].sort();
+    const y = [...new Set(b)].sort();
+    return x.length === y.length && x.every((v, i) => v === y[i]);
+  };
+  const cidrs = (list) => (Array.isArray(list) ? list : []).map((b) => b && b.cidr).filter(Boolean);
+  const blocks = cidrs(form.blocks);
+  return blocks.length > 0 && same(blocks, cidrs(job.blocks)) && same(form.domains || [], job.domains || []);
+}

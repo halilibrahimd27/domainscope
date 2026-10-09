@@ -19,8 +19,11 @@
  * drawn by week; Report: the DMARC customer report of the domain on screen with its trend, no re-run
  * link, no script, no server of the list, nothing sent; a reload keeps the history (not the reports);
  * 375 / 320 px without horizontal scroll, TR / EN × light / dark; turned off after a confirmation, a
- * drop writes nothing; Forget report history; Delete all local data clears it; zero console errors /
- * CSP violations / missing i18n keys, nothing sent outside the page.
+ * drop writes nothing; Forget report history; Delete all local data clears it; another tab turning
+ * the switch on, off and on again, followed every time; a history at its size limit taking a drop
+ * and then a domain classed again against its SPF, trimmed and never lost; a day whose mail all
+ * failed drawn as a stub in the compliance chart; zero console errors / CSP violations / missing
+ * i18n keys, nothing sent outside the page.
  *
  * Data is documentation space only (tests/fixtures/mailreports: example.com / .net / .org,
  * 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32).
@@ -33,6 +36,7 @@ import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import { pinnedClockScript } from './clock.mjs';
 import { crc32 } from '../../assets/js/lib/zipread.js';
+import { HISTORY_MAX_BYTES, historyText } from '../../assets/js/lib/dmarchistory.js';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
   gotoRoute, installDownloadCapture, setLangUi, takeDownloads, waitReady, csvHeader
@@ -99,6 +103,46 @@ ${rec('203.0.113.77', 3, false, '<spf><domain>example.org</domain><result>fail</
 ${day >= 17 ? rec('198.51.100.88', 7, false, '<dkim><domain>sendgrid.net</domain><selector>smtpapi</selector><result>pass</result></dkim><spf><domain>sendgrid.net</domain><result>pass</result></spf>') : ''}
 </feedback>`;
 };
+
+/** 2026-09-29 00:00 UTC: the day of the two reports the size-limit steps drop. */
+const CAP_DAY = Date.parse('2026-09-29T00:00:00Z') / 1000;
+
+/** A report of one day (CAP_DAY) of `domain`: [ip, count, aligned] records, aligned in SPF and DKIM or in neither. */
+const dayReport = (domain, id, records) => `<?xml version="1.0" encoding="UTF-8"?><feedback><report_metadata><org_name>google.com</org_name><email>noreply-dmarc-support@example.org</email>
+<report_id>${id}</report_id><date_range><begin>${CAP_DAY}</begin><end>${CAP_DAY + DAY_S - 1}</end></date_range></report_metadata>
+<policy_published><domain>${domain}</domain><p>none</p></policy_published>
+${records.map(([ip, count, aligned]) => `<record><row><source_ip>${ip}</source_ip><count>${count}</count><policy_evaluated><disposition>none</disposition>
+<dkim>${aligned ? 'pass' : 'fail'}</dkim><spf>${aligned ? 'pass' : 'fail'}</spf></policy_evaluated></row><identifiers><header_from>${domain}</header_from></identifiers>
+<auth_results><spf><domain>${domain}</domain><result>${aligned ? 'pass' : 'fail'}</result></spf></auth_results></record>`).join('\n')}
+</feedback>`;
+
+/**
+ * A stored history just under `target` characters: example.com with one day and as many sources of
+ * one message as fit (the size cap drops those first). Every address has the same length (four hex
+ * digits a group, none with a leading zero), so every source weighs the same.
+ */
+function fillerHistory(target) {
+  const day = { msgs: 10000, dmarcPass: 0, spfAligned: 0, dkimAligned: 0, quarantine: 0, reject: 0, unknownMsgs: 10000, knownFail: 0 };
+  const d = { days: { '2026-09-01': day }, sources: {}, recent: {}, policy: null, seen: {}, cut: null, checked: null };
+  const h = { v: 1, keep: true, updatedAt: null, domains: { 'example.com': d } };
+  const add = (from, to) => {
+    for (let k = from; k < to; k += 1) {
+      d.sources[`2001:db8:${(0x1000 + (k >> 12)).toString(16)}:${(0x1000 + (k & 0xfff)).toString(16)}::1`] = {
+        first: '2026-09-01', last: '2026-09-01', msgs: 1, passMsgs: 0, cls: 'unknown', service: null, type: null
+      };
+    }
+  };
+  add(0, 1);
+  const base = historyText(h).length;
+  add(1, 2);
+  const per = historyText(h).length - base;
+  const n = 1 + Math.floor((target - base) / per);
+  add(2, n);
+  // As many digits as the 10000 measured with.
+  day.msgs = n;
+  day.unknownMsgs = n;
+  return historyText(h);
+}
 
 /** A stored (uncompressed) zip of [name, text] entries: a mailbox folder saved as one archive. */
 function storedZip(entries) {
@@ -258,6 +302,14 @@ async function main() {
   await writeFile(orgZip, storedZip(Array.from({ length: 20 }, (_, d) => [`google.com!example.org!${ORG_FIRST + d * DAY_S}.xml`, orgReport(d)])));
   const lateReport = path.join(dir, 'google.com!example.org!late.xml');
   await writeFile(lateReport, orgReport(20, { id: 'org-late' }));
+  // One day of two domains: example.org (the busiest, its mail aligned) and example.net, whose 400
+  // addresses all fail (0 % compliance) and whose SPF is not looked up at the drop.
+  const capZip = path.join(dir, 'two-domains-2026-09-29.zip');
+  const netIps = Array.from({ length: 400 }, (_, i) => (i < 200 ? `198.51.100.${i + 1}` : `203.0.113.${i - 199}`));
+  await writeFile(capZip, storedZip([
+    ['google.com!example.org!cap.xml', dayReport('example.org', 'cap-org', [['192.0.2.30', 100000, true]])],
+    ['google.com!example.net!cap.xml', dayReport('example.net', 'cap-net', netIps.map((ip) => [ip, 5, false]))]
+  ]));
 
   const server = await startServer({ base: BASE });
   const origin = new URL(server.url).origin;
@@ -546,6 +598,96 @@ async function main() {
       assertEqual(await storedText(page), '', 'cleared with the rest');
       assertEqual(await page.evaluate(() => [document.querySelector('[data-role="rpt-keep"]')?.checked, !!document.querySelector('.rpt-tabs [data-tab="history"]')]), [false, false], 'off, no History tab');
       await setLangUi(page, 'en');
+    });
+
+    run.group('Another tab, the size limit');
+    await run.step('another tab turns keeping on, off and on again: the switch here follows every change', async () => {
+      const other = await browser.newPage('about:blank', { width: 1280, height: 900 });
+      try {
+        await other.send('Network.enable');
+        await other.send('Network.setBlockedURLs', { urls: ['https://*'] });
+        await other.send('Page.addScriptToEvaluateOnNewDocument', { source: pinnedClockScript(HISTORY_NOW) });
+        await other.send('Page.addScriptToEvaluateOnNewDocument', { source: fakeScript() });
+        await other.goto(`${server.url}#/reports`);
+        await waitReady(other);
+        const follows = (p, on, message) => p.waitFor((v) => document.querySelector('[data-role="rpt-keep"]')?.checked === v, { args: [on], message, timeout: 10000 });
+        // A click goes to the tab in front (a tab behind it runs its timers once a second).
+        const front = (p) => p.send('Page.bringToFront');
+        await follows(other, false, 'off in the other tab');
+        await front(page);
+        await page.click('[data-role="rpt-keep"]');
+        await follows(other, true, 'on here: on there');
+        // Nothing is kept yet: turned off without a question.
+        await front(other);
+        await other.click('[data-role="rpt-keep"]');
+        await follows(page, false, 'off there: off here');
+        // On again there: the workspace holds the very text this tab wrote first.
+        await other.click('[data-role="rpt-keep"]');
+        await follows(page, true, 'on again there: on again here');
+        assertEqual(JSON.parse(await storedText(page)).keep, true, 'on in the workspace');
+      } finally {
+        await other.close();
+        await page.send('Page.bringToFront');
+      }
+    });
+
+    await run.step('a history at its size limit takes a drop of two domains: its oldest details are trimmed, the rest kept', async () => {
+      const filler = fillerHistory(HISTORY_MAX_BYTES - 2000);
+      assert(filler.length <= HISTORY_MAX_BYTES - 2000 && filler.length > HISTORY_MAX_BYTES - 2200, `the filler: ${filler.length} characters`);
+      await page.evaluate((value) => import('./assets/js/state.js').then(async ({ state }) => {
+        await state.setWorkspaceData('reportHistory', value);
+        await state.whenSaved();
+      }), filler);
+      await page.waitFor(() => !!document.querySelector('.rpt-tabs [data-tab="history"]'), { message: 'the History tab follows the workspace', timeout: 15000 });
+      await removeToasts(page);
+      await page.setFileInput('.rpt-load .filedrop-input', [capZip]);
+      const said = await toastText(page, /reports added/, 'kept');
+      assert(/^2 reports added to the history of this workspace\. The history reached its size limit \(4 MB\): its oldest details were dropped\.$/.test(said), said);
+      await page.evaluate(async () => (await import('./assets/js/state.js')).state.whenSaved());
+      const stored = await storedText(page);
+      assert(stored.length > HISTORY_MAX_BYTES - 1000 && stored.length < HISTORY_MAX_BYTES, `${stored.length} characters`);
+      assertEqual(Object.keys(JSON.parse(stored).domains), ['example.com', 'example.net', 'example.org'], 'every domain');
+    });
+
+    await run.step('a day whose mail all failed is a bar in the compliance chart, a stub in the error band, not a gap', async () => {
+      await openHistory(page);
+      await pickHistoryDomain(page, 'example.net');
+      assertEqual((await bars(page, 'volume')).map(([d]) => d), ['2026-09-29'], 'its messages');
+      assertEqual(await bars(page, 'compliance'), [['2026-09-29', ['compliance']]], 'its compliance');
+      const stub = await page.evaluate(() => {
+        const seg = document.querySelector('.rh-chart[data-chart="compliance"] g.rh-bar[data-day="2026-09-29"] [data-seg]');
+        return { cls: seg.getAttribute('class'), height: Math.round(seg.getBBox().height * 100) / 100 };
+      });
+      assertEqual(stub, { cls: 'rh-band-error', height: 2 }, 'a 2 px stub in the error band');
+      assertEqual(await page.evaluate(() => document.querySelectorAll('.rh-stats .stat-value')[1].textContent), '0%', 'the compliance of the period');
+    });
+
+    await run.step('its SPF landing classes that domain again at the limit: trimmed again and said so, never lost', async () => {
+      await page.click('.rpt-tabs [data-tab="dmarc"]');
+      await page.waitFor(() => !!document.querySelector('.rpt-domain select'), { message: 'the DMARC domain picker' });
+      await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => {
+        window.__keptBefore = state.workspaceData('reportHistory') || '';
+      }));
+      await removeToasts(page);
+      await page.evaluate(() => {
+        const sel = document.querySelector('.rpt-domain select');
+        sel.value = 'example.net';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await page.waitFor(() => document.querySelector('.rpt-spf')?.dataset.state === 'ok', { message: 'the SPF of example.net', timeout: 15000 });
+      // The history follows a moment later (HISTORY_SYNC_MS): every source of example.net now rests on its SPF.
+      await page.waitFor(() => import('./assets/js/state.js').then(({ state }) => (state.workspaceData('reportHistory') || '') !== window.__keptBefore),
+        { message: 'the history classed again', timeout: 15000 });
+      await page.evaluate(async () => (await import('./assets/js/state.js')).state.whenSaved());
+      const stored = await storedText(page);
+      assert(stored.length > HISTORY_MAX_BYTES - 1000 && stored.length < HISTORY_MAX_BYTES, `the history is still there: ${stored.length} characters`);
+      assertEqual(await idbRecord(page), stored, 'in IndexedDB as the workspace holds it');
+      const h = JSON.parse(stored);
+      assertEqual([h.keep, Object.keys(h.domains), h.domains['example.net'].checked], [true, ['example.com', 'example.net', 'example.org'], '2026-09-30'], 'on, every domain, example.net checked');
+      assertEqual(Object.values(h.domains['example.net'].sources).filter((s) => !s.checked).length, 0, 'every address of example.net classed against its SPF');
+      await toastText(page, /^The history reached its size limit \(4 MB\): its oldest details were dropped\.$/, 'the trim said');
+      assertEqual(await page.evaluate(() => [document.querySelector('[data-role="rpt-keep"]').checked, !!document.querySelector('.rpt-tabs [data-tab="history"]')]),
+        [true, true], 'the switch on, the History tab there');
     });
 
     run.group('Quality');

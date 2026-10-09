@@ -17,7 +17,7 @@ import {
   HISTORY_VERSION, HISTORY_DAYS, RECENT_DAYS, HISTORY_MAX_BYTES, HISTORY_PERIODS, HISTORY_CLASSES, DAY_FIELDS, RECENT_FIELDS, ROLLUP_VERDICTS,
   ROLLUP_CSV_COLUMNS, TREND_CSV_COLUMNS, NEW_BASELINE_DAYS, NEW_WINDOW_DAYS, WEEK_BIN_AFTER, SERVICE_MAX,
   dayOf, addDays, isDay, utf8Length, reportHash, emptyHistory, sanitizeHistory, readHistory, historyText, setKeep, forgetHistory,
-  mergeReports, reclassify, prune, historyDomains, historySummary, trend, newSince, newSources, historySources, rollup, rollupVerdict,
+  mergeReports, reclassify, prune, fitHistory, historyDomains, historySummary, trend, newSince, newSources, historySources, rollup, rollupVerdict,
   rollupCsvRows, trendCsvRows, daysSince
 } from '../../assets/js/lib/dmarchistory.js';
 import { SOURCE_CLASSES, parseAggregateReport, aggregateDmarc, classifySources, readReportFiles } from '../../assets/js/lib/dmarcreport.js';
@@ -338,6 +338,96 @@ describe('prune', () => {
     const text = historyText(small);
     assert.ok(bytes <= HISTORY_MAX_BYTES && utf8Length(text) === bytes);
     assert.equal(sanitizePart('reportHistory', text), text, 'the workspace keeps it whole');
+  });
+
+  test('a stage runs to its end before the next: no day goes while a source is left (domains of a single source)', () => {
+    // 300 small domains, each with one source of one message (its object's only entry: no comma
+    // goes with it), and example.com with 200 days of 50 sources of 1,000 messages.
+    const reports = [];
+    for (let i = 0; i < 300; i += 1) reports.push(rep({ domain: `d${i}.example.org`, day: addDays(TODAY, -100), records: [[`192.0.2.${(i % 250) + 1}`, 1]] }));
+    for (let i = 0; i < 200; i += 1) reports.push(rep({ day: addDays(TODAY, -40 - i), records: Array.from({ length: 50 }, (_, j) => [`2001:db8::${j.toString(16)}`, 1000]) }));
+    const { history } = merge(emptyHistory({ keep: true }), reports);
+    const full = utf8Length(historyText(history));
+    const one = utf8Length(JSON.stringify('192.0.2.100')) + utf8Length(JSON.stringify(history.domains['d99.example.org'].sources['192.0.2.100'])) + 2;
+    // Caps that take about `need` of the small sources away.
+    for (let need = 50; need <= 120; need += 1) {
+      const maxBytes = full - need * one + 1;
+      const p = prune(history, { now: NOW, maxBytes });
+      assert.ok(p.bytes <= maxBytes && p.bytes === utf8Length(historyText(p.history)), `${need}: ${p.bytes} of ${maxBytes}`);
+      assert.deepEqual([p.dropped.recentDays, p.dropped.days, p.dropped.domains], [0, 0, 0], `${need}: ${JSON.stringify(p.dropped)}`);
+      assert.ok(Math.abs(p.dropped.sources - need) <= 2, `${need}: ${p.dropped.sources} sources`);
+      assert.equal(p.history.domains['example.com'].cut, null, `${need}: no day of example.com cut`);
+    }
+  });
+
+  test('…and no source goes while a recent day is left (domains of a single recent day)', () => {
+    const oldestRecent = addDays(TODAY, -(RECENT_DAYS - 1));
+    const reports = [];
+    for (let i = 0; i < 300; i += 1) reports.push(rep({ domain: `d${i}.example.org`, day: oldestRecent, records: [[`192.0.2.${(i % 250) + 1}`, 1]] }));
+    for (let i = 0; i < RECENT_DAYS - 1; i += 1) reports.push(rep({ day: addDays(TODAY, -i), records: Array.from({ length: 50 }, (_, j) => [`2001:db8::${j.toString(16)}`, 1000]) }));
+    const { history } = merge(emptyHistory({ keep: true }), reports);
+    // Without its oldest recent day (each small domain's only one) the text is still a little over the cap.
+    const withoutOldest = utf8Length(historyText({
+      ...history,
+      domains: Object.fromEntries(Object.entries(history.domains).map(([name, d]) => [name, { ...d, recent: Object.fromEntries(Object.entries(d.recent).filter(([day]) => day !== oldestRecent)) }]))
+    }));
+    const maxBytes = withoutOldest - 150;
+    const p = prune(history, { now: NOW, maxBytes });
+    assert.deepEqual([p.dropped.recentDays, p.dropped.sources, p.dropped.days], [2, 0, 0], JSON.stringify(p.dropped));
+    assert.ok(p.bytes <= maxBytes && p.bytes === utf8Length(historyText(p.history)));
+    assert.equal(Object.keys(p.history.domains).length, 301, 'every domain stays');
+  });
+
+  test('with the switch on, a pruned text leaves room for it to be turned off ("false" is a byte longer)', () => {
+    const { history } = merge(emptyHistory({ keep: true }), [rep({ records: [['192.0.2.10', 1], ['192.0.2.11', 2]] })]);
+    const size = utf8Length(historyText(history));
+    const p = prune(history, { now: NOW, maxBytes: size });
+    assert.ok(p.history.domains['example.com'], 'the domain stays');
+    assert.ok(utf8Length(historyText(setKeep(p.history, false))) <= size, 'turned off, it still fits');
+    // Off, the whole cap is its own.
+    const off = setKeep(history, false);
+    assert.deepEqual(prune(off, { now: NOW, maxBytes: utf8Length(historyText(off)) }).dropped, { recentDays: 0, sources: 0, days: 0, domains: 0 });
+  });
+});
+
+describe('fitHistory: every write within the cap', () => {
+  /** example.com with 40,000 sources of one message (over the cap: the cap drops them first) and example.net. */
+  const overCap = () => {
+    const h = merge(emptyHistory({ keep: true }), [rep({ domain: 'example.net', records: [['192.0.2.20', 100], ['192.0.2.21', 50, { dkim: 'fail', spf: 'fail' }]] })]).history;
+    const d = { days: { '2026-09-01': { ...Object.fromEntries(DAY_FIELDS.map((f) => [f, 0])), msgs: 40000, unknownMsgs: 40000 } }, sources: {}, recent: {}, policy: null, seen: {}, cut: null, checked: null };
+    // Four hex digits a group, none with a leading zero: one length for every address.
+    for (let k = 0; k < 40000; k += 1) {
+      d.sources[`2001:db8:${(0x1000 + (k >> 12)).toString(16)}:${(0x1000 + (k & 0xfff)).toString(16)}::1`] = { first: '2026-09-01', last: '2026-09-01', msgs: 1, passMsgs: 0, cls: 'unknown', service: null, type: null };
+    }
+    h.domains['example.com'] = d;
+    return h;
+  };
+
+  test('a capped history classed again against the SPF with services named, or turned off: trimmed, never lost', () => {
+    const capped = prune(overCap(), { now: NOW }).history;
+    const text = historyText(capped);
+    assert.equal(sanitizePart('reportHistory', text), text, 'stored whole');
+    // The SPF landed (every source checked) and Identify senders named a few.
+    const strong = reclassify(capped, (domain, ip) => ({ cls: domain === 'example.net' ? 'yours' : 'unknown', service: ip.endsWith(':1000::1') ? 'Example Mailer' : null, type: 'transactional', provisional: false }), { now: NOW });
+    const raw = historyText(strong.history);
+    assert.ok(utf8Length(raw) > HISTORY_MAX_BYTES, 'over the cap as it is');
+    assert.equal(sanitizePart('reportHistory', raw), '', 'written as it is, the workspace would keep nothing');
+    const fit = fitHistory(strong.history, { now: NOW });
+    assert.equal(sanitizePart('reportHistory', fit.text), fit.text, 'the workspace keeps it whole');
+    assert.equal(fit.text, historyText(fit.history));
+    assert.ok(fit.dropped && fit.dropped.sources > 0 && fit.dropped.days === 0 && fit.dropped.domains === 0, JSON.stringify(fit.dropped));
+    const back = readHistory(fit.text);
+    assert.deepEqual(Object.keys(back.domains).sort(), ['example.com', 'example.net']);
+    assert.ok(Object.values(back.domains['example.com'].sources).every((s) => s.checked), 'the classes kept are the SPF\'s');
+    assert.deepEqual(Object.values(back.domains['example.net'].sources).map((s) => s.cls), ['yours', 'yours']);
+    // Turned off at the cap: room was left for it.
+    const off = fitHistory(setKeep(capped, false), { now: NOW });
+    assert.equal(sanitizePart('reportHistory', off.text), off.text);
+    assert.deepEqual([readHistory(off.text).keep, off.dropped], [false, null]);
+    // Within the cap: written as it is.
+    const same = fitHistory(capped, { now: NOW });
+    assert.deepEqual([same.history === capped, same.text === text, same.dropped], [true, true, null]);
+    assert.deepEqual(fitHistory(emptyHistory(), { now: NOW }), { history: emptyHistory(), text: '', dropped: null }, 'nothing to keep: no text');
   });
 });
 

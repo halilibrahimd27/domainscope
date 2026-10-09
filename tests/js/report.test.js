@@ -482,7 +482,8 @@ describe('dmarcReport: a domain\'s DMARC reports and the history the workspace k
   test('Turkish: the frame and its own words', () => {
     const { html } = buildReport('dmarc', crafted(), words('tr'));
     assert.ok(html.startsWith('<!doctype html>\n<html lang="tr">'));
-    for (const s of ['DMARC raporu · example.com', 'Sorunlar ve öneriler', 'Sınıfa göre gönderen adresler', 'Son 30 gün', '2026-09-20 tarihinden bu yana yeni göndericiler']) {
+    for (const s of ['DMARC raporu · example.com', 'Sorunlar ve öneriler', 'Sınıfa göre gönderen adresler', 'Son 30 gün', '2026-09-20 tarihinden bu yana yeni göndericiler',
+      'google.com tarafından gönderilen 3 rapor', 'ilk görülme: 2026-09-25 · 5 e-posta']) {
       assert.ok(html.includes(s), s);
     }
     assertInert(html);

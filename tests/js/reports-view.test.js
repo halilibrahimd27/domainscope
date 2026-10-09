@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs';
 import {
   id, titleKey, icon, alignedState, fixParams, headlineShare, summaryFacts, verdictLook, CLASS_STYLE, TLS_TOOLS, SPF_LINE_STATES, VERDICT_EXTRA_KEYS,
   INTEL_MAX, FIX_FIRST_MAX, IDENTIFY_CONCURRENCY, GROUP_LIST_MAX, SOURCE_VIEWS, result, sourceRowChanged, serviceLabel, serviceHow, groupName, ptrFact,
-  unnamedHint, loadHistoryPanel, HISTORY_SYNC_MS, SPF_CHECKED_STATES, classesChecked, historyClassifier, keepMessages, spfLineText, noteTexts, reportWhyText,
+  unnamedHint, loadHistoryPanel, HISTORY_SYNC_MS, SPF_CHECKED_STATES, classesChecked, historyClassifier, keepMessages, historyTrimmed, spfLineText, noteTexts, reportWhyText,
   fixStepText, spfReasonText, dmarcReportFacts
 } from '../../assets/js/views/reports.js';
 import {
@@ -315,6 +315,9 @@ test('keepMessages: what a merge says, in order; the size cap said once', () => 
   assert.deepEqual(keepMessages(m({ skipped: { old: 2, future: 1, cut: 4, invalid: 0 } }), { dropped: { recentDays: 1, sources: 0, days: 0, domains: 0 } }).map(([k]) => k),
     ['rpt.keep.old', 'rpt.keep.future', 'rpt.keep.cut', 'rpt.keep.trimmed']);
   assert.deepEqual(keepMessages(m({}), null), []);
+  // A write fitted to the cap (fitHistory): a trim is said, what only the window let go is not.
+  assert.deepEqual([null, { dropped: null }, { dropped: { recentDays: 0, sources: 0, days: 0, domains: 2 } }, { dropped: { recentDays: 0, sources: 3, days: 0, domains: 0 } }].map(historyTrimmed),
+    [false, false, false, true]);
   inLang('en', () => {
     assert.equal(t('rpt.keep.added', { count: 1 }), '1 report added to the history of this workspace.');
     assert.equal(t('rpt.keep.already', { count: 3 }), '3 reports were in the history already and are not counted again.');
@@ -398,4 +401,21 @@ test('the History panel\'s pure parts: compliance bands, the stack of a day, cle
   }
   assert.equal(inLang('tr', () => t('rpt.hist.newLine', { count: 0, date: '3 Eki 2026' })), '3 Eki 2026 tarihinden bu yana yeni gönderici yok.');
   assert.equal(inLang('en', () => t('rpt.hist.newLine', { count: 2, date: 'Oct 3, 2026' })), '2 new senders since Oct 3, 2026.');
+  assert.equal(inLang('tr', () => t('rpt.hist.show', { domain: 'example.com' })), 'example.com alan adının eğilimini göster');
+});
+
+test('the compliance chart: a day of 0 % compliance is a stub in the error band, not a gap; no mail is no bar', async () => {
+  const panel = await loadHistoryPanel();
+  assert.deepEqual(panel.complianceStack({ day: '2026-09-29', reportedDays: 0, msgs: 0, compliance: null }), [], 'no report');
+  assert.deepEqual(panel.complianceStack({ day: '2026-09-29', reportedDays: 1, msgs: 0, compliance: null }), [], 'reports of no message: no compliance');
+  const zero = panel.complianceStack({ day: '2026-09-29', reportedDays: 1, msgs: 2000, compliance: 0 });
+  assert.deepEqual(zero.map((s) => [s.key, s.value, s.cls]), [['compliance', 0, 'rh-band-error']]);
+  assert.ok(panel.STUB_PX >= 2);
+  assert.deepEqual(panel.barHeights(zero, { max: 1, plot: 77 }).map((s) => [s.key, s.height]), [['compliance', panel.STUB_PX]], 'drawn as a stub');
+  assert.deepEqual(panel.barHeights(panel.complianceStack({ reportedDays: 1, msgs: 5, compliance: 1 }), { max: 1, plot: 77 }).map((s) => s.height), [77]);
+  assert.deepEqual(panel.barHeights(panel.complianceStack({ reportedDays: 1, msgs: 1000, compliance: 0.001 }), { max: 1, plot: 77 }).map((s) => s.height), [panel.STUB_PX], 'a sliver too');
+  // The volume's segments of no value are left out; a sliver of one is a pixel.
+  assert.deepEqual(panel.barHeights(panel.volumeSegments({ msgs: 1000, dmarcPass: 999, knownFail: 0 }), { max: 1000, plot: 100 }).map((s) => [s.key, Math.round(s.height * 10) / 10]),
+    [['pass', 99.9], ['other', 1]]);
+  assert.deepEqual(panel.barHeights(panel.volumeSegments({ msgs: 0, dmarcPass: 0, knownFail: 0 }), { max: 1, plot: 100 }), [], 'a day of no message');
 });

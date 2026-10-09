@@ -31,9 +31,11 @@
  *
  * Rules: a report is filed under the UTC day of its date_range begin; one older than the window or
  * more than a day ahead of the clock is not taken. Over the size cap, {@link prune} drops the
- * oldest recent days first, then the sources with the fewest messages, then the oldest days. Never
- * kept: the report XML, file names, envelope_to, the reporters' contacts and failure-report
- * content; a report's key only as its hash.
+ * oldest recent days first, then the sources with the fewest messages, then the oldest days, each
+ * stage only once the one before it has nothing left; every write goes through {@link fitHistory},
+ * so no change (a class, a service, the switch) ever takes the text over the cap. Never kept: the
+ * report XML, file names, envelope_to, the reporters' contacts and failure-report content; a
+ * report's key only as its hash.
  */
 
 import { normalizeHostname } from './domain.js';
@@ -322,6 +324,17 @@ export function readHistory(text) {
 /** The keys of an object sorted, as a new object (a stable text, a readable hand-over file). */
 const sortedObject = (o, map = (v) => v) => Object.fromEntries(Object.keys(o).sort().map((k) => [k, map(o[k], k)]));
 
+/** A domain as the text holds it: its parts in order, their keys sorted. */
+const domainShape = (d) => ({
+  days: sortedObject(d.days),
+  sources: sortedObject(d.sources),
+  recent: sortedObject(d.recent, (rows) => sortedObject(rows)),
+  policy: d.policy,
+  seen: sortedObject(d.seen, (list) => [...list].sort()),
+  cut: d.cut || null,
+  checked: d.checked || null
+});
+
 /**
  * The history as the workspace keeps it: JSON with its keys in order (days and domains sorted),
  * '' when there is nothing to keep (the switch off and no domain).
@@ -336,15 +349,7 @@ export function historyText(history) {
     v: HISTORY_VERSION,
     keep: !!h.keep,
     updatedAt: h.updatedAt || null,
-    domains: sortedObject(h.domains, (d) => ({
-      days: sortedObject(d.days),
-      sources: sortedObject(d.sources),
-      recent: sortedObject(d.recent, (rows) => sortedObject(rows)),
-      policy: d.policy,
-      seen: sortedObject(d.seen, (list) => [...list].sort()),
-      cut: d.cut || null,
-      checked: d.checked || null
-    }))
+    domains: sortedObject(h.domains, domainShape)
   });
 }
 
@@ -599,19 +604,25 @@ export function reclassify(history, classify, { now = Date.now(), domains = null
 /* Keeping it small                                                         */
 /* ------------------------------------------------------------------------ */
 
-/** A key and its value as they weigh in the text ("key":value,). */
-const weight = (key, value) => utf8Length(JSON.stringify(key)) + utf8Length(JSON.stringify(value)) + 2;
+/**
+ * The UTF-8 bytes an entry takes in its object's text: "key":value, and the comma that goes with
+ * it unless it was the object's last entry (`last`).
+ */
+const weight = (key, value, last) => utf8Length(JSON.stringify(key)) + utf8Length(JSON.stringify(value)) + (last ? 1 : 2);
 
 /**
  * Keep the history within its window and its size: days, reports seen and sources older than
  * {@link HISTORY_DAYS} days (a source by its last day) and recent rows older than
  * {@link RECENT_DAYS} days go; then, while its text is over `maxBytes`, the oldest recent days
  * (every domain's at once), then the sources with the fewest messages, then the oldest days with
- * the reports filed on them (the domain's `cut` moves, so those reports are not taken again).
- * A domain with nothing left goes.
+ * the reports filed on them (the domain's `cut` moves, so those reports are not taken again). A
+ * stage goes on until the text fits, and the next one starts only when it has nothing left: no
+ * source goes while a recent day is kept, no day while a source is. With the switch on, a byte is
+ * left for turning it off ("false" is a byte longer than "true"). A domain with nothing left goes.
  * @param {History} history
  * @param {{ now?: Date|number, maxBytes?: number }} [opts]
- * @returns {{ history: History, dropped: { recentDays: number, sources: number, days: number, domains: number }, bytes: number }}
+ * @returns {{ history: History, dropped: { recentDays: number, sources: number, days: number, domains: number }, bytes: number, text: string }}
+ *   `text`: {@link historyText} of the history; `bytes`: its UTF-8 length
  */
 export function prune(history, { now = Date.now(), maxBytes = HISTORY_MAX_BYTES } = {}) {
   const h = copyHistory(history);
@@ -620,86 +631,124 @@ export function prune(history, { now = Date.now(), maxBytes = HISTORY_MAX_BYTES 
   const recentFrom = addDays(today, -(RECENT_DAYS - 1));
   const dropped = { recentDays: 0, sources: 0, days: 0, domains: 0 };
   const entries = () => Object.entries(h.domains);
-  for (const [, d] of entries()) {
+  const isEmpty = (d) => !Object.keys(d.days).length && !Object.keys(d.sources).length && !Object.keys(d.seen).length;
+  for (const [name, d] of entries()) {
     for (const day of Object.keys(d.days)) if (day < oldest) delete d.days[day];
     for (const day of Object.keys(d.seen)) if (day < oldest) delete d.seen[day];
     for (const day of Object.keys(d.recent)) if (day < recentFrom) delete d.recent[day];
     for (const [ip, s] of Object.entries(d.sources)) if (s.last < oldest) delete d.sources[ip];
     if (d.cut && d.cut < oldest) d.cut = null;
-  }
-  const dropEmpty = () => {
-    for (const [name, d] of entries()) {
-      if (!Object.keys(d.days).length && !Object.keys(d.sources).length && !Object.keys(d.seen).length) {
-        delete h.domains[name];
-        dropped.domains += 1;
-      }
+    if (isEmpty(d)) {
+      delete h.domains[name];
+      dropped.domains += 1;
     }
+  }
+  const limit = Math.max(0, (Number(maxBytes) || 0) - (h.keep ? 1 : 0));
+  let text = historyText(h);
+  let bytes = utf8Length(text);
+  // A stage counts what it drops (`est`, exact) and measures the text once a round.
+  const measure = () => {
+    text = historyText(h);
+    bytes = utf8Length(text);
   };
-  dropEmpty();
-  const size = () => utf8Length(historyText(h));
-  let bytes = size();
-  const limit = Math.max(0, Number(maxBytes) || 0);
-  for (let round = 0; bytes > limit && round < 6; round += 1) {
-    // 1. The oldest recent days, every domain's at once.
-    const recentDays = [...new Set(entries().flatMap(([, d]) => Object.keys(d.recent)))].sort();
-    for (const day of recentDays) {
-      if (bytes <= limit) break;
+  // The entries each domain has left in one of its parts: true when the one taken was the last.
+  const counts = (part) => new Map(entries().map(([, d]) => [d, Object.keys(d[part]).length]));
+  const take = (left, d) => {
+    const n = left.get(d);
+    left.set(d, n - 1);
+    return n === 1;
+  };
+  // A domain left with nothing goes, with its comma unless it was the last.
+  const dropDomain = (name, d) => {
+    const w = weight(name, domainShape(d), Object.keys(h.domains).length === 1);
+    delete h.domains[name];
+    dropped.domains += 1;
+    return w;
+  };
+  // 1. The oldest recent days, every domain's at once.
+  while (bytes > limit) {
+    const days = [...new Set(entries().flatMap(([, d]) => Object.keys(d.recent)))].sort();
+    if (!days.length) break;
+    const left = counts('recent');
+    let est = bytes;
+    for (const day of days) {
+      if (est <= limit) break;
       for (const [, d] of entries()) {
         if (!d.recent[day]) continue;
-        bytes -= weight(day, d.recent[day]);
+        est -= weight(day, d.recent[day], take(left, d));
         delete d.recent[day];
       }
       dropped.recentDays += 1;
     }
-    bytes = size();
-    if (bytes <= limit) break;
-    // 2. The sources with the fewest messages (the least recently seen first among equals).
-    const all = entries().flatMap(([, d]) => Object.entries(d.sources).map(([ip, s]) => ({ d, ip, s })));
+    measure();
+  }
+  // 2. The sources with the fewest messages (the least recently seen first among equals); no
+  //    recent row is left by now.
+  while (bytes > limit) {
+    const all = entries().flatMap(([name, d]) => Object.entries(d.sources).map(([ip, s]) => ({ name, d, ip, s })));
+    if (!all.length) break;
     all.sort((a, b) => a.s.msgs - b.s.msgs || (a.s.last < b.s.last ? -1 : a.s.last > b.s.last ? 1 : 0) || (a.ip < b.ip ? -1 : a.ip > b.ip ? 1 : 0));
-    for (const { d, ip, s } of all) {
-      if (bytes <= limit) break;
-      bytes -= weight(ip, s);
+    const left = counts('sources');
+    let est = bytes;
+    for (const { name, d, ip, s } of all) {
+      if (est <= limit) break;
+      const last = take(left, d);
+      est -= weight(ip, s, last);
       delete d.sources[ip];
-      for (const rows of Object.values(d.recent)) {
-        if (rows[ip]) {
-          bytes -= weight(ip, rows[ip]);
-          delete rows[ip];
-        }
-      }
       dropped.sources += 1;
+      if (last && isEmpty(d)) est -= dropDomain(name, d);
     }
-    for (const [, d] of entries()) for (const [day, rows] of Object.entries(d.recent)) if (!Object.keys(rows).length) delete d.recent[day];
-    bytes = size();
-    if (bytes <= limit) break;
-    // 3. The oldest days, with the reports filed on them.
+    measure();
+  }
+  // 3. The oldest days with the reports filed on them, every domain's at once (no source is left
+  //    by now): the domain's cut moves past them, and a domain with nothing left goes.
+  while (bytes > limit) {
     const days = [...new Set(entries().flatMap(([, d]) => [...Object.keys(d.days), ...Object.keys(d.seen)]))].sort();
+    if (!days.length) break;
+    const daysLeft = counts('days');
+    const seenLeft = counts('seen');
+    let est = bytes;
     for (const day of days) {
-      if (bytes <= limit) break;
-      for (const [, d] of entries()) {
+      if (est <= limit) break;
+      for (const [name, d] of entries()) {
         if (!d.days[day] && !d.seen[day]) continue;
-        if (d.days[day]) bytes -= weight(day, d.days[day]);
-        if (d.seen[day]) bytes -= weight(day, d.seen[day]);
-        delete d.days[day];
-        delete d.seen[day];
-        delete d.recent[day];
-        if (!d.cut || day > d.cut) d.cut = day;
+        if (d.days[day]) {
+          est -= weight(day, d.days[day], take(daysLeft, d));
+          delete d.days[day];
+        }
+        if (d.seen[day]) {
+          est -= weight(day, d.seen[day], take(seenLeft, d));
+          delete d.seen[day];
+        }
+        if (!d.cut || day > d.cut) {
+          est += utf8Length(JSON.stringify(day)) - utf8Length(JSON.stringify(d.cut || null));
+          d.cut = day;
+        }
+        if (!daysLeft.get(d) && !seenLeft.get(d) && isEmpty(d)) est -= dropDomain(name, d);
       }
       dropped.days += 1;
     }
-    dropEmpty();
-    bytes = size();
+    measure();
   }
-  // Still over (a cap smaller than the domains' policies): the domains with the least mail go.
-  if (bytes > limit) {
-    const order = entries().map(([name, d]) => [name, Object.values(d.days).reduce((n, x) => n + x.msgs, 0)]).sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1));
-    for (const [name] of order) {
-      if (bytes <= limit) break;
-      delete h.domains[name];
-      dropped.domains += 1;
-      bytes = size();
-    }
-  }
-  return { history: h, dropped, bytes };
+  return { history: h, dropped, bytes, text };
+}
+
+/**
+ * The text the workspace keeps of a history (lib/workspace.js part `reportHistory`, kept whole or
+ * not at all): {@link historyText}, pruned first ({@link prune}) when it is over `maxBytes`. Every
+ * write goes through here, so a change that makes the text longer — the sources classed against
+ * the SPF (`checked`), the services Identify senders named, the switch turned off — trims the
+ * history instead of losing all of it.
+ * @param {History} history
+ * @param {{ now?: Date|number, maxBytes?: number }} [opts]
+ * @returns {{ history: History, text: string, dropped: { recentDays: number, sources: number, days: number, domains: number }|null }}
+ *   `history`: the one `text` is of (the same object when it fit); `dropped`: what {@link prune} dropped, null when it fit
+ */
+export function fitHistory(history, { now = Date.now(), maxBytes = HISTORY_MAX_BYTES } = {}) {
+  const text = historyText(history);
+  if (utf8Length(text) <= Math.max(0, Number(maxBytes) || 0)) return { history, text, dropped: null };
+  const p = prune(history, { now, maxBytes });
+  return { history: p.history, text: p.text, dropped: p.dropped };
 }
 
 /* ------------------------------------------------------------------------ */

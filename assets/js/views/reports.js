@@ -71,7 +71,7 @@ import { NaMark } from '../ui/source-status.js';
 import { SummaryButton } from '../ui/summary-button.js';
 import { ReportButton } from '../ui/report-button.js';
 import {
-  HISTORY_DAYS, HISTORY_PERIODS, readHistory, historyText, setKeep, forgetHistory, mergeReports, reclassify, prune, historyDomains, trend, newSince, newSources, rollup
+  HISTORY_DAYS, HISTORY_PERIODS, readHistory, fitHistory, setKeep, forgetHistory, mergeReports, reclassify, prune, historyDomains, trend, newSince, newSources, rollup
 } from '../lib/dmarchistory.js';
 
 /** Route id (`#/reports`). */
@@ -1099,8 +1099,18 @@ export function keepMessages(m, p) {
   if (m.skipped.old) out.push(['rpt.keep.old', { count: m.skipped.old, days: HISTORY_DAYS }]);
   if (m.skipped.future) out.push(['rpt.keep.future', { count: m.skipped.future }]);
   if (m.skipped.cut) out.push(['rpt.keep.cut', { count: m.skipped.cut }]);
-  if (p && (p.dropped.recentDays || p.dropped.sources || p.dropped.days)) out.push(['rpt.keep.trimmed', {}]);
+  if (historyTrimmed(p)) out.push(['rpt.keep.trimmed', {}]);
   return out;
+}
+
+/**
+ * Whether lib/dmarchistory.js prune (or fitHistory) dropped details to fit the size cap — not only
+ * what the window let go.
+ * @param {{ dropped: { recentDays: number, sources: number, days: number }|null }|null} p
+ * @returns {boolean}
+ */
+export function historyTrimmed(p) {
+  return !!(p && p.dropped && (p.dropped.recentDays || p.dropped.sources || p.dropped.days));
 }
 
 /**
@@ -1294,8 +1304,6 @@ let intelDns = null;
 let active = null;
 /** ui/report-history.js once the History tab loaded it (its choices are reset with the reports). */
 let historyModule = null;
-/** The report history text this view wrote last: a change of the part that is not it redraws the switch and the History tab. */
-let historyWritten = null;
 
 /** Forget every report (Forget, another workspace, "Delete all local data"). */
 function resetReports() {
@@ -1323,9 +1331,8 @@ export function mount(container, ctx) {
         if (rerender) rerender();
       } else if (key === 'inventory' && rerender && S.dmarc) {
         rerender({ keep: true });
-      } else if (key === 'workspaceData' && rerender && value && Array.isArray(value.parts) && value.parts.includes('reportHistory')
-        && (state.workspaceData('reportHistory') || '') !== historyWritten) {
-        // Another tab kept, forgot or switched off the report history, or a workspace file replaced it: the switch and the History tab follow.
+      } else if (key === 'workspaceData' && rerender && value && Array.isArray(value.parts) && value.parts.includes('reportHistory')) {
+        // Another tab kept, forgot or switched the report history off or on, or a workspace file replaced it: the switch and the History tab follow.
         rerender({ history: true });
       }
     });
@@ -1382,13 +1389,20 @@ export function mount(container, ctx) {
   /** The History tab is there while the switch is on or something is kept. */
   const historyTabWanted = () => currentHistory().keep || historyHasDomains();
 
-  /** Write the history (nothing when its text did not change); a write that failed says so. */
+  /**
+   * Write the history within its cap (lib/dmarchistory.js fitHistory: a text over it is pruned
+   * first, as the workspace keeps it whole or not at all), nothing when its text did not change; a
+   * trim and a write that failed say so.
+   */
   async function saveHistory(next) {
-    const text = historyText(next);
+    const fit = fitHistory(next, { now: Date.now() });
+    const { text } = fit;
     if (text === (state.workspaceData('reportHistory') || '')) return true;
-    historyWritten = text;
+    // What the view draws from now on, before the write's own change event: not a change to follow.
+    historyCache = { text, value: fit.history };
     const done = state.setWorkspaceData('reportHistory', text);
-    historyCache = state.workspaceData('reportHistory') === text ? { text, value: next } : { text: null, value: null };
+    if (state.workspaceData('reportHistory') !== text) historyCache = { text: null, value: null };
+    if (historyTrimmed(fit)) toast(t('rpt.keep.trimmed'), { type: 'info' });
     const ok = await done;
     if (!ok && state.workspacePersistence && state.workspaceError) {
       toast(t('rpt.keep.failed', { error: state.workspaceError.message || String(state.workspaceError) }), { type: 'warn' });
@@ -2787,6 +2801,8 @@ export function mount(container, ctx) {
 
   rerender = ({ keep = false, history = false } = {}) => {
     if (history) {
+      // The report history changed: redrawn unless it is the text the view drew from (or wrote) last.
+      if ((state.workspaceData('reportHistory') || '') === historyCache.text) return;
       renderLoad();
       refreshHistory();
     } else if (keep) {

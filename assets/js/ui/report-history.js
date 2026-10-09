@@ -7,9 +7,10 @@
  * - The domain's numbers (messages, DMARC compliance, the unknown senders' share, the days with a
  *   report), then two bar charts in inline SVG coloured by the app's tokens: the messages of each
  *   day stacked by result (passed; failed from unknown senders and forwarders; failed from your
- *   servers and third parties) and the day's compliance banded like the DMARC tab's head. A bar
- *   answers the pointer and the arrow keys with its values (a polite live region says them); the
- *   same values are in the table under the charts, which exports as CSV.
+ *   servers and third parties) and the day's compliance banded like the DMARC tab's head (a day of
+ *   0 % is a stub in the error band, not a gap: only a day without mail has no bar). A bar answers
+ *   the pointer and the arrow keys with its values (a polite live region says them); the same
+ *   values are in the table under the charts, which exports as CSV.
  * - The sending addresses with the days they were first and last seen and the service behind
  *   them, "New since <date>" for those that appeared lately (lib/dmarchistory.js newSince).
  * - The roll-up across the workspace's domains (volume, compliance, policy, the unknown senders'
@@ -40,6 +41,8 @@ const GUTTER = 46;
 export const VOLUME_SEGMENTS = Object.freeze(['pass', 'other', 'known']);
 /** The compliance bands (the DMARC tab's head: 98 % and 90 %). */
 export const COMPLIANCE_BANDS = Object.freeze([['ok', 0.98], ['warn', 0.9], ['error', 0]]);
+/** The least height of a compliance bar, in px: a day of 0 % (or nearly) is a stub, never a gap. */
+export const STUB_PX = 2;
 /** The look of a roll-up verdict. */
 export const VERDICT_LOOK = Object.freeze({
   'no-mail': 'neutral', enforced: 'ok', 'enforced-losing': 'error', 'fix-first': 'warn', ready: 'info'
@@ -173,7 +176,7 @@ registerStrings('tr', {
   'rpt.hist.col.verdict': 'Sonuç',
   'rpt.hist.col.lastReport': 'Son rapor',
   'rpt.hist.notChecked': 'SPF henüz kontrol edilmedi: yetkili bir üçüncü taraf bilinmeyen sayılmış olabilir',
-  'rpt.hist.show': '{domain} eğilimini göster',
+  'rpt.hist.show': '{domain} alan adının eğilimini göster',
   'rpt.hist.privacy': 'Bu çalışma alanında, bu tarayıcıda (IndexedDB) {days} gün tutulur: her günün hacmi ve sonuçları, her gönderen adresin de ilk ve son görüldüğü gün, sınıfı ve hizmeti. Rapor dosyaları hiçbir zaman tutulmaz. Tarayıcıdan yalnızca sizin dışa aktardığınız bir çalışma alanı dosyasının içinde çıkar.',
   'rpt.hist.offNote': 'Özet tutma kapalı: yeni raporlar eklenmiyor. Tutulanlar, siz unutana kadar kalır.',
   'rpt.hist.forget': 'Rapor geçmişini unut',
@@ -211,6 +214,29 @@ export function volumeSegments(slot) {
     { key: 'other', value: Math.max(0, slot.msgs - slot.dmarcPass - known) },
     { key: 'known', value: known }
   ];
+}
+
+/**
+ * A slot's bar in the compliance chart: none without mail (no report, or reports of no message),
+ * else its compliance in its band's colour, at least {@link STUB_PX} tall (0 % is the worst day,
+ * not a day without a report).
+ * @param {{ compliance: number|null }} slot
+ * @returns {Array<{ key: 'compliance', value: number, cls: string, min: number }>}
+ */
+export function complianceStack(slot) {
+  const band = complianceBand(slot && slot.compliance);
+  return band ? [{ key: 'compliance', value: slot.compliance, cls: `rh-band-${band}`, min: STUB_PX }] : [];
+}
+
+/**
+ * The segments of one bar as drawn, bottom to top, with their heights in px: a segment of no value
+ * is left out unless it has a least height (`min`); each is at least 1 px, or its `min`.
+ * @param {Array<{ value: number, min?: number }>} segs
+ * @param {{ max: number, plot: number }} o the axis top and the plot's height (px)
+ * @returns {Array<object & { height: number }>}
+ */
+export function barHeights(segs, { max, plot }) {
+  return segs.filter((s) => s.value > 0 || s.min > 0).map((s) => ({ ...s, height: Math.max(s.min || 1, (s.value / max) * plot) }));
 }
 
 /**
@@ -255,10 +281,11 @@ function topRounded(x, y, w, hgt, radius) {
 
 /**
  * A bar chart in inline SVG drawn to the width of its box (a ResizeObserver draws it again), its
- * axes in HTML so their text is never stretched. Each bar is a stack of segments; the pointer, a
- * tap or the arrow keys pick a bar and its values show in a tooltip and a polite live region.
+ * axes in HTML so their text is never stretched. Each bar is a stack of segments ({@link barHeights}:
+ * one of no value is drawn only with a least height, `min`); the pointer, a tap or the arrow keys
+ * pick a bar and its values show in a tooltip and a polite live region.
  * @param {{ id: string, title: string, aria: string, slots: object[], height: number, max: number,
- *   ticks: number[], tickLabel: (v: number) => string, stack: (slot: object) => Array<{ key: string, value: number, cls: string }>,
+ *   ticks: number[], tickLabel: (v: number) => string, stack: (slot: object) => Array<{ key: string, value: number, cls: string, min?: number }>,
  *   tip: (slot: object) => string[], xLabel: (slot: object) => string, legend: Node }} o
  * @returns {{ el: HTMLElement, destroy(): void }}
  */
@@ -353,13 +380,13 @@ function BarChart(o) {
       svgEl.append(svg('line', { class: tick === 0 ? 'rh-base' : 'rh-grid', attrs: { x1: GUTTER, x2: width, y1: y, y2: y } }));
     }
     o.slots.forEach((slot, i) => {
-      const segs = o.stack(slot).filter((s) => s.value > 0);
+      const segs = barHeights(o.stack(slot), { max: o.max, plot: plotH - 1 });
       if (!segs.length) return;
       const x = GUTTER + i * step + (step - bw) / 2;
       let bottom = H - 1;
       const g = svg('g', { class: 'rh-bar', dataset: { slot: i, day: slot.day } });
       segs.forEach((s, k) => {
-        const hgt = Math.max(1, (s.value / o.max) * (plotH - 1));
+        const hgt = s.height;
         const isTop = k === segs.length - 1;
         // A 2 px surface gap between two segments of a stack, the lower one gives it up (when it can).
         const drawn = !isTop && hgt > 4 ? hgt - 2 : hgt;
@@ -543,7 +570,7 @@ export function mountHistory(host, { ctx, read, preferred, onForget, classStyle,
       max: 1,
       ticks: [0, 0.5, 1],
       tickLabel: pct,
-      stack: (s) => (s.compliance === null ? [] : [{ key: 'compliance', value: s.compliance, cls: `rh-band-${complianceBand(s.compliance)}` }]),
+      stack: complianceStack,
       tip,
       xLabel: (s) => short(s.day),
       legend: h('div', { class: 'rh-legend text-xs' },

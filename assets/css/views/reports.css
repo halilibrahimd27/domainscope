@@ -458,20 +458,11 @@
   font-weight: 600;
 }
 
-/* The switch "Keep a summary of these reports in this workspace", under the drop zone (once reports
-   are read, its label alone: the hint is for screen readers then). */
+/* The switch "Keep a summary of these reports in this workspace", under the drop zone. Its hint is
+   the one place that says what the switch writes (and never the files): it stays on screen in the
+   compact card too, where reports were just read and the switch is most likely turned on. */
 .rpt-keep .check-hint {
   max-width: 62rem;
-}
-
-.rpt-load.is-compact .rpt-keep .check-hint {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
 }
 
 /* ---- History (ui/report-history.js, .rh-*) -------------------------------------------- */

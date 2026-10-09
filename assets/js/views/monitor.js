@@ -1108,8 +1108,9 @@ export function mount(container, ctx) {
     });
     actions = ResultActions({
       summary,
-      // One file, no menu (DESIGN §5.3): the changes the Changes tab's filters show.
-      exports: [{ label: t('result.export'), title: t('mon.csvTitle'), dataset: { action: 'mon-csv' }, onSelect: () => exportCsv() }]
+      // One file, no menu (DESIGN §5.3): the changes the Changes tab's filters show. Its data-export
+      // is what setExportsDisabled reaches (renderTimeline: it waits while they show nothing).
+      exports: [{ label: t('result.export'), title: t('mon.csvTitle'), dataset: { action: 'mon-csv', export: 'csv' }, onSelect: () => exportCsv() }]
     });
     head.set('actions', actions.el);
     head.set('next', linksOf());

@@ -25,11 +25,17 @@
   min-height: 7.5rem;
 }
 
-/* Compact (a check started): the list is two lines (1.5 em each, the padding and the border), still
-   editable; Edit shows it whole again. */
+/* Compact (a check started): the list is two lines, still editable; Edit shows it whole again. The
+   line height, the padding and the border are set here, so the height is exactly two lines of 1.5 em,
+   3 px of padding above and below and the 1 px borders. The padding stays that small: a line's text
+   overflows into it, and with the fields' usual 7 px the tops of the third domain would show. */
 .tool-input.is-compact:not(.is-editing) .pf-box .textarea {
   min-height: 0;
-  height: calc(3em + 16px);
+  height: calc(3em + 8px);
+  padding-top: 3px;
+  padding-bottom: 3px;
+  border-width: 1px;
+  line-height: 1.5;
   resize: none;
 }
 

@@ -399,8 +399,8 @@ export function mountCtWatch(host, { ctx, domains }) {
   /** Export ▾: the CSV and the calendar of the rows shown (no Copy summary: the portfolio's has the check). */
   const actions = ResultActions({
     exports: [
-      { label: t('ctw.export.csv'), title: t('ctw.export.title'), dataset: { action: 'ct-csv' }, onSelect: () => exportCsv() },
-      { label: t('ctw.export.ics'), icon: 'calendar', title: t('ctw.export.icsTitle'), dataset: { action: 'ct-ics' }, onSelect: () => exportCalendar() }
+      { label: t('ctw.export.csv'), title: t('ctw.export.title'), dataset: { action: 'ct-csv', export: 'csv' }, onSelect: () => exportCsv() },
+      { label: t('ctw.export.ics'), icon: 'calendar', title: t('ctw.export.icsTitle'), dataset: { action: 'ct-ics', export: 'ics' }, onSelect: () => exportCalendar() }
     ]
   });
   head.set('actions', actions.el);
@@ -537,7 +537,9 @@ export function mountCtWatch(host, { ctx, domains }) {
       compared
     ]);
     head.set('progress', runningNow ? progress.el : null);
-    actions.setExportsDisabled(runningNow || !analysis.rows.length);
+    // The actions are the two files alone: while a check runs or no row is listed they wait, and
+    // on a phone so does the "⋯" that holds them (as Export ▾ does on a wider screen).
+    actions.setDisabled(runningNow || !analysis.rows.length);
   }
 
   function readLine(domain) {

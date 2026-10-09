@@ -16,7 +16,9 @@
  *     Run on the list's row (primary) and the privacy note; the file input of Monitoring and of the
  *     reports (a drop zone, Choose files the primary button, the privacy note in its footer), no
  *     Run; the empty state with the chips of what each tool checks; no result header;
- *   - Domain portfolio: a check folds the input (the list two lines high, Edit unfolds the DKIM
+ *   - Domain portfolio: its privacy note's "What is sent" opens About › Data sources (rdap.org as
+ *     the fallback, the name servers' own domains); a check folds the input (the list two lines
+ *     high, no part of a third line showing under them; Edit unfolds the DKIM
  *     option and folds it again), the result header starts high, Run reads "Run again" and is
  *     secondary while the list and the option ask for the check on screen; the status summary
  *     filters the Domains table (pressed again: every domain; the Show select follows it and it the
@@ -28,14 +30,19 @@
  *   - Monitoring: the source card folds to one row (what was read, Add files, the folder picker,
  *     Forget); the result header (the targets and the last check, the status summary that filters
  *     the Targets tab, Copy summary with ¶ and its one file as a plain Export button, no Copy link,
- *     the links); the Changes tab counts what it shows;
+ *     the links); the Changes tab counts what it shows, and while its filters show nothing the
+ *     head's Export waits;
  *   - DMARC & TLS reports: the file input folds to one row (the files read, Add reports, Choose a
- *     folder, Forget reports) and keeps its switch; the result header (Copy summary with ¶, Report,
+ *     folder, Forget reports) and keeps its switch with its hint on screen (what it keeps, never
+ *     the files); the result header (Copy summary with ¶, Report,
  *     Print, no Copy link); a status item opens the tab that lists what it counts; the kept note in
  *     the result header;
  *   - a tool that is left takes back its phone-layout listeners (its run bar's and its actions');
  *   - phones: at 375×812 (Turkish, dark) only Copy summary stays in the row and the rest is behind
- *     "⋯", in Turkish words; at 320 px no horizontal scroll on the three tools, empty or with a result;
+ *     "⋯", in Turkish words; at 375×812 before any check, the portfolio's floating Run shows on the
+ *     Domains tab once the inline one is out of view and stays hidden while the CT tab leads with
+ *     Check CT (one primary button), and while a CT check runs its "⋯" and the files in it wait;
+ *     at 320 px no horizontal scroll on the three tools, empty or with a result;
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; nothing sent.
  */
 
@@ -152,7 +159,37 @@ const statusOf = (page, head) => page.evaluate((sel) => [...document.querySelect
 
 /** The visible primary buttons of the page body (one at a time, DESIGN §5.1). */
 const primaries = (page) => page.evaluate(() => [...document.querySelectorAll('#page-body .btn-primary')].filter((b) => b.checkVisibility())
-  .map((b) => b.dataset.action || b.textContent.trim()));
+  .map((b) => b.dataset.action || b.dataset.role || b.textContent.trim()));
+
+/** The primary buttons on screen now: shown and inside the viewport (the phone's floating Run stands in for an inline one out of view). */
+const primariesInView = (page) => page.evaluate(() => [...document.querySelectorAll('#page-body .btn-primary')].filter((b) => {
+  const r = b.getBoundingClientRect();
+  return b.checkVisibility() && r.width > 0 && r.bottom > 0 && r.top < window.innerHeight;
+}).map((b) => b.dataset.action || b.dataset.role || b.textContent.trim()));
+
+/** Where the portfolio's inline Run is: on screen or scrolled out of it, and whether its floating copy shows. */
+const runBarInfo = (page) => page.evaluate(() => {
+  const r = document.querySelector('[data-action="pf-run"]').getBoundingClientRect();
+  const float = document.querySelector('.pf-view .run-bar-float');
+  return { inlineOut: r.bottom <= 0 || r.top >= window.innerHeight, float: !!float && !float.hidden && float.checkVisibility() };
+});
+
+/**
+ * How many pixels of the compact domain list's third line show under its two lines: the box's
+ * inner height past the top padding, the two line boxes and the space a line keeps above its
+ * tallest letters (half the leading, then the font's ascent over them, measured in a canvas in
+ * the box's own font). 0 or less: none.
+ */
+const thirdLineShows = (page) => page.evaluate(() => {
+  const box = document.querySelector('[data-role="pf-domains"]');
+  const cs = getComputedStyle(box);
+  const lh = parseFloat(cs.lineHeight);
+  const g = document.createElement('canvas').getContext('2d');
+  g.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  const m = g.measureText('bdfhkltABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789');
+  const above = (lh - (m.fontBoundingBoxAscent + m.fontBoundingBoxDescent)) / 2 + (m.fontBoundingBoxAscent - m.actualBoundingBoxAscent);
+  return Math.round((box.clientHeight - (parseFloat(cs.paddingTop) + 2 * lh + above)) * 10) / 10;
+});
 
 /** Each kept-result note on the page: the result header it sits in, shown or not. */
 const keptNotes = (page) => page.evaluate((heads) => [...document.querySelectorAll('.kept-note')].map((n) => ({
@@ -229,7 +266,11 @@ async function main() {
         'the input card and the empty state');
       assert(info.run && info.run.primary && info.run.shortcut === 'submit' && info.run.sameRow && info.run.label === 'Check portfolio', `Run: ${JSON.stringify(info.run)}`);
       assert(info.checks >= 6, `the chips of what it checks (${info.checks})`);
-      assertEqual(await page.evaluate(() => document.querySelector('.pf-form-card .privacy-note-link')?.dataset.view), 'about', 'the rest of what is sent, one click away');
+      // rdap.org as the fallback and the name servers' own domains: About › Data sources says them
+      assertEqual(await page.evaluate(() => {
+        const link = document.querySelector('.pf-form-card .privacy-note-link');
+        return link ? [link.dataset.view, link.getAttribute('href').replace(/^.*#/, '#')] : null;
+      }), ['about', '#/about?section=sources'], 'the rest of what is sent, one click away');
       await assertNoHorizontalScroll(page, 'portfolio empty');
       await shot(page, 'watch-portfolio-empty-desktop-light-en');
     });
@@ -266,6 +307,8 @@ async function main() {
       assertEqual([info.run.label, info.run.primary, info.run.sameRow], ['Run again', false, true], 'Run again, secondary, on the list\'s row');
       const box = await page.evaluate(() => Math.round(document.querySelector('[data-role="pf-domains"]').getBoundingClientRect().height));
       assert(box <= 64, `the list two lines high: ${box} px`);
+      const third = await thirdLineShows(page);
+      assert(third <= 0.5, `no part of the third domain under the two lines: ${third} px of it show`);
       assertEqual(await page.evaluate(() => !!document.querySelector('.pf-prompt-slot:not([hidden])')), false, 'the prompt gone once the check is on screen');
       await page.type('[data-role="pf-domains"]', `${DOMAINS.join('\n')}\nexample.net`);
       assertEqual(await page.evaluate(() => [document.querySelector('[data-action="pf-run"] .btn-label').textContent, document.querySelector('[data-action="pf-run"]').classList.contains('btn-primary')]),
@@ -407,6 +450,21 @@ async function main() {
       await shot(mpage, 'watch-monitor-result-desktop-light-en');
     });
 
+    await run.step('the Changes tab\'s filters show nothing: the head\'s Export waits (no empty file), and is back with the changes', async () => {
+      const exportOff = () => mpage.evaluate(() => document.querySelector('.mon-summary [data-action="mon-csv"]').disabled);
+      assertEqual(await exportOff(), false, 'eight changes shown: Export ready');
+      await mpage.click('.mon-tabs .tab[data-tab="changes"]');
+      await mpage.click('.mon-tl-tone .seg-btn[data-value="good"]');
+      await mpage.waitFor(() => document.querySelector('.mon-tl-tone .seg-btn[data-value="good"]')?.getAttribute('aria-pressed') === 'true'
+        && !document.querySelector('.mon-tl-entry') && document.querySelector('.mon-tabs .tab[data-tab="changes"] .tab-badge')?.textContent === '0',
+      { message: 'no good change in the fixture' });
+      assertEqual(await exportOff(), true, 'nothing shown: Export waits');
+      await mpage.click('.mon-tl-tone .seg-btn[data-value="all"]');
+      await mpage.waitFor(() => document.querySelectorAll('.mon-tl-entry').length === 8, { message: 'every change again' });
+      assertEqual(await exportOff(), false, 'the changes back: Export ready');
+      await mpage.click('.mon-tabs .tab[data-tab="targets"]');
+    });
+
     run.group('DMARC & TLS reports (desktop)');
     await run.step('a dropped zip: the file input folds to one row and keeps its switch; the result header (Copy summary with ¶, Report, Print; no Copy link)', async () => {
       await front(page);
@@ -420,12 +478,19 @@ async function main() {
           row: [...c.querySelectorAll('.file-input-row .file-input-actions > *')].map((el) => el.dataset.action || (el.classList.contains('filedrop') ? `drop:${el.querySelector('.filedrop-title').textContent}` : el.tagName)),
           files: c.querySelector('.file-input-summary [data-role="rpt-files"]')?.textContent || '',
           keep: !!c.querySelector('[data-role="rpt-keep"]'),
+          // what the switch writes, said on screen next to it (DESIGN §9: a privacy text is never only for screen readers)
+          hint: (() => {
+            const el = c.querySelector('.rpt-keep .check-hint');
+            const r = el ? el.getBoundingClientRect() : null;
+            return !!el && el.checkVisibility() && r.width > 100 && r.height > 10 && getComputedStyle(el).clipPath === 'none' ? el.textContent.slice(0, 32) : null;
+          })(),
           privacy: !!c.querySelector('.tool-input-foot .privacy-note')
         };
       });
       assertEqual(card, {
-        compact: true, row: ['drop:Add reports', 'rpt-folder', 'rpt-forget'], files: '1 file · 3 DMARC reports · 2 TLS reports · 1 could not be used', keep: true, privacy: true
-      }, 'one row: the files read, Add reports, the folder, Forget; the switch and the privacy note stay');
+        compact: true, row: ['drop:Add reports', 'rpt-folder', 'rpt-forget'], files: '1 file · 3 DMARC reports · 2 TLS reports · 1 could not be used', keep: true,
+        hint: 'Off by default: while it is off ', privacy: true
+      }, 'one row: the files read, Add reports, the folder, Forget; the switch with its hint and the privacy note stay');
       const info = await templateInfo(page, HEADS.reports);
       assert(info.head && info.head.top < 420, `the result header near the top: ${JSON.stringify(info.head)}`);
       assertEqual(await actionsRow(page, HEADS.reports), ['summary+plain', 'report', 'print'], 'Copy summary + ¶, Report, Print; no Copy link');
@@ -486,10 +551,74 @@ async function main() {
         assertEqual(await actionsRow(p, HEADS[id]), ['summary', 'menu:more'], `${id}: Copy summary, ⋯`);
         assertEqual(await openResultMenu(p, 'more', HEADS[id]), more[id], `${id}: the rest, in order`);
         await p.press('Escape');
+        if (id === 'portfolio') {
+          const third = await thirdLineShows(p);
+          assert(third <= 0.5, `portfolio: no part of the third domain under the list's two lines (${third} px of it show)`);
+        }
         await assertNoHorizontalScroll(p, `${id} 375 tr dark`);
         await shot(p, `watch-${id}-result-375-dark-tr`);
       }
       assertEqual(await page.evaluate(() => document.querySelector('.rpt-results-head .result-title').textContent), '2 alan adının raporları', 'the reports\' title in Turkish');
+    });
+
+    await run.step('375×812 before any check: the floating Run stands in for the inline one on the Domains tab, never while the CT tab leads; a CT check that runs holds its "⋯" and its files', async () => {
+      const fresh = await openPage(browser, server, { width: 375, height: 812, mobile: true }, [portfolioFakes()]);
+      pages.push({ ...fresh, where: 'phone 375, no check' });
+      const p = fresh.page;
+      await front(p);
+      await p.emulateMedia({ 'prefers-color-scheme': 'light' });
+      await setLangUi(p, 'en');
+      await gotoRoute(p, '#/portfolio');
+      await p.type('[data-role="pf-domains"]', DOMAINS.join('\n'));
+      // The Domains tab, scrolled past the inline Run (a spacer makes the short empty page long enough).
+      const toEnd = () => p.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await p.evaluate(() => document.querySelector('.pf-view').style.setProperty('padding-bottom', '1600px'));
+      await toEnd();
+      await p.waitFor(() => !document.querySelector('.pf-view .run-bar-float').hidden, { message: 'the floating Run on the Domains tab' });
+      assertEqual(await runBarInfo(p), { inlineOut: true, float: true }, 'Domains tab: the inline Run out of view, its floating copy shown');
+      assertEqual(await primariesInView(p), ['run-bar-float'], 'one primary on screen: the floating Run');
+      // The CT tab opened where the page is: Check CT leads, the floating Run goes at once.
+      await p.evaluate(() => document.querySelector('.pf-results .tab[data-tab="ct"]').click());
+      await p.waitFor(() => !!document.querySelector('[data-action="ct-run"]'), { message: 'the CT panel' });
+      assertEqual(await runBarInfo(p), { inlineOut: true, float: false }, 'CT tab: no floating Run');
+      // Scrolled back up and down again on the CT tab: still none.
+      await p.evaluate(() => window.scrollTo(0, 0));
+      await frames(p);
+      await toEnd();
+      await frames(p);
+      await frames(p);
+      assertEqual(await runBarInfo(p), { inlineOut: true, float: false }, 'CT tab, scrolled to its end: no floating Run');
+      const shown = await primariesInView(p);
+      assert(shown.every((a) => a === 'ct-run'), `no primary on screen but Check CT: ${JSON.stringify(shown)}`);
+      await p.evaluate(() => document.querySelector('.pf-view').style.removeProperty('padding-bottom'));
+
+      // A CT check held while it runs: its actions are files only, so on a phone the row is "⋯" alone, and it waits with them.
+      await p.evaluate(() => {
+        const inner = window.fetch;
+        window.__ctGate = new Promise((resolve) => { window.__ctOpen = resolve; });
+        window.fetch = async (input, init) => {
+          const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+          if (url.startsWith('https://api.certspotter.com/') || url.startsWith('https://crt.sh/')) await window.__ctGate;
+          return inner(input, init);
+        };
+      });
+      const ctActions = () => p.evaluate(() => {
+        const head = document.querySelector('.pf-ct-head');
+        const more = head?.querySelector('.result-actions [data-menu="more"]');
+        return {
+          status: head?.dataset.status || null,
+          row: [...(head?.querySelectorAll('.result-actions > *') || [])].map((el) => (el.classList.contains('menu-wrap') ? `menu:${el.querySelector('.menu-button').dataset.menu}` : el.dataset.action || el.tagName)),
+          more: more ? more.disabled : null,
+          files: [...(head?.querySelectorAll('.result-actions .menu-popover .menu-item') || [])].map((b) => `${b.dataset.export}:${b.disabled ? 'off' : 'on'}`)
+        };
+      });
+      await p.click('[data-action="ct-run"]');
+      await p.waitFor(() => document.querySelector('.pf-ct-head')?.dataset.status === 'running', { message: 'the CT check running' });
+      assertEqual(await ctActions(), { status: 'running', row: ['menu:more'], more: true, files: ['csv:off', 'ics:off'] }, 'while it runs: "⋯" and the CSV and the calendar in it wait');
+      await p.evaluate(() => window.__ctOpen());
+      await p.waitFor(() => document.querySelector('.pf-ct-head')?.dataset.status === 'done', { timeout: 30000, message: 'the CT check done' });
+      assertEqual(await ctActions(), { status: 'done', row: ['menu:more'], more: false, files: ['csv:on', 'ics:on'] }, 'done, with rows: "⋯" and its files ready');
+      await shot(p, 'watch-portfolio-ct-375-light-en');
     });
 
     await run.step('320 px (English, light): no horizontal scroll on the three tools, empty or with a result', async () => {

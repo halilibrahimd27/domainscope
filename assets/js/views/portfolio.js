@@ -815,7 +815,9 @@ export function mount(container, ctx) {
     stopDataset: { action: 'pf-stop', shortcut: 'cancel' },
     onRun: () => start(),
     onStop: () => stop(),
-    hasValue: () => parsePortfolioInput(box.value).domains.length > 0
+    // The phone's floating copy offers Check portfolio, never while the CT tab leads with its own
+    // Check CT (one primary button at a time); Stop still floats while a check runs.
+    hasValue: () => session.tab !== 'ct' && parsePortfolioInput(box.value).domains.length > 0
   });
   const input = ToolInput({
     className: 'pf-form-card',
@@ -825,8 +827,9 @@ export function mount(container, ctx) {
     run: runBar,
     notes: [boxStatus],
     more: [dkimBox.el],
-    // the rest (rdap.org as the fallback, the name servers' own domains) is one click away, in About
-    privacy: PrivacyNote({ text: t('pf.privacy'), href: ctx.href('about', { section: 'sent' }), className: 'pf-sends' }),
+    // the rest (rdap.org as the fallback, the name servers' own domains) is one click away, in
+    // About › Data sources & quotas
+    privacy: PrivacyNote({ text: t('pf.privacy'), href: ctx.href('about', { section: 'sources' }), className: 'pf-sends' }),
     // the compact row's one line: the option off its default
     summary: () => optionsSummary([{ label: t('pf.dkimOff'), isDefault: session.dkim }])
   });
@@ -1260,8 +1263,10 @@ export function mount(container, ctx) {
     label: t('nav.portfolio'),
     onChange: (tab) => {
       session.tab = tab;
-      // One primary button at a time: the CT tab's Check CT leads while it is open (DESIGN §5.1, region 3).
+      // One primary button at a time: the CT tab's Check CT leads while it is open (DESIGN §5.1,
+      // region 3), and the phone's floating copy follows at once (hasValue reads the tab).
       runBar.setPrimary(tab !== 'ct');
+      runBar.refresh();
       if (tab === 'security') openSecurity();
       if (tab === 'policy') renderPolicyMatrix();
       if (tab === 'ct') openCt();
@@ -1343,9 +1348,9 @@ export function mount(container, ctx) {
     actions = ResultActions({
       summary,
       exports: [
-        { label: t('pf.export.csv'), title: t('pf.export.title'), dataset: { action: 'pf-csv' }, onSelect: () => exportRows('csv') },
-        { label: t('pf.export.json'), title: t('pf.export.title'), dataset: { action: 'pf-json' }, onSelect: () => exportRows('json') },
-        { label: t('pf.export.ics'), icon: 'calendar', title: t('pf.export.icsTitle'), dataset: { action: 'pf-ics' }, onSelect: () => exportCalendar() }
+        { label: t('pf.export.csv'), title: t('pf.export.title'), dataset: { action: 'pf-csv', export: 'csv' }, onSelect: () => exportRows('csv') },
+        { label: t('pf.export.json'), title: t('pf.export.title'), dataset: { action: 'pf-json', export: 'json' }, onSelect: () => exportRows('json') },
+        { label: t('pf.export.ics'), icon: 'calendar', title: t('pf.export.icsTitle'), dataset: { action: 'pf-ics', export: 'ics' }, onSelect: () => exportCalendar() }
       ],
       // Copy link shares the check on screen (its domains while a link can carry them), not the box.
       link: () => (session.job ? ctx.shareUrl(shareParams(session.job.domains)) : null)

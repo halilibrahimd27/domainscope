@@ -1022,6 +1022,27 @@ export function passportCards(raw, { now, waivers = null } = {}) {
   return Object.fromEntries(PASSPORT_CARDS.map((id) => [id, id === 'health' ? healthCard(r, { now, waivers }) : BUILDERS[id](r, { now })]));
 }
 
+/**
+ * The Domain overview's status summary (docs/DESIGN.md §5.4, §5.6): the errors and warnings of its
+ * health card (the accepted risks left out, as the card leaves them out) and the cards a failed
+ * lookup left "n/a" — items for lib/template.js statusItems. The health counts are there once the
+ * card is ready; `cards` names the cards with a failure, in page order.
+ * @param {Record<string, object>} cards {@link passportCards}
+ * @returns {Array<{ key: 'error'|'warn'|'na', severity: 'error'|'warn', count: number, cards?: string[] }>}
+ */
+export function passportStatus(cards) {
+  const all = cards || {};
+  const health = all.health;
+  const s = health && health.state === 'ready' && health.summary ? health.summary : null;
+  const n = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+  const na = PASSPORT_CARDS.filter((id) => all[id] && Array.isArray(all[id].failures) && all[id].failures.length);
+  return [
+    s ? { key: 'error', severity: 'error', count: n(s.error) } : null,
+    s ? { key: 'warn', severity: 'warn', count: n(s.warn) } : null,
+    { key: 'na', severity: 'warn', count: na.length, cards: na }
+  ].filter(Boolean);
+}
+
 /** The cards that say when the domain does not exist, which they read from the NS and SOA lookups. */
 const EXISTS_CARDS = Object.freeze(['mail', 'web', 'certs', 'saas']);
 

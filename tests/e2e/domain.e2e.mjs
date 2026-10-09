@@ -272,7 +272,7 @@ async function main() {
       });
       assertEqual(nav, ['domain', 'health', 'subdomains', 'lookup'], 'Investigate a domain group');
       assertEqual(await text(page, 'h1'), 'Domain overview', 'title');
-      assert(await page.evaluate(() => !!document.querySelector('.dov-empty .empty')), 'empty state');
+      assert(await page.evaluate(() => !!document.querySelector('.dov-empty .tool-empty')), 'empty state');
       assertEqual(await counts(page), { dns: 0, rdap: 0, ct: 0 }, 'nothing sent');
       await shot(page, opts, 'domain-empty-desktop-light-en');
     });

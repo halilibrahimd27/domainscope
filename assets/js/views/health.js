@@ -18,7 +18,11 @@
  *   result belongs to the report on screen: a language switch keeps it (a fetch in flight goes
  *   on polling its paid measurement), a new check drops it, and "Report (JSON)" carries it.
  *
- * "Copy summary" in the hero (ui/summary-button.js): the verdict, score, counts and the worst
+ * The page template (ui/template.js): the input card (compact once a check starts), the result
+ * header `.hlt-hero` (the verdict, grade and score, the counts as the checks' filters, the actions,
+ * "Also check:") and the category scores as its metric strip.
+ *
+ * "Copy summary" in the result header (ui/summary-button.js): the verdict, score, counts and the worst
  * problems as Markdown for Jira / Slack, or plain text; the score and the traffic light come from
  * lib/summary.js, which the summary shares. Its link is the report's (domain and the selectors it
  * was checked with), never the route's: a new check changes the route before its report replaces
@@ -28,7 +32,7 @@
  * Accepted risks (lib/waivers.js, the workspace's `waivers` part): "Accept this risk…" on a
  * problem asks for a reason, an owner and an end date (ui/waivers.js, loaded on the first click);
  * until that day the finding is left out of the score, the grade, the light and the counts, the
- * hero says how many are accepted and what the score is with them, Copy summary and the customer
+ * result header says how many are accepted and what the score is with them, Copy summary and the customer
  * report say "N accepted risks excluded". The day after, it counts again and says so.
  *
  * Shareable: `#/health?domain=example.com` (also `name=`) runs on open; with `run=0` (a domain
@@ -36,14 +40,19 @@
  * kept for the page session (`result()` / `snapshot()`): coming back shows it without a new check.
  */
 
-import { h, clear, uid } from '../ui/dom.js';
+import { h, clear, uid, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, CopyButton, Disclosure, EmptyState, ErrorBanner, ExternalLink, Icon, KeyValueList, KindBadge,
-  ProgressBar, SegmentedControl, SeverityIcon, announce, describeError, setButtonBusy, textInput
+  Alert, Badge, Button, Card, CodeBlock, Disclosure, ErrorBanner, ExternalLink, Icon, KeyValueList, KindBadge,
+  ProgressBar, RelativeTime, SegmentedControl, SeverityIcon, announce, describeError, setButtonBusy, textInput
 } from '../ui/components.js';
 import {
   registerStrings, hasString, formatNumber, formatDate, formatDateTime, formatDuration, formatRelative, formatRegion, daysUntil, getLang
 } from '../i18n.js';
+import {
+  EmptyState, ExampleChips, MetricStrip, NextSteps, OptionsDisclosure, PrivacyNote, RelatedLinks, ResultActions, ResultHeader, ResultTitle,
+  RunBar, StatusSummary, ToolInput, withSubject
+} from '../ui/template.js';
+import { inputCompact, templateState, toggleStatus } from '../lib/template.js';
 import {
   domainHealth, applyRdap, caaRestrictionNotes, DEFAULT_DKIM_SELECTORS, HEALTH_I18N, SPF_LOOKUP_LIMIT, SPF_VOID_LIMIT, CAA_ISSUERS,
   LOOKUP_FAILED_PARAM
@@ -67,8 +76,9 @@ import { ExpectedCaaBadge, expectedCasChanged } from '../ui/expected-ca.js';
 import { healthScore, trafficLight, permalinkParams } from '../ui/view-summaries.js';
 import { errorKind, mergeSignals, onceAsync, splitList } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
-import { scoreHealth, countSeverities } from '../lib/healthscore.js';
+import { scoreHealth, countSeverities, healthStatus } from '../lib/healthscore.js';
 import { WAIVERS_I18N, healthWaivers, readWaivers } from '../lib/waivers.js';
+import { HEALTH_WEB_I18N } from '../lib/healthweb.js';
 import { storageErrorText } from '../ui/workspace-ui.js';
 
 /** Route id (`#/health`). */
@@ -111,6 +121,10 @@ registerStrings('en', MTA_STS_I18N.en);
 registerStrings('tr', MTA_STS_I18N.tr);
 registerStrings('en', WAIVERS_I18N.en);
 registerStrings('tr', WAIVERS_I18N.tr);
+// The Web category's name (health.group.web) and its checks' texts: the empty state and the metric
+// strip name every category before ui/health-v2.js has loaded.
+registerStrings('en', HEALTH_WEB_I18N.en);
+registerStrings('tr', HEALTH_WEB_I18N.tr);
 
 registerStrings('en', {
   'hlt.domain': 'Domain',
@@ -120,9 +134,9 @@ registerStrings('en', {
   'hlt.dkimExtra': 'Extra DKIM selectors',
   'hlt.dkimExtraHint': '{count} common selectors are always tried. Add your own (e.g. from a DKIM-Signature “s=” tag), comma-separated.',
   'hlt.invalid': 'Enter a domain name such as example.com.',
-  'hlt.examples': 'Try:',
-  'hlt.emptyTitle': 'Check a domain’s DNS, email and registration health',
-  'hlt.emptyBody': 'Name servers, SOA, MX, SPF (with the 10-lookup limit), DMARC, DKIM, CAA, DNSSEC, wildcard DNS and RDAP expiry — in one go, from your browser.',
+  'hlt.optSummary': 'extra DKIM selectors: {list}',
+  'hlt.privacy': 'DNS questions go to your DoH resolvers and one RDAP lookup to the registry; anything else is sent only from its own button.',
+  'hlt.emptyLine': 'A score and a grade, the problems first with how to fix each, and every check with what it read.',
   'hlt.progress': 'Checking {domain}',
   'hlt.step.records': 'DNS records',
   'hlt.step.ns': 'Name servers',
@@ -139,9 +153,6 @@ registerStrings('en', {
   'hlt.light.error': 'Problems found',
   'hlt.light.warn': 'Needs attention',
   'hlt.light.ok': 'Healthy',
-  'hlt.light.errorBody': 'Fix the errors first — they break mail delivery, resolution or security for real users.',
-  'hlt.light.warnBody': 'Nothing is broken, but some settings are weak or risky.',
-  'hlt.light.okBody': 'No problems found in {count} checks.',
   'hlt.score': 'Score',
   'hlt.scoreTitle': 'Each category loses 40 per error and 15 per warning; the score is their weighted mean, at most 79 with an error and 89 with a warning. Info items do not count.',
   'hlt.grade': 'Grade {grade}',
@@ -162,7 +173,7 @@ registerStrings('en', {
   'hlt.fix.hide': 'Hide the fix',
   'hlt.checksTitle': 'Checks',
   'hlt.detailsTitle': 'Details',
-  'hlt.links': 'More about this domain:',
+  'hlt.metricsLabel': 'Score of each category',
 
   'hlt.rdap.title': 'Registration (RDAP)',
   'hlt.rdap.registrar': 'Registrar',
@@ -339,9 +350,9 @@ registerStrings('tr', {
   'hlt.dkimExtra': 'Ek DKIM seçicileri',
   'hlt.dkimExtraHint': '{count} yaygın seçici her zaman denenir. Kendi seçicilerinizi (ör. DKIM-Signature başlığındaki “s=” değeri) virgülle ayırarak ekleyin.',
   'hlt.invalid': 'ornek.com.tr gibi bir alan adı girin.',
-  'hlt.examples': 'Deneyin:',
-  'hlt.emptyTitle': 'Bir alan adının DNS, e-posta ve kayıt sağlığını kontrol edin',
-  'hlt.emptyBody': 'Ad sunucuları, SOA, MX, SPF (10 sorgu sınırıyla), DMARC, DKIM, CAA, DNSSEC, joker (wildcard) DNS ve RDAP bitiş tarihi — tek seferde, tarayıcınızdan.',
+  'hlt.optSummary': 'ek DKIM seçicileri: {list}',
+  'hlt.privacy': 'DNS soruları DoH çözümleyicilerinize, tek bir RDAP sorgusu kayıt kuruluşuna gider; gerisi yalnızca kendi düğmesine basınca gönderilir.',
+  'hlt.emptyLine': 'Puan ve not, önce sorunlar ve her birinin nasıl düzeltileceği, her kontrol ve okuduğu kayıtlar.',
   'hlt.progress': '{domain} kontrol ediliyor',
   'hlt.step.records': 'DNS kayıtları',
   'hlt.step.ns': 'Ad sunucuları',
@@ -358,9 +369,6 @@ registerStrings('tr', {
   'hlt.light.error': 'Sorun bulundu',
   'hlt.light.warn': 'İlgilenilmesi gerekiyor',
   'hlt.light.ok': 'Sağlıklı',
-  'hlt.light.errorBody': 'Önce hataları giderin — gerçek kullanıcılar için e-posta teslimini, çözümlemeyi ya da güvenliği bozuyorlar.',
-  'hlt.light.warnBody': 'Bozuk bir şey yok ama bazı ayarlar zayıf ya da riskli.',
-  'hlt.light.okBody': '{count} kontrolde sorun bulunmadı.',
   'hlt.score': 'Puan',
   'hlt.scoreTitle': 'Her kategori hata başına 40, uyarı başına 15 puan kaybeder; puan kategorilerin ağırlıklı ortalamasıdır, hatayla en fazla 79, uyarıyla en fazla 89 olur. Bilgi maddeleri sayılmaz.',
   'hlt.grade': 'Not {grade}',
@@ -381,7 +389,7 @@ registerStrings('tr', {
   'hlt.fix.hide': 'Düzeltmeyi gizle',
   'hlt.checksTitle': 'Kontroller',
   'hlt.detailsTitle': 'Ayrıntılar',
-  'hlt.links': 'Bu alan adı hakkında daha fazlası:',
+  'hlt.metricsLabel': 'Kategorilerin puanı',
 
   'hlt.rdap.title': 'Kayıt bilgisi (RDAP)',
   'hlt.rdap.registrar': 'Kayıt firması',
@@ -681,135 +689,230 @@ export function mount(container, ctx) {
     mono: true,
     className: 'hlt-domain',
     attrs: { 'data-role': 'health-domain', 'data-shortcut': 'focus', inputmode: 'url', enterkeyhint: 'go' },
+    onInput: () => syncRunBar(),
     onEnter: () => start()
   });
+  /** The extra DKIM selectors typed, as the summary line and the options' title say them. */
+  const selectorsSummary = () => {
+    const list = parseSelectors(selectorsField.value);
+    return list.length ? t('hlt.optSummary', { list: list.join(', ') }) : '';
+  };
   const selectorsField = textInput({
     label: t('hlt.dkimExtra'),
     value: restored?.selectors ?? ctx.params.selectors ?? '',
     placeholder: 'mailgun, s1024',
     mono: true,
     attrs: { 'data-role': 'health-selectors' },
+    onInput: () => {
+      options.refresh();
+      input.refresh();
+    },
     onEnter: () => start()
   });
   selectorsField.setHint(t('hlt.dkimExtraHint', { count: DEFAULT_DKIM_SELECTORS.length }));
-  const runBtn = Button({ label: t('hlt.run'), icon: 'activity', variant: 'primary', dataset: { action: 'run', shortcut: 'submit' }, onClick: () => start() });
-  const stopBtn = Button({ label: t('common.stop'), icon: 'stop', dataset: { action: 'stop', shortcut: 'cancel' }, onClick: () => { if (current && current.controller) current.controller.abort(); } });
-  stopBtn.hidden = true;
-  const examples = ['github.com', 'cloudflare.com', 'wikipedia.org', 'example.com'];
-  const examplesEl = h('div', { class: 'cluster text-sm hlt-examples' },
-    h('span', { class: 'muted' }, t('hlt.examples')),
-    examples.map((d) => h('button', {
-      type: 'button', class: 'link-btn mono', dataset: { example: d },
-      on: { click: () => { domainField.value = d; start(); } }
-    }, d)));
-  const formCard = Card({
+  const runBar = RunBar({
+    label: t('hlt.run'),
+    dataset: { action: 'run', shortcut: 'submit' },
+    stopDataset: { action: 'stop', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => { if (current && current.controller) current.controller.abort(); },
+    hasValue: () => !!domainField.value.trim()
+  });
+  const runBtn = runBar.run;
+  // An example fills the box and leaves the keyboard on Check health: nothing is sent before that click.
+  const examples = ExampleChips({
+    className: 'hlt-examples',
+    examples: ['github.com', 'cloudflare.com', 'wikipedia.org', 'example.com'],
+    onPick: (d) => {
+      domainField.value = d;
+      domainField.setError(null);
+      syncRunBar();
+    },
+    focus: () => runBtn
+  });
+  const options = OptionsDisclosure({
+    label: t('hlt.options'), summary: selectorsSummary, className: 'hlt-options', open: !!(restored?.selectors || ctx.params.selectors), children: selectorsField.el
+  });
+  const input = ToolInput({
     className: 'hlt-form-card',
-    children: h('div', { class: 'stack' },
-      h('div', { class: 'hlt-form' }, domainField.el, h('div', { class: 'hlt-buttons' }, stopBtn, runBtn)),
-      h('div', { class: 'hlt-form-foot' },
-        examplesEl,
-        Disclosure({ summary: t('hlt.options'), className: 'hlt-options', open: !!(restored?.selectors || ctx.params.selectors), children: selectorsField.el })))
+    fieldsClass: 'hlt-form',
+    label: t('nav.health'),
+    primary: domainField.el,
+    run: runBar,
+    extras: [examples, options.el],
+    privacy: PrivacyNote({ text: t('hlt.privacy') }),
+    summary: selectorsSummary
   });
 
   /* --- results skeleton ------------------------------------------------------------ */
   const progress = ProgressBar({ label: t('hlt.progress', { domain: '' }) });
-  progress.el.hidden = true;
-  const errorEl = h('div');
+  const errorEl = h('div', { class: 'hlt-error' });
+  /** The result header (region 4): in the page only while a report or a check is (its `.hlt-hero` says so). */
+  const head = ResultHeader({ className: 'hlt-hero' });
   const heroEl = h('div', { class: 'hlt-hero-wrap' });
+  /** The score of each category (region 6), under the header. */
+  const metrics = MetricStrip({ className: 'hlt-metrics', label: t('hlt.metricsLabel') });
   /** Problems first and the Web card (ui/health-v2.js). */
   const v2El = h('div', { class: 'stack-lg hv2' });
   const checksEl = h('div', { class: 'hlt-groups' });
   const detailsEl = h('div', { class: 'hlt-details' });
-  let filter = restored?.filter === 'problems' ? 'problems' : 'all';
+  /** The checks shown: 'all', 'problems' (the segmented control) or one severity (the status summary's filter). */
+  let filter = ['problems', ...SEVERITY_ORDER].includes(restored?.filter) ? restored.filter : 'all';
   const filterCtl = SegmentedControl({
     label: t('hlt.filter'),
     size: 'sm',
     value: filter,
     options: [{ value: 'all', label: t('hlt.filter.all') }, { value: 'problems', label: t('hlt.filter.problems') }],
-    onChange: (v) => {
-      filter = v;
-      if (current && current.report) renderChecks(current.report);
-    }
+    onChange: (v) => setFilter(v)
   });
   filterCtl.el.dataset.control = 'health-filter';
-  const emptyEl = h('div', { class: 'card hlt-empty' }, EmptyState({ icon: 'activity', title: t('hlt.emptyTitle'), message: t('hlt.emptyBody') }));
+  const emptyEl = h('div', { class: 'hlt-empty' }, EmptyState({
+    icon: 'activity',
+    message: t('hlt.emptyLine'),
+    checks: HEALTH_GROUPS.map((g) => t(`health.group.${g}`))
+  }));
+  /** The report's actions (ResultActions), disabled while a check runs. */
+  let actions = null;
+  /** The status summary of the report on screen (its filters follow `filter`). */
+  let status = null;
+  const checksSection = h('section', { class: 'stack hlt-checks-section' },
+    h('div', { class: 'hlt-section-head' }, h('h2', { class: 'section-title' }, t('hlt.checksTitle')), filterCtl.el),
+    checksEl);
   // No part of the form: Ctrl/Cmd+Enter on the checks filter starts no new check.
-  /** The hero's Copy summary (disabled while a check runs). */
-  let heroSummary = null;
   const results = h('div', { class: 'stack-lg hlt-results', hidden: true, dataset: { shortcutScope: 'results' } },
-    heroEl,
+    metrics.el,
     v2El,
-    h('section', { class: 'stack hlt-checks-section' },
-      h('div', { class: 'hlt-section-head' }, h('h2', { class: 'section-title' }, t('hlt.checksTitle')), filterCtl.el),
-      checksEl),
+    checksSection,
     h('section', { class: 'stack hlt-details-section' }, h('h2', { class: 'section-title' }, t('hlt.detailsTitle')), detailsEl));
-  container.append(h('div', { class: 'stack-lg hlt-view' }, formCard, progress, errorEl, emptyEl, results));
+  container.append(h('div', { class: 'hlt-view' }, input.el, heroEl, errorEl, emptyEl, results, runBar.float));
+  ctx.onCleanup(() => runBar.dispose());
 
-  /* --- hero ------------------------------------------------------------------------------ */
+  /** The checks filter: the segmented control's 'all' / 'problems', or a status item's severity. */
+  function setFilter(next) {
+    filter = next || 'all';
+    filterCtl.setValue(filter === 'all' || filter === 'problems' ? filter : null);
+    if (status) status.setPressed(SEVERITY_ORDER.includes(filter) ? filter : null);
+    if (current && current.report) renderChecks(current.report);
+  }
+
+  /** The run bar and the input follow the state: compact once a check starts, "Run again" while the box asks for the report on screen. */
+  function syncRunBar() {
+    const shown = current && (current.report || (current.shown && current.shown.report));
+    const state = templateState({ running: !!(current && current.controller), result: !!shown });
+    const box = normalizeHostname(domainField.value.trim().replace(/^\*\./, ''));
+    runBar.setState(state);
+    runBar.setRerun(state === 'done' && !!box && !!current.report && box === current.report.domain);
+    input.setCompact(inputCompact(state));
+  }
+
+  /* --- region 4: the result header --------------------------------------------------- */
   /**
-   * @param {object} report
+   * The header of the report on screen, or of the check that runs: "Checking example.org…" with
+   * its progress while it runs (the report under it is the previous one, its actions wait), else
+   * the verdict and the domain, the grade and score, the counts as filters and the actions.
+   * @param {object|null} report
    * @param {string[]} selectors the extra DKIM selectors the report was checked with (its permalink)
    */
-  function renderHero(report, selectors, hw = reportWaivers(report)) {
-    clear(heroEl);
+  function renderHero(report, selectors = [], hw = report ? reportWaivers(report) : null) {
+    const running = !!(current && current.controller);
+    if (!report && !running) {
+      head.el.remove();
+      return;
+    }
+    if (!head.el.isConnected) heroEl.append(head.el);
+    head.setState(running ? 'running' : 'done');
+    if (running) {
+      head.set('title', ResultTitle({ running: true, text: withSubject((p) => t('result.checking', p), current.domain, { className: 'hlt-hero-domain' }) }));
+      head.set('key', null);
+      head.set('meta', null);
+      head.set('notes', null);
+      head.set('status', null);
+      head.set('next', null);
+      head.set('related', null);
+      head.set('progress', progress.el);
+      if (actions) actions.setDisabled(true);
+      else head.set('actions', null);
+      return;
+    }
+    head.set('progress', null);
     // the accepted risks leave the counts, the light, the score and the grade (the note says the score with them)
     const s = hw.ids.size ? countSeverities(report.checks, { waived: hw.ids }) : report.summary;
     const light = trafficLight(s);
     const graded = scoreHealth(report.checks, { waived: hw.ids });
     const { score, grade } = graded;
-    const total = s.ok + s.info + s.warn + s.error;
+    Object.assign(head.el.dataset, { light, score: String(score), grade });
+    head.set('title', ResultTitle({
+      severity: light,
+      // The dot stays with the verdict when the title wraps on a phone (a no-break space before it).
+      text: [h('span', { class: 'hlt-hero-verdict' }, t(`hlt.light.${light}`)), '\u00a0· ', h('span', { class: 'hlt-hero-domain mono' }, report.domain)]
+    }));
+    head.set('key', h('span', { class: 'result-score hlt-score', title: t('hlt.scoreTitle') },
+      h('span', { class: 'result-grade', dataset: { severity: light }, attrs: { role: 'img', 'aria-label': t('hlt.grade', { grade }) } }, grade),
+      h('span', { class: 'result-score-value num' }, String(score)),
+      h('span', { class: 'result-score-max' }, '/100')));
+    head.set('meta', [
+      RelativeTime(report.checkedAt, { text: t('hlt.checkedAt', { time: formatRelative(report.checkedAt) }) }),
+      report.zone ? h('span', null, t('hlt.zone', { zone: report.zone })) : null
+    ]);
     const expiredCount = new Set(hw.expired.map((e) => e.check.id)).size;
-    const waivedEl = hw.applied.length || expiredCount ? h('div', { class: 'hlt-waived text-sm', dataset: { role: 'hero-waived', count: String(hw.applied.length) } },
+    head.set('notes', hw.applied.length || expiredCount ? h('div', { class: 'hlt-waived text-sm', dataset: { role: 'hero-waived', count: String(hw.applied.length) } },
       hw.applied.length ? h('p', { class: 'hlt-waived-line' }, Icon('shield', { size: 14 }), ' ', t('wvr.count', { count: hw.applied.length, date: hw.until }), ' ',
         graded.full ? h('span', { class: 'muted', dataset: { role: 'hero-with-waived', score: String(graded.full.score), grade: graded.full.grade } },
           t('wvr.withThem', { count: hw.applied.length, score: graded.full.score, grade: graded.full.grade })) : null) : null,
-      expiredCount ? h('p', { class: 'hlt-waived-expired', dataset: { role: 'hero-waived-expired' } }, Icon('clock', { size: 14 }), ' ', t('wvr.expiredCount', { count: expiredCount })) : null) : null;
-    const lightEl = h('div', { class: ['hlt-light', `hlt-light-${light}`], attrs: { role: 'img', 'aria-label': t(`hlt.light.${light}`) } },
-      ['error', 'warn', 'ok'].map((k) => h('span', { class: ['hlt-lamp', `hlt-lamp-${k}`, { 'is-on': k === light }] })));
-    const counts = h('div', { class: 'hlt-counts' }, SEVERITY_ORDER.map((sev) => h('span', {
-      class: ['hlt-count', `hlt-count-${sev}`, { 'is-zero': !s[sev] }], dataset: { severity: sev, count: s[sev] }
-    }, SeverityIcon(sev, { size: 15 }), h('span', null, t(`hlt.count.${sev}`, { count: s[sev] })))));
-    heroSummary = SummaryButton({
-      kind: 'health',
-      facts: () => ({ report, waived: hw.applied.length ? { ids: [...hw.ids], until: hw.until } : null }),
-      url: () => ctx.shareUrl(permalinkParams('health', checkParams({ domain: report.domain, selectors })))
+      expiredCount ? h('p', { class: 'hlt-waived-expired', dataset: { role: 'hero-waived-expired' } }, Icon('clock', { size: 14 }), ' ', t('wvr.expiredCount', { count: expiredCount })) : null) : null);
+    // The counts are the checks list's severity filters (a second press shows every check again).
+    status = StatusSummary({
+      verdict: true,
+      pressed: SEVERITY_ORDER.includes(filter) ? filter : null,
+      items: healthStatus(s).map((item) => ({
+        ...item,
+        text: t(`hlt.count.${item.key}`, { count: item.count }),
+        filter: true,
+        onPress: (key) => {
+          setFilter(toggleStatus(SEVERITY_ORDER.includes(filter) ? filter : null, key));
+          checksSection.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+        }
+      }))
     });
-    const zoneLink = report.zone && report.zone !== report.domain
-      ? h('a', { class: 'btn btn-secondary btn-sm', href: ctx.href('health', { domain: report.zone }) }, Icon('arrow-right', { size: 14 }), h('span', { class: 'btn-label' }, t('hlt.checkZone', { zone: report.zone })))
-      : null;
-    heroEl.append(h('div', { class: ['card', 'hlt-hero', `hlt-hero-${light}`], dataset: { light, score, grade } },
-      lightEl,
-      h('div', { class: 'hlt-hero-main' },
-        h('div', { class: 'hlt-hero-domain mono' }, report.domain),
-        h('div', { class: 'hlt-hero-verdict' }, t(`hlt.light.${light}`)),
-        h('p', { class: 'hlt-hero-body' }, light === 'ok' ? t('hlt.light.okBody', { count: formatNumber(total) }) : t(`hlt.light.${light}Body`)),
-        counts,
-        waivedEl,
-        h('div', { class: 'hlt-hero-meta muted text-xs' },
-          h('span', { title: formatDateTime(report.checkedAt) }, t('hlt.checkedAt', { time: formatRelative(report.checkedAt) })),
-          report.zone ? h('span', null, t('hlt.zone', { zone: report.zone })) : null)),
-      h('div', { class: 'hlt-hero-side' },
-        h('div', { class: 'hlt-score', title: t('hlt.scoreTitle') },
-          h('span', { class: ['hlt-grade', `hlt-grade-${grade}`], attrs: { role: 'img', 'aria-label': t('hlt.grade', { grade }) } }, grade),
-          h('span', { class: 'hlt-score-value num' }, String(score)),
-          h('span', { class: 'hlt-score-max' }, '/100'),
-          h('span', { class: 'hlt-score-label' }, t('hlt.score'))),
-        h('div', { class: 'hlt-hero-actions' },
-          zoneLink,
-          heroSummary,
-          ReportButton(ctx, 'health', () => ({
-            report, selectors,
-            waived: hw.applied.length ? { applied: hw.applied.map((a) => ({ id: a.check.id, reason: a.waiver.reason, owner: a.waiver.owner, expires: a.waiver.expires })) } : null
-          })),
-          Button({
-            label: t('hlt.download'), icon: 'download', size: 'sm', dataset: { action: 'download' },
-            onClick: () => downloadText(timestampedName('domain-health', 'json', report.domain), toJson(exportReport(report)), 'application/json;charset=utf-8')
-          })))));
-    heroEl.append(h('div', { class: 'cluster text-sm hlt-links' },
-      h('span', { class: 'muted' }, t('hlt.links')),
-      h('a', { href: ctx.href('lookup', { name: report.domain, type: 'A,AAAA,MX,NS,TXT,SOA,CAA,HTTPS' }) }, Icon('search', { size: 14 }), ' ', t('nav.lookup')),
-      h('a', { href: ctx.href('global', { name: report.domain, type: 'A' }) }, Icon('globe', { size: 14 }), ' ', t('nav.global')),
-      h('a', { href: ctx.href('scan', { domain: report.domain }) }, Icon('target', { size: 14 }), ' ', t('nav.scan'))));
+    head.set('status', status.el);
+    if (actions) actions.dispose();
+    actions = ResultActions({
+      summary: SummaryButton({
+        kind: 'health',
+        plainLabel: t('result.plainTitle'),
+        facts: () => ({ report, waived: hw.applied.length ? { ids: [...hw.ids], until: hw.until } : null }),
+        url: () => ctx.shareUrl(permalinkParams('health', checkParams({ domain: report.domain, selectors })))
+      }),
+      report: ReportButton(ctx, 'health', () => ({
+        report, selectors,
+        waived: hw.applied.length ? { applied: hw.applied.map((a) => ({ id: a.check.id, reason: a.waiver.reason, owner: a.waiver.owner, expires: a.waiver.expires })) } : null
+      })),
+      exports: [{
+        label: t('hlt.download'), icon: 'download', dataset: { action: 'download' },
+        onSelect: () => downloadText(timestampedName('domain-health', 'json', report.domain), toJson(exportReport(report)), 'application/json;charset=utf-8')
+      }],
+      print: true,
+      // Copy link shares the check on screen (not the box, which may hold a carried domain).
+      link: () => ctx.shareUrl(checkParams({ domain: report.domain, selectors }))
+    });
+    head.set('actions', actions.el);
+    head.set('next', report.zone && report.zone !== report.domain ? NextSteps({
+      steps: [{ label: t('hlt.checkZone', { zone: report.zone }), icon: 'arrow-right', href: ctx.href('health', { domain: report.zone }), dataset: { role: 'check-zone' } }]
+    }) : null);
+    head.set('related', RelatedLinks({
+      self: 'health',
+      links: [
+        { view: 'lookup', icon: 'search', label: t('nav.lookup'), href: ctx.href('lookup', { name: report.domain, type: 'A,AAAA,MX,NS,TXT,SOA,CAA,HTTPS' }) },
+        { view: 'global', icon: 'globe', label: t('nav.global'), href: ctx.href('global', { name: report.domain, type: 'A' }) },
+        { view: 'scan', icon: 'target', label: t('nav.scan'), href: ctx.href('scan', { domain: report.domain }) }
+      ]
+    }));
+    metrics.update(graded.groups.map((g) => ({
+      id: g.group,
+      label: t(`health.group.${g.group}`),
+      value: g.score,
+      severity: g.error ? 'error' : g.warn ? 'warn' : null
+    })));
   }
 
   /* --- accepted risks ---------------------------------------------------------------------- */
@@ -909,7 +1012,10 @@ export function mount(container, ctx) {
     for (const group of HEALTH_GROUPS) {
       const all = groupChecks(report.checks, group);
       if (!all.length) continue;
-      const shown = filter === 'problems' ? all.filter((c) => c.severity === 'error' || c.severity === 'warn') : all;
+      let shown = all;
+      if (filter === 'problems') shown = all.filter((c) => c.severity === 'error' || c.severity === 'warn');
+      // A status item's filter: the checks of that severity (an accepted risk is not an open error or warning).
+      else if (SEVERITY_ORDER.includes(filter)) shown = all.filter((c) => c.severity === filter && !isAccepted(c));
       const open = all.filter((c) => !isAccepted(c));
       const accepted = all.length - open.length;
       const counts = SEVERITY_ORDER.filter((sev) => sev !== 'ok' && open.some((c) => c.severity === sev))
@@ -1644,13 +1750,14 @@ export function mount(container, ctx) {
   let current = null;
 
   function setRunning(on) {
-    runBtn.hidden = on;
-    stopBtn.hidden = !on;
+    // Run ⇄ Stop in the run bar, the keyboard focus with them.
+    runBar.setRunning(on);
     domainField.input.readOnly = on;
     // The report on screen belongs to the previous check until this one finishes.
-    if (heroSummary) heroSummary.setDisabled(on);
+    if (actions) actions.setDisabled(on);
     syncWaiverButtons();
     ctx.setBusy(on);
+    syncRunBar();
   }
 
   /** While a check runs, the report on screen is the previous one: its "Accept this risk…" and Remove wait for the new one. */
@@ -1663,11 +1770,6 @@ export function mount(container, ctx) {
   function checkParams(check) {
     const selectors = check.selectors || [];
     return { domain: check.domain, selectors: selectors.length ? selectors.join(',') : null };
-  }
-
-  /** "Copy link" shares the check on screen (not the box, which may hold a carried domain). */
-  function setShareAction() {
-    ctx.setActions(CopyButton(() => ctx.shareUrl(current ? checkParams(current) : ctx.params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
   }
 
   /** The domains the box holds, as a check reads them (what a carried domain may replace). */
@@ -1695,6 +1797,7 @@ export function mount(container, ctx) {
       domainField.setError(null);
       carried = domain;
     }
+    syncRunBar();
   }
 
   /** Run the checks. `auto`: a shared link's run on arrival (offline: no toast, see lookup.js). */
@@ -1712,7 +1815,6 @@ export function mount(container, ctx) {
     const extra = parseSelectors(selectorsField.value);
     if (!ctx.requireOnline({ quiet: auto })) return;
     ctx.setParams({ domain, selectors: extra.length ? extra.join(',') : null });
-    setShareAction();
     ctx.runStarted(domain);
     run(domain, extra);
   }
@@ -1748,10 +1850,12 @@ export function mount(container, ctx) {
     };
     current = state;
     clear(errorEl);
-    progress.el.hidden = false;
+    emptyEl.hidden = true;
     progress.setVariant('default');
     progress.setLabel(t('hlt.progress', { domain }));
     progress.set(0, 10);
+    // The header says what runs; the report under it (if any) is the previous one until this one lands.
+    renderHero(null);
     setRunning(true);
     const startedAt = performance.now();
     try {
@@ -1779,12 +1883,13 @@ export function mount(container, ctx) {
       if (current !== state) return;
       state.report = report;
       state.finishedAt = new Date();
+      state.controller = null;
       progress.done(`${t('common.done')} · ${formatDuration(performance.now() - startedAt)}`);
       renderReport(report, state.selectors);
-      setTimeout(() => { if (current === state) progress.el.hidden = true; }, 1200);
+      const s = reportSummary(report);
+      announce(`${report.domain}: ${t(`hlt.light.${trafficLight(s)}`)} · ${healthStatus(s).filter((x) => x.count || x.key === 'error').map((x) => t(`hlt.count.${x.key}`, { count: x.count })).join(' · ')}`);
     } catch (err) {
       if (current !== state) return;
-      progress.el.hidden = true;
       if (err && err.name === 'AbortError') return;
       errorEl.append(Alert({ variant: 'error', title: t('hlt.failed'), message: err && err.message ? err.message : String(err) }));
     } finally {
@@ -1792,11 +1897,24 @@ export function mount(container, ctx) {
         state.controller = null;
         state.shown = null;
         if (!ctx.signal.aborted) {
+          if (!state.report && shown) {
+            // Stopped or failed: the report on screen is the previous one again, header and all.
+            showAgain(shown);
+            renderHero(shown.report, shown.selectors);
+          } else if (!state.report) {
+            renderHero(null);
+            emptyEl.hidden = !!errorEl.firstChild;
+          }
           setRunning(false);
-          if (!state.report && shown) showAgain(shown);
         }
       }
     }
+  }
+
+  /** The counts of a report as its header shows them (the workspace's accepted risks left out). */
+  function reportSummary(report) {
+    const hw = reportWaivers(report);
+    return hw.ids.size ? countSeverities(report.checks, { waived: hw.ids }) : report.summary;
   }
 
   /* --- initial state ----------------------------------------------------------------- */
@@ -1820,7 +1938,7 @@ export function mount(container, ctx) {
     // from another tool (`run=0`) only fills the form.
     Promise.resolve().then(() => start({ auto: true }));
   }
-  if (restored && restored.report) setShareAction();
+  syncRunBar();
 
   // The CAA card's expected / unexpected CA badges follow the workspace's expected CAs, and the
   // score, the hero and the problems its accepted risks (this page, another tab, an import).

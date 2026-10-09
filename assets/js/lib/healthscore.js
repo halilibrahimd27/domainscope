@@ -219,6 +219,19 @@ export function problemsFirst(checks, { waived = null } = {}) {
 }
 
 /**
+ * Domain Health's status summary (docs/DESIGN.md §5.4, §5.6): errors, warnings, notes and passed
+ * checks — items for lib/template.js statusItems (Domain Health is a verdict tool: its "0 errors"
+ * shows). Each key is also the severity the checks list filters on when the item is pressed.
+ * @param {{ ok?: number, info?: number, warn?: number, error?: number }|null|undefined} summary {@link countSeverities}
+ * @returns {Array<{ key: 'error'|'warn'|'info'|'ok', severity: 'error'|'warn'|'info'|'ok', count: number }>}
+ */
+export function healthStatus(summary) {
+  const s = summary || {};
+  const n = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+  return ['error', 'warn', 'info', 'ok'].map((key) => ({ key, severity: key, count: n(s[key]) }));
+}
+
+/**
  * Severity counts of a list of checks, as lib/health's report `summary`; `waived` leaves the
  * accepted risks out of the error and warning counts.
  * @param {Array<{ severity: string }>} checks

@@ -120,6 +120,11 @@ const JS = join(ASSETS, 'js');
  * relative times as a <time> with the absolute local time and its UTC offset in the title, and MenuButton's type-ahead), views/home.js by 467,
  * i18n.js by 228 (formatDateTime's `offset`, utcOffsetLabel), app.js by 193 (a purpose line of text and nodes) and style.css by 119 (the
  * sidebar's privacy line wraps).
+ * Phase 2 (the page template and Investigate a domain, docs/DESIGN.md §8): ≈ 272 KB (278,870 bytes), 100,010 bytes under the budget.
+ * style.css grew by 2,733 bytes (the template's regions: the input card, the run bar and its phone copy, the result header, the status
+ * summary, the metric strip, the empty state), ui/summary-button.js by 335 (the ¶ button, and copy() for a menu item), app.js by 224
+ * (the kept-result note in the result header's slot) and ui/components.js by 166 (the ¶ icon, CopyButton's icon, MenuButton's visible
+ * label). ui/template.js and lib/template.js load with the four tools, never with Home.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;
@@ -212,7 +217,9 @@ describe('the Subdomains view graph', () => {
     const names = staticGraph(join(JS, 'views', 'subdomains.js')).map(rel);
     assert.ok(names.includes('assets/js/lib/scanplan.js'), 'the plan line comes from lib/scanplan.js');
     assert.ok(names.includes('assets/js/lib/sourceinfo.js'), 'the source list comes from lib/sourceinfo.js');
-    assert.deepEqual(HEAVY.filter((m) => names.includes(`assets/js/${m}`)), []);
+    // The page template is the view's own (HEAVY lists it only to keep it off the start route).
+    assert.ok(names.includes('assets/js/ui/template.js'), 'the view draws with the page template');
+    assert.deepEqual(HEAVY.filter((m) => m !== 'ui/template.js' && names.includes(`assets/js/${m}`)), []);
   });
 });
 

@@ -46,7 +46,7 @@ import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import {
   cliOptions, createRunner, assert, assertEqual, sleep, waitReady, gotoRoute, setLangUi, assertNoHorizontalScroll,
-  shot, assertClean, assertNoMissingKeys, zoneHandoffScript, BASE, SHOTS
+  shot, assertClean, assertNoMissingKeys, zoneHandoffScript, resultAction, BASE, SHOTS
 } from './scan.e2e.mjs';
 
 const opts = cliOptions();
@@ -131,13 +131,13 @@ async function clickMenu(page, view) {
   return href;
 }
 
-/** Press the page header's "Copy link" and return the hash it copied (the clipboard is stubbed in the page). */
+/** Press the result's "Copy link" and return the hash it copied (the clipboard is stubbed in the page). */
 async function copiedLink(page) {
   await page.evaluate(() => {
     window.__copied = null;
     Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: async (text) => { window.__copied = text; } });
   });
-  await page.click('.page-actions .copy-btn');
+  await resultAction(page, '[data-action="copy-link"]');
   await page.waitFor(() => window.__copied !== null, { message: 'Copy link' });
   return page.evaluate(() => new URL(window.__copied).hash);
 }

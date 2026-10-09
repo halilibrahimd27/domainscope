@@ -29,16 +29,20 @@
  * again with no request.
  */
 
-import { h, clear } from '../ui/dom.js';
+import { h, clear, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, EmptyState, ExternalLink, Icon, KeyValueList, KindBadge, ProgressBar, SeverityIcon,
+  Alert, Badge, Button, Card, ExternalLink, Icon, KeyValueList, KindBadge, ProgressBar, RelativeTime, SeverityIcon,
   announce, textInput
 } from '../ui/components.js';
-import { registerStrings, hasString, formatNumber, formatDate, formatDateTime, formatRelative, getLang } from '../i18n.js';
+import { registerStrings, hasString, formatNumber, formatDate, formatRelative, getLang } from '../i18n.js';
 import {
   PASSPORT_CARDS, PASSPORT_LOOKUPS, CARD_LOOKUPS, HEALTH_LOOKUPS, passportDomain, passportCards, cardsOfLookup, buildPassport,
-  lookupCtIssuers, passportSummaryFacts
+  lookupCtIssuers, passportSummaryFacts, passportStatus
 } from '../lib/passport.js';
+import {
+  EmptyState, PrivacyNote, RelatedLinks, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput, withSubject
+} from '../ui/template.js';
+import { inputCompact, templateState } from '../lib/template.js';
 import { HEALTH_I18N, LOOKUP_FAILED_PARAM } from '../lib/health.js';
 import { WAIVERS_I18N, readWaivers } from '../lib/waivers.js';
 import { NaMark, RetryButton, setRetryBusy, statusText } from '../ui/source-status.js';
@@ -75,10 +79,10 @@ registerStrings('en', {
   'dov.placeholder': 'example.com',
   'dov.run': 'Build overview',
   'dov.invalid': 'Enter a domain name such as example.com (not an IP address or a bare ending such as com.tr).',
-  'dov.sends': 'Nothing is sent until you press Build overview. Then the DNS questions go to your DoH resolvers and the registration lookup to the registry’s RDAP server; Certificate Transparency is asked only from the Certificates card.',
+  'dov.privacy': 'Nothing is sent until you press Build overview: then DNS questions go to your DoH resolvers and one RDAP lookup to the registry.',
   'dov.linkPrompt': 'Opened from a link: press Build overview to look up {domain}. Nothing has been sent yet.',
-  'dov.emptyTitle': 'Everything about a domain on one page',
-  'dov.emptyBody': 'Registration and expiry, who hosts its DNS and mail, what serves the website, which CAs may issue certificates, the services its TXT records verify and its health score — for a migration or a takeover, with a link to the tool that goes deeper.',
+  'dov.emptyLine': 'Cards that fill in as their lookups land, each with a link to the tool that goes deeper.',
+  'dov.status.na': { one: '{count} card could not be read', other: '{count} cards could not be read' },
   'dov.progress': 'Building the overview of {domain}',
   'dov.progressCount': '{done} of {total} lookups',
   'dov.builtAt': 'Built {time}',
@@ -251,10 +255,10 @@ registerStrings('tr', {
   'dov.placeholder': 'example.com',
   'dov.run': 'Özeti oluştur',
   'dov.invalid': 'example.com gibi bir alan adı girin (IP adresi ya da com.tr gibi yalın bir uzantı değil).',
-  'dov.sends': 'Özeti oluştur’a basana kadar hiçbir şey gönderilmez. Sonra DNS soruları DoH çözümleyicilerinize, kayıt sorgusu kayıt kuruluşunun RDAP sunucusuna gider; Certificate Transparency yalnızca Sertifikalar kartından sorulur.',
+  'dov.privacy': 'Özeti oluştur’a basana kadar hiçbir şey gönderilmez: sonra DNS soruları DoH çözümleyicilerinize, tek bir RDAP sorgusu da kayıt kuruluşuna gider.',
   'dov.linkPrompt': 'Bir bağlantıdan açıldı: {domain} için Özeti oluştur’a basın. Henüz hiçbir şey gönderilmedi.',
-  'dov.emptyTitle': 'Bir alan adına dair her şey tek sayfada',
-  'dov.emptyBody': 'Kayıt ve bitiş tarihi, DNS’ini ve e-postasını kimin barındırdığı, web sitesini neyin sunduğu, hangi CA’ların sertifika verebileceği, TXT kayıtlarının doğruladığı hizmetler ve sağlık puanı — taşıma ya da devralma için, daha ayrıntılı araca bağlantılarla.',
+  'dov.emptyLine': 'Sorguları geldikçe dolan kartlar; her birinde daha ayrıntılı araca bir bağlantı var.',
+  'dov.status.na': '{count} kart okunamadı',
   'dov.progress': '{domain} özeti oluşturuluyor',
   'dov.progressCount': '{done}/{total} sorgu',
   'dov.builtAt': 'Oluşturuldu: {time}',
@@ -491,7 +495,7 @@ export function mount(container, ctx) {
   const na = (status) => NaMark([status]);
   const hostList = (hosts, render = mono) => h('span', { class: 'dov-list' }, hosts.map((x) => h('span', { class: 'dov-list-item' }, render(x))));
 
-  /* --- form ------------------------------------------------------------------------------ */
+  /* --- region 2: the input (ui/template.js ToolInput) ----------------------------------- */
   const nameField = textInput({
     label: t('dov.domain'),
     value: initialName,
@@ -499,34 +503,51 @@ export function mount(container, ctx) {
     mono: true,
     className: 'dov-name',
     attrs: { 'data-role': 'dov-name', 'data-shortcut': 'focus', inputmode: 'url', enterkeyhint: 'go' },
+    onInput: () => syncRunBar(),
     onEnter: () => start()
   });
-  const runBtn = Button({ label: t('dov.run'), icon: 'id-card', variant: 'primary', dataset: { action: 'dov-run', shortcut: 'submit' }, onClick: () => start() });
-  const stopBtn = Button({ label: t('common.stop'), icon: 'stop', dataset: { action: 'dov-stop', shortcut: 'cancel' }, onClick: () => stop() });
-  stopBtn.hidden = true;
-  const promptEl = h('div', { class: 'dov-prompt' });
-  const formCard = h('div', { class: 'card dov-form-card' },
-    h('div', { class: 'card-body stack' },
-      h('div', { class: 'dov-form' }, nameField.el, h('div', { class: 'dov-buttons' }, stopBtn, runBtn)),
-      h('p', { class: 'muted text-sm dov-sends' }, t('dov.sends')),
-      promptEl));
+  const runBar = RunBar({
+    label: t('dov.run'),
+    dataset: { action: 'dov-run', shortcut: 'submit' },
+    stopDataset: { action: 'dov-stop', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => stop(),
+    hasValue: () => !!nameField.value.trim()
+  });
+  const input = ToolInput({
+    className: 'dov-form-card',
+    fieldsClass: 'dov-form',
+    label: t('nav.domain'),
+    primary: nameField.el,
+    run: runBar,
+    privacy: PrivacyNote({ text: t('dov.privacy'), className: 'dov-sends' })
+  });
 
-  /* --- results skeleton ------------------------------------------------------------------ */
+  /* --- regions 4 and 8: the ready prompt, the result header, the cards -------------------- */
   const progress = ProgressBar({ format: (v, max) => t('dov.progressCount', { done: formatNumber(v), total: formatNumber(max) }) });
-  progress.el.hidden = true;
-  const emptyEl = h('div', { class: 'card dov-empty' }, EmptyState({ icon: 'id-card', title: t('dov.emptyTitle'), message: t('dov.emptyBody') }));
-  const headEl = h('div', { class: 'dov-head-wrap' });
+  /** A shared link waits for a click ("Opened from a link …"): above the result header, or in its place. */
+  const prompt = ResultHeader({ className: 'result-ready dov-prompt' });
+  prompt.setState('ready');
+  const promptSlot = h('div', { class: 'dov-prompt-slot' });
+  /** The overview's result header: in the page only while there is an overview (its `.dov-head` says so). */
+  const head = ResultHeader({ className: 'dov-head' });
+  const headSlot = h('div', { class: 'dov-head-wrap' });
+  const emptyEl = h('div', { class: 'dov-empty' }, EmptyState({
+    icon: 'id-card',
+    message: t('dov.emptyLine'),
+    checks: PASSPORT_CARDS.map((c) => t(`dov.card.${c}`))
+  }));
   const lookalikeSlot = h('div', { class: 'dov-lookalike' });
   const slots = Object.fromEntries(PASSPORT_CARDS.map((c) => [c, h('div', { class: 'dov-slot', dataset: { card: c } })]));
   // No part of the form: Ctrl/Cmd+Enter on a card's button starts no new build.
-  const results = h('div', { class: 'stack-lg dov-results', hidden: true, dataset: { shortcutScope: 'results' } },
-    headEl,
+  const results = h('div', { class: 'dov-results', hidden: true, dataset: { shortcutScope: 'results' } },
     h('div', { class: 'dov-grid' }, PASSPORT_CARDS.map((c) => slots[c])),
     lookalikeSlot);
-  container.append(h('div', { class: 'stack-lg dov-view' }, formCard, progress, emptyEl, results));
+  container.append(h('div', { class: 'dov-view' }, input.el, promptSlot, headSlot, emptyEl, results, runBar.float));
+  ctx.onCleanup(() => runBar.dispose());
 
-  /** The overview's summary button (disabled while a build runs). */
-  let summary = null;
+  /** The overview's actions (ResultActions: Copy summary, Report, Copy link), disabled while a build runs. */
+  let actions = null;
 
   /* --- rendering ---------------------------------------------------------------------- */
   // The health card leaves the workspace's accepted risks out, read now (lib/waivers.js), as Domain Health does.
@@ -535,42 +556,86 @@ export function mount(container, ctx) {
     return passportCards(current ? current.raw : {}, { now, waivers: readWaivers(ctx.state.workspaceData('waivers'), { now }) });
   };
 
-  function renderHead() {
-    // The head redrawn under the keyboard focus (a Retry landed after the build) keeps it on the
-    // same button, like a card (renderCard).
-    const old = headEl.firstElementChild;
-    const focused = old && old.contains(document.activeElement) ? document.activeElement : null;
-    const key = focused ? focusKey(focused, old) : null;
-    clear(headEl);
-    if (!current) return;
-    const { domain, host } = current;
-    summary = SummaryButton({
-      kind: 'domain',
-      facts: () => (current && current.at && !current.controller ? passportSummaryFacts(cardsOf(), { domain: current.domain, host: current.host, at: current.at }) : null),
-      url: () => (current ? ctx.shareUrl(permalinkParams('domain', { name: current.domain })) : null),
-      disabled: !!current.controller
-    });
-    const meta = current.controller
-      ? null
-      : h('span', { class: 'muted text-xs', title: current.at ? formatDateTime(current.at) : null },
-        current.stopped ? t('dov.stoppedAt', { time: formatRelative(current.at) }) : t('dov.builtAt', { time: formatRelative(current.at) }));
-    headEl.append(h('div', { class: 'card dov-head', dataset: { domain } },
-      h('div', { class: 'dov-head-main' },
-        // Read as the whole sentence ("example.com özeti" in Turkish), shown as the name alone.
-        h('h2', { class: 'dov-head-title' }, h('span', { class: 'sr-only' }, t('dov.resultsTitle', { domain })),
-          h('span', { class: 'mono dov-break', attrs: { 'aria-hidden': 'true' } }, domain)),
-        host ? h('p', { class: 'text-sm muted dov-reduced' }, t('dov.reduced', { domain, host })) : null,
-        meta),
-      h('div', { class: 'dov-head-actions' }, summary, ReportButton(ctx, 'domain', () => current && current.at && !current.controller && { cards: cardsOf(), domain: current.domain, host: current.host, at: current.at }, { disabled: !!current.controller }))));
-    if (focused) {
-      const el = headEl.firstElementChild;
-      const target = key && el.querySelector(key);
-      if (target && !target.disabled) target.focus({ preventScroll: true });
-      else {
-        el.setAttribute('tabindex', '-1');
-        el.focus({ preventScroll: true });
-      }
+  /** The run bar and the input follow the state: compact once a build starts, "Run again" while the box asks for the overview on screen. */
+  function syncRunBar() {
+    const state = templateState({ running: !!(current && current.controller), result: !!current, ready: !promptSlot.hidden && !!promptSlot.firstChild });
+    const box = passportDomain(nameField.value);
+    runBar.setState(state);
+    runBar.setRerun(state === 'done' && !!box && box.domain === current.domain);
+    input.setCompact(inputCompact(state));
+  }
+
+  /** Bring a card into view with the keyboard focus on it (its Retry, when it has one): a status item's press. */
+  function focusCard(cardId) {
+    const card = slots[cardId] && slots[cardId].querySelector('.dov-card');
+    if (!card) return;
+    const retry = card.querySelector('[data-action="retry-source"]');
+    card.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
+    if (retry) retry.focus({ preventScroll: true });
+    else {
+      card.setAttribute('tabindex', '-1');
+      card.focus({ preventScroll: true });
     }
+  }
+
+  function renderHead() {
+    if (!current) {
+      head.el.remove();
+      return;
+    }
+    if (!head.el.isConnected) headSlot.append(head.el);
+    const { domain, host } = current;
+    const running = !!current.controller;
+    const cards = cardsOf();
+    head.el.dataset.domain = domain;
+    head.setState(running ? 'running' : 'done');
+    head.set('title', ResultTitle({
+      running,
+      text: withSubject((p) => t(running ? 'dov.progress' : 'dov.resultsTitle', p), domain, { name: 'domain', className: 'dov-break' })
+    }));
+    const hc = cards.health;
+    head.set('key', !running && hc.state === 'ready' && hc.grade
+      ? h('span', { class: 'result-score', title: t('dov.health.score', { score: hc.score }) },
+        h('span', { class: 'result-grade', dataset: { severity: hc.light } }, hc.grade),
+        h('span', { class: 'result-score-value num' }, String(hc.score)), h('span', { class: 'result-score-max' }, '/100'))
+      : null);
+    head.set('meta', [
+      host ? h('span', { class: 'dov-reduced' }, t('dov.reduced', { domain, host })) : null,
+      !running && current.at ? RelativeTime(current.at, {
+        className: 'dov-built',
+        text: t(current.stopped ? 'dov.stoppedAt' : 'dov.builtAt', { time: formatRelative(current.at) })
+      }) : null
+    ]);
+    head.set('progress', running ? progress.el : null);
+    const status = !running ? passportStatus(cards).map((item) => ({
+      ...item,
+      text: item.key === 'na' ? t('dov.status.na', { count: item.count }) : t(`dov.health.count.${item.key}`, { count: item.count }),
+      onPress: () => focusCard(item.key === 'na' ? item.cards[0] : 'health')
+    })) : [];
+    head.set('status', status.length ? StatusSummary({ items: status }).el : null);
+    if (actions) actions.dispose();
+    const summary = SummaryButton({
+      kind: 'domain',
+      plainLabel: t('result.plainTitle'),
+      facts: () => (current && current.at && !current.controller ? passportSummaryFacts(cardsOf(), { domain: current.domain, host: current.host, at: current.at }) : null),
+      url: () => (current ? ctx.shareUrl(permalinkParams('domain', { name: current.domain })) : null)
+    });
+    actions = ResultActions({
+      summary,
+      report: ReportButton(ctx, 'domain', () => current && current.at && !current.controller && { cards: cardsOf(), domain: current.domain, host: current.host, at: current.at }),
+      // Copy link shares the overview on screen (not the box, which may hold a carried name).
+      link: () => (current ? ctx.shareUrl({ name: current.domain }) : null)
+    });
+    actions.setDisabled(running);
+    head.set('actions', actions.el);
+    head.set('related', running ? null : RelatedLinks({
+      self: 'domain',
+      links: [
+        { view: 'health', icon: 'activity', label: t('nav.health'), href: ctx.href('health', { domain }) },
+        { view: 'lookup', icon: 'search', label: t('nav.lookup'), href: ctx.href('lookup', { name: domain, type: 'A,AAAA,MX,NS,TXT,SOA,CAA,HTTPS' }) },
+        { view: 'subdomains', icon: 'layers', label: t('nav.subdomains'), href: ctx.href('subdomains', { domain }) }
+      ]
+    }));
   }
 
   /** The "Open in <tool>" link of a card. */
@@ -660,11 +725,12 @@ export function mount(container, ctx) {
 
   function renderAll() {
     const has = !!current;
-    emptyEl.hidden = has;
+    emptyEl.hidden = has || !promptSlot.hidden;
     results.hidden = !has;
     renderHead();
     if (has) renderCards();
     renderLookalike();
+    syncRunBar();
   }
 
   /* --- lookalike domains (ui/lookalike-panel.js, loaded on the first click) ---------------- */
@@ -1022,15 +1088,23 @@ export function mount(container, ctx) {
    */
   let carried = restored ? (typeof restored.carried === 'string' ? restored.carried : null) : (isFillOnly(ctx.params) && routeName) || null;
 
-  /** "Opened from a link …": the box holds a name no overview on screen is about, and nothing runs. */
+  /**
+   * "Opened from a link …" (the template's ready state, DESIGN §5.2): the box holds a name no
+   * overview on screen is about, and nothing runs.
+   */
   function renderPrompt() {
-    clear(promptEl);
     const p = passportDomain(nameField.value);
     const linked = linkName ? passportDomain(linkName) : null;
     const fromRoute = !!p && !!linked && linked.domain === p.domain;
-    if (!fromRoute || (current && (current.controller || current.domain === p.domain))) return;
-    promptEl.append(Alert({ variant: 'info', compact: true, message: t('dov.linkPrompt', { domain: p.domain }) }));
-    promptEl.firstChild.dataset.prompt = 'link';
+    const show = fromRoute && !(current && (current.controller || current.domain === p.domain));
+    clear(promptSlot);
+    promptSlot.hidden = !show;
+    if (show) {
+      prompt.set('title', ResultTitle({ icon: 'link', text: h('span', { dataset: { prompt: 'link' } }, t('dov.linkPrompt', { domain: p.domain })) }));
+      promptSlot.append(prompt.el);
+    }
+    emptyEl.hidden = !!current || show;
+    syncRunBar();
   }
 
   /** A name from a route: into the box while it is empty or holds the last build or the last carried name. */
@@ -1045,19 +1119,12 @@ export function mount(container, ctx) {
 
   /* --- run ------------------------------------------------------------------------------ */
   function setRunning(on) {
-    const hadFocus = document.activeElement === (on ? runBtn : stopBtn);
-    runBtn.hidden = on;
-    stopBtn.hidden = !on;
-    nameField.input.readOnly = on;
-    if (summary) summary.setDisabled(on);
-    ctx.setBusy(on);
     // The keyboard focus follows the button it was on (Build ⇄ Stop), never falling to <body>.
-    if (hadFocus) (on ? stopBtn : runBtn).focus();
-  }
-
-  /** "Copy link" shares the overview on screen (not the box, which may hold a carried name). */
-  function setShareAction() {
-    ctx.setActions(CopyButton(() => ctx.shareUrl(current ? { name: current.domain } : ctx.params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
+    runBar.setRunning(on);
+    nameField.input.readOnly = on;
+    if (actions) actions.setDisabled(on);
+    ctx.setBusy(on);
+    syncRunBar();
   }
 
   function abortAll() {
@@ -1095,13 +1162,11 @@ export function mount(container, ctx) {
       retrying: new Set(), retryControllers: new Set(), ct: null, ctController: null, healthStale: false
     };
     current = state;
-    setShareAction();
-    renderPrompt();
-    renderAll();
-    progress.el.hidden = false;
     progress.setVariant('default');
     progress.setLabel(t('dov.progress', { domain }));
     progress.set(0, PASSPORT_LOOKUPS.length);
+    renderPrompt();
+    renderAll();
     setRunning(true);
     let done = 0;
     try {
@@ -1125,11 +1190,9 @@ export function mount(container, ctx) {
       if (current !== state) return;
       state.at = new Date();
       progress.done(t('common.done'));
-      setTimeout(() => { if (current === state && !state.controller) progress.el.hidden = true; }, 1200);
       announce(t('dov.done', { domain }));
     } catch (err) {
       if (current !== state) return;
-      progress.el.hidden = true;
       state.at = new Date();
       if (err && err.name === 'AbortError') {
         state.stopped = true;
@@ -1284,7 +1347,6 @@ export function mount(container, ctx) {
       domain: r.domain, host: r.host || null, raw: r.raw, controller: null, at: r.at ? new Date(r.at) : new Date(), stopped: !!r.stopped,
       retrying: new Set(), retryControllers: new Set(), ct: null, ctController: null
     };
-    setShareAction();
   }
   // A route's name only fills the box: a shared link, a carried target (`run=0`) or a nav link
   // alike. Nothing is sent before Build overview.
@@ -1297,7 +1359,11 @@ export function mount(container, ctx) {
   ctx.onCleanup(ctx.state.subscribe((change) => {
     const workspace = change.key === 'workspace' || change.key === 'cleared';
     const waivers = change.key === 'workspaceData' && !!(change.value && Array.isArray(change.value.parts) && change.value.parts.includes('waivers'));
-    if ((workspace || waivers) && current) renderCard('health');
+    if ((workspace || waivers) && current) {
+      renderCard('health');
+      // The head's grade and counts leave the accepted risks out too.
+      if (!current.controller) renderHead();
+    }
   }));
 
   active = {

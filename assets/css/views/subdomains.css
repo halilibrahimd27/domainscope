@@ -6,91 +6,15 @@
  * Colours come from the design tokens only, so light and dark themes follow automatically.
  */
 
-/* ---- hero ------------------------------------------------------------------ */
+/* ---- the input (ui/template.js ToolInput: .tool-input.sub-hero) -------------------- */
 
-.sub-hero {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 22px 24px 18px;
-  background:
-    radial-gradient(90% 120% at 0% 0%, var(--accent-soft) 0%, transparent 60%),
-    var(--surface);
+.sub-view {
+  gap: var(--stack-gap);
 }
 
-.sub-hero-head {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.sub-hero-title {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  line-height: 1.3;
-}
-
-.sub-hero-title label {
-  cursor: pointer;
-}
-
-.sub-hero-desc {
-  max-width: 78ch;
-  margin: 0;
-  font-size: 13.5px;
-  line-height: 1.5;
-  color: var(--text-2);
-}
-
-.sub-search {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: start;
-}
-
-.sub-search-box {
-  position: relative;
-  min-width: 0;
-}
-
-.sub-search-icon {
-  position: absolute;
-  top: 15px;
-  left: 15px;
-  z-index: 1;
-  color: var(--text-3);
-  pointer-events: none;
-}
-
-.sub-search-field .input {
-  height: 48px;
-  padding-left: 44px;
-  border-radius: 10px;
-  font-size: 16px;
-  box-shadow: var(--shadow-xs);
-}
-
+/* A running scan's box is read-only. */
 .sub-search-field .input:read-only {
   background: var(--surface-2);
-}
-
-.sub-search-field .field-hint {
-  margin-top: 2px;
-}
-
-.sub-search-buttons {
-  display: flex;
-}
-
-.sub-run-btn {
-  --btn-h: 48px;
-  min-width: 132px;
-  padding: 0 22px;
-  border-radius: 10px;
-  font-size: 15px;
 }
 
 .sub-scope {
@@ -98,7 +22,6 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 8px;
-  margin-top: -6px;
   color: var(--text-2);
 }
 
@@ -110,43 +33,9 @@
   display: none;
 }
 
-.sub-hero-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 24px;
-}
-
-.sub-examples {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.sub-examples-label {
-  margin-right: 2px;
-  font-size: 12.5px;
-  color: var(--text-3);
-}
-
-.sub-example {
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--surface);
-  color: var(--accent-text);
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background var(--dur), border-color var(--dur);
-}
-
-.sub-example:hover {
-  border-color: var(--accent-soft-border);
-  background: var(--accent-soft);
+/* A shared link's ready prompt (the template's ready state) stands in for the empty state. */
+.sub-link-prompt:not([hidden]) ~ .sub-intro {
+  display: none;
 }
 
 .sub-wordlist .check-text {
@@ -386,164 +275,28 @@
   font-weight: 600;
 }
 
-/* ---- intro (before the first scan) ---------------------------------------- */
+/* ---- the empty result region (ui/template.js EmptyState in .sub-intro) ------------- */
 
-.sub-intro {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 20px 24px;
+/* "Where do the subdomains come from?": the long explanation, one click away. */
+.sub-intro-details {
+  max-width: 80ch;
 }
 
-.sub-intro-title {
+.sub-intro-details > .disclosure-summary {
+  padding: 4px 0;
+  font-size: var(--fs-sm);
+}
+
+.sub-intro-text p {
   margin: 0;
-  font-size: 16px;
-  font-weight: 700;
-}
-
-.sub-intro-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.sub-intro-item {
-  display: flex;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-2);
-}
-
-.sub-intro-icon {
-  display: inline-grid;
-  place-items: center;
-  flex: none;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  background: var(--accent-soft);
-  color: var(--accent-text);
-}
-
-.sub-intro-item[data-source="dns"] .sub-intro-icon {
-  background: var(--k-platform-bg);
-  color: var(--k-platform);
-}
-
-.sub-intro-item[data-source="dnsfirst"] {
-  border-color: var(--ok-border);
-}
-
-.sub-intro-item[data-source="dnsfirst"] .sub-intro-icon {
-  background: var(--ok-bg);
-  color: var(--ok);
-}
-
-.sub-intro-text {
-  min-width: 0;
-}
-
-.sub-intro-item-title {
-  margin: 1px 0 4px;
-  font-size: 13.5px;
-  font-weight: 700;
-}
-
-.sub-intro-item-body {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.5;
   color: var(--text-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
 }
 
-.sub-intro-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--text-3);
-}
-
-.sub-intro-foot a {
-  font-weight: 600;
-}
-
-.sub-intro-limits {
-  flex-wrap: nowrap;
-  align-items: flex-start;
-}
-
-.sub-intro-limits > svg {
-  flex: none;
-  margin-top: 2px;
-}
-
-.sub-link-prompt[hidden] {
-  display: none;
-}
-
-/* ---- run panel -------------------------------------------------------------- */
-
-.sub-run {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px 18px;
-}
-
-.sub-run-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 8px 12px;
-}
-
-.sub-run-icon {
-  display: inline-grid;
-  place-items: center;
-  flex: none;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  background: var(--accent-soft);
-  color: var(--accent-text);
-}
-
-.sub-run[data-status="done"] .sub-run-icon {
-  background: var(--ok-bg);
-  color: var(--ok);
-}
-
-.sub-run[data-status="cancelled"] .sub-run-icon,
-.sub-run[data-status="error"] .sub-run-icon {
-  background: var(--warn-bg);
-  color: var(--warn);
-}
-
-.sub-run-titles {
-  flex: 1 1 12rem;
-  min-width: 0;
-}
-
-/* Copy summary: at the end of the header line, under the title where the line is too narrow */
-.sub-run-head > .sum-actions {
-  margin-left: auto;
-}
-
-.sub-run-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 700;
-  overflow-wrap: anywhere;
-}
+/* ---- the run's result header (ui/template.js ResultHeader: .result-head.sub-run) -------- */
 
 .sub-run-meta {
-  margin-top: 2px;
-  font-size: 12.5px;
   color: var(--text-3);
 }
 
@@ -878,16 +631,11 @@
   gap: 8px 16px;
 }
 
-.sub-actions-main,
-.sub-actions-files {
+.sub-actions-main {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 12px;
-}
-
-.sub-actions-files {
-  gap: 6px;
 }
 
 .sub-act-count {
@@ -903,20 +651,6 @@
 
 .sub-resolving-only .check-text {
   font-size: 12.5px;
-}
-
-.sub-stats {
-  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
-}
-
-.sub-stats .stat-top {
-  align-items: flex-start;
-}
-
-/* Labels such as "Other CDN / platform" wrap instead of being cut off. */
-.sub-stats .stat-label {
-  line-height: 1.3;
-  white-space: normal;
 }
 
 .sub-summary:empty {
@@ -1417,19 +1151,23 @@
   min-width: 0;
 }
 
+/* The toolbar's Show select (DESIGN §5.1): its label beside it, not above. */
 .sub-filter {
-  max-width: 100%;
-  overflow-x: auto;
-  scrollbar-width: none;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
 }
 
-.sub-filter::-webkit-scrollbar {
-  display: none;
-}
-
-.sub-filter .seg-btn {
-  flex: none;
+.sub-filter .field-label {
+  color: var(--text-2);
+  font-weight: var(--fw-medium);
   white-space: nowrap;
+}
+
+.sub-filter .select {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .sub-wild-toggle .check-text {
@@ -1546,55 +1284,7 @@
   color: var(--k-dangling);
 }
 
-/* Hand-over to SSL Targets */
-.sub-cta {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 16px 18px;
-  border-left: 3px solid var(--accent);
-}
-
-.sub-cta-icon {
-  display: inline-grid;
-  place-items: center;
-  flex: none;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: var(--accent-soft);
-  color: var(--accent-text);
-}
-
-.sub-cta-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.sub-cta-title {
-  margin: 0 0 3px;
-  font-size: 14.5px;
-  font-weight: 700;
-}
-
-.sub-cta-body {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text-2);
-}
-
-.sub-cta-btn {
-  flex: none;
-}
-
 /* ---- responsive --------------------------------------------------------------- */
-
-@media (max-width: 1100px) {
-  .sub-intro-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
 
 @media (max-width: 800px) {
   .sub-adv {
@@ -1603,49 +1293,6 @@
 }
 
 @media (max-width: 640px) {
-  .sub-hero {
-    padding: 16px 14px 14px;
-    gap: 12px;
-  }
-
-  .sub-hero-title {
-    font-size: 17px;
-  }
-
-  /* The page description already says what this is; keep the search box above the fold. */
-  .sub-hero-desc {
-    display: none;
-  }
-
-  .sub-search {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .sub-run-btn {
-    width: 100%;
-  }
-
-  .sub-search-buttons {
-    display: block;
-  }
-
-  .sub-hero-foot {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .sub-intro {
-    padding: 16px 14px;
-  }
-
-  .sub-run {
-    padding: 14px;
-  }
-
-  .sub-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .sub-tech {
     padding: 10px 12px;
   }
@@ -1672,21 +1319,13 @@
     flex-wrap: wrap;
   }
 
-  .sub-cta {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .sub-cta-btn {
-    width: 100%;
-  }
-
-  /* The filter segmented control fills the row and scrolls sideways instead of clipping its last
-     button; a right-edge fade hints there is more. */
+  /* The Show select takes the toolbar's row. */
   .sub-filter {
     width: 100%;
-    -webkit-mask-image: linear-gradient(90deg, #000 92%, transparent);
-    mask-image: linear-gradient(90deg, #000 92%, transparent);
+  }
+
+  .sub-filter .select {
+    flex: 1;
   }
 
   /* Stacked card rows: on a phone the results table would need to scroll sideways and push the
@@ -2056,13 +1695,11 @@
   }
 }
 
-/* Print (style.css hides the shell and every control): leave out the search box, the intro and the
-   hand-over card; a host name, the row's identity, never breaks inside. */
+/* Print (style.css hides the shell, every control and the template's input and empty state): leave
+   out the ready prompt too; a host name, the row's identity, never breaks inside. */
 @media print {
-  .sub-hero,
   .sub-intro,
-  .sub-link-prompt,
-  .sub-cta {
+  .sub-link-prompt {
     display: none;
   }
 

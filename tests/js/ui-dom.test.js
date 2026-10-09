@@ -5,7 +5,7 @@
  * no HTML-injection sinks). No network, no browser.
  */
 
-import { test, describe, mock } from 'node:test';
+import { test, describe, mock, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -18,7 +18,8 @@ import * as dom from '../../assets/js/ui/dom.js';
 import { sanitizeFilename, timestampedName, jsonReplacer } from '../../assets/js/ui/download.js';
 import {
   compareValues, ipSortValue, normalizeSearch, csvCell, rowsToCsv, decodeText, describeError, ICON_NAMES, KINDS, CliText,
-  folderOrder, Tag, Badge, Chip, Alert, TAG_VARIANTS, overflowEdges, MenuButton, menuPlacement, menuStep, menuTypeAhead, RelativeTime
+  folderOrder, Tag, Badge, Chip, Alert, TAG_VARIANTS, overflowEdges, MenuButton, menuPlacement, menuStep, menuTypeAhead, RelativeTime,
+  CopyButton
 } from '../../assets/js/ui/components.js';
 import {
   parseRoute, buildRoute, sameParams, sameSearch, hasRepeatedKeys, VIEWS, REPO_URL, DEFAULT_VIEW
@@ -28,6 +29,11 @@ import { HttpError } from '../../assets/js/lib/util.js';
 import { WORDLIST_SMALL } from '../../assets/js/lib/wordlist.js';
 import { NAV_GROUPS } from '../../assets/js/lib/shellnav.js';
 import { clearedMessage } from '../../assets/js/ui/workspace-ui.js';
+import {
+  EmptyState, ExampleChips, MetricStrip, NextSteps, OptionsDisclosure, PrivacyNote, RelatedLinks, ResultActions, ResultHeader,
+  ResultTitle, RunBar, STATUS_ICONS, StatusSummary, ToolInput, withSubject
+} from '../../assets/js/ui/template.js';
+import { SummaryButton } from '../../assets/js/ui/summary-button.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 /** The Subdomains view's source, then its run's progress and results (ui/subdomains-run.js, loaded with the first scan). */
@@ -2451,8 +2457,9 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     assert.ok(start.indexOf('session.tab = null;') !== -1 && start.indexOf('session.tab = null;') < start.indexOf("ctx.setParams({ domain: v.domains.join(',') });"));
     // update(): an edited `tab=` opens that tab without a re-mount.
     assert.match(src, /const tab = ui \? runUi\.parseSubTab\(params\.tab\) : null;\s*if \(tab\) ui\.showTab\(tab\);/);
-    // A stat card filters the hosts and hands the focus to the Hosts tab (the card hides with its panel).
-    assert.match(src, /function pickFilter\(f\) \{\s*setFilter\(f\);\s*showTab\('hosts', \{ focus: true \}\);/);
+    // A status item of the run's header filters the hosts and opens their tab (a second press shows
+    // every host again); the focus stays on the item, which never hides with a panel.
+    assert.match(src, /function pressStatus\(item\) \{\s*if \(item\.tab === 'sources'\) \{\s*showTab\('sources'\);\s*return;\s*\}\s*setFilter\(item\.filter === 'all' \|\| session\.filter === item\.filter \? 'all' : item\.filter\);\s*showTab\('hosts'\);/);
     // A click on the tab already shown is a choice (the component fires onChange only for a change) …
     assert.match(src, /tabs\.el\.querySelector\('\[role="tablist"\]'\)\.addEventListener\('click', \(event\) => \{[^}]*if \(tab && session\.tab === null\) remember\(tab\.dataset\.tab\);/);
     // … and an automatic move held back under the focus happens once the focus has left the tabs.
@@ -2464,7 +2471,8 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     // the wait note and the per-source lines sits in the always-visible run header.
     const src = await subdomainsSource();
     assert.match(src, /const sourceLive = h\('div', \{ class: 'sr-only sub-src-live', attrs: \{ 'aria-live': 'polite' \} \}\);/);
-    assert.match(src, /h\('div', \{ class: 'sub-run-titles' \}, title, meta\),\s*summary\.el,\s*NotifyButton\(\(\) => run\.job \|\| null\)\),\s*progress, zoneBanner, handoffBanner, localeBanner\.el, notice, sourceLive\);/, 'in the run header');
+    // In the run header (ui/template.js ResultHeader), outside its notes, which hide while none shows.
+    assert.match(src, /head\.set\('notes', \[zoneBanner, handoffBanner, localeBanner\.el, notice\]\);\s*\/\/[^\n]*\n\s*head\.el\.append\(sourceLive\);/, 'in the run header');
     assert.match(src, /const sourceWaitNote = h\('div', \{ class: 'sub-src-wait', hidden: true \}\);/, 'the note in the panel is no live region of its own');
     assert.match(src, /const sourceNotes = h\('div', \{ class: 'sub-src-notes' \}\);/);
     // Each line once: every source event redraws the panel's lines.
@@ -3005,5 +3013,715 @@ describe('topology notes and card (ui/topology.js)', () => {
     } finally {
       i18n.setLang('en');
     }
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* ui/template.js — the page template (docs/DESIGN.md §5, §7, §8 phase 2)   */
+/* ------------------------------------------------------------------------ */
+
+// RunBar (Run and Stop in one slot, "Run again", the phone's floating copy), ToolInput (compact,
+// Edit), ResultHeader (parts that hide, the kept-result slot, the focus kept across a redraw),
+// StatusSummary (order, zeros, toggles), ResultActions (the fixed order, Export as a button or a
+// menu, the phone's "⋯"), NextSteps, RelatedLinks, MetricStrip (zeros folded), EmptyState and the
+// small parts; and the components.js / summary-button.js options the template added (MenuButton
+// showLabel, CopyButton icon, SummaryButton plainLabel) — against a fake document of their own,
+// richer than the one above (classes, selectors, focus).
+describe('ui/template.js — the page template', () => {
+  /* ---- a fake document: just enough for the template --------------------------------------- */
+
+  class TplNode {
+    constructor(nodeType) {
+      this.nodeType = nodeType;
+      this.childNodes = [];
+      this.parentNode = null;
+    }
+
+    appendChild(child) {
+      if (child.nodeType === 11) {
+        for (const c of [...child.childNodes]) this.appendChild(c);
+        child.childNodes = [];
+        return child;
+      }
+      if (child.parentNode) child.parentNode.removeChild(child);
+      child.parentNode = this;
+      this.childNodes.push(child);
+      return child;
+    }
+
+    removeChild(child) {
+      const i = this.childNodes.indexOf(child);
+      if (i !== -1) this.childNodes.splice(i, 1);
+      child.parentNode = null;
+      return child;
+    }
+
+    append(...nodes) {
+      for (const n of nodes) this.appendChild(typeof n === 'string' ? new TplText(n) : n);
+    }
+
+    prepend(...nodes) {
+      const rest = this.childNodes.splice(0);
+      this.append(...nodes);
+      for (const n of rest) this.appendChild(n);
+    }
+
+    replaceChildren(...nodes) {
+      for (const c of this.childNodes.splice(0)) c.parentNode = null;
+      this.append(...nodes);
+    }
+
+    replaceWith(node) {
+      const parent = this.parentNode;
+      if (!parent) return;
+      const i = parent.childNodes.indexOf(this);
+      if (node.parentNode) node.parentNode.removeChild(node);
+      parent.childNodes.splice(i, 1, node);
+      node.parentNode = parent;
+      this.parentNode = null;
+    }
+
+    remove() {
+      if (this.parentNode) this.parentNode.removeChild(this);
+    }
+
+    get firstChild() {
+      return this.childNodes[0] || null;
+    }
+
+    contains(node) {
+      for (let n = node; n; n = n.parentNode) if (n === this) return true;
+      return false;
+    }
+
+    get isConnected() {
+      return tplDocument.body.contains(this);
+    }
+
+    get textContent() {
+      return this.childNodes.map((c) => c.textContent).join('');
+    }
+
+    set textContent(v) {
+      this.replaceChildren(new TplText(String(v)));
+    }
+  }
+
+  class TplText extends TplNode {
+    constructor(data) {
+      super(3);
+      this.data = data;
+    }
+
+    get textContent() {
+      return this.data;
+    }
+  }
+
+  const tplCamel = (name) => name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+
+  /** One compound selector: a tag, `.class`es and `[attr]` / `[attr="value"]` (data-* read from dataset). */
+  function tplMatches(el, sel) {
+    const m = /^([a-z0-9-]*)((?:\.[\w-]+|\[[^\]]+\])*)$/i.exec(sel.trim());
+    if (!m) throw new Error(`fake DOM: unsupported selector ${sel}`);
+    if (m[1] && el.tagName !== m[1].toUpperCase()) return false;
+    for (const part of m[2].match(/\.[\w-]+|\[[^\]]+\]/g) || []) {
+      if (part.startsWith('.')) {
+        if (!el.classList.contains(part.slice(1))) return false;
+        continue;
+      }
+      const a = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(part);
+      const name = a[1];
+      const value = name.startsWith('data-') ? el.dataset[tplCamel(name.slice(5))] : el.getAttribute(name);
+      if (value === undefined || value === null) return false;
+      if (a[2] !== undefined && String(value) !== a[2]) return false;
+    }
+    return true;
+  }
+
+  class TplElement extends TplNode {
+    constructor(tag) {
+      super(1);
+      this.tagName = tag.toUpperCase();
+      this.attributes = new Map();
+      this.dataset = {};
+      this.styleProps = new Map();
+      this.style = { setProperty: (k, v) => this.styleProps.set(k, v), removeProperty: (k) => this.styleProps.delete(k) };
+      this.hidden = false;
+      this.disabled = false;
+      this.value = '';
+      this.listeners = {};
+    }
+
+    setAttribute(k, v) {
+      this.attributes.set(k, String(v));
+    }
+
+    setAttributeNS(_ns, k, v) {
+      this.attributes.set(k, String(v));
+    }
+
+    getAttribute(k) {
+      return this.attributes.has(k) ? this.attributes.get(k) : null;
+    }
+
+    hasAttribute(k) {
+      return this.attributes.has(k);
+    }
+
+    removeAttribute(k) {
+      this.attributes.delete(k);
+    }
+
+    get id() {
+      return this.getAttribute('id') || '';
+    }
+
+    addEventListener(type, fn) {
+      (this.listeners[type] ||= []).push(fn);
+    }
+
+    removeEventListener(type, fn) {
+      this.listeners[type] = (this.listeners[type] || []).filter((x) => x !== fn);
+    }
+
+    click() {
+      if (this.disabled) return;
+      const event = { type: 'click', target: this, currentTarget: this, preventDefault() {}, stopPropagation() {} };
+      for (const fn of this.listeners.click || []) fn(event);
+    }
+
+    focus() {
+      tplDocument.activeElement = this;
+    }
+
+    getBoundingClientRect() {
+      return { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+    }
+
+    get classList() {
+      const get = () => (this.getAttribute('class') || '').split(/\s+/).filter(Boolean);
+      const set = (list) => this.setAttribute('class', list.join(' '));
+      return {
+        contains: (c) => get().includes(c),
+        add: (...cs) => set([...get(), ...cs.filter((c) => !get().includes(c))]),
+        remove: (...cs) => set(get().filter((x) => !cs.includes(x))),
+        toggle: (c, on = !get().includes(c)) => {
+          set(on ? [...get().filter((x) => x !== c), c] : get().filter((x) => x !== c));
+          return on;
+        }
+      };
+    }
+
+    matches(selector) {
+      return selector.split(',').some((s) => tplMatches(this, s));
+    }
+
+    querySelectorAll(selector) {
+      const out = [];
+      const walk = (n) => {
+        for (const c of n.childNodes) {
+          if (c.nodeType !== 1) continue;
+          if (c.matches(selector)) out.push(c);
+          walk(c);
+        }
+      };
+      walk(this);
+      return out;
+    }
+
+    querySelector(selector) {
+      return this.querySelectorAll(selector)[0] || null;
+    }
+
+    closest(selector) {
+      for (let n = this; n && n.nodeType === 1; n = n.parentNode) if (n.matches(selector)) return n;
+      return null;
+    }
+  }
+
+  const tplDocument = {
+    activeElement: null,
+    body: new TplElement('body'),
+    documentElement: new TplElement('html'),
+    createElement: (tag) => new TplElement(tag),
+    createElementNS: (_ns, tag) => new TplElement(tag),
+    createTextNode: (s) => new TplText(s),
+    createDocumentFragment: () => new TplNode(11)
+  };
+
+  let tplPrevious;
+  before(() => {
+    tplPrevious = globalThis.document;
+    globalThis.document = tplDocument;
+    i18n.setLang('en');
+  });
+  after(() => {
+    if (tplPrevious === undefined) delete globalThis.document;
+    else globalThis.document = tplPrevious;
+  });
+  afterEach(() => {
+    tplDocument.activeElement = null;
+    tplDocument.body.replaceChildren();
+    delete globalThis.matchMedia;
+  });
+
+  /** A phone (matchMedia says the phone layout applies) for what is built inside `fn`. */
+  function tplOnPhone(fn) {
+    globalThis.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+    try {
+      return fn();
+    } finally {
+      delete globalThis.matchMedia;
+    }
+  }
+
+  const cls = (el) => el.getAttribute('class') || '';
+  const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
+
+  /* ---- small parts ---------------------------------------------------------------------------- */
+
+  describe('withSubject, ResultTitle, PrivacyNote, ExampleChips, OptionsDisclosure', () => {
+    test('withSubject draws the subject on its own, wherever the sentence puts it', () => {
+      const before = withSubject((p) => `Overview of ${p.subject}`, 'example.com');
+      assert.equal(before.length, 2);
+      assert.equal(before[0], 'Overview of ');
+      assert.match(cls(before[1]), /\bmono\b.*\bresult-subject\b/);
+      assert.equal(before[1].textContent, 'example.com');
+      const after = withSubject((p) => `${p.domain} özeti`, 'example.com', { mono: false, className: 'x', name: 'domain' });
+      assert.equal(after[0].textContent, 'example.com');
+      assert.ok(!cls(after[0]).includes('mono') && cls(after[0]).includes('x'));
+      assert.equal(after[1], ' özeti');
+      assert.equal(withSubject(() => 'No subject here', 'example.com').length, 1, 'only the subject when the sentence has no place for it');
+    });
+
+    test('ResultTitle: a verdict\'s icon (not read out), a spinner while running, then the words', () => {
+      const [mark, words] = ResultTitle({ severity: 'warn', text: 'Needs attention' });
+      assert.ok(cls(mark).includes('sev-warn') && mark.getAttribute('aria-hidden') === 'true');
+      assert.ok(mark.querySelector(`.icon-${STATUS_ICONS.warn}`), 'the warn icon');
+      assert.equal(words.textContent, 'Needs attention');
+      assert.ok(cls(ResultTitle({ running: true, severity: 'error', text: 'x' })[0]).includes('result-spinner'), 'the spinner wins');
+      assert.equal(ResultTitle({ text: 'Plain' }).length, 1, 'no icon without a severity');
+    });
+
+    test('PrivacyNote: one quiet line, an optional link to what is sent', () => {
+      const note = PrivacyNote({ text: 'Only the DoH resolvers see the name.', href: '#/about?section=sent' });
+      assert.equal(note.tagName, 'P');
+      assert.match(text(note), /^Only the DoH resolvers see the name\. What is sent$/);
+      assert.equal(note.querySelector('a.privacy-note-link').getAttribute('href'), '#/about?section=sent');
+      assert.equal(PrivacyNote({ text: 'x' }).querySelector('a'), null);
+    });
+
+    test('ExampleChips fill the form and move the focus to Run; they send nothing themselves', () => {
+      const picked = [];
+      const run = new TplElement('button');
+      const chips = ExampleChips({ examples: ['example.com', { value: 'example.org', label: 'org' }, '', null], onPick: (v) => picked.push(v), focus: () => run });
+      assert.equal(chips.getAttribute('role'), 'group');
+      assert.equal(chips.getAttribute('aria-label'), 'Try:');
+      const buttons = chips.querySelectorAll('button[data-example]');
+      assert.deepEqual(buttons.map((b) => [b.dataset.example, b.textContent]), [['example.com', 'example.com'], ['example.org', 'org']]);
+      buttons[1].click();
+      assert.deepEqual(picked, ['example.org']);
+      assert.equal(tplDocument.activeElement, run);
+    });
+
+    test('OptionsDisclosure: the summary of the choices off their default next to its title', () => {
+      let summary = 'small wordlist';
+      const opts = OptionsDisclosure({ label: 'Advanced options', summary: () => summary, children: new TplElement('div') });
+      const line = opts.el.querySelector('.options-summary');
+      assert.equal(line.textContent, 'small wordlist');
+      summary = '';
+      opts.refresh();
+      assert.equal(line.hidden, true);
+      opts.setOpen(true);
+      assert.equal(opts.el.open, true);
+    });
+  });
+
+  /* ---- RunBar ------------------------------------------------------------------------------------ */
+
+  describe('RunBar', () => {
+    test('Run and Stop take turns in one slot; the focus follows; the hooks are the view\'s', () => {
+      const calls = [];
+      const bar = RunBar({
+        label: 'Check health', dataset: { action: 'run', shortcut: 'submit' }, stopDataset: { action: 'stop', shortcut: 'cancel' },
+        onRun: () => calls.push('run'), onStop: () => calls.push('stop')
+      });
+      assert.ok(cls(bar.el).includes('run-bar'));
+      assert.deepEqual([bar.run.dataset.action, bar.run.dataset.shortcut, bar.stop.dataset.action, bar.stop.dataset.shortcut], ['run', 'submit', 'stop', 'cancel']);
+      assert.deepEqual([bar.run.hidden, bar.stop.hidden, cls(bar.run).includes('btn-primary')], [false, true, true]);
+      assert.equal(bar.stop.textContent, 'Stop');
+      bar.run.focus();
+      bar.setRunning(true);
+      assert.deepEqual([bar.run.hidden, bar.stop.hidden, bar.isRunning(), tplDocument.activeElement === bar.stop], [true, false, true, true], 'Stop takes the slot and the focus');
+      bar.setRunning(false);
+      assert.deepEqual([bar.run.hidden, bar.stop.hidden, tplDocument.activeElement === bar.run], [false, true, true], 'and gives both back');
+      bar.run.click();
+      bar.stop.click();
+      assert.deepEqual(calls, ['run', 'stop']);
+    });
+
+    test('"Run again" and secondary while a result is on screen; another primary (a link\'s Start) steps it back; a new verb', () => {
+      const bar = RunBar({ label: 'Look up' });
+      const label = () => bar.run.querySelector('.btn-label').textContent;
+      bar.setRerun(true);
+      assert.deepEqual([label(), cls(bar.run).includes('btn-secondary'), bar.isRerun()], ['Run again', true, true]);
+      bar.setRunning(true);
+      assert.equal(bar.isRerun(), false, 'not while running');
+      bar.setRunning(false);
+      bar.setRerun(false);
+      assert.deepEqual([label(), cls(bar.run).includes('btn-primary')], ['Look up', true]);
+      bar.setPrimary(false);
+      assert.ok(cls(bar.run).includes('btn-secondary') && !cls(bar.run).includes('btn-primary'));
+      bar.setPrimary(true);
+      bar.setLabel('Scan');
+      assert.equal(label(), 'Scan');
+    });
+
+    test('the floating copy: hidden off a phone, its own hook only, a click on it clicks the real button', () => {
+      const calls = [];
+      const bar = RunBar({ label: 'Scan', dataset: { action: 'sub-run' }, onRun: () => calls.push('run'), onStop: () => calls.push('stop') });
+      const btn = bar.float.querySelector('[data-role="run-bar-float"]');
+      assert.ok(bar.float.hidden && btn && !btn.dataset.action, 'hidden, no data-action of its own');
+      btn.click();
+      bar.setRunning(true);
+      btn.click();
+      assert.deepEqual(calls, ['run', 'stop']);
+      bar.dispose();
+    });
+  });
+
+  /* ---- ToolInput --------------------------------------------------------------------------------- */
+
+  describe('ToolInput', () => {
+    const build = (extra = {}) => {
+      const field = new TplElement('div');
+      field.setAttribute('class', 'field');
+      const run = RunBar({ label: 'Look up' });
+      let summary = 'A, MX · Google';
+      const input = ToolInput({
+        primary: field, run, inline: [new TplElement('div')], more: [new TplElement('div')], extras: [new TplElement('div')],
+        notes: [new TplElement('p'), null], privacy: PrivacyNote({ text: 'Sent to the DoH resolver.' }), summary: () => summary,
+        className: 'lkp-form-card', fieldsClass: 'lkp-form', label: 'DNS Lookup', ...extra
+      });
+      return { input, field, run, setSummary: (s) => { summary = s; } };
+    };
+
+    test('one card, role search: the primary field first, then the inline fields, the summary line and Run; notes, the rest, the privacy note', () => {
+      const { input, field, run } = build();
+      const el = input.el;
+      assert.ok(cls(el).includes('tool-input') && cls(el).includes('card') && cls(el).includes('lkp-form-card'));
+      assert.deepEqual([el.getAttribute('role'), el.getAttribute('aria-label')], ['search', 'DNS Lookup']);
+      const fields = el.querySelector('.tool-input-fields');
+      assert.ok(cls(fields).includes('lkp-form'));
+      assert.deepEqual(fields.childNodes.map((n) => cls(n).split(' ')[0]), ['tool-input-primary', 'tool-input-inline', 'tool-input-summary', 'run-bar']);
+      assert.equal(fields.childNodes[0].firstChild, field);
+      assert.equal(fields.childNodes[3], run.el);
+      assert.deepEqual(el.childNodes.map((n) => cls(n)), ['tool-input-fields lkp-form', 'tool-input-notes', 'tool-input-more', 'tool-input-foot']);
+      assert.equal(el.querySelector('.tool-input-notes').childNodes.length, 1, 'null notes dropped');
+      assert.equal(el.querySelector('.tool-input-summary').hidden, true, 'no summary line while the form is whole');
+    });
+
+    test('compact from a run on: the summary line with Edit; Edit unfolds the rest (aria-expanded) and folds it again', () => {
+      const { input, setSummary } = build();
+      const el = input.el;
+      const edit = el.querySelector('[data-action="tool-input-edit"]');
+      const more = el.querySelector('.tool-input-more');
+      const inline = el.querySelector('.tool-input-inline');
+      assert.deepEqual(edit.getAttribute('aria-controls').split(' '), [more.id, inline.id], 'Edit controls the rest of the form');
+      input.setCompact(true);
+      assert.deepEqual([input.isCompact(), cls(el).includes('is-compact'), el.querySelector('.tool-input-summary').hidden], [true, true, false]);
+      assert.equal(el.querySelector('.tool-input-summary-text').textContent, 'A, MX · Google');
+      edit.click();
+      assert.deepEqual([cls(el).includes('is-editing'), edit.getAttribute('aria-expanded')], [true, 'true']);
+      edit.click();
+      assert.deepEqual([cls(el).includes('is-editing'), edit.getAttribute('aria-expanded')], [false, 'false']);
+      edit.click();
+      setSummary('');
+      input.refresh();
+      assert.equal(el.querySelector('.tool-input-summary-text').hidden, true, 'every option at its default: no text, Edit stays');
+      input.setCompact(false);
+      assert.deepEqual([cls(el).includes('is-compact'), cls(el).includes('is-editing'), edit.getAttribute('aria-expanded')], [false, false, 'false'], 'whole again, not editing');
+      input.setEditing(true);
+      assert.equal(cls(el).includes('is-editing'), false, 'Edit means nothing on the whole form');
+    });
+
+    test('nothing to unfold: no Edit', () => {
+      const input = ToolInput({ primary: new TplElement('div'), run: RunBar({ label: 'Run' }) });
+      assert.equal(input.el.querySelector('[data-action="tool-input-edit"]').hidden, true);
+      assert.equal(input.el.querySelector('.tool-input-more').hidden, true);
+      assert.equal(input.el.querySelector('.tool-input-foot'), null, 'no privacy note given');
+    });
+  });
+
+  /* ---- ResultHeader ------------------------------------------------------------------------------ */
+
+  describe('ResultHeader', () => {
+    test('one section labelled by its h2 title; an empty part hides; the status and actions row hides with both', () => {
+      const head = ResultHeader({ className: 'hlt-hero', dataset: { light: 'ok' } });
+      const el = head.el;
+      assert.equal(el.tagName, 'SECTION');
+      assert.ok(cls(el).includes('result-head') && cls(el).includes('hlt-hero'));
+      assert.deepEqual([el.dataset.state, el.dataset.light], ['empty', 'ok']);
+      assert.equal(el.getAttribute('aria-labelledby'), head.title.id);
+      assert.deepEqual([head.title.tagName, head.title.getAttribute('tabindex')], ['H2', '-1']);
+      const bar = el.querySelector('.result-bar');
+      assert.equal(bar.hidden, true);
+      head.set('status', StatusSummary({ items: [{ key: 'warn', severity: 'warn', count: 1, text: '1 warning' }] }).el);
+      assert.deepEqual([head.get('status').hidden, bar.hidden], [false, false]);
+      head.set('status', null);
+      assert.deepEqual([head.get('status').hidden, bar.hidden], [true, true]);
+      head.set('meta', ['', null, false, 'Checked 2 min ago']);
+      assert.equal(head.get('meta').textContent, 'Checked 2 min ago', 'empty values dropped');
+      head.set('meta', [[], null]);
+      assert.equal(head.get('meta').hidden, true);
+      assert.throws(() => head.set('nope', 'x'), /no part "nope"/);
+      assert.equal(ResultHeader({ level: 3, label: 'Lookup' }).el.getAttribute('aria-label'), 'Lookup');
+    });
+
+    test('the kept-result slot the shell fills (page-kept, data-kept-slot); running is aria-busy', () => {
+      const head = ResultHeader();
+      assert.ok(cls(head.kept).includes('page-kept') && head.kept.dataset.keptSlot === '' && head.kept.hidden);
+      assert.equal(head.el.querySelector('[data-kept-slot]'), head.kept);
+      head.setState('running');
+      assert.deepEqual([head.el.dataset.state, head.el.getAttribute('aria-busy')], ['running', 'true']);
+      head.setState('done');
+      assert.equal(head.el.getAttribute('aria-busy'), null);
+    });
+
+    test('a part redrawn under the focus keeps it on the same control, else on the title', () => {
+      const head = ResultHeader();
+      tplDocument.body.append(head.el);
+      const make = (action) => {
+        const b = new TplElement('button');
+        b.dataset.action = action;
+        return b;
+      };
+      head.set('next', [make('explain'), make('dnssec-chain')]);
+      head.get('next').querySelector('[data-action="dnssec-chain"]').focus();
+      head.set('next', [make('explain'), make('dnssec-chain')]);
+      const now = tplDocument.activeElement;
+      assert.ok(now !== null && now.dataset.action === 'dnssec-chain' && head.get('next').contains(now), 'the new DNSSEC chain button');
+      head.set('next', [make('explain')]);
+      assert.equal(tplDocument.activeElement, head.title, 'gone: the title');
+      head.focusTitle();
+      assert.equal(tplDocument.activeElement, head.title);
+    });
+  });
+
+  /* ---- StatusSummary ------------------------------------------------------------------------------- */
+
+  describe('StatusSummary', () => {
+    const items = (onPress = null) => [
+      { key: 'ok', severity: 'ok', count: 20, text: '20 passed', filter: true, onPress },
+      { key: 'error', severity: 'error', count: 0, text: '0 errors', filter: true, onPress },
+      { key: 'warn', severity: 'warn', count: 3, text: '3 warnings', filter: true, onPress, title: 'Open problems' },
+      { key: 'hosts', severity: 'neutral', count: 7, text: '7 hosts', onPress },
+      { key: 'types', severity: 'neutral', count: 4, text: '4 types' }
+    ];
+
+    test('a group, not a live region; error → warn → info → ok → neutral; "0 errors" only for a verdict tool', () => {
+      const plain = StatusSummary({ items: items() });
+      assert.deepEqual([plain.el.getAttribute('role'), plain.el.getAttribute('aria-label'), plain.el.getAttribute('aria-live')], ['group', i18n.t('result.statusLabel'), null]);
+      assert.deepEqual(plain.el.childNodes.map((n) => n.dataset.status), ['warn', 'ok', 'hosts', 'types']);
+      const verdict = StatusSummary({ items: items(), verdict: true });
+      assert.deepEqual(verdict.el.childNodes.map((n) => n.dataset.status), ['error', 'warn', 'ok', 'hosts', 'types']);
+      const warn = verdict.el.querySelector('[data-status="warn"]');
+      assert.deepEqual([warn.dataset.count, warn.dataset.severity, warn.getAttribute('title'), text(warn)], ['3', 'warn', 'Open problems', '3 warnings']);
+      assert.ok(warn.querySelector('.status-icon.sev-warn') && warn.querySelector('.status-icon').getAttribute('aria-hidden') === 'true', 'the icon is not read out');
+      assert.ok(verdict.el.querySelector('[data-status="hosts"]').querySelector('.status-dot'), 'a neutral count gets a dot');
+    });
+
+    test('a filter is a toggle (aria-pressed, its visible text the name); one that opens what it counts a button; the rest text', () => {
+      const pressed = [];
+      const s = StatusSummary({ items: items((key) => pressed.push(key)), verdict: true, pressed: 'warn' });
+      const node = (k) => s.el.querySelector(`[data-status="${k}"]`);
+      assert.deepEqual(['error', 'warn', 'ok', 'hosts', 'types'].map((k) => [node(k).tagName, node(k).getAttribute('aria-pressed')]),
+        [['BUTTON', 'false'], ['BUTTON', 'true'], ['BUTTON', 'false'], ['BUTTON', null], ['SPAN', null]]);
+      node('ok').click();
+      node('hosts').click();
+      assert.deepEqual(pressed, ['ok', 'hosts']);
+      s.setPressed('ok');
+      assert.deepEqual([node('ok').getAttribute('aria-pressed'), node('warn').getAttribute('aria-pressed')], ['true', 'false']);
+      s.update([{ key: 'warn', severity: 'warn', count: 2, text: '2 warnings', filter: true, onPress: () => {} }], { pressed: null });
+      assert.deepEqual(s.el.childNodes.map((n) => [n.dataset.status, n.getAttribute('aria-pressed')]), [['warn', 'false']]);
+    });
+
+    test('a redraw keeps the focus on the same item, a plain button too', () => {
+      const s = StatusSummary({ items: items(() => {}) });
+      tplDocument.body.append(s.el);
+      s.el.querySelector('[data-status="hosts"]').focus();
+      s.update(items(() => {}));
+      assert.equal(tplDocument.activeElement.dataset.status, 'hosts');
+      assert.ok(s.el.contains(tplDocument.activeElement), 'the new button');
+    });
+  });
+
+  /* ---- ResultActions --------------------------------------------------------------------------------- */
+
+  describe('ResultActions', () => {
+    const report = () => {
+      const b = new TplElement('button');
+      b.dataset.action = 'report';
+      b.append('Report…');
+      return b;
+    };
+    const summary = () => SummaryButton({ kind: 'lookup', facts: () => null, plainLabel: i18n.t('result.plainTitle') });
+    const files = (n) => [
+      { label: 'names.txt', dataset: { export: 'names' }, onSelect: () => {} },
+      { label: 'CSV', dataset: { export: 'csv' }, onSelect: () => {} },
+      { label: 'JSON', dataset: { export: 'json' }, onSelect: () => {} }
+    ].slice(0, n);
+    const row = (a) => a.el.childNodes.map((n) => {
+      if (cls(n).includes('sum-actions')) return n.querySelector('[data-action="copy-summary-text"]').hidden ? 'summary' : 'summary+plain';
+      if (cls(n).includes('menu-wrap')) return `menu:${n.querySelector('.menu-button').dataset.menu}`;
+      return n.dataset.action || `file:${n.dataset.export}`;
+    });
+
+    test('the fixed order: Copy summary with ¶, Report, Export ▾ (Print last), Copy link; a labelled group', () => {
+      const a = ResultActions({ summary: summary(), report: report(), exports: files(2), print: true, link: () => '#/lookup?name=example.com' });
+      assert.deepEqual([a.el.getAttribute('role'), a.el.getAttribute('aria-label')], ['group', i18n.t('result.actionsLabel')]);
+      assert.deepEqual(row(a), ['summary+plain', 'report', 'menu:export', 'copy-link']);
+      const menu = a.el.querySelector('[data-menu="export"]');
+      assert.equal(text(menu), 'Export', 'its visible label');
+      assert.deepEqual(a.el.querySelectorAll('.menu-item').map((i) => [text(i), i.dataset.export || i.dataset.action]), [['names.txt', 'names'], ['CSV', 'csv'], ['Print / save as PDF', 'print']]);
+      const link = a.el.querySelector('[data-action="copy-link"]');
+      assert.ok(link.querySelector('.icon-link') && text(link) === 'Copy link');
+    });
+
+    test('one file is a plain button that keeps its data-export; no file and no print: no Export at all', () => {
+      let saved = 0;
+      const one = ResultActions({ summary: summary(), exports: [{ label: 'Export', title: 'The answers in dig format', dataset: { export: 'dig' }, onSelect: () => { saved += 1; } }], link: () => 'x' });
+      assert.deepEqual(row(one), ['summary+plain', 'file:dig', 'copy-link']);
+      const btn = one.el.querySelector('[data-export="dig"]');
+      assert.equal(btn.getAttribute('title'), 'The answers in dig format');
+      btn.click();
+      assert.equal(saved, 1);
+      assert.deepEqual(row(ResultActions({ summary: summary(), link: () => 'x' })), ['summary+plain', 'copy-link']);
+      assert.deepEqual(row(ResultActions({ exports: [{ label: 'no handler' }] })), [], 'an export without onSelect is dropped');
+    });
+
+    test('a phone keeps Copy summary in the row and puts the rest behind "⋯", ¶ first and Copy link last', () => {
+      const a = tplOnPhone(() => ResultActions({ summary: summary(), report: report(), exports: files(1), print: true, link: () => '#/health?domain=example.com' }));
+      assert.deepEqual(row(a), ['summary', 'menu:more']);
+      const more = a.el.querySelector('[data-menu="more"]');
+      assert.equal(more.getAttribute('aria-label'), i18n.t('result.more'));
+      assert.deepEqual(a.el.querySelectorAll('.menu-item').map((i) => i.dataset.action || i.dataset.export),
+        ['copy-summary-text', 'report', 'names', 'print', 'copy-link']);
+    });
+
+    test('a run on: every action waits but Copy link; nothing to export yet: the files wait, Print does not', () => {
+      const sum = summary();
+      const rep = report();
+      const a = ResultActions({ summary: sum, report: rep, exports: files(3), print: true, link: () => 'x' });
+      a.setDisabled(true);
+      assert.deepEqual([sum.markdown.disabled, sum.plain.disabled, rep.disabled, a.el.querySelector('[data-menu="export"]').disabled, a.el.querySelector('[data-action="copy-link"]').disabled],
+        [true, true, true, true, false]);
+      a.setDisabled(false);
+      a.setExportsDisabled(true);
+      assert.deepEqual(a.el.querySelectorAll('.menu-item').map((i) => i.disabled), [true, true, true, false]);
+      assert.equal(a.el.querySelector('[data-menu="export"]').disabled, false, 'Print is still there');
+      a.dispose();
+    });
+  });
+
+  /* ---- NextSteps, RelatedLinks, MetricStrip, EmptyState -------------------------------------------- */
+
+  describe('NextSteps and RelatedLinks', () => {
+    test('next steps: buttons and links with their hooks, in a labelled group; none: nothing drawn', () => {
+      let clicked = 0;
+      const next = NextSteps({ steps: [{ label: 'Explain', icon: 'book', dataset: { action: 'explain' }, onClick: () => { clicked += 1; } }, { label: 'Bulk Resolve', href: '#/bulk', dataset: { view: 'bulk' } }, null] });
+      assert.deepEqual([next.getAttribute('role'), next.getAttribute('aria-label')], ['group', i18n.t('result.nextLabel')]);
+      const [btn, link] = next.childNodes;
+      assert.deepEqual([btn.tagName, btn.dataset.action, link.tagName, link.getAttribute('href'), link.dataset.view], ['BUTTON', 'explain', 'A', '#/bulk', 'bulk']);
+      btn.click();
+      assert.equal(clicked, 1);
+      assert.equal(NextSteps({ steps: [] }), null);
+    });
+
+    test('"Also check:" up to four other tools, each with its view, never the tool itself; none: nothing drawn', () => {
+      const links = ['lookup', 'health', 'global', 'scan', 'ip', 'bulk'].map((view) => ({ view, href: `#/${view}`, label: view, icon: 'search' }));
+      const row = RelatedLinks({ links, self: 'health' });
+      assert.equal(row.querySelector('.result-related-label').textContent, 'Also check:');
+      assert.deepEqual(row.querySelectorAll('a.related-link').map((a) => a.dataset.view), ['lookup', 'global', 'scan', 'ip']);
+      assert.equal(RelatedLinks({ links: [{ view: 'health', href: '#/health', label: 'Health' }], self: 'health' }), null);
+    });
+  });
+
+  describe('MetricStrip', () => {
+    test('label-over-value figures, read-only; only an error or warn value coloured; zeros folded into one sentence', () => {
+      const strip = MetricStrip({
+        label: 'Kinds',
+        className: 'sub-stats',
+        foldable: ['cdn', 'dangling'],
+        metrics: [
+          { id: 'found', label: 'Found', value: 1234, hint: '2 wildcard suspects hidden' },
+          { id: 'cdn', label: 'Other CDN', value: 0 },
+          { id: 'dangling', label: 'Dangling CNAME', value: 2, severity: 'error', title: 'A CNAME to a name nobody owns' },
+          { id: 'unresolved', label: 'Not resolving', value: 0 },
+          { id: 'pending', label: 'Pending', value: null },
+          { label: 'no id', value: 3 }
+        ]
+      });
+      assert.deepEqual([strip.el.getAttribute('role'), strip.el.getAttribute('aria-label')], ['group', 'Kinds']);
+      const metrics = strip.el.querySelectorAll('.metric');
+      assert.deepEqual(metrics.map((m) => m.dataset.metric), ['found', 'dangling', 'unresolved', 'pending'], 'a zero folds only when foldable');
+      assert.deepEqual(metrics.map((m) => m.querySelector('.metric-value').textContent), ['1,234', '2', '0', '—']);
+      assert.ok(cls(metrics[1].querySelector('.metric-value')).includes('metric-error') && metrics[1].getAttribute('title') === 'A CNAME to a name nobody owns');
+      assert.ok(!/\bmetric-(error|warn)\b/.test(cls(metrics[0].querySelector('.metric-value'))), 'no colour on a plain count');
+      assert.equal(metrics[0].querySelector('.metric-hint').textContent, '2 wildcard suspects hidden');
+      assert.equal(strip.el.querySelectorAll('button, a').length, 0, 'read-only');
+      const zero = strip.el.querySelector('.metric-zero');
+      assert.deepEqual([zero.hidden, zero.textContent, zero.dataset.folded], [false, 'None: Other CDN', 'cdn']);
+      strip.update([{ id: 'cdn', label: 'Other CDN', value: 0 }], { foldable: [] });
+      assert.deepEqual([strip.el.querySelectorAll('.metric').length, zero.hidden, zero.dataset.folded], [1, true, ''], 'nothing folds while counts still grow');
+    });
+  });
+
+  describe('EmptyState', () => {
+    test('a small icon, one line, the chips of what it checks (their hooks kept), details and an action; no card', () => {
+      const action = new TplElement('a');
+      const empty = EmptyState({
+        icon: 'layers', message: 'The subdomains found and where each one points.', className: 'sub-intro-empty',
+        checks: ['DNS first', { label: 'CT logs', className: 'sub-intro-item', dataset: { source: 'ct' } }, { label: '' }, null],
+        details: new TplElement('details'), action
+      });
+      assert.ok(cls(empty).includes('tool-empty') && !cls(empty).includes('card'));
+      assert.equal(empty.querySelector('.tool-empty-icon').getAttribute('aria-hidden'), 'true');
+      assert.equal(empty.querySelector('.tool-empty-message').textContent, 'The subdomains found and where each one points.');
+      const checks = empty.querySelectorAll('li.tool-empty-check');
+      assert.deepEqual(checks.map((c) => [c.textContent, c.dataset.source || null, cls(c).includes('sub-intro-item')]), [['DNS first', null, false], ['CT logs', 'ct', true]]);
+      assert.ok(empty.querySelector('details') && empty.contains(action));
+      assert.equal(EmptyState({ message: 'x' }).querySelector('ul'), null, 'no list without checks');
+    });
+  });
+
+  /* ---- the components.js and summary-button.js options the template added ------------------------ */
+
+  describe('MenuButton showLabel, CopyButton icon, SummaryButton plainLabel', () => {
+    test('MenuButton: icon-only with its label as the name, or (showLabel) the visible label and a chevron', () => {
+      const icon = MenuButton({ label: 'More actions', items: [{ label: 'A', onSelect: () => {} }] });
+      assert.deepEqual([icon.button.getAttribute('aria-label'), icon.button.getAttribute('title'), icon.button.querySelector('.btn-label')], ['More actions', 'More actions', null]);
+      assert.ok(cls(icon.button).includes('btn-icon') && cls(icon.button).includes('btn-ghost'));
+      const shown = MenuButton({ label: 'Export', icon: 'download', showLabel: true, variant: 'secondary', dataset: { menu: 'export' }, items: [{ label: 'CSV', onSelect: () => {} }] });
+      assert.deepEqual([shown.button.getAttribute('aria-label'), shown.button.getAttribute('title'), text(shown.button)], [null, null, 'Export']);
+      assert.ok(shown.button.querySelector('.icon-chevron-down') && cls(shown.button).includes('btn-secondary') && !cls(shown.button).includes('btn-icon'));
+      assert.deepEqual([shown.button.getAttribute('aria-haspopup'), shown.button.getAttribute('aria-expanded'), shown.button.dataset.menu], ['menu', 'false', 'export']);
+    });
+
+    test('CopyButton: its own icon (Copy link\'s link)', () => {
+      assert.ok(CopyButton('x', { label: 'Copy link', icon: 'link' }).querySelector('.icon-link'));
+      assert.ok(CopyButton('x').querySelector('.icon-copy'), 'the copy icon by default');
+    });
+
+    test('SummaryButton: with plainLabel the plain-text button is the ¶ icon with that name; copy() says false with nothing to copy', async () => {
+      const plain = SummaryButton({ kind: 'health', facts: () => null, plainLabel: 'Copy as plain text' }).plain;
+      assert.ok(plain.querySelector('.icon-pilcrow') && !plain.querySelector('.btn-label'));
+      assert.deepEqual([plain.getAttribute('aria-label'), plain.getAttribute('title'), plain.dataset.action], ['Copy as plain text', 'Copy as plain text', 'copy-summary-text']);
+      const classic = SummaryButton({ kind: 'health', facts: () => null });
+      assert.equal(classic.plain.querySelector('.btn-label').textContent, 'Plain text', 'without it, the worded button as before');
+      assert.equal(await classic.copy('text'), false);
+      assert.equal(classic.text(), '');
+    });
   });
 });

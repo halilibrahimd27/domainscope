@@ -7,14 +7,18 @@
  * dig-style presentation text with a copy button. Host names and IP addresses in the
  * results link to this view / IP Intel.
  *
- * "Copy summary" in the summary card: the answer in one line for Jira / Slack (lib/summary.js),
+ * The page template (ui/template.js): the input card (compact once a lookup runs) and the summary
+ * as the result header `.lkp-sum` — who answered, the counts, Copy summary, Export (the answers
+ * in dig format) and Copy link, the next steps, "Also check:".
+ *
+ * "Copy summary" in the summary: the answer in one line for Jira / Slack (lib/summary.js),
  * with the link of that query and the time its last answer arrived.
  *
- * "DNSSEC chain" in the summary card (ui/dnssec-panel.js over lib/dnssec.js, loaded on its first
+ * "DNSSEC chain" among the summary's next steps (ui/dnssec-panel.js over lib/dnssec.js, loaded on its first
  * click): the chain of trust of the name and one of the looked-up types, validated in this browser
  * from the IANA root trust anchors down, zone by zone; a new lookup closes it.
  *
- * "Explain" in the summary card (ui/explain-panel.js over lib/records.js and lib/spfexplain.js,
+ * "Explain" among the summary's next steps (ui/explain-panel.js over lib/records.js and lib/spfexplain.js,
  * loaded on its first click; not for a reverse name or the root): the name's SPF term by term with
  * "Does an address pass?" and a flatten preview, the DMARC and CAA that apply tag by tag, and its
  * HTTPS / SVCB parameters with the ECH configuration decoded; the lookup's answers are reused, a
@@ -33,12 +37,17 @@
  * why (lib/sourcestatus.js), and its Retry asks that type again.
  */
 
-import { h, clear } from '../ui/dom.js';
+import { h, clear, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, CopyButton, Disclosure, EmptyState, Icon, KeyValueList, KindBadge,
-  Spinner, checkbox, checkboxGroup, select, setButtonBusy, textInput, SeverityIcon
+  Alert, Badge, Button, Card, CodeBlock, CopyButton, Disclosure, Icon, KeyValueList, KindBadge,
+  Spinner, announce, checkbox, checkboxGroup, select, setButtonBusy, textInput
 } from '../ui/components.js';
 import { registerStrings, hasString, formatNumber, formatDuration, formatDateTime, formatDate } from '../i18n.js';
+import {
+  EmptyState, ExampleChips, NextSteps, PrivacyNote, RelatedLinks, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput
+} from '../ui/template.js';
+import { inputCompact, optionsSummary, templateState } from '../lib/template.js';
+import { downloadText, timestampedName } from '../ui/download.js';
 import { RESOLVERS, getResolver } from '../lib/resolvers.js';
 import { typeToNumber, typeToName, DNSSEC_ALGORITHMS, DS_DIGEST_TYPES } from '../lib/dnswire.js';
 import { followCnames } from '../lib/doh.js';
@@ -50,7 +59,7 @@ import { mergeSignals, onceAsync } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
 import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
-import { lookupLayout, LOOKUP_FLAGS } from '../lib/density.js';
+import { lookupLayout, lookupStatus, LOOKUP_FLAGS } from '../lib/density.js';
 import { dohStatus } from '../lib/sourcestatus.js';
 import { RetryButton, statusText } from '../ui/source-status.js';
 
@@ -107,9 +116,12 @@ registerStrings('en', {
   'lkp.badTypes': 'Unknown record types: {types}',
   'lkp.tooManyTypes': 'At most {max} types per lookup.',
   'lkp.ptrNote': 'IP address detected: asking for its reverse DNS name (PTR {name}).',
-  'lkp.emptyTitle': 'Look up any DNS record',
-  'lkp.emptyBody': 'Parsed fields, DNSSEC status and the raw answer for every record type — through automatic failover or the resolver of your choice.',
-  'lkp.examples': 'Try:',
+  'lkp.emptyLine': 'Each record type parsed into readable fields, with its TTL, the header flags and the raw answer in dig format.',
+  'lkp.privacy': 'Each question goes to your DoH resolvers, or to the one resolver you pick here.',
+  'lkp.count.failed': { one: '{count} query failed', other: '{count} queries failed' },
+  'lkp.count.nodata': { one: '{count} type has no records', other: '{count} types have no records' },
+  'lkp.optResolver': 'resolver: {name}',
+  'lkp.exportDigTitle': 'Download every answer as text, in dig format',
 
   'lkp.sum.title': '{name}',
   'lkp.sum.via': 'via {resolver}',
@@ -120,7 +132,6 @@ registerStrings('en', {
   'lkp.sum.answeredBy': 'answered by {resolver}',
   'lkp.noRecords': 'No records:',
   'lkp.noRecordsBody': 'The name exists but has no records of these types (NODATA).',
-  'lkp.copyAll': 'Copy all (dig format)',
   'lkp.dnssecChain': 'DNSSEC chain',
   'lkp.dnssecChainTitle': 'Validate the chain of trust of this answer from the root trust anchors down, in this browser',
   'lkp.explain': 'Explain',
@@ -266,9 +277,12 @@ registerStrings('tr', {
   'lkp.badTypes': 'Bilinmeyen kayıt türleri: {types}',
   'lkp.tooManyTypes': 'Bir sorguda en fazla {max} tür seçilebilir.',
   'lkp.ptrNote': 'IP adresi algılandı: ters DNS adı soruluyor (PTR {name}).',
-  'lkp.emptyTitle': 'Herhangi bir DNS kaydını sorgulayın',
-  'lkp.emptyBody': 'Her kayıt türü için ayrıştırılmış alanlar, DNSSEC durumu ve ham yanıt — otomatik yedeklemeyle ya da seçtiğiniz çözümleyiciyle.',
-  'lkp.examples': 'Deneyin:',
+  'lkp.emptyLine': 'Her kayıt türü okunur alanlara ayrılmış olarak: TTL’i, başlık bayrakları ve dig biçiminde ham yanıtıyla.',
+  'lkp.privacy': 'Her soru DoH çözümleyicilerinize ya da burada seçtiğiniz tek çözümleyiciye gider.',
+  'lkp.count.failed': '{count} sorgu başarısız oldu',
+  'lkp.count.nodata': '{count} türde kayıt yok',
+  'lkp.optResolver': 'çözümleyici: {name}',
+  'lkp.exportDigTitle': 'Tüm yanıtları dig biçiminde metin olarak indir',
 
   'lkp.sum.title': '{name}',
   'lkp.sum.via': '{resolver} üzerinden',
@@ -279,7 +293,6 @@ registerStrings('tr', {
   'lkp.sum.answeredBy': '{resolver} yanıtladı',
   'lkp.noRecords': 'Kayıt yok:',
   'lkp.noRecordsBody': 'Ad mevcut ama bu türlerde kaydı yok (NODATA).',
-  'lkp.copyAll': 'Tümünü kopyala (dig biçimi)',
   'lkp.dnssecChain': 'DNSSEC zinciri',
   'lkp.dnssecChainTitle': 'Bu yanıtın güven zincirini kök güven çapalarından başlayarak tarayıcınızda doğrular',
   'lkp.explain': 'Açıkla',
@@ -645,10 +658,16 @@ export function mount(container, ctx) {
     value: getResolver(params.resolver) ? params.resolver : ''
   });
   resolverField.input.dataset.role = 'lookup-resolver';
-  const runBtn = Button({ label: t('lkp.run'), icon: 'search', variant: 'primary', dataset: { action: 'run', shortcut: 'submit' }, onClick: () => start() });
   // Stop (Esc) while a lookup asks: the answers in so far stay, each type still asked offers its Retry.
-  const stopBtn = Button({ label: t('common.stop'), icon: 'stop', variant: 'secondary', dataset: { action: 'lkp-stop', shortcut: 'cancel' }, onClick: () => stop() });
-  stopBtn.hidden = true;
+  const runBar = RunBar({
+    label: t('lkp.run'),
+    dataset: { action: 'run', shortcut: 'submit' },
+    stopDataset: { action: 'lkp-stop', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => stop(),
+    hasValue: () => !!nameField.value.trim()
+  });
+  const runBtn = runBar.run;
 
   const known = new Set(LOOKUP_TYPES);
   const typeGroup = checkboxGroup({
@@ -676,60 +695,125 @@ export function mount(container, ctx) {
         const list = TYPE_PRESETS[key];
         typeGroup.values = list.filter((x) => known.has(x));
         otherField.value = list.filter((x) => !known.has(x)).join(', ');
+        syncRunBar();
       }
     })),
-    Button({ label: t('lkp.preset.none'), size: 'sm', variant: 'ghost', dataset: { preset: 'none' }, onClick: () => { typeGroup.values = []; otherField.value = ''; } }));
+    Button({
+      label: t('lkp.preset.none'), size: 'sm', variant: 'ghost', dataset: { preset: 'none' },
+      onClick: () => {
+        typeGroup.values = [];
+        otherField.value = '';
+        syncRunBar();
+      }
+    }));
   const dnssecField = checkbox({ label: t('lkp.dnssec'), checked: params.dnssec === '1' || params.dnssec === true, switch: true });
   dnssecField.input.dataset.role = 'lookup-dnssec';
   const cdField = checkbox({ label: t('lkp.cd'), hint: t('lkp.cdHint'), checked: params.cd === '1' || params.cd === true, switch: true });
   cdField.input.dataset.role = 'lookup-cd';
 
+  // An example fills the form and leaves the keyboard on Look up: nothing is sent before that click.
   const examples = [
     { name: 'cloudflare.com', types: ['A', 'AAAA', 'HTTPS', 'CAA'] },
     { name: 'github.com', types: ['MX', 'TXT'] },
     { name: 'ietf.org', types: ['DS', 'DNSKEY'], dnssec: true },
     { name: '8.8.8.8', types: ['PTR'] }
   ];
-  const examplesEl = h('div', { class: 'lkp-examples cluster text-sm' },
-    h('span', { class: 'muted' }, t('lkp.examples')),
-    examples.map((ex) => h('button', {
-      type: 'button',
-      class: 'link-btn mono',
-      dataset: { example: ex.name },
-      on: {
-        click: () => {
-          nameField.value = ex.name;
-          typeGroup.values = ex.types;
-          otherField.value = '';
-          dnssecField.checked = !!ex.dnssec;
-          cdField.checked = false;
-          start();
-        }
-      }
-    }, `${ex.name} ${ex.types.join(',')}`)));
-
-  const formError = h('div', { class: 'field-error lkp-form-error', hidden: true, attrs: { 'aria-live': 'polite' } });
-  const formCard = Card({
-    className: 'lkp-form-card',
-    children: h('div', { class: 'stack' },
-      h('div', { class: 'lkp-form' }, nameField.el, resolverField.el, h('div', { class: 'lkp-buttons' }, runBtn, stopBtn)),
-      h('div', { class: 'lkp-types-wrap' }, typeGroup.el, presetBar),
-      h('div', { class: 'lkp-options' }, otherField.el, h('div', { class: 'stack-sm' }, dnssecField.el, cdField.el)),
-      formError,
-      examplesEl)
+  const examplesEl = ExampleChips({
+    className: 'lkp-examples',
+    examples: examples.map((ex) => ({ value: ex.name, label: `${ex.name} ${ex.types.join(',')}`, ex })),
+    onPick: (value, { ex }) => {
+      nameField.value = ex.name;
+      typeGroup.values = ex.types;
+      otherField.value = '';
+      dnssecField.checked = !!ex.dnssec;
+      cdField.checked = false;
+      nameField.setError(null);
+      syncRunBar();
+    },
+    focus: () => runBtn
   });
 
+  /** The compact row's summary: the choices that are not the defaults (the common types, automatic, no DO / CD bit). */
+  const optionsLine = () => {
+    const types = [...typeGroup.values, ...parseTypes(otherField.value).types];
+    const common = types.length === TYPE_PRESETS.common.length && TYPE_PRESETS.common.every((x) => types.includes(x));
+    return optionsSummary([
+      { label: types.join(', '), isDefault: common || !types.length },
+      { label: t('lkp.optResolver', { name: resolverName(resolverField.value) }), isDefault: !resolverField.value },
+      { label: 'DNSSEC (DO)', isDefault: !dnssecField.checked },
+      { label: 'CD', isDefault: !cdField.checked }
+    ]);
+  };
+  const formError = h('div', { class: 'field-error lkp-form-error', hidden: true, attrs: { 'aria-live': 'polite' } });
+  const input = ToolInput({
+    className: 'lkp-form-card',
+    fieldsClass: 'lkp-form',
+    label: t('nav.lookup'),
+    primary: nameField.el,
+    inline: [resolverField.el],
+    run: runBar,
+    notes: [formError],
+    more: [
+      h('div', { class: 'lkp-types-wrap' }, typeGroup.el, presetBar),
+      h('div', { class: 'lkp-options' }, otherField.el, h('div', { class: 'stack-sm' }, dnssecField.el, cdField.el))
+    ],
+    extras: [examplesEl],
+    privacy: PrivacyNote({ text: t('lkp.privacy') }),
+    summary: optionsLine
+  });
+  // Any change of the form (a type ticked, another resolver, a name typed) makes Look up the primary button again.
+  input.el.addEventListener('input', () => syncRunBar());
+  input.el.addEventListener('change', () => syncRunBar());
+
   /* --- results area ------------------------------------------------------------------ */
+  /** The result header (region 4): the name, who answered, the counts, the actions and the next steps. */
+  const head = ResultHeader({ className: 'lkp-sum' });
+  /** The "No records" line lives in the header: its node is kept while its types stay the same. */
+  const nodataHost = h('div', { class: 'lkp-nodata-host' });
   const summaryEl = h('div', { class: 'lkp-summary' });
   const noteEl = h('div', { class: 'lkp-note' });
   const cardsEl = h('div', { class: 'lkp-cards' });
-  // Explain (ui/explain-panel.js) and the DNSSEC chain (ui/dnssec-panel.js), each loaded on the first click of its summary button.
+  // Explain (ui/explain-panel.js) and the DNSSEC chain (ui/dnssec-panel.js), each loaded on the first click of its next-step button.
   const explainEl = h('div', { class: 'lkp-explain' });
   const dnssecEl = h('div', { class: 'lkp-dnssec' });
-  const emptyEl = h('div', { class: 'card lkp-empty' }, EmptyState({ icon: 'search', title: t('lkp.emptyTitle'), message: t('lkp.emptyBody') }));
+  const emptyEl = h('div', { class: 'lkp-empty' }, EmptyState({
+    icon: 'search',
+    message: t('lkp.emptyLine'),
+    checks: ['A · AAAA', 'MX', 'TXT · SPF', 'CAA', 'HTTPS · SVCB', 'DS · DNSKEY']
+  }));
   // No part of the form: Ctrl/Cmd+Enter in a field here starts no new lookup.
   const results = h('div', { class: 'stack lkp-results', hidden: true, dataset: { shortcutScope: 'results' } }, summaryEl, noteEl, explainEl, dnssecEl, cardsEl);
-  container.append(h('div', { class: 'stack-lg lkp-view' }, formCard, emptyEl, results));
+  container.append(h('div', { class: 'lkp-view' }, input.el, emptyEl, results, runBar.float));
+  ctx.onCleanup(() => runBar.dispose());
+
+  /** The form as a query (no validation, nothing marked): what Run would ask now. */
+  function formQuery() {
+    const parsed = parseLookupName(nameField.value);
+    const other = parseTypes(otherField.value).types;
+    return {
+      input: parsed ? parsed.ptrFor || parsed.name : null,
+      types: [...typeGroup.values, ...other.filter((x) => !typeGroup.values.includes(x))].join(','),
+      resolver: resolverField.value || null,
+      dnssec: dnssecField.checked,
+      cd: cdField.checked
+    };
+  }
+
+  /** The run bar and the input follow the state: compact once a lookup runs, "Run again" while the form asks for the answers on screen. */
+  function syncRunBar() {
+    const running = !!(current && current.controller);
+    const state = templateState({ running, result: !!current });
+    let same = false;
+    if (state === 'done') {
+      const f = formQuery();
+      const q = current.q;
+      same = f.input === q.input && (f.types === q.types.join(',') || !!q.ptrFor) && f.resolver === (q.resolver || null) && f.dnssec === !!q.dnssec && f.cd === !!q.cd;
+    }
+    runBar.setState(state);
+    runBar.setRerun(same);
+    input.setCompact(inputCompact(state));
+    input.refresh();
+  }
 
   /*
    * Balanced CSS columns move cards between columns whenever one grows (a raw answer opened).
@@ -1361,7 +1445,6 @@ export function mount(container, ctx) {
     }
     if (!ctx.requireOnline({ quiet: auto })) return;
     ctx.setParams(queryParams(q));
-    setShareAction();
     ctx.runStarted(q.input);
     run(q);
   }
@@ -1369,14 +1452,6 @@ export function mount(container, ctx) {
   /** The route params of a query (what a shared link runs). */
   function queryParams(q) {
     return { name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : null, cd: q.cd ? '1' : null };
-  }
-
-  /**
-   * "Copy link" in the page header (after a run, and again for a run restored by a re-mount): the
-   * query on screen, not the box, which may hold a carried name.
-   */
-  function setShareAction() {
-    ctx.setActions(CopyButton(() => ctx.shareUrl(current ? queryParams(current.q) : ctx.params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }));
   }
 
   /** The names the box holds, as a query reads them (what a carried name may replace). */
@@ -1404,17 +1479,20 @@ export function mount(container, ctx) {
       nameField.setError(null);
       carried = name;
     }
+    syncRunBar();
   }
 
-  /** The summary card of the current lookup, updated in place by {@link renderSummary}. */
+  /** The result header's parts of the current lookup, updated in place by {@link renderSummary}. */
   let summaryParts = null;
 
   /**
-   * Draw the summary card, again on every answer and Retry. In place: the card's header facts are
-   * redrawn, while its actions (the same for the whole lookup; Copy summary is enabled once every
-   * type has answered) and a "No records" line whose types did not change are kept as they are,
-   * so what the user opened there (the raw answer inside it too) and the keyboard focus stay. A
-   * line whose types changed is drawn anew with the same open state and focus.
+   * Draw the result header (region 4), again on every answer and Retry. In place: the title, the
+   * meta line (who answered, its PoP, the time, a Stop) and the status summary are redrawn, while
+   * the actions, the next steps and the related links — the same for the whole lookup; Copy summary
+   * and Export are enabled once every type has answered — and a "No records" line whose types did
+   * not change are kept as they are, so what the user opened there (the raw answer inside it too)
+   * and the keyboard focus stay. A line whose types changed is drawn anew with the same open state
+   * and focus.
    * @param {object} q the query ({@link readForm})
    * @param {Array<object|null>} responses
    * @param {number|null} elapsed
@@ -1427,17 +1505,16 @@ export function mount(container, ctx) {
     const total = responses.reduce((n, r) => n + (r && r.ok ? r.answers.filter((rr) => rr.type === r.type).length : 0), 0);
     const failed = responses.filter((r) => r && !r.ok).length;
     const done = responses.filter(Boolean).length;
+    const running = !!(current && current.q === q && current.controller);
     const resolverLabel = q.resolver ? resolverName(q.resolver) : t('lkp.resolverAuto', { chain: chainNames });
     // A stopped lookup with types still unanswered: said here, and its Copy summary says which.
     const stopped = !!(current && current.q === q && current.stopped) && done < q.types.length;
     // Said once for every answer (lib/density.js): who answered, its PoP and the header flags.
     const shared = layout.shared;
-    const main = h('div', { class: 'lkp-sum-main' },
-      h('div', { class: 'lkp-sum-name mono' }, q.input),
+    head.setState(running ? 'running' : 'done');
+    head.set('title', ResultTitle({ running, text: h('span', { class: 'lkp-sum-name mono' }, q.input) }));
+    head.set('meta', [
       h('div', { class: 'lkp-sum-meta' },
-        h('span', null, t('lkp.sum.types', { count: q.types.length })),
-        h('span', null, t('lkp.sum.records', { count: total })),
-        failed ? h('span', { class: 'lkp-sum-failed' }, SeverityIcon('error'), ' ', `${formatNumber(failed)} × ${t('lkp.card.failed')}`) : null,
         shared.resolver
           ? h('span', { class: 'lkp-sum-resolver', dataset: { resolver: shared.resolver } }, t('lkp.sum.answeredBy', { resolver: resolverName(shared.resolver) }))
           : h('span', null, t('lkp.sum.via', { resolver: resolverLabel })),
@@ -1447,42 +1524,76 @@ export function mount(container, ctx) {
           ? h('span', { class: 'lkp-sum-stopped', dataset: { role: 'lkp-stopped' } }, Icon('stop', { size: 13 }), ' ', t('lkp.sum.stopped', { count: q.types.length - done })) : null,
         q.dnssec ? Badge('DO', { variant: 'accent', title: t('lkp.dnssec') }) : null,
         q.cd ? Badge('CD', { variant: 'warn', title: t('lkp.cd') }) : null),
-      shared.flags ? h('div', { class: 'lkp-sum-flags' }, flagsRow(shared.flags)) : null);
+      shared.flags ? h('div', { class: 'lkp-sum-flags' }, flagsRow(shared.flags)) : null
+    ]);
+    // The counts: a failed query opens its card, the types with no records their line.
+    head.set('status', StatusSummary({
+      items: lookupStatus({ types: q.types.length, records: total, noRecords: layout.noRecords, failed }).map((item) => ({
+        ...item,
+        text: item.key === 'failed' ? t('lkp.count.failed', { count: item.count })
+          : item.key === 'nodata' ? t('lkp.count.nodata', { count: item.count })
+            : t(`lkp.sum.${item.key}`, { count: item.count }),
+        title: item.key === 'nodata' ? `${t('lkp.noRecords')} ${item.types.join(', ')}` : null,
+        onPress: item.key === 'failed' ? () => focusFailedCard()
+          : item.key === 'nodata' ? () => openNoRecords() : null
+      }))
+    }).el);
     const types = layout.noRecords.join(' ');
 
-    const prev = summaryParts && summaryParts.q === q && summaryParts.card.isConnected ? summaryParts : null;
+    const prev = summaryParts && summaryParts.q === q && head.el.isConnected ? summaryParts : null;
     if (!prev) {
-      // A new lookup: everything drawn anew, its "No records" line closed.
+      // A new lookup: its actions, next steps and links drawn anew, its "No records" line closed.
       const allText = () => responses.filter(Boolean).map(responseText).join('\n\n');
+      if (summaryParts && summaryParts.actions) summaryParts.actions.dispose();
       // Reads the facts at click time: the answers, and the time the last one arrived (or the Stop).
-      const summary = SummaryButton({
-        kind: 'lookup',
-        disabled: done !== q.types.length && !stopped,
-        facts: () => ({
-          name: q.name, ptrFor: q.ptrFor, types: q.types, responses, dnssec: q.dnssec, at: summaryParts ? summaryParts.at : at,
-          stopped: !!(current && current.q === q && current.stopped)
+      const actions = ResultActions({
+        summary: SummaryButton({
+          kind: 'lookup',
+          plainLabel: t('result.plainTitle'),
+          facts: () => ({
+            name: q.name, ptrFor: q.ptrFor, types: q.types, responses, dnssec: q.dnssec, at: summaryParts ? summaryParts.at : at,
+            stopped: !!(current && current.q === q && current.stopped)
+          }),
+          url: () => ctx.shareUrl(permalinkParams('lookup', { name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : null, cd: q.cd ? '1' : null }))
         }),
-        url: () => ctx.shareUrl(permalinkParams('lookup', { name: q.input, type: q.types.join(','), resolver: q.resolver, dnssec: q.dnssec ? '1' : null, cd: q.cd ? '1' : null }))
+        // The one file of a lookup: every answer as dig-style text (a plain button, not a one-item menu).
+        exports: [{
+          label: t('result.export'), title: t('lkp.exportDigTitle'), icon: 'download', dataset: { export: 'dig' },
+          onSelect: () => downloadText(timestampedName('dns-lookup', 'txt', q.input), `${allText()}\n`, 'text/plain;charset=utf-8')
+        }],
+        // Copy link: the query on screen, not the box, which may hold a carried name.
+        link: () => ctx.shareUrl(queryParams(q))
       });
-      const actions = h('div', { class: 'lkp-sum-actions cluster' },
-        CopyButton(allText, { label: t('lkp.copyAll'), size: 'sm', variant: 'secondary' }),
-        summary,
-        !q.ptrFor && q.name !== '.' ? Button({ label: t('lkp.explain'), icon: 'book', size: 'sm', variant: 'secondary', title: t('lkp.explainTitle'), dataset: { action: 'explain' }, onClick: () => openExplain(q) }) : null,
-        Button({ label: t('lkp.dnssecChain'), icon: 'shield', size: 'sm', variant: 'secondary', title: t('lkp.dnssecChainTitle'), dataset: { action: 'dnssec-chain' }, onClick: () => openDnssec(q) }),
-        q.ptrFor ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('ip', { ips: q.ptrFor }) }, Icon('network', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.ip'))) : null,
-        !q.ptrFor && q.name !== '.' ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('global', { name: q.name, type: ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'CAA', 'HTTPS', 'SOA'].includes(q.types[0]) ? q.types[0] : 'A' }) }, Icon('globe', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.global'))) : null,
-        !q.ptrFor && q.name !== '.' && q.name.includes('.') ? h('a', { class: 'btn btn-ghost btn-sm', href: ctx.href('health', { domain: q.name.replace(/^_dmarc\./, '') }) }, Icon('activity', { size: 14 }), h('span', { class: 'btn-label' }, t('nav.health'))) : null);
+      actions.setDisabled(done !== q.types.length && !stopped);
+      head.set('actions', actions.el);
+      const named = !q.ptrFor && q.name !== '.';
+      head.set('next', NextSteps({
+        steps: [
+          named ? { label: t('lkp.explain'), icon: 'book', title: t('lkp.explainTitle'), dataset: { action: 'explain' }, onClick: () => openExplain(q) } : null,
+          { label: t('lkp.dnssecChain'), icon: 'shield', title: t('lkp.dnssecChainTitle'), dataset: { action: 'dnssec-chain' }, onClick: () => openDnssec(q) }
+        ]
+      }));
+      head.set('related', RelatedLinks({
+        self: 'lookup',
+        links: [
+          q.ptrFor ? { view: 'ip', icon: 'network', label: t('nav.ip'), href: ctx.href('ip', { ips: q.ptrFor }) } : null,
+          named ? {
+            view: 'global', icon: 'globe', label: t('nav.global'),
+            href: ctx.href('global', { name: q.name, type: ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'CAA', 'HTTPS', 'SOA'].includes(q.types[0]) ? q.types[0] : 'A' })
+          } : null,
+          named && q.name.includes('.') ? { view: 'health', icon: 'activity', label: t('nav.health'), href: ctx.href('health', { domain: q.name.replace(/^_dmarc\./, '') }) } : null
+        ].filter(Boolean)
+      }));
       const line = layout.noRecords.length ? noRecordsLine(q, responses, layout.noRecords) : null;
-      const card = h('div', { class: 'lkp-sum card' }, main, actions, line);
-      clear(summaryEl);
-      summaryEl.append(card);
-      summaryParts = { q, card, main, line, types, summary, at };
+      clear(nodataHost);
+      if (line) nodataHost.append(line);
+      head.set('notes', nodataHost.firstChild ? nodataHost : null);
+      if (!head.el.isConnected) summaryEl.append(head.el);
+      summaryParts = { q, line, types, actions, at };
       return;
     }
-    prev.main.replaceWith(main);
-    prev.main = main;
     prev.at = at;
-    prev.summary.setDisabled(done !== q.types.length && !stopped);
+    prev.actions.setDisabled(done !== q.types.length && !stopped);
     if (prev.types === types) return;
     const old = prev.line;
     const doc = globalThis.document;
@@ -1493,10 +1604,33 @@ export function mount(container, ctx) {
     }) : null;
     if (old && line) old.replaceWith(line);
     else if (old) old.remove();
-    else if (line) prev.card.append(line);
+    else if (line) nodataHost.append(line);
+    // The host stays the same node: the notes part is set again only when it appears or goes.
+    if (!old !== !line) head.set('notes', line ? nodataHost : null);
     if (line && focusAt >= 0) (focusablesOf(line)[focusAt] || focusablesOf(line)[0])?.focus({ preventScroll: true });
     prev.line = line;
     prev.types = types;
+  }
+
+  /** The status summary's "n queries failed": the first card that got no answer, in view with the focus on its Retry. */
+  function focusFailedCard() {
+    const card = cardsEl.querySelector('.lkp-card[data-state="error"]');
+    if (!card) return;
+    card.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
+    const retry = card.querySelector('[data-action="retry-source"]');
+    if (retry) retry.focus({ preventScroll: true });
+    else {
+      card.setAttribute('tabindex', '-1');
+      card.focus({ preventScroll: true });
+    }
+  }
+
+  /** The status summary's "n types have no records": the line opened, the focus on it. */
+  function openNoRecords() {
+    const box = nodataHost.querySelector('.lkp-nodata-box');
+    if (!box) return;
+    box.open = true;
+    box.querySelector('summary')?.focus({ preventScroll: true });
   }
 
   /** The DNSSEC chain of the lookup on screen: { q, panel } (ui/dnssec-panel.js). */
@@ -1586,7 +1720,7 @@ export function mount(container, ctx) {
     results.hidden = false;
     unpinColumns();
     clear(cardsEl);
-    clear(summaryEl); // a new lookup starts with its "No records" line closed
+    summaryParts = null; // a new lookup starts with its "No records" line closed
     const cards = q.types.map((type, i) => makeCard(type, { onRetry: () => retry(i) }));
     cardsEl.append(...cards.map((c) => c.el));
     renderSummary(q, state.responses, null, null);
@@ -1634,7 +1768,7 @@ export function mount(container, ctx) {
       else if (cards[i].el.isConnected) {
         cards[i].el.setAttribute('tabindex', '-1');
         cards[i].el.focus({ preventScroll: true });
-      } else summaryEl.querySelector('.lkp-nodata summary')?.focus();
+      } else nodataHost.querySelector('.lkp-nodata summary')?.focus();
     }
 
     if (preset) {
@@ -1644,7 +1778,10 @@ export function mount(container, ctx) {
       preset.forEach((resp, i) => { if (resp) finish(i, resp); });
       filling = false;
       state.controller = null;
+      // Drawn once more as a finished lookup (the answers above were drawn while it filled in).
+      renderSummary(q, state.responses, state.elapsed, state.finishedAt || state.stoppedAt);
       markStopped();
+      syncRunBar();
       return;
     }
 
@@ -1662,8 +1799,11 @@ export function mount(container, ctx) {
       if (current === state) {
         state.controller = null;
         if (!ctx.signal.aborted) {
+          // Drawn once more as a finished lookup, then said once (the status summary is no live region).
+          renderSummary(q, state.responses, state.elapsed, state.finishedAt || state.stoppedAt);
           markStopped();
           setButtonState(false);
+          announceTotals(q, state.responses);
         }
       }
     }
@@ -1685,20 +1825,33 @@ export function mount(container, ctx) {
   }
 
   function setButtonState(busy) {
-    const doc = globalThis.document;
-    // The keyboard focus follows the button that takes the other's place.
-    const from = doc && (busy ? runBtn : stopBtn).contains(doc.activeElement);
-    setButtonBusy(runBtn, busy);
-    runBtn.hidden = busy;
-    stopBtn.hidden = !busy;
-    if (from) (busy ? stopBtn : runBtn).focus();
+    // The keyboard focus follows the button that takes the other's place (the run bar moves it
+    // before Look up turns busy, which a focused button would not survive).
+    if (busy) {
+      runBar.setRunning(true);
+      setButtonBusy(runBtn, true);
+    } else {
+      setButtonBusy(runBtn, false);
+      runBar.setRunning(false);
+    }
     ctx.setBusy(busy);
+    syncRunBar();
+  }
+
+  /** The totals of a finished lookup, said once: "example.com: 8 types · 9 records · 1 query failed". */
+  function announceTotals(q, responses) {
+    const layout = lookupLayout(q.types, responses);
+    const total = responses.reduce((n, r) => n + (r && r.ok ? r.answers.filter((rr) => rr.type === r.type).length : 0), 0);
+    const failed = responses.filter((r) => r && !r.ok).length;
+    const parts = [t('lkp.sum.types', { count: q.types.length }), t('lkp.sum.records', { count: total }),
+      failed ? t('lkp.count.failed', { count: failed }) : null,
+      layout.noRecords.length ? t('lkp.count.nodata', { count: layout.noRecords.length }) : null].filter(Boolean);
+    announce(`${q.input}: ${parts.join(' · ')}`);
   }
 
   /* --- initial state ------------------------------------------------------------------ */
   if (restored && restored.q && Array.isArray(restored.responses)) {
     run(restored.q, restored.responses, { at: restored.at, elapsed: restored.elapsed });
-    setShareAction();
     // The kept answers under a name carried over from another tool: the box takes the name.
     if (isFillOnly(ctx.params) && ctx.params.name) takeCarried(ctx.params.name);
   } else if (!restored && params.name && !isFillOnly(ctx.params)) {
@@ -1706,6 +1859,7 @@ export function mount(container, ctx) {
     // from another tool (`run=0`) only fills the form.
     Promise.resolve().then(() => start({ auto: true }));
   }
+  syncRunBar();
 
   /** Fill the form from route-style params (`name`, `type`, `resolver`, `dnssec`, `cd`). */
   function fillForm(next) {

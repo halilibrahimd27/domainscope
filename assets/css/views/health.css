@@ -2,251 +2,29 @@
  * views/health.css — "Domain Health" view (.hlt-*).
  */
 
-/* ---- form ------------------------------------------------------------------ */
-
-.hlt-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: end;
-}
-
-.hlt-form .field {
-  min-width: 0;
-}
-
-.hlt-buttons {
-  display: flex;
-  gap: 8px;
-}
-
-.hlt-form-foot {
+/* The page template (ui/template.js, style.css § 4) draws the input, the result header (.hlt-hero) and
+   the empty state; the category scores are its metric strip. This sheet draws the report. */
+.hlt-view {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--stack-gap);
 }
 
-.hlt-examples .link-btn {
-  font-size: 12.5px;
+.hlt-hero-wrap:empty,
+.hlt-error:empty {
+  display: none;
 }
 
-.hlt-options .disclosure-summary {
-  padding: 8px 12px;
-  font-size: 13px;
-}
-
-@media (max-width: 600px) {
-  .hlt-form {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .hlt-buttons .btn {
-    flex: 1;
-  }
-}
-
-.hlt-empty {
-  padding: 8px 0;
-}
-
-/* ---- hero -------------------------------------------------------------------- */
-
-.hlt-hero-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.hlt-hero {
-  --h-accent: var(--ok-solid);
-  position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 18px 24px;
-  align-items: center;
-  padding: 18px 20px;
-  overflow: hidden;
-}
-
-.hlt-hero::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 4px;
-  background: var(--h-accent);
-}
-
-.hlt-hero-warn {
-  --h-accent: var(--warn-solid);
-}
-
-.hlt-hero-error {
-  --h-accent: var(--error-solid);
-}
-
-/* Traffic light: three lamps, the active one lit; the verdict text repeats it. */
-.hlt-light {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 7px;
-  border-radius: 999px;
-  background: var(--surface-3);
+/* The category scores (region 6): a band of figures under the header. */
+.hlt-metrics {
+  padding: var(--space-2) var(--card-pad);
   border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
 }
 
-.hlt-lamp {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--border-strong);
-  opacity: 0.45;
-}
-
-.hlt-lamp-error.is-on {
-  background: var(--error-solid);
-  opacity: 1;
-  box-shadow: 0 0 10px var(--error-solid);
-}
-
-.hlt-lamp-warn.is-on {
-  background: var(--warn-solid);
-  opacity: 1;
-  box-shadow: 0 0 10px var(--warn-solid);
-}
-
-.hlt-lamp-ok.is-on {
-  background: var(--ok-solid);
-  opacity: 1;
-  box-shadow: 0 0 10px var(--ok-solid);
-}
-
-.hlt-hero-main {
-  min-width: 0;
-}
-
-.hlt-hero-domain {
-  font-size: 13px;
-  color: var(--text-3);
-  overflow-wrap: anywhere;
-}
-
-.hlt-hero-verdict {
-  font-size: 22px;
-  font-weight: 750;
-  letter-spacing: -0.01em;
-}
-
-.hlt-hero-error .hlt-hero-verdict {
-  color: var(--error);
-}
-
-.hlt-hero-warn .hlt-hero-verdict {
-  color: var(--warn);
-}
-
-.hlt-hero-ok .hlt-hero-verdict {
-  color: var(--ok);
-}
-
-.hlt-hero-body {
-  margin: 2px 0 10px;
-  font-size: 13.5px;
-  color: var(--text-2);
-}
-
-.hlt-counts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-}
-
-.hlt-count {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-/* Muted, not faded: opacity on the text itself would drop "0 errors" below 4.5:1 in light mode. */
-.hlt-count.is-zero {
-  color: var(--text-3);
-}
-
-.hlt-count.is-zero .sev {
-  opacity: 0.55;
-}
-
-.hlt-hero-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin-top: 8px;
-}
-
-.hlt-hero-side {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 10px;
-}
-
-.hlt-score {
-  display: grid;
-  grid-template-columns: auto auto auto;
-  align-items: baseline;
-  column-gap: 2px;
-  text-align: right;
-}
-
-.hlt-score-value {
-  font-size: 40px;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -0.03em;
-}
-
-.hlt-score-max {
-  font-size: 15px;
-  color: var(--text-3);
-}
-
-.hlt-score-label {
-  grid-column: 1 / -1;
-  font-size: 12px;
-  color: var(--text-3);
-}
-
-.hlt-hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-@media (max-width: 700px) {
-  .hlt-hero {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .hlt-hero-side {
-    grid-column: 1 / -1;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .hlt-hero-actions {
-    justify-content: flex-start;
-  }
-}
-
-.hlt-links a {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+.hlt-waived p {
+  margin: 0;
 }
 
 /* ---- checks -------------------------------------------------------------------- */
@@ -822,11 +600,9 @@
   position: relative;
 }
 
-/* Print (style.css hides the shell and every control): leave out the form, the empty state and the links to other tools. */
+/* Print (style.css hides the shell, every control and the template's input, actions and links): leave out the empty state. */
 @media print {
-  .hlt-form-card,
-  .hlt-empty,
-  .hlt-links {
+  .hlt-empty {
     display: none;
   }
 
@@ -836,8 +612,8 @@
     white-space: nowrap;
   }
 
-  /* The traffic light is drawn with backgrounds, which paper leaves out by default. */
-  .hlt-light {
+  /* The grade is drawn on its tint, which paper leaves out by default. */
+  .hlt-hero .result-grade {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
@@ -900,63 +676,7 @@
   }
 }
 
-/* --- Domain Health v2 (SPEC §5.78): the grade, problems first, the Web card (.hv2-*) --- */
-.hlt-grade {
-  align-self: center;
-  margin-right: 10px;
-  min-width: 44px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 30px;
-  font-weight: 800;
-  line-height: 1.2;
-  text-align: center;
-  color: var(--ok);
-  background: var(--ok-bg);
-  border: 1px solid var(--ok-border);
-}
-
-.hlt-grade-B,
-.hlt-grade-C {
-  color: var(--warn);
-  background: var(--warn-bg);
-  border-color: var(--warn-border);
-}
-
-.hlt-grade-D,
-.hlt-grade-E,
-.hlt-grade-F {
-  color: var(--error);
-  background: var(--error-bg);
-  border-color: var(--error-border);
-}
-
-.hv2-chips {
-  gap: 6px;
-}
-
-.hv2-chip {
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--ok-border);
-  background: var(--ok-bg);
-  color: var(--ok);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.hv2-chip-warn {
-  border-color: var(--warn-border);
-  background: var(--warn-bg);
-  color: var(--warn);
-}
-
-.hv2-chip-error {
-  border-color: var(--error-border);
-  background: var(--error-bg);
-  color: var(--error);
-}
-
+/* --- Domain Health v2 (SPEC §5.78): problems first, the Web card (.hv2-*) --- */
 .hv2-cap,
 .hv2-how {
   margin: 4px 0 0;
@@ -1145,11 +865,6 @@
 }
 
 @media (max-width: 640px) {
-  .hlt-grade {
-    font-size: 24px;
-    min-width: 36px;
-  }
-
   .hv2-problem {
     padding: 8px;
   }

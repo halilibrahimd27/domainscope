@@ -553,9 +553,11 @@ hr {
     "nav main";
 }
 
-/* A field focused from the keyboard ('/', a start-page job) never lands under the sticky header. */
+/* A field focused from the keyboard ('/', a start-page job) never lands under the sticky header,
+   nor under the phone's floating run bar (ui/template.js RunBar sets --run-bar-h while it shows). */
 :root {
   scroll-padding-top: calc(var(--header-h) + 8px);
+  scroll-padding-bottom: var(--run-bar-h, 0px);
 }
 
 /* Header (docs/DESIGN.md §3.2), one row at every width: the brand, the Tools button (below
@@ -2131,7 +2133,7 @@ button.nav-status:hover {
 }
 
 /* Buttons: heights from the density tokens (--btn-h, --btn-h-sm, --btn-h-lg; 40 px and more on
-   touch screens). A view may set --btn-h on one button of its own (.sub-run-btn). */
+   touch screens). A view may set --btn-h on one button of its own. */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -4406,6 +4408,735 @@ button.nav-status:hover {
     font-family: var(--font-sans);
     font-size: 12px;
     font-weight: 600;
+  }
+}
+
+/* ---- Page template (ui/template.js; docs/DESIGN.md §5): the regions every tool shares --------- */
+
+/* Region 2: the tool's input. One card; compact from the moment a run starts (one row: the field,
+   the summary line with Edit, Run); the privacy note stays. */
+.tool-input {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--card-pad);
+}
+
+.tool-input-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  grid-auto-columns: auto;
+  align-items: start;
+  gap: var(--space-2) var(--space-3);
+}
+
+/* One label line, so Run and the summary can drop by exactly that much (below). */
+.tool-input-fields .field-label {
+  line-height: var(--lh-sm);
+}
+
+/* Run is as tall as the box beside it. */
+.tool-input-fields > .run-bar {
+  --btn-h: var(--field-h);
+}
+
+.tool-input-primary,
+.tool-input-inline {
+  min-width: 0;
+}
+
+.tool-input-inline {
+  display: flex;
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.tool-input-inline > .field {
+  min-width: 200px;
+  max-width: 300px;
+}
+
+.tool-input-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 360px;
+  min-height: var(--field-h);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
+}
+
+/* While the labels show, Run and the summary line drop by one label line and the field's 6 px gap:
+   they sit on the box's row, and a hint or an error under the box does not move them. */
+@media (min-width: 720px) {
+  .tool-input:is(:not(.is-compact), .is-editing) .tool-input-fields:has(.field-label) > :is(.run-bar, .tool-input-summary) {
+    margin-top: calc(var(--lh-sm) + 6px);
+  }
+}
+
+.tool-input-summary-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-input-edit {
+  flex: none;
+  font-size: var(--fs-xs);
+}
+
+.tool-input-notes:empty {
+  display: none;
+}
+
+.tool-input-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.tool-input-more {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.tool-input-extras {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+
+.tool-input-extras > .disclosure {
+  flex: 1 1 100%;
+}
+
+.tool-input-foot {
+  margin-top: calc(var(--space-1) * -1);
+}
+
+/* Compact: the labels and hints of the primary field are for screen readers only (Edit shows the
+   whole form again, labels included); the optional fields and the extras wait behind Edit. */
+.tool-input.is-compact:not(.is-editing) .tool-input-primary .field-label,
+.tool-input.is-compact:not(.is-editing) .tool-input-primary .field-hint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.tool-input.is-compact:not(.is-editing) .tool-input-inline,
+.tool-input.is-compact:not(.is-editing) .tool-input-more {
+  display: none;
+}
+
+/* Region 2's footer: what is sent and to whom, in one quiet line (principle 6). */
+.privacy-note {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
+}
+
+.privacy-note-icon {
+  flex: none;
+  color: var(--text-3);
+  transform: translateY(2px);
+}
+
+.privacy-note-link {
+  white-space: nowrap;
+}
+
+/* "Try:" and the example chips: they fill the form and send nothing. */
+.example-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.example-chips-label {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.options-label {
+  font-weight: var(--fw-semibold);
+}
+
+.options-summary {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
+}
+
+/* Region 3: Run and Stop take turns in one slot. */
+.run-bar {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.run-bar[hidden] {
+  display: none;
+}
+
+/* The phone's floating copy (RunBar): at the bottom while the inline Run is out of view. */
+.run-bar-float {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: var(--z-sticky);
+  padding: var(--space-2) max(var(--page-x-phone), env(safe-area-inset-right, 0px)) calc(var(--space-2) + env(safe-area-inset-bottom, 0px))
+    max(var(--page-x-phone), env(safe-area-inset-left, 0px));
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 -10px 24px -14px var(--backdrop);
+}
+
+.run-bar-float-btn {
+  width: 100%;
+}
+
+.run-bar-float-icon {
+  display: inline-flex;
+}
+
+@media (min-width: 720px) {
+  .run-bar-float {
+    display: none !important;
+  }
+}
+
+/* Region 4: the result header. */
+.result-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--card-pad);
+}
+
+.result-top {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3) var(--space-4);
+}
+
+.result-titles {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.result-title {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-lg);
+  overflow-wrap: anywhere;
+}
+
+.result-title:focus {
+  outline: none;
+}
+
+.result-title:focus-visible {
+  border-radius: var(--radius-xs);
+  outline: var(--focus-w) solid var(--focus);
+  outline-offset: var(--focus-offset);
+}
+
+.result-title-text {
+  min-width: 0;
+}
+
+.result-sev {
+  display: inline-flex;
+  flex: none;
+  height: var(--lh-lg);
+  align-items: center;
+  color: var(--text-3);
+}
+
+.result-sev.sev-error {
+  color: var(--error);
+}
+
+.result-sev.sev-warn {
+  color: var(--warn);
+}
+
+.result-sev.sev-info {
+  color: var(--info);
+}
+
+.result-sev.sev-ok {
+  color: var(--ok);
+}
+
+.result-spinner {
+  flex: none;
+  margin-top: 4px;
+  color: var(--accent);
+}
+
+.result-subject.mono {
+  font-size: 0.95em;
+}
+
+.result-key {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* A key metric of a grade and a score ("B 89/100"): the grade on its status tint, never on a
+   solid fill (DESIGN §6.2). */
+.result-score {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.result-grade {
+  display: inline-grid;
+  min-width: 32px;
+  height: 32px;
+  place-items: center;
+  align-self: center;
+  margin-right: var(--space-1);
+  border: 1px solid var(--neutral-border);
+  border-radius: var(--radius);
+  background: var(--neutral-bg);
+  color: var(--neutral);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+}
+
+.result-grade[data-severity="ok"] {
+  border-color: var(--ok-border);
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.result-grade[data-severity="warn"] {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.result-grade[data-severity="error"] {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.result-score-value {
+  color: var(--text);
+  font-size: var(--fs-2xl);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-2xl);
+}
+
+.result-score-max {
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+
+.result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--space-3);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
+}
+
+.result-meta > * {
+  min-width: 0;
+}
+
+.result-head .page-kept {
+  margin-top: var(--space-1);
+}
+
+.result-progress .progress-track {
+  height: 4px;
+}
+
+.result-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* Notes come and go: an empty note, or a notes row with none to show, takes no room and no gap
+   (a live region therefore never sits in the notes; it would fall silent with them). */
+.result-notes > :empty,
+.result-notes:not(:has(> :not(:empty, [hidden]))) {
+  display: none;
+}
+
+.result-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+
+.result-actions-slot {
+  margin-left: auto;
+}
+
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* The status summary (DESIGN §5.4): "icon count label"; a filter is a toggle, pressed in neutral. */
+.status-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+button.status-item {
+  background: none;
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+button.status-item:hover {
+  border-color: var(--border);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+button.status-item[aria-pressed="true"] {
+  border-color: var(--border-control);
+  background: var(--surface-selected);
+  color: var(--text);
+}
+
+.status-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.status-icon.sev-error {
+  color: var(--error);
+}
+
+.status-icon.sev-warn {
+  color: var(--warn);
+}
+
+.status-icon.sev-info {
+  color: var(--info);
+}
+
+.status-icon.sev-ok {
+  color: var(--ok);
+}
+
+.status-dot {
+  color: var(--text-3);
+  font-weight: var(--fw-bold);
+}
+
+.next-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin-left: calc(var(--space-2) * -1);
+}
+
+.result-related {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--space-3);
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+
+.related-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent-text);
+}
+
+.related-link .icon {
+  flex: none;
+}
+
+/* Region 6: the metric strip — figures, not boxes; colour only on an error or warn value. */
+.metric-strip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.metric-list {
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+  margin: 0;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  min-width: 0;
+  min-height: 56px;
+  padding: 0 var(--space-5);
+  border-left: 1px solid var(--border);
+}
+
+.metric:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.metric-label {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
+}
+
+.metric-value {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-xl);
+}
+
+.metric-value.metric-error {
+  color: var(--error);
+}
+
+.metric-value.metric-warn {
+  color: var(--warn);
+}
+
+.metric-hint {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-xs);
+}
+
+.metric-zero {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+/* The empty result region: no card, a small icon, one line and the chips of what it checks. */
+.tool-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  color: var(--text-2);
+}
+
+.tool-empty-icon {
+  display: grid;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-3);
+}
+
+.tool-empty-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-top: 5px;
+}
+
+.tool-empty-message {
+  margin: 0;
+  max-width: 80ch;
+  font-size: var(--fs-md);
+  line-height: var(--lh-md);
+}
+
+.tool-empty-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tool-empty-check {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.tool-empty-action {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+/* Phones: one column of fields with a full-width Run; compact, the field over the summary and Run;
+   the figures two to a row. */
+@media (max-width: 719px) {
+  .tool-input-fields {
+    grid-auto-flow: row;
+  }
+
+  .tool-input-inline {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .tool-input-inline > .field {
+    max-width: none;
+  }
+
+  .tool-input-fields .run-bar > .btn {
+    flex: 1;
+  }
+
+  /* Compact: the field and Run on one row, the summary line and Edit under them. */
+  .tool-input.is-compact .tool-input-fields {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .tool-input.is-compact .tool-input-primary {
+    grid-row: 1;
+    grid-column: 1;
+  }
+
+  .tool-input.is-compact .tool-input-fields > .run-bar {
+    grid-row: 1;
+    grid-column: 2;
+  }
+
+  .tool-input.is-compact .tool-input-fields > .run-bar > .btn {
+    flex: none;
+  }
+
+  .tool-input.is-compact .tool-input-inline,
+  .tool-input.is-compact .tool-input-summary {
+    grid-column: 1 / -1;
+  }
+
+  .tool-input.is-compact .tool-input-summary {
+    max-width: none;
+    min-height: 0;
+  }
+
+  /* Editing, the label is back above the box: Run, beside the box, drops by its line. */
+  .tool-input.is-compact.is-editing .tool-input-fields:has(.field-label) > .run-bar {
+    margin-top: calc(var(--lh-sm) + 6px);
+  }
+
+  .result-top {
+    flex-wrap: wrap;
+  }
+
+  .result-actions-slot {
+    margin-left: 0;
+  }
+
+  .result-actions {
+    justify-content: flex-start;
+  }
+
+  .metric-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metric {
+    min-height: 48px;
+    padding: 0 var(--space-3);
+  }
+
+  .metric:nth-child(odd) {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
+@media (forced-colors: active) {
+  button.status-item[aria-pressed="true"] {
+    border-color: Highlight;
+  }
+}
+
+@media print {
+  .tool-input,
+  .tool-empty,
+  .result-actions,
+  .result-next,
+  .result-related,
+  .run-bar-float {
+    display: none !important;
+  }
+
+  .result-head {
+    break-inside: avoid;
   }
 }
 

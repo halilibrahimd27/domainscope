@@ -1,7 +1,8 @@
 /**
  * subtabs.js — the Subdomains results as tabs, as data: which tab a run opens and when an
- * automatic choice moves on, the live counts on the tab labels, the Overview's summary alerts,
- * and where a host name may wrap on a narrow screen.
+ * automatic choice moves on, the live counts on the tab labels, the result header's status
+ * summary (and the Hosts filter each item opens), the Overview's summary alerts, and where a host
+ * name may wrap on a narrow screen.
  *
  * Pure: no DOM, storage, network, clock or i18n. views/subdomains.js feeds it counts and the
  * run's state, and turns the results into tabs, badges, alerts and text runs.
@@ -104,6 +105,27 @@ export function summaryAlerts({ status = 'running', counts = {}, failedSources =
     if (w && typeof w.code === 'string' && w.code) out.push({ key: w.code, variant: 'warn', detail: w.detail === undefined ? '' : String(w.detail) });
   }
   return out;
+}
+
+/**
+ * The Subdomains run's status summary (docs/DESIGN.md §5.4, §5.6): the hosts found, those that
+ * resolve, those behind a CDN (Cloudflare, another CDN or a platform: their origin is hidden),
+ * those that do not resolve and the passive sources that failed — items for lib/template.js
+ * statusItems. Each item's `filter` is the Hosts table's filter it opens (views/subdomains.js
+ * FILTERS), or null for the Sources tab.
+ * @param {{ counts?: { found?: number, resolving?: number, cloudflare?: number, cdn?: number, unresolved?: number },
+ *   failedSources?: number }} [input] `counts`: views/subdomains.js countHosts
+ * @returns {Array<{ key: string, severity: 'error'|'warn'|'info'|'neutral', count: number, filter: string|null, tab: string }>}
+ */
+export function subStatus({ counts = {}, failedSources = 0 } = {}) {
+  const c = counts || {};
+  return [
+    { key: 'found', severity: 'neutral', count: count(c.found), filter: 'all', tab: 'hosts' },
+    { key: 'resolving', severity: 'neutral', count: count(c.resolving), filter: 'resolving', tab: 'hosts' },
+    { key: 'behind', severity: 'info', count: count(c.cloudflare) + count(c.cdn), filter: 'behind', tab: 'hosts' },
+    { key: 'unresolved', severity: 'warn', count: count(c.unresolved), filter: 'unresolved', tab: 'hosts' },
+    { key: 'sources', severity: 'error', count: count(failedSources), filter: null, tab: 'sources' }
+  ];
 }
 
 /**

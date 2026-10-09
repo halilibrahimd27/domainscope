@@ -25,7 +25,7 @@
  */
 
 import { h } from './dom.js';
-import { CopyButton, Modal } from './components.js';
+import { CopyButton, Modal, copyText, toast } from './components.js';
 import { t, getLang, registerStrings } from '../i18n.js';
 import { SUMMARY_CORE_I18N, buildSummary, renderSummary } from '../lib/summarycore.js';
 
@@ -115,16 +115,19 @@ export function showSummaryFallback(text) {
 /**
  * "Copy summary" (Markdown) + "Plain text" for one view's result.
  * @param {{ kind: string, facts: () => object|null, url?: string|(() => string|null)|null, inventory?: false|'names'|'count',
- *   disabled?: boolean, size?: 'sm'|'md', className?: string }} opts
+ *   disabled?: boolean, size?: 'sm'|'md', className?: string, plainLabel?: string|null }} opts
  *   `kind`: a lib/summary SUMMARY_KINDS view id; `facts`: the builder's facts, read at click time
  *   (null while there is no finished result: nothing is copied); `url`: the permalink of that
  *   result (built from the result, not from the route); `inventory`: what the summary takes from
  *   the server list, which the tooltip says — 'names' (servers by name) or 'count' (how many
  *   addresses are in it); `disabled`: the initial state (the view calls setDisabled as its run
- *   starts and finishes)
- * @returns {{ el: HTMLElement, setDisabled(disabled: boolean): void, text(format?: 'markdown'|'text'): string }}
+ *   starts and finishes); `plainLabel`: "Plain text" becomes the ¶ icon button of the page
+ *   template's result header (docs/DESIGN.md §5.3) with this accessible name and tooltip
+ * @returns {{ el: HTMLElement, markdown: HTMLButtonElement, plain: HTMLButtonElement, setDisabled(disabled: boolean): void,
+ *   text(format?: 'markdown'|'text'): string, copy(format?: 'markdown'|'text'): Promise<boolean> }}
+ *   `copy`: what the buttons do, for a menu item (the phone's "⋯": a toast says it, or the dialog)
  */
-export function SummaryButton({ kind, facts, url = null, inventory = false, disabled = false, size = 'sm', className = '' }) {
+export function SummaryButton({ kind, facts, url = null, inventory = false, disabled = false, size = 'sm', className = '', plainLabel = null }) {
   const link = () => (typeof url === 'function' ? url() : url) || null;
   const text = (format = 'markdown') => {
     const f = facts();
@@ -142,8 +145,10 @@ export function SummaryButton({ kind, facts, url = null, inventory = false, disa
   });
   markdown.dataset.action = 'copy-summary';
   const plain = CopyButton(() => text('text'), {
-    label: t('sum.btn.plain'),
-    title: t('sum.btn.plainTip'),
+    label: plainLabel || t('sum.btn.plain'),
+    iconOnly: !!plainLabel,
+    icon: plainLabel ? 'pilcrow' : 'copy',
+    title: plainLabel || t('sum.btn.plainTip'),
     size,
     variant: 'ghost',
     toastOnCopy: t('sum.copiedPlain'),
@@ -155,11 +160,21 @@ export function SummaryButton({ kind, facts, url = null, inventory = false, disa
   permalinks.set(el, () => (facts() ? link() : null));
   const api = {
     el,
+    markdown,
+    plain,
     setDisabled(disabled) {
       markdown.disabled = !!disabled;
       plain.disabled = !!disabled;
     },
-    text
+    text,
+    async copy(format = 'markdown') {
+      const str = text(format);
+      if (!str) return false;
+      const ok = await copyText(str);
+      if (ok) toast(t(format === 'text' ? 'sum.copiedPlain' : 'sum.copied'), { type: 'success', timeout: 2000 });
+      else showSummaryFallback(str);
+      return ok;
+    }
   };
   api.setDisabled(disabled);
   return api;

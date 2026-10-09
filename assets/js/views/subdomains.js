@@ -2,9 +2,10 @@
  * views/subdomains.js — "Subdomains": the search-first page for the most common question,
  * "which subdomains does this domain have, and where do they point?".
  *
- * - Hero: one large domain box (URLs, hostnames and several domains are accepted; a leading
- *   `www.` is dropped, any other subdomain is kept and scopes the scan to that branch), a
- *   prominent Scan button (Enter works too), example chips, a "try a wordlist" switch and an
+ * - The input (the page template's ToolInput, ui/template.js; `.sub-hero` stays its class): the
+ *   domain box (URLs, hostnames and several domains are accepted; a leading `www.` is dropped,
+ *   any other subdomain is kept and scopes the scan to that branch), Scan on its row (Enter works
+ *   too), example chips that fill the box, a "try a wordlist" switch and an
  *   "Advanced" disclosure (passive sources with quota notes, wordlist level Off / Small /
  *   Smart / Large / Huge with exact candidate counts, the locale packs the typed domain gets and
  *   a time estimate, languages / markets (automatic from the domain ending or chosen), a custom
@@ -13,16 +14,18 @@
  *   its later targets — never at level Off), permutations + budget, origin hints, expired
  *   certificates, extra hostnames; the plan counts every wildcard base too).
  *   The options are remembered per browser (a stored legacy 'medium' level loads as 'smart').
+ *   Compact from the first scan: the box, the options' summary line with Edit, Run again.
  * - Runs lib/scanner.runScan (the DNS-first discovery engine) without a certificate: stages
  *   (sources, DNS records, wildcard, wordlist, permutations, resolve, origin hints), per-source
  *   chips with clear status texts (quota used up, temporarily down + CT fallback …) and a
  *   progress bar while it runs; hosts stream into the table as they resolve. Cancel aborts
  *   through an AbortController.
- * - Results in tabs under the run's header (title, time, progress bar), with live counts on the
- *   tab labels (lib/subtabs): Overview — stat cards (click to filter the hosts), the summary
- *   alerts, "found through DNS / from sources" technique chips and a hand-over to "SSL Targets";
- *   Hosts — copy / names.txt / CSV / JSON exports, a filter bar (All / Resolving / Cloudflare /
- *   Direct / Not resolving + search) and the table (subdomain → DNS lookup, IPs → IP Intel,
+ * - Results in tabs under the run's result header (ui/subdomains-run.js: title, time, progress
+ *   bar, the counts as filters, Copy summary / Export ▾ / Copy link, the next steps "Find
+ *   certificate targets" and Bulk Resolve), with live counts on the tab labels (lib/subtabs):
+ *   Overview — the summary alerts, "found through DNS / from sources" technique chips and the
+ *   takeover card; Hosts — the kind counts (a read-only metric strip), copy all names, the Show
+ *   select and search, and the table (subdomain → DNS lookup, IPs → IP Intel,
  *   classification with the translated reason, CNAME chain, how each name was found, matching
  *   inventory server; wildcard suspects hidden by default; on a phone each row is a card whose
  *   names wrap only after a dot and whose IPs never break); Origins — the ORIGIN panel for
@@ -40,12 +43,12 @@
  * scan finished in the background).
  *
  * "Copy summary" in the run's header, so every tab has it (ui/summary-button.js,
- * subdomainsSummaryFacts): the stat cards, the proxied hosts with their origin candidates and the
+ * subdomainsSummaryFacts): the counts, the proxied hosts with their origin candidates and the
  * dangling CNAMEs as Markdown for Jira / Slack, or plain text; a cancelled scan's summary says
  * what it found, without origin candidates.
  *
  * Route params: `#/subdomains?domain=example.com` (comma-separated or repeated) pre-fills the
- * box. A shared link with `&run=1` (the header's "Copy link") pre-fills it and offers a one-click
+ * box. A shared link with `&run=1` (the result header's "Copy link") pre-fills it and offers a one-click
  * "Start scan" prompt — a link never starts a scan (third-party quotas, thousands of DNS
  * queries) on its own. Starting a scan writes only `domain` into the URL (replaceState), so a
  * reload or a restored tab pre-fills the box instead of silently scanning again. Picking a results
@@ -59,9 +62,11 @@
 
 import { h, clear, uid, debounce, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, CopyButton, Disclosure, ErrorBanner, Icon, SegmentedControl, checkbox, checkboxGroup, decodeText,
+  Alert, Badge, Button, Disclosure, ErrorBanner, Icon, SegmentedControl, checkbox, checkboxGroup, decodeText,
   radioGroup, select, textInput, textarea, toast
 } from '../ui/components.js';
+import { EmptyState, ExampleChips, PrivacyNote, ResultHeader, ResultTitle, RunBar, ToolInput } from '../ui/template.js';
+import { inputCompact, templateState } from '../lib/template.js';
 import { t, registerStrings, hasString, formatNumber, formatDate, formatBytes } from '../i18n.js';
 import {
   normalizeHostname, stripWildcard, registrableDomain, isPublicSuffix, isSubdomainOf, parseHostList, sortHostnames,
@@ -125,8 +130,8 @@ export const CUSTOM_FILE_MAX_BYTES = 5 * 1024 * 1024;
 export const SHELLS = Object.freeze(['posix', 'powershell']);
 /** Python launcher per shell (the CLI needs Python 3.8+). */
 export const PYTHON_FOR_SHELL = Object.freeze({ posix: 'python3', powershell: 'python' });
-/** Every table filter (stat cards can pick the last two too). */
-export const FILTERS = Object.freeze(['all', 'resolving', 'cloudflare', 'direct', 'unresolved', 'cdn', 'dangling']);
+/** Every table filter: the Hosts toolbar's Show select offers all but the last, which the status summary's "behind a CDN" picks. */
+export const FILTERS = Object.freeze(['all', 'resolving', 'cloudflare', 'direct', 'unresolved', 'cdn', 'dangling', 'behind']);
 /** Example chips under the search box. */
 export const EXAMPLES = Object.freeze(['github.com', 'cloudflare.com', 'wikipedia.org']);
 /**
@@ -157,15 +162,14 @@ const WORDLIST_INFO = wordlistInfo();
 /* ------------------------------------------------------------------------ */
 
 registerStrings('en', {
-  'sub.hero.title': 'Which domain should we scan?',
-  'sub.hero.desc': 'DNS first: the domain’s own records, a smart wordlist and variations of every name found are checked over DNS-over-HTTPS, then Certificate Transparency and passive DNS fill the gaps — right in your browser, which never connects to the domain’s servers.',
+  'sub.input.label': 'Domain',
+  'sub.emptyLine': 'The subdomains found, where each one points and which ones a proxy hides, with how each was found.',
   'sub.input.placeholder': 'example.com',
   'sub.input.hint': 'A domain, a URL or a subdomain. Separate several domains with spaces or commas.',
   'sub.run': 'Scan',
   'sub.cancel': 'Cancel',
   'sub.link.prompt': 'This link opens a scan of {domains}. It starts when you click — it queries the passive sources and public DNS resolvers from your browser.',
   'sub.link.start': 'Start scan',
-  'sub.examples': 'Try:',
   'sub.scope': 'Only names under {name} are listed.',
   'sub.scopeAll': 'Scan all of {domain}',
   'sub.err.required': 'Enter a domain, e.g. example.com.',
@@ -402,15 +406,14 @@ registerStrings('en', {
 });
 
 registerStrings('tr', {
-  'sub.hero.title': 'Hangi alan adını tarayalım?',
-  'sub.hero.desc': 'Önce DNS: alan adının kendi kayıtları, akıllı kelime listesi ve bulunan her adın varyasyonları DNS-over-HTTPS ile denenir; Certificate Transparency ve pasif DNS boşlukları doldurur — hepsi tarayıcınızda; tarayıcınız alan adının sunucularına hiç bağlanmaz.',
+  'sub.input.label': 'Alan adı',
+  'sub.emptyLine': 'Bulunan subdomain’ler, her birinin nereye işaret ettiği ve hangilerini bir proxy’nin gizlediği; her birinin nasıl bulunduğuyla.',
   'sub.input.placeholder': 'ornek.com.tr',
   'sub.input.hint': 'Alan adı, URL ya da bir subdomain yazın. Birden fazla alan adını boşluk veya virgülle ayırın.',
   'sub.run': 'Tara',
   'sub.cancel': 'İptal et',
   'sub.link.prompt': 'Bu bağlantı {domains} için bir tarama açar. Siz tıklayınca başlar — pasif kaynaklar ve genel DNS çözümleyicileri tarayıcınızdan sorgulanır.',
   'sub.link.start': 'Taramayı başlat',
-  'sub.examples': 'Deneyin:',
   'sub.scope': 'Yalnızca {name} altındaki adlar listelenir.',
   'sub.scopeAll': '{domain} alan adının tamamını tara',
   'sub.err.required': 'Bir alan adı girin, ör. ornek.com.tr.',
@@ -2079,6 +2082,8 @@ export function matchesFilter(host, filter) {
     case 'direct': return c.kind === 'direct' || c.kind === 'private';
     case 'unresolved': return c.kind === 'unresolved' || c.kind === 'nxdomain';
     case 'dangling': return !!c.dangling;
+    // Behind a CDN (the status summary's item): Cloudflare, another CDN or a platform — the origin is hidden.
+    case 'behind': return c.kind === 'cloudflare' || c.kind === 'cdn' || c.kind === 'platform';
     default: return true;
   }
 }
@@ -2492,6 +2497,8 @@ export function mount(container, ctx) {
   const cleanups = [];
   let options = loadOptions();
   let lastBf = options.bruteforce !== 'off' ? options.bruteforce : 'smart';
+  /** The input card (ui/template.js ToolInput), once built: its compact row repeats the Advanced summary. */
+  let toolInput = null;
 
   /* --- route params -------------------------------------------------------- */
   const fromRoute = routeTargets(ctx.searchParams, ctx.params);
@@ -2522,11 +2529,11 @@ export function mount(container, ctx) {
     if (!fromRoute.length && namesIntent.domains.length) session.text = namesIntent.domains.join(', ');
   }
 
-  /* --- hero: search box ------------------------------------------------------ */
+  /* --- region 2: the input (ui/template.js ToolInput) ------------------------------ */
   const inputId = uid('sub-domain');
-  const titleId = `${inputId}-title`;
   const domainField = textInput({
     id: inputId,
+    label: t('sub.input.label'),
     value: session.text,
     placeholder: t('sub.input.placeholder'),
     hint: t('sub.input.hint'),
@@ -2540,6 +2547,7 @@ export function mount(container, ctx) {
       renderScope();
       renderZoneChip();
       renderDomainDependent();
+      syncRunBar();
     },
     onEnter: () => start()
   });
@@ -2551,53 +2559,62 @@ export function mount(container, ctx) {
     if (options.locales === null) renderLangs();
     renderAdvSummary();
   }, 120);
-  const runBtn = Button({ label: t('sub.run'), icon: 'search', variant: 'primary', size: 'lg', className: 'sub-run-btn', dataset: { action: 'sub-run', shortcut: 'submit' }, onClick: () => start() });
-  const cancelBtn = Button({ label: t('sub.cancel'), icon: 'stop', variant: 'secondary', size: 'lg', className: 'sub-run-btn', dataset: { action: 'sub-cancel', shortcut: 'cancel' }, onClick: () => cancel() });
-  cancelBtn.hidden = true;
+  const runBar = RunBar({
+    label: t('sub.run'),
+    dataset: { action: 'sub-run', shortcut: 'submit' },
+    stopLabel: t('sub.cancel'),
+    stopDataset: { action: 'sub-cancel', shortcut: 'cancel' },
+    onRun: () => start(),
+    onStop: () => cancel(),
+    hasValue: () => !!domainField.value.trim(),
+    className: 'sub-search-buttons'
+  });
   const scopeNote = h('div', { class: 'sub-scope text-sm', hidden: true });
   const formError = h('div', { class: 'sub-form-error' });
-  // A shared link (`&run=1`) pre-fills the box and waits for one click: a link alone never
-  // starts the scan's thousands of DNS queries and third-party source calls.
-  const linkPrompt = h('div', { class: 'sub-link-prompt', hidden: true });
+  // A shared link (`&run=1`) pre-fills the box and waits for one click (the template's ready state,
+  // in region 4's place): a link alone never starts the scan's thousands of DNS queries and
+  // third-party source calls.
+  const prompt = ResultHeader({ className: 'result-ready sub-link-prompt' });
+  prompt.setState('ready');
+  const linkPrompt = prompt.el;
+  linkPrompt.hidden = true;
   // A Zone File "Scan now" that arrived while another scan was running waits for it, with its
   // prompt in the same place: `{ zone }` (the zone it scans), null when none waits. Hiding the
   // prompt drops it.
   let zoneStartAfter = null;
 
   function showLinkPrompt(domains) {
-    clear(linkPrompt);
+    zoneStartAfter = null;
     linkPrompt.hidden = false;
-    linkPrompt.append(Alert({
-      variant: 'info',
-      icon: 'link',
-      compact: true,
-      message: t('sub.link.prompt', { domains: domains.join(', ') }),
-      actions: [Button({ label: t('sub.link.start'), icon: 'search', variant: 'primary', size: 'sm', dataset: { action: 'sub-link-start' }, onClick: () => start() })]
-    }));
+    linkPrompt.dataset.prompt = 'link';
+    prompt.set('title', ResultTitle({ icon: 'link', text: t('sub.link.prompt', { domains: domains.join(', ') }) }));
+    prompt.set('actions', h('div', { class: 'result-actions' },
+      Button({ label: t('sub.link.start'), icon: 'play', variant: 'primary', size: 'sm', dataset: { action: 'sub-link-start' }, onClick: () => start() })));
+    // One primary button at a time: Start scan leads, Scan steps back.
+    runBar.setPrimary(false);
+    syncRunBar();
   }
 
   function showZoneBusyPrompt(zone) {
     zoneStartAfter = { zone };
-    clear(linkPrompt);
     linkPrompt.hidden = false;
-    const alert = Alert({
-      variant: 'info',
+    linkPrompt.dataset.prompt = 'zone-busy';
+    prompt.set('title', ResultTitle({
       icon: 'file-text',
-      compact: true,
-      message: t('sub.zone.busy', { running: session.run.config.domains.join(', '), domain: parseTargets(domainField.value).domains.join(', ') }),
-      actions: [
-        Button({ label: t('sub.zone.busy.cancel'), icon: 'stop', variant: 'primary', size: 'sm', dataset: { action: 'sub-zone-cancel' }, onClick: () => cancel() }),
-        Button({ label: t('sub.zone.busy.dismiss'), variant: 'secondary', size: 'sm', dataset: { action: 'sub-zone-dismiss' }, onClick: () => hideLinkPrompt() })
-      ]
-    });
-    alert.dataset.prompt = 'zone-busy';
-    linkPrompt.append(alert);
+      text: t('sub.zone.busy', { running: session.run.config.domains.join(', '), domain: parseTargets(domainField.value).domains.join(', ') })
+    }));
+    prompt.set('actions', h('div', { class: 'result-actions' },
+      Button({ label: t('sub.zone.busy.cancel'), icon: 'stop', variant: 'primary', size: 'sm', dataset: { action: 'sub-zone-cancel' }, onClick: () => cancel() }),
+      Button({ label: t('sub.zone.busy.dismiss'), variant: 'secondary', size: 'sm', dataset: { action: 'sub-zone-dismiss' }, onClick: () => hideLinkPrompt() })));
   }
 
   function hideLinkPrompt() {
     zoneStartAfter = null;
-    clear(linkPrompt);
     linkPrompt.hidden = true;
+    delete linkPrompt.dataset.prompt;
+    prompt.set('title', null);
+    prompt.set('actions', null);
+    runBar.setPrimary(true);
   }
 
   // "Zone file loaded" chip: shown while the imported zone belongs to a typed domain.
@@ -2684,23 +2701,22 @@ export function mount(container, ctx) {
       }, t('sub.scopeAll', { domain: reg })));
   }
 
-  const examples = h('div', { class: 'sub-examples' },
-    h('span', { class: 'sub-examples-label' }, t('sub.examples')),
-    EXAMPLES.map((d) => h('button', {
-      type: 'button',
-      class: 'sub-example mono',
-      dataset: { example: d },
-      on: {
-        click: () => {
-          if (isRunning()) return;
-          domainField.value = d;
-          session.text = d;
-          domainField.setError(null);
-          renderScope();
-          start();
-        }
-      }
-    }, d)));
+  // An example fills the box and leaves the keyboard on Scan: nothing is sent before that click.
+  const examples = ExampleChips({
+    className: 'sub-examples',
+    examples: EXAMPLES,
+    onPick: (d) => {
+      if (isRunning()) return;
+      domainField.value = d;
+      session.text = d;
+      domainField.setError(null);
+      hideLinkPrompt();
+      renderScope();
+      renderDomainDependent();
+      syncRunBar();
+    },
+    focus: () => (isRunning() ? null : runBar.run)
+  });
 
   /* --- quick toggle + advanced options ---------------------------------------- */
   const wordlistLabel = h('span');
@@ -3168,6 +3184,7 @@ export function mount(container, ctx) {
       options.includeExpired ? t('sub.sum.expired') : null,
       extras ? t('sub.sum.extra', { count: extras }) : null
     ].filter(Boolean).join(' · ');
+    if (toolInput) toolInput.refresh();
   }
 
   function renderDoh() {
@@ -3183,38 +3200,56 @@ export function mount(container, ctx) {
       h('span', { class: 'sub-doh-spread' }, t('sub.opt.dohSpread')));
   }
 
-  const hero = h('section', { class: 'sub-hero card', attrs: { 'aria-labelledby': titleId } },
-    h('div', { class: 'sub-hero-head' },
-      h('h2', { class: 'sub-hero-title', id: titleId }, h('label', { for: inputId }, t('sub.hero.title'))),
-      h('p', { class: 'sub-hero-desc' }, t('sub.hero.desc'))),
-    h('div', { class: 'sub-search' },
-      h('div', { class: 'sub-search-box' }, Icon('search', { size: 18, className: 'sub-search-icon' }), domainField.el),
-      h('div', { class: 'sub-search-buttons' }, runBtn, cancelBtn)),
-    scopeNote,
-    zoneHost,
-    handoffHost,
-    formError,
-    linkPrompt,
-    h('div', { class: 'sub-hero-foot' }, examples, wordlistSwitch.el),
-    advanced);
+  // The input: the domain box and Scan; the hand-off chips, the scope note and the errors always
+  // shown; examples, the wordlist switch and the Advanced options folded behind Edit once a scan
+  // starts (the compact row says the Advanced summary).
+  toolInput = ToolInput({
+    className: 'sub-hero',
+    fieldsClass: 'sub-search',
+    label: t('nav.subdomains'),
+    primary: domainField.el,
+    run: runBar,
+    notes: [scopeNote, zoneHost, handoffHost, formError],
+    extras: [examples, wordlistSwitch.el, advanced],
+    privacy: PrivacyNote({ text: t('sub.intro.privacy'), href: ctx.href('about', { section: 'sent' }) }),
+    summary: () => advSummary.textContent
+  });
+  const hero = toolInput.el;
 
-  /* --- intro (before the first scan) ---------------------------------------- */
-  const introId = uid('sub-intro');
-  const intro = h('section', { class: 'sub-intro card', attrs: { 'aria-labelledby': introId } },
-    h('h2', { class: 'sub-intro-title', id: introId }, t('sub.intro.title')),
-    h('div', { class: 'sub-intro-grid' }, [['network', 'dnsfirst'], ['certificate', 'ct'], ['database', 'dns']].map(([ic, key]) => h('div', { class: 'sub-intro-item', dataset: { source: key } },
-      h('span', { class: 'sub-intro-icon', attrs: { 'aria-hidden': 'true' } }, Icon(ic, { size: 18 })),
-      h('div', { class: 'sub-intro-text' },
-        h('h3', { class: 'sub-intro-item-title' }, t(`sub.intro.${key}.title`)),
-        h('p', { class: 'sub-intro-item-body' }, t(`sub.intro.${key}.body`)))))),
-    Alert({ variant: 'info', icon: 'cloud', compact: true, message: t('sub.intro.cf') }),
-    h('p', { class: 'sub-intro-foot sub-intro-limits' }, Icon('info', { size: 13 }), h('span', null, t('sub.intro.limits'))),
-    h('p', { class: 'sub-intro-foot' }, Icon('lock', { size: 13 }), h('span', null, t('sub.intro.privacy')),
-      h('a', { href: ctx.href('about'), dataset: { action: 'sub-about' } }, t('sub.intro.more'))));
+  /* --- the empty result region (before the first scan) ------------------------------- */
+  // What a scan gives and where the names come from; the long explanation one click away.
+  const intro = h('div', { class: 'sub-intro' }, EmptyState({
+    icon: 'layers',
+    message: t('sub.emptyLine'),
+    checks: ['dnsfirst', 'ct', 'dns'].map((key) => ({ label: t(`sub.intro.${key}.title`), className: 'sub-intro-item', dataset: { source: key } })),
+    details: Disclosure({
+      summary: t('sub.intro.title'),
+      className: 'sub-intro-details',
+      children: h('div', { class: 'stack-sm sub-intro-text' },
+        ['dnsfirst', 'ct', 'dns'].map((key) => h('p', { class: 'sub-intro-item-body' },
+          h('strong', null, t(`sub.intro.${key}.title`)), ' — ', t(`sub.intro.${key}.body`))),
+        h('p', { class: 'sub-intro-foot' }, t('sub.intro.cf')),
+        h('p', { class: 'sub-intro-foot sub-intro-limits' }, t('sub.intro.limits')))
+    }),
+    action: h('a', { href: ctx.href('about'), dataset: { action: 'sub-about' } }, t('sub.intro.more'))
+  }));
 
   // The scan's results are no part of the form: Ctrl/Cmd+Enter in a filter there starts no new scan.
   const resultsHost = h('div', { class: 'sub-results-host', dataset: { shortcutScope: 'results' } });
-  container.append(h('div', { class: 'sub-view stack-lg' }, hero, intro, resultsHost));
+  container.append(h('div', { class: 'sub-view stack-lg' }, hero, linkPrompt, intro, resultsHost, runBar.float));
+  cleanups.push(() => runBar.dispose());
+
+  /** The run bar and the input follow the scan: compact once one starts, "Run again" while the box holds its domains. */
+  function syncRunBar() {
+    const run = session.run;
+    const state = templateState({ running: isRunning(), result: !!run, ready: !linkPrompt.hidden });
+    const box = parseTargets(domainField.value).domains;
+    const same = !!run && box.length === run.config.domains.length && box.every((d, i) => d === run.config.domains[i]);
+    runBar.setState(state);
+    runBar.setRerun(state === 'done' && same);
+    toolInput.setCompact(inputCompact(state));
+    toolInput.refresh();
+  }
 
   renderScope();
   renderZoneChip();
@@ -3401,35 +3436,20 @@ export function mount(container, ctx) {
   }
 
   function setRunning(on) {
-    runBtn.hidden = on;
-    cancelBtn.hidden = !on;
+    // Scan ⇄ Cancel in the run bar, the keyboard focus with them.
+    runBar.setRunning(on);
     domainField.input.readOnly = on;
     ctx.setBusy(on ? t('sub.busy') : false);
-    renderHeaderActions();
+    syncRunBar();
   }
 
-  /** Scan the last run's domains again (the header's Re-run). */
+  /** Scan the last run's domains again (the kept-result note's Run again). */
   function rerunLast() {
     const run = session.run;
     if (!run || isRunning()) return;
     domainField.value = run.config.domains.join(', ');
     session.text = domainField.value;
     start();
-  }
-
-  function renderHeaderActions() {
-    const run = session.run;
-    if (!run) {
-      ctx.setActions();
-      return;
-    }
-    const params = { domain: run.config.domains.join(','), run: '1' };
-    ctx.setActions(
-      CopyButton(() => ctx.shareUrl(params), { label: t('common.copyLink'), size: 'sm', variant: 'secondary' }),
-      Button({
-        label: t('common.rerun'), icon: 'refresh', size: 'sm', dataset: { action: 'sub-rerun' }, disabled: run.status === 'running',
-        onClick: rerunLast
-      }));
   }
 
   /** Draw a run (loaded with its first scan: start() awaits ui/subdomains-run.js before it creates one). */
@@ -3472,7 +3492,7 @@ export function mount(container, ctx) {
   }
 
   if (session.run) attach(session.run);
-  else renderHeaderActions();
+  else syncRunBar();
 
   // A shared link (`&run=1`) offers a one-click start — unless this page already has that scan.
   if (linkAction(ctx.params, fromRoute, session.run) === 'prompt') {
@@ -3512,6 +3532,7 @@ export function mount(container, ctx) {
           renderPlan();
           if (options.locales === null) renderLangs();
           renderAdvSummary();
+          syncRunBar();
         }
         return;
       }
@@ -3527,6 +3548,11 @@ export function mount(container, ctx) {
       renderAdvSummary();
       if (linkAction(params, list, session.run) === 'prompt') showLinkPrompt(list);
       else hideLinkPrompt();
+      syncRunBar();
+    },
+    /** The kept-result note's Run again: scan the last run's domains again. */
+    rerun() {
+      rerunLast();
     },
     // A finished background scan grew the learned store: refresh the count + plan live.
     refreshLearned() {
@@ -3561,8 +3587,8 @@ export function unmount() {}
 
 /**
  * The page's last scan once it has ended (done, cancelled or failed), or null while none has or
- * one runs. It stays in this module, so the shell keeps only the fact (lib/session.js). No
- * `rerun()`: the page header has the scan's own Re-run.
+ * one runs. It stays in this module, so the shell keeps only the fact (lib/session.js); its note
+ * ("Result from 10:51 · Run again") sits in the run's result header.
  * @returns {{ subject: string, at: Date }|null}
  */
 export function result() {
@@ -3571,7 +3597,12 @@ export function result() {
   return { subject: run.config.domains.join(', '), at: run.finishedAt };
 }
 
-export default { id, titleKey, icon, mount, unmount, update, result };
+/** "Run again" of the kept-result note: scan the last run's domains again. */
+export function rerun() {
+  if (active && active.rerun) active.rerun();
+}
+
+export default { id, titleKey, icon, mount, unmount, update, result, rerun };
 
 /* ------------------------------------------------------------------------ */
 /* Run UI: progress + results                                               */

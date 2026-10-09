@@ -5,7 +5,7 @@
  *   has no AAAA records") gets no card of its own but a place in one "No records: AAAA, CAA, …"
  *   line, and what every answer shares (the resolver that answered, its PoP / NSID and the header
  *   flags) is said once in the summary instead of on every card; a card repeats only what
- *   differs from that.
+ *   differs from that; and ({@link lookupStatus}) the result header's status summary.
  * - IP Intel ({@link foldZeroStats}): stat cards whose count is zero fold into one sentence; and
  *   ({@link addressLines}) a long IPv6 address may break in two in its narrow column on a phone.
  *
@@ -113,6 +113,24 @@ export function lookupLayout(types, responses) {
     out.own[type] = { resolver: resolver === undefined && !!r.resolver, nsid: nsid === undefined && !!r.nsid, flags: flags === undefined };
   }
   return out;
+}
+
+/**
+ * DNS Lookup's status summary (docs/DESIGN.md §5.4, §5.6): the queries that got no answer, the
+ * types asked, the records answered and the types with no records (named in `types`, the line
+ * that lists them) — items for lib/template.js statusItems.
+ * @param {{ types?: number, records?: number, noRecords?: string[], failed?: number }} [input]
+ * @returns {Array<{ key: 'failed'|'types'|'records'|'nodata', severity: 'error'|'neutral', count: number, types?: string[] }>}
+ */
+export function lookupStatus({ types = 0, records = 0, noRecords = [], failed = 0 } = {}) {
+  const n = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+  const nodata = Array.isArray(noRecords) ? noRecords.filter((x) => typeof x === 'string' && x) : [];
+  return [
+    { key: 'failed', severity: 'error', count: n(failed) },
+    { key: 'types', severity: 'neutral', count: n(types) },
+    { key: 'records', severity: 'neutral', count: n(records) },
+    { key: 'nodata', severity: 'neutral', count: nodata.length, types: nodata }
+  ];
 }
 
 /**

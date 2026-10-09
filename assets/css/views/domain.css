@@ -2,44 +2,23 @@
  * views/domain.css — "Domain overview" view (.dov-*).
  */
 
-/* ---- form ------------------------------------------------------------------ */
-
-.dov-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: end;
-}
-
-.dov-form .field {
-  min-width: 0;
-}
-
-.dov-buttons {
+/* The page template (ui/template.js, style.css § 4) draws the input, the ready prompt, the result
+   header and the empty state; this sheet draws the cards. */
+.dov-view {
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: var(--stack-gap);
 }
 
-.dov-sends {
-  margin: 0;
+.dov-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
 }
 
-.dov-prompt:empty {
+.dov-prompt-slot:empty,
+.dov-head-wrap:empty {
   display: none;
-}
-
-@media (max-width: 600px) {
-  .dov-form {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .dov-buttons .btn {
-    flex: 1;
-  }
-}
-
-.dov-empty {
-  padding: 8px 0;
 }
 
 /* ---- helpers --------------------------------------------------------------- */
@@ -104,41 +83,6 @@
   font-size: 13px;
   font-weight: 700;
   color: var(--text);
-}
-
-/* ---- head ------------------------------------------------------------------ */
-
-.dov-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px 20px;
-  padding: 16px 18px;
-}
-
-.dov-head-main {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1 1 260px;
-  min-width: 0;
-}
-
-.dov-head-title {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 700;
-  line-height: 1.25;
-}
-
-.dov-reduced {
-  margin: 0;
-}
-
-.dov-head-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 
 /* ---- cards ----------------------------------------------------------------- */
@@ -354,14 +298,6 @@
 /* ---- phones ------------------------------------------------------------------ */
 
 @media (max-width: 600px) {
-  .dov-head {
-    padding: 14px;
-  }
-
-  .dov-head-title {
-    font-size: 18px;
-  }
-
   .dov-card .card-head {
     padding: 12px 14px;
   }
@@ -386,7 +322,7 @@
 @media print {
   .dov-form-card,
   .dov-empty,
-  .dov-prompt,
+  .dov-prompt-slot,
   .dov-card-actions {
     display: none;
   }

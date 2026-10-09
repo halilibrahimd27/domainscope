@@ -258,7 +258,7 @@ describe('i18n coverage', () => {
     }
     for (const o of ['input', 'cert', 'bruteforce', 'wordlist', 'permutation', 'recursive', 'dnsmine', 'zone', 'zoneTitle']) add(`sub.origin.${o}`);
     for (const k of sub.HINT_KINDS) { add(`sub.hint.${k}`); add(`sub.hint.${k}.title`); }
-    for (const f of sub.SEGMENT_FILTERS) add(`sub.filter.${f}`);
+    for (const f of sub.SHOW_FILTERS) add(`sub.filter.${f}`);
     for (const k of ['mine', 'wordlist', 'permutation', 'recursive', 'zone']) add(`sub.tech.${k}`);
     for (const k of ['sub.tech.dnsOnly', 'sub.tech.dnsOnlyIncomplete']) add(k); // dnsOnlyNoteKey()
     // Source health: every state and every quota hint key a SourceResult can carry.

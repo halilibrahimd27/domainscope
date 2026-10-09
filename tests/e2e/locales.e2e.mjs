@@ -35,7 +35,7 @@ import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import {
   BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  gotoRoute, installDownloadCapture, setLangUi, shot, takeDownloads, waitReady
+  gotoRoute, installDownloadCapture, resultAction, setLangUi, shot, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 import { SOURCES } from '../../assets/js/lib/sourceinfo.js';
 
@@ -276,7 +276,7 @@ async function main() {
     });
     await run.step('the JSON export carries how the packs were chosen and the evidence', async () => {
       await openTab(page, 'hosts');
-      await page.click('.sub-actions [data-export="json"]');
+      await resultAction(page, '[data-export="json"]', '.sub-run');
       const downloads = await takeDownloads(page);
       assertEqual(downloads.length, 1, 'one download');
       const wl = JSON.parse(downloads[0].text).options.wordlist;

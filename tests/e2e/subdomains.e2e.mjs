@@ -19,11 +19,12 @@
  *   - the site root lands on #/subdomains: first nav item, "Discover" group, hero, intro
  *   - validation (IP, public suffix, empty), the "only under shop.x" scope hint, example chips
  *   - a live scan started with Enter: URL rewritten to ?domain=… (no run=1: a reload only pre-fills), Cancel
- *     visible, stages and per-source chips, hosts streaming into the table, stat cards
- *   - filters (segmented control, stat cards, search), lookup / IP Intel links, exports
- *     (copy, names.txt, CSV, JSON — downloads are captured in the page) and "resolving only"
+ *     visible, stages and per-source chips, hosts streaming into the table, the kind counts
+ *   - filters (the result header's status items, the Hosts toolbar's Show select, search), lookup /
+ *     IP Intel links, exports from the result header (copy, names.txt, CSV, JSON — downloads are
+ *     captured in the page) and "resolving only"
  *   - results survive a visit to DNS Lookup and the browser Back button (no re-scan)
- *   - the hand-over card opens SSL Targets with the domain pre-filled
+ *   - the next step "Find certificate targets" opens SSL Targets with the domain pre-filled
  *   - TR + EN, light + dark, desktop 1440×900 and phone 390×844 without horizontal page scroll
  *   - route params: `?domain=` pre-fills without running, `&run=1` shows a one-click "Start scan"
  *     prompt (a link never scans on its own) and a reload does not scan again, update()
@@ -36,7 +37,7 @@
  *     with every control inside the viewport
  *   - an emulated zone (example.net answered inside the page, no network): proxied + DNS-only
  *     hosts give an origin /24 and the sweep command in both shells, whatever the live domain has,
- *     and Copy summary gives its stat cards and ORIGIN panel as Markdown / plain text with the permalink
+ *     and Copy summary gives its counts and ORIGIN panel as Markdown / plain text with the permalink
  *   - the Zone File hand-off (emulated DNS): exact mode, a zone origin whose name has a 48-character
  *     label inside its 375 px card, the "origin?" badges right after a scan with slow DNS, and a
  *     "Scan now" that arrives while another scan runs (a prompt, never a silent drop)
@@ -45,7 +46,7 @@
  *     move held back while the focus is in a panel and made once it leaves, a click on the tab
  *     shown as a choice, arrow keys / Home / End with a roving tabindex, `tab=` in the URL kept
  *     across a language switch and a visit to another view (always next to the domain, also
- *     after a return through the nav link), stat cards and the "origin?" links
+ *     after a return through the nav link), the status items and the "origin?" links
  *     opening their tab, and at 375 px (TR/EN × light/dark) all four tabs in view, host names
  *     wrapping only after a dot (a label wider than the card inside itself), IPs whole, no page
  *     scrolling sideways on Hosts or Origins
@@ -61,7 +62,7 @@ import { launchBrowser } from './cdp.mjs';
 import { SOURCES as LIB_SOURCES } from '../../assets/js/lib/sources.js';
 import {
   BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  csvHeader, gotoRoute, installDownloadCapture, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady,
+  csvHeader, gotoRoute, installDownloadCapture, resultAction, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady,
   ZONE_HANDOFF_APEX, ZONE_HANDOFF_DNS, ZONE_HANDOFF_INPUT, zoneHandoffScript
 } from './scan.e2e.mjs';
 
@@ -167,24 +168,35 @@ async function nodeChecks(run) {
 /* Page helpers                                                             */
 /* ------------------------------------------------------------------------ */
 
+/** A kind count of the Hosts tab's metric strip (a zero folded into "None: …" reads 0), or null. */
 const statValue = (page, key) => page.evaluate((k) => {
-  const el = document.querySelector(`.sub-stats [data-stat="${k}"]`);
-  if (!el || el.hidden) return null;
-  const n = Number(el.querySelector('.stat-value').textContent.replace(/[^\d]/g, ''));
+  const el = document.querySelector(`.sub-stats [data-metric="${k}"]`);
+  if (!el) return (document.querySelector('.sub-stats .metric-zero')?.dataset.folded || '').split(' ').includes(k) ? 0 : null;
+  const n = Number(el.querySelector('.metric-value').textContent.replace(/[^\d]/g, ''));
   return Number.isFinite(n) ? n : null;
 }, key);
 
+/** The Hosts table now: its rows, and the toolbar's Show select (`pressed`: its value, "all" as null). */
 const tableInfo = (page) => page.evaluate(() => {
   const rows = [...document.querySelectorAll('.sub-table tbody tr.dt-row')];
+  const show = document.querySelector('.sub-filter select')?.value || null;
   return {
     rows: rows.length,
     names: rows.map((r) => r.querySelector('.sub-host-name')?.textContent || ''),
     withIp: rows.filter((r) => r.querySelector('.sub-ip')).length,
     kinds: rows.map((r) => r.querySelector('.sub-kind [data-kind]')?.dataset.kind || ''),
     count: document.querySelector('.sub-table .dt-count')?.textContent || '',
-    pressed: document.querySelector('.sub-filter [aria-pressed="true"]')?.dataset.value || null
+    pressed: show,
+    status: document.querySelector('.sub-run .status-item[aria-pressed="true"]')?.dataset.status || null
   };
 });
+
+/** The Hosts toolbar's Show select set to `value` (a change event, as a pick would send). */
+const showHosts = (page, value) => page.evaluate((v) => {
+  const s = document.querySelector('.sub-filter select');
+  s.value = v;
+  s.dispatchEvent(new Event('change', { bubbles: true }));
+}, value);
 
 async function typeAndSubmit(page, text) {
   await page.type('[data-role="sub-domain"]', text);
@@ -578,7 +590,7 @@ async function main() {
         brand: document.getElementById('brand').getAttribute('href'),
         input: !!document.querySelector('.sub-hero [data-role="sub-domain"]'),
         placeholder: document.querySelector('[data-role="sub-domain"]').placeholder,
-        label: document.querySelector('.sub-hero-title label')?.htmlFor === document.querySelector('[data-role="sub-domain"]').id,
+        label: document.querySelector('.sub-hero label[for]')?.htmlFor === document.querySelector('[data-role="sub-domain"]').id,
         mouse: matchMedia('(hover: hover) and (pointer: fine)').matches,
         focused: document.activeElement === document.querySelector('[data-role="sub-domain"]'),
         intro: !document.querySelector('.sub-intro').hidden,
@@ -861,11 +873,12 @@ async function main() {
         busy: document.getElementById('main').getAttribute('aria-busy'),
         meta: document.querySelector('.sub-run-meta').textContent,
         progressHidden: document.querySelector('.sub-progress').hidden,
-        actions: [...document.querySelectorAll('.page-actions button')].map((b) => b.textContent.trim()),
+        actions: [...document.querySelectorAll('.sub-run .result-actions button')].map((b) => b.textContent.trim()),
+        run: document.querySelector('[data-action="sub-run"]').textContent.trim(),
         reasonTitle: document.querySelector('.sub-kind [data-kind="cloudflare"]')?.title || ''
       }));
       assert(!ui.cancel && ui.busy === 'false' && /Finished in/.test(ui.meta) && ui.progressHidden, `finished UI: ${JSON.stringify(ui)}`);
-      assert(ui.actions.includes('Copy link') && ui.actions.includes('Run again'), `page actions: ${ui.actions}`);
+      assert(ui.actions.includes('Copy link') && ui.run === 'Run again', `result actions and run bar: ${ui.actions}, ${ui.run}`);
       assert(/Cloudflare/.test(ui.reasonTitle), `translated reason tooltip: ${ui.reasonTitle}`);
       const cf = await statValue(page, 'cloudflare');
       assert(cf >= 1, 'Behind Cloudflare stat');
@@ -1003,35 +1016,32 @@ async function main() {
       await openTab(page, 'hosts');
     });
 
-    await liveStep('filters: segmented control, stat cards and search narrow the table', async () => {
+    await liveStep('filters: the status summary, the Show select and search narrow the table', async () => {
       const all = (await tableInfo(page)).rows;
-      await page.click('.sub-filter [data-value="resolving"]');
+      await showHosts(page, 'resolving');
       let info = await tableInfo(page);
-      assertEqual(info.pressed, 'resolving', 'pressed');
+      assertEqual([info.pressed, info.status], ['resolving', 'resolving'], 'Show: Resolving, and its status item pressed');
       assertEqual(info.withIp, info.rows, 'every row resolves');
-      assertEqual(info.rows, Math.min(await statValue(page, 'resolving'), 200), 'rows = Resolving stat');
-      await page.click('.sub-filter [data-value="cloudflare"]');
+      assertEqual(info.rows, Math.min(await statValue(page, 'resolving'), 200), 'rows = Resolving count');
+      await showHosts(page, 'cloudflare');
       info = await tableInfo(page);
       assert(info.rows > 0 && info.kinds.every((k) => k === 'cloudflare'), `cloudflare only: ${info.kinds}`);
-      assertEqual(await page.evaluate(() => document.querySelector('[data-stat="cloudflare"]').getAttribute('aria-pressed')), 'true', 'stat card pressed');
-      await page.click('.sub-filter [data-value="unresolved"]');
+      assertEqual(info.status, null, 'no status item for Cloudflare alone');
+      await showHosts(page, 'unresolved');
       info = await tableInfo(page);
       assertEqual(info.withIp, 0, 'no IPs among the non-resolving');
       await openTab(page, 'overview');
-      await page.click('.sub-stats [data-stat="direct"]');
-      // A stat card filters the hosts and opens their tab, with the focus on it (the card is hidden now).
-      assertEqual(await page.evaluate(() => [document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab, document.activeElement?.dataset.tab]),
-        ['hosts', 'hosts'], 'the Hosts tab is open and focused');
+      await page.click('.sub-run .status-item[data-status="behind"]');
+      // A status item filters the hosts and opens their tab; the focus stays on the pressed item.
+      assertEqual(await page.evaluate(() => [document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab,
+        document.activeElement?.dataset.status, document.activeElement?.getAttribute('aria-pressed')]),
+      ['hosts', 'behind', 'true'], 'the Hosts tab is open, the item pressed and focused');
       info = await tableInfo(page);
-      assert(info.kinds.every((k) => k === 'direct' || k === 'private'), `direct only: ${info.kinds}`);
-      assertEqual(info.pressed, 'direct', 'segmented follows the stat card');
-      await openTab(page, 'overview');
-      await page.click('.sub-stats [data-stat="cdn"]');
+      assert(info.kinds.every((k) => ['cloudflare', 'cdn', 'platform'].includes(k)), `behind a CDN only: ${info.kinds}`);
+      assertEqual(info.pressed, 'behind', 'the Show select follows the status item');
+      await page.click('.sub-run .status-item[data-status="behind"]');
       info = await tableInfo(page);
-      assert(info.kinds.every((k) => k === 'cdn' || k === 'platform'), `cdn only: ${info.kinds}`);
-      assertEqual(info.pressed, null, 'no segment for CDN / platform');
-      await page.click('.sub-filter [data-value="all"]');
-      assertEqual((await tableInfo(page)).rows, all, 'all again');
+      assertEqual([info.rows, info.pressed], [all, 'all'], 'a second press shows every host again');
       await page.type('.sub-table .dt-search-input', `www.${DOMAIN}`);
       await page.waitFor((d) => [...document.querySelectorAll('.sub-table tbody tr.dt-row')].every((r) => r.textContent.includes(d)), { args: [`www.${DOMAIN}`], message: 'search' });
       await shot(page, opts, 'subdomains-desktop-light-en-search');
@@ -1058,9 +1068,9 @@ async function main() {
       const count = () => page.evaluate(() => Number(document.querySelector('.sub-act-count').textContent.replace(/[^\d]/g, '')));
       assertEqual(await count(), found, 'count badge');
       await takeDownloads(page);
-      await page.click('[data-export="names"]');
-      await page.click('[data-export="csv"]');
-      await page.click('[data-export="json"]');
+      await resultAction(page, '[data-export="names"]', '.sub-run');
+      await resultAction(page, '[data-export="csv"]', '.sub-run');
+      await resultAction(page, '[data-export="json"]', '.sub-run');
       const files = await takeDownloads(page);
       assertEqual(files.map((f) => f.name.replace(/\d{8}-\d{4}/, 'STAMP')), ['names.txt', `subdomains-${DOMAIN}-STAMP.csv`, `subdomains-${DOMAIN}-STAMP.json`], 'files');
       const names = files[0].text.trim().split('\n');
@@ -1074,7 +1084,7 @@ async function main() {
       assertEqual(json.options.bruteforce, 'smart', 'JSON options');
       await page.click('.sub-resolving-only .check-label');
       assertEqual(await count(), resolving, 'resolving-only count');
-      await page.click('[data-export="names"]');
+      await resultAction(page, '[data-export="names"]', '.sub-run');
       const [only] = await takeDownloads(page);
       assertEqual(only.text.trim().split('\n').length, resolving, 'resolving-only names.txt');
       await page.click('[data-action="sub-copy"]');
@@ -1126,10 +1136,10 @@ async function main() {
       assertEqual(await selectedTab(page), 'hosts', 'the Hosts tab again');
     });
 
-    await liveStep('hand-over: "Open in SSL Targets" (Overview) pre-fills the domain there', async () => {
-      assert(await page.evaluate(() => /Which servers need the certificate/.test(document.querySelector('.sub-cta').textContent)), 'CTA text');
+    await liveStep('hand-over: the next step "Find certificate targets" pre-fills the domain in SSL Targets', async () => {
+      assert(await page.evaluate(() => /matches these names to your servers/.test(document.querySelector('.sub-run .result-next [data-action="sub-cta"]').title)), 'next step tooltip');
       await openTab(page, 'overview');
-      await page.click('[data-action="sub-cta"]');
+      await page.click('.sub-run [data-action="sub-cta"]');
       await page.waitFor(() => document.documentElement.dataset.view === 'scan' && document.querySelector('[data-role="scan-domains"]'), { timeout: 15000, message: 'scan view' });
       const info = await page.evaluate(() => ({ hash: location.hash, value: document.querySelector('[data-role="scan-domains"]').value }));
       assertEqual(info.hash, `#/scan?domain=${DOMAIN}`, 'scan route');
@@ -1148,18 +1158,18 @@ async function main() {
         h1: document.querySelector('h1.page-title').textContent,
         group: document.querySelector('.nav-group-label').textContent,
         run: document.querySelector('[data-action="sub-run"]').textContent.trim(),
-        title: document.querySelector('.sub-hero-title').textContent,
-        stat: document.querySelector('[data-stat="cloudflare"] .stat-label').textContent,
-        segs: [...document.querySelectorAll('.sub-filter .seg-btn')].map((b) => b.textContent),
+        label: document.querySelector('.sub-hero label[for]').textContent,
+        stat: document.querySelector('.sub-stats [data-metric="cloudflare"] .metric-label').textContent,
+        show: [...document.querySelectorAll('.sub-filter option')].map((o) => o.textContent),
         cta: document.querySelector('[data-action="sub-cta"]').textContent.trim(),
         rows: document.querySelectorAll('.sub-table tbody tr.dt-row').length,
         tabs: [...document.querySelectorAll('.sub-tabs .tab-label')].map((l) => l.textContent),
         tab: document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab
       }));
-      assertEqual([info.h1, info.group, info.run, info.title], ['Subdomain Tarama', 'Alan adını incele', 'Tara', 'Hangi alan adını tarayalım?'], 'TR labels');
+      assertEqual([info.h1, info.group, info.run, info.label], ['Subdomain Tarama', 'Alan adını incele', 'Yeniden çalıştır', 'Alan adı'], 'TR labels');
       assertEqual(info.stat, 'Cloudflare arkasında', 'TR stat');
-      assertEqual(info.segs, ['Tümü', 'Çözümlenen', 'Cloudflare', 'Doğrudan', 'Çözümlenmeyen'], 'TR filters');
-      assertEqual(info.cta, 'SSL Hedefleri’nde aç', 'TR CTA');
+      assertEqual(info.show, ['Tümü', 'Çözümlenen', 'CDN arkasında', 'Cloudflare', 'Diğer CDN / platform', 'Doğrudan', 'Çözümlenmeyen', 'Sahipsiz CNAME'], 'TR Show select');
+      assertEqual(info.cta, 'Sertifika hedeflerini bul', 'TR next step');
       assertEqual(info.tabs, ['Genel bakış', 'Host’lar', 'Origin’ler', 'Kaynaklar'], 'TR tabs');
       assertEqual(info.tab, 'hosts', 'the tab survives the language re-mount');
       assert(info.rows >= 3, 'rows kept');
@@ -1199,11 +1209,13 @@ async function main() {
         };
       });
       assert(table && table.block === 'block' && table.nameVisible && table.kindVisible, `stacked, name + classification on screen: ${JSON.stringify(table)}`);
+      // The input is compact after a run: the box and Run again share one row.
       const btn = await page.evaluate(() => {
         const r = document.querySelector('[data-action="sub-run"]').getBoundingClientRect();
-        return { w: Math.round(r.width), vw: document.documentElement.clientWidth };
+        const f = document.querySelector('[data-role="sub-domain"]').getBoundingClientRect();
+        return { sameRow: Math.abs(r.top - f.top) < 2, inside: r.right <= document.documentElement.clientWidth + 1 };
       });
-      assert(btn.w > btn.vw * 0.7, `full-width Scan button on phones: ${JSON.stringify(btn)}`);
+      assert(btn.sameRow && btn.inside, `compact input on phones, the box and Run on one row: ${JSON.stringify(btn)}`);
       await shot(page, opts, 'subdomains-mobile-light-tr-results');
       await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
       await sleep(150);
@@ -1450,7 +1462,7 @@ async function main() {
         assertEqual(shown, `python ssl_origin_scan.py ${withExclude}`, 'PowerShell command with --exclude');
         await takeDownloads(tab);
         await openTab(tab, 'hosts');
-        await tab.click('[data-export="json"]');
+        await resultAction(tab, '[data-export="json"]', '.sub-run');
         await tab.waitFor(() => (window.__downloads || []).length === 1, { message: 'JSON export' });
         const exported = JSON.parse((await takeDownloads(tab))[0].text).origin;
         assertEqual([exported.cliSuggestion, exported.exclude && exported.exclude.requested], [`python3 ssl_origin_scan.py ${withExclude}`, ['203.0.113.12']],
@@ -1693,17 +1705,22 @@ async function main() {
         assertEqual(await tt.evaluate(() => document.querySelector('.sub-view').dataset.marker), 'kept', 'no re-mount');
       });
 
-      await run.step('Overview: a stat card filters the hosts and opens their tab with the focus on it; "See the origin candidates" opens Origins, whose selected tab keeps its warn count colour', async () => {
+      await run.step('Overview: a status item filters the hosts and opens their tab, the focus staying on it; "See the origin candidates" opens Origins, whose selected tab keeps its warn count colour', async () => {
         await openTab(tt, 'overview');
-        await tt.click('.sub-stats [data-stat="cloudflare"]');
+        await tt.click('.sub-run .status-item[data-status="behind"]');
         const info = await tt.evaluate(() => ({
           selected: document.querySelector('.sub-tabs .tab[aria-selected="true"]')?.dataset.tab,
-          focused: document.activeElement?.dataset.tab || null,
+          focused: document.activeElement?.dataset.status || null,
+          pressed: document.activeElement?.getAttribute('aria-pressed') || null,
+          show: document.querySelector('.sub-filter select').value,
           kinds: [...document.querySelectorAll('.sub-table tbody tr.dt-row .sub-kind [data-kind]')].map((k) => k.dataset.kind),
           route: new URLSearchParams(location.hash.split('?')[1] || '').get('tab')
         }));
-        assertEqual(info, { selected: 'hosts', focused: 'hosts', kinds: ['cloudflare', 'cloudflare'], route: 'hosts' }, 'filtered Hosts, focused');
-        await tt.click('.sub-filter [data-value="all"]');
+        assertEqual(info, { selected: 'hosts', focused: 'behind', pressed: 'true', show: 'behind', kinds: ['cloudflare', 'cloudflare'], route: 'hosts' },
+          'filtered Hosts; the item pressed and focused, the Show select along');
+        await showHosts(tt, 'all');
+        assertEqual(await tt.evaluate(() => document.querySelector('.sub-run .status-item[data-status="behind"]').getAttribute('aria-pressed')), 'false',
+          'the item follows the Show select');
         await openTab(tt, 'overview');
         await tt.click('[data-action="sub-origin-link"]');
         await tt.waitFor(() => document.activeElement?.classList.contains('sub-org-title'), { message: 'focus on the ORIGIN panel title' });
@@ -2124,9 +2141,9 @@ async function main() {
           notSent: !!document.querySelector('.tko [data-part="tko-not-sent"]'),
           disabled: document.querySelector('.tko [data-action="tko-run"]').disabled,
           rdap: window.__rdap.length,
-          beforeCta: document.querySelector('.tko').nextElementSibling === document.querySelector('.sub-cta')
+          lastInOverview: document.querySelector('.sub-tab-overview').lastElementChild === document.querySelector('.tko')
         }));
-        assertEqual(before, { title: 'Takeover risks', notSent: true, disabled: false, rdap: 0, beforeCta: true }, 'the card before the click');
+        assertEqual(before, { title: 'Takeover risks', notSent: true, disabled: false, rdap: 0, lastInOverview: true }, 'the card before the click');
 
         await tab.click('.tko [data-action="tko-run"]');
         await tab.waitFor(() => document.querySelector('.tko [data-part="tko-summary"]'), { timeout: 30000, message: 'the takeover results' });

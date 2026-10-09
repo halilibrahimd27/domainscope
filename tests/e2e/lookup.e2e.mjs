@@ -181,12 +181,14 @@ function cardsInfo() {
   return out;
 }
 
-/** The summary: name, meta line, shared flags, the "No records" types. */
+/** The summary: name, meta line, the status items ("failed:1"), shared flags, the "No records" types. */
 function summaryInfo() {
   const sum = document.querySelector('.lkp-sum');
   if (!sum) return null;
   return {
     meta: sum.querySelector('.lkp-sum-meta')?.textContent.replace(/\s+/g, ' ') || '',
+    status: [...sum.querySelectorAll('.status-item')].map((x) => `${x.dataset.status}:${x.dataset.count}`),
+    statusText: [...sum.querySelectorAll('.status-item')].map((x) => x.textContent.trim()),
     flags: [...sum.querySelectorAll('.lkp-sum-flags .lkp-flag[data-set="1"]')].map((f) => f.dataset.flag),
     noRecords: sum.querySelector('.lkp-nodata')?.dataset.types.split(' ') || [],
     noRecordsText: sum.querySelector('.lkp-nodata summary')?.textContent.replace(/\s+/g, ' ').trim() || ''
@@ -388,7 +390,8 @@ async function offlineGroup(browser, server) {
       let c = await page.evaluate(cardsInfo);
       assertEqual([c.MX.state, c.TXT.state], ['error', 'pending'], 'MX failed while TXT is still asked');
       assert(/Every resolver tried: rate limited — try again in a few minutes/.test(c.MX.text), `reason: ${c.MX.text.slice(0, 300)}`);
-      assert(/1 × The query failed/.test((await page.evaluate(summaryInfo)).meta), 'the summary counts the failure');
+      const failedSum = await page.evaluate(summaryInfo);
+      assert(failedSum.status.includes('failed:1') && failedSum.statusText.includes('1 query failed'), `the summary counts the failure: ${JSON.stringify(failedSum.statusText)}`);
       await page.evaluate(() => { window.__dohFail.types = []; });
       const before = await page.evaluate(() => window.__dohFail.asked.length);
       await page.evaluate(() => document.querySelector('.lkp-card[data-type="MX"] [data-action="retry-source"]').focus());
@@ -498,7 +501,7 @@ async function offlineGroup(browser, server) {
     });
 
     await step('the summary leads a domain on to Global DNS and Domain Health, and the root zone to neither', async () => {
-      const links = () => page.evaluate(() => [...document.querySelectorAll('.lkp-sum-actions a')].map((a) => a.hash));
+      const links = () => page.evaluate(() => [...document.querySelectorAll('.lkp-sum .result-related a')].map((a) => a.hash));
       await gotoHash(page, '#/lookup?name=example.com&type=NS', 'lookup');
       await page.waitFor(ALL_DONE, { timeout: 30000, message: 'example.com answered' });
       const domain = await links();
@@ -878,15 +881,16 @@ async function liveGroups(browser, server) {
 
   await step('language switch keeps results (snapshot) and translates', async () => {
     const before = await page.evaluate(cardsInfo);
-    const shareLabel = () => page.evaluate(() => [...document.querySelectorAll('.page-actions button')].map((b) => b.textContent.trim()));
-    assertEqual(await shareLabel(), ['Copy link'], 'header action before the switch');
+    const shareLabel = () => page.evaluate(() => [...document.querySelectorAll('.lkp-sum [data-action="copy-link"]')].map((b) => b.textContent.trim()));
+    assertEqual(await shareLabel(), ['Copy link'], 'the result\'s Copy link before the switch');
     await setLangUi(page, 'tr');
-    await page.waitFor(() => document.querySelector('[data-action="run"] .btn-label')?.textContent === 'Sorgula', { message: 'TR form' });
+    // The restored answers are on screen and the box still asks for them: Run reads "Run again".
+    await page.waitFor(() => document.querySelector('[data-action="run"] .btn-label')?.textContent === 'Yeniden çalıştır', { message: 'TR form' });
     const after = await page.evaluate(cardsInfo);
     assertEqual(Object.keys(after), Object.keys(before), 'cards kept');
     assert(Object.values(after).every((c) => c.state !== 'pending'), 'restored without re-query');
     assert(/Ham yanıt/.test(Object.values(after)[0].text), 'Turkish card text');
-    assertEqual(await shareLabel(), ['Bağlantıyı kopyala'], 'header "Copy link" kept (translated) for the restored run');
+    assertEqual(await shareLabel(), ['Bağlantıyı kopyala'], '"Copy link" kept (translated) for the restored run');
     await shot(page, 'lookup-desktop-dark-tr-ietf');
     await setLangUi(page, 'en');
   });

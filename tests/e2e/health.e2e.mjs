@@ -46,7 +46,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
-import { installDownloadCapture, stubClipboard, takeClipboard, takeDownloads, zoneHandoffScript } from './scan.e2e.mjs';
+import { installDownloadCapture, resultAction, stubClipboard, takeClipboard, takeDownloads, zoneHandoffScript } from './scan.e2e.mjs';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
 import { healthScore, trafficLight, groupChecks, parseSelectors, HEALTH_GROUPS } from '../../assets/js/views/health.js';
 import { HEALTH_I18N, HEALTH_CHECK_IDS } from '../../assets/js/lib/health.js';
@@ -561,7 +561,8 @@ async function mtaStsGroup(browser, server) {
 
     await step('"Report (JSON)" carries the policy check', async () => {
       await takeDownloads(page);
-      await page.click('[data-action="download"]');
+      // In the result header's Export ▾ menu (opened first, as a person would).
+      await resultAction(page, '[data-action="download"]', '.hlt-hero');
       await page.waitFor(() => (window.__downloads || []).length > 0, { message: 'download' });
       const [d] = await takeDownloads(page);
       const json = JSON.parse(d.text);
@@ -765,7 +766,7 @@ async function mtaStsGroup(browser, server) {
     await step('after the stop the report on screen still works: Copy link, the filter, RDAP Retry, the policy check, and it is kept on leaving', async () => {
       const shown = await page.evaluate(() => document.querySelector('.hlt-hero-domain').textContent);
       await takeClipboard(page);
-      await page.click('.page-actions .copy-btn');
+      await resultAction(page, '[data-action="copy-link"]', '.hlt-hero');
       await page.waitFor(() => window.__clip.length === 1, { message: 'Copy link' });
       const link = (await takeClipboard(page))[0];
       assert(link.endsWith(`/domainscope/#/health?domain=${shown}`), `Copy link shares the report on screen: ${link}`);
@@ -957,12 +958,12 @@ async function mtaStsGroup(browser, server) {
         report: obs?.querySelector('.hv2-obs-report')?.getAttribute('href') || '',
         status: obs?.querySelector('.hv2-obs-status')?.textContent.replace(/\s+/g, ' ').trim() || '',
         reason: obs?.querySelector('.hv2-obs-status')?.dataset.reason || null,
-        webChip: problems?.querySelector('.hv2-chip[data-group="web"]')?.dataset.score || null,
+        webChip: document.querySelector('.hlt-metrics [data-metric="web"] .metric-value')?.textContent || null,
         wwwMissing: !!problems?.querySelector('.hv2-problem[data-id="www.missing"]')
       };
     });
 
-    await step('the Web card: HTTPS record, www against the bare domain, the HSTS link; the problems-first panel scores the Web category; nothing sent to the Observatory', async () => {
+    await step('the Web card: HTTPS record, www against the bare domain, the HSTS link; the metric strip scores the Web category; nothing sent to the Observatory', async () => {
       await gotoHash(page, `#/health?domain=${MAIL_APEX}`, 'health');
       await page.waitFor((d) => document.querySelector('.hlt-hero-domain')?.textContent === d && !document.querySelector('[data-action="run"]').hidden,
         { args: [MAIL_APEX], timeout: 30000, message: 'example.com report' });
@@ -973,7 +974,7 @@ async function mtaStsGroup(browser, server) {
       assert(/None \(optional\)/.test(w.webText), `the HTTPS record is none/optional: ${w.webText}`);
       assertEqual(w.hsts, 'https://hstspreload.org/?domain=example.com', 'the HSTS preload link opens the status page');
       assert(w.wwwMissing, 'the www.missing warning is in the problems-first panel');
-      assertEqual(w.webChip, '85', 'the Web category scores 85 (one warning) in the breakdown');
+      assertEqual(w.webChip, '85', 'the Web category scores 85 (one warning) in the metric strip under the header');
       assertEqual(w.obsState, 'idle', 'the Observatory has not been sent to yet');
       assert(/Content-Security-Policy/.test(w.obsWhat), `the "what it measures" text: ${w.obsWhat.slice(0, 80)}`);
       assertEqual(w.button, 'Check HTTP security', 'the check button');
@@ -1398,7 +1399,8 @@ async function liveGroups(browser, server) {
     await shot(page, 'health-desktop-dark-en-github');
     const before = await page.evaluate(reportInfo);
     await setLangUi(page, 'tr');
-    await page.waitFor(() => document.querySelector('[data-action="run"] .btn-label')?.textContent === 'Sağlığı kontrol et', { message: 'TR form' });
+    // The restored report is on screen and the box still asks for it: Run reads "Run again".
+    await page.waitFor(() => document.querySelector('[data-action="run"] .btn-label')?.textContent === 'Yeniden çalıştır', { message: 'TR form' });
     const after = await page.evaluate(reportInfo);
     assertEqual(after.checks, before.checks, 'same checks (restored, not re-run)');
     assertEqual(after.untranslated, [], 'untranslated titles (TR)');

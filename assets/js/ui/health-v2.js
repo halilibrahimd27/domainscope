@@ -42,8 +42,6 @@ registerStrings('en', {
   'hv2.problems.warn': { one: '{count} warning', other: '{count} warnings' },
   'hv2.problems.groupCount': '{group} · {count}',
   'hv2.advice': 'What to do',
-  'hv2.groupScore': '{group} {score}',
-  'hv2.groupScoreTitle': '{group}: {score}/100, weight {weight}',
   'hv2.scoreHow': 'Each category starts at 100 and loses 40 per error and 15 per warning; the score is their weighted mean (DNS 30, Email 25, Certificates & DNSSEC 20, Web 15, Registration 10). An error caps it at {error}, a warning at {warn}; a name that does not exist scores 0. A from 90, B from 80, C from 70, D from 60, E from 50, F below.',
   'hv2.cap.fatal': 'The name does not exist: the score is 0.',
   'hv2.cap.error': 'An error caps the score at {cap} (the categories alone would give {raw}).',
@@ -89,8 +87,6 @@ registerStrings('tr', {
   'hv2.problems.warn': { one: '{count} uyarı', other: '{count} uyarı' },
   'hv2.problems.groupCount': '{group} · {count}',
   'hv2.advice': 'Ne yapmalı',
-  'hv2.groupScore': '{group} {score}',
-  'hv2.groupScoreTitle': '{group}: {score}/100, ağırlık {weight}',
   'hv2.scoreHow': 'Her kategori 100 puanla başlar; hata başına 40, uyarı başına 15 puan kaybeder. Puan, kategorilerin ağırlıklı ortalamasıdır (DNS 30, E-posta 25, Sertifika ve DNSSEC 20, Web 15, Alan adı kaydı 10). Bir hata puanı en fazla {error}, bir uyarı en fazla {warn} yapar; var olmayan bir ad 0 alır. 90 ve üstü A, 80 B, 70 C, 60 D, 50 E, altı F.',
   'hv2.cap.fatal': 'Ad mevcut değil: puan 0.',
   'hv2.cap.error': 'Bir hata puanı en fazla {cap} yapar (kategoriler tek başına {raw} verirdi).',
@@ -157,21 +153,17 @@ export function addWeb(report, opts) {
 const groupName = (g) => t(`health.group.${g}`);
 
 /**
- * The score of every category and why the total is lower than their mean (the accepted risks left out).
+ * Why the total is what it is: the cap an error or a warning puts on it, and how the score is
+ * made (the accepted risks left out). The score of every category is the result header's metric
+ * strip (views/health.js, docs/DESIGN.md §5.6).
  * @param {object} report
  * @param {{ waived?: Set<string>|null }} [opts] the check ids accepted as risks
  * @returns {HTMLElement}
  */
 export function ScoreBreakdown(report, { waived = null } = {}) {
   const graded = scoreHealth(report.checks, { waived });
-  const chips = graded.groups.map((g) => h('span', {
-    class: ['hv2-chip', `hv2-chip-${g.error ? 'error' : g.warn ? 'warn' : 'ok'}`],
-    dataset: { group: g.group, score: g.score },
-    title: t('hv2.groupScoreTitle', { group: groupName(g.group), score: g.score, weight: g.weight })
-  }, t('hv2.groupScore', { group: groupName(g.group), score: g.score })));
   const cap = graded.cap ? t(`hv2.cap.${graded.cap}`, { cap: graded.score, raw: Math.round(graded.raw) }) : null;
   return h('div', { class: 'hv2-breakdown', dataset: { grade: graded.grade, score: graded.score } },
-    h('div', { class: 'cluster hv2-chips' }, chips),
     cap ? h('p', { class: 'muted text-xs hv2-cap', dataset: { cap: graded.cap } }, cap) : null,
     h('p', { class: 'muted text-xs hv2-how' }, t('hv2.scoreHow', { error: SCORE_CAPS.error, warn: SCORE_CAPS.warn })));
 }

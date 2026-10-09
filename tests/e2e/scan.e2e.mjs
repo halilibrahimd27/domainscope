@@ -291,6 +291,41 @@ export async function assertNoHorizontalScroll(page, where) {
     `${where}: page scrolls horizontally (${rep.scrollWidth} > ${rep.clientWidth}); offenders: ${rep.offenders.join(', ')}`);
 }
 
+/**
+ * Open a result head's Export ▾ (`which` "export") or "⋯" ("more") menu (ui/template.js
+ * ResultActions) with a click; resolves to its items' texts once it is open.
+ */
+export async function openResultMenu(page, which = 'export', scope = '.result-head') {
+  await page.click(`${scope} .result-actions [data-menu="${which}"]`);
+  return page.waitFor((w, root) => {
+    const btn = document.querySelector(`${root} .result-actions [data-menu="${w}"]`);
+    const menu = btn && btn.closest('.menu-wrap').querySelector('.menu-popover');
+    return menu && btn.getAttribute('aria-expanded') === 'true'
+      ? [...menu.querySelectorAll('.menu-item')].map((item) => item.textContent.trim()) : null;
+  }, { args: [which, scope], message: `the ${which} menu of ${scope}` });
+}
+
+/**
+ * Click a result's action as a person would (docs/DESIGN.md §5.3): the button in the result head's
+ * row, or the item of the Export ▾ or "⋯" menu that holds it, opening that menu first. `sel` names
+ * the action by its own attribute ('[data-export="csv"]', '[data-action="copy-link"]'); `scope`
+ * picks the head ('.sub-run', '.hlt-hero', '.lkp-sum').
+ */
+export async function resultAction(page, sel, scope = '.result-head') {
+  const menu = await page.evaluate((s, root) => {
+    for (const head of document.querySelectorAll(root)) {
+      const el = head.querySelector(`.result-actions ${s}`);
+      if (el) return el.closest('.menu-popover') ? el.closest('.menu-wrap').querySelector('.menu-button').dataset.menu : '';
+    }
+    return null;
+  }, sel, scope);
+  if (menu === null) throw new Error(`resultAction: no ${sel} in ${scope}`);
+  if (menu) {
+    await openResultMenu(page, menu, scope);
+    await page.click(`${scope} .result-actions .menu-popover ${sel}`);
+  } else await page.click(`${scope} .result-actions ${sel}`);
+}
+
 /** Full-page screenshot into SHOTS (toasts removed first); no-op with --no-shots. */
 export async function shot(page, opts, name) {
   if (!opts.shots) return;

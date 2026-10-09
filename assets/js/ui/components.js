@@ -159,7 +159,8 @@ const ICONS = {
   users: [['circle', { cx: 9, cy: 8, r: 3.5 }], ['path', { d: 'M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.2A6.5 6.5 0 0 1 21.5 20' }]],
   bell: [['path', { d: 'M6 9a6 6 0 0 1 12 0c0 6 2.5 8 2.5 8h-17S6 15 6 9z' }], ['path', { d: 'M10 20.5a2.2 2.2 0 0 0 4 0' }]],
   home: [['path', { d: 'M3.5 11L12 4l8.5 7' }], ['path', { d: 'M5.5 9.5V20h5v-5.5h3V20h5V9.5' }]],
-  more: [DOT(5.5, 12, 1.6), DOT(12, 12, 1.6), DOT(18.5, 12, 1.6)]
+  more: [DOT(5.5, 12, 1.6), DOT(12, 12, 1.6), DOT(18.5, 12, 1.6)],
+  pilcrow: [['path', { d: 'M13 4v16' }], ['path', { d: 'M17 4v16' }], ['path', { d: 'M19 4H9.5a4.5 4.5 0 0 0 0 9H13' }]]
 };
 
 /** Names of every built-in icon (for docs/tests). */
@@ -468,16 +469,20 @@ function popoverSupported() {
  * followed as any link) or an action (`onSelect`). Without popover support the menu is shown and
  * hidden in place.
  * @param {{ label: string, icon?: string, items: Array<{ label: string, icon?: string, href?: string,
- *   onSelect?: (event: Event) => void, dataset?: object }>, size?: 'sm'|'md', className?: string, dataset?: object }} opts
- *   `label`: the button's accessible name and tooltip (it shows its icon only) and the menu's name
+ *   onSelect?: (event: Event) => void, dataset?: object }>, size?: 'sm'|'md', className?: string, dataset?: object,
+ *   showLabel?: boolean, variant?: string }} opts
+ *   `label`: the menu's name, and the button's accessible name and tooltip (it shows its icon only) —
+ *   or, with `showLabel` (the result header's "Export ▾"), its visible text with a chevron
  * @returns {{ el: HTMLElement, button: HTMLButtonElement, menu: HTMLElement, open: (opts?: { last?: boolean }) => void,
  *   close: (opts?: { focus?: boolean }) => void, isOpen: () => boolean }}
  */
-export function MenuButton({ label, icon = 'more', items = [], size = 'sm', className = '', dataset = null }) {
+export function MenuButton({ label, icon = 'more', items = [], size = 'sm', className = '', dataset = null, showLabel = false, variant = 'ghost' }) {
   const menuId = uid('menu');
   const popover = popoverSupported();
   const button = Button({
-    icon, size, variant: 'ghost', title: label, ariaLabel: label, className: 'btn-icon menu-button', dataset: dataset || {},
+    icon, size, variant, label: showLabel ? label : '', iconRight: showLabel ? 'chevron-down' : null,
+    title: showLabel ? null : label, ariaLabel: showLabel ? null : label, className: showLabel ? 'menu-button' : 'btn-icon menu-button',
+    dataset: dataset || {},
     attrs: { 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-controls': menuId }
   });
   let shown = false;
@@ -706,19 +711,20 @@ export async function copyText(text) {
 /**
  * Copy button with "Copied" feedback (icon swap + screen-reader announcement).
  * @param {string|(() => string)} value text or a function producing it at click time
- * @param {{ label?: string, iconOnly?: boolean, size?: 'sm'|'md', variant?: string, title?: string,
+ * @param {{ label?: string, iconOnly?: boolean, icon?: string, size?: 'sm'|'md', variant?: string, title?: string,
  *   toastOnCopy?: boolean|string, onFail?: (text: string) => void, className?: string }} [opts]
  *   `toastOnCopy`: true toasts "Copied", a string toasts that text; `onFail` replaces the
- *   "could not copy" toast (e.g. with the text in a dialog to copy by hand)
+ *   "could not copy" toast (e.g. with the text in a dialog to copy by hand); `icon`: the one shown
+ *   before and after the "copied" tick (the copy icon by default)
  * @returns {HTMLButtonElement}
  */
 export function CopyButton(value, {
-  label = null, iconOnly = false, size = 'sm', variant = 'ghost', title = null, toastOnCopy = false, onFail = null, className = ''
+  label = null, iconOnly = false, icon = 'copy', size = 'sm', variant = 'ghost', title = null, toastOnCopy = false, onFail = null, className = ''
 } = {}) {
   const text = label ?? t('common.copy');
   const btn = Button({
     label: iconOnly ? '' : text,
-    icon: 'copy',
+    icon,
     variant,
     size,
     title: title ?? text,
@@ -742,7 +748,7 @@ export function CopyButton(value, {
     clearTimeout(timer);
     timer = setTimeout(() => {
       const cur = btn.querySelector('.icon');
-      if (cur) cur.replaceWith(Icon('copy', { size: size === 'sm' ? 14 : 16 }));
+      if (cur) cur.replaceWith(Icon(icon, { size: size === 'sm' ? 14 : 16 }));
       btn.classList.remove('is-copied');
       if (labelEl) labelEl.textContent = text;
     }, 1600);

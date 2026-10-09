@@ -942,7 +942,9 @@ function titleKeyOf(def, view) {
  * The page header (docs/DESIGN.md §5.1, region 1): the tool's icon, its title (the page's <h1>) and
  * one purpose line (`nav.<id>.purpose`). The ⓘ button next to the title opens what the tool does at
  * length (`nav.<id>.desc`) with a link to its section of About (lib/shellnav.js aboutSectionOf).
- * `.page-actions` holds the page's own actions; the kept-result note sits under the purpose line.
+ * `.page-actions` holds the page's own actions; the kept-result note sits under the purpose line,
+ * or in the view's result header once the view draws its result with the page template
+ * (ui/template.js: Copy link and Run again live there too).
  */
 function renderPageHeader(def, view = null) {
   const titleKey = titleKeyOf(def, view);
@@ -950,6 +952,7 @@ function renderPageHeader(def, view = null) {
   dom.pageActions = h('div', { class: 'page-actions' });
   dom.pageBody = h('div', { class: 'page-body', id: 'page-body', dataset: { view: def.id } });
   dom.keptNote = h('div', { class: 'page-kept', hidden: true });
+  dom.keptShown = null;
   dom.offlineNote = h('div', { class: 'page-offline', id: 'page-offline', hidden: true });
   dom.pageDef = def;
   const purposeKey = `nav.${def.id}.purpose`;
@@ -1056,9 +1059,11 @@ function requireOnline({ quiet = false } = {}) {
 }
 
 /**
- * Show (or hide with null) the page header's note about a kept result: "Result from <time>" (or
- * the result's own `label`), with "Run again" when the view exports `rerun()` and the note offers
- * it (`rerun`). Its keyboard focus goes to the page title when the note goes away under it.
+ * Show (or hide with null) the note about a kept result: "Result from <time>" (or the result's own
+ * `label`), with "Run again" when the view exports `rerun()` and the note offers it (`rerun`). It
+ * goes into the view's result header when the view has one (ui/template.js ResultHeader: the
+ * `[data-kept-slot]` of its `.result-meta`, docs/DESIGN.md §5.1), else under the page header's
+ * purpose line. Its keyboard focus goes to the page title when the note goes away under it.
  * @param {{ at: Date, dropped: boolean, rerun?: boolean, label?: string|null }|null} note
  */
 function setKeptNote(note) {
@@ -1066,9 +1071,13 @@ function setKeptNote(note) {
   const cur = current;
   cur.note = note;
   const doc = globalThis.document;
-  const hadFocus = !!doc && dom.keptNote.contains(doc.activeElement);
-  clear(dom.keptNote);
-  dom.keptNote.hidden = !note;
+  const hosts = [...new Set([dom.keptNote, dom.keptShown].filter(Boolean))];
+  const hadFocus = !!doc && hosts.some((el) => el.contains(doc.activeElement));
+  for (const el of hosts) {
+    clear(el);
+    el.hidden = true;
+  }
+  dom.keptShown = null;
   if (note) {
     const rerun = note.rerun !== false && typeof cur.view.rerun === 'function' ? () => {
       try {
@@ -1077,7 +1086,10 @@ function setKeptNote(note) {
         reportError(err);
       }
     } : null;
-    dom.keptNote.append(KeptNote({ at: note.at, dropped: note.dropped, label: note.label, onRerun: rerun }));
+    const host = (dom.pageBody && dom.pageBody.querySelector('[data-kept-slot]')) || dom.keptNote;
+    host.append(KeptNote({ at: note.at, dropped: note.dropped, label: note.label, onRerun: rerun }));
+    host.hidden = false;
+    dom.keptShown = host;
   } else if (hadFocus && dom.pageTitle) {
     dom.pageTitle.focus({ preventScroll: true });
   }
@@ -1213,7 +1225,7 @@ function finishRoute(def) {
     globalThis.scrollTo(0, 0);
     if (dom.pageTitle) dom.pageTitle.focus({ preventScroll: true });
     // A kept result is said with the tool's name ("Domain Health · Result from 14:02").
-    const kept = dom.keptNote && !dom.keptNote.hidden ? dom.keptNote.querySelector('.kept-note-text') : null;
+    const kept = dom.keptShown && !dom.keptShown.hidden ? dom.keptShown.querySelector('.kept-note-text') : null;
     announce(kept ? `${t(`nav.${def.id}`)} · ${kept.textContent}` : t(`nav.${def.id}`));
   } else {
     // The offline copy is fetched after the first view, never in its way.

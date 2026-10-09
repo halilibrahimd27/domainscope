@@ -2,18 +2,15 @@
  * views/lookup.css — "DNS Lookup" view (.lkp-*).
  */
 
+/* The page template (ui/template.js, style.css § 4) draws the input, the result header (.lkp-sum)
+   and the empty state; this sheet draws the form's options and the record cards. */
+.lkp-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
+}
+
 /* ---- form ------------------------------------------------------------------ */
-
-.lkp-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(12rem, 18rem) auto;
-  gap: 12px;
-  align-items: end;
-}
-
-.lkp-form .field {
-  min-width: 0;
-}
 
 .lkp-types-wrap {
   display: flex;
@@ -41,56 +38,19 @@
   display: none;
 }
 
-.lkp-examples .link-btn {
-  font-size: 12.5px;
-}
-
 @media (max-width: 760px) {
-  .lkp-form,
   .lkp-options {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .lkp-buttons .btn {
-    width: 100%;
-  }
 }
 
-/* ---- summary ------------------------------------------------------------------ */
-
-.lkp-sum {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 16px;
-  padding: 12px 16px;
-}
-
-.lkp-sum-main {
-  min-width: 0;
-}
-
-.lkp-sum-name {
-  font-size: 16px;
-  font-weight: 700;
-  overflow-wrap: anywhere;
-}
+/* ---- the result header (.lkp-sum) ------------------------------------------- */
 
 .lkp-sum-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 14px;
-  margin-top: 2px;
-  font-size: 13px;
-  color: var(--text-2);
-}
-
-.lkp-sum-failed {
-  display: inline-flex;
-  align-items: center;
-  color: var(--error);
+  gap: 2px var(--space-3);
 }
 
 /* Stopped (Stop, Esc) before every type answered: how many did not. */
@@ -103,7 +63,8 @@
 
 /* The header flags every answer shares, once (lib/density.js lookupLayout). */
 .lkp-sum-flags {
-  margin-top: 8px;
+  flex-basis: 100%;
+  margin-top: 2px;
 }
 
 /* "No records: AAAA, CAA, …": the NODATA types, one line instead of a card each. */
@@ -470,10 +431,6 @@
 
 .lkp-rrsig-validity .badge {
   white-space: nowrap;
-}
-
-.lkp-empty {
-  padding: 8px 0;
 }
 
 .lkp-rrsig-validity {

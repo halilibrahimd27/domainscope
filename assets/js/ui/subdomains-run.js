@@ -41,7 +41,7 @@ import { registrableDomain } from '../lib/domain.js';
 import { errorKind } from '../lib/util.js';
 import {
   CHIP_ERRORS, DNS_ORIGINS, FILTERS, SHELLS, SOURCE_NAMES, WARNING_CODES, countHosts, dayText, isProxiedOriginHost, isResolving,
-  languageName, liveHosts, loadOnFirstUse, matchesFilter, namesText, networkOwner, originOverview, originSweepFor,
+  languageName, liveHosts, loadOnFirstUse, matchesFilter, namesText, networkOwner, originExport, originOverview, originSweepFor,
   realOriginNetworks, reasonText, routeTargets, sourceHealthText, sourceNote, techniqueCounts
 } from '../views/subdomains.js';
 
@@ -103,32 +103,6 @@ function originTitle(origin) {
   if (DNS_ORIGINS.has(o)) return t('sub.origin.dnsTitle');
   if (o === 'zone') return t('sub.origin.zoneTitle');
   return null;
-}
-
-/**
- * The `origin` block of the JSON export: the networks and the POSIX command the ORIGIN panel shows
- * (no wildcard suspects, no IPv6 /48), with the panel's exclusions applied — whoever runs the
- * exported command never probes an address the user excluded — and what they did (`exclude`);
- * the hints with `stale` on a remembered origin the map (read now) has since marked stale.
- * @param {object|null} result ScanResult
- * @param {string[]} [exclude] the tokens typed into the panel's Exclude box
- * @param {object|null} [origins] the origin map read now
- * @returns {{ networks: object[], hints: object[], cliSuggestion: string|null,
- *   exclude: { requested: string[], emitted: string[], excluded: string[], unused: string[], invalid: string[] }|null }}
- */
-export function originExport(result, exclude = [], origins = null) {
-  const r = result || {};
-  const tokens = Array.isArray(exclude) && exclude.length ? exclude.map(String) : null;
-  const sweep = originSweepFor(r, { shell: 'posix', exclude: tokens, origins });
-  return {
-    networks: realOriginNetworks(r.originNetworks, r.hosts).networks,
-    // a remembered origin the map now marks stale carries the mark (lib/originnow.js)
-    hints: origins ? hintsNow(r, origins) : r.originHints || [],
-    cliSuggestion: sweep.command,
-    exclude: tokens
-      ? { requested: tokens, emitted: sweep.emitted, excluded: sweep.excluded, unused: sweep.excludeUnused, invalid: sweep.excludeDropped }
-      : null
-  };
 }
 
 /**
@@ -774,7 +748,9 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
       discovery: run.result ? techniqueCounts(run.result.hosts) : null,
       sourceHealth: sourceHealthSummary(run.sourceResults).map(({ domains: _d, ...x }) => x),
       // The networks and the POSIX command the ORIGIN panel shows, with its exclusions applied.
-      origin: run.result ? originExport(run.result, originExclude.tokens, originIndex(stateSingleton.workspaceData('origins'))) : null,
+      // (a remembered origin the map now marks stale carries the mark in the hints: lib/originnow.js)
+      origin: run.result ? originExport(run.result, originExclude.tokens, originIndex(stateSingleton.workspaceData('origins')),
+        { hints: hintsNow(run.result, stateSingleton.workspaceData('origins')) }) : null,
       subdomains: exportRows()
     })}\n`, 'application/json;charset=utf-8'))
   });

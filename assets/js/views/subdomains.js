@@ -1666,6 +1666,32 @@ export function originSweepFor(result, { shell = 'posix', exclude = null, origin
 }
 
 /**
+ * The `origin` block of a JSON export (Subdomains, SSL Targets): the networks and the POSIX command
+ * the ORIGIN panel / Behind CDN shows (no wildcard suspects, no IPv6 /48), with the exclusions typed
+ * there applied — whoever runs the exported command never probes an address the user excluded — and
+ * what they did (`exclude`); `hints` as the caller reads them (lib/originnow.js hintsNow), else the scan's.
+ * @param {object|null} result ScanResult
+ * @param {string[]} [exclude] the tokens typed into the Exclude box
+ * @param {object|null} [origins] the origin map read now
+ * @param {{ hints?: object[]|null }} [opts]
+ * @returns {{ networks: object[], hints: object[], cliSuggestion: string|null,
+ *   exclude: { requested: string[], emitted: string[], excluded: string[], unused: string[], invalid: string[] }|null }}
+ */
+export function originExport(result, exclude = [], origins = null, { hints = null } = {}) {
+  const r = result || {};
+  const tokens = Array.isArray(exclude) && exclude.length ? exclude.map(String) : null;
+  const sweep = originSweepFor(r, { shell: 'posix', exclude: tokens, origins });
+  return {
+    networks: realOriginNetworks(r.originNetworks, r.hosts).networks,
+    hints: hints || r.originHints || [],
+    cliSuggestion: sweep.command,
+    exclude: tokens
+      ? { requested: tokens, emitted: sweep.emitted, excluded: sweep.excluded, unused: sweep.excludeUnused, invalid: sweep.excludeDropped }
+      : null
+  };
+}
+
+/**
  * The zone part of a ScanResult (Zone File hand-off), normalised: the zone's exact origin
  * addresses, host-name origins and proxied names that went into the CLI command. Null for a
  * scan without a zone.

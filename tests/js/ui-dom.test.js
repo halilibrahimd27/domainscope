@@ -1572,11 +1572,20 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
     const ex = S.originExport(result, ['198.51.100.25', 'not-an-ip']);
     assert.equal(ex.cliSuggestion, gone.command, 'whoever runs the exported command never probes the excluded address');
     assert.deepEqual(ex.exclude, { requested: ['198.51.100.25', 'not-an-ip'], emitted: [], excluded: ['198.51.100.25'], unused: [], invalid: ['not-an-ip'] });
+    // The hints as the caller reads them now (lib/originnow.js hintsNow), else the scan's own.
+    const hints = [{ ip: '192.0.2.40', reasons: [{ kind: 'known', host: 'www.x.com', port: 443, stale: { reason: 'cli-not-hosted', at: '2026-10-01T00:00:00.000Z' } }] }];
+    assert.equal(S.originExport(result, [], null, { hints }).hints, hints);
+    assert.equal(S.originExport({ ...result, originHints: hints }).hints, hints);
     // Wiring: the panel and the export read the same helper and the run's exclusions, which are kept
     // per run at module level (a re-mount — another view and back, a language switch — keeps them).
     const src = await subdomainsSource();
-    assert.match(src, /origin: run\.result \? originExport\(run\.result, originExclude\.tokens, originIndex\(stateSingleton\.workspaceData\('origins'\)\)\) : null/,
+    assert.match(src, /origin: run\.result \? originExport\(run\.result, originExclude\.tokens, originIndex\(stateSingleton\.workspaceData\('origins'\)\),\s*\{ hints: hintsNow\(run\.result, stateSingleton\.workspaceData\('origins'\)\) \}\) : null/,
       'the export reads the panel exclusions and the origin map as the panel does');
+    // SSL Targets: Behind CDN's exclusions are the scan's, and its JSON export applies them through the same helper.
+    const scanSrc = await readFile(path.join(ROOT, 'assets', 'js', 'views', 'scan.js'), 'utf8');
+    assert.match(scanSrc, /const cdnExclude = run\.cdnExclude \|\| \(run\.cdnExclude = \{ raw: '', tokens: \[\] \}\);/, 'kept with the scan, not the mount');
+    assert.match(scanSrc, /origin: run\.result \? originExport\(run\.result, cdnExclude\.tokens, originIndex\(state\.workspaceData\('origins'\)\), \{ hints: shown\(\)\.originHints \}\) : null,/,
+      'the JSON export honours them');
     assert.match(src, /const currentSweep = \(shell\) => originSweepFor\(r, \{/, 'the panel reads the same helper');
     assert.match(src, /let originExclude = originExcludes\.get\(run\);/, 'the exclusions outlive the mounted panel');
     assert.doesNotMatch(src, /const originExclude = \{ tokens: \[\] \};/);

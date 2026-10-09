@@ -21,6 +21,8 @@
  *     marked stale with the reason ("the CLI found this name on another server … on <date>");
  *     a file that is not a report is named; the next scan shows the stale entry but leaves it out
  *     of the command; Remove the stale entry;
+ *   - SSL Targets › Behind CDN: an address typed into the sweep's Exclude box stays with the scan
+ *     (another tool and back) and the scan's JSON export carries the same command and what it did;
  *   - SSL Targets › Servers with an inventory: a remembered origin the map then marks stale (as a
  *     Verify batch would) reads "Origin map · Stale" with the reason, and its server no longer
  *     serves the names nor ranks first — at once, and back when the map is;
@@ -42,7 +44,7 @@ import { launchBrowser } from './cdp.mjs';
 import { orderSuites } from './run-all.mjs';
 import {
   BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  gotoRoute, setLangUi, sleep, waitReady, zoneHandoffScript, ZONE_HANDOFF_APEX, ZONE_HANDOFF_DNS
+  gotoRoute, installDownloadCapture, setLangUi, sleep, takeDownloads, waitReady, zoneHandoffScript, ZONE_HANDOFF_APEX, ZONE_HANDOFF_DNS
 } from './scan.e2e.mjs';
 import { SOURCES } from '../../assets/js/lib/sources.js';
 
@@ -192,6 +194,7 @@ async function main() {
     page = await browser.newPage('about:blank', { width: 1440, height: 900 });
     netHits = await networkGuard(page);
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(APEX, ZONE_HANDOFF_DNS) });
+    await installDownloadCapture(page);
     await page.emulateMedia({ 'prefers-color-scheme': 'light' });
     await page.goto(`${server.url}#/about`);
     await waitReady(page);
@@ -289,6 +292,39 @@ async function main() {
       assert(cmd.includes('192.0.2.10 192.0.2.20'), `Behind CDN command: ${cmd}`);
       await page.evaluate(() => document.querySelector('.scan-known-origins')?.scrollIntoView());
       await shotPage(page, opts, 'origins-scan-cdn-desktop-light-en');
+    });
+
+    await run.step('SSL Targets › Behind CDN: an exclusion stays with the scan (another tool and back) and the JSON export applies it', async () => {
+      const quick = () => page.evaluate(() => document.querySelector('.scan-cli-quick code')?.textContent || '');
+      await page.type('[data-role="scan-cdn-exclude"]', '192.0.2.10');
+      await page.waitFor(() => !/192\.0\.2\.10/.test(document.querySelector('.scan-cli-quick code')?.textContent || '')
+        && document.querySelector('[data-role="exclude-applied"]'), { message: 'the sweep leaves the excluded origin out' });
+      const excluded = await quick();
+      assert(excluded.includes('192.0.2.20') && !excluded.includes('192.0.2.10'), `Behind CDN command: ${excluded}`);
+      // Another tool and back: the box and the command are the scan's, not the mount's.
+      await gotoRoute(page, 'about');
+      await gotoRoute(page, 'scan');
+      await page.click('.scan-tabs [data-tab="cdn"]');
+      const back = await page.waitFor(() => {
+        const box = document.querySelector('[data-role="scan-cdn-exclude"]');
+        return box ? { box: box.value, cmd: document.querySelector('.scan-cli-quick code')?.textContent || '' } : false;
+      }, { message: 'Behind CDN again' });
+      assertEqual(back, { box: '192.0.2.10', cmd: excluded }, 'kept with the scan');
+      // The JSON export: the same command and what the exclusion did.
+      await takeDownloads(page);
+      await page.click('.scan-exports [data-export="json"]');
+      const files = await page.waitFor(() => (window.__downloads || []).length > 0, { message: 'JSON downloaded' }).then(() => takeDownloads(page));
+      const doc = JSON.parse(files.find((f) => f.name.endsWith('.json')).text);
+      assertEqual(doc.origin.cliSuggestion, excluded, 'the exported command is the one shown, exclusion applied');
+      assertEqual([doc.origin.exclude.requested, doc.origin.exclude.excluded], [['192.0.2.10'], ['192.0.2.10']], 'and says what it did');
+      assert(doc.scan.cliSuggestion.includes('192.0.2.10'), 'the scan as it ran is kept beside it');
+      // Cleared again for the steps below.
+      await page.evaluate(() => {
+        const box = document.querySelector('[data-role="scan-cdn-exclude"]');
+        box.value = '';
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await page.waitFor(() => /192\.0\.2\.10/.test(document.querySelector('.scan-cli-quick code')?.textContent || ''), { message: 'exclusion cleared' });
     });
 
     await run.step('a CLI report that finds www on another server: remembered, and the old origin marked stale', async () => {

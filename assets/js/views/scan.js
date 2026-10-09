@@ -88,7 +88,7 @@ import { RenewalSets, RenewalPlanPanel, CertFileButtons, SetBadge, renewalSummar
 import {
   LEGACY_BRUTEFORCE, PERMUTATION_BUDGETS, DEFAULT_PERMUTATION_BUDGET, PYTHON_FOR_SHELL, SHELLS, WARNING_CODES, LEARNED_TRY_MAX,
   applyProgress, applyStage, bruteforceBases, ensureSmartCount, estimateText, languageName, levelPacks, levelSize, linkAction, localeSummary,
-  liveHosts, networkOwner, originOverview, originSweep, partialHostRecord, planQueryRange,
+  liveHosts, networkOwner, originExport, originOverview, originSweep, partialHostRecord, planQueryRange,
   realOriginNetworks, reasonText, rememberLearned, runScanner, scanConcurrency, sharedVocabulary, sourceHealthText, stopStages,
   techniqueCounts, wordlistCount, wordlistFellShort, wordlistPlan, wordlistPlanText, wordlistScanConfig,
   ZoneChip, isResolving, validZoneIntent, zoneChipCounts, zoneForDomains, zoneScanOverrides
@@ -2687,8 +2687,9 @@ function buildRunUI(run, ctx, { onFinish }) {
   const setOf = sets ? setOfName(sets) : null;
   let plan = null;
   const domainsLabel = run.config.domains.join(', ') || '—';
-  // Behind-CDN origin-panel state: the exclude tokens and an on-demand network-owner cache.
-  const cdnExclude = { raw: '', tokens: [] };
+  // Behind-CDN origin-panel state: the exclude tokens — the scan's (they outlive a re-mount: another
+  // tool and back, a language switch; the JSON export applies them) — and an on-demand owner cache.
+  const cdnExclude = run.cdnExclude || (run.cdnExclude = { raw: '', tokens: [] });
   const cdnOwnerCache = new Map();
   // The finished result as the workspace's origin map reads now (lib/originnow.js): a remembered
   // origin it has since marked stale is flagged, and no longer makes its server need the
@@ -3287,6 +3288,8 @@ function buildRunUI(run, ctx, { onFinish }) {
       } : {}),
       // the result as the origin map reads now: a remembered origin since marked stale is flagged
       scan: shown(),
+      // Behind CDN's networks and sweep command with its exclusions, as Subdomains exports its own
+      origin: run.result ? originExport(run.result, cdnExclude.tokens, originIndex(state.workspaceData('origins')), { hints: shown().originHints }) : null,
       verification: verifyExport(run, ctx.version),
       dane: sets ? daneExportAll() : daneExport(run, ctx.version)
     };

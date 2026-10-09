@@ -34,6 +34,7 @@ import {
   ResultTitle, RunBar, STATUS_ICONS, StatusSummary, ToolInput, withSubject
 } from '../../assets/js/ui/template.js';
 import { SummaryButton } from '../../assets/js/ui/summary-button.js';
+import { keptSlotOf } from '../../assets/js/ui/session-ui.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 /** The Subdomains view's source, then its run's progress and results (ui/subdomains-run.js, loaded with the first scan). */
@@ -3056,6 +3057,16 @@ describe('ui/template.js — the page template', () => {
       return child;
     }
 
+    insertBefore(node, ref) {
+      if (!ref) return this.appendChild(node);
+      if (node.parentNode) node.parentNode.removeChild(node);
+      const i = this.childNodes.indexOf(ref);
+      if (i === -1) throw new Error('fake DOM: insertBefore: the reference is no child');
+      this.childNodes.splice(i, 0, node);
+      node.parentNode = this;
+      return node;
+    }
+
     append(...nodes) {
       for (const n of nodes) this.appendChild(typeof n === 'string' ? new TplText(n) : n);
     }
@@ -3489,6 +3500,32 @@ describe('ui/template.js — the page template', () => {
       assert.equal(head.el.getAttribute('aria-busy'), null);
     });
 
+    test('a ready prompt\'s header has no kept slot (kept: false): "Opened from a link …" is about the box, not the kept result', () => {
+      const prompt = ResultHeader({ className: 'result-ready dov-prompt', kept: false });
+      assert.equal(prompt.kept, null);
+      assert.equal(prompt.el.querySelector('[data-kept-slot]'), null);
+      assert.ok(prompt.el.querySelector('.result-titles').contains(prompt.title), 'the rest of the header as before');
+    });
+
+    test('keptSlotOf (the shell\'s choice): the first slot shown and outside a ready prompt; none: null, the note under the page header', () => {
+      const body = new TplElement('div');
+      // A ready prompt first (one drawn with a slot of its own too), then a header inside a hidden region, then the result's.
+      const prompt = ResultHeader({ className: 'result-ready sub-link-prompt' });
+      const hidden = new TplElement('div');
+      hidden.hidden = true;
+      const elsewhere = ResultHeader({ className: 'x-head' });
+      hidden.append(elsewhere.el);
+      const head = ResultHeader({ className: 'sub-run' });
+      body.append(prompt.el, hidden, head.el);
+      assert.equal(keptSlotOf(body), head.kept, 'the result\'s header');
+      hidden.hidden = false;
+      assert.equal(keptSlotOf(body), elsewhere.kept, 'shown again: the first one');
+      head.el.remove();
+      elsewhere.el.remove();
+      assert.equal(keptSlotOf(body), null, 'only a prompt: none');
+      assert.equal(keptSlotOf(null), null);
+    });
+
     test('a part redrawn under the focus keeps it on the same control, else on the title', () => {
       const head = ResultHeader();
       tplDocument.body.append(head.el);
@@ -3553,7 +3590,41 @@ describe('ui/template.js — the page template', () => {
       s.el.querySelector('[data-status="hosts"]').focus();
       s.update(items(() => {}));
       assert.equal(tplDocument.activeElement.dataset.status, 'hosts');
-      assert.ok(s.el.contains(tplDocument.activeElement), 'the new button');
+      assert.ok(s.el.contains(tplDocument.activeElement), 'the button on screen');
+    });
+
+    test('an update changes the items in place, by key: a press under way keeps its node (Subdomains redraws them every 150 ms)', () => {
+      const pressed = [];
+      const at = (n, extra = {}) => [
+        { key: 'found', severity: 'neutral', count: n, text: `${n} hosts`, onPress: () => pressed.push(`found@${n}`) },
+        { key: 'resolving', severity: 'neutral', count: n - 1, text: `${n - 1} resolving`, filter: true, onPress: () => pressed.push(`resolving@${n}`), ...extra }
+      ];
+      const s = StatusSummary({ items: at(5, { title: 'Answered with an address' }) });
+      tplDocument.body.append(s.el);
+      const node = (k) => s.el.querySelector(`[data-status="${k}"]`);
+      const words = (el) => el.querySelector('.status-text').textContent;
+      const found = node('found');
+      const resolving = node('resolving');
+      resolving.focus();
+      s.update(at(9), { pressed: 'resolving' });
+      assert.equal(node('found'), found, 'the same node');
+      assert.equal(node('resolving'), resolving, 'the same toggle');
+      assert.deepEqual([words(found), found.dataset.count, words(resolving), resolving.getAttribute('aria-pressed'), resolving.getAttribute('title')],
+        ['9 hosts', '9', '8 resolving', 'true', null], 'its words, count, pressed state and title follow');
+      assert.equal(tplDocument.activeElement, resolving, 'the focus never moved');
+      resolving.click();
+      found.click();
+      assert.deepEqual(pressed, ['resolving@9', 'found@9'], 'a press reads the item as it is now');
+      // An item that comes takes its place in the order (info before neutral); one that goes leaves.
+      s.update([{ key: 'cdn', severity: 'info', count: 2, text: '2 behind a CDN', filter: true, onPress: () => {} }, at(9)[1]]);
+      assert.deepEqual(s.el.childNodes.map((n) => n.dataset.status), ['cdn', 'resolving']);
+      assert.equal(node('resolving'), resolving, 'still the same toggle');
+      assert.equal(found.parentNode, null, 'the hosts gone');
+      // An item whose kind (or severity) changes is drawn anew, and the focus goes to its new node.
+      s.update([{ key: 'resolving', severity: 'neutral', count: 3, text: '3 resolving', onPress: () => {} }]);
+      assert.notEqual(node('resolving'), resolving, 'a plain button now');
+      assert.equal(node('resolving').getAttribute('aria-pressed'), null);
+      assert.equal(tplDocument.activeElement, node('resolving'), 'the focus on the new node');
     });
   });
 
@@ -3622,6 +3693,18 @@ describe('ui/template.js — the page template', () => {
       assert.deepEqual(a.el.querySelectorAll('.menu-item').map((i) => i.disabled), [true, true, true, false]);
       assert.equal(a.el.querySelector('[data-menu="export"]').disabled, false, 'Print is still there');
       a.dispose();
+    });
+
+    test('dispose removes the phone-layout listener (it would keep the page it drew alive): the actions\' and the run bar\'s', () => {
+      const listeners = new Set();
+      globalThis.matchMedia = () => ({ matches: false, addEventListener: (_type, fn) => listeners.add(fn), removeEventListener: (_type, fn) => listeners.delete(fn) });
+      const a = ResultActions({ summary: summary(), link: () => 'x' });
+      const bar = RunBar({ label: 'Run' });
+      assert.equal(listeners.size, 2, 'both follow the phone layout');
+      a.dispose();
+      bar.dispose();
+      a.dispose();
+      assert.equal(listeners.size, 0, 'none left, a second dispose is harmless');
     });
   });
 

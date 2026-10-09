@@ -1484,6 +1484,10 @@ export function mount(container, ctx) {
 
   /** The result header's parts of the current lookup, updated in place by {@link renderSummary}. */
   let summaryParts = null;
+  // The actions' phone-layout listener would keep this page alive once it is left.
+  ctx.onCleanup(() => {
+    if (summaryParts && summaryParts.actions) summaryParts.actions.dispose();
+  });
 
   /**
    * Draw the result header (region 4), again on every answer and Retry. In place: the title, the

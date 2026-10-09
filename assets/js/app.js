@@ -72,7 +72,7 @@ import {
 import {
   createSessionStore, carryRoute, restorePlan, normalizeResult, keptNote, FILL_PARAM, FILL_VALUE
 } from './lib/session.js';
-import { TargetChip, KeptNote } from './ui/session-ui.js';
+import { TargetChip, KeptNote, keptSlotOf } from './ui/session-ui.js';
 import { permalinkParams, utcStamp } from './lib/summarycore.js';
 import { resultPermalink } from './ui/summary-button.js';
 import { registerServiceWorker, reloadPage, setManifestLang } from './ui/pwa.js';
@@ -1061,9 +1061,10 @@ function requireOnline({ quiet = false } = {}) {
 /**
  * Show (or hide with null) the note about a kept result: "Result from <time>" (or the result's own
  * `label`), with "Run again" when the view exports `rerun()` and the note offers it (`rerun`). It
- * goes into the view's result header when the view has one (ui/template.js ResultHeader: the
- * `[data-kept-slot]` of its `.result-meta`, docs/DESIGN.md §5.1), else under the page header's
- * purpose line. Its keyboard focus goes to the page title when the note goes away under it.
+ * goes into the view's result header when the view has one (ui/template.js ResultHeader: its
+ * `[data-kept-slot]`, docs/DESIGN.md §5.1 — the first one shown and not in a ready prompt,
+ * ui/session-ui.js keptSlotOf), else under the page header's purpose line. Its keyboard focus
+ * goes to the page title when the note goes away under it.
  * @param {{ at: Date, dropped: boolean, rerun?: boolean, label?: string|null }|null} note
  */
 function setKeptNote(note) {
@@ -1086,7 +1087,7 @@ function setKeptNote(note) {
         reportError(err);
       }
     } : null;
-    const host = (dom.pageBody && dom.pageBody.querySelector('[data-kept-slot]')) || dom.keptNote;
+    const host = keptSlotOf(dom.pageBody) || dom.keptNote;
     host.append(KeptNote({ at: note.at, dropped: note.dropped, label: note.label, onRerun: rerun }));
     host.hidden = false;
     dom.keptShown = host;

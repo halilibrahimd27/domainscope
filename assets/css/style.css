@@ -5095,6 +5095,12 @@ button.status-item[aria-pressed="true"] {
     flex-wrap: wrap;
   }
 
+  /* The title keeps a real width: the key metric ("B 89/100") wraps under it instead of squeezing
+     it to a column that splits a word or the domain mid-way (DESIGN §6.3, Linux fonts at 320 px). */
+  .result-titles {
+    flex: 1 1 14rem;
+  }
+
   .result-actions-slot {
     margin-left: 0;
   }

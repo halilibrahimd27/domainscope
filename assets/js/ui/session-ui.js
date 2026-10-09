@@ -100,6 +100,27 @@ export function TargetChip({ target, onClear }) {
 }
 
 /**
+ * Where the note over a kept result goes in a view drawn on the page template (ui/template.js
+ * ResultHeader, docs/DESIGN.md §5.1): the first kept slot (`[data-kept-slot]`) that is shown — no
+ * hidden element around it — and is not in a ready prompt (`.result-ready`, "Opened from a link …",
+ * which is about the name in the box, not the result). Null when the view has none: the note then
+ * goes under the page header.
+ * @param {ParentNode|null} root the page body
+ * @returns {HTMLElement|null}
+ */
+export function keptSlotOf(root) {
+  if (!root || typeof root.querySelectorAll !== 'function') return null;
+  for (const slot of root.querySelectorAll('[data-kept-slot]')) {
+    let usable = true;
+    for (let n = slot.parentNode; usable && n && n !== root; n = n.parentNode) {
+      if (n.hidden || (n.classList && n.classList.contains('result-ready'))) usable = false;
+    }
+    if (usable) return slot;
+  }
+  return null;
+}
+
+/**
  * The note over a tool's kept result: when it finished and, when the tool offers it, "Run again".
  * `dropped`: the result was too large to keep and only its query came back — or nothing did, when
  * there is no "Run again" (lib/session.js keptNote). `label`: the tool's

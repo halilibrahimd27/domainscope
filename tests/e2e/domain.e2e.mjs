@@ -12,9 +12,9 @@
  * fills the box (a host name reduced to its registrable domain, "Nothing has been sent yet") and
  * an IP refused; Build overview → the seven cards fill as their lookups land: an RDAP 503 and a
  * SERVFAIL for NS show "⚠ n/a" with the reason and a Retry that asks only that lookup again (the
- * keyboard focus stays on the card, or on Copy summary when it moved there meanwhile), at once
- * when pressed while the build still waits for RDAP (the health checks then follow the new
- * answer); DNS hosting, mail platform with SPF / DMARC one-liners, apex and www with their CDN,
+ * keyboard focus stays on the card, or on Copy summary when it moved there meanwhile; the result
+ * header's grade, score and counts follow the refreshed health card), at once when pressed while
+ * the build still waits for RDAP (the health checks then follow the new answer); DNS hosting, mail platform with SPF / DMARC one-liners, apex and www with their CDN,
  * CAA, SaaS vendors without a single token on the page, the health score; the CT issuers on a
  * click (exactly one Cert Spotter request) compared with CAA; Copy summary (names only, the
  * permalink); the print stylesheet; the kept result on the way back (no new query); Ctrl+Enter
@@ -356,6 +356,19 @@ async function main() {
       assertEqual(again, [], 'the health run read the rest from the cache');
       assert(/adam\.ns\.cloudflare\.com/.test(await text(page, '.dov-card-dns')), 'name servers');
       assertEqual(await page.evaluate(() => document.querySelector('.dov-score').dataset.light), 'ok', 'the fixed zone is healthy: no error or warning left');
+      // The result header follows the refreshed health card: its grade, score and counts are the new ones.
+      const head = await page.evaluate(() => {
+        const el = document.querySelector('.dov-head');
+        const card = document.querySelector('.dov-score');
+        return {
+          head: { score: el.querySelector('.result-score-value')?.textContent || null, light: el.querySelector('.result-grade')?.dataset.severity || null },
+          card: { score: card.dataset.score, light: card.dataset.light },
+          counts: [...el.querySelectorAll('.status-item')].map((x) => x.dataset.status),
+          group: !!el.querySelector('.status-summary')
+        };
+      });
+      assertEqual(head.head, head.card, 'the head\'s grade and score are the health card\'s');
+      assertEqual([head.counts, head.group], [[], false], 'no error, warning or n/a card left to count: no status summary at all');
     });
 
     await run.step('the CT issuers on a click: exactly one Cert Spotter request, compared with CAA', async () => {

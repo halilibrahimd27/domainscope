@@ -2499,6 +2499,7 @@ export function mount(container, ctx) {
   let lastBf = options.bruteforce !== 'off' ? options.bruteforce : 'smart';
   /** The input card (ui/template.js ToolInput), once built: its compact row repeats the Advanced summary. */
   let toolInput = null;
+  const isRunning = () => !!(session.run && session.run.status === 'running');
 
   /* --- route params -------------------------------------------------------- */
   const fromRoute = routeTargets(ctx.searchParams, ctx.params);
@@ -2574,7 +2575,8 @@ export function mount(container, ctx) {
   // A shared link (`&run=1`) pre-fills the box and waits for one click (the template's ready state,
   // in region 4's place): a link alone never starts the scan's thousands of DNS queries and
   // third-party source calls.
-  const prompt = ResultHeader({ className: 'result-ready sub-link-prompt' });
+  // No kept-result slot: the note over the last scan goes into that scan's header, never here.
+  const prompt = ResultHeader({ className: 'result-ready sub-link-prompt', kept: false });
   prompt.setState('ready');
   const linkPrompt = prompt.el;
   linkPrompt.hidden = true;
@@ -3184,7 +3186,8 @@ export function mount(container, ctx) {
       options.includeExpired ? t('sub.sum.expired') : null,
       extras ? t('sub.sum.extra', { count: extras }) : null
     ].filter(Boolean).join(' · ');
-    if (toolInput) toolInput.refresh();
+    // The compact row repeats the summary, and an option changed ends "Run again".
+    if (toolInput) syncRunBar();
   }
 
   function renderDoh() {
@@ -3239,12 +3242,21 @@ export function mount(container, ctx) {
   container.append(h('div', { class: 'sub-view stack-lg' }, hero, linkPrompt, intro, resultsHost, runBar.float));
   cleanups.push(() => runBar.dispose());
 
-  /** The run bar and the input follow the scan: compact once one starts, "Run again" while the box holds its domains. */
+  /**
+   * What a scan reads besides its domains — the options, the extra names and the custom wordlist —
+   * as one string (`run.formKey` at its start): "Run again" only while they are still the scan's.
+   */
+  function formKey() {
+    const o = sanitizeOptions(options);
+    return JSON.stringify([{ ...o, sources: [...o.sources].sort() }, parseHostList(extraField.value, { allowWildcard: true }).valid, customWordlist().labels]);
+  }
+
+  /** The run bar and the input follow the scan: compact once one starts, "Run again" while the box holds its domains and the options are its. */
   function syncRunBar() {
     const run = session.run;
     const state = templateState({ running: isRunning(), result: !!run, ready: !linkPrompt.hidden });
     const box = parseTargets(domainField.value).domains;
-    const same = !!run && box.length === run.config.domains.length && box.every((d, i) => d === run.config.domains[i]);
+    const same = !!run && box.length === run.config.domains.length && box.every((d, i) => d === run.config.domains[i]) && run.formKey === formKey();
     runBar.setState(state);
     runBar.setRerun(state === 'done' && same);
     toolInput.setCompact(inputCompact(state));
@@ -3302,7 +3314,6 @@ export function mount(container, ctx) {
   /* --- run control ------------------------------------------------------------ */
   let ui = null;
   let starting = false;
-  const isRunning = () => !!(session.run && session.run.status === 'running');
 
   function validate() {
     clear(formError);
@@ -3391,6 +3402,7 @@ export function mount(container, ctx) {
     // The DohClient counts queries for its whole life; remember where this run started.
     run.queriesAtStart = typeof dns.stats === 'function' ? dns.stats().queries : null;
     run.zone = zoneCfg.zone || null; // the imported zone it scans (zoneStartAction)
+    run.formKey = formKey(); // the options it was started with ("Run again" while they stay)
     session.run = run;
     session.filter = 'all';
     // A new run opens on the automatic tab (lib/subtabs.autoSubTab); setParams below drops `tab=`.

@@ -459,7 +459,9 @@ export function ResultTitle({ severity = null, running = false, icon = null, tex
  * - `title`: the h2 (`.result-title`, focusable from code: the outline reads tool → result);
  * - `key`: the key metric at the right (a grade, days left);
  * - `meta`: time, counts, resolver; under it the kept-result note (`.page-kept`, `data-kept-slot`:
- *   the shell puts "Result from 10:51 · Run again" there) and `progress` while running;
+ *   the shell puts "Result from 10:51 · Run again" there, ui/session-ui.js keptSlotOf) and
+ *   `progress` while running. A ready prompt's header ("Opened from a link …", `.result-ready`)
+ *   is about the name in the box, not a kept result: it has no slot (`kept: false`);
  * - `notes`: what the result needs said (a zone file used, a cancelled run); an empty note takes no
  *   room, and the row hides while none shows — so a live region goes on `el` itself, not here;
  * - `status` (StatusSummary) and `actions` (ResultActions) on one row;
@@ -468,11 +470,11 @@ export function ResultTitle({ severity = null, running = false, icon = null, tex
  * `setState` marks it ready / running / done / error (`data-state`, aria-busy while running). A
  * part redrawn under the keyboard focus keeps it: on the same control when the new content has one
  * (its data-action, data-export, data-menu or data-status), else on the title.
- * @param {{ className?: string|string[], dataset?: object, level?: 2|3, label?: string|null }} [opts]
- * @returns {{ el: HTMLElement, title: HTMLElement, kept: HTMLElement, set(part: string, value: any): void,
+ * @param {{ className?: string|string[], dataset?: object, level?: 2|3, label?: string|null, kept?: boolean }} [opts]
+ * @returns {{ el: HTMLElement, title: HTMLElement, kept: HTMLElement|null, set(part: string, value: any): void,
  *   get(part: string): HTMLElement|null, setState(state: string): void, focusTitle(): void }}
  */
-export function ResultHeader({ className = '', dataset = {}, level = 2, label = null } = {}) {
+export function ResultHeader({ className = '', dataset = {}, level = 2, label = null, kept: keptSlot = true } = {}) {
   const titleId = uid('result-title');
   const title = h(`h${level}`, { class: 'result-title', id: titleId, attrs: { tabindex: -1 } });
   const parts = {
@@ -487,7 +489,7 @@ export function ResultHeader({ className = '', dataset = {}, level = 2, label = 
     related: h('div', { class: 'result-related-slot', hidden: true }),
     sources: h('div', { class: 'result-sources', hidden: true })
   };
-  const kept = h('div', { class: 'page-kept result-kept', hidden: true, dataset: { keptSlot: '' } });
+  const kept = keptSlot ? h('div', { class: 'page-kept result-kept', hidden: true, dataset: { keptSlot: '' } }) : null;
   const bar = h('div', { class: 'result-bar', hidden: true }, parts.status, parts.actions);
   const el = h('section', {
     class: ['result-head', 'card', className],
@@ -539,6 +541,12 @@ export function ResultHeader({ className = '', dataset = {}, level = 2, label = 
  * aria-pressed whose accessible name is its visible text; one with only `onPress` a plain button
  * (it opens what it counts); any other a fact. Not a live region: the view announces the totals
  * once, when the run ends.
+ *
+ * `update` changes the items in place, by key: an item that stays keeps its node (its words,
+ * count, title and pressed state follow), and only an item that comes or goes is added or
+ * removed — Subdomains updates its counts every 150 ms while hosts stream in, and a button drawn
+ * anew between a press and its release would never get the click. An item whose kind (toggle,
+ * button, fact) or severity changes is drawn anew, the keyboard focus moving to its new node.
  * @param {{ items?: Array<{ key: string, severity: string, count: number, text: string, title?: string,
  *   filter?: boolean, onPress?: (key: string) => void }>, verdict?: boolean, pressed?: string|null, label?: string|null, className?: string }} [opts]
  * @returns {{ el: HTMLElement, update(items: object[], opts?: { pressed?: string|null }): void, setPressed(key: string|null): void }}
@@ -546,50 +554,75 @@ export function ResultHeader({ className = '', dataset = {}, level = 2, label = 
 export function StatusSummary({ items = [], verdict = false, pressed = null, label = null, className = '' } = {}) {
   const el = h('div', { class: ['status-summary', className], attrs: { role: 'group', 'aria-label': label || t('result.statusLabel') } });
   let current = pressed;
-  let shown = [];
-  const buttons = new Map(); // the toggles, by key
-  const pressable = new Map(); // every button, by key (the focus comes back to it after a redraw)
-  const render = () => {
+  /** The items on screen, by key: { node, text (its words' span), kind, severity, item (the latest: a press reads its onPress) }. */
+  const drawn = new Map();
+  const kindOf = (item) => (typeof item.onPress === 'function' ? (item.filter ? 'toggle' : 'button') : 'fact');
+
+  function draw(item, kind) {
+    const key = item.key;
+    const mark = STATUS_ICONS[item.severity]
+      ? h('span', { class: ['status-icon', `sev-${item.severity}`], attrs: { 'aria-hidden': 'true' } }, Icon(STATUS_ICONS[item.severity], { size: 14 }))
+      : h('span', { class: 'status-dot', attrs: { 'aria-hidden': 'true' } }, '·');
+    const text = h('span', { class: 'status-text' });
+    const common = { class: ['status-item', `status-${item.severity}`], dataset: { status: key, severity: item.severity } };
+    const press = () => {
+      const now = drawn.get(key);
+      if (now && typeof now.item.onPress === 'function') now.item.onPress(key);
+    };
+    const node = kind === 'fact' ? h('span', common, mark, text) : h('button', { ...common, type: 'button', on: { click: press } }, mark, text);
+    return { node, text, kind, severity: item.severity };
+  }
+
+  function fill(d, item) {
+    d.item = item;
+    if (d.text.textContent !== item.text) d.text.textContent = item.text;
+    d.node.dataset.count = String(item.count);
+    if (item.title) d.node.setAttribute('title', item.title);
+    else d.node.removeAttribute('title');
+    if (d.kind === 'toggle') d.node.setAttribute('aria-pressed', String(current === item.key));
+  }
+
+  function render(shown) {
     const focused = hasFocus(el) ? globalThis.document.activeElement : null;
     const was = focused && focused.dataset ? focused.dataset.status : null;
-    clear(el);
-    buttons.clear();
-    pressable.clear();
-    for (const item of shown) {
-      const mark = STATUS_ICONS[item.severity]
-        ? h('span', { class: ['status-icon', `sev-${item.severity}`], attrs: { 'aria-hidden': 'true' } }, Icon(STATUS_ICONS[item.severity], { size: 14 }))
-        : h('span', { class: 'status-dot', attrs: { 'aria-hidden': 'true' } }, '·');
-      const inner = [mark, h('span', { class: 'status-text' }, item.text)];
-      const common = {
-        class: ['status-item', `status-${item.severity}`],
-        dataset: { status: item.key, severity: item.severity, count: String(item.count) },
-        title: item.title || null
-      };
-      const press = typeof item.onPress === 'function' ? () => item.onPress(item.key) : null;
-      let node;
-      if (press && item.filter) {
-        node = h('button', { ...common, type: 'button', attrs: { 'aria-pressed': String(current === item.key) }, on: { click: press } }, inner);
-        buttons.set(item.key, node);
-      } else if (press) node = h('button', { ...common, type: 'button', on: { click: press } }, inner);
-      else node = h('span', common, inner);
-      if (press) pressable.set(item.key, node);
-      append(el, node);
+    const keys = new Set(shown.map((x) => x.key));
+    for (const [key, d] of drawn) {
+      if (keys.has(key)) continue;
+      d.node.remove();
+      drawn.delete(key);
     }
-    if (was) {
-      const again = pressable.get(was);
-      if (again) again.focus({ preventScroll: true });
+    shown.forEach((item, i) => {
+      const kind = kindOf(item);
+      let d = drawn.get(item.key);
+      if (d && (d.kind !== kind || d.severity !== item.severity)) {
+        d.node.remove();
+        d = null;
+      }
+      if (!d) {
+        d = draw(item, kind);
+        drawn.set(item.key, d);
+      }
+      fill(d, item);
+      // In the order statusItems gives: only an item that came (or changed its place) moves.
+      const at = el.childNodes[i] || null;
+      if (at !== d.node) el.insertBefore(d.node, at);
+    });
+    // The item under the focus was drawn anew: the focus goes to its new node.
+    if (was && !el.contains(focused)) {
+      const again = drawn.get(was);
+      if (again && again.kind !== 'fact') again.node.focus({ preventScroll: true });
     }
-  };
+  }
+
   const api = {
     el,
     update(next, { pressed: p = current } = {}) {
       current = p;
-      shown = statusItems(next, { verdict });
-      render();
+      render(statusItems(next, { verdict }));
     },
     setPressed(key) {
       current = key;
-      for (const [k, node] of buttons) node.setAttribute('aria-pressed', String(k === key));
+      for (const d of drawn.values()) if (d.kind === 'toggle') d.node.setAttribute('aria-pressed', String(d.item.key === key));
     }
   };
   api.update(items, { pressed });

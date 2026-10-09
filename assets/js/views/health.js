@@ -706,6 +706,8 @@ export function mount(container, ctx) {
     onInput: () => {
       options.refresh();
       input.refresh();
+      // Other selectors ask for another check: Run is the verb (and primary) again.
+      syncRunBar();
     },
     onEnter: () => start()
   });
@@ -785,7 +787,11 @@ export function mount(container, ctx) {
     checksSection,
     h('section', { class: 'stack hlt-details-section' }, h('h2', { class: 'section-title' }, t('hlt.detailsTitle')), detailsEl));
   container.append(h('div', { class: 'hlt-view' }, input.el, heroEl, errorEl, emptyEl, results, runBar.float));
-  ctx.onCleanup(() => runBar.dispose());
+  // Their phone-layout listeners would keep this page alive once it is left.
+  ctx.onCleanup(() => {
+    runBar.dispose();
+    if (actions) actions.dispose();
+  });
 
   /** The checks filter: the segmented control's 'all' / 'problems', or a status item's severity. */
   function setFilter(next) {
@@ -795,14 +801,25 @@ export function mount(container, ctx) {
     if (current && current.report) renderChecks(current.report);
   }
 
-  /** The run bar and the input follow the state: compact once a check starts, "Run again" while the box asks for the report on screen. */
+  /**
+   * The run bar and the input follow the state: compact once a check starts, "Run again" while the
+   * form asks for the report on screen — its domain and its extra DKIM selectors.
+   */
   function syncRunBar() {
     const shown = current && (current.report || (current.shown && current.shown.report));
     const state = templateState({ running: !!(current && current.controller), result: !!shown });
     const box = normalizeHostname(domainField.value.trim().replace(/^\*\./, ''));
+    const same = state === 'done' && !!box && !!current.report && box === current.report.domain
+      && sameSelectors(parseSelectors(selectorsField.value), current.selectors);
     runBar.setState(state);
-    runBar.setRerun(state === 'done' && !!box && !!current.report && box === current.report.domain);
+    runBar.setRerun(same);
     input.setCompact(inputCompact(state));
+  }
+
+  /** The same extra selectors, in any order. */
+  function sameSelectors(a, b) {
+    const list = Array.isArray(b) ? b : [];
+    return a.length === list.length && a.every((s) => list.includes(s));
   }
 
   /* --- region 4: the result header --------------------------------------------------- */

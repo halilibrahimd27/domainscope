@@ -42,7 +42,7 @@ import {
 import {
   EmptyState, PrivacyNote, RelatedLinks, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput, withSubject
 } from '../ui/template.js';
-import { inputCompact, templateState } from '../lib/template.js';
+import { inputCompact, statusItems, templateState } from '../lib/template.js';
 import { HEALTH_I18N, LOOKUP_FAILED_PARAM } from '../lib/health.js';
 import { WAIVERS_I18N, readWaivers } from '../lib/waivers.js';
 import { NaMark, RetryButton, setRetryBusy, statusText } from '../ui/source-status.js';
@@ -257,7 +257,7 @@ registerStrings('tr', {
   'dov.invalid': 'example.com gibi bir alan adı girin (IP adresi ya da com.tr gibi yalın bir uzantı değil).',
   'dov.privacy': 'Özeti oluştur’a basana kadar hiçbir şey gönderilmez: sonra DNS soruları DoH çözümleyicilerinize, tek bir RDAP sorgusu da kayıt kuruluşuna gider.',
   'dov.linkPrompt': 'Bir bağlantıdan açıldı: {domain} için Özeti oluştur’a basın. Henüz hiçbir şey gönderilmedi.',
-  'dov.emptyLine': 'Sorguları geldikçe dolan kartlar; her birinde daha ayrıntılı araca bir bağlantı var.',
+  'dov.emptyLine': 'Yanıtlar geldikçe dolan kartlar; her birinde daha ayrıntılı araca bir bağlantı var.',
   'dov.status.na': '{count} kart okunamadı',
   'dov.progress': '{domain} özeti oluşturuluyor',
   'dov.progressCount': '{done}/{total} sorgu',
@@ -525,8 +525,12 @@ export function mount(container, ctx) {
 
   /* --- regions 4 and 8: the ready prompt, the result header, the cards -------------------- */
   const progress = ProgressBar({ format: (v, max) => t('dov.progressCount', { done: formatNumber(v), total: formatNumber(max) }) });
-  /** A shared link waits for a click ("Opened from a link …"): above the result header, or in its place. */
-  const prompt = ResultHeader({ className: 'result-ready dov-prompt' });
+  /**
+   * A shared link waits for a click ("Opened from a link …"): above the result header, or in its
+   * place. It has no kept-result slot: the note is about the overview on screen, which its own
+   * header says, never the name the prompt waits to look up.
+   */
+  const prompt = ResultHeader({ className: 'result-ready dov-prompt', kept: false });
   prompt.setState('ready');
   const promptSlot = h('div', { class: 'dov-prompt-slot' });
   /** The overview's result header: in the page only while there is an overview (its `.dov-head` says so). */
@@ -544,10 +548,14 @@ export function mount(container, ctx) {
     h('div', { class: 'dov-grid' }, PASSPORT_CARDS.map((c) => slots[c])),
     lookalikeSlot);
   container.append(h('div', { class: 'dov-view' }, input.el, promptSlot, headSlot, emptyEl, results, runBar.float));
-  ctx.onCleanup(() => runBar.dispose());
 
   /** The overview's actions (ResultActions: Copy summary, Report, Copy link), disabled while a build runs. */
   let actions = null;
+  // Their phone-layout listeners would keep this page alive once it is left.
+  ctx.onCleanup(() => {
+    runBar.dispose();
+    if (actions) actions.dispose();
+  });
 
   /* --- rendering ---------------------------------------------------------------------- */
   // The health card leaves the workspace's accepted risks out, read now (lib/waivers.js), as Domain Health does.
@@ -612,7 +620,8 @@ export function mount(container, ctx) {
       text: item.key === 'na' ? t('dov.status.na', { count: item.count }) : t(`dov.health.count.${item.key}`, { count: item.count }),
       onPress: () => focusCard(item.key === 'na' ? item.cards[0] : 'health')
     })) : [];
-    head.set('status', status.length ? StatusSummary({ items: status }).el : null);
+    // Nothing to count (no error, warning or n/a card): no group at all, and the row hides.
+    head.set('status', statusItems(status).length ? StatusSummary({ items: status }).el : null);
     if (actions) actions.dispose();
     const summary = SummaryButton({
       kind: 'domain',
@@ -1307,7 +1316,11 @@ export function mount(container, ctx) {
       state.retryControllers.delete(controller);
       state.retrying.delete('health');
     }
-    if (current === state && !ctx.signal.aborted) renderCard('health');
+    if (current !== state || ctx.signal.aborted) return;
+    renderCard('health');
+    // The head's grade, score and counts are the health card's: drawn again with it (a build still
+    // running draws the head when it ends).
+    if (!state.controller) renderHead();
   }
 
   /** The certificates card's CT lookup: one Cert Spotter request (crt.sh as its fallback). */

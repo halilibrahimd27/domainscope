@@ -24,13 +24,20 @@
  *     on the button; one file is a plain Export button (DNS Lookup's dig file); Copy link copies the
  *     result's own link; the next steps and "Also check:";
  *   - the kept result: leaving the view and coming back through the navigation shows the note
- *     ("Result from …") inside the result header, once;
+ *     ("Result from …") inside the result header, once, shown — Subdomains' in the run's header,
+ *     never in the hidden link prompt it started from; the overview's in its header while the
+ *     prompt names a carried name (`run=0`);
+ *   - an option changed makes Run the verb and primary again (Health's DKIM selectors, an extra
+ *     name in Subdomains), set back "Run again";
+ *   - a tool that is left takes back its phone-layout listeners (its run bar's and its actions'),
+ *     so nothing keeps the page it drew alive;
  *   - a shared link's ready prompt leads (Subdomains: Run steps back to secondary until Start);
  *     the metric strip is read-only;
  *   - phones: at 375×812 (Turkish, dark) only Copy summary stays in the row and the rest is behind
  *     "⋯" (Copy link from there), in Turkish words; the floating run bar shows while the inline
  *     Run is out of view, keeps a focused field clear of it and runs the tool; 320 px: no
- *     horizontal scroll on the four tools, empty or with a result;
+ *     horizontal scroll on the four tools, empty or with a result, and the subject of each result
+ *     title on one line (the key metric wraps under the title instead of splitting it);
  *   - no missing i18n keys; zero console errors, exceptions and CSP violations; nothing sent.
  */
 
@@ -81,6 +88,41 @@ const SUB_DONE = "(() => { const p = document.querySelector('.sub-run-ui .sub-ru
 const DOMAIN_DONE = "!!document.querySelector('.dov-head') && !document.querySelector('[data-action=\"dov-run\"]').hidden && [...document.querySelectorAll('.dov-card')].every((c) => c.dataset.state !== 'pending')";
 const STAMP = /\d{8}-\d{4}/;
 
+/**
+ * Counts the 'change' listeners on the phone layout's media query (lib/template.js PHONE_MAX_WIDTH):
+ * the run bar and the actions of a tool add one each, and a tool that is left must take them back
+ * (a MediaQueryList with a listener keeps the page it drew alive).
+ */
+const PHONE_LISTENERS = `(() => {
+  const real = window.matchMedia.bind(window);
+  window.__phoneListeners = 0;
+  window.matchMedia = (query) => {
+    const mql = real(query);
+    if (!/max-width:\\s*719px/.test(query)) return mql;
+    const add = mql.addEventListener.bind(mql);
+    const remove = mql.removeEventListener.bind(mql);
+    const live = new Set();
+    mql.addEventListener = (type, fn, opts) => {
+      if (type === 'change' && !live.has(fn)) { live.add(fn); window.__phoneListeners += 1; }
+      return add(type, fn, opts);
+    };
+    mql.removeEventListener = (type, fn, opts) => {
+      if (type === 'change' && live.delete(fn)) window.__phoneListeners -= 1;
+      return remove(type, fn, opts);
+    };
+    return mql;
+  };
+})();`;
+
+/** Each kept-result note on the page: the result header it sits in (the tool's hook), in a ready prompt or not, shown or not. */
+const keptNotes = (page) => page.evaluate(() => [...document.querySelectorAll('.kept-note')].map((n) => ({
+  head: ['dov-head', 'hlt-hero', 'sub-run', 'lkp-sum'].find((c) => n.closest(`.${c}`)) || null,
+  prompt: !!n.closest('.result-ready'),
+  shown: n.checkVisibility(),
+  text: n.querySelector('.kept-note-text')?.textContent || '',
+  rerun: !!n.querySelector('[data-action="kept-rerun"]')
+})));
+
 /** Fail every https request that reaches the network; returns the list it records. */
 async function networkGuard(page) {
   const hits = [];
@@ -97,6 +139,7 @@ async function openPage(browser, server, viewport) {
   const page = await browser.newPage('about:blank', viewport);
   const hits = await networkGuard(page);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: zoneHandoffScript(APEX, ZONE) });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: PHONE_LISTENERS });
   await installDownloadCapture(page);
   await page.goto(`${server.url}#/about`);
   await waitReady(page);
@@ -239,6 +282,17 @@ async function main() {
       assertEqual(await state(), { expanded: 'false', moreShown: false, summary: true }, 'folded');
       await page.click(edit);
       assertEqual(await state(), { expanded: 'true', moreShown: true, summary: true }, 'unfolded');
+      // An option changed asks for another check: Run is the verb and primary again; set back, "Run again".
+      const runNow = async () => {
+        const r = (await templateInfo(page, '.hlt-hero')).run;
+        return [r.label, r.primary];
+      };
+      await page.evaluate(() => { document.querySelector('.hlt-options').open = true; });
+      await page.type('[data-role="health-selectors"]', 'mailgun');
+      assertEqual(await runNow(), ['Check health', true], 'another DKIM selector: the verb, primary');
+      await page.type('[data-role="health-selectors"]', '');
+      assertEqual(await runNow(), ['Run again', false], 'the report\'s selectors again: Run again');
+      await page.evaluate(() => { document.querySelector('.hlt-options').open = false; });
       await page.click(edit);
       assertEqual(await state(), { expanded: 'false', moreShown: false, summary: true }, 'folded again');
     });
@@ -353,6 +407,34 @@ async function main() {
       assert(info.top < 300, `the result header near the top: ${info.top}`);
     });
 
+    await run.step('Subdomains: an option changed (an extra name) makes Scan the verb and primary again; set back, "Run again"', async () => {
+      const runNow = async () => {
+        const r = (await templateInfo(page, '.sub-run')).run;
+        return [r.label, r.primary];
+      };
+      assertEqual(await runNow(), ['Run again', false], 'the scan\'s domains and options');
+      const edit = '.sub-hero [data-action="tool-input-edit"]';
+      await page.click(edit);
+      await page.evaluate(() => { document.querySelector('.sub-advanced').open = true; });
+      await page.type('[data-role="sub-extra"]', `ftp.${APEX}`);
+      assertEqual(await runNow(), ['Scan', true], 'an extra name: the verb, primary');
+      await page.type('[data-role="sub-extra"]', '');
+      assertEqual(await runNow(), ['Run again', false], 'none again: Run again');
+      await page.evaluate(() => { document.querySelector('.sub-advanced').open = false; });
+      await page.click(edit);
+    });
+
+    await run.step('Subdomains kept: back through the navigation, its note shows in the run\'s header, not in the link prompt it started from', async () => {
+      await gotoRoute(page, '#/about');
+      await page.click('a.nav-link[data-view="subdomains"]');
+      await page.waitFor(() => document.documentElement.dataset.view === 'subdomains' && !!document.querySelector('.sub-run .result-actions')
+        && !!document.querySelector('.kept-note'), { timeout: 15000, message: 'the kept scan and its note' });
+      const notes = await keptNotes(page);
+      assertEqual(notes.map(({ head, prompt, shown, rerun }) => ({ head, prompt, shown, rerun })), [{ head: 'sub-run', prompt: false, shown: true, rerun: true }],
+        `one note, shown, in the run's header: ${JSON.stringify(notes)}`);
+      assert(/^Result from /.test(notes[0].text), notes[0].text);
+    });
+
     await run.step('Domain overview: the prompt, Build, the result header with its status and links', async () => {
       await runTool(page, 'domain');
       const head = await page.evaluate(() => ({
@@ -365,6 +447,34 @@ async function main() {
       assert(head.title.includes(APEX) && head.actions, `the head: ${JSON.stringify(head)}`);
       assertEqual(head.related, ['health', 'lookup', 'subdomains'], 'Also check');
       await assertNoHorizontalScroll(page, 'overview');
+    });
+
+    await run.step('Domain overview kept under a carried name (run=0): the note in the overview\'s header; the prompt names the carried name', async () => {
+      await gotoRoute(page, '#/about');
+      await gotoRoute(page, '#/domain?name=example.org&run=0');
+      await page.waitFor(() => !!document.querySelector('.kept-note') && !!document.querySelector('.dov-prompt'), { message: 'the kept overview, its note and the prompt' });
+      const notes = await keptNotes(page);
+      assertEqual(notes.map(({ head, prompt, shown, rerun }) => ({ head, prompt, shown, rerun })), [{ head: 'dov-head', prompt: false, shown: true, rerun: true }],
+        `one note, in the overview's header: ${JSON.stringify(notes)}`);
+      const info = await page.evaluate(() => ({
+        box: document.querySelector('[data-role="dov-name"]').value,
+        prompt: document.querySelector('.dov-prompt .result-title').textContent,
+        head: document.querySelector('.dov-head .result-title').textContent
+      }));
+      assert(info.box === 'example.org' && /example\.org/.test(info.prompt) && info.head.includes(APEX), `the box and the prompt: the carried name; the head: the kept overview: ${JSON.stringify(info)}`);
+    });
+
+    await run.step('a tool that is left takes back its phone-layout listeners (its run bar\'s and its actions\'): nothing keeps its page alive', async () => {
+      await gotoRoute(page, '#/about');
+      const base = await page.evaluate(() => window.__phoneListeners);
+      for (const [id, tool] of Object.entries(TOOLS)) {
+        await gotoRoute(page, `#/${id}`);
+        await page.waitFor((sel) => !!document.querySelector(`${sel} .result-actions`), { args: [tool.head], timeout: 10000, message: `${id}: the kept result` });
+        const on = await page.evaluate(() => window.__phoneListeners);
+        assert(on >= base + 2, `${id}: its run bar and its actions follow the phone layout (${base} → ${on})`);
+        await gotoRoute(page, '#/about');
+        assertEqual(await page.evaluate(() => window.__phoneListeners), base, `${id}: none left once it is left`);
+      }
     });
 
     await run.step('desktop: no missing keys; no console errors, exceptions or CSP violations', async () => {
@@ -445,6 +555,12 @@ async function main() {
         await runTool(phone, id);
         await assertNoHorizontalScroll(phone, `${id} 320 result`);
         assertEqual(await actionsRow(phone, TOOLS[id].head), ['summary', 'menu:more'], `${id}: Copy summary, ⋯ at 320`);
+        // The title keeps a real width (the key metric wraps under it): its subject is never split across lines.
+        const subject = await phone.evaluate((sel) => {
+          const s = document.querySelector(`${sel} .result-title :is(.result-subject, .hlt-hero-domain, .lkp-sum-name)`);
+          return s ? { text: s.textContent, lines: s.getClientRects().length } : null;
+        }, TOOLS[id].head);
+        assertEqual(subject, { text: APEX, lines: 1 }, `${id}: the subject on one line at 320 px`);
       }
       await shot(phone, 'investigate-subdomains-result-320-light-en');
     });

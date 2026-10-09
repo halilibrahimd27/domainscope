@@ -1594,6 +1594,8 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
       offOrigins();
       run.listeners.delete(listener);
       stopTicker();
+      // Its phone-layout listener would keep this run's whole panel alive (a new scan, a visit elsewhere).
+      actions.dispose();
       // Abandon any in-flight network-owner lookups when the panel is torn down.
       try {
         ownerCtl.abort();

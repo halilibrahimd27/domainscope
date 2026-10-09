@@ -83,12 +83,13 @@ async function networkGuard(page) {
 }
 
 /**
- * What the shell shows: the chip, the kept-result note (its text and its "Run again", or null),
- * the nav links' hrefs, the route.
+ * What the shell shows: the chip, the kept-result note (its text and its "Run again", or null:
+ * only a note the user can see counts, never one inside a hidden element), the nav links' hrefs,
+ * the route.
  */
 function shellInfo() {
   const chip = document.querySelector('[data-role="target-chip"]');
-  const note = document.querySelector('.page-kept:not([hidden]) .kept-note');
+  const note = [...document.querySelectorAll('.page-kept:not([hidden]) .kept-note')].find((n) => n.checkVisibility()) || null;
   const rerun = note ? note.querySelector('[data-action="kept-rerun"]') : null;
   const hrefs = {};
   document.querySelectorAll('#app-nav a.nav-link[data-view]').forEach((a) => { hrefs[a.dataset.view] = a.getAttribute('href'); });

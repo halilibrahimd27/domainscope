@@ -240,7 +240,7 @@ async function main() {
     page = await browser.newPage('about:blank', { width: 1440, height: 900 });
     // The fixture reports carry fixed expiry dates (one on 2026-10-03, one on 2026-10-20) and the
     // view buckets them against Date.now(), so the page runs on a clock that starts at the
-    // suite's reference date and keeps moving: the expiry tiles and lines never drift with today.
+    // suite's reference date and keeps moving: the expiry counts and figures never drift with today.
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: ESTATE_CLOCK_SCRIPT });
     netHits = await networkGuard(page);
     await installDownloadCapture(page);

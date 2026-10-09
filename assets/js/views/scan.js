@@ -17,7 +17,7 @@
  * DNS names) a warning sign. The run bar (ui/template.js RunBar, the wizard's sticky variant:
  * Start / Cancel, the query estimate and a summary) follows the steps; on narrow screens it sticks
  * to the bottom of the viewport while the form is scrolled, so Start is always within reach. Once
- * a scan starts the steps fold into one row ("Certificate *.example.net · EC 256 · Domains
+ * a scan starts the steps fold into one row ("Certificate *.example.net · ECDSA P-256 · Domains
  * example.net · 2 servers · recommended options — Edit", lib/scanform.setupSummary; DESIGN §5.5),
  * and Start reads "Run again" while the setup still asks for the scan on screen.
  *

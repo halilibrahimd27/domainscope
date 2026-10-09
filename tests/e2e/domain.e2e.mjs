@@ -671,7 +671,8 @@ async function main() {
       });
       await page.send('Emulation.setEmulatedMedia', { media: '' });
       assertEqual(paper, { shown: ['crep-print-host'], scripts: 0, subject: 'example.org', weight: '700' }, 'on paper');
-      assertEqual(await page.evaluate(() => getComputedStyle(document.querySelector('.crep-print-host')).display), 'none', 'not on screen');
+      // On screen the host is hidden; or already gone, when Chrome reported the end of print media (matchMedia) before this ran.
+      assertEqual(await page.evaluate(() => { const host = document.querySelector('.crep-print-host'); return host ? getComputedStyle(host).display : 'none'; }), 'none', 'not on screen');
       await page.evaluate(() => window.dispatchEvent(new Event('afterprint')));
       assertEqual(await page.evaluate(() => [!!document.querySelector('.crep-print-host'), document.adoptedStyleSheets.length]), [false, sheets], 'gone after printing');
     });

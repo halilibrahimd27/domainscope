@@ -4856,6 +4856,11 @@ button.status-item[aria-pressed="true"] {
   color: var(--text);
 }
 
+/* Words that wrap (a long item on a 320 px phone) start at the icon, not centred as a button's. */
+button.status-item {
+  text-align: start;
+}
+
 .status-icon {
   display: inline-flex;
   flex: none;

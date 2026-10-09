@@ -14,6 +14,10 @@
  *   the current certificates' expiries, with reminders at the radar's days.
  * - The baseline: after a check, the ids of the certificates read go into the workspace's
  *   `ctSeen` part with the time of the read, so the next check marks what was logged since.
+ * - Known certificates (lib/waivers.js, kind 'cert'): a row flagged new or from an unexpected CA
+ *   offers "Known certificate…" (ui/waivers.js: a reason, an owner and an end date): its public
+ *   key (Cert Spotter's SHA-256 of it, else the certificate's) is then expected, and its rows are
+ *   "Known" — never new nor unexpected — until that day; their expiry and revocation still count.
  *
  * The last check belongs to the module, so a language switch (a re-mount) shows it again; leaving
  * the view stops a check that runs (what was read is kept), and another workspace or "Delete all
@@ -28,7 +32,7 @@ import {
   CT_EXPORT_COLUMNS, analyzeCt, exportCtRow, expiryEntries, matchesCtFilter, parseRadarDays, readDomainCt, readPortfolioCt, readSeen, seenText,
   spotterBudget, updateSeen
 } from '../lib/ctwatch.js';
-import { createLimiter, mergeSignals } from '../lib/util.js';
+import { createLimiter, mergeSignals, onceAsync } from '../lib/util.js';
 import { buildCalendar } from '../lib/ics.js';
 import { toCsv } from '../lib/export.js';
 import { sourceStatus } from '../lib/sourcestatus.js';
@@ -37,6 +41,14 @@ import { downloadText, timestampedName } from './download.js';
 import { registerRunning } from './jobs.js';
 import { ProblemReporting, RevokedLine, generatedKeys as revocationKeys } from './revocation.js';
 import { state as stateSingleton } from '../state.js';
+import { WAIVERS_I18N, readWaivers } from '../lib/waivers.js';
+import { storageErrorText } from './workspace-ui.js';
+
+/** ui/waivers.js: the "Known certificate…" dialog, on its first click. */
+const loadWaivers = onceAsync(() => import('./waivers.js'));
+
+registerStrings('en', WAIVERS_I18N.en);
+registerStrings('tr', WAIVERS_I18N.tr);
 
 /** The tiles above the table, each a filter of lib/ctwatch.js CT_WATCH_FILTERS. */
 export const CT_TILES = Object.freeze(['current', 'expiring', 'new', 'unexpected', 'wildcard', 'precert']);
@@ -114,12 +126,14 @@ registerStrings('en', {
   'ctw.flag.wildcard': 'Wildcard',
   'ctw.flag.revoked': 'Revoked',
   'ctw.flag.superseded': 'Superseded',
+  'ctw.flag.known': 'Known',
   'ctw.flagTitle.new': 'Not logged at the last check of this domain.',
   'ctw.flagTitle.unexpected': 'Not one of this workspace’s expected CAs. Change them under Workspaces › Expected CAs.',
   'ctw.flagTitle.precert': 'Only the precertificate is logged: the CA issued this certificate, but its final form was never logged. Names, dates and serial are the same; the fingerprint differs.',
   'ctw.flagTitle.wildcard': 'Holds a wildcard name: valid for every name one label below it.',
   'ctw.flagTitle.revoked': 'Revoked by its CA (Cert Spotter).',
   'ctw.flagTitle.superseded': 'Every name of it is on a certificate that expires later.',
+  'ctw.flagTitle.known': 'A known certificate: its key was accepted as expected (Workspaces › Accepted risks), so it is never flagged new or from an unexpected CA. Its expiry and revocation are still watched.',
   'ctw.daysLeft': { zero: 'today', one: '{count} day left', other: '{count} days left' },
   'ctw.moreNames': { one: '+{count} name', other: '+{count} names' },
   'ctw.openCrtsh': 'crt.sh',
@@ -207,12 +221,14 @@ registerStrings('tr', {
   'ctw.flag.wildcard': 'Wildcard',
   'ctw.flag.revoked': 'İptal edilmiş',
   'ctw.flag.superseded': 'Yenisiyle değiştirilmiş',
+  'ctw.flag.known': 'Bilinen',
   'ctw.flagTitle.new': 'Bu alan adının son kontrolünde kayıtlı değildi.',
   'ctw.flagTitle.unexpected': 'Bu çalışma alanının beklenen CA’larından biri değil. Çalışma alanları › Beklenen CA’lar bölümünden değiştirin.',
   'ctw.flagTitle.precert': 'Yalnızca ön sertifika kayıtlı: CA bu sertifikayı verdi, ancak son hâli hiç kaydedilmedi. Adlar, tarihler ve seri numarası aynıdır; parmak izi farklıdır.',
   'ctw.flagTitle.wildcard': 'Wildcard bir ad taşır: bir etiket altındaki her ad için geçerlidir.',
   'ctw.flagTitle.revoked': 'CA’sı tarafından iptal edilmiş (Cert Spotter).',
   'ctw.flagTitle.superseded': 'Her adı, süresi daha geç dolan bir sertifikada da var.',
+  'ctw.flagTitle.known': 'Bilinen bir sertifika: anahtarı beklenen olarak kabul edildi (Çalışma alanları › Kabul edilen riskler), bu yüzden hiçbir zaman yeni ya da beklenmeyen bir CA’dan diye işaretlenmez. Bitiş tarihi ve iptal durumu izlenmeye devam eder.',
   'ctw.daysLeft': { zero: 'bugün', other: '{count} gün kaldı' },
   'ctw.moreNames': { other: '+{count} ad' },
   'ctw.openCrtsh': 'crt.sh',
@@ -371,10 +387,27 @@ export function mountCtWatch(host, { ctx, domains }) {
   const mono = (text) => h('span', { class: 'mono pf-break' }, text);
   const cellOf = (...children) => h('span', { class: 'pf-cell' }, children.filter(Boolean));
   const flagBadge = (f) => {
-    const variant = { new: 'info', unexpected: 'warn', precert: 'warn', wildcard: 'neutral', revoked: 'error', superseded: 'neutral' }[f];
-    const el = Badge(t(`ctw.flag.${f}`), { variant, title: t(`ctw.flagTitle.${f}`) });
+    const variant = { new: 'info', unexpected: 'warn', precert: 'warn', wildcard: 'neutral', revoked: 'error', superseded: 'neutral', known: 'ok' }[f];
+    const el = Badge(t(`ctw.flag.${f}`), { variant, icon: f === 'known' ? 'shield' : null, title: t(`ctw.flagTitle.${f}`) });
     el.dataset.flag = f;
     return el;
+  };
+  /** The key a known-certificate waiver names: the public key's SHA-256, else the certificate's. */
+  const keyOf = (r) => r.spkiSha256 || r.sha256 || null;
+  /** Where the focus goes once the table is drawn again: the row a click marked known. */
+  let knownFocus = null;
+  /** A known certificate's line (its waiver), or "Known certificate…" on a row flagged new or unexpected that has a key. */
+  const knownPart = (r) => {
+    if (r.known) {
+      const w = r.known;
+      return h('span', { class: 'text-xs pf-known', dataset: { role: 'ct-known-line', cert: r.id }, attrs: { tabindex: '-1' } },
+        t(w.owner ? 'wvr.lineOwner' : 'wvr.line', { date: w.expires, owner: w.owner, reason: w.reason }));
+    }
+    if (!(r.isNew || r.unexpected) || !keyOf(r)) return null;
+    return Button({
+      label: t('wvr.known'), icon: 'shield', size: 'sm', variant: 'ghost', title: t('wvr.knownTitle'), className: 'pf-known-btn',
+      dataset: { action: 'ct-known', cert: r.id, domain: r.domain }, onClick: () => markKnown(r)
+    });
   };
   const expiryBadge = (r) => {
     if (!r.current) return null;
@@ -390,7 +423,8 @@ export function mountCtWatch(host, { ctx, domains }) {
   const flagsCell = (r) => cellOf(
     ...r.flags.map(flagBadge),
     r.revoked ? RevokedLine(r.revocation, { className: 'pf-ct-revoked text-xs' }) : null,
-    (r.revoked || r.unexpected) && r.problemReporting ? ProblemReporting(r.problemReporting, { className: 'pf-ct-report' }) : null
+    (r.revoked || r.unexpected) && r.problemReporting ? ProblemReporting(r.problemReporting, { className: 'pf-ct-report' }) : null,
+    knownPart(r)
   );
   const caCell = (r) => cellOf(
     h('span', null, r.ca),
@@ -533,7 +567,33 @@ export function mountCtWatch(host, { ctx, domains }) {
 
   function recompute() {
     const reads = S.order.map((d) => S.reads.get(d)).filter(Boolean);
-    analysis = analyzeCt(reads, { now: S.at || new Date(), days, expected: stateSingleton.workspaceData('expectedCas') || [], seen: S.seenBefore || readSeen('') });
+    // the known certificates are read now: one whose end date is over is flagged again
+    const known = readWaivers(stateSingleton.workspaceData('waivers'), { now: Date.now() });
+    analysis = analyzeCt(reads, { now: S.at || new Date(), days, expected: stateSingleton.workspaceData('expectedCas') || [], seen: S.seenBefore || readSeen(''), known });
+  }
+
+  /** "Known certificate…": the dialog, then the waiver into the workspace (the subscription below draws the rows again). */
+  async function markKnown(r) {
+    let ui;
+    try {
+      ui = await loadWaivers();
+    } catch (err) {
+      ctx.checkOutdated();
+      ctx.toast(`${t('error.title')}: ${err && err.message ? err.message : String(err)}`, { type: 'error' });
+      return;
+    }
+    const subject = `${r.names.slice(0, 3).join(', ')}${r.names.length > 3 ? ` ${t('ctw.moreNames', { count: r.names.length - 3 })}` : ''} · ${r.ca}`;
+    const input = await ui.openWaiverDialog({ kind: 'cert', domain: r.domain, ref: keyOf(r), subject });
+    if (!input) return;
+    try {
+      knownFocus = r.id;
+      const { waiver, persisted } = await ui.acceptRisk(input, stateSingleton);
+      announce(t('wvr.saved', { date: waiver.expires, subject: r.names[0] }));
+      if (!persisted) toast(t('wvr.notSaved', { reason: storageErrorText(stateSingleton.workspaceError) }), { type: 'warn' });
+    } catch (err) {
+      knownFocus = null;
+      toast(err && err.code ? ui.waiverErrorText(err.code) : String(err && err.message ? err.message : err), { type: 'error' });
+    }
   }
 
   function render() {
@@ -651,9 +711,19 @@ export function mountCtWatch(host, { ctx, domains }) {
     saved(downloadText(timestampedName('ct-expiry', 'ics', subject()), text, 'text/calendar;charset=utf-8'));
   }
 
-  // The expected CAs changed (Workspaces dialog, another tab): the flags follow.
+  // The expected CAs or the known certificates changed (Workspaces dialog, another tab, a click here): the flags follow.
   const unsubscribe = stateSingleton.subscribe(({ key, value }) => {
-    if (key === 'workspaceData' && value && Array.isArray(value.parts) && value.parts.includes('expectedCas')) render();
+    if (key !== 'workspaceData' || !value || !Array.isArray(value.parts) || !value.parts.some((p) => p === 'expectedCas' || p === 'waivers')) return;
+    render();
+    if (knownFocus) {
+      const id = knownFocus;
+      knownFocus = null;
+      // the table draws its rows on the next frame
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const line = [...root.querySelectorAll('[data-role="ct-known-line"]')].find((el) => el.dataset.cert === id);
+        if (line) line.focus();
+      }));
+    }
   });
 
   render();

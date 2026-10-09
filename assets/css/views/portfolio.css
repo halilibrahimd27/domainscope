@@ -371,12 +371,41 @@
   align-items: flex-start;
 }
 
-.pf-evidence {
+.pf-evidence,
+.pf-waiver {
   max-width: 16rem;
   color: var(--text-2);
   white-space: normal;
   /* a date stays whole in its .pf-nowrap; a word longer than the line breaks where it must, and the
      cell may be that narrow (break-word would size it to the longest word and spill on a phone) */
+  overflow-wrap: anywhere;
+}
+
+/* an accepted risk (lib/waivers.js): its owner, reason and end date; one whose end date is over counts again */
+.pf-waiver {
+  font-style: italic;
+}
+
+.pf-waiver.is-expired {
+  color: var(--warn);
+  font-style: normal;
+}
+
+.pf-accept {
+  margin-top: 2px;
+}
+
+.pf-cell[data-status="waived"]:focus-visible {
+  outline: 2px solid var(--focus, var(--accent));
+  outline-offset: 2px;
+}
+
+/* the CT tab's "Known certificate…" and a known certificate's line, under the flags as the revocation line */
+.pf-known {
+  flex-basis: 100%;
+  min-width: 0;
+  color: var(--text-2);
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 
@@ -496,7 +525,9 @@
     overflow-wrap: break-word;
   }
 
-  .pf-evidence {
+  .pf-evidence,
+  .pf-waiver,
+  .pf-known {
     max-width: none;
   }
 

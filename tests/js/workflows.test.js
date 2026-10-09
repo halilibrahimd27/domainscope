@@ -85,8 +85,8 @@ describe('ci.yml', () => {
 
   test('the offline E2E script runs exactly the suites that need no network', () => {
     const cmd = pkg.scripts['test:e2e:offline'];
-    assert.match(cmd, /^node tests\/e2e\/run-all\.mjs --only shell,subdomains,zone,scan,verify,renewal,dane,pfx,chainfix,renew,estate,global,ptr,retire,carry,ip,lookup,health,workspaces,origins,domain,change,cutover,privacy,reports,portfolio,secscore,locales,explain,revocation,takeover --offline --no-shots$/);
-    for (const suite of ['shell', 'subdomains', 'zone', 'scan', 'verify', 'renewal', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'ptr', 'retire', 'carry', 'ip', 'lookup', 'health', 'workspaces', 'origins', 'domain', 'change', 'cutover', 'privacy', 'reports', 'portfolio', 'secscore', 'locales', 'explain', 'revocation', 'takeover']) assert.ok(existsSync(join(ROOT, 'tests', 'e2e', `${suite}.e2e.mjs`)), suite);
+    assert.match(cmd, /^node tests\/e2e\/run-all\.mjs --only shell,subdomains,zone,scan,verify,renewal,dane,pfx,chainfix,renew,estate,global,ptr,retire,carry,ip,lookup,health,workspaces,origins,domain,change,cutover,privacy,reports,portfolio,secscore,locales,explain,revocation,takeover,waivers --offline --no-shots$/);
+    for (const suite of ['shell', 'subdomains', 'zone', 'scan', 'verify', 'renewal', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'ptr', 'retire', 'carry', 'ip', 'lookup', 'health', 'workspaces', 'origins', 'domain', 'change', 'cutover', 'privacy', 'reports', 'portfolio', 'secscore', 'locales', 'explain', 'revocation', 'takeover', 'waivers']) assert.ok(existsSync(join(ROOT, 'tests', 'e2e', `${suite}.e2e.mjs`)), suite);
     // ci.yml's step names the same suites, in the same order.
     const only = cmd.match(/--only (\S+)/)[1].split(',');
     const named = ci.match(/- name: Offline E2E \(([^)]+)\)/);

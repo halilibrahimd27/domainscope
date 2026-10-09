@@ -93,6 +93,8 @@ before(async () => {
   await imp('assets/js/ui/soa-probe.js');
   // Domain Health v2 (problems first, the Web card): loaded with the first report.
   await imp('assets/js/ui/health-v2.js');
+  // Accepted risks: the "Accept this risk…" / "Known certificate…" dialog, loaded on its first click.
+  await imp('assets/js/ui/waivers.js');
   // SSL Targets › Rollout: loaded on the tab's first show.
   await imp('assets/js/ui/rollout-panel.js');
   // Certificate › Compare: loaded on the tab's first use.
@@ -515,6 +517,11 @@ describe('i18n coverage', () => {
     // every finding kind, severity, reachability result, advice and skip reason it words from a code.
     const exp = await imp('assets/js/ui/exposure-panel.js');
     for (const k of exp.generatedKeys()) add(k);
+    // Accepted risks (lib/waivers.js): every error, kind and state the dialog and the Workspaces dialog word from a code.
+    const wvr = await imp('assets/js/lib/waivers.js');
+    for (const c of wvr.WAIVER_ERRORS) add(`wvr.err.${c}`);
+    for (const k of wvr.WAIVER_KINDS) add(`wvr.kind.${k}`);
+    for (const s of wvr.WAIVER_STATES) add(`wvr.state.${s}`);
     assert.deepEqual(missingIn(keys), []);
   });
 

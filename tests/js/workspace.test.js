@@ -169,6 +169,19 @@ describe('part values', () => {
     assert.equal(sanitizePart('ctSeen', null), '');
   });
 
+  test('the accepted risks: the JSON text lib/waivers.js writes, kept as it is up to 64 KiB (it checks every entry when it reads it), never cut; anything else empty', () => {
+    const text = '{"format":"domainscope-waivers","v":1,"waivers":[{"id":"w-0123456789abcdef","kind":"finding","domain":"example.com","ref":"dmarc.policy-none","reason":"Q1","owner":"","created":null,"expires":"2026-12-31"}]}';
+    assert.ok(WORKSPACE_PARTS.includes('waivers'));
+    assert.equal(WORKSPACE_LIMITS.waivers, 65536);
+    assert.equal(sanitizePart('waivers', text), text);
+    assert.equal(sanitizePart('waivers', 'w'.repeat(WORKSPACE_LIMITS.waivers)).length, WORKSPACE_LIMITS.waivers);
+    assert.equal(sanitizePart('waivers', 'w'.repeat(WORKSPACE_LIMITS.waivers + 1)), '', 'a cut JSON text would be no JSON: too long is nothing');
+    assert.equal(sanitizePart('waivers', [{ kind: 'finding' }]), '');
+    assert.equal(sanitizePart('waivers', null), '');
+    assert.equal(sanitizeWorkspaceData({ waivers: text }).waivers, text);
+    assert.equal(emptyWorkspaceData().waivers, '');
+  });
+
   test('notes: free text with its line breaks; controls other than tab / newline dropped; capped', () => {
     assert.equal(sanitizePart('notes', 'Renewal:\r\n\tcall ops\u0007 first'), 'Renewal:\n\tcall ops first');
     assert.equal(sanitizePart('notes', 'n'.repeat(WORKSPACE_LIMITS.notes + 5)).length, WORKSPACE_LIMITS.notes);

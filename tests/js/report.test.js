@@ -335,6 +335,26 @@ describe('healthReport: the checks with their problems and advice first', () => 
     assert.ok(!html.includes('Records read'));
   });
 
+  test('accepted risks (lib/waivers.js): out of the problems and the counts, "N accepted risks excluded", and listed with their reason, owner and end date', () => {
+    const accepted = healthInput.report.checks.find((c) => c.severity === 'error' || c.severity === 'warn');
+    const waived = { applied: [{ id: accepted.id, reason: 'Moving in Q1 <b>', owner: 'Mail team', expires: '2026-12-31' }] };
+    const { doc, html } = buildReport('health', { ...healthInput, waived }, words('en'));
+    const s = healthInput.report.summary;
+    const same = healthInput.report.checks.filter((c) => c.id === accepted.id && (c.severity === 'error' || c.severity === 'warn'));
+    assert.equal(doc.problems.length, s.error + s.warn - same.length);
+    const less = { error: same.filter((c) => c.severity === 'error').length, warn: same.filter((c) => c.severity === 'warn').length };
+    assert.equal(doc.verdict.score, Math.max(0, 100 - 20 * (s.error - less.error) - 6 * (s.warn - less.warn)));
+    assert.deepEqual(doc.verdict.counts.at(-1), { severity: 'info', text: same.length === 1 ? '1 accepted risk excluded' : `${same.length} accepted risks excluded` });
+    const section = doc.sections.find((x) => x.id === 'accepted');
+    assert.equal(section.items.length, same.length);
+    assert.ok(section.items[0].detail.startsWith('Accepted until 2026-12-31 by Mail team: Moving in Q1 <b>'), section.items[0].detail);
+    assert.ok(html.includes('Accepted until 2026-12-31 by Mail team: Moving in Q1 &lt;b&gt;'), 'escaped');
+    assertInert(html);
+    const tr = buildReport('health', { ...healthInput, waived }, words('tr')).html;
+    assert.ok(tr.includes('kabul edilen risk hariç tutuldu') && tr.includes('2026-12-31 tarihine kadar Mail team tarafından kabul edildi'), 'Turkish');
+    assert.ok(!buildReport('health', healthInput, words('en')).doc.sections.some((x) => x.id === 'accepted'), 'none without waivers');
+  });
+
   test('a lookup that failed reads as one, not as "none"', () => {
     const report = { ...healthInput.report, failedLookups: ['mx', 'txt'] };
     const doc = healthReport({ report }, words('en'));

@@ -25,6 +25,12 @@
  * the one on screen, and one stopped or failed leaves the old report there. It is disabled while a
  * check runs.
  *
+ * Accepted risks (lib/waivers.js, the workspace's `waivers` part): "Accept this risk…" on a
+ * problem asks for a reason, an owner and an end date (ui/waivers.js, loaded on the first click);
+ * until that day the finding is left out of the score, the grade, the light and the counts, the
+ * hero says how many are accepted and what the score is with them, Copy summary and the customer
+ * report say "N accepted risks excluded". The day after, it counts again and says so.
+ *
  * Shareable: `#/health?domain=example.com` (also `name=`) runs on open; with `run=0` (a domain
  * carried over from another tool, lib/session.js) it is only filled in. The finished report is
  * kept for the page session (`result()` / `snapshot()`): coming back shows it without a new check.
@@ -61,7 +67,9 @@ import { ExpectedCaaBadge, expectedCasChanged } from '../ui/expected-ca.js';
 import { healthScore, trafficLight, permalinkParams } from '../ui/view-summaries.js';
 import { errorKind, mergeSignals, onceAsync, splitList } from '../lib/util.js';
 import { fillReplaces, isFillOnly } from '../lib/session.js';
-import { scoreHealth } from '../lib/healthscore.js';
+import { scoreHealth, countSeverities } from '../lib/healthscore.js';
+import { WAIVERS_I18N, healthWaivers, readWaivers } from '../lib/waivers.js';
+import { storageErrorText } from '../ui/workspace-ui.js';
 
 /** Route id (`#/health`). */
 export const id = 'health';
@@ -92,13 +100,17 @@ const loadDelegation = onceAsync(() => import('../ui/delegation-panel.js'));
 const loadDependencies = onceAsync(() => import('../ui/takeover-panel.js'));
 /** ui/health-v2.js (SPEC §5.78): the Web step, problems first and the Web card, with the first report. */
 const loadV2 = onceAsync(() => import('../ui/health-v2.js'));
+/** ui/waivers.js: the "Accept this risk…" dialog and the workspace's waivers, on the first click. */
+const loadWaivers = onceAsync(() => import('../ui/waivers.js'));
 
 // Every health.<id>.title / .detail string (EN + TR) ships with lib/health.js, every
-// mtasts.<finding>.title / .detail and mtasts.head.<key> with lib/mtasts.js.
+// mtasts.<finding>.title / .detail and mtasts.head.<key> with lib/mtasts.js, every wvr.* with lib/waivers.js.
 registerStrings('en', HEALTH_I18N.en);
 registerStrings('tr', HEALTH_I18N.tr);
 registerStrings('en', MTA_STS_I18N.en);
 registerStrings('tr', MTA_STS_I18N.tr);
+registerStrings('en', WAIVERS_I18N.en);
+registerStrings('tr', WAIVERS_I18N.tr);
 
 registerStrings('en', {
   'hlt.domain': 'Domain',
@@ -738,12 +750,20 @@ export function mount(container, ctx) {
    * @param {object} report
    * @param {string[]} selectors the extra DKIM selectors the report was checked with (its permalink)
    */
-  function renderHero(report, selectors) {
+  function renderHero(report, selectors, hw = reportWaivers(report)) {
     clear(heroEl);
-    const s = report.summary;
+    // the accepted risks leave the counts, the light, the score and the grade (the note says the score with them)
+    const s = hw.ids.size ? countSeverities(report.checks, { waived: hw.ids }) : report.summary;
     const light = trafficLight(s);
-    const { score, grade } = scoreHealth(report.checks);
+    const graded = scoreHealth(report.checks, { waived: hw.ids });
+    const { score, grade } = graded;
     const total = s.ok + s.info + s.warn + s.error;
+    const expiredCount = new Set(hw.expired.map((e) => e.check.id)).size;
+    const waivedEl = hw.applied.length || expiredCount ? h('div', { class: 'hlt-waived text-sm', dataset: { role: 'hero-waived', count: String(hw.applied.length) } },
+      hw.applied.length ? h('p', { class: 'hlt-waived-line' }, Icon('shield', { size: 14 }), ' ', t('wvr.count', { count: hw.applied.length, date: hw.until }), ' ',
+        graded.full ? h('span', { class: 'muted', dataset: { role: 'hero-with-waived', score: String(graded.full.score), grade: graded.full.grade } },
+          t('wvr.withThem', { score: graded.full.score, grade: graded.full.grade })) : null) : null,
+      expiredCount ? h('p', { class: 'hlt-waived-expired', dataset: { role: 'hero-waived-expired' } }, Icon('clock', { size: 14 }), ' ', t('wvr.expiredCount', { count: expiredCount })) : null) : null;
     const lightEl = h('div', { class: ['hlt-light', `hlt-light-${light}`], attrs: { role: 'img', 'aria-label': t(`hlt.light.${light}`) } },
       ['error', 'warn', 'ok'].map((k) => h('span', { class: ['hlt-lamp', `hlt-lamp-${k}`, { 'is-on': k === light }] })));
     const counts = h('div', { class: 'hlt-counts' }, SEVERITY_ORDER.map((sev) => h('span', {
@@ -751,7 +771,7 @@ export function mount(container, ctx) {
     }, SeverityIcon(sev, { size: 15 }), h('span', null, t(`hlt.count.${sev}`, { count: s[sev] })))));
     heroSummary = SummaryButton({
       kind: 'health',
-      facts: () => ({ report }),
+      facts: () => ({ report, waived: hw.applied.length ? { ids: [...hw.ids], until: hw.until } : null }),
       url: () => ctx.shareUrl(permalinkParams('health', checkParams({ domain: report.domain, selectors })))
     });
     const zoneLink = report.zone && report.zone !== report.domain
@@ -764,6 +784,7 @@ export function mount(container, ctx) {
         h('div', { class: 'hlt-hero-verdict' }, t(`hlt.light.${light}`)),
         h('p', { class: 'hlt-hero-body' }, light === 'ok' ? t('hlt.light.okBody', { count: formatNumber(total) }) : t(`hlt.light.${light}Body`)),
         counts,
+        waivedEl,
         h('div', { class: 'hlt-hero-meta muted text-xs' },
           h('span', { title: formatDateTime(report.checkedAt) }, t('hlt.checkedAt', { time: formatRelative(report.checkedAt) })),
           report.zone ? h('span', null, t('hlt.zone', { zone: report.zone })) : null)),
@@ -776,7 +797,10 @@ export function mount(container, ctx) {
         h('div', { class: 'hlt-hero-actions' },
           zoneLink,
           heroSummary,
-          ReportButton(ctx, 'health', () => ({ report, selectors })),
+          ReportButton(ctx, 'health', () => ({
+            report, selectors,
+            waived: hw.applied.length ? { applied: hw.applied.map((a) => ({ id: a.check.id, reason: a.waiver.reason, owner: a.waiver.owner, expires: a.waiver.expires })) } : null
+          })),
           Button({
             label: t('hlt.download'), icon: 'download', size: 'sm', dataset: { action: 'download' },
             onClick: () => downloadText(timestampedName('domain-health', 'json', report.domain), toJson(exportReport(report)), 'application/json;charset=utf-8')
@@ -788,13 +812,63 @@ export function mount(container, ctx) {
       h('a', { href: ctx.href('scan', { domain: report.domain }) }, Icon('target', { size: 14 }), ' ', t('nav.scan'))));
   }
 
+  /* --- accepted risks ---------------------------------------------------------------------- */
+  /** The workspace's waivers of a report's findings, read now (lib/waivers.js healthWaivers). */
+  function reportWaivers(report) {
+    const now = Date.now();
+    return healthWaivers(report, readWaivers(ctx.state.workspaceData('waivers'), { now }), { now });
+  }
+
+  /** Where the focus goes once the problems card is drawn again (the button that took the place of the one clicked). */
+  let pendingFocus = null;
+
+  /** "Accept this risk…": the dialog, then the waiver into the workspace (the subscription below draws the report again). */
+  async function acceptCheck(c, report, previous) {
+    let ui;
+    try {
+      ui = await loadWaivers();
+    } catch (err) {
+      ctx.checkOutdated();
+      ctx.toast(describeError(err), { type: 'error' });
+      return;
+    }
+    const input = await ui.openWaiverDialog({ kind: 'finding', domain: report.domain, ref: c.id, subject: checkTitle(c), existing: previous });
+    if (!input) return;
+    try {
+      pendingFocus = { action: 'hv2-waiver-remove', check: c.id };
+      const { waiver, persisted } = await ui.acceptRisk(input, ctx.state);
+      announce(t('wvr.saved', { date: waiver.expires, subject: checkTitle(c) }));
+      if (!persisted) ctx.toast(t('wvr.notSaved', { reason: storageErrorText(ctx.state.workspaceError) }), { type: 'warn' });
+    } catch (err) {
+      pendingFocus = null;
+      ctx.toast(err && err.code ? ui.waiverErrorText(err.code) : describeError(err), { type: 'error' });
+    }
+  }
+
+  /** Remove: the finding counts again. */
+  async function removeWaiverOf(waiver, c) {
+    try {
+      const ui = await loadWaivers();
+      pendingFocus = { action: 'hv2-accept', check: c.id };
+      const persisted = await ui.removeRisk(waiver.id, ctx.state);
+      announce(t('wvr.removed', { subject: checkTitle(c) }));
+      if (!persisted) ctx.toast(t('wvr.notSaved', { reason: storageErrorText(ctx.state.workspaceError) }), { type: 'warn' });
+    } catch (err) {
+      pendingFocus = null;
+      ctx.checkOutdated();
+      ctx.toast(describeError(err), { type: 'error' });
+    }
+  }
+
   /* --- checks ----------------------------------------------------------------------------- */
-  function renderCheck(c, report) {
+  function renderCheck(c, report, hw) {
     const fixable = c.severity !== 'ok' && FIXABLE_CHECKS.includes(c.id);
-    return h('li', { class: ['hlt-check', `hlt-sev-${c.severity}`], dataset: { id: c.id, severity: c.severity } },
+    const waiver = hw && (c.severity === 'error' || c.severity === 'warn') ? hw.byId.get(c.id) : null;
+    return h('li', { class: ['hlt-check', `hlt-sev-${c.severity}`, { 'is-waived': !!waiver }], dataset: { id: c.id, severity: c.severity, ...(waiver ? { waived: waiver.expires } : {}) } },
       h('span', { class: 'hlt-check-icon' }, SeverityIcon(c.severity, { size: 18 })),
       h('div', { class: 'hlt-check-body' },
-        h('div', { class: 'hlt-check-title' }, checkTitle(c)),
+        h('div', { class: 'hlt-check-title' }, checkTitle(c),
+          waiver ? Badge(t('wvr.badgeUntil', { date: waiver.expires }), { variant: 'neutral', icon: 'shield', className: 'hlt-waived-badge', title: waiver.reason }) : null),
         h('div', { class: 'hlt-check-detail' }, checkDetail(c)),
         fixable ? fixToggle(c, report) : null));
   }
@@ -828,7 +902,7 @@ export function mount(container, ctx) {
     return h('div', { class: 'hlt-fix' }, btn, host);
   }
 
-  function renderChecks(report) {
+  function renderChecks(report, hw = reportWaivers(report)) {
     clear(checksEl);
     for (const group of HEALTH_GROUPS) {
       const all = groupChecks(report.checks, group);
@@ -844,7 +918,7 @@ export function mount(container, ctx) {
         actions: counts.length ? h('div', { class: 'cluster' }, counts) : Badge(t('severity.ok'), { variant: 'ok', icon: 'check' }),
         padded: false,
         children: shown.length
-          ? h('ul', { class: 'hlt-check-list' }, shown.map((c) => renderCheck(c, report)))
+          ? h('ul', { class: 'hlt-check-list' }, shown.map((c) => renderCheck(c, report, hw)))
           : h('p', { class: 'hlt-none muted text-sm' }, t('hlt.noProblems'))
       }));
       checksEl.lastChild.dataset.group = group;
@@ -1517,7 +1591,7 @@ export function mount(container, ctx) {
    * Web card's Observatory grade comes back as a new report, which is drawn again.
    */
   let v2Token = 0;
-  function renderV2(report, selectors) {
+  function renderV2(report, selectors, hw) {
     const token = ++v2Token;
     loadV2().then((v2) => {
       if (token !== v2Token) return;
@@ -1528,8 +1602,20 @@ export function mount(container, ctx) {
         renderReport(next, selectors);
       };
       v2El.append(
-        v2.ProblemsPanel(report, { checkTitle, checkDetail, fixToggle, fixable: (c) => c.severity !== 'ok' && FIXABLE_CHECKS.includes(c.id) }),
+        v2.ProblemsPanel(report, {
+          checkTitle, checkDetail, fixToggle, fixable: (c) => c.severity !== 'ok' && FIXABLE_CHECKS.includes(c.id),
+          waivers: hw,
+          // a report on screen while another check runs is the old one: it accepts nothing
+          onAccept: (c, previous) => { if (current && !current.controller) acceptCheck(c, report, previous); },
+          onRemove: (waiver, c) => { if (current && !current.controller) removeWaiverOf(waiver, c); }
+        }),
         v2.WebPanel(report, { ctx, state: current, onReport }));
+      if (pendingFocus) {
+        const { action, check } = pendingFocus;
+        pendingFocus = null;
+        const target = [...v2El.querySelectorAll(`[data-action="${action}"]`)].find((el) => el.dataset.check === check);
+        if (target) target.focus();
+      }
     }).catch((err) => {
       if (token !== v2Token) return;
       ctx.checkOutdated();
@@ -1541,9 +1627,10 @@ export function mount(container, ctx) {
   function renderReport(report, selectors) {
     emptyEl.hidden = true;
     results.hidden = false;
-    renderHero(report, selectors);
-    renderV2(report, selectors);
-    renderChecks(report);
+    const hw = reportWaivers(report);
+    renderHero(report, selectors, hw);
+    renderV2(report, selectors, hw);
+    renderChecks(report, hw);
     renderDetails(report);
   }
 
@@ -1722,9 +1809,12 @@ export function mount(container, ctx) {
   }
   if (restored && restored.report) setShareAction();
 
-  // The CAA card's expected / unexpected CA badges follow the workspace's expected CAs.
+  // The CAA card's expected / unexpected CA badges follow the workspace's expected CAs, and the
+  // score, the hero and the problems its accepted risks (this page, another tab, an import).
+  const waiversChanged = (change) => !!(change.value && Array.isArray(change.value.parts) && change.value.parts.includes('waivers'));
   ctx.onCleanup(ctx.state.subscribe((change) => {
-    if (change.key === 'workspaceData' && expectedCasChanged(change) && current && current.report && !current.controller) {
+    const workspace = change.key === 'workspace' || change.key === 'cleared';
+    if ((workspace || (change.key === 'workspaceData' && (expectedCasChanged(change) || waiversChanged(change)))) && current && current.report && !current.controller) {
       renderReport(current.report, current.selectors);
     }
   }));

@@ -19,14 +19,19 @@
  * {@link evaluatePolicy} reads the facts lib/portfolio.js portfolioFacts() derives from one
  * domain's lookups; {@link auditPortfolio} makes the matrix. A rule whose facts could not be read
  * (a lookup that failed, a TLD without RDAP, a check not run) is 'unknown', never a pass or a
- * fail: the evidence says why. Texts are keys of {@link POLICY_I18N} (English and Turkish), so the
+ * fail: the evidence says why. A failed rule an active waiver of the domain accepts (lib/waivers.js,
+ * kind 'rule', ref the rule id) is 'waived': neither a pass nor a fail, counted on its own, with
+ * the waiver and the status it had (`was`); a failed rule whose waiver is over stays a fail and
+ * says so (`waiverExpired`). Texts are keys of {@link POLICY_I18N} (English and Turkish), so the
  * view and the headless runner (tools/ds.mjs audit) word the same evidence.
  *
- * Pure: no DOM, network, storage or clock beyond what the facts carry. Runs in browsers and Node 22.
+ * Pure: no DOM, network, storage or clock beyond what the facts carry and the `now` the waivers are
+ * read at. Runs in browsers and Node 22.
  */
 
 import { toCsv } from './export.js';
 import { corporateRegistrar, registrarClass, registrarId } from './registrars.js';
+import { matchWaiver } from './waivers.js';
 
 /** Version of the exported policy file. */
 export const POLICY_VERSION = 1;
@@ -38,8 +43,8 @@ export const POLICY_MAX_RULES = 40;
 export const POLICY_OPS = Object.freeze(['>=', '<=', '>', '<', '==', '!=']);
 /** Keys of a flat policy that are not rules. */
 const RESERVED_KEYS = new Set(['name', 'version', 'description', '$schema', 'rules']);
-/** A cell's outcome. */
-export const POLICY_STATUSES = Object.freeze(['pass', 'fail', 'unknown']);
+/** A cell's outcome ('waived': a failed rule an active waiver accepts). */
+export const POLICY_STATUSES = Object.freeze(['pass', 'fail', 'unknown', 'waived']);
 /** Why a policy text was refused or a rule left out ({@link parsePolicy}). */
 export const POLICY_ERRORS = Object.freeze(['not-json', 'not-object', 'too-large', 'too-many', 'unknown-rule', 'outside-rules', 'bad-value', 'empty']);
 
@@ -569,23 +574,41 @@ function caaEvidence(c) {
   return ev(`pol.ev.caa.${c.state}`);
 }
 
+/** A waiver as a cell carries it: what it says, never more. */
+const waiverOf = (w) => ({ id: w.id, reason: w.reason, owner: w.owner, expires: w.expires });
+
+/**
+ * A cell with what the waivers say of it: a failed rule an active waiver accepts is 'waived' (`was`
+ * the status it had, `waiver` the waiver); any other cell an active waiver names carries it (a
+ * rule that passes needs it no more, one not known stays not known); a failed rule whose waiver is
+ * over says so (`waiverExpired`).
+ */
+function withWaiver(c, domain, waivers, now) {
+  const m = waivers && waivers.length ? matchWaiver(waivers, { kind: 'rule', domain, ref: c.id }, { now }) : null;
+  if (!m) return c;
+  if (!m.active) return c.status === 'fail' ? { ...c, waiverExpired: { id: m.waiver.id, expires: m.waiver.expires } } : c;
+  return c.status === 'fail' ? { ...c, status: 'waived', was: 'fail', waiver: waiverOf(m.waiver) } : { ...c, waiver: waiverOf(m.waiver) };
+}
+
 /**
  * Evaluate one domain's facts against a policy.
  * @param {{ rules: Array<{ id: string, op: string, value: any }> }} policy a {@link parsePolicy} policy
  * @param {object} facts lib/portfolio.js portfolioFacts()
- * @returns {Array<{ id: string, status: 'pass'|'fail'|'unknown', actual: any, evidence: { key: string, params: object }, required: string }>}
+ * @param {{ waivers?: object[], now?: Date|number }} [opts] lib/waivers.js waivers (kind 'rule'), read at `now`
+ * @returns {Array<{ id: string, status: 'pass'|'fail'|'unknown'|'waived', actual: any, evidence: { key: string, params: object }, required: string,
+ *   was?: 'fail', waiver?: { id: string, reason: string, owner: string, expires: string }, waiverExpired?: { id: string, expires: string } }>}
  */
-export function evaluatePolicy(policy, facts) {
+export function evaluatePolicy(policy, facts, { waivers = [], now = Date.now() } = {}) {
   const f = facts || {};
   // A domain that does not exist in DNS: its DNS rules say so, never "not known".
   return ((policy && policy.rules) || []).map((entry) => {
     const fn = RULE_EVAL[entry.id];
     if (!fn) return cell(entry, 'unknown', null, ev('pol.ev.pending'));
-    const c = fn(entry, f);
+    let c = fn(entry, f);
     if (c.status !== 'pass' && f.exists === false && ['ns.providers', 'dnssec', 'caa', 'caa.issuers', 'spf', 'spf.lookups', 'spf.all', 'dmarc.policy', 'dkim', 'mtaSts', 'tlsRpt', 'mx.null'].includes(entry.id)) {
-      return { ...c, status: 'fail', evidence: ev('pol.ev.nxdomain') };
+      c = { ...c, status: 'fail', evidence: ev('pol.ev.nxdomain') };
     }
-    return c;
+    return withWaiver(c, f.domain, waivers, now);
   });
 }
 
@@ -594,17 +617,19 @@ export function evaluatePolicy(policy, facts) {
  * rule, with counts per row and in all.
  * @param {{ name: string|null, rules: object[] }} policy
  * @param {object[]} factsList lib/portfolio.js portfolioFacts() per domain
+ * @param {{ waivers?: object[], now?: Date|number }} [opts] the accepted risks ({@link evaluatePolicy})
  * @returns {{ name: string|null, rules: Array<{ id: string, required: string }>, rows: Array<{ domain: string,
- *   cells: object[], pass: number, fail: number, unknown: number }>, counts: { domains: number, failing: number,
- *   passing: number, unknown: number, pass: number, fail: number, cells: number } }}
- *   `failing`: domains with at least one failed rule; `passing`: every rule passed; `unknown`: the rest
+ *   cells: object[], pass: number, fail: number, unknown: number, waived: number }>, counts: { domains: number, failing: number,
+ *   passing: number, unknown: number, pass: number, fail: number, waived: number, cells: number } }}
+ *   `failing`: domains with at least one failed rule; `passing`: no rule failed or not known (an accepted one is
+ *   neither); `unknown`: the rest; `waived`: the cells an active waiver accepts
  */
-export function auditPortfolio(policy, factsList) {
+export function auditPortfolio(policy, factsList, { waivers = [], now = Date.now() } = {}) {
   const rules = ((policy && policy.rules) || []).map((e) => ({ id: e.id, required: requirementText(e) }));
   const rows = (factsList || []).map((facts) => {
-    const cells = evaluatePolicy(policy, facts);
+    const cells = evaluatePolicy(policy, facts, { waivers, now });
     const count = (s) => cells.filter((c) => c.status === s).length;
-    return { domain: facts.domain, cells, pass: count('pass'), fail: count('fail'), unknown: count('unknown') };
+    return { domain: facts.domain, cells, pass: count('pass'), fail: count('fail'), unknown: count('unknown'), waived: count('waived') };
   });
   const counts = {
     domains: rows.length,
@@ -613,6 +638,7 @@ export function auditPortfolio(policy, factsList) {
     unknown: rows.filter((r) => r.fail === 0 && r.unknown > 0).length,
     pass: rows.reduce((n, r) => n + r.pass, 0),
     fail: rows.reduce((n, r) => n + r.fail, 0),
+    waived: rows.reduce((n, r) => n + r.waived, 0),
     cells: rows.reduce((n, r) => n + r.cells.length, 0)
   };
   return { name: policy ? policy.name : null, rules, rows, counts };
@@ -629,8 +655,25 @@ export function evidenceText(c, t) {
 }
 
 /**
- * The matrix as CSV: one row per domain, its counts, then one column per rule — "PASS", "FAIL" or
- * "UNKNOWN" with the evidence (`FAIL · 12 days left (2026-10-14)`). Formula-looking cells are
+ * What a cell's waiver says, as text in the language `t` speaks: "accepted until 2026-12-31 by
+ * Ops: …" for an active one, "accepted until 2026-09-30, expired: it counts again" for one that is
+ * over; '' for a cell without either.
+ * @param {{ waiver?: object, waiverExpired?: object }} c
+ * @param {Function} t
+ * @returns {string}
+ */
+export function waiverText(c, t) {
+  if (c && c.waiver) {
+    const w = c.waiver;
+    return String(t(w.owner ? 'pol.waiverOwner' : 'pol.waiver', { date: w.expires, owner: w.owner, reason: w.reason }));
+  }
+  return c && c.waiverExpired ? String(t('pol.waiverExpired', { date: c.waiverExpired.expires })) : '';
+}
+
+/**
+ * The matrix as CSV: one row per domain, its counts, then one column per rule — "PASS", "FAIL",
+ * "UNKNOWN" or "WAIVED" with the evidence (`FAIL · 12 days left (2026-10-14)`) and what its waiver
+ * says. The "Accepted" count is a column only when a cell is waived. Formula-looking cells are
  * defused by lib/export.js toCsv.
  * @param {ReturnType<typeof auditPortfolio>} audit
  * @param {{ t: Function }} opts
@@ -641,13 +684,16 @@ export function auditCsv(audit, { t }) {
     { key: 'domain', header: t('pol.csv.domain') },
     { key: 'fail', header: t('pol.csv.fail') },
     { key: 'unknown', header: t('pol.csv.unknown') },
+    ...(audit.counts && audit.counts.waived ? [{ key: 'waived', header: t('pol.csv.waived') }] : []),
     { key: 'pass', header: t('pol.csv.pass') },
     ...audit.rules.map((r, i) => ({
       key: r.id,
       header: `${r.id} (${r.required})`,
       get: (row) => {
         const c = row.cells[i];
-        return c ? `${c.status.toUpperCase()} · ${evidenceText(c, t)}` : '';
+        if (!c) return '';
+        const waiver = waiverText(c, t);
+        return `${c.status.toUpperCase()} · ${evidenceText(c, t)}${waiver ? ` · ${waiver}` : ''}`;
       }
     }))
   ];
@@ -675,7 +721,11 @@ export function auditJson(audit, { t, policy, app = 'DomainScope', version = '',
       pass: r.pass,
       fail: r.fail,
       unknown: r.unknown,
-      rules: r.cells.map((c) => ({ id: c.id, status: c.status, required: c.required, actual: c.actual, evidence: evidenceText(c, t), key: c.evidence.key, params: c.evidence.params }))
+      waived: r.waived || 0,
+      rules: r.cells.map((c) => ({
+        id: c.id, status: c.status, required: c.required, actual: c.actual, evidence: evidenceText(c, t), key: c.evidence.key, params: c.evidence.params,
+        ...(c.was ? { was: c.was } : {}), ...(c.waiver ? { waiver: { ...c.waiver } } : {}), ...(c.waiverExpired ? { waiverExpired: { ...c.waiverExpired } } : {})
+      }))
     }))
   };
 }
@@ -710,6 +760,10 @@ const STRINGS = [
   ['pol.st.pass', ['Pass', 'Geçti']],
   ['pol.st.fail', ['Fail', 'Kaldı']],
   ['pol.st.unknown', ['Not known', 'Bilinmiyor']],
+  ['pol.st.waived', ['Accepted', 'Kabul edildi']],
+  ['pol.waiver', ['accepted until {date}: {reason}', '{date} tarihine kadar kabul edildi: {reason}']],
+  ['pol.waiverOwner', ['accepted until {date} by {owner}: {reason}', '{date} tarihine kadar {owner} tarafından kabul edildi: {reason}']],
+  ['pol.waiverExpired', ['accepted until {date}, expired: it counts again', '{date} tarihine kadar kabul edilmişti, süresi doldu: yeniden hesaba katılıyor']],
 
   ['pol.preset.baseline', ['Baseline', 'Temel']],
   ['pol.preset.strict-mail', ['Strict mail', 'Sıkı e-posta']],
@@ -807,6 +861,7 @@ const STRINGS = [
   ['pol.csv.domain', ['Domain', 'Alan adı']],
   ['pol.csv.fail', ['Failed', 'Kalan']],
   ['pol.csv.unknown', ['Not known', 'Bilinmeyen']],
+  ['pol.csv.waived', ['Accepted', 'Kabul edilen']],
   ['pol.csv.pass', ['Passed', 'Geçen']]
 ];
 

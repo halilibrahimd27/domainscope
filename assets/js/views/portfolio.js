@@ -15,7 +15,10 @@
  *   adoption of each measure and a CSV (ui/secscore-panel.js over lib/secscore.js, loaded with
  *   the tab on its first use): computed from the check on screen, nothing more is sent.
  * - The policy (Policy audit tab): presets, one row per rule and the JSON (kept in step), kept in
- *   the workspace; the matrix domain × rule with the evidence of each cell, CSV and JSON.
+ *   the workspace; the matrix domain × rule with the evidence of each cell, CSV and JSON. A failed
+ *   cell offers "Accept…" (ui/waivers.js: a reason, an owner and an end date, kept in the
+ *   workspace's waivers, lib/waivers.js): an accepted rule is "Accepted" — neither a pass nor a
+ *   fail, counted on its own — until its end date.
  * - Certificates (CT) tab: the CT watchlist of the same domains (ui/ctwatch-panel.js over
  *   lib/ctwatch.js, loaded with the tab on its first use).
  *
@@ -36,8 +39,9 @@ import {
 } from '../lib/portfolio.js';
 import {
   POLICY_RULES, POLICY_PRESET_IDS, POLICY_OPS, POLICY_I18N, POLICY_MAX_CHARS, parsePolicy, policyText, presetPolicy, auditPortfolio, auditCsv,
-  auditJson, evidenceText, policyRule
+  auditJson, evidenceText, policyRule, waiverText
 } from '../lib/policy.js';
+import { WAIVERS_I18N, readWaivers } from '../lib/waivers.js';
 import { corporateRegistrar } from '../lib/registrars.js';
 import { buildCalendar } from '../lib/ics.js';
 import { toCsv, toJson } from '../lib/export.js';
@@ -49,7 +53,7 @@ import { NaMark, RetryButton, setRetryBusy, statusText } from '../ui/source-stat
 import { SummaryButton } from '../ui/summary-button.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { startJob, NotifyButton } from '../ui/jobs.js';
-import { workspaceLabel } from '../ui/workspace-ui.js';
+import { workspaceLabel, storageErrorText } from '../ui/workspace-ui.js';
 import { state as stateSingleton } from '../state.js';
 
 /** Route id (`#/portfolio`). */
@@ -73,12 +77,16 @@ export const PORTFOLIO_TABS = Object.freeze(['domains', 'security', 'policy', 'c
 const loadCtPanel = onceAsync(() => import('../ui/ctwatch-panel.js'));
 /** The Domain security tab's panel (with lib/secscore.js), on the tab's first use. */
 const loadSecurityPanel = onceAsync(() => import('../ui/secscore-panel.js'));
+/** ui/waivers.js: the "Accept…" dialog of a failed rule, on its first click. */
+const loadWaivers = onceAsync(() => import('../ui/waivers.js'));
 
 registerSummaryBuilder('portfolio', portfolioSummary);
 registerStrings('en', PORTFOLIO_SUMMARY_I18N.en);
 registerStrings('tr', PORTFOLIO_SUMMARY_I18N.tr);
 registerStrings('en', POLICY_I18N.en);
 registerStrings('tr', POLICY_I18N.tr);
+registerStrings('en', WAIVERS_I18N.en);
+registerStrings('tr', WAIVERS_I18N.tr);
 
 registerStrings('en', {
   'pf.domains': 'Domains',
@@ -227,6 +235,8 @@ registerStrings('en', {
   'pf.policy.pass': 'All pass',
   'pf.policy.fail': { one: '{count} rule fails', other: '{count} rules fail' },
   'pf.policy.unknown': { one: '{count} rule not known', other: '{count} rules not known' },
+  'pf.policy.waived': { one: '{count} rule accepted', other: '{count} rules accepted' },
+  'pf.matrix.waived': { one: '{count} failed rule is an accepted risk', other: '{count} failed rules are accepted risks' },
 
   'pf.export.csv': 'CSV',
   'pf.export.json': 'JSON',
@@ -426,6 +436,8 @@ registerStrings('tr', {
   'pf.policy.pass': 'Hepsi geçti',
   'pf.policy.fail': '{count} kural karşılanmadı',
   'pf.policy.unknown': '{count} kural bilinmiyor',
+  'pf.policy.waived': '{count} kural kabul edildi',
+  'pf.matrix.waived': '{count} karşılanmayan kural kabul edilen risk',
 
   'pf.export.csv': 'CSV',
   'pf.export.json': 'JSON',
@@ -545,11 +557,14 @@ export function matchesFilter(facts, filter, { policyFails = () => false } = {})
  */
 export function matrixCountsText(counts, t) {
   const c = counts || { domains: 0, failing: 0, unknown: 0, passing: 0 };
-  if (c.domains && c.passing === c.domains) return t('pf.matrix.allPass', { count: c.domains });
+  // the failed rules a waiver accepts, counted on their own
+  const waived = c.waived ? ` · ${t('pf.matrix.waived', { count: c.waived })}` : '';
+  if (c.domains && c.passing === c.domains) return `${t('pf.matrix.allPass', { count: c.domains })}${waived}`;
   return [
     t('pf.matrix.failing', { count: c.failing, total: c.domains }),
     c.unknown ? t('pf.matrix.unknown', { count: c.unknown }) : null,
-    c.passing ? t('pf.matrix.passing', { count: c.passing }) : null
+    c.passing ? t('pf.matrix.passing', { count: c.passing }) : null,
+    c.waived ? t('pf.matrix.waived', { count: c.waived }) : null
   ].filter(Boolean).join(' · ');
 }
 
@@ -1007,10 +1022,12 @@ export function mount(container, ctx) {
   function policyCell(row) {
     const r = audit ? audit.rows.find((x) => x.domain === row.domain) : null;
     if (!r) return null;
-    if (!r.fail && !r.unknown) return h('span', { dataset: { policy: 'pass' } }, Badge(t('pf.policy.pass'), { variant: 'ok', icon: 'check' }));
+    const accepted = r.waived ? Badge(t('pf.policy.waived', { count: r.waived }), { icon: 'shield' }) : null;
+    if (!r.fail && !r.unknown) return h('span', { class: 'pf-cell', dataset: { policy: 'pass' } }, Badge(t('pf.policy.pass'), { variant: 'ok', icon: 'check' }), accepted);
     return h('span', { class: 'pf-cell', dataset: { policy: r.fail ? 'fail' : 'unknown' } },
       r.fail ? Badge(t('pf.policy.fail', { count: r.fail }), { variant: 'error', icon: 'x-circle' }) : null,
-      r.unknown ? Badge(t('pf.policy.unknown', { count: r.unknown })) : null);
+      r.unknown ? Badge(t('pf.policy.unknown', { count: r.unknown })) : null,
+      accepted);
   }
 
   /** A text with what `re` matches (one capture group) kept on one line, each match in a .pf-nowrap. */
@@ -1654,8 +1671,39 @@ export function mount(container, ctx) {
   const matrixHost = h('div', { class: 'pf-matrix-host' });
   let matrixTable = null;
 
+  /** The workspace's accepted risks, read now (lib/waivers.js). */
+  const waiversNow = () => readWaivers(state.workspaceData('waivers'), { now: Date.now() });
+
   function recomputeAudit() {
-    audit = session.job && parsed.policy && parsed.policy.rules.length ? auditPortfolio(parsed.policy, rows.map((r) => r.facts)) : null;
+    audit = session.job && parsed.policy && parsed.policy.rules.length
+      ? auditPortfolio(parsed.policy, rows.map((r) => r.facts), { waivers: waiversNow(), now: Date.now() }) : null;
+  }
+
+  /** Where the focus goes once the matrix is drawn again: the cell a click accepted. */
+  let matrixFocus = null;
+
+  /** "Accept…" on a failed cell: the dialog, then the waiver into the workspace (the subscription redraws the matrix). */
+  async function acceptRule(domain, rule) {
+    let ui;
+    try {
+      ui = await loadWaivers();
+    } catch (err) {
+      ctx.checkOutdated();
+      toast(err && err.message ? err.message : String(err), { type: 'error' });
+      return;
+    }
+    const subject = `${t(`pol.rule.${rule.id}`)} (${rule.id} ${rule.required})`;
+    const input = await ui.openWaiverDialog({ kind: 'rule', domain, ref: rule.id, subject });
+    if (!input) return;
+    try {
+      matrixFocus = { domain, rule: rule.id };
+      const { waiver, persisted } = await ui.acceptRisk(input, state);
+      announce(t('wvr.saved', { date: waiver.expires, subject: `${domain} · ${rule.id}` }));
+      if (!persisted) toast(t('wvr.notSaved', { reason: storageErrorText(state.workspaceError) }), { type: 'warn' });
+    } catch (err) {
+      matrixFocus = null;
+      toast(err && err.code ? ui.waiverErrorText(err.code) : String(err && err.message ? err.message : err), { type: 'error' });
+    }
   }
 
   function policyChanged() {
@@ -1722,7 +1770,8 @@ export function mount(container, ctx) {
         render: (r) => h('span', { class: 'pf-cell', dataset: { result: r.fail ? 'fail' : r.unknown ? 'unknown' : 'pass' } },
           r.fail ? Badge(t('pf.policy.fail', { count: r.fail }), { variant: 'error', icon: 'x-circle' }) : null,
           r.unknown ? Badge(t('pf.policy.unknown', { count: r.unknown })) : null,
-          !r.fail && !r.unknown ? Badge(t('pf.policy.pass'), { variant: 'ok', icon: 'check' }) : null)
+          !r.fail && !r.unknown ? Badge(t('pf.policy.pass'), { variant: 'ok', icon: 'check' }) : null,
+          r.waived ? Badge(t('pf.policy.waived', { count: r.waived }), { icon: 'shield' }) : null)
       }
     ];
     (audit ? audit.rules : []).forEach((rule, i) => cols.push({
@@ -1731,15 +1780,25 @@ export function mount(container, ctx) {
       title: t(`pol.rule.${rule.id}`),
       sortable: true,
       wrap: true,
-      sortValue: (r) => ({ fail: 0, unknown: 1, pass: 2 }[r.cells[i].status]),
-      searchValue: (r) => evidenceText(r.cells[i], t),
+      sortValue: (r) => ({ fail: 0, unknown: 1, waived: 2, pass: 3 }[r.cells[i].status]),
+      searchValue: (r) => `${evidenceText(r.cells[i], t)} ${waiverText(r.cells[i], t)}`,
       className: 'pf-mx-cell',
       render: (r) => {
         const c = r.cells[i];
-        const variant = c.status === 'pass' ? 'ok' : c.status === 'fail' ? 'error' : 'neutral';
-        return h('span', { class: 'pf-cell', dataset: { status: c.status, rule: c.id } },
-          Badge(t(`pol.st.${c.status}`), { variant, icon: c.status === 'pass' ? 'check' : c.status === 'fail' ? 'x-circle' : 'help' }),
-          h('span', { class: 'text-xs pf-evidence' }, keepDates(evidenceText(c, t))));
+        const variant = c.status === 'pass' ? 'ok' : c.status === 'fail' ? 'error' : c.status === 'waived' ? 'info' : 'neutral';
+        const icon = { pass: 'check', fail: 'x-circle', waived: 'shield' }[c.status] || 'help';
+        const waiver = waiverText(c, t);
+        // a failed rule can be accepted as a risk (an owner, a reason, an end date): it is then neither a pass nor a fail
+        const accept = c.status === 'fail' ? Button({
+          label: t('wvr.acceptRule'), size: 'sm', variant: 'ghost', className: 'pf-accept', title: t('wvr.acceptRuleTitle', { domain: r.domain, rule: rule.id }),
+          // not data-rule: that names the cell itself
+          dataset: { action: 'pf-accept', waive: rule.id }, onClick: () => acceptRule(r.domain, rule)
+        }) : null;
+        return h('span', { class: 'pf-cell', dataset: { status: c.status, rule: c.id, domain: r.domain }, attrs: c.status === 'waived' ? { tabindex: '-1' } : {} },
+          Badge(t(`pol.st.${c.status}`), { variant, icon }),
+          h('span', { class: 'text-xs pf-evidence' }, keepDates(evidenceText(c, t))),
+          waiver ? h('span', { class: ['text-xs', 'pf-waiver', { 'is-expired': !c.waiver }], dataset: { role: 'pf-waiver' } }, keepDates(waiver)) : null,
+          accept);
       }
     }));
     return cols;
@@ -1785,6 +1844,15 @@ export function mount(container, ctx) {
     clear(counts);
     counts.append(matrixCountsText(audit.counts, t));
     if (job.status === 'running') counts.append(h('span', { class: 'muted' }, ` · ${t('pf.matrix.running')}`));
+    if (matrixFocus) {
+      // the cell just accepted (the table draws its rows on the next frame)
+      const want = matrixFocus;
+      matrixFocus = null;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const cell = [...matrixHost.querySelectorAll('.pf-cell[data-status="waived"]')].find((el) => el.dataset.rule === want.rule && el.dataset.domain === want.domain);
+        if (cell) cell.focus();
+      }));
+    }
   }
 
   function exportMatrix(format) {
@@ -1811,6 +1879,11 @@ export function mount(container, ctx) {
     table.el.hidden = true;
     renderPolicy();
   }
+  // The accepted risks changed (an "Accept…" here, the Workspaces dialog, another tab): the matrix follows.
+  cleanups.push(state.subscribe(({ key, value }) => {
+    if (key !== 'workspaceData' || !value || !Array.isArray(value.parts) || !value.parts.includes('waivers')) return;
+    policyChanged();
+  }));
   // The policy changed in another tab or by an imported workspace.
   cleanups.push(state.subscribe(({ key, value }) => {
     if (key !== 'workspaceData' || !value || !Array.isArray(value.parts) || !value.parts.includes('policy')) return;

@@ -186,6 +186,23 @@ describe('health', () => {
     assert.deepEqual(lines(md(clean)).slice(1, 4), ['- Healthy · grade A · score 100/100', '- 12 passed', '- No errors or warnings']);
   });
 
+  test('accepted risks (lib/waivers.js): left out of the score, the counts and the problems; a line says how many and until when', () => {
+    const r = report([check('spf.too-many-lookups', 'warn', { count: 12, limit: 10 }), check('dmarc.missing', 'error'), check('ipv6.missing', 'info'), check('ns.ok', 'ok')],
+      { ok: 1, info: 1, warn: 1, error: 1 });
+    const ls = lines(md(S.healthSummary({ report: r, waived: { ids: ['dmarc.missing'], until: '2026-12-31' } }, opts())));
+    // email 100 − 15 = 85 (weight 25): (3000 + 2125) / 55 = 93.2 → the warning caps it at 89, a B
+    assert.equal(ls[1], '- Needs attention · grade B · score 89/100');
+    assert.equal(ls[2], '- 1 warning · 1 note · 1 passed');
+    assert.equal(ls[3], '- 1 accepted risk excluded (until 2026-12-31)');
+    assert.match(ls[4], /^- \*\*Warning:\*\* /);
+    assert.ok(!ls.some((l) => /\*\*Error:\*\*/.test(l)), 'the accepted error is not listed');
+    const two = md(S.healthSummary({ report: r, waived: { ids: ['dmarc.missing', 'spf.too-many-lookups', 'ipv6.missing'], until: '2026-11-30' } }, opts()));
+    assert.ok(two.includes('- 2 accepted risks excluded (the first ends 2026-11-30)'), 'an info finding is never an accepted risk');
+    assert.ok(two.includes('- Healthy · grade A · score 100/100'), two);
+    assert.ok(md(S.healthSummary({ report: r, waived: { ids: ['dmarc.missing'] } }, opts('tr'))).includes('- 1 kabul edilen risk hariç tutuldu\n'));
+    assert.equal(md(S.healthSummary({ report: r, waived: { ids: [] } }, opts())), md(S.healthSummary({ report: r }, opts())), 'none accepted: as before');
+  });
+
   test('Turkish', () => {
     const doc = S.healthSummary({ report: report([check('dmarc.missing', 'error')], { ok: 3, info: 0, warn: 0, error: 1 }) }, opts('tr'));
     const out = md(doc);

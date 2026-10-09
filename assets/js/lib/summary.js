@@ -47,32 +47,41 @@ const { kit, doc, code, strong, isoDay, whenText, problemLines } = BUILDER_KIT;
 /* Builders                                                                 */
 /* ------------------------------------------------------------------------ */
 
-/** The score and letter of a report (lib/healthscore.js, SPEC §5.78), as the view's hero shows them. */
-function gradeOf(report) {
-  const g = scoreHealth(report.checks);
+/** The score and letter of a report (lib/healthscore.js, SPEC §5.78), as the view's hero shows them: the accepted risks left out. */
+function gradeOf(report, waived) {
+  const g = scoreHealth(report.checks, { waived });
   return { score: g.score, grade: g.grade };
 }
 
 /**
  * Domain Health: the verdict and score, the counts, the worst problems (errors, then warnings).
+ * The accepted risks (`waived`: lib/waivers.js healthWaivers' check ids and the first day one of
+ * them ends) are left out of the score, the counts and the problems, and a line says how many.
  * @param {{ report: { domain: string, checkedAt?: Date, summary: object, checks: Array<{ severity: string,
- *   titleKey: string, params?: object, id?: string }> } }} facts a lib/health.domainHealth report
+ *   titleKey: string, params?: object, id?: string }> }, waived?: { ids: Iterable<string>, until?: string|null }|null }} facts
+ *   a lib/health.domainHealth report
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {SummaryDoc}
  */
-export function healthSummary({ report }, opts) {
+export function healthSummary({ report, waived = null }, opts) {
   const k = kit(opts);
   const { t } = k;
-  const s = report.summary || {};
+  const ids = new Set(waived && waived.ids ? waived.ids : []);
+  const isWaived = (c) => ids.has(c.id) && (c.severity === 'error' || c.severity === 'warn');
+  const accepted = (report.checks || []).filter(isWaived).length;
+  const base = report.summary || {};
+  const s = accepted ? { ...base, error: (base.error || 0) - (report.checks || []).filter((c) => isWaived(c) && c.severity === 'error').length,
+    warn: (base.warn || 0) - (report.checks || []).filter((c) => isWaived(c) && c.severity === 'warn').length } : base;
   const light = trafficLight(s);
   // lib/health passes booleans as the English words 'yes' / 'no' (the view shows them translated too).
   const local = (params) => Object.fromEntries(Object.entries(params || {}).map(([key, v]) => [key, v === 'yes' ? t('common.yes') : v === 'no' ? t('common.no') : v]));
-  const problems = (report.checks || []).map((c) => ({ severity: c.severity, key: c.titleKey, params: local(c.params) }));
+  const problems = (report.checks || []).filter((c) => !isWaived(c)).map((c) => ({ severity: c.severity, key: c.titleKey, params: local(c.params) }));
   const tally = k.counts([['sum.count.error', s.error], ['sum.count.warn', s.warn], ['sum.count.info', s.info], ['sum.count.ok', s.ok]]);
   const listed = problemLines(k, problems);
   return doc('health', k.title('health', [code(report.domain)]), [
-    [t('sum.health.verdictGrade', { verdict: t(`sum.health.light.${light}`), ...gradeOf(report) })],
+    [t('sum.health.verdictGrade', { verdict: t(`sum.health.light.${light}`), ...gradeOf(report, ids) })],
     tally ? [tally] : null,
+    accepted ? [t(waived.until ? 'sum.health.waivedUntil' : 'sum.health.waived', { count: accepted, date: waived.until || '' })] : null,
     ...(listed.length ? listed : [[t('sum.health.noProblems')]])
   ], { when: whenText(t, 'sum.at.checked', report.checkedAt, opts.now || new Date()), url: opts.url });
 }
@@ -817,6 +826,9 @@ const STRINGS = [
   ['sum.health.light.warn', ['Needs attention', 'İlgilenilmesi gerekiyor']],
   ['sum.health.light.error', ['Problems found', 'Sorun bulundu']],
   ['sum.health.noProblems', ['No errors or warnings', 'Hata ya da uyarı yok']],
+  ['sum.health.waived', [{ one: '{count} accepted risk excluded', other: '{count} accepted risks excluded' }, '{count} kabul edilen risk hariç tutuldu']],
+  ['sum.health.waivedUntil', [{ one: '{count} accepted risk excluded (until {date})', other: '{count} accepted risks excluded (the first ends {date})' },
+    { one: '{count} kabul edilen risk hariç tutuldu ({date} tarihine kadar)', other: '{count} kabul edilen risk hariç tutuldu (ilki {date} tarihinde bitiyor)' }]],
 
   ['sum.domain.registration', ['Registration', 'Kayıt']],
   ['sum.domain.dns', ['DNS', 'DNS']],

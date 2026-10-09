@@ -9,7 +9,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   POLICY_RULES, POLICY_PRESETS, POLICY_PRESET_IDS, POLICY_OPS, POLICY_I18N, POLICY_ERRORS, POLICY_MAX_RULES,
-  parsePolicy, policyObject, policyText, presetPolicy, evaluatePolicy, auditPortfolio, auditCsv, auditJson, evidenceText, requirementText, policyRule
+  parsePolicy, policyObject, policyText, presetPolicy, evaluatePolicy, auditPortfolio, auditCsv, auditJson, evidenceText, requirementText, policyRule,
+  waiverText, POLICY_STATUSES
 } from '../../assets/js/lib/policy.js';
 import { portfolioFacts, LOCK_LEVELS } from '../../assets/js/lib/portfolio.js';
 import { HEALTH_CHECK_IDS } from '../../assets/js/lib/health.js';
@@ -440,7 +441,7 @@ describe('the matrix', () => {
   test('one row per domain, one cell per rule; counts', () => {
     assert.deepEqual(audit.rules, [{ id: 'expiryDays', required: '>= 30' }, { id: 'transferLock', required: 'true' }, { id: 'dmarc.policy', required: '>= quarantine' }]);
     assert.deepEqual(audit.rows.map((r) => [r.domain, r.pass, r.fail, r.unknown]), [['example.com', 3, 0, 0], ['example.org', 1, 2, 0], ['example-test.com.tr', 1, 0, 2]]);
-    assert.deepEqual(audit.counts, { domains: 3, failing: 1, passing: 1, unknown: 1, pass: 5, fail: 2, cells: 9 });
+    assert.deepEqual(audit.counts, { domains: 3, failing: 1, passing: 1, unknown: 1, pass: 5, fail: 2, waived: 0, cells: 9 });
   });
 
   test('CSV: a row per domain, a column per rule with the status and the evidence', () => {
@@ -475,5 +476,75 @@ describe('the matrix', () => {
       assert.ok(String(typeof POLICY_I18N.tr[k] === 'object' ? POLICY_I18N.tr[k].other : POLICY_I18N.tr[k]).trim(), k);
     }
     assert.equal(evidenceText(cellOf(one({ expiryDays: 30 }), facts({ registration: { ...facts().registration, daysLeft: 3 } }), 'expiryDays'), makeT('tr')), '3 gün kaldı (2027-04-20)');
+  });
+});
+
+describe('the matrix with accepted risks (lib/waivers.js): the status "waived"', () => {
+  const NOW = Date.parse('2026-10-09T12:00:00Z');
+  const policy = parsePolicy({ name: 'baseline', rules: { expiryDays: '>= 30', transferLock: true, 'dmarc.policy': '>= quarantine' } }).policy;
+  const list = [
+    facts(),
+    facts({ domain: 'example.org', registration: { ...facts().registration, daysLeft: 9, transferLock: false } }),
+    facts({ domain: 'example-test.com.tr', registration: { state: 'unsupported', tld: 'tr' } })
+  ];
+  const waiver = (domain, ref, expires = '2026-12-31', extra = {}) => ({ id: `w-${domain}-${ref}`, kind: 'rule', domain, ref, reason: 'Registrar move in November', owner: 'Ops', created: null, expires, ...extra });
+  const waivers = [
+    waiver('example.org', 'transferLock'),
+    waiver('example.org', 'expiryDays', '2026-10-01'),
+    waiver('example.com', 'dmarc.policy'),
+    waiver('example-test.com.tr', 'expiryDays'),
+    { ...waiver('example.org', 'transferLock'), kind: 'finding', id: 'w-finding' }
+  ];
+  const audit = auditPortfolio(policy, list, { waivers, now: NOW });
+  const row = (d) => audit.rows.find((r) => r.domain === d);
+
+  test('a failed rule an active waiver accepts is "waived": neither a pass nor a fail, counted on its own, with the waiver and what it was', () => {
+    const org = row('example.org');
+    assert.deepEqual(org.cells.map((c) => c.status), ['fail', 'waived', 'pass']);
+    assert.deepEqual([org.pass, org.fail, org.unknown, org.waived], [1, 1, 0, 1]);
+    const c = org.cells[1];
+    assert.deepEqual([c.was, c.waiver], ['fail', { id: 'w-example.org-transferLock', reason: 'Registrar move in November', owner: 'Ops', expires: '2026-12-31' }]);
+    assert.equal(c.evidence.key, 'pol.ev.lockOff', 'the evidence stays');
+    assert.deepEqual(audit.counts, { domains: 3, failing: 1, passing: 1, unknown: 1, pass: 5, fail: 1, waived: 1, cells: 9 });
+  });
+
+  test('an expired waiver leaves the rule failed and says so; a rule that passes keeps its waiver (no longer needed), one not known stays not known', () => {
+    const expired = row('example.org').cells[0];
+    assert.deepEqual([expired.status, expired.waiverExpired], ['fail', { id: 'w-example.org-expiryDays', expires: '2026-10-01' }]);
+    const pass = row('example.com').cells[2];
+    assert.deepEqual([pass.status, pass.waiver && pass.waiver.id], ['pass', 'w-example.com-dmarc.policy']);
+    const tr = row('example-test.com.tr').cells[0];
+    assert.deepEqual([tr.status, tr.waiver && tr.waiver.expires], ['unknown', '2026-12-31']);
+    // a finding's waiver is no rule's; another domain's neither
+    assert.equal(auditPortfolio(policy, [list[1]], { waivers: [waivers[4]], now: NOW }).rows[0].waived, 0);
+  });
+
+  test('the domain with only accepted failures meets the policy; without waivers nothing changes; the clock decides', () => {
+    const one = auditPortfolio(policy, [list[1]], { waivers: [waiver('example.org', 'transferLock'), waiver('example.org', 'expiryDays')], now: NOW });
+    assert.deepEqual([one.counts.failing, one.counts.passing, one.counts.waived], [0, 1, 2]);
+    const later = auditPortfolio(policy, [list[1]], { waivers: [waiver('example.org', 'transferLock'), waiver('example.org', 'expiryDays')], now: Date.parse('2027-01-01T00:00:00Z') });
+    assert.deepEqual([later.counts.failing, later.counts.waived, later.rows[0].cells[0].waiverExpired.expires], [1, 0, '2026-12-31']);
+    assert.deepEqual(auditPortfolio(policy, list).rows.map((r) => r.waived), [0, 0, 0]);
+    assert.deepEqual(evaluatePolicy(policy, list[1]).map((c) => c.status), ['fail', 'fail', 'pass'], 'evaluatePolicy without waivers');
+  });
+
+  test('CSV: the Accepted count is a column when a cell is waived; the cell says WAIVED with the waiver; an expired one says it counts again', () => {
+    const lines = auditCsv(audit, { t }).replace(/^\ufeff/, '').trimEnd().split('\r\n');
+    assert.equal(lines[0], 'Domain,Failed,Not known,Accepted,Passed,expiryDays (>= 30),transferLock (true),dmarc.policy (>= quarantine)');
+    assert.equal(lines[2], 'example.org,1,0,1,1,"FAIL · 9 days left (2027-04-20) · accepted until 2026-10-01, expired: it counts again",'
+      + 'WAIVED · no transfer prohibition (clientTransferProhibited or serverTransferProhibited): the domain can be transferred away · accepted until 2026-12-31 by Ops: Registrar move in November,PASS · DMARC p=quarantine');
+    assert.ok(!auditCsv(auditPortfolio(policy, list), { t }).includes('Accepted'), 'no column without a waived cell');
+    assert.equal(waiverText({ waiver: { expires: '2026-12-31', owner: '', reason: 'r' } }, t), 'accepted until 2026-12-31: r');
+    assert.equal(waiverText({}, t), '');
+    assert.ok(POLICY_STATUSES.includes('waived'));
+  });
+
+  test('JSON: the status, what it was and the waiver', () => {
+    const j = auditJson(audit, { t, policy, version: '1.0.0', at: new Date(NOW) });
+    const org = j.rows.find((r) => r.domain === 'example.org');
+    assert.equal(org.waived, 1);
+    assert.deepEqual([org.rules[1].status, org.rules[1].was, org.rules[1].waiver.expires], ['waived', 'fail', '2026-12-31']);
+    assert.deepEqual(org.rules[0].waiverExpired, { id: 'w-example.org-expiryDays', expires: '2026-10-01' });
+    assert.equal(j.counts.waived, 1);
   });
 });

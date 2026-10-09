@@ -30,6 +30,11 @@
  * and when the check ran (lib/workspace.js `ctSeen`: the JSON text {@link seenText} writes, read
  * and checked by {@link readSeen}).
  *
+ * Known certificates (lib/waivers.js, kind 'cert'): a certificate whose public key's SHA-256 (or
+ * its own SHA-256) an active waiver of its domain names is never flagged new or from an unexpected
+ * CA — its expiry and revocation are still watched; a waiver that is over leaves its certificate
+ * flagged as before ({@link analyzeCt} `known`).
+ *
  * CT lists publicly trusted certificates only: a private CA's, a self-signed one, or one a CA never
  * logged is not there. DOM-free; every request takes the caller's `signal` and a timeout, only an
  * abort rejects, every other failure is reported in the result.
@@ -39,10 +44,12 @@ import { fetchJson, errorKind, sleep, throwIfAborted, createLimiter, ParseError 
 import { normalizeHostname, isSubdomainOf, sortHostnames, certCovers } from './domain.js';
 import { fetchSource } from './sources.js';
 import { parseCertificate } from './x509.js';
+import { sha256 } from './sha.js';
 import { CERTSPOTTER_ISSUANCES, CRTSH_BASE, CT_TIMEOUT_MS } from './ctcert.js';
 import { caaIssuerInfo } from './health.js';
 import { expectedCaStatus } from './expectedca.js';
 import { spotterRevocation, problemReportingText } from './revocation.js';
+import { matchWaiver } from './waivers.js';
 
 /** Cert Spotter's hourly allowance for a subdomain search, per IP (`X-Ratelimit-Limit: 10`). */
 export const CT_WATCH_SPOTTER_LIMIT = 10;
@@ -70,8 +77,8 @@ export const CT_WATCH_MAX_THRESHOLDS = 5;
 export const CT_SEEN_VERSION = 1;
 /** The baseline's text is kept under this many characters (lib/workspace.js WORKSPACE_LIMITS.ctSeen). */
 export const CT_SEEN_MAX_CHARS = 1048576;
-/** What a certificate row can be flagged with, in the order a row shows them. */
-export const CT_WATCH_FLAGS = Object.freeze(['new', 'unexpected', 'precert', 'wildcard', 'revoked', 'superseded']);
+/** What a certificate row can be flagged with, in the order a row shows them ('known': a known certificate, lib/waivers.js). */
+export const CT_WATCH_FLAGS = Object.freeze(['new', 'unexpected', 'precert', 'wildcard', 'revoked', 'superseded', 'known']);
 /** The table's filters, in the select's order. */
 export const CT_WATCH_FILTERS = Object.freeze(['current', 'all', 'new', 'expiring', 'unexpected', 'wildcard', 'precert']);
 /** How a domain's read ended. */
@@ -95,6 +102,8 @@ export const CT_WATCH_NOTES = Object.freeze(['spotter-quota', 'spotter-failed', 
  * @property {Date} notAfter
  * @property {string|null} serialHex lowercase hex, no leading 00
  * @property {string|null} sha256 certificate SHA-256 (Cert Spotter)
+ * @property {string|null} spkiSha256 its public key's (SubjectPublicKeyInfo) SHA-256: Cert Spotter's
+ *   `pubkey_sha256`, else from its DER; null from crt.sh
  * @property {boolean|null} precert logged only as a precertificate; null: not known (crt.sh)
  * @property {boolean|null} revoked Cert Spotter's flag; null: not known (crt.sh)
  * @property {{ time: Date|null, reasonCode: number|null, reason: string|null, checkedAt: Date|null }|null} revocation
@@ -124,6 +133,8 @@ export const CT_WATCH_NOTES = Object.freeze(['spotter-quota', 'spotter-failed', 
 
 const DAY_MS = 86400000;
 const encoder = new TextEncoder();
+const SHA256_RE = /^[0-9a-f]{64}$/i;
+const hexOf = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 
 /**
  * FNV-1a, 64 bits, of a text's UTF-8 bytes: 16 hex digits.
@@ -382,7 +393,10 @@ export function fromSpotterItems(items, domain, { now = Date.now() } = {}) {
     }
     const intermediate = dnValue(issuer, 'CN');
     const serialHex = cert ? serialOf(cert.serialHex) : null;
-    const sha256 = typeof item.cert_sha256 === 'string' && /^[0-9a-f]{64}$/i.test(item.cert_sha256) ? item.cert_sha256.toLowerCase() : null;
+    const certSha = typeof item.cert_sha256 === 'string' && SHA256_RE.test(item.cert_sha256) ? item.cert_sha256.toLowerCase() : null;
+    // the key's SHA-256 as Cert Spotter says it, else from the DER (both are of the SubjectPublicKeyInfo)
+    const spkiSha256 = typeof item.pubkey_sha256 === 'string' && SHA256_RE.test(item.pubkey_sha256) ? item.pubkey_sha256.toLowerCase()
+      : cert && cert.spkiDer instanceof Uint8Array && cert.spkiDer.length ? hexOf(sha256(cert.spkiDer)) : null;
     const fallback = typeof item.tbs_sha256 === 'string' && item.tbs_sha256 ? `tbs:${item.tbs_sha256.toLowerCase()}` : `certspotter:${item.id}`;
     const r = spotterRevocation(item);
     out.push({
@@ -395,14 +409,15 @@ export function fromSpotterItems(items, domain, { now = Date.now() } = {}) {
       notBefore,
       notAfter,
       serialHex,
-      sha256,
+      sha256: certSha,
+      spkiSha256,
       precert: cert ? !!cert.isPrecertificate : null,
       revoked: typeof item.revoked === 'boolean' ? item.revoked : null,
       revocation: r ? { time: r.time, reasonCode: r.reasonCode, reason: r.reason, checkedAt: r.checkedAt } : null,
       problemReporting: problemReportingText(item.problem_reporting),
       wildcard: names.some((n) => n.startsWith('*.')),
       source: 'certspotter',
-      url: sha256 ? `${CRTSH_BASE}?q=${sha256}` : null
+      url: certSha ? `${CRTSH_BASE}?q=${certSha}` : null
     });
   }
   return out;
@@ -440,6 +455,7 @@ export function fromCrtshCerts(certs, domain, { now = Date.now() } = {}) {
       notAfter,
       serialHex,
       sha256: typeof c.sha256 === 'string' && c.sha256 ? c.sha256 : null,
+      spkiSha256: null,
       precert: null,
       revoked: null,
       revocation: null,
@@ -461,7 +477,7 @@ function mergeById(...lists) {
       byId.set(c.id, { ...c });
       continue;
     }
-    for (const k of ['sha256', 'serialHex', 'url', 'revocation', 'problemReporting']) if (!prev[k] && c[k]) prev[k] = c[k];
+    for (const k of ['sha256', 'spkiSha256', 'serialHex', 'url', 'revocation', 'problemReporting']) if (!prev[k] && c[k]) prev[k] = c[k];
     if (prev.precert === null && c.precert !== null) prev.precert = c.precert;
     if (prev.revoked === null && c.revoked !== null) prev.revoked = c.revoked;
   }
@@ -605,12 +621,27 @@ export async function readPortfolioCt(domains, { onRead, concurrency = CT_WATCH_
 
 /**
  * @typedef {WatchCert & { daysLeft: number, band: number|null, nameSet: string, newest: boolean, superseded: boolean,
- *   current: boolean, isNew: boolean|null, unexpected: boolean|null, flags: string[] }} WatchRow
+ *   current: boolean, isNew: boolean|null, unexpected: boolean|null, flags: string[],
+ *   known: { id: string, expires: string, reason: string, owner: string }|null,
+ *   knownExpired: { id: string, expires: string, reason: string, owner: string }|null }} WatchRow
  *   `newest`: the newest valid (not revoked) certificate of its exact name set; `superseded`: every
  *   name is on another valid certificate that expires later; `current`: newest and not
  *   superseded (what the radar watches); `isNew`: not seen at the domain's last check (null: no
- *   earlier check); `unexpected`: the issuer is none of the expected CAs (null: none set)
+ *   earlier check); `unexpected`: the issuer is none of the expected CAs (null: none set); `known`:
+ *   the active waiver that makes it a known certificate (then `isNew` and `unexpected` are false);
+ *   `knownExpired`: one that is over (the flags are as without it)
  */
+
+/**
+ * The known-certificate waiver of a certificate (its key's SHA-256, else its own), active first.
+ * @param {object[]} known lib/waivers.js waivers
+ * @param {{ domain: string, spkiSha256?: string|null, sha256?: string|null }} c
+ * @param {number} t now, ms
+ */
+function knownOf(known, c, t) {
+  if (!known || !known.length) return null;
+  return matchWaiver(known, { kind: 'cert', domain: c.domain, refs: [c.spkiSha256, c.sha256] }, { now: t });
+}
 
 /** Is `name` covered by a certificate holding `names`? A wildcard needs the same wildcard. */
 function coveredBy(name, names) {
@@ -621,11 +652,12 @@ function coveredBy(name, names) {
 /**
  * The rows of the table and what the tiles count, from the domains' reads.
  * @param {DomainRead[]} reads
- * @param {{ now?: Date|number, days?: number[], expected?: string[], seen?: ReturnType<typeof readSeen> }} [opts]
+ * @param {{ now?: Date|number, days?: number[], expected?: string[], seen?: ReturnType<typeof readSeen>, known?: object[] }} [opts]
+ *   `known`: lib/waivers.js waivers (kind 'cert'): the known certificates, never new nor unexpected
  * @returns {{ rows: WatchRow[], counts: Record<string, number>, first: string[] }} rows sorted by domain,
- *   then the soonest expiry; `first`: domains read without an earlier check
+ *   then the soonest expiry; `first`: domains read without an earlier check; `counts.known`: the known rows
  */
-export function analyzeCt(reads, { now = Date.now(), days = CT_WATCH_DEFAULT_DAYS, expected = [], seen = emptySeen() } = {}) {
+export function analyzeCt(reads, { now = Date.now(), days = CT_WATCH_DEFAULT_DAYS, expected = [], seen = emptySeen(), known = [] } = {}) {
   const t = ms(now);
   const rows = [];
   const first = [];
@@ -653,6 +685,8 @@ export function analyzeCt(reads, { now = Date.now(), days = CT_WATCH_DEFAULT_DAY
       const newest = newestIds.has(c.id) && c.revoked !== true;
       const current = newest && !superseded;
       const status = expectedCaStatus(c.issuer, expected);
+      const k = knownOf(known, { ...c, domain: c.domain || read.domain }, t);
+      const isKnown = !!(k && k.active);
       const row = {
         ...c,
         daysLeft,
@@ -661,8 +695,11 @@ export function analyzeCt(reads, { now = Date.now(), days = CT_WATCH_DEFAULT_DAY
         newest,
         superseded,
         current,
-        isNew: base ? !Object.prototype.hasOwnProperty.call(base.ids, c.id) : null,
-        unexpected: status ? !status.expected : null,
+        // a known certificate is neither new nor unexpected: its key was accepted as ours
+        isNew: base ? (isKnown ? false : !Object.prototype.hasOwnProperty.call(base.ids, c.id)) : null,
+        unexpected: status ? (isKnown ? false : !status.expected) : null,
+        known: isKnown ? { id: k.waiver.id, expires: k.waiver.expires, reason: k.waiver.reason, owner: k.waiver.owner } : null,
+        knownExpired: k && !k.active ? { id: k.waiver.id, expires: k.waiver.expires, reason: k.waiver.reason, owner: k.waiver.owner } : null,
         flags: []
       };
       if (row.isNew) row.flags.push('new');
@@ -671,11 +708,13 @@ export function analyzeCt(reads, { now = Date.now(), days = CT_WATCH_DEFAULT_DAY
       if (c.wildcard) row.flags.push('wildcard');
       if (c.revoked) row.flags.push('revoked');
       if (superseded) row.flags.push('superseded');
+      if (isKnown) row.flags.push('known');
       rows.push(row);
     }
   }
   rows.sort((a, b) => (a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : 0) || a.notAfter - b.notAfter || (a.id < b.id ? -1 : 1));
   const counts = Object.fromEntries(CT_WATCH_FILTERS.map((f) => [f, rows.filter((r) => matchesCtFilter(r, f, { radar })).length]));
+  counts.known = rows.filter((r) => r.known).length;
   return { rows, counts, first };
 }
 
@@ -719,7 +758,8 @@ export function expiryEntries(rows) {
 
 /** The CSV columns of {@link exportCtRow}, in order. */
 export const CT_EXPORT_COLUMNS = Object.freeze(['domain', 'names', 'ca', 'intermediate', 'notBefore', 'notAfter', 'daysLeft', 'current', 'new',
-  'unexpectedCa', 'precertificateOnly', 'wildcard', 'revoked', 'superseded', 'serial', 'sha256', 'source', 'url', 'revokedAt', 'revocationReason']);
+  'unexpectedCa', 'precertificateOnly', 'wildcard', 'revoked', 'superseded', 'serial', 'sha256', 'source', 'url', 'revokedAt', 'revocationReason',
+  'publicKeySha256', 'knownUntil']);
 
 /**
  * One row as the CSV holds it: plain values, booleans as yes / no, unknown as an empty cell.
@@ -748,7 +788,9 @@ export function exportCtRow(r) {
     source: r.source,
     url: r.url || '',
     revokedAt: r.revoked && r.revocation && r.revocation.time ? r.revocation.time.toISOString() : '',
-    revocationReason: r.revoked && r.revocation && r.revocation.reason ? r.revocation.reason : ''
+    revocationReason: r.revoked && r.revocation && r.revocation.reason ? r.revocation.reason : '',
+    publicKeySha256: r.spkiSha256 || '',
+    knownUntil: r.known ? r.known.expires : ''
   };
 }
 

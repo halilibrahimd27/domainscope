@@ -384,6 +384,40 @@ describe('the analysis', () => {
     assert.ok(none.rows.every((r) => r.unexpected === null), 'no expected CAs: no flag');
   });
 
+  test('a known certificate (lib/waivers.js, kind cert: its key\'s SHA-256, or its own) is never new nor unexpected while its waiver lasts', () => {
+    const KEY = '9a'.repeat(32);
+    const certs = spotted([
+      issuance({ names: ['www.example.com'], serial: 1 }),
+      { ...issuance({ names: ['cdn.example.com'], serial: 2, issuer: 'C=US, O=Other CA Inc, CN=Other CA 1' }), pubkey_sha256: KEY.toUpperCase() },
+      issuance({ names: ['shop.example.com'], serial: 3, issuer: 'C=US, O=Other CA Inc, CN=Other CA 1' })
+    ]);
+    assert.equal(certs[1].spkiSha256, KEY, 'Cert Spotter\'s pubkey_sha256, in lower case');
+    assert.match(certs[0].spkiSha256, /^[0-9a-f]{64}$/);
+    const seen = updateSeen(emptySeen(), [read([certs[0]], { at: new Date('2026-10-01T00:00:00Z') })], { now: new Date('2026-10-01T00:00:00Z') });
+    const known = [
+      { id: 'w-key', kind: 'cert', domain: 'example.com', ref: KEY, reason: 'Our CDN', owner: 'Web team', created: null, expires: '2026-12-31' },
+      { id: 'w-old', kind: 'cert', domain: 'example.com', ref: certs[2].sha256, reason: 'Shop vendor', owner: '', created: null, expires: '2026-10-01' },
+      { id: 'w-other', kind: 'cert', domain: 'example.org', ref: certs[0].spkiSha256, reason: 'elsewhere', owner: '', created: null, expires: '2026-12-31' }
+    ];
+    const { rows, counts } = analyzeCt([read(certs)], { now: NOW, seen, expected: ['Example Trust'], known });
+    const by = (name) => rows.find((r) => r.names[0] === name);
+    assert.deepEqual([by('cdn.example.com').isNew, by('cdn.example.com').unexpected, by('cdn.example.com').flags], [false, false, ['known']]);
+    assert.deepEqual(by('cdn.example.com').known, { id: 'w-key', expires: '2026-12-31', reason: 'Our CDN', owner: 'Web team' });
+    // the shop certificate's waiver is over: flagged as before, and it says so
+    assert.deepEqual([by('shop.example.com').flags, by('shop.example.com').known, by('shop.example.com').knownExpired.id], [['new', 'unexpected'], null, 'w-old']);
+    assert.deepEqual([by('www.example.com').known, by('www.example.com').flags], [null, []], 'another domain\'s waiver covers nothing here');
+    assert.deepEqual([counts.new, counts.unexpected, counts.known], [1, 1, 1]);
+    assert.equal(matchesCtFilter(by('cdn.example.com'), 'new'), false);
+    assert.equal(matchesCtFilter(by('cdn.example.com'), 'unexpected'), false);
+    const csv = exportCtRow(by('cdn.example.com'));
+    assert.deepEqual([csv.publicKeySha256, csv.knownUntil, csv.new, csv.unexpectedCa], [KEY, '2026-12-31', 'no', 'no']);
+    // without waivers, the same rows are flagged
+    assert.deepEqual(analyzeCt([read(certs)], { now: NOW, seen, expected: ['Example Trust'] }).rows.find((r) => r.names[0] === 'cdn.example.com').flags, ['new', 'unexpected']);
+    // crt.sh says no key: such a row has none to match
+    const [crt] = fromCrtshCerts([{ key: 'crtsh:1:1', id: 1, serialHex: '01', issuer: ISSUER, notBefore: new Date('2026-08-01T00:00:00Z'), notAfter: new Date('2026-10-30T00:00:00Z'), names: ['www.example.com'] }], 'example.com', { now: NOW });
+    assert.equal(crt.spkiSha256, null);
+  });
+
   test('the filters', () => {
     const row = { current: true, daysLeft: 10, isNew: true, unexpected: false, wildcard: false, precert: null };
     assert.deepEqual(CT_WATCH_FILTERS.filter((f) => matchesCtFilter(row, f, { radar: 30 })), ['current', 'all', 'new', 'expiring']);
@@ -447,7 +481,7 @@ describe('the baseline', () => {
 });
 
 test('the codes the UI words are enumerable', () => {
-  assert.deepEqual([...CT_WATCH_FLAGS], ['new', 'unexpected', 'precert', 'wildcard', 'revoked', 'superseded']);
+  assert.deepEqual([...CT_WATCH_FLAGS], ['new', 'unexpected', 'precert', 'wildcard', 'revoked', 'superseded', 'known']);
   assert.deepEqual([...CT_WATCH_STATES], ['ok', 'partial', 'failed']);
   assert.deepEqual([...CT_WATCH_NOTES], ['spotter-quota', 'spotter-failed', 'crtsh-partial', 'truncated', 'first']);
   for (const list of [CT_WATCH_FLAGS, CT_WATCH_FILTERS, CT_WATCH_STATES, CT_WATCH_NOTES]) assert.ok(Object.isFrozen(list));

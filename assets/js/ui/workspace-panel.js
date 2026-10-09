@@ -7,7 +7,10 @@
  *   - the current workspace: its recent domains (a click makes one the current target, which
  *     every tool fills in), its expected CAs (lib/expectedca.js: the issuer badges of the
  *     Certificate view, SSL Targets and the CAA checks) and free-text notes, both saved as you
- *     type — always into the workspace they were typed in;
+ *     type — always into the workspace they were typed in —, and its accepted risks
+ *     (lib/waivers.js): each with its reason, owner and end date and a Remove, the expired ones
+ *     removed at once, waivers.json exported (the headless runner's --waivers input) and imported
+ *     (merged: an entry for the same item replaces the one there);
  *   - the hand-over file (lib/handover.js): export the current workspace as one JSON file, sealed
  *     with a password if one is given (PBKDF2 + AES-GCM, lib/cryptobox.js; the password is never
  *     kept), and import one as a new workspace or over the one of the same name (after a
@@ -30,6 +33,11 @@ import { DEFAULT_WORKSPACE_ID, WORKSPACE_LIMITS, WorkspaceError, uniqueWorkspace
 import { exportWorkspaceFile, readWorkspaceFile, openWorkspaceFile, HANDOVER_MAX_BYTES } from '../lib/handover.js';
 import { MIN_PASSWORD_LENGTH } from '../lib/cryptobox.js';
 import { resolveExpectedCa } from '../lib/expectedca.js';
+import {
+  WAIVERS_MAX_CHARS, WAIVER_SOON_DAYS, mergeWaivers, parseWaivers, readWaivers, removeWaiver, waiverCounts, waiverState, waiversFileText, waiversPartText
+} from '../lib/waivers.js';
+// the accepted risks' texts (wvr.*) and their errors in words
+import { waiverErrorText } from './waivers.js';
 import { workspaceLabel, defaultWorkspaceNames, isDefaultWorkspaceName, storageErrorText } from './workspace-ui.js';
 
 /** The hand-over file errors the dialog words itself (lib/handover.js HandoverError codes). */
@@ -45,7 +53,7 @@ const SAVE_DELAY_MS = 400;
 
 registerStrings('en', {
   'ws.title': 'Workspaces',
-  'ws.intro': 'Each workspace keeps its own servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy, origin map and the certificates the CT watch has seen, so one customer’s data never mixes with another’s. Theme, language, resolvers and parallelism are the same in every workspace. Everything stays in this browser (IndexedDB).',
+  'ws.intro': 'Each workspace keeps its own servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy, origin map, the certificates the CT watch has seen and its accepted risks, so one customer’s data never mixes with another’s. Theme, language, resolvers and parallelism are the same in every workspace. Everything stays in this browser (IndexedDB).',
   'ws.memoryOnly': 'Browser storage is unavailable: the workspaces last until you close this tab.',
   'ws.listTitle': 'Your workspaces',
   'ws.active': 'Active',
@@ -57,7 +65,7 @@ registerStrings('en', {
   'ws.save': 'Save',
   'ws.cancel': 'Cancel',
   'ws.delete': 'Delete “{name}”',
-  'ws.deleteConfirm': 'Delete the workspace “{name}” and everything in it: its servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy, origin map and CT watch baseline? This cannot be undone. Export it first to keep a copy.',
+  'ws.deleteConfirm': 'Delete the workspace “{name}” and everything in it: its servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy, origin map, CT watch baseline and accepted risks? This cannot be undone. Export it first to keep a copy.',
   'ws.deleted': 'Workspace “{name}” deleted.',
   'ws.deleteNotSaved': '“{name}” is deleted here, but not in this browser’s storage: {reason}. It comes back when the page is loaded again.',
   'ws.gone': '“{name}” was deleted in another tab.',
@@ -123,7 +131,7 @@ registerStrings('en', {
   'ws.sum.encrypted': 'was encrypted',
   'ws.importNew': 'Import as a new workspace',
   'ws.importReplace': 'Replace “{name}”',
-  'ws.replaceConfirm': 'Replace everything in “{name}” — its servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy, origin map and CT watch baseline — with the file’s? This cannot be undone.',
+  'ws.replaceConfirm': 'Replace everything in “{name}” — its servers, learned names, custom wordlist, expected CAs, notes, recent domains, domain policy, origin map, CT watch baseline and accepted risks — with the file’s? This cannot be undone.',
   'ws.imported': 'Imported as the new workspace “{name}”.',
   'ws.replaced': '“{name}” replaced with the file’s contents.',
   'ws.err.too-large': 'The file is too large (at most {size}).',
@@ -139,7 +147,7 @@ registerStrings('en', {
 
 registerStrings('tr', {
   'ws.title': 'Çalışma alanları',
-  'ws.intro': 'Her çalışma alanı kendi sunucularını, öğrenilen adlarını, özel kelime listesini, beklenen CA’larını, notlarını, son alan adlarını, alan adı politikasını, origin haritasını ve CT izlemesinin gördüğü sertifikaları tutar; böylece bir müşterinin verisi diğerininkine karışmaz. Tema, dil, çözümleyiciler ve paralellik her çalışma alanında aynıdır. Hepsi bu tarayıcıda kalır (IndexedDB).',
+  'ws.intro': 'Her çalışma alanı kendi sunucularını, öğrenilen adlarını, özel kelime listesini, beklenen CA’larını, notlarını, son alan adlarını, alan adı politikasını, origin haritasını, CT izlemesinin gördüğü sertifikaları ve kabul edilen risklerini tutar; böylece bir müşterinin verisi diğerininkine karışmaz. Tema, dil, çözümleyiciler ve paralellik her çalışma alanında aynıdır. Hepsi bu tarayıcıda kalır (IndexedDB).',
   'ws.memoryOnly': 'Tarayıcı depolaması kullanılamıyor: çalışma alanları bu sekmeyi kapatana kadar tutulur.',
   'ws.listTitle': 'Çalışma alanlarınız',
   'ws.active': 'Etkin',
@@ -151,7 +159,7 @@ registerStrings('tr', {
   'ws.save': 'Kaydet',
   'ws.cancel': 'Vazgeç',
   'ws.delete': '“{name}” alanını sil',
-  'ws.deleteConfirm': '“{name}” çalışma alanı ve içindeki her şey silinsin mi: sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları, alan adı politikası, origin haritası ve CT izleme referansı? Bu işlem geri alınamaz. Bir kopyasını saklamak için önce dışa aktarın.',
+  'ws.deleteConfirm': '“{name}” çalışma alanı ve içindeki her şey silinsin mi: sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları, alan adı politikası, origin haritası, CT izleme referansı ve kabul edilen riskleri? Bu işlem geri alınamaz. Bir kopyasını saklamak için önce dışa aktarın.',
   'ws.deleted': '“{name}” çalışma alanı silindi.',
   'ws.deleteNotSaved': '“{name}” burada silindi ama bu tarayıcının depolamasından silinemedi: {reason}. Sayfa yeniden yüklendiğinde geri gelir.',
   'ws.gone': '“{name}” başka bir sekmede silindi.',
@@ -217,7 +225,7 @@ registerStrings('tr', {
   'ws.sum.encrypted': 'şifreliydi',
   'ws.importNew': 'Yeni çalışma alanı olarak içe aktar',
   'ws.importReplace': '“{name}” alanının yerine koy',
-  'ws.replaceConfirm': '“{name}” içindeki her şey — sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları, alan adı politikası, origin haritası ve CT izleme referansı — dosyadakilerle değiştirilsin mi? Bu işlem geri alınamaz.',
+  'ws.replaceConfirm': '“{name}” içindeki her şey — sunucuları, öğrenilen adları, özel kelime listesi, beklenen CA’ları, notları, son alan adları, alan adı politikası, origin haritası, CT izleme referansı ve kabul edilen riskleri — dosyadakilerle değiştirilsin mi? Bu işlem geri alınamaz.',
   'ws.imported': '“{name}” adlı yeni çalışma alanı olarak içe aktarıldı.',
   'ws.replaced': '“{name}” dosyanın içeriğiyle değiştirildi.',
   'ws.err.too-large': 'Dosya çok büyük (en fazla {size}).',
@@ -303,6 +311,9 @@ export function importSummary(ws) {
   if ((d.policy || '').trim()) parts.push(t('ws.sum.policy'));
   if (d.ctSeen) parts.push(t('ws.sum.ctSeen'));
   if (d.rollout) parts.push(t('ws.sum.rollout'));
+  // the accepted risks the file carries (an entry that cannot be read is left out when they are read)
+  const waivers = readWaivers(d.waivers);
+  if (waivers.length) parts.push(t('wvr.ws.sum', { count: waivers.length }));
   if (ws.encrypted) parts.push(t('ws.sum.encrypted'));
   return parts.join(' · ');
 }
@@ -681,7 +692,117 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
         h('p', { class: 'field-hint' }, t('ws.recentHint')),
         recentList),
       h('div', { class: 'ws-block' }, expected.el, expectedList, expectedStatus),
-      h('div', { class: 'ws-block' }, notes.el, notesStatus));
+      h('div', { class: 'ws-block' }, notes.el, notesStatus),
+      waiversBlock(wsId));
+  }
+
+  /* --- the accepted risks (lib/waivers.js) ------------------------------------ */
+
+  const waiversOutcome = Outcome('ws-waivers-outcome');
+
+  /**
+   * Keep a list as the workspace's waivers (into the workspace it was shown for), and say what
+   * storage did; the focus goes to the next Remove (or the empty list) when one was removed.
+   */
+  async function keepWaivers(wsId, list, done, { refocus = false, variant = 'ok' } = {}) {
+    if (state.workspace.id !== wsId) return false;
+    let text;
+    try {
+      text = waiversPartText(list);
+    } catch (err) {
+      waiversOutcome.show(waiverErrorText(err.code), 'error');
+      return false;
+    }
+    const persisted = await state.setWorkspaceData('waivers', text);
+    renderCurrent();
+    if (refocus) {
+      const next = current.querySelector('[data-role="ws-waivers"] [data-action="ws-waiver-remove"]') || current.querySelector('[data-role="ws-waivers-empty"]');
+      if (next) next.focus({ preventScroll: true });
+    }
+    if (persisted) {
+      if (done) waiversOutcome.show(done, variant);
+    } else {
+      waiversOutcome.show(t('ws.notSaved', { reason: storageErrorText(state.workspaceError) }), 'warn');
+    }
+    return persisted;
+  }
+
+  /**
+   * The workspace's accepted risks: their counts, one line each (kind, domain, what, until when,
+   * by whom and why) with a Remove, the expired ones removed at once, waivers.json exported and
+   * imported (merged).
+   */
+  function waiversBlock(wsId) {
+    const now = Date.now();
+    const list = readWaivers(state.workspaceData('waivers'), { now });
+    const c = waiverCounts(list, { now });
+    const headId = uid('ws-waivers');
+    const items = list.length ? h('ul', { class: 'ws-waivers', attrs: { 'aria-labelledby': headId } }, list.map((w) => {
+      const st = waiverState(w, { now });
+      return h('li', { class: ['ws-waiver', `is-${st}`], dataset: { role: 'ws-waiver', id: w.id, kind: w.kind, state: st } },
+        h('div', { class: 'ws-waiver-main' },
+          h('span', { class: 'ws-waiver-what' },
+            Badge(t(`wvr.kind.${w.kind}`), { variant: w.kind === 'cert' ? 'ok' : 'neutral', icon: 'shield' }), ' ',
+            h('span', { class: 'mono ws-waiver-domain' }, w.domain), ' ',
+            h('span', { class: 'mono ws-waiver-ref' }, w.ref)),
+          h('span', { class: 'ws-waiver-when' }, Badge(st === 'expired' ? t('wvr.ws.expiredOn', { date: w.expires }) : t('wvr.ws.until', { date: w.expires }),
+            { variant: st === 'expired' ? 'error' : st === 'expiring' ? 'warn' : 'neutral', icon: 'clock' })),
+          h('span', { class: 'ws-waiver-why' }, w.owner ? `${w.owner}: ${w.reason}` : w.reason)),
+        (() => {
+          const btn = IconButton({
+            icon: 'trash', label: t('wvr.ws.removeOne', { ref: w.ref, domain: w.domain }), size: 'sm',
+            onClick: () => keepWaivers(wsId, removeWaiver(readWaivers(state.workspaceData('waivers'), { now: Date.now() }), w.id), null, { refocus: true })
+          });
+          btn.dataset.action = 'ws-waiver-remove';
+          return btn;
+        })());
+    })) : h('p', { class: 'ws-empty', dataset: { role: 'ws-waivers-empty' }, attrs: { tabindex: -1 } }, t('wvr.ws.empty'));
+    const exportBtn = Button({
+      label: t('wvr.ws.export'), icon: 'download', size: 'sm', dataset: { action: 'ws-waivers-export' }, disabled: !list.length,
+      onClick: () => {
+        const current = readWaivers(state.workspaceData('waivers'), { now: Date.now() });
+        const file = downloadText('waivers.json', waiversFileText(current, { now: Date.now(), app: `DomainScope ${appVersion}`.trim() }), 'application/json;charset=utf-8');
+        waiversOutcome.show(t('wvr.ws.exported', { file, count: current.length }));
+      }
+    });
+    const dropExpired = c.expired ? Button({
+      label: t('wvr.ws.dropExpired'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'ws-waivers-drop-expired' },
+      onClick: () => {
+        const at = Date.now();
+        keepWaivers(wsId, readWaivers(state.workspaceData('waivers'), { now: at }).filter((w) => waiverState(w, { now: at }) !== 'expired'), null, { refocus: true });
+      }
+    }) : null;
+    const drop = FileDrop({
+      accept: '.json,application/json',
+      compact: true,
+      icon: 'upload',
+      title: t('wvr.ws.import'),
+      hint: t('wvr.ws.importHint'),
+      maxBytes: WAIVERS_MAX_CHARS * 4,
+      paste: false,
+      onFiles: (files) => {
+        const file = files[0];
+        if (!file) return;
+        const parsed = parseWaivers(file.text, { now: Date.now() });
+        if (!parsed.ok) {
+          waiversOutcome.show(waiverErrorText(parsed.errors[0].code), 'error');
+          return;
+        }
+        const merged = mergeWaivers(readWaivers(state.workspaceData('waivers'), { now: Date.now() }), parsed.waivers);
+        // an entry that cannot be read is left out (its item counts), and said
+        const skipped = parsed.errors.length ? ` ${t('wvr.ws.skipped', { count: parsed.errors.length, reason: waiverErrorText(parsed.errors[0].code) })}` : '';
+        keepWaivers(wsId, merged.list, `${t('wvr.ws.imported', { added: merged.added, replaced: merged.replaced })}${skipped}`, { variant: skipped ? 'warn' : 'ok' });
+      }
+    });
+    drop.el.dataset.role = 'ws-waivers-import';
+    return h('div', { class: 'ws-block ws-waivers-block', dataset: { role: 'ws-waivers', total: String(c.total), expired: String(c.expired) } },
+      h('div', { class: 'ws-block-head' }, h('span', { class: 'field-label', id: headId }, t('wvr.ws.title')), dropExpired),
+      h('p', { class: 'field-hint' }, t('wvr.ws.hint')),
+      list.length ? h('p', { class: 'ws-note', dataset: { role: 'ws-waivers-counts' } }, t('wvr.ws.counts', { active: c.active, expiring: c.expiring, days: WAIVER_SOON_DAYS, expired: c.expired })) : null,
+      items,
+      h('div', { class: 'ws-actions' }, exportBtn),
+      drop.el,
+      waiversOutcome.el);
   }
 
   /* --- the hand-over file -------------------------------------------------- */

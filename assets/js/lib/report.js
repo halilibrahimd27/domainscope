@@ -330,19 +330,27 @@ function problemsOf(checks, w) {
     .map(({ c }) => checkItem(c, w));
 }
 
-/** The score, the traffic light and the counts of a Health summary. */
-function verdictOf(summary, w, { body = true } = {}) {
+/**
+ * The score, the traffic light and the counts of a Health summary. `waived`: the accepted risks
+ * left out of the counts (and so of the score), said as their own count.
+ */
+function verdictOf(summary, w, { body = true, waived = null } = {}) {
   const s = summary || {};
-  const n = (k) => Number(s[k]) || 0;
+  const less = (k) => (waived && waived[k]) || 0;
+  const n = (k) => Math.max(0, (Number(s[k]) || 0) - less(k));
   const light = n('error') ? 'error' : n('warn') ? 'warn' : 'ok';
   const score = Math.max(0, Math.min(100, 100 - 20 * n('error') - 6 * n('warn')));
   const total = n('ok') + n('info') + n('warn') + n('error');
+  const accepted = less('error') + less('warn');
   return {
     light,
     score,
     label: w.t(`crep.light.${light}`),
     body: body ? w.t(`crep.light.${light}Body`, { count: total }) : null,
-    counts: REPORT_SEVERITIES.filter((k) => n(k)).map((k) => ({ severity: k, text: w.t(`crep.count.${k}`, { count: n(k) }) }))
+    counts: [
+      ...REPORT_SEVERITIES.filter((k) => n(k)).map((k) => ({ severity: k, text: w.t(`crep.count.${k}`, { count: n(k) }) })),
+      ...(accepted ? [{ severity: 'info', text: w.t('crep.waived', { count: accepted }) }] : [])
+    ]
   };
 }
 
@@ -594,8 +602,11 @@ export function domainReport(input, opts) {
  * Domain Health's report: the verdict (light, score, counts), the errors and warnings with their
  * advice first, then the notes, the passed checks by group and the records the checks read (a
  * lookup that failed says so). The DKIM selectors added to the check are named in "what was
- * checked".
- * @param {{ report: object, selectors?: string[] }} input lib/health.js domainHealth() and the extra selectors
+ * checked". The accepted risks (`waived`, lib/waivers.js healthWaivers: each check's waiver) are
+ * left out of the problems and the counts, said as "N accepted risks excluded", and listed in a
+ * section of their own with their reason, owner and end date.
+ * @param {{ report: object, selectors?: string[], waived?: { applied: Array<{ id: string, reason: string, owner?: string, expires: string }> }|null }} input
+ *   lib/health.js domainHealth(), the extra selectors and the accepted risks (by check id)
  * @param {{ t: Function, has?: (key: string) => boolean, statusText?: (status: object) => string }} opts
  * @returns {ReportDoc}
  */
@@ -603,7 +614,11 @@ export function healthReport(input, opts) {
   const w = words(opts);
   const { t } = w;
   const r = (input && input.report) || {};
-  const checks = Array.isArray(r.checks) ? r.checks : [];
+  const waivers = new Map(((input && input.waived && input.waived.applied) || []).filter((x) => x && typeof x.id === 'string').map((x) => [x.id, x]));
+  const accepted = (c) => waivers.has(c.id) && (c.severity === 'error' || c.severity === 'warn');
+  const all = Array.isArray(r.checks) ? r.checks : [];
+  const waivedChecks = all.filter(accepted);
+  const checks = all.filter((c) => !accepted(c));
   const selectors = Array.isArray(input && input.selectors) ? input.selectors.filter(Boolean).map(String) : [];
   const failed = new Set(Array.isArray(r.failedLookups) ? r.failedLookups : []);
   const rec = r.records || {};
@@ -637,16 +652,27 @@ export function healthReport(input, opts) {
   ].filter(hasValue);
 
   const sections = [];
+  if (waivedChecks.length) {
+    // what was accepted, why, by whom and until when: the customer sees it was left out on purpose
+    const items = waivedChecks.map((c) => {
+      const item = checkItem(c, w);
+      const x = waivers.get(c.id);
+      const line = t(x.owner ? 'crep.waivedLineOwner' : 'crep.waivedLine', { date: String(x.expires || ''), owner: String(x.owner || ''), reason: String(x.reason || '') });
+      return { ...item, detail: item.detail ? `${line} — ${item.detail}` : line };
+    });
+    sections.push({ id: 'accepted', title: t('crep.accepted', { count: items.length }), items });
+  }
   if (notesItems.length) sections.push({ id: 'notes', title: t('crep.notes'), items: notesItems });
   if (passed.length) sections.push({ id: 'passed', title: t('crep.passed'), passed });
   sections.push({ id: 'records', title: t('crep.records'), rows: records });
   const zone = r.zone && r.zone !== r.domain ? t('crep.zone', { zone: r.zone }) : null;
+  const less = { error: waivedChecks.filter((c) => c.severity === 'error').length, warn: waivedChecks.filter((c) => c.severity === 'warn').length };
   return {
     kind: 'health',
     subject: String(r.domain || ''),
     subtitle: zone,
     at: asDate(r.checkedAt),
-    verdict: verdictOf(r.summary, w),
+    verdict: verdictOf(r.summary, w, { waived: waivedChecks.length ? less : null }),
     problems: problemsOf(checks, w),
     problemsKnown: true,
     sections,
@@ -836,6 +862,10 @@ export const REPORT_I18N = Object.freeze({
     'crep.ctNotAsked': 'Not looked up: Certificate Transparency is asked only on its own button.',
     'crep.notes': 'Notes',
     'crep.passed': 'Passed checks',
+    'crep.waived': { one: '{count} accepted risk excluded', other: '{count} accepted risks excluded' },
+    'crep.accepted': { one: 'Accepted risk ({count})', other: 'Accepted risks ({count})' },
+    'crep.waivedLine': 'Accepted until {date}: {reason}',
+    'crep.waivedLineOwner': 'Accepted until {date} by {owner}: {reason}',
     'crep.records': 'Records read',
     'crep.registrar': 'Registrar',
     'crep.expires': 'Expires',
@@ -903,6 +933,10 @@ export const REPORT_I18N = Object.freeze({
     'crep.ctNotAsked': 'Sorgulanmadı: Certificate Transparency yalnızca kendi düğmesiyle sorgulanır.',
     'crep.notes': 'Notlar',
     'crep.passed': 'Geçen kontroller',
+    'crep.waived': '{count} kabul edilen risk hariç tutuldu',
+    'crep.accepted': 'Kabul edilen riskler ({count})',
+    'crep.waivedLine': '{date} tarihine kadar kabul edildi: {reason}',
+    'crep.waivedLineOwner': '{date} tarihine kadar {owner} tarafından kabul edildi: {reason}',
     'crep.records': 'Okunan kayıtlar',
     'crep.registrar': 'Kayıt firması',
     'crep.expires': 'Bitiş tarihi',

@@ -41,7 +41,9 @@ const DATA = {
   // The CT watch's baseline (lib/ctwatch.js): its JSON text, carried as it is.
   ctSeen: '{"v":1,"domains":{"example.com":{"at":"2026-09-27T12:00:00.000Z","ids":{"00000000000000aa":"2026-12-01"}}}}',
   // The Rollout board (lib/rollout.js): its JSON text, one board with web01 installed.
-  rollout: '{"v":1,"boards":[{"id":"abababababababababababababababababababababababababababababababab","label":"*.example.com","created":"2026-09-28T09:00:00.000Z","updated":"2026-09-28T09:10:00.000Z","rows":[{"k":"s:web01","n":"web01","s":null,"i":"2026-09-28T09:10:00.000Z","r":null,"v":null,"a":null,"m":"2026-09-28T09:10:00.000Z"}]}]}'
+  rollout: '{"v":1,"boards":[{"id":"abababababababababababababababababababababababababababababababab","label":"*.example.com","created":"2026-09-28T09:00:00.000Z","updated":"2026-09-28T09:10:00.000Z","rows":[{"k":"s:web01","n":"web01","s":null,"i":"2026-09-28T09:10:00.000Z","r":null,"v":null,"a":null,"m":"2026-09-28T09:10:00.000Z"}]}]}',
+  // The accepted risks (lib/waivers.js): their JSON text, carried as it is.
+  waivers: '{"format":"domainscope-waivers","v":1,"waivers":[{"id":"w-0123456789abcdef","kind":"finding","domain":"example.com","ref":"dmarc.policy-none","reason":"Moving to quarantine in Q1","owner":"Mail team","created":"2026-09-28T09:00:00.000Z","expires":"2026-12-31"}]}'
 };
 const WS = { name: 'Acme', data: DATA, app: 'DomainScope 1.0.0', exportedAt: AT };
 
@@ -56,9 +58,10 @@ describe('the plain file', () => {
     assert.equal(file.workspace.default, false);
     assert.equal(file.workspace.exportedAt, '2026-09-28T09:30:00.000Z');
     assert.equal(file.workspace.app, 'DomainScope 1.0.0');
-    assert.deepEqual(Object.keys(file.workspace.parts), ['inventory', 'wordlist', 'expectedCas', 'recent', 'origins', 'ctSeen', 'rollout']);
+    assert.deepEqual(Object.keys(file.workspace.parts), ['inventory', 'wordlist', 'expectedCas', 'recent', 'origins', 'ctSeen', 'rollout', 'waivers']);
     assert.equal(file.workspace.parts.origins.entries.length, 2, 'the origin map goes with the workspace');
     assert.equal(file.workspace.parts.ctSeen, DATA.ctSeen, 'the CT watch baseline too');
+    assert.equal(file.workspace.parts.waivers, DATA.waivers, 'and the accepted risks');
     assert.ok(text.endsWith('\n') && text.includes('\n  "format"'), 'indented');
   });
 

@@ -237,6 +237,64 @@
   max-width: 100%;
 }
 
+/* the accepted risks (lib/waivers.js): one line each, a Remove at its end */
+.ws-waivers {
+  display: grid;
+  gap: 6px;
+  max-height: 18rem;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.ws-waiver {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.ws-waiver.is-expired {
+  border-color: var(--error-border);
+}
+
+.ws-waiver.is-expiring {
+  border-color: var(--warn-border);
+}
+
+.ws-waiver-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.ws-waiver-what,
+.ws-waiver-why {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ws-waiver-domain {
+  font-weight: 600;
+}
+
+.ws-waiver-ref {
+  color: var(--text-2);
+}
+
+.ws-waiver-why {
+  flex-basis: 100%;
+  color: var(--text-2);
+}
+
 .ws-expected-entry .badge-text {
   overflow-wrap: anywhere;
 }

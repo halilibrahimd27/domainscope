@@ -17,6 +17,12 @@
  * 4. score = min(round(raw), cap); the letter is A from 90, B from 80, C from 70, D from 60,
  *    E from 50 and F below ({@link HEALTH_GRADES}).
  *
+ * Accepted risks (lib/waivers.js): the errors and warnings a waiver accepts are scored by the same
+ * formula as if they cost nothing — their group stays, no cap comes from them — and the result
+ * says how many were left out and what the score would be with them (`full`). The what-if planner
+ * ({@link whatIfHealth}) scores the findings one plans to fix the same way. A check that says the
+ * name does not exist ({@link FATAL_CHECKS}) is never left out.
+ *
  * DOM-free; runs in browsers and Node 22.
  */
 
@@ -58,6 +64,7 @@ const SEVERITIES = ['error', 'warn', 'info', 'ok'];
  * @property {number} warn
  * @property {number} info
  * @property {number} ok
+ * @property {number} waived errors and warnings of the group left out
  */
 
 /**
@@ -67,6 +74,9 @@ const SEVERITIES = ['error', 'warn', 'info', 'ok'];
  * @property {number} raw the weighted mean before the caps (unrounded)
  * @property {'fatal'|'error'|'warn'|null} cap the cap that lowered the score, if any
  * @property {GroupScore[]} groups the groups the checks have, in display order
+ * @property {number} waived the errors and warnings left out (accepted risks, or planned fixes)
+ * @property {{ score: number, grade: string, raw: number, cap: string|null }|null} full the score
+ *   with them, when any was left out
  */
 
 /** The group of a check, as lib/health makeCheck files it ('dns' when it has none). */
@@ -100,17 +110,42 @@ function orderGroups(names) {
 }
 
 /**
+ * Which checks a `waived` option leaves out: none, check ids (an iterable), or a predicate.
+ * @param {Iterable<string>|((check: object) => boolean)|null|undefined} waived
+ * @returns {(check: object) => boolean}
+ */
+function waivedTest(waived) {
+  if (typeof waived === 'function') return waived;
+  if (!waived || typeof waived === 'string' || typeof waived[Symbol.iterator] !== 'function') return () => false;
+  const ids = new Set(waived);
+  return (c) => ids.has(c.id);
+}
+
+/** Can a check be left out of the score: an error or a warning that does not say the name is gone. */
+const leavable = (c) => (c.severity === 'error' || c.severity === 'warn') && !FATAL_CHECKS.includes(c.id);
+
+/**
  * The score and letter of a list of checks (a report's `checks`), with each group's part.
+ * `waived` leaves errors and warnings out (lib/waivers.js healthWaivers `ids`): they cost nothing
+ * and cap nothing, their group stays; `full` is the score with them.
  * @param {Array<{ id?: string, severity: string, group?: string }>|null|undefined} checks
+ * @param {{ waived?: Iterable<string>|((check: object) => boolean)|null }} [opts]
  * @returns {HealthGrade}
  */
-export function scoreHealth(checks) {
+export function scoreHealth(checks, { waived = null } = {}) {
   const list = Array.isArray(checks) ? checks.filter((c) => c && typeof c === 'object') : [];
+  const isWaived = waivedTest(waived);
   const tally = new Map();
+  let left = 0;
   for (const c of list) {
     const g = groupOf(c);
-    if (!tally.has(g)) tally.set(g, { error: 0, warn: 0, info: 0, ok: 0 });
-    tally.get(g)[severityOf(c)] += 1;
+    if (!tally.has(g)) tally.set(g, { error: 0, warn: 0, info: 0, ok: 0, waived: 0 });
+    if (leavable(c) && isWaived(c)) {
+      tally.get(g).waived += 1;
+      left += 1;
+    } else {
+      tally.get(g)[severityOf(c)] += 1;
+    }
   }
   const groups = orderGroups([...tally.keys()]).map((group) => {
     const n = tally.get(group);
@@ -133,7 +168,29 @@ export function scoreHealth(checks) {
     score = SCORE_CAPS.warn;
     cap = 'warn';
   }
-  return { score, grade: gradeFor(score), raw, cap, groups };
+  let full = null;
+  if (left) {
+    const all = scoreHealth(list);
+    full = { score: all.score, grade: all.grade, raw: all.raw, cap: all.cap };
+  }
+  return { score, grade: gradeFor(score), raw, cap, groups, waived: left, full };
+}
+
+/**
+ * The what-if planner: the score now (accepted risks left out) and with the ticked findings fixed
+ * too, by the same formula ({@link scoreHealth}).
+ * @param {Array<{ id?: string, severity: string, group?: string }>} checks
+ * @param {Iterable<string>} fixed check ids one plans to fix
+ * @param {{ waived?: Iterable<string>|null }} [opts] the accepted risks
+ * @returns {{ now: HealthGrade, then: HealthGrade, gain: number, fixed: number }} `fixed`: how many
+ *   errors and warnings the ticked ids stand for
+ */
+export function whatIfHealth(checks, fixed, { waived = null } = {}) {
+  const accepted = new Set(waived && typeof waived !== 'string' && typeof waived[Symbol.iterator] === 'function' ? waived : []);
+  const planned = [...(fixed || [])].filter((id) => !accepted.has(id));
+  const now = scoreHealth(checks, { waived: accepted });
+  const then = scoreHealth(checks, { waived: new Set([...accepted, ...planned]) });
+  return { now, then, gain: then.score - now.score, fixed: then.waived - now.waived };
 }
 
 /**
@@ -144,12 +201,15 @@ export function scoreHealth(checks) {
 
 /**
  * The problems of a report for the "problems first" list: the errors, then the warnings, each
- * split by group (display order) with their checks in report order.
+ * split by group (display order) with their checks in report order. `waived` leaves the accepted
+ * risks out (they are listed apart).
  * @param {Array<{ severity: string, group?: string }>|null|undefined} checks
+ * @param {{ waived?: Iterable<string>|((check: object) => boolean)|null }} [opts]
  * @returns {{ total: number, sections: Array<{ severity: 'error'|'warn', count: number, groups: ProblemGroup[] }> }}
  */
-export function problemsFirst(checks) {
-  const list = Array.isArray(checks) ? checks.filter((c) => c && typeof c === 'object') : [];
+export function problemsFirst(checks, { waived = null } = {}) {
+  const isWaived = waivedTest(waived);
+  const list = Array.isArray(checks) ? checks.filter((c) => c && typeof c === 'object' && !(leavable(c) && isWaived(c))) : [];
   const sections = ['error', 'warn'].map((severity) => {
     const mine = list.filter((c) => c.severity === severity);
     const names = orderGroups([...new Set(mine.map(groupOf))]);
@@ -159,12 +219,17 @@ export function problemsFirst(checks) {
 }
 
 /**
- * Severity counts of a list of checks, as lib/health's report `summary`.
+ * Severity counts of a list of checks, as lib/health's report `summary`; `waived` leaves the
+ * accepted risks out of the error and warning counts.
  * @param {Array<{ severity: string }>} checks
+ * @param {{ waived?: Iterable<string>|((check: object) => boolean)|null }} [opts]
  * @returns {{ ok: number, info: number, warn: number, error: number }}
  */
-export function countSeverities(checks) {
+export function countSeverities(checks, { waived = null } = {}) {
+  const isWaived = waivedTest(waived);
   const summary = { ok: 0, info: 0, warn: 0, error: 0 };
-  for (const c of Array.isArray(checks) ? checks : []) if (c && Object.hasOwn(summary, c.severity)) summary[c.severity] += 1;
+  for (const c of Array.isArray(checks) ? checks : []) {
+    if (c && Object.hasOwn(summary, c.severity) && !(leavable(c) && isWaived(c))) summary[c.severity] += 1;
+  }
   return summary;
 }

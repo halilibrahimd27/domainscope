@@ -2,8 +2,8 @@
  * lib/workspace.js — customer workspaces: named, separate sets of what belongs to one customer
  * (the server inventory, the learned names, the custom wordlist, the expected CAs, free-text
  * notes, the domains worked on, the domain policy of the portfolio audit (lib/policy.js), the
- * origin map of its proxied names, the certificates its CT watch has seen (lib/ctwatch.js) and the
- * Rollout board), so a DUPLICATE_IP never mixes two customers' servers and a label
+ * origin map of its proxied names, the certificates its CT watch has seen (lib/ctwatch.js), the
+ * Rollout board and the accepted risks (lib/waivers.js)), so a DUPLICATE_IP never mixes two customers' servers and a label
  * learned from one customer's scans is never tried under another customer's domains.
  * Settings about the tool itself (theme, language, resolvers, parallelism) stay global (state.js).
  *
@@ -48,7 +48,7 @@ import { randomLabel } from './util.js';
 export const DEFAULT_WORKSPACE_ID = 'default';
 
 /** What one workspace holds. */
-export const WORKSPACE_PARTS = Object.freeze(['inventory', 'learned', 'wordlist', 'expectedCas', 'notes', 'recent', 'policy', 'origins', 'ctSeen', 'rollout']);
+export const WORKSPACE_PARTS = Object.freeze(['inventory', 'learned', 'wordlist', 'expectedCas', 'notes', 'recent', 'policy', 'origins', 'ctSeen', 'rollout', 'waivers']);
 
 /** Bounds: workspaces, name and notes length (characters), list lengths, stored text sizes. */
 export const WORKSPACE_LIMITS = Object.freeze({
@@ -62,7 +62,8 @@ export const WORKSPACE_LIMITS = Object.freeze({
   inventory: 16 * 1024 * 1024,
   wordlist: 8 * 1024 * 1024,
   policy: 16384,
-  ctSeen: 1048576
+  ctSeen: 1048576,
+  waivers: 65536
 });
 
 /** localStorage key of the pointer to the active workspace (the id, as a plain string). */
@@ -276,6 +277,8 @@ export function sanitizePart(part, value) {
     case 'origins': return sanitizeOriginMap(value);
     // The CT watch's baseline: JSON text too, read by lib/ctwatch.js.
     case 'ctSeen': return typeof value === 'string' ? cut(value, WORKSPACE_LIMITS.ctSeen) : '';
+    // The accepted risks: JSON text, read by lib/waivers.js; never cut (a cut text is no JSON).
+    case 'waivers': return typeof value === 'string' && value.length <= WORKSPACE_LIMITS.waivers ? value : '';
     default: throw new WorkspaceError('part', `unknown workspace part: ${part}`);
   }
 }

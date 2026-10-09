@@ -340,11 +340,15 @@ async function main() {
       await page.click('[data-action="ct-csv"]');
       await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'CSV' });
       const [csv] = await takeDownloads(page);
-      assertEqual(csvHeader(csv.text), [...CT_EXPORT_COLUMNS], 'columns');
-      const lines = csv.text.trim().split('\r\n');
+      const columns = csvHeader(csv.text);
+      assertEqual(columns, [...CT_EXPORT_COLUMNS], 'columns');
+      // these rows quote nothing: a comma splits the cells
+      const at = columns.indexOf('revokedAt');
+      const cells = (l) => l.split(',');
+      const lines = csv.text.trim().split('\r\n').slice(1);
       const revoked = lines.find((l) => l.includes('2026-10-05T09:30:00.000Z'));
-      assert(revoked && revoked.endsWith(',2026-10-05T09:30:00.000Z,keyCompromise'), revoked);
-      assertEqual(lines.filter((l) => l.endsWith(',,')).length, 3, 'the others: empty cells');
+      assert(revoked && cells(revoked)[at] === '2026-10-05T09:30:00.000Z' && cells(revoked)[at + 1] === 'keyCompromise', revoked);
+      assertEqual(lines.filter((l) => cells(l)[at] === '' && cells(l)[at + 1] === '').length, 3, 'the others: empty cells');
       await removeToasts(page);
     });
 

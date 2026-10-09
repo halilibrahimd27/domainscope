@@ -6,7 +6,10 @@
  *   record), run after lib/health's checks, on the same DNS client;
  * - {@link ProblemsPanel}: problems first — the errors, then the warnings, by category with
  *   counts, each with "Show the fix" (the view's toggle, lib/fixes.js) or a line of advice
- *   (lib/healthadvice.js), under the score of every category (lib/healthscore.js);
+ *   (lib/healthadvice.js), under the score of every category (lib/healthscore.js); each with
+ *   "Accept this risk…" (lib/waivers.js: the view opens ui/waivers.js's dialog), the accepted
+ *   ones listed apart with their reason, owner and end date and a Remove, and the what-if
+ *   planner: tick the problems to fix, see the score and grade they would give;
  * - {@link WebPanel}: the Web category: the HTTPS record, www against the bare domain, the HSTS
  *   preload list (a link: it has no CORS) and the HTTP security grade of Mozilla's HTTP
  *   Observatory. That one is ONE request on a click (lib/observatory.js), never on arrival; a
@@ -14,9 +17,10 @@
  */
 
 import { h } from './dom.js';
-import { Badge, Button, Card, ExternalLink, Icon, KeyValueList, SeverityIcon, announce, setButtonBusy } from './components.js';
+import { Badge, Button, Card, Disclosure, ExternalLink, Icon, KeyValueList, SeverityIcon, announce, checkbox, setButtonBusy } from './components.js';
 import { registerStrings, t, formatNumber, formatDateTime, formatRelative } from '../i18n.js';
-import { HEALTH_SCORE_GROUPS, SCORE_CAPS, problemsFirst, scoreHealth } from '../lib/healthscore.js';
+import { HEALTH_SCORE_GROUPS, SCORE_CAPS, problemsFirst, scoreHealth, whatIfHealth } from '../lib/healthscore.js';
+import { WAIVERS_I18N, isWaivableCheck } from '../lib/waivers.js';
 import { HEALTH_ADVICE_I18N, adviceKey } from '../lib/healthadvice.js';
 import { HEALTH_WEB_I18N, addWebChecks, hstsPreloadUrl, withObservatory } from '../lib/healthweb.js';
 import { OBSERVATORY_SKIP_REASONS, observatoryEligible, observatoryScan } from '../lib/observatory.js';
@@ -28,6 +32,8 @@ registerStrings('en', HEALTH_WEB_I18N.en);
 registerStrings('tr', HEALTH_WEB_I18N.tr);
 registerStrings('en', HEALTH_ADVICE_I18N.en);
 registerStrings('tr', HEALTH_ADVICE_I18N.tr);
+registerStrings('en', WAIVERS_I18N.en);
+registerStrings('tr', WAIVERS_I18N.tr);
 
 registerStrings('en', {
   'hv2.problems.title': 'Problems first',
@@ -151,12 +157,13 @@ export function addWeb(report, opts) {
 const groupName = (g) => t(`health.group.${g}`);
 
 /**
- * The score of every category and why the total is lower than their mean.
+ * The score of every category and why the total is lower than their mean (the accepted risks left out).
  * @param {object} report
+ * @param {{ waived?: Set<string>|null }} [opts] the check ids accepted as risks
  * @returns {HTMLElement}
  */
-export function ScoreBreakdown(report) {
-  const graded = scoreHealth(report.checks);
+export function ScoreBreakdown(report, { waived = null } = {}) {
+  const graded = scoreHealth(report.checks, { waived });
   const chips = graded.groups.map((g) => h('span', {
     class: ['hv2-chip', `hv2-chip-${g.error ? 'error' : g.warn ? 'warn' : 'ok'}`],
     dataset: { group: g.group, score: g.score },
@@ -170,16 +177,94 @@ export function ScoreBreakdown(report) {
 }
 
 /**
- * Problems first: the errors, then the warnings, by category with counts. Each problem has
- * "Show the fix" when lib/fixes.js has one, else a line of advice.
+ * The accepted risks of a report as the view hands them over (lib/waivers.js healthWaivers).
+ * @typedef {{ ids: Set<string>, byId: Map<string, object>, expired: Array<{ check: object, waiver: object }> }} ReportWaivers
+ */
+
+/** The errors and warnings of a report a waiver can accept, one per check id, in report order. */
+function waivableChecks(report, keep) {
+  const seen = new Set();
+  return (report.checks || []).filter((c) => {
+    if (!isWaivableCheck(c) || !keep(c) || seen.has(c.id)) return false;
+    seen.add(c.id);
+    return true;
+  });
+}
+
+/**
+ * The what-if planner: tick the open problems one plans to fix, read the score and grade they
+ * would give by the same formula (lib/healthscore.js whatIfHealth). Nothing is saved.
  * @param {object} report
- * @param {{ checkTitle: Function, checkDetail: Function, fixToggle: Function, fixable: (c: object) => boolean }} hooks
+ * @param {Set<string>} waived the accepted risks (already left out)
+ * @param {(c: object) => string} checkTitle
+ * @returns {HTMLElement|null}
+ */
+export function WhatIfPanel(report, waived, checkTitle) {
+  const open = waivableChecks(report, (c) => !waived.has(c.id));
+  if (!open.length) return null;
+  const ticked = new Set();
+  const out = h('p', { class: 'hv2-whatif-out text-sm', dataset: { role: 'whatif-result' }, attrs: { 'aria-live': 'polite' } }, t('wvr.whatIfNone'));
+  const update = () => {
+    if (!ticked.size) {
+      out.textContent = t('wvr.whatIfNone');
+      delete out.dataset.score;
+      delete out.dataset.grade;
+      return;
+    }
+    const r = whatIfHealth(report.checks, ticked, { waived });
+    out.textContent = t('wvr.whatIfResult', { count: ticked.size, from: r.now.score, fromGrade: r.now.grade, to: r.then.score, toGrade: r.then.grade });
+    out.dataset.score = String(r.then.score);
+    out.dataset.grade = r.then.grade;
+  };
+  const boxes = open.map((c) => {
+    const box = checkbox({
+      label: h('span', { class: 'hv2-whatif-label' }, SeverityIcon(c.severity, { size: 14 }), ' ', checkTitle(c)),
+      value: c.id,
+      className: 'hv2-whatif-item',
+      onChange: (on) => {
+        if (on) ticked.add(c.id);
+        else ticked.delete(c.id);
+        update();
+      }
+    });
+    box.el.dataset.check = c.id;
+    return box.el;
+  });
+  return Disclosure({
+    summary: t('wvr.whatIf'),
+    className: 'hv2-whatif',
+    children: h('div', { class: 'stack-sm' }, h('p', { class: 'muted text-xs' }, t('wvr.whatIfHint')), h('div', { class: 'stack-xs hv2-whatif-list' }, boxes), out)
+  });
+}
+
+/**
+ * Problems first: the errors, then the warnings, by category with counts. Each problem has
+ * "Show the fix" when lib/fixes.js has one, else a line of advice, and "Accept this risk…" (a
+ * problem whose waiver is over says so: it counts again). The accepted risks are listed apart,
+ * each with its reason, owner and end date and a Remove; the what-if planner closes the card.
+ * @param {object} report
+ * @param {{ checkTitle: Function, checkDetail: Function, fixToggle: Function, fixable: (c: object) => boolean,
+ *   waivers?: ReportWaivers|null, onAccept?: ((check: object, expired: object|null) => void)|null,
+ *   onRemove?: ((waiver: object, check: object) => void)|null }} hooks
  * @returns {HTMLElement}
  */
-export function ProblemsPanel(report, { checkTitle, checkDetail, fixToggle, fixable }) {
-  const { total, sections } = problemsFirst(report.checks);
+export function ProblemsPanel(report, { checkTitle, checkDetail, fixToggle, fixable, waivers = null, onAccept = null, onRemove = null }) {
+  const ids = waivers ? waivers.ids : new Set();
+  const expiredById = new Map((waivers ? waivers.expired : []).map((e) => [e.check.id, e.waiver]));
+  const { total, sections } = problemsFirst(report.checks, { waived: ids });
+  const acceptPart = (c) => {
+    if (!onAccept || !isWaivableCheck(c)) return null;
+    const gone = expiredById.get(c.id) || null;
+    return h('div', { class: 'hv2-accept' },
+      gone ? h('p', { class: 'hv2-waiver-expired text-xs', dataset: { role: 'waiver-expired' } }, Icon('clock', { size: 13 }), ' ', t('wvr.expiredLine', { date: gone.expires })) : null,
+      Button({
+        label: t(gone ? 'wvr.acceptAgain' : 'wvr.accept'), icon: 'shield', size: 'sm', variant: 'ghost', className: 'hv2-accept-btn',
+        dataset: { action: 'hv2-accept', check: c.id }, onClick: () => onAccept(c, gone)
+      }));
+  };
+  const accepted = waivableChecks(report, (c) => ids.has(c.id));
   const body = !total
-    ? h('p', { class: 'hv2-none text-sm' }, Icon('check-circle', { size: 16 }), ' ', t('hv2.problems.none'))
+    ? h('p', { class: 'hv2-none text-sm' }, Icon('check-circle', { size: 16 }), ' ', t(accepted.length ? 'wvr.noneOpen' : 'hv2.problems.none'))
     : h('div', { class: 'stack hv2-sections' }, sections.map((s) => h('section', { class: ['hv2-section', `hv2-section-${s.severity}`], dataset: { severity: s.severity, count: s.count } },
       h('h3', { class: 'hv2-section-title' }, SeverityIcon(s.severity, { size: 16 }), ' ', t(`hv2.problems.${s.severity}`, { count: s.count })),
       s.groups.map((g) => h('div', { class: 'hv2-group', dataset: { group: g.group, count: g.checks.length } },
@@ -193,13 +278,31 @@ export function ProblemsPanel(report, { checkTitle, checkDetail, fixToggle, fixa
               h('div', { class: 'hv2-problem-title' }, checkTitle(c)),
               h('div', { class: 'hv2-problem-detail muted text-sm' }, checkDetail(c)),
               key && !fix ? h('p', { class: 'hv2-advice text-sm' }, Icon('lightbulb', { size: 14 }), ' ', h('span', { class: 'hv2-advice-label' }, `${t('hv2.advice')}: `), t(key)) : null,
-              fix));
+              fix,
+              acceptPart(c)));
         })))))));
+  const acceptedEl = accepted.length ? h('section', { class: 'hv2-section hv2-section-accepted', dataset: { severity: 'accepted', count: accepted.length } },
+    h('h3', { class: 'hv2-section-title' }, Icon('shield', { size: 16 }), ' ', t('wvr.section', { count: accepted.length })),
+    h('ul', { class: 'hv2-list' }, accepted.map((c) => {
+      const w = waivers.byId.get(c.id);
+      const title = checkTitle(c);
+      return h('li', { class: ['hv2-problem', 'hv2-accepted'], dataset: { id: c.id, severity: c.severity, waiver: w.id } },
+        h('span', { class: 'hv2-problem-icon' }, SeverityIcon(c.severity, { size: 16 })),
+        h('div', { class: 'hv2-problem-body' },
+          h('div', { class: 'hv2-problem-title' }, title),
+          h('p', { class: 'hv2-waiver text-sm', dataset: { role: 'waiver-line' } }, Icon('shield', { size: 14 }), ' ',
+            t(w.owner ? 'wvr.lineOwner' : 'wvr.line', { date: w.expires, owner: w.owner, reason: w.reason })),
+          onRemove ? h('div', { class: 'hv2-accept' }, Button({
+            label: t('wvr.remove'), icon: 'x', size: 'sm', variant: 'ghost', title: t('wvr.removeTitle', { subject: String(title) }),
+            dataset: { action: 'hv2-waiver-remove', check: c.id }, onClick: () => onRemove(w, c)
+          })) : null));
+    }))) : null;
   const counts = sections.map((s) => Badge(t(`hv2.problems.${s.severity}`, { count: s.count }), { variant: s.severity }));
+  if (accepted.length) counts.push(Badge(t('wvr.section', { count: accepted.length }), { variant: 'neutral', icon: 'shield' }));
   return Card({
     title: t('hv2.problems.title'), icon: 'alert', className: 'hlt-card hv2-problems',
-    actions: counts.length ? h('div', { class: 'cluster' }, counts) : Badge(t('severity.ok'), { variant: 'ok', icon: 'check' }),
-    children: h('div', { class: 'stack' }, ScoreBreakdown(report), body)
+    actions: sections.length || accepted.length ? h('div', { class: 'cluster' }, counts) : Badge(t('severity.ok'), { variant: 'ok', icon: 'check' }),
+    children: h('div', { class: 'stack' }, ScoreBreakdown(report, { waived: ids }), body, acceptedEl, WhatIfPanel(report, ids, checkTitle))
   });
 }
 

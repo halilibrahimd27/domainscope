@@ -5,7 +5,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  scoreHealth, gradeFor, problemsFirst, countSeverities, groupWeight, HEALTH_SCORE_WEIGHTS, HEALTH_SCORE_GROUPS, SCORE_CAPS,
+  scoreHealth, gradeFor, problemsFirst, countSeverities, groupWeight, whatIfHealth, HEALTH_SCORE_WEIGHTS, HEALTH_SCORE_GROUPS, SCORE_CAPS,
   DEFAULT_GROUP_WEIGHT, FATAL_CHECKS, HEALTH_GRADES
 } from '../../assets/js/lib/healthscore.js';
 import {
@@ -88,6 +88,50 @@ describe('healthscore: the score and its letter', () => {
       [['dns', ['ns.single']], ['email', ['mx.cname', 'spf.ptr']], ['web', ['www.missing']]]);
     assert.deepEqual(problemsFirst([check('ns.ok', 'ok')]), { total: 0, sections: [] });
     assert.deepEqual(countSeverities(checks), { ok: 1, info: 1, warn: 4, error: 2 });
+  });
+});
+
+describe('healthscore with accepted risks (lib/waivers.js)', () => {
+  // dns 100 (w30), email: one error, one warning → 45 (w25), security 100 (w20): (3000 + 1125 + 2000) / 75 = 81.7 → the error caps it at 79
+  const checks = [check('ns.ok', 'ok'), check('mx.unresolvable', 'error'), check('dmarc.policy-none', 'warn'), check('caa.missing', 'info')];
+
+  test('the same formula without the waived findings: they cost nothing and cap nothing, their group stays; `full` is the score with them', () => {
+    const all = scoreHealth(checks);
+    assert.deepEqual([all.score, all.grade, all.cap, all.waived, all.full], [79, 'C', 'error', 0, null]);
+    const r = scoreHealth(checks, { waived: ['mx.unresolvable'] });
+    // email 85 (one warning left): (3000 + 2125 + 2000) / 75 = 95 → the warning caps it at 89
+    assert.equal(r.groups.find((g) => g.group === 'email').score, 85);
+    assert.deepEqual([r.score, r.grade, r.cap, r.waived], [SCORE_CAPS.warn, 'B', 'warn', 1]);
+    assert.deepEqual(r.full, { score: 79, grade: 'C', raw: all.raw, cap: 'error' });
+    assert.deepEqual(r.groups.map((g) => [g.group, g.error, g.warn, g.waived]), [['dns', 0, 0, 0], ['email', 0, 1, 1], ['security', 0, 0, 0]]);
+    // both accepted: every group at 100 → A, no cap
+    const both = scoreHealth(checks, { waived: new Set(['mx.unresolvable', 'dmarc.policy-none']) });
+    assert.deepEqual([both.score, both.grade, both.cap, both.waived, both.groups.find((g) => g.group === 'email').score], [100, 'A', null, 2, 100]);
+    // a predicate works too; an info or ok check is never "waived"
+    assert.equal(scoreHealth(checks, { waived: (c) => c.id === 'caa.missing' || c.id === 'ns.ok' }).waived, 0);
+    assert.equal(scoreHealth(checks, { waived: 'mx.unresolvable' }).waived, 0, 'a string is not a list of ids');
+  });
+
+  test('a name that does not exist scores 0 whatever is accepted', () => {
+    const gone = scoreHealth([check('domain.nxdomain', 'error'), check('rdap.ok', 'ok')], { waived: ['domain.nxdomain'] });
+    assert.deepEqual([gone.score, gone.cap, gone.waived], [0, 'fatal', 0]);
+  });
+
+  test('problems first and the counts leave the accepted risks out', () => {
+    const p = problemsFirst(checks, { waived: ['mx.unresolvable'] });
+    assert.deepEqual(p.sections.map((s) => [s.severity, s.count]), [['warn', 1]]);
+    assert.deepEqual(countSeverities(checks, { waived: ['mx.unresolvable'] }), { ok: 1, info: 1, warn: 1, error: 0 });
+  });
+
+  test('the what-if planner: the score now and with the ticked findings fixed, by the same formula', () => {
+    const w = whatIfHealth(checks, ['dmarc.policy-none'], { waived: ['mx.unresolvable'] });
+    assert.deepEqual([w.now.score, w.then.score, w.then.grade, w.gain, w.fixed], [89, 100, 'A', 11, 1]);
+    const none = whatIfHealth(checks, []);
+    assert.deepEqual([none.now.score, none.then.score, none.gain, none.fixed], [79, 79, 0, 0]);
+    // fixing the error alone lifts the error cap: email 85 → (3000 + 2125 + 2000) / 75 = 95 → the warning's cap
+    assert.deepEqual([whatIfHealth(checks, ['mx.unresolvable']).then.score, whatIfHealth(checks, ['mx.unresolvable']).then.grade], [89, 'B']);
+    // an accepted risk ticked too counts once
+    assert.equal(whatIfHealth(checks, ['mx.unresolvable'], { waived: ['mx.unresolvable'] }).fixed, 0);
   });
 });
 

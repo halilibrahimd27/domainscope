@@ -506,7 +506,7 @@ async function main() {
 
     /* ---------------- 4. Global DNS ---------------- */
     run.group('4. Global DNS');
-    const GLOBAL_DONE = "document.querySelector('.glb-summary .alert') && document.querySelector('.glb-summary .alert').dataset.state !== 'running'";
+    const GLOBAL_DONE = "document.querySelector('.glb-summary')?.dataset.state === 'done'";
     await run.step(`${GLOBAL_NAME} A: ${RESOLVERS.length} resolvers + ${GEO_VANTAGES.length} locations, worldwide IPs`, async () => {
       await gotoRoute(page, `#/global?name=${GLOBAL_NAME}&type=A`);
       await waitDone(page, GLOBAL_DONE, 'global done', 60000);
@@ -516,7 +516,7 @@ async function main() {
         pending: document.querySelectorAll('.glb-row.is-pending').length,
         ips: [...document.querySelectorAll('.glb-ips tbody tr.dt-row')].map((r) => r.querySelector('[data-kind]')?.dataset.kind),
         failed: document.querySelectorAll('.glb-resolvers .glb-fail').length,
-        state: document.querySelector('.glb-summary .alert').dataset.state
+        state: document.querySelector('.glb-summary').dataset.verdict
       }));
       process.stdout.write(`        ${info.ips.length} IPs (${[...new Set(info.ips)].join(', ')}), state ${info.state}, ${info.failed} resolver(s) failed\n`);
       assertEqual([info.resolvers, info.geo, info.pending], [RESOLVERS.length, GEO_VANTAGES.length, 0], 'rows');

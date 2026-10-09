@@ -35,7 +35,7 @@ import { startServer } from './serve.mjs';
 import { launchBrowser } from './cdp.mjs';
 import {
   BASE, FIXTURES, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  gotoRoute, installDownloadCapture, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady
+  gotoRoute, installDownloadCapture, resultAction, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const ZONES = path.join(FIXTURES, 'zones');
@@ -303,10 +303,9 @@ const fakeProviderScript = (desec, doPages, token) => `(() => {
   };
 })();`;
 
-/** Open the importer (folded under "Replace" while a zone is loaded) and its fetch panel. */
+/** Open the importer (compact behind Edit while a zone is loaded) and its fetch panel. */
 const openFetch = (page) => page.evaluate(() => {
-  const folded = document.querySelector('.zone-import-folded');
-  if (folded) folded.open = true;
+  document.querySelector('.zone-import.is-compact:not(.is-editing) [data-action="tool-input-edit"]')?.click();
   const panel = document.querySelector('.zone-fetch');
   if (!panel) throw new Error('no fetch panel');
   panel.open = true;
@@ -406,7 +405,9 @@ async function main() {
         samples: document.querySelectorAll('[data-sample]').length,
         howto: !!document.querySelector('.zone-howto'),
         paste: !!document.querySelector('.zone-paste'),
-        privacy: /never|nothing is uploaded/i.test(document.querySelector('#page-body .alert')?.textContent || '')
+        // What is kept and sent: one line in the card's footer, the whole of it one click away.
+        privacy: /nothing is sent until you click/.test(document.querySelector('.zone-import .tool-input-foot .privacy-note')?.textContent || '')
+          && /nothing is uploaded or saved/.test(document.querySelector('.zone-import .zone-privacy-full')?.textContent || '')
       }));
       assertEqual(ui, { drop: true, origin: true, samples: 3, howto: true, paste: true, privacy: true }, 'empty state');
       assertEqual(await page.evaluate(() => window.__fakeDnsLog.length), 0, 'no DNS query');
@@ -421,7 +422,11 @@ async function main() {
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="zone-origin"]').value), 'example.com', 'origin');
       assert(/header/.test(await text(page, '.zone-origin-field')), 'origin source hint');
       assert(/^39 records · 26 names · 10 proxied$/.test((await text(page, '[data-role="zone-counts"]')).trim()), await text(page, '[data-role="zone-counts"]'));
-      assert(await page.evaluate(() => document.activeElement?.classList.contains('zone-summary-title')), 'focus on the summary heading');
+      assert(await page.evaluate(() => document.activeElement?.classList.contains('result-title') && !!document.activeElement.closest('.zone-summary')), 'focus on the result header\'s title');
+      // A file tool's card folds to one row once a zone is loaded: the drop zone, the file, Edit.
+      const card = await page.evaluate(() => [document.querySelector('.zone-import').classList.contains('is-compact'),
+        document.querySelector('.zone-import .tool-input-summary-text')?.textContent || '']);
+      assert(card[0] && /^cloudflare-export\.txt · \d/.test(card[1]), `the compact import card: ${JSON.stringify(card)}`);
       const badge = await page.evaluate(() => document.querySelector('.zone-tabs .tab[data-tab="problems"] .tab-badge'));
       assert(badge !== undefined, 'problems badge');
       assertEqual(await page.evaluate(() => window.__fakeDnsLog.length), 0, 'no DNS query');
@@ -498,7 +503,7 @@ async function main() {
       const originRows = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.zone-origins-table tbody tr.dt-row')]
         .map((tr) => [tr.querySelector('td:not(.dt-expander) strong')?.textContent, tr.textContent])));
       await setInv('');
-      await page.click('[data-action="zone-forget"]');
+      await resultAction(page, '[data-action="zone-forget"]', '.zone-summary');
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'forgotten' });
       await page.setFileInput('.zone-drop .filedrop-input', [CF_FILE]);
       await page.waitFor(() => !!document.querySelector('.zone-summary'), { message: 'summary' });
@@ -923,7 +928,7 @@ async function main() {
     await run.step('Route 53 JSON pasted: incomplete export alert (the old zone\'s kept check loses its note); cPanel: missing-dot error', async () => {
       assert(/^Live check from /.test((await keptNote(page)).text), 'the check kept over the trips to Subdomains and SSL Targets');
       const r53 = await readFile(path.join(ZONES, 'route53.json'), 'utf8');
-      await page.evaluate(() => { document.querySelectorAll('.zone-import-folded, .zone-paste').forEach((d) => { d.open = true; }); });
+      await page.evaluate(() => { document.querySelector('.zone-import.is-compact:not(.is-editing) [data-action="tool-input-edit"]')?.click(); document.querySelectorAll('.zone-paste').forEach((d) => { d.open = true; }); });
       await page.type('[data-role="zone-paste"]', r53);
       await page.click('[data-action="zone-paste-import"]');
       await page.waitFor(() => /AWS Route 53/.test(document.querySelector('.zone-format-badge')?.textContent || ''), { message: 'route53' });
@@ -973,7 +978,8 @@ async function main() {
       await clickTab(page, 'live');
       const counts = await page.evaluate(() => {
         const of = (el) => (/\((\d+) of (\d+) addresses are private\)/.exec(el?.textContent || '') || []).slice(1).join('/');
-        return { pinned: of([...document.querySelectorAll('.zone-page > .alert')].find((a) => /internal zone/.test(a.textContent))), live: of(document.querySelector('.zone-live-card .alert')) };
+        // The pinned alert is a note of the zone's result header.
+        return { pinned: of([...document.querySelectorAll('.zone-summary .result-notes .alert')].find((a) => /internal zone/.test(a.textContent))), live: of(document.querySelector('.zone-live-card .alert')) };
       });
       assertEqual(counts, { pinned: '6/8', live: '6/8' }, 'internal-zone counts');
     });
@@ -1040,7 +1046,7 @@ async function main() {
       await page.waitFor(() => document.querySelector('.zone-drift')?.dataset.status === 'done', { timeout: 30000, message: 'check done' });
       await leaveAndReturn(page);
       assert((await keptNote(page)).rerun, 'kept, with Run again');
-      await page.click('[data-action="zone-forget"]');
+      await resultAction(page, '[data-action="zone-forget"]', '.zone-summary');
       await page.waitFor(() => !document.querySelector('.zone-summary') && document.querySelectorAll('[data-sample]').length === 3, { message: 'empty' });
       assert(await page.evaluate(() => [...document.querySelectorAll('.toast')].some((t) => /Zone forgotten/.test(t.textContent))), 'toast');
       assertEqual(await keptNote(page), { text: '', rerun: false, hash: await page.evaluate(() => location.hash) }, 'no note, no dead Run again over the empty view');
@@ -1060,7 +1066,7 @@ async function main() {
       await page.waitFor(() => !!document.querySelector('.gp-confirm') || !!document.querySelector('[data-action="par-stop"]'), { message: 'dialog or run' });
       if (await page.evaluate(() => !!document.querySelector('.gp-confirm'))) await page.click('.gp-confirm .btn-primary');
       await page.waitFor((b) => !!document.querySelector('[data-action="par-stop"]') && window.__gp.n > b, { args: [base], message: 'running' });
-      await page.click('[data-action="zone-forget"]');
+      await resultAction(page, '[data-action="zone-forget"]', '.zone-summary');
       await page.waitFor(() => !document.querySelector('.zone-summary') && document.getElementById('main')?.getAttribute('aria-busy') === 'false', { message: 'forgotten, the run ended' });
       assert(!await page.evaluate(() => [...document.querySelectorAll('.toast')].some((x) => /New name servers:/.test(x.textContent))), 'no toast for the dropped run');
       await page.evaluate(() => { window.__gp.allowUpTo = Infinity; });
@@ -1071,7 +1077,7 @@ async function main() {
       assert(!await page.evaluate(() => !!document.querySelector('.par-results')), 'no result of the dropped run');
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="par-ns"]').value), '', 'Forget drops the servers typed in too');
       assertEqual(await page.evaluate(() => window.__gp.n), posted, 'nothing sent after Forget');
-      await page.click('[data-action="zone-forget"]');
+      await resultAction(page, '[data-action="zone-forget"]', '.zone-summary');
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'empty again' });
     });
 
@@ -1300,21 +1306,22 @@ async function main() {
       assert(await page.evaluate(() => !!document.querySelector('.zone-summary')), 'the first zone stays');
       await page.click('[data-compare-sample="bind"]');
       await page.waitFor(() => !!document.querySelector('[data-role="zcmp-results"]'), { message: 'compared again' });
-      await page.click('[data-action="zone-forget"]');
+      await resultAction(page, '[data-action="zone-forget"]', '.zone-summary');
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'forgotten' });
       await page.click('[data-sample="cloudflare"]');
       await page.waitFor(() => !!document.querySelector('.zone-summary'), { message: 'sample again' });
       await clickTab(page, 'compare');
       await page.waitFor(() => !!document.querySelector('[data-compare-sample]'), { message: 'importer', timeout: 10000 });
       assert(!await page.evaluate(() => !!document.querySelector('[data-role="zcmp-results"]')), 'Forget dropped the second zone too');
-      await page.click('[data-action="zone-forget"]');
+      await resultAction(page, '[data-action="zone-forget"]', '.zone-summary');
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'empty again' });
     });
 
     await run.step('Convert a zone over Route 53\'s batch limits: several change batches AWS takes, in order, each to download or copy', async () => {
       const big = ['$ORIGIN example.com.', '$TTL 300', ...Array.from({ length: 600 }, (_, i) => `h${i} A 192.0.2.${i % 250}`), ''].join('\n');
       await page.evaluate((v) => {
-        document.querySelectorAll('.zone-import-folded, .zone-paste').forEach((d) => { d.open = true; });
+        document.querySelector('.zone-import.is-compact:not(.is-editing) [data-action="tool-input-edit"]')?.click();
+        document.querySelectorAll('.zone-paste').forEach((d) => { d.open = true; });
         const el = document.querySelector('[data-role="zone-paste"]');
         const ta = el.tagName === 'TEXTAREA' ? el : el.querySelector('textarea');
         ta.value = v;
@@ -1344,14 +1351,15 @@ async function main() {
       assert(/^The preview shows the first 400 of the [\d,]+ lines of example\.com\.route53\.1\.json, the first of 2 files; its download and Copy have them all\.$/
         .test(await text(page, '[data-role="zconv-preview-note"]')), await text(page, '[data-role="zconv-preview-note"]'));
       await shot(page, opts, 'zone-convert-batches-desktop-light-en');
-      await page.click('[data-action="zone-forget"]');
+      await resultAction(page, '[data-action="zone-forget"]', '.zone-summary');
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'forgotten' });
     });
 
     await run.step('Compare: a new first zone reads the kept second file again — a one-record batch then takes the new zone\'s name', async () => {
       const pasteZone = async (value) => {
         await page.evaluate((v) => {
-          document.querySelectorAll('.zone-import-folded, .zone-paste').forEach((d) => { d.open = true; });
+          document.querySelector('.zone-import.is-compact:not(.is-editing) [data-action="tool-input-edit"]')?.click();
+        document.querySelectorAll('.zone-paste').forEach((d) => { d.open = true; });
           const el = document.querySelector('[data-role="zone-paste"]');
           const ta = el.tagName === 'TEXTAREA' ? el : el.querySelector('textarea');
           ta.value = v;
@@ -1373,7 +1381,7 @@ async function main() {
       assertEqual(await title(), 'Compared with example.com', 'read again under the new first zone\'s name');
       const rows = await cmpRows();
       assert(rows.includes('changed www A') && !rows.some((r) => r.includes(' @ ')), `www compared with www, never with the apex: ${rows}`);
-      await page.click('[data-action="zone-forget"]');
+      await resultAction(page, '[data-action="zone-forget"]', '.zone-summary');
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'forgotten' });
     });
 
@@ -1525,7 +1533,8 @@ async function main() {
       await page.click('[data-action="zone-fetch"]');
       await page.waitFor(() => !!document.querySelector('[data-action="zone-fetch-stop"]'), { message: 'running' });
       await page.evaluate(() => {
-        document.querySelectorAll('.zone-import-folded, .zone-paste').forEach((d) => { d.open = true; });
+        document.querySelector('.zone-import.is-compact:not(.is-editing) [data-action="tool-input-edit"]')?.click();
+        document.querySelectorAll('.zone-paste').forEach((d) => { d.open = true; });
         const el = document.querySelector('[data-role="zone-paste"]');
         const ta = el.tagName === 'TEXTAREA' ? el : el.querySelector('textarea');
         ta.value = '$ORIGIN example.org.\n$TTL 300\n@ 300 IN A 192.0.2.10\n';
@@ -1652,7 +1661,7 @@ async function main() {
     });
 
     await run.step('the fetch panel at 320 and 375 px, TR/EN × light/dark: no horizontal scroll', async () => {
-      await page.click('[data-action="zone-forget"]');
+      await resultAction(page, '[data-action="zone-forget"]', '.zone-summary');
       await page.waitFor(() => !document.querySelector('.zone-summary'), { message: 'empty' });
       for (const lang of ['tr', 'en']) {
         await setLangUi(page, lang);

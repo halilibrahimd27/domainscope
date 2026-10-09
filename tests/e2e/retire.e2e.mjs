@@ -15,12 +15,14 @@
  * glue, an A record, an HTTPS hint, a CNAME chain into another zone, a zone wildcard asked through a
  * random name under it, the zone's proxied origin, a record only in the file, an internal name never
  * sent even with the Zone File hand-off toggle off), the evidence chips, the owner from the server
- * list, Copy summary, CSV / JSON, the passive lookup (its cost written next to the button, two
+ * list, the page template (the verdict as the result title, the status summary filtering the change
+ * list, Copy summary, Export ▾ CSV / JSON, Copy link), the passive lookup (its cost written next to the button, two
  * services, a cut-off ip.thc.org list said, unverified until checked; "Check these too" adds their
  * domains and checks again: one gone, one live), the Small-wordlist
  * discovery offered for a domain without host names (and nothing run before the click; a double
  * click starts one, and after Stop nothing more is asked), Stop and the keyboard focus, a shared link that fills the form and waits, a carried address (never over a
- * draft), the 375 px layout in TR / EN × light / dark, zero console errors / CSP violations /
+ * draft), the comparison of the old and the new server on its own page (#/retire/compare; the old
+ * in-page anchor #/retire?section=compare opens it), the 375 px layout in TR / EN × light / dark, zero console errors / CSP violations /
  * missing i18n keys, nothing sent outside the page.
  *
  * Data is documentation space only (example.com / .net / .org, 192.0.2.0/24, 198.51.100.0/24,
@@ -34,7 +36,7 @@ import { launchBrowser } from './cdp.mjs';
 import { pinnedClockScript } from './clock.mjs';
 import {
   BASE, SHOTS, assert, assertClean, assertEqual, assertNoHorizontalScroll, assertNoMissingKeys, cliOptions, createRunner,
-  gotoRoute, installDownloadCapture, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady
+  gotoRoute, installDownloadCapture, resultAction, setLangUi, shot, sleep, stubClipboard, takeClipboard, takeDownloads, waitReady
 } from './scan.e2e.mjs';
 
 const CF_EDGE = '104.16.1.1';
@@ -258,6 +260,25 @@ const rows = (page) => page.evaluate(() => [...document.querySelectorAll('.retir
   tr.querySelector('.retire-value .mono').textContent, tr.dataset.verified
 ])));
 const chips = (page) => page.evaluate(() => [...document.querySelectorAll('.retire-chips .src-chip')].map((c) => [c.dataset.source, c.dataset.state]));
+/** The status summary of the result header: { key: count }. */
+const statusCounts = (page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.retire-status .status-item')].map((x) => [x.dataset.status, x.dataset.count])));
+/** Unfold a compact input card (Edit), as a person does before changing the fields it folds away. */
+const openForm = (page, scope = '.retire-form-card') => page.evaluate((s) => {
+  const card = document.querySelector(s);
+  const edit = card && card.querySelector('[data-action="tool-input-edit"]');
+  if (card && card.classList.contains('is-compact') && edit && edit.getAttribute('aria-expanded') !== 'true') edit.click();
+}, scope);
+/** Zone File's paste box, open (the import card unfolded first when a zone is loaded). */
+const openZonePaste = async (page) => {
+  await openForm(page, '.zone-import');
+  await page.evaluate(() => { document.querySelectorAll('.zone-paste').forEach((d) => { d.open = true; }); });
+};
+/** The comparison of the old and the new server, Retire an IP's own page. */
+const gotoCompare = async (page, query = '') => {
+  await page.evaluate((q) => { location.hash = `#/retire/compare${q}`; }, query);
+  await page.waitFor(() => document.documentElement.dataset.view === 'retire' && !!document.querySelector('#page-body .retire-compare .oc-page'),
+    { message: 'the compare page', timeout: 15000 });
+};
 
 async function main() {
   const opts = cliOptions();
@@ -294,7 +315,9 @@ async function main() {
         return { links: [...group.querySelectorAll('.nav-link')].map((a) => a.dataset.view), title: document.querySelector('h1.page-title').textContent };
       });
       assertEqual(nav, { links: ['change', 'global', 'zone', 'retire'], title: 'Retire an IP' }, 'nav');
-      assert(await page.evaluate(() => !!document.querySelector('.retire-empty .empty-title')), 'empty state');
+      assert(await page.evaluate(() => !!document.querySelector('.retire-empty .tool-empty .tool-empty-checks')), 'empty state');
+      // The compare tool is a page of its own, linked from the empty state.
+      assertEqual(await page.evaluate(() => new URL(document.querySelector('.retire-empty [data-role="compare-open"]').href).hash), '#/retire/compare', 'compare link');
       assertEqual(await dnsCount(page), 0, 'nothing sent');
     });
 
@@ -317,14 +340,14 @@ async function main() {
       assertEqual(await dnsCount(page), 0, 'nothing sent');
     });
 
-    /** The verdict and what the head card says around it. */
+    /** The verdict (the result title) and what the result header says around it. */
     const verdict = () => page.evaluate(() => {
       const v = document.querySelector('[data-role="retire-verdict"]');
       return {
-        variant: [...v.classList].find((c) => /^alert-(ok|info|warn|error)$/.test(c)),
-        title: v.querySelector('.alert-title')?.textContent || '',
-        message: v.querySelector('.alert-message')?.textContent || '',
-        stopped: /Stopped/.test(document.querySelector('.retire-head').textContent),
+        severity: v.dataset.severity,
+        title: v.querySelector('.result-title-text')?.textContent || '',
+        message: document.querySelector('.retire-head [data-role="retire-incomplete"]')?.textContent || '',
+        stopped: !!document.querySelector('.retire-head [data-role="retire-stopped"]'),
         clean: !!document.querySelector('[data-role="retire-clean"]')
       };
     });
@@ -338,14 +361,14 @@ async function main() {
       await waitDone(page, 'the SERVFAIL check');
       await page.evaluate(() => { window.__fakeDnsRcodes = {}; });
       const v = await verdict();
-      assertEqual([v.variant, v.title, v.clean], ['alert-warn', 'Nothing found pointing at 192.0.2.10, but not everything could be checked', false], 'verdict');
+      assertEqual([v.severity, v.title, v.clean], ['warn', 'Nothing found pointing at 192.0.2.10, but not everything could be checked', false], 'verdict');
       assert(/lookups failed · 1 SPF result cannot be told from here: the list may be incomplete\./.test(v.message), v.message);
       const failures = await text(page, '.retire-group[data-group="servfail.example.org"] [data-role="retire-failures"]');
       assert(/^Lookups that failed for servfail\.example\.org: MX, NS, the SPF record, the HTTPS record, 1 host name \(servfail\.example\.org\)\./.test(failures), failures);
       assertEqual(await rows(page), [['servfail.example.org', 'unknown', 'servfail.example.org', 'TXT', '—', 'unknown']], 'the SPF row');
       const c = await chipValues();
       assertEqual([c.dns[0], c.spf], ['failed', ['failed', '1 could not be read']], 'chips');
-      assert(await page.evaluate(() => document.querySelector('.retire-stats [data-stat="unknown"]') !== null), 'a "Cannot tell" stat');
+      assertEqual(await statusCounts(page), { unknown: '1' }, 'a "cannot tell" item in the status summary');
       await shot(page, opts, 'retire-servfail-desktop-light-en');
     });
 
@@ -359,7 +382,7 @@ async function main() {
       await waitDone(page, 'stopped at once', 'cancelled');
       await page.evaluate(() => { window.__fakeDnsDelay = 0; });
       const v = await verdict();
-      assertEqual([v.variant, v.title, v.stopped, v.clean], ['alert-warn', 'Nothing found pointing at 192.0.2.10, but not everything could be checked', true, false], 'verdict');
+      assertEqual([v.severity, v.title, v.stopped, v.clean], ['warn', 'Nothing found pointing at 192.0.2.10, but not everything could be checked', true, false], 'verdict');
       assert(/1 domain not checked/.test(v.message), v.message);
       const c = await chipValues();
       assertEqual([c.dns, c.spf], [['idle', 'not checked'], ['idle', 'not checked']], 'chips');
@@ -371,7 +394,7 @@ async function main() {
       await page.click('[data-action="retire-run"]');
       await waitDone(page, 'the check of a domain that does not exist');
       const v = await verdict();
-      assertEqual([v.variant, v.title, v.clean], ['alert-warn', 'Nothing found pointing at 192.0.2.10, but not everything could be checked', false], 'verdict');
+      assertEqual([v.severity, v.title, v.clean], ['warn', 'Nothing found pointing at 192.0.2.10, but not everything could be checked', false], 'verdict');
       assert(/1 domain does not exist: the list may be incomplete\./.test(v.message), v.message);
       const note = await text(page, '.retire-group[data-group="exmaple.example.org"] [data-role="retire-missing"]');
       assert(/^exmaple\.example\.org does not exist: public DNS answers NXDOMAIN for it and it has no name servers\. A typo\?/.test(note), note);
@@ -380,7 +403,7 @@ async function main() {
     await run.step('a zone imported under Zone File and the last scan fill an empty domain box; the host names per domain', async () => {
       const before = await dnsCount(page);
       await gotoRoute(page, 'zone');
-      await page.evaluate(() => { document.querySelectorAll('.zone-import-folded, .zone-paste').forEach((d) => { d.open = true; }); });
+      await openZonePaste(page);
       await page.type('[data-role="zone-paste"]', ZONE);
       await page.click('[data-action="zone-paste-import"]');
       await page.waitFor(async () => {
@@ -452,16 +475,32 @@ async function main() {
       assert(wildcard.includes(`a wildcard: checked through the random name ${probe}`), wildcard);
       assertEqual(await chips(page), [['dns', 'ok'], ['spf', 'ok'], ['zone', 'ok'], ['servers', 'ok'], ['passive', 'idle']], 'chips');
       const head = await page.evaluate(() => ({
-        verdict: document.querySelector('[data-role="retire-verdict"] .alert-title')?.textContent,
+        verdict: document.querySelector('[data-role="retire-verdict"] .result-title-text')?.textContent,
+        severity: document.querySelector('[data-role="retire-verdict"]').dataset.severity,
         owner: document.querySelector('.retire-owner-list li')?.dataset.server,
-        stats: Object.fromEntries([...document.querySelectorAll('.retire-stats .stat')].map((s) => [s.dataset.stat, s.querySelector('.stat-value').textContent])),
         glue: document.querySelector('.retire-group tr[data-type="NS"] .retire-change')?.dataset.action,
-        chip: document.querySelector('[data-role="target-chip"] .target-chip-value')?.textContent || null
+        chip: document.querySelector('[data-role="target-chip"] .target-chip-value')?.textContent || null,
+        top: Math.round(document.querySelector('.retire-head').getBoundingClientRect().top + scrollY)
       }));
-      assertEqual(head, {
-        verdict: '13 records break something once 192.0.2.10 is gone', owner: 'web01',
-        stats: { breaking: '13', mail: '4', file: '1' }, glue: 'glue', chip: '192.0.2.10'
-      }, 'head');
+      // The result header in the first 300 px under the page header (DESIGN §5.1).
+      assertEqual({ ...head, top: head.top <= 320 }, {
+        verdict: '13 records break something once 192.0.2.10 is gone', severity: 'error', owner: 'web01',
+        glue: 'glue', chip: '192.0.2.10', top: true
+      }, `head (${head.top} px)`);
+      // Worst first: mail and DNS (errors), what is only in the file, then every record that must change.
+      assertEqual(await statusCounts(page), { mail: '4', ns: '2', file: '1', breaking: '13' }, 'status summary');
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.retire-status .status-item')].map((x) => x.dataset.status)), ['mail', 'ns', 'file', 'breaking'], 'status order');
+      // A status item filters the change list (a second press shows every record again).
+      await page.click('.retire-status [data-status="mail"]');
+      await page.waitFor(() => !document.querySelector('.retire-filter-note').hidden, { message: 'the filter note' });
+      assertEqual((await rows(page)).map((r) => `${r[2]} ${r[3]}`), ['example.com MX', 'example.com TXT', 'mail.example.com A', '_spf.example.net TXT'], 'only the mail rows');
+      assertEqual(await page.evaluate(() => document.querySelector('.retire-status [data-status="mail"]').getAttribute('aria-pressed')), 'true', 'pressed');
+      await page.click('.retire-status [data-status="mail"]');
+      await page.waitFor(() => document.querySelector('.retire-filter-note').hidden, { message: 'every row again' });
+      assertEqual((await rows(page)).length, 14, 'every row');
+      // A next step: the comparison of the old and the new server, on its own page, with the address and the first domain.
+      assertEqual(await page.evaluate(() => new URL(document.querySelector('.retire-head .retire-compare-step').href).hash),
+        '#/retire/compare?old=192.0.2.10&host=example.com', 'compare step');
       await shot(page, opts, 'retire-results-desktop-light-en');
     });
 
@@ -473,13 +512,17 @@ async function main() {
       assert(md.includes('- Owned by 1 server in your list'), 'a count of servers');
       assert(!md.includes('web01'), 'never a server name');
       assert(/#\/retire\?domains=example\.com$/m.test(md), `the link leaves out the inventory address: ${md}`);
-      // The page header's Copy link follows the same rule.
+      // The result's Copy link follows the same rule.
       await stubClipboard(page);
-      await jsClick(page, '.page-actions .copy-btn');
+      await resultAction(page, '[data-action="copy-link"]', '.retire-head');
       const [link] = await takeClipboard(page);
-      assertEqual(new URL(link).hash, '#/retire?domains=example.com', 'the header’s Copy link leaves out the inventory address too');
-      await jsClick(page, '[data-export="csv"]');
-      await jsClick(page, '[data-export="json"]');
+      assertEqual(new URL(link).hash, '#/retire?domains=example.com', 'the result’s Copy link leaves out the inventory address too');
+      // The standard actions in their order; CSV and JSON in the Export ▾ menu.
+      assertEqual(await page.evaluate(() => [...document.querySelectorAll('.retire-head .result-actions [data-action], .retire-head .result-actions [data-menu]')]
+        .filter((x) => !x.closest('.menu-popover') && !x.hidden).map((x) => x.dataset.action || `menu:${x.dataset.menu}`)),
+      ['copy-summary', 'copy-summary-text', 'menu:export', 'copy-link'], 'the actions, in order');
+      await resultAction(page, '[data-export="csv"]', '.retire-head');
+      await resultAction(page, '[data-export="json"]', '.retire-head');
       const [csv, json] = await takeDownloads(page);
       assert(/^ip-retire-192\.0\.2\.10-\d{8}-\d{4}\.csv$/.test(csv.name), csv.name);
       assertEqual(csv.text.split('\r\n')[0], 'group,severity,name,type,value,address,action,verified,via,sources,line', 'CSV header');
@@ -503,6 +546,8 @@ async function main() {
       for (const lang of ['tr', 'en']) {
         await setLangUi(page, lang);
         await page.setViewport({ width: 320, height: 640, mobile: true });
+        // The domain box and the host names wait behind Edit while a result is on screen.
+        await openForm(page);
         await page.waitFor(() => document.querySelector('[data-action="retire-discover"]')?.getBoundingClientRect().width > 0, { message: `the offer at 320 px (${lang})` });
         await page.evaluate(() => document.querySelector('.retire-discover').scrollIntoView({ block: 'center' }));
         await assertNoHorizontalScroll(page, `retire discovery offer 320 px ${lang}`);
@@ -511,7 +556,7 @@ async function main() {
           const btn = document.querySelector('[data-action="retire-discover"]');
           const b = btn.getBoundingClientRect();
           const cost = document.getElementById(btn.getAttribute('aria-describedby'));
-          // The passive lookup's button, under the chips of the head card, fits its card too.
+          // The passive lookup's button, a next step of the result header, fits it too.
           const card = document.querySelector('.retire-head-card').getBoundingClientRect();
           const passive = document.querySelector('[data-action="retire-passive"]').getBoundingClientRect();
           return {
@@ -521,7 +566,7 @@ async function main() {
           };
         });
         assert(fit.inside, `the button stays inside its box (${lang})`);
-        assert(fit.passive, `the passive lookup's button stays inside the head card (${lang})`);
+        assert(fit.passive, `the passive lookup's button stays inside the result header (${lang})`);
         assert(/159/.test(fit.cost) && /\d+–\d+/.test(fit.cost), `the cost next to the button (${lang}): ${fit.cost}`);
         if (lang === 'tr') await shot(page, opts, 'retire-discover-320-tr');
         await page.setViewport({ width: 1440, height: 900 });
@@ -631,8 +676,9 @@ async function main() {
       const before = await dnsCount(page);
       await page.evaluate(() => { location.hash = '#/retire?ips=198.51.100.7&domains=example.org'; });
       await page.waitFor(() => document.querySelector('[data-role="retire-ips"]').value === '198.51.100.7', { message: 'link filled' });
-      assertEqual(await page.evaluate(() => [document.querySelector('[data-role="retire-domains"]').value, document.querySelector('.retire-prompt .alert')?.dataset.prompt]),
-        ['example.org', 'link'], 'prompt');
+      assertEqual(await page.evaluate(() => [document.querySelector('[data-role="retire-domains"]').value, document.querySelector('.retire-prompt')?.dataset.prompt,
+        !document.querySelector('.retire-prompt-slot').hidden, !!document.querySelector('.retire-prompt [data-action="retire-link-start"]')]),
+      ['example.org', 'link', true, true], 'prompt');
       await sleep(200);
       assertEqual(await dnsCount(page), before, 'the link sent nothing');
       // A carried address (run=0) over a draft: the draft stays.
@@ -648,19 +694,24 @@ async function main() {
       await typeInto(page, 'retire-domains', 'example.com\nexample.net\nexample.org');
     });
 
-    run.group('Compare the old and the new server');
+    run.group('Compare the old and the new server (#/retire/compare)');
     const ocRows = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.oc-table tbody tr')]
       .map((tr) => [tr.dataset.field, `${tr.dataset.severity}${tr.dataset.same === 'true' ? '' : ' differs'}`])));
-    await run.step('the card takes the retired address and the first domain; nothing sent; a private address gets the CLI command', async () => {
-      await page.evaluate(() => document.querySelector('.oc-card')?.scrollIntoView());
-      // The boxes follow the form (debounced) while nobody has typed in them.
+    await run.step('the old in-page anchor opens #/retire/compare; the card takes the retired address and the first domain; nothing sent; a private address gets the CLI command', async () => {
+      await page.evaluate(() => { location.hash = '#/retire?section=compare'; });
+      await page.waitFor(() => location.hash === '#/retire/compare' && !!document.querySelector('.retire-compare .oc-page'), { message: 'the old anchor redirected' });
+      assertEqual(await page.evaluate(() => [document.querySelector('h1.page-title').textContent, new URL(document.querySelector('[data-role="compare-back"]').href).hash,
+        document.querySelector('#app-nav .nav-link[aria-current="page"]')?.dataset.view || null]),
+      ['Compare the old and the new server', '#/retire', 'retire'], 'the page heading, the way back, the nav entry');
+      // The boxes take the form's one address and its first domain while nobody has typed in them.
       await page.waitFor(() => document.querySelector('[data-role="oc-oldIp"]')?.value === '192.0.2.10'
         && document.querySelector('[data-role="oc-host"]')?.value === 'example.com', { message: 'filled from the form' });
+      assert(await page.evaluate(() => !!document.querySelector('.oc-empty .tool-empty')), 'the empty state');
       await typeInto(page, 'oc-newIp', '10.0.0.20');
       await page.waitFor(() => !!document.querySelector('[data-role="oc-cli"] code'), { message: 'CLI block' });
       assertEqual((await page.evaluate(() => document.querySelector('[data-role="oc-cli"] code').textContent)).trim(),
         'python3 ssl_origin_scan.py --compare 192.0.2.10 10.0.0.20 -n example.com', 'CLI command');
-      assert(!await page.evaluate(() => !!document.querySelector('[data-action="oc-run"]')), 'no Compare button for addresses a probe cannot reach');
+      assert(await page.evaluate(() => document.querySelector('[data-action="oc-run"]').closest('.run-bar').hidden), 'no Compare button for addresses a probe cannot reach');
       assertEqual(await page.evaluate(() => window.__gp.calls.length), 0, 'no Globalping');
     });
 
@@ -668,18 +719,22 @@ async function main() {
       await typeInto(page, 'oc-host', 'www.example.com');
       await typeInto(page, 'oc-oldIp', OLD_IP);
       await typeInto(page, 'oc-newIp', NEW_IP);
-      await page.waitFor(() => !!document.querySelector('[data-action="oc-run"]') && !document.querySelector('[data-action="oc-run"]').disabled, { message: 'Compare button' });
+      await page.waitFor(() => !document.querySelector('[data-action="oc-run"]').closest('.run-bar').hidden && !document.querySelector('[data-action="oc-run"]').disabled, { message: 'Compare button' });
       await page.click('[data-action="oc-run"]');
       await page.waitFor(() => !!document.querySelector('.gp-confirm'), { message: 'dialog' });
       assert(/Cost: 2 probes/.test(await page.evaluate(() => document.querySelector('.gp-confirm').textContent)), 'cost in the dialog');
       await page.click('.gp-confirm .btn-primary');
-      await page.waitFor(() => !!document.querySelector('.oc-results'), { timeout: 20000, message: 'results' });
+      await page.waitFor(() => !!document.querySelector('.oc-results') && document.querySelector('.oc-results').dataset.verdict !== 'running', { timeout: 20000, message: 'results' });
       const posts = await page.evaluate(() => window.__gp.calls.filter((c) => c.method === 'POST').map((c) => c.body));
       assertEqual(posts.length, 2, 'two probes');
       assertEqual([posts[0].target, posts[0].limit, posts[1].target, posts[1].locations], [OLD_IP, 1, NEW_IP, 'fakeCompare000001'], 'the old address first, then the same probe at the new one');
       assert(posts.every((b) => b.type === 'http' && b.measurementOptions.request.method === 'GET' && b.measurementOptions.request.host === 'www.example.com'
         && b.measurementOptions.request.path === '/' && b.measurementOptions.protocol === 'HTTPS'), 'GET / with the name as SNI and Host');
-      assertEqual(await page.evaluate(() => document.querySelector('.oc-results').dataset.verdict), 'differs', 'verdict');
+      assertEqual(await page.evaluate(() => [document.querySelector('.oc-results').dataset.verdict, !!document.querySelector('.oc-head .result-title .sev-warn')]),
+        ['differs', true], 'verdict');
+      assert(/answers differently/.test(await text(page, '.oc-head .result-title')), 'the verdict is the result title');
+      // The input card folds to one row once a comparison ran; the result header sits under it.
+      assert(await page.evaluate(() => document.querySelector('.oc-card').classList.contains('is-compact')), 'compact card');
       const rows = await ocRows();
       assertEqual([rows.status, rows.title, rows.body, rows.hsts, rows.server, rows.certSubject, rows.certCovers, rows.certFingerprint],
         ['ok', 'ok', 'ok', 'warn differs', 'info differs', 'ok', 'ok', 'info differs'], 'fields');
@@ -687,7 +742,7 @@ async function main() {
         ['www.example.com, example.com', 'www.example.com, example.com'], 'the names each certificate carries');
       assert(/visitors whose browsers never saw it/.test(await page.evaluate(() => document.querySelector('.oc-row[data-field="hsts"]').textContent)), 'the HSTS note');
       await takeDownloads(page);
-      await page.click('[data-action="oc-json"]');
+      await resultAction(page, '[data-action="oc-json"]', '.oc-head');
       await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'JSON' });
       const [dl] = await takeDownloads(page);
       const doc = JSON.parse(dl.text);
@@ -711,7 +766,7 @@ async function main() {
       // Switched on (Servers › Origin map), the comparison shown again offers to remember the new server.
       await page.evaluate(() => import('./assets/js/state.js').then(({ state }) => state.setWorkspaceData('origins', { v: 1, remember: true, entries: [] })));
       await gotoRoute(page, 'about');
-      await gotoRoute(page, 'retire');
+      await gotoCompare(page);
       const label = await page.waitFor(() => document.querySelector('[data-action="oc-remember"]')?.textContent || false, { message: 'Remember button' });
       assertEqual(label, `Remember ${NEW_IP} as the origin of www.example.com`, 'button');
       await page.click('[data-action="oc-remember"]');
@@ -741,7 +796,7 @@ async function main() {
       await page.click('[data-action="oc-run"]');
       await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'unreachable', { timeout: 20000, message: 'unreachable' });
       assertEqual(await ocRows(), { reach: 'warn' }, 'the same on both sides: a warning, nothing else compared');
-      assert(/Neither server answered this probe/.test(await page.evaluate(() => document.querySelector('.oc-results .alert').textContent)), 'the verdict');
+      assert(/Neither server answered this probe/.test(await text(page, '.oc-results .result-title')), 'the verdict');
       const reach = () => page.evaluate(() => document.querySelectorAll('.oc-row[data-field="reach"] td')[1].textContent);
       assert((await reach()).startsWith('no: connection refused — connect ECONNREFUSED'), await reach());
       await setLangUi(page, 'tr');
@@ -761,7 +816,7 @@ async function main() {
       assert(/answers like the old one/.test(results) && !/answers differently/.test(results), 'the verdict: the same');
       assert(/Both servers serve a certificate the probe does not trust/.test(results), 'the shared warning');
       await takeDownloads(page);
-      await page.click('[data-action="oc-json"]');
+      await resultAction(page, '[data-action="oc-json"]', '.oc-head');
       await page.waitFor(() => (window.__downloads || []).length === 1, { message: 'JSON' });
       const [dl] = await takeDownloads(page);
       assertEqual([JSON.parse(dl.text).verdict, JSON.parse(dl.text).shared], ['same', ['cert-untrusted']], 'JSON');
@@ -804,7 +859,7 @@ async function main() {
       await page.waitFor(() => document.activeElement?.dataset.action === 'oc-stop', { message: 'keyboard focus on Stop' });
       await page.waitFor((b) => window.__gp.n >= b + 2, { args: [base], message: 'the new address asked' });
       await page.press('Enter');
-      await page.waitFor(() => !document.querySelector('[data-action="oc-stop"]') && !!document.querySelector('.oc-partial'), { message: 'stopped with the old answer' });
+      await page.waitFor(() => document.querySelector('[data-action="oc-stop"]').hidden && !!document.querySelector('.oc-partial'), { message: 'stopped with the old answer' });
       assertEqual(await page.evaluate(() => document.activeElement?.dataset.action), 'oc-run', 'keyboard focus back on Compare');
       assert(/Stopped after the old server was asked/.test(await page.evaluate(() => document.querySelector('.oc-card').textContent)), 'the stop alert');
       assertEqual(await page.evaluate(() => document.querySelector('.oc-partial tr[data-field="status"] td')?.textContent), '200', 'the old server\'s answer kept');
@@ -814,28 +869,27 @@ async function main() {
       await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'differs' && !document.querySelector('.oc-partial'), { timeout: 20000, message: 'compared again' });
     });
 
-    await run.step('Ctrl+Enter in a field of the card compares, and Retire an IP\'s own check does not start', async () => {
+    await run.step('Ctrl+Enter in a field of the card compares', async () => {
       const base = await page.evaluate(() => window.__gp.n);
-      const status = () => page.evaluate(() => document.querySelector('.retire-job')?.dataset.status || null);
-      const before = await status();
+      // The path waits behind Edit once a comparison ran.
+      await openForm(page, '.oc-card');
       await page.evaluate(() => document.querySelector('[data-role="oc-path"]').focus());
       await page.press('Enter', { ctrl: true });
-      await page.waitFor((b) => window.__gp.n >= b + 2 && !document.querySelector('[data-action="oc-stop"]') && !!document.querySelector('.oc-results'),
+      await page.waitFor((b) => window.__gp.n >= b + 2 && document.querySelector('[data-action="oc-stop"]').hidden && document.querySelector('.oc-results')?.dataset.verdict === 'differs',
         { args: [base], timeout: 20000, message: 'compared from the keyboard' });
-      assertEqual(await status(), before, 'the view\'s own check did not run');
-      assert(!await page.evaluate(() => !!document.querySelector('[data-action="retire-stop"]:not([hidden])')), 'no check of the view in progress');
+      assert(!await page.evaluate(() => !!document.querySelector('.retire-job')), 'no check of Retire an IP on this page');
     });
 
-    await run.step('leaving Retire an IP during a run and coming back: the card on screen gets the result and its Compare button back', async () => {
-      // The old address answers; the new one is held while the view is left and opened again.
+    await run.step('leaving the compare page during a run and coming back: the card on screen gets the result and its Compare button back', async () => {
+      // The old address answers; the new one is held while the page is left and opened again.
       const base = await page.evaluate(() => { window.__compareScenario = 'broken'; window.__gp.allowUpTo = window.__gp.n + 1; return window.__gp.n; });
       await page.click('[data-action="oc-run"]');
-      await page.waitFor((b) => window.__gp.n >= b + 2 && !!document.querySelector('[data-action="oc-stop"]'), { args: [base], message: 'the new address asked' });
+      await page.waitFor((b) => window.__gp.n >= b + 2 && !document.querySelector('[data-action="oc-stop"]').hidden, { args: [base], message: 'the new address asked' });
       await gotoRoute(page, 'about');
-      await gotoRoute(page, 'retire');
-      await page.waitFor(() => !!document.querySelector('[data-action="oc-stop"]'), { message: 'the run shown on the new card' });
+      await gotoCompare(page);
+      await page.waitFor(() => !document.querySelector('[data-action="oc-stop"]').hidden, { message: 'the run shown on the new card' });
       await page.evaluate(() => { window.__gp.allowUpTo = Infinity; });
-      await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'broken' && !document.querySelector('[data-action="oc-stop"]'),
+      await page.waitFor(() => document.querySelector('.oc-results')?.dataset.verdict === 'broken' && document.querySelector('[data-action="oc-stop"]').hidden,
         { timeout: 20000, message: 'the result on the card shown, no Stop' });
       assert(await page.evaluate(() => !document.querySelector('[data-action="oc-run"]').disabled), 'Compare enabled again');
       await page.evaluate(() => { window.__compareScenario = 'differs'; });
@@ -893,6 +947,7 @@ async function main() {
 
     run.group('Phone 375×667, Turkish / English, light / dark');
     await run.step('the form and the change list at 375 px: labelled cards, no horizontal scroll', async () => {
+      await gotoRoute(page, 'retire');
       await page.click('[data-action="retire-run"]');
       await waitDone(page, 'phone check');
       await page.setViewport({ width: 375, height: 667, mobile: true });
@@ -935,7 +990,7 @@ async function main() {
         state.setSession('scanHosts', undefined);
       });
       await gotoRoute(page, 'zone');
-      await page.evaluate(() => { document.querySelectorAll('.zone-import-folded, .zone-paste').forEach((d) => { d.open = true; }); });
+      await openZonePaste(page);
       await page.type('[data-role="zone-paste"]', [
         '$ORIGIN corp.example.com.',
         '@ 3600 IN SOA ns1.corp.example.com. hostmaster.corp.example.com. 1 7200 3600 1209600 300',

@@ -9,7 +9,11 @@
  * location tables, answer groups (letters + colours) and group filtering, the worldwide IP
  * table with inventory matching, form validation, resolvers-only mode, the language re-mount
  * keeping results without re-querying, desktop + phone in light/dark, no horizontal page
- * scroll, no console errors / exceptions / CSP violations and no missing i18n keys.
+ * scroll, no console errors / exceptions / CSP violations and no missing i18n keys. The page
+ * template (docs/DESIGN.md §5): the verdict is the result header's title (`.glb-summary`, its
+ * `data-verdict`), what it rests on its notes, the findings a list on the Answer groups tab, the
+ * figures its metric strip; the resolver, location and ISP tables sit on the Resolvers & locations
+ * tab (`.glb-resolvers` and the rest stay in the page, only their panel hides).
  *
  * OFFLINE (always; alone with --offline): a fake DoH inside the page answers every query — the
  * mainland China locations' AliDNS questions in its JSON form (?name=&type=&edns_client_subnet=)
@@ -54,7 +58,15 @@ const OFFLINE = argv.includes('--offline');
 /** Third-party hosts whose request failures the view reports in its UI: every public DoH
  *  resolver can time out or, like Quad9 over HTTP/3, omit CORS headers. */
 const FLAKY_HOSTS = [...RESOLVERS, ...ECS_RESOLVERS].map((r) => new URL(r.url).hostname);
-const DONE = "document.querySelector('.glb-summary .alert') && document.querySelector('.glb-summary .alert').dataset.state !== 'running'";
+const DONE = "document.querySelector('.glb-summary')?.dataset.state === 'done'";
+/** The verdict's words in the result title (without the name after it). */
+const VERDICT = "document.querySelector('.glb-summary .glb-verdict')?.textContent";
+
+/** Open a tab of the result (groups, ips, resolvers), as a click on it does. */
+async function selectTab(page, id) {
+  await page.click(`.glb-tabs .tab[data-tab="${id}"]`);
+  await page.waitFor((t) => document.querySelector(`.glb-tabs .tab[data-tab="${t}"]`)?.getAttribute('aria-selected') === 'true', { args: [id], message: `tab ${id}` });
+}
 
 /* ------------------------------------------------------------------------ */
 /* Tiny runner                                                              */
@@ -169,7 +181,7 @@ function tableInfo() {
     pending: document.querySelectorAll('.glb-row.is-pending').length,
     groups: [...document.querySelectorAll('.glb-legend .glb-chip')].map((c) => c.dataset.group),
     ips: document.querySelectorAll('.glb-ips tbody tr.dt-row').length,
-    state: document.querySelector('.glb-summary .alert')?.dataset.state,
+    state: document.querySelector('.glb-summary')?.dataset.verdict,
     failed: document.querySelectorAll('.glb-resolvers .glb-fail').length,
     unavailable: document.querySelectorAll('.glb-resolvers .glb-skip').length,
     // Quad9 rows (operator "Quad9 Foundation"): answered, or muted — never an error row.
@@ -179,8 +191,8 @@ function tableInfo() {
       cmd: tr.querySelector('.glb-skip-cmd code')?.textContent || null,
       label: tr.querySelector('.glb-skip .badge-text')?.textContent || null
     })),
-    summary: document.querySelector('.glb-summary .alert')?.textContent || '',
-    answeredHint: document.querySelector('.glb-stats .stat')?.textContent || '',
+    summary: document.querySelector('.glb-summary')?.textContent || '',
+    answeredHint: document.querySelector('.glb-stats .metric[data-metric="answered"]')?.textContent || '',
     errorChip: !!document.querySelector('.glb-legend .glb-chip[data-group="error"]'),
     cfStatus: res.find((tr) => tr.textContent.includes('Cloudflare, Inc.'))?.textContent || '',
     hash: window.location.hash
@@ -391,20 +403,21 @@ const fakeGlobalDnsScript = () => `(() => {
   };
 })();`;
 
-/** Summary alert, verdict findings and the operator labels of the answer groups. */
+/** The verdict (the result header), its findings (the Answer groups tab) and the operator labels of the answer groups. */
 function verdictInfo() {
-  const alert = document.querySelector('.glb-summary .alert');
+  const head = document.querySelector('.glb-summary');
   return {
-    state: alert?.dataset.state,
-    title: alert?.querySelector('.alert-title')?.textContent || '',
-    message: alert?.querySelector('.alert-message')?.textContent || '',
-    findings: [...document.querySelectorAll('.glb-summary .glb-finding')].map((li) => ({
+    state: head?.dataset.verdict,
+    title: head?.querySelector('.glb-verdict')?.textContent || '',
+    message: [...document.querySelectorAll('.glb-summary .glb-verdict-body, .glb-summary .glb-verdict-extra')].map((p) => p.textContent).join(' '),
+    findings: [...document.querySelectorAll('.glb-findings .glb-finding')].map((li) => ({
       code: li.dataset.finding, marks: [...li.querySelectorAll('.glb-mark')].map((m) => m.textContent), text: li.lastElementChild.textContent
     })),
     chips: [...document.querySelectorAll('.glb-legend .glb-chip')].map((c) => ({
       group: c.dataset.group, ops: [...c.querySelectorAll('.glb-chip-ops .glb-prov')].map((o) => o.textContent)
     })),
-    groupsStat: document.querySelectorAll('.glb-stats .stat')[1]?.className || '',
+    // The "Different answers" figure: coloured only as a warning or an error (an explained difference is none).
+    groupsStat: document.querySelector('.glb-stats .metric[data-metric="groups"]')?.dataset.severity || 'none',
     external: window.__externalFetches
   };
 }
@@ -436,7 +449,7 @@ async function offlineVerdicts(browser, server) {
     assertEqual(info.findings, [], 'no findings');
     assert(info.chips.length >= 3 && info.chips.every((c) => c.ops.length === 1), `one operator per chip: ${JSON.stringify(info.chips)}`);
     assertEqual([...new Set(info.chips.map((c) => c.ops[0]))].sort(), ['Akamai', 'Amazon CloudFront'], 'chip operators');
-    assert(/stat-v-info/.test(info.groupsStat), `distinct answers stat is info, not a warning: ${info.groupsStat}`);
+    assertEqual(info.groupsStat, 'none', 'distinct answers figure is no warning');
     assertEqual(info.external, [], 'nothing left the page');
     await assertNoHorizontalScroll(page, 'by design');
     await shot(page, 'global-offline-desktop-light-en-by-design');
@@ -457,14 +470,14 @@ async function offlineVerdicts(browser, server) {
     assert(info.findings.every((f) => f.marks.length === 1), `one group mark per finding: ${JSON.stringify(info.findings.map((f) => f.marks))}`);
     const direct = info.chips.find((c) => c.ops.includes('Direct'));
     assert(direct && mixed.marks[0] === direct.group, `the mixed finding points at the "Direct" group: ${JSON.stringify(info.chips)}`);
-    assert(/stat-v-warn/.test(info.groupsStat), `distinct answers stat warns: ${info.groupsStat}`);
+    assertEqual(info.groupsStat, 'warn', 'distinct answers figure warns');
     await shot(page, 'global-offline-desktop-light-en-mixed');
   });
 
   await step('[dark, TR] the verdict is translated after a language re-mount (no re-query)', async () => {
     await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
     await setLangUi(page, 'tr');
-    await page.waitFor(() => document.querySelector('.glb-summary .alert-title')?.textContent === 'Yanıtlar farklı', { message: 'TR verdict' });
+    await page.waitFor(`${VERDICT} === 'Yanıtlar farklı'`, { message: 'TR verdict' });
     const info = await page.evaluate(verdictInfo);
     assertEqual(info.findings.map((f) => f.code), ['rcode', 'nxdomain', 'mixed'], 'finding codes kept');
     assert(/doğrudan/.test(info.findings[2].text) && info.chips.some((c) => c.ops.includes('Doğrudan')), `TR texts: ${info.findings[2].text}`);
@@ -502,7 +515,7 @@ async function offlineVerdicts(browser, server) {
       await page.waitFor(DONE, { timeout: 20000, message: `offline check done (${name})` });
       const info = await page.evaluate(verdictInfo);
       assertEqual(info.state, 'differ', `${name}: state (${info.title}: ${info.message})`);
-      assert(/stat-v-warn/.test(info.groupsStat), `${name}: distinct answers stat warns: ${info.groupsStat}`);
+      assertEqual(info.groupsStat, 'warn', `${name}: distinct answers figure warns`);
       assert(!/SafeSearch/.test(info.message), `${name}: not called a rewrite: ${info.message}`);
       return info;
     };
@@ -524,7 +537,7 @@ async function offlineVerdicts(browser, server) {
     const info = await page.evaluate(verdictInfo);
     assertEqual(info.state, 'agree', `state (${info.title})`);
     assert(/Cloudflare Family: a SafeSearch rewrite \(forcesafesearch\.google\.com\), the policy of these filtering resolvers/.test(info.message), `body: ${info.message}`);
-    assert(/stat-v-info/.test(info.groupsStat), `distinct answers stat is info: ${info.groupsStat}`);
+    assertEqual(info.groupsStat, 'none', 'distinct answers figure is no warning');
   });
 
   await step('Netlify → Vercel at the apex: a move between providers, not "by design"', async () => {
@@ -549,7 +562,7 @@ async function offlineVerdicts(browser, server) {
     assert(/^Every answer is an edge .* On the way, steered\.example\.com sends sources to different names \(zone[12]\.steered\.example\.com, zone[12]\.steered\.example\.com\), but they lead to the same CDN names: weighted or load-balanced records/.test(info.message), `body: ${info.message}`);
     assertEqual(info.findings, [], 'no findings');
     assert(info.chips.every((c) => c.ops.join() === 'Fastly'), `every group on Fastly: ${JSON.stringify(info.chips)}`);
-    assert(/stat-v-info/.test(info.groupsStat), `distinct answers stat is info: ${info.groupsStat}`);
+    assertEqual(info.groupsStat, 'none', 'distinct answers figure is no warning');
   });
 
   await step('AAAA with no records anywhere: the CNAME chains to Fastly or Cloudflare differ by design', async () => {
@@ -560,7 +573,7 @@ async function offlineVerdicts(browser, server) {
     assertEqual(info.title, 'No AAAA records anywhere — the CNAME chains differ by design (Fastly, Cloudflare)', 'title');
     assert(/^No source returns AAAA records for this name\./.test(info.message) && /multi-CDN/.test(info.message), `body: ${info.message}`);
     assertEqual(info.chips.map((c) => c.ops.join()), ['Fastly', 'Cloudflare'], 'operator next to each empty answer');
-    assert(/stat-v-info/.test(info.groupsStat), `distinct answers stat is info: ${info.groupsStat}`);
+    assertEqual(info.groupsStat, 'none', 'distinct answers figure is no warning');
     // The A answers of the same name: edges of two CDNs behind one shared name.
     await gotoHash(page, '#/global?name=nov6.example.com&type=A', 'global');
     await page.waitFor(DONE, { timeout: 20000, message: 'offline check done' });
@@ -582,7 +595,7 @@ async function offlineVerdicts(browser, server) {
     assertEqual(info.findings, [], 'no findings');
     assert(info.chips.some((c) => c.ops.join() === 'Alibaba Cloud CDN') && info.chips.some((c) => c.ops.join() === 'Amazon CloudFront'),
       `the chips name both operators: ${JSON.stringify(info.chips)}`);
-    assert(/stat-v-info/.test(info.groupsStat), `distinct answers stat is info: ${info.groupsStat}`);
+    assertEqual(info.groupsStat, 'none', 'distinct answers figure is no warning');
     assertEqual(info.external, [], 'nothing left the page');
     const cn = await page.evaluate(() => {
       const group = document.querySelector('.glb-geo .glb-geo-group[data-group="cn"]');
@@ -614,11 +627,11 @@ async function offlineVerdicts(browser, server) {
     await assertNoHorizontalScroll(page, 'china');
     await shot(page, 'global-offline-desktop-light-en-china');
     await setLangUi(page, 'tr');
-    await page.waitFor(() => /^Tasarım gereği farklı/.test(document.querySelector('.glb-summary .alert-title')?.textContent || ''), { message: 'TR verdict' });
+    await page.waitFor(() => /^Tasarım gereği farklı/.test(document.querySelector('.glb-summary .glb-verdict')?.textContent || ''), { message: 'TR verdict' });
     const tr = await page.evaluate(() => ({
       title: document.querySelector('.glb-geo-group[data-group="cn"] .glb-geo-group-title > span:not(.flag)')?.textContent.trim(),
       desc: document.querySelector('.glb-geo-group[data-group="cn"] .section-desc')?.textContent || '',
-      message: document.querySelector('.glb-summary .alert-message')?.textContent || ''
+      message: document.querySelector('.glb-summary .glb-verdict-body')?.textContent || ''
     }));
     assertEqual(tr.title, 'Anakara Çin', 'TR group title');
     assert(/A ve AAAA için ayrıca bir kez ABD’deki bir alt ağ adına sorulur/.test(tr.desc), `TR note names the control question: ${tr.desc}`);
@@ -643,8 +656,8 @@ async function offlineVerdicts(browser, server) {
     assert(/sends Beijing, China; Shanghai, China; Guangzhou, China to CNAME china-nocontrol\.example\.com\.w\.kunluncan\.com, unlike every other source: either .* a line of its own .*, or AliDNS still holds an older answer — that would expire within 10 min\. AliDNS asked on behalf of a subnet outside China could not tell the two apart\./.test(unsure.message),
       `unsure: the doubt and the TTL: ${unsure.message}`);
     await setLangUi(page, 'tr');
-    await page.waitFor(() => /eski bir yanıt/.test(document.querySelector('.glb-summary .alert-message')?.textContent || ''), { message: 'TR doubt' });
-    assertEqual(await page.evaluate(() => document.querySelector('.glb-summary .alert-title')?.textContent), 'Büyük olasılıkla tasarım gereği farklı: CDN / GeoDNS uç sunucuları (Amazon CloudFront, Alibaba Cloud CDN)', 'TR hedged title');
+    await page.waitFor(() => /eski bir yanıt/.test(document.querySelector('.glb-summary .glb-verdict-body')?.textContent || ''), { message: 'TR doubt' });
+    assertEqual(await page.evaluate(() => document.querySelector('.glb-summary .glb-verdict')?.textContent), 'Büyük olasılıkla tasarım gereği farklı: CDN / GeoDNS uç sunucuları (Amazon CloudFront, Alibaba Cloud CDN)', 'TR hedged title');
     await setLangUi(page, 'en');
     assertEqual([stale.external, unsure.external], [[], []], 'nothing left the page');
   });
@@ -671,7 +684,7 @@ async function offlineVerdicts(browser, server) {
       `unsure: the doubt and the TTL: ${unsure.message}`);
     assertEqual(await copiedVerdict(page), '- Resolvers agree — locations differ, most likely by GeoDNS; AliDNS may still hold an older answer for mainland China', 'unsure: Copy summary');
     await setLangUi(page, 'tr');
-    await page.waitFor(() => document.querySelector('.glb-summary .alert-title')?.textContent === 'Çözümleyiciler aynı — konumlar büyük olasılıkla GeoDNS yüzünden farklı', { message: 'TR hedged geo title' });
+    await page.waitFor(`${VERDICT} === 'Çözümleyiciler aynı — konumlar büyük olasılıkla GeoDNS yüzünden farklı'`, { message: 'TR hedged geo title' });
     assertEqual(await copiedVerdict(page), '- Çözümleyiciler aynı — konumlar büyük olasılıkla GeoDNS yüzünden farklı; AliDNS anakara Çin için hâlâ eski bir yanıtı tutuyor olabilir', 'TR Copy summary');
     await setLangUi(page, 'en');
     // A bare Cloudflare-range address only in China while the world gets Fastly's anycast address.
@@ -687,7 +700,7 @@ async function offlineVerdicts(browser, server) {
     const info = await page.evaluate(verdictInfo);
     assertEqual(info.state, 'differ', `the verdict is kept (${info.title}: ${info.message})`);
     assertEqual(info.findings.map((f) => f.code), ['cname'], 'one finding');
-    const partner = await page.evaluate(() => document.querySelector('.glb-summary .glb-finding[data-partner="true"]')?.lastElementChild.textContent || '');
+    const partner = await page.evaluate(() => document.querySelector('.glb-findings .glb-finding[data-partner="true"]')?.lastElementChild.textContent || '');
     assertEqual(partner, 'Beijing, China; Shanghai, China; Guangzhou, China: the China answer ends at a cache name this tool does not recognise '
       + '(cache01.partner.example.net), after Alibaba Cloud CDN; it may be the CDN’s partner. It is not counted as the CDN’s own edge, so the answers still differ.', 'worded as a partner');
     assertEqual(info.findings[0].marks.length, 1, 'marked with the China group only');
@@ -702,7 +715,7 @@ async function offlineVerdicts(browser, server) {
     await page.setViewport({ width: 1440, height: 900 });
     await setLangUi(page, 'tr');
     const tr = await page.waitFor(() => {
-      const text = document.querySelector('.glb-summary .glb-finding[data-partner="true"]')?.lastElementChild.textContent || '';
+      const text = document.querySelector('.glb-findings .glb-finding[data-partner="true"]')?.lastElementChild.textContent || '';
       return /iş ortağı olabilir/.test(text) ? text : false;
     }, { message: 'TR partner finding' });
     assertEqual(tr, 'Pekin, Çin; Şanghay, Çin; Guangzhou, Çin: Çin’deki yanıt, Alibaba Cloud CDN üzerinden geçtikten sonra bu aracın tanımadığı bir önbellek adında '
@@ -733,7 +746,7 @@ async function offlineVerdicts(browser, server) {
     assertEqual(rows.length, 3, 'three China rows');
     assert(rows.every((r) => r.muted && /Not asked/.test(r.text) && /cuts large answers short/.test(r.text)), `muted, with the reason: ${JSON.stringify(rows)}`);
     assertEqual(await page.evaluate(() => window.__jsonQueries.length), 0, 'no question to AliDNS, not even the control');
-    const answered = await page.evaluate(() => document.querySelector('.glb-stats .stat')?.textContent || '');
+    const answered = await page.evaluate(() => document.querySelector('.glb-stats .metric[data-metric="answered"]')?.textContent || '');
     assert(/43 \/ 43/.test(answered) && /3 not asked/.test(answered), `the answered stat leaves them out and says so: ${answered}`);
     await setLangUi(page, 'tr');
     await page.waitFor(() => /Sorulmadı/.test(document.querySelector('.glb-geo-group[data-group="cn"] .glb-skip')?.textContent || ''), { message: 'TR not asked' });
@@ -749,9 +762,9 @@ async function offlineVerdicts(browser, server) {
     assertEqual(info.title, 'No source could resolve the name', 'title');
     assertEqual(info.findings.map((f) => f.code), ['rcode'], 'finding codes');
     assert(/: SERVFAIL — no answer at all, typically a DNSSEC validation failure or name servers that cannot be reached\./.test(info.findings[0].text), `servfail: ${info.findings[0].text}`);
-    assert(/stat-v-error/.test(info.groupsStat), `distinct answers stat is an error: ${info.groupsStat}`);
+    assertEqual(info.groupsStat, 'error', 'distinct answers figure is an error');
     await setLangUi(page, 'tr');
-    await page.waitFor(() => document.querySelector('.glb-summary .alert-title')?.textContent === 'Hiçbir kaynak adı çözümleyemedi', { message: 'TR unresolved title' });
+    await page.waitFor(`${VERDICT} === 'Hiçbir kaynak adı çözümleyemedi'`, { message: 'TR unresolved title' });
     const tr = await page.evaluate(verdictInfo);
     assert(/ulaşılamayan ad sunucuları/.test(tr.findings[0].text), `TR servfail: ${tr.findings[0].text}`);
     await setLangUi(page, 'en');
@@ -858,11 +871,11 @@ const fakeIspGlobalpingScript = () => `(() => {
   };
 })();`;
 
-/** The ISP panel and the summary as the user sees them. */
+/** The ISP panel and the verdict as the user sees them. */
 function ispInfo() {
   const panel = document.querySelector('[data-role="isp-panel"]');
   const rows = [...document.querySelectorAll('.glb-isp-table tbody tr.dt-row')];
-  const alert = document.querySelector('.glb-summary .alert');
+  const head = document.querySelector('.glb-summary');
   return {
     panel: !!panel,
     status: document.querySelector('[data-role="isp-status"] [data-isp-status]')?.dataset.ispStatus || null,
@@ -872,10 +885,10 @@ function ispInfo() {
     pending: rows.filter((tr) => tr.classList.contains('is-pending')).length,
     istanbul: rows.find((tr) => tr.textContent.includes('Istanbul'))?.textContent || '',
     chicago: rows.find((tr) => tr.textContent.includes('Chicago'))?.textContent || '',
-    state: alert?.dataset.state,
-    title: alert?.querySelector('.alert-title')?.textContent || '',
-    message: alert?.textContent || '',
-    findings: [...document.querySelectorAll('.glb-summary .glb-finding')].map((li) => li.textContent),
+    state: head?.dataset.verdict,
+    title: head?.querySelector('.glb-verdict')?.textContent || '',
+    message: head?.querySelector('.result-notes')?.textContent || '',
+    findings: [...document.querySelectorAll('.glb-findings .glb-finding')].map((li) => li.querySelector('.glb-finding-text').textContent),
     chips: document.querySelectorAll('.glb-legend .glb-chip').length,
     oldIp: [...document.querySelectorAll('.glb-ips tbody tr.dt-row')].find((tr) => tr.textContent.includes('192.0.2.10'))?.querySelectorAll('.glb-flag').length || 0,
     calls: window.__gpIsp.calls.map((c) => `${c.method} ${c.path}`),
@@ -899,6 +912,8 @@ async function offlineIsp(browser, server) {
     await gotoHash(page, '#/global?name=isp.example.com&type=A', 'global');
     await page.waitFor(DONE, { timeout: 20000, message: 'check done' });
     assertEqual(await page.evaluate(() => !!document.querySelector('[data-role="isp-panel"]')), false, 'not loaded before the click');
+    // The ISP resolvers are a section of the Resolvers & locations tab.
+    await selectTab(page, 'resolvers');
     await page.click('[data-action="isp-open"]');
     await page.waitFor(() => !!document.querySelector('[data-role="isp-panel"]'), { message: 'panel' });
     const info = await page.evaluate(ispInfo);
@@ -943,7 +958,7 @@ async function offlineIsp(browser, server) {
   await step('[TR, dark] a language re-mount keeps the ISP rows and words the verdict in Turkish (no new measurement)', async () => {
     await page.emulateMedia({ 'prefers-color-scheme': 'dark' });
     await setLangUi(page, 'tr');
-    await page.waitFor(() => document.querySelector('.glb-summary .alert-title')?.textContent === '1 İSS çözümleyicisinde eskimiş yanıt', { timeout: 10000, message: 'TR stale title' });
+    await page.waitFor(`${VERDICT} === '1 İSS çözümleyicisinde eskimiş yanıt'`, { timeout: 10000, message: 'TR stale title' });
     const info = await page.evaluate(ispInfo);
     assertEqual(info.rows, 10, 'rows kept');
     assertEqual(info.posts.length, 1, 'no second measurement');
@@ -1007,7 +1022,7 @@ async function liveChecks(browser, server) {
 
   await step('empty state before a query', async () => {
     await gotoHash(page, '#/global', 'global');
-    const info = await page.evaluate(() => ({ empty: !!document.querySelector('.glb-empty .empty'), resultsHidden: document.querySelector('.glb-results').hidden }));
+    const info = await page.evaluate(() => ({ empty: !!document.querySelector('.glb-empty .tool-empty'), resultsHidden: document.querySelector('.glb-results').hidden }));
     assert(info.empty && info.resultsHidden, `empty state: ${JSON.stringify(info)}`);
     await assertNoHorizontalScroll(page, 'empty');
   });
@@ -1183,7 +1198,7 @@ async function liveChecks(browser, server) {
       document.querySelector('[data-action="run"]').click();
       document.querySelector('[data-action="stop"]').click(); // same tick: before any answer
     });
-    await page.waitFor(() => document.querySelector('.glb-summary .alert')?.dataset.state === 'stopped', { message: 'stopped state' });
+    await page.waitFor(() => document.querySelector('.glb-summary')?.dataset.verdict === 'stopped', { message: 'stopped state' });
     const info = await page.evaluate(() => ({
       runVisible: !document.querySelector('[data-action="run"]').hidden,
       spinners: document.querySelectorAll('.glb-results .glb-pending').length

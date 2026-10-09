@@ -59,10 +59,8 @@ const JSON_URLS = ECS_RESOLVERS.map((r) => [r.url, r.id]);
 const OLD_SUBNETS = GEO_VANTAGES.filter((v) => !v.resolver).slice(0, 2).map((v) => v.subnet);
 /** Every source of a Global DNS check: the resolvers and the locations. */
 const SOURCES = RESOLVERS.length + GEO_VANTAGES.length;
-const DONE = () => {
-  const a = document.querySelector('.glb-summary .alert');
-  return !!a && a.dataset.state !== 'running';
-};
+/** The check's result header (the page template) says it ended. */
+const DONE = () => document.querySelector('.glb-summary')?.dataset.state === 'done';
 
 /**
  * The fake DoH (RFC 8484 wire and AliDNS's JSON form), installed before the app loads:

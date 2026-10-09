@@ -162,7 +162,7 @@ async function main() {
       assertEqual(nav, ['change', 'global', 'zone', 'retire'], 'Change & migrate DNS group');
       assertEqual(await text(page, 'h1'), 'DNS change request', 'title');
       assertEqual(await page.evaluate(() => document.querySelector('[data-role="change-template"]').value), 'acme-txt', 'first template');
-      assert(await page.evaluate(() => !!document.querySelector('.chg-empty .empty')), 'empty state');
+      assert(await page.evaluate(() => !!document.querySelector('.chg-empty .tool-empty')), 'empty state');
       assertEqual(await dnsLog(page), [], 'no DNS query');
       await shot(page, opts, 'change-empty-desktop-light-en');
     });
@@ -244,7 +244,8 @@ async function main() {
       await pickTemplate(page, 'spf');
       await fill(page, 'domain', 'example.com');
       await fill(page, 'includes', '_spf.google.com');
-      await page.waitFor(() => /read the current records first/.test(document.querySelector('.chg-problems')?.textContent || ''), { message: 'read first' });
+      // A note of the result header (the page template), above the outputs it is about.
+      await page.waitFor(() => /read the current records first/.test(document.querySelector('.chg-result [data-role="needs-read"]')?.textContent || ''), { message: 'read first' });
       await page.evaluate(() => document.querySelector('textarea[data-field="includes"]').focus());
       await page.press('Enter', { ctrl: true });
       await page.waitFor(() => /Current records read at/.test(document.querySelector('.chg-read-note')?.textContent || ''), { message: 'read done', timeout: 10000 });

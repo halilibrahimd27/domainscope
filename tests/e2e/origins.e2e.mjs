@@ -262,7 +262,7 @@ async function main() {
       assertEqual(map.entries.map((e) => `${e.name} ${e.ip}:${e.port} ${e.source}`), [`shop.${APEX} 192.0.2.20:443 zone`, `www.${APEX} 192.0.2.10:443 zone`], 'entries');
       await shotPage(page, opts, 'origins-zone-remembered-desktop-light-en');
       // Forget the file: the scans below see the origin map only, not the zone.
-      await page.click('[data-action="zone-forget"]');
+      await resultAction(page, '[data-action="zone-forget"]', '.zone-summary');
       await page.waitFor(() => !document.querySelector('.zone-tabs'), { message: 'zone forgotten' });
     });
 
@@ -597,7 +597,7 @@ async function main() {
       await assertNoHorizontalScroll(page, 'zone origins 375 tr dark');
       await page.evaluate(() => document.querySelector('[data-role="zone-remember"]').scrollIntoView());
       await shotPage(page, opts, 'origins-zone-phone375-dark-tr');
-      await page.click('[data-action="zone-forget"]');
+      await resultAction(page, '[data-action="zone-forget"]', '.zone-summary');
       await page.waitFor(() => !document.querySelector('.zone-tabs'), { message: 'zone forgotten' });
       await subdomainsScan(page);
       const panel = await originPanel(page);

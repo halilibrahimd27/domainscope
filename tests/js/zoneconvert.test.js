@@ -754,6 +754,31 @@ describe('pitfalls', () => {
     assert.ok(convertZone(z, 'bind').text.includes('key65000="a b"'), 'BIND keeps it quoted');
   });
 
+  test('a numbered SvcParam key with no value: null in octoDNS, key65001="" in DNSControl, the bare key in BIND and Route 53; all read back', () => {
+    const z = bind('svc HTTPS 1 . alpn=h2 key65001 key65002="" key65003=abc\nweb SVCB 1 web.example.net. key65001');
+    const params = (zone, name) => zone.records.find((r) => r.name === name).data.params;
+    assert.deepEqual(params(z, 'svc.example.com'), { alpn: ['h2'], key65001: '', key65002: '', key65003: '616263' }, 'the parser: no bytes either way');
+    // octoDNS writes '' as `key65001=`, which nothing reads: null is a key without a value.
+    const oct = convertZone(z, 'octodns');
+    assert.match(oct.text, /^ {6}key65001: null\n {6}key65002: null\n {6}key65003: abc$/m, oct.text);
+    assert.match(oct.text, /^web:\n {2}ttl: 3600\n {2}type: SVCB\n {2}value:\n {4}svcparams:\n {6}key65001: null$/m, oct.text);
+    assert.ok(!/key6500\d: ''/.test(oct.text), 'never an empty string');
+    const octBack = parseZone(oct.text, { origin: 'example.com', filename: oct.filename });
+    // DNSControl refuses the bare numbered key: it gets an empty value.
+    const dnsc = convertZone(z, 'dnscontrol');
+    assert.ok(dnsc.text.includes(`HTTPS("svc", 1, ".", ${JSON.stringify('alpn="h2" key65001="" key65002="" key65003="abc"')})`), dnsc.text);
+    assert.ok(dnsc.text.includes(`SVCB("web", 1, "web.example.net.", ${JSON.stringify('key65001=""')})`), dnsc.text);
+    const { zone: dnscBack } = dnscontrolZone(dnsc.text, 'example.com');
+    // BIND and Route 53 keep the bare key: a valid presentation form.
+    assert.match(convertZone(z, 'bind').text, /IN HTTPS 1 \. alpn="h2" key65001 key65002 key65003="abc"$/m);
+    const r53 = JSON.parse(convertZone(z, 'route53').text).Changes.find((c) => c.ResourceRecordSet.Name === 'web.example.com.');
+    assert.equal(r53.ResourceRecordSet.ResourceRecords[0].Value, '1 web.example.net. key65001');
+    const bindBack = parseZone(convertZone(z, 'bind').text, { origin: 'example.com', filename: convertFilename('example.com', 'bind') });
+    for (const [t, back] of [['octodns', octBack], ['dnscontrol', dnscBack], ['bind', bindBack]]) {
+      for (const name of ['svc.example.com', 'web.example.com']) assert.deepEqual(params(back, name), params(z, name), `${t} ${name}`);
+    }
+  });
+
   test('octoDNS: a CAA value with a quote or a backslash is flagged (octoDNS writes it between quotes as it is)', () => {
     const z = bind(['q CAA 0 issue "ca.example.net; account=\\"a b\\""', 'b CAA 0 issue "ca.example.net; x=a\\\\b"', 'ok CAA 0 issue "ca.example.net"'].join('\n'));
     const res = convertZone(z, 'octodns');

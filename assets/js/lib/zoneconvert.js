@@ -893,7 +893,9 @@ const octodnsSvcKey = (k) => (OCTODNS_SVC_KEYS.includes(k) || SVC_KEY_NUMBERS[k]
  * The `svcparams` mapping of an HTTPS / SVCB value (lib/zoneparse.js data `params`) as octoDNS
  * keeps it: lists for mandatory, alpn and the address hints, null for a key without a value,
  * the port as a number; a key written by number (`key<N>`) as its wire bytes in `\DDD` escapes:
- * ech decoded from base64, tls-supported-groups as 16-bit numbers, dohpath as UTF-8.
+ * ech decoded from base64, tls-supported-groups as 16-bit numbers, dohpath as UTF-8. A key whose
+ * value is no bytes at all (`key65001`) is null as well: octoDNS writes '' as `key65001=`, which
+ * no zone file parser reads.
  */
 function octodnsSvcParams(params) {
   const out = {};
@@ -904,7 +906,10 @@ function octodnsSvcParams(params) {
     else if (k === 'alpn' || k === 'ipv4hint' || k === 'ipv6hint') out[key] = list(v);
     else if (v === true) out[key] = null;
     else if (k === 'port') out[key] = Number(v);
-    else out[key] = charStringText(svcWireBytes(k, v));
+    else {
+      const bytes = svcWireBytes(k, v);
+      out[key] = bytes.length ? charStringText(bytes) : null;
+    }
   }
   return out;
 }
@@ -1024,6 +1029,19 @@ function svcParams(text) {
   return m ? m[1].trim() : '';
 }
 
+/**
+ * HTTPS / SVCB parameters as DNSControl takes them: it splits them at every space, quoted or not,
+ * so a space in a value is \032; and a key written by number without a value (`key65001`) gets
+ * an empty one, `key65001=""`, which DNSControl reads where it refuses the bare key.
+ * @param {string} text the parameters (lib/zoneparse.js presentation tokens)
+ * @returns {string}
+ */
+function dnscontrolSvcParams(text) {
+  return (String(text).match(/(?:[^\s"\\]|\\.|"(?:[^"\\]|\\.)*")+/g) || [])
+    .map((tok) => (/^key\d+$/i.test(tok) ? `${tok}=""` : tok.replace(/"(?:[^"\\]|\\.)*"/g, (q) => q.replace(/ /g, '\\032'))))
+    .join(' ');
+}
+
 /** One DNSControl record call (without modifiers). */
 function dnscontrolCall(type, name, r) {
   const d = r.data;
@@ -1041,8 +1059,7 @@ function dnscontrolCall(type, name, r) {
     case 'SSHFP': return `SSHFP(${n}, ${d.algorithm}, ${d.fpType}, ${js(d.fingerprint)}`;
     case 'DS': return `DS(${n}, ${d.keyTag}, ${d.algorithm}, ${d.digestType}, ${js(d.digest)}`;
     case 'NAPTR': return `NAPTR(${n}, ${d.order}, ${d.preference}, ${js(d.flags)}, ${js(d.services)}, ${js(d.regexp)}, ${js(fqdn(d.replacement))}`;
-    // DNSControl splits the parameters at every space, quoted or not: a space in a value is \032.
-    case 'HTTPS': case 'SVCB': return `${type}(${n}, ${d.priority}, ${js(fqdn(d.target))}, ${js(svcParams(svcText(r)).replace(/"(?:[^"\\]|\\.)*"/g, (q) => q.replace(/ /g, '\\032')))}`;
+    case 'HTTPS': case 'SVCB': return `${type}(${n}, ${d.priority}, ${js(fqdn(d.target))}, ${js(dnscontrolSvcParams(svcParams(svcText(r))))}`;
     case 'RP': return `RP(${n}, ${js(fqdn(d.mbox))}, ${js(fqdn(d.txt))}`;
     case 'OPENPGPKEY': return `OPENPGPKEY(${n}, ${js(String(d))}`;
     default: return null;

@@ -59,6 +59,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
+import { isKnownExternal, unexpectedConsoleErrors } from './known-external.mjs';
 import { launchBrowser } from './cdp.mjs';
 import { zoneHandoffScript, stubClipboard, takeClipboard } from './scan.e2e.mjs';
 import { RESOLVERS } from '../../assets/js/lib/resolvers.js';
@@ -81,11 +82,7 @@ const OFFLINE = argv.includes('--offline');
 // Third-party hosts whose request failures the view reports in its UI (not app errors): every
 // public DoH resolver can time out or, like Quad9 over HTTP/3, omit CORS headers.
 const FLAKY_HOSTS = ['ipwho.is', 'api.hackertarget.com', ...RESOLVERS.map((r) => new URL(r.url).hostname)];
-// Live runs only: Robtex answers 403 without CORS headers to the HeadlessChrome user agent (a normal
-// Chrome gets its data), so Chrome logs a CORS / 403 console error that the app handles (the source
-// shows as failed, the rest carries on). That known external error is tolerated; the app is unchanged.
-const KNOWN_EXTERNAL_ERRORS = ['freeapi.robtex.com'];
-const isKnownExternal = (text) => KNOWN_EXTERNAL_ERRORS.some((host) => String(text).includes(host));
+// Live runs only: Robtex's 403 without CORS to HeadlessChrome is tolerated (known-external.mjs); the app is unchanged.
 const ROWS_DONE = "document.querySelectorAll('.ipi-row').length > 0 && document.querySelectorAll('.ipi-row.is-pending').length === 0 && !document.querySelector('[data-action=\"run\"]').hidden";
 
 /* ------------------------------------------------------------------------ */
@@ -170,11 +167,8 @@ async function shot(page, name) {
 
 async function assertClean(page, where) {
   const p = await page.problems();
-  // Chrome's "Failed to load resource" console line names no URL, only the matching log entry does.
-  const externalSeen = p.logErrors.some((e) => isKnownExternal(`${e.text || ''} ${e.url || ''}`));
-  const isKnownConsole = (m) => isKnownExternal(`${m.text} ${m.url || ''}`) || (externalSeen && /Failed to load resource|CORS|ERR_FAILED/.test(m.text));
   const issues = [
-    ...p.consoleErrors.filter((m) => !isKnownConsole(m)).map((m) => `console.${m.type}: ${m.text}`),
+    ...unexpectedConsoleErrors(p.logErrors, p.consoleErrors).map((m) => `console.${m.type}: ${m.text}`),
     ...p.exceptions.map((e) => `exception: ${e.text}`),
     ...p.csp.map((c) => `CSP: ${JSON.stringify(c).slice(0, 300)}`)
   ];

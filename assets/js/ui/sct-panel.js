@@ -138,7 +138,7 @@ registerStrings('tr', {
   'sct.verdict.compliant': 'uygun görünüyor',
   'sct.verdict.not-compliant': 'politikayı karşılamıyor',
   'sct.verdict.cannot-tell': 'dosyadan söylenemiyor',
-  'sct.policy.counts': 'Gereken SCT\'lerin {counted} / {required} kadarı sayılıyor, {operators} işletmeciden.',
+  'sct.policy.counts': '{required} SCT gerekiyor, {counted} tanesi sayılıyor ({operators} işletmeci).',
   'sct.policy.over': '{days} günlük ömür, Apple\'ın hiçbir koşulda kabul etmediği sınırın (398 gün) üstünde.',
   'sct.policy.approx': 'Yayımlanmış politikaların bu dosyadan yapılan bir yaklaşımıdır; son kararı tarayıcıların kendi kontrolü verir.',
   'sct.reason.no-scts': 'Sertifikada gömülü SCT yok.',

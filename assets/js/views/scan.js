@@ -89,6 +89,7 @@ import { expectedCasChanged } from '../ui/expected-ca.js';
 import { knownForScan, originIndex, originTarget } from '../lib/originmap.js';
 import { StaleBadge, staleText } from '../ui/origin-map.js';
 import { resultNow, staleKnownUses } from '../lib/originnow.js';
+import { rolloutRows } from '../lib/rollout.js';
 import {
   CertAlternatives, CertChainNotes, CertLoader, CertPfxNote, CertSourceNote, CertSummary, RenewalLink, certWarningAlerts, getCurrentCert, setCurrentCert, normalizeCertLoad, pfxFocusTarget,
   certDisplayName, issuerDisplayName, openCertInputs, certFileInputs, ValidityBadge, PENDING_CERT, CURRENT_CERT, EXPIRING_DAYS, CERT_ACCEPT, CERT_MAX_BYTES
@@ -2870,6 +2871,8 @@ function buildRunUI(run, ctx, { onFinish }) {
     if (!shownMemo || shownMemo.r !== r) shownMemo = { r, sig: staleSig(r), value: resultNow(r, state.workspaceData('origins')) };
     return shownMemo.value;
   };
+  /** What the Rollout board lists for a result (and the current plan): compared before and after a map write. */
+  const rolloutSig = (res) => JSON.stringify(rolloutRows(res, { plan: sets ? plan : null }));
   const cdnOwnerCtl = new AbortController();
   // The shell of the Behind CDN commands (the quick sweep and step 3 of the CLI card), shared with
   // the Verify tab's CLI card through session.cdnShell. renderCdnTab builds the one toggle and
@@ -4669,15 +4672,18 @@ function buildRunUI(run, ctx, { onFinish }) {
   const offOrigins = state.subscribe(({ key, value }) => {
     if (!run.result || key !== 'workspaceData' || !value || !(value.parts || []).includes('origins')) return;
     if (!shownMemo || shownMemo.r !== run.result || shownMemo.sig !== staleSig(run.result)) {
+      // The Renewal plan tab and the Rollout board follow the map's marks too; the board is drawn
+      // again only when its rows changed (its open snippets and fields are kept otherwise).
+      const boardBefore = rolloutSig(shown());
       shownMemo = null;
-      // The Renewal plan tab and the Rollout board follow the map's marks too.
       if (sets) plan = planRenewal(shown(), sets);
+      const boardChanged = rolloutSig(shown()) !== boardBefore;
       renderStatsNow();
       renderKey();
       renderSummary();
       renderServersTab();
       renderPlanTab();
-      renderRolloutTab();
+      if (boardChanged) renderRolloutTab();
       renderTabBadges();
     }
     renderCdnTab();

@@ -273,6 +273,7 @@ registerStrings('en', {
   'cert.tab.chain': 'Chain',
   'cert.tab.caa': 'CAA',
   'cert.tab.ct': 'CT logs',
+  'cert.tab.sct': 'Transparency',
   'cert.tab.pem': 'PEM & OpenSSL',
   'cert.tab.compare': 'Compare',
   'cert.dane.leaf': 'The DANE check uses the leaf certificate of the file ({name}) and its chain.',
@@ -623,6 +624,7 @@ registerStrings('tr', {
   'cert.tab.chain': 'Zincir',
   'cert.tab.caa': 'CAA',
   'cert.tab.ct': 'CT kayıtları',
+  'cert.tab.sct': 'Şeffaflık',
   'cert.tab.pem': 'PEM ve OpenSSL',
   'cert.tab.compare': 'Karşılaştır',
   'cert.dane.leaf': 'DANE kontrolü dosyadaki uç sertifikayı ({name}) ve zincirini kullanır.',
@@ -2098,6 +2100,8 @@ const loadCertDiff = onceAsync(() => import('../ui/cert-diff-panel.js'));
 /** "Is it revoked?" lookups per certificate (ui/revocation-card.js, loaded with the CT logs tab). */
 const revocationCache = new Map();
 const loadRevocationCard = onceAsync(() => import('../ui/revocation-card.js'));
+/** Certificate › Transparency (ui/sct-panel.js, loaded on the tab's first open; it reads the CT log list then). */
+const loadSctPanel = onceAsync(() => import('../ui/sct-panel.js'));
 let teardown = null;
 /** The mounted view's page-session hooks ({@link result}, {@link rerun}); null while another tool is shown. */
 let active = null;
@@ -2394,6 +2398,7 @@ export function mount(container, ctx) {
         { id: 'caa', label: t('cert.tab.caa'), content: () => caaPanel(cert) },
         { id: 'dane', label: t('dane.tab'), content: () => danePanel(cert) },
         { id: 'ct', label: t('cert.tab.ct'), content: () => ctPanel(cert) },
+        { id: 'sct', label: t('cert.tab.sct'), content: () => sctPanel(cert) },
         { id: 'pem', label: t('cert.tab.pem'), content: () => pemPanel(cert, analysis) },
         { id: 'compare', label: t('cert.tab.compare'), content: () => comparePanel() }
       ], {
@@ -3102,6 +3107,20 @@ export function mount(container, ctx) {
         host.append(RevocationCard({ cert, ctx, cache: revocationCache, cacheKey: key }));
       }).catch((err) => {
         ctx.checkOutdated();
+        host.append(ErrorBanner(err, { compact: true }));
+      });
+      return host;
+    }
+
+    /* --- Transparency: the embedded SCTs and the CT policies (ui/sct-panel.js, loaded on first open) --- */
+    function sctPanel(cert) {
+      const host = h('div', { class: 'cert-sct-host' }, Spinner({ showLabel: true }));
+      loadSctPanel().then(({ SctPanel }) => {
+        clear(host);
+        host.append(SctPanel({ cert, ctx }));
+      }).catch((err) => {
+        ctx.checkOutdated();
+        clear(host);
         host.append(ErrorBanner(err, { compact: true }));
       });
       return host;

@@ -13,7 +13,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, DataTable, Spinner } from './components.js';
+import { Alert, Tag, DataTable, Spinner } from './components.js';
 import { statusText } from './source-status.js';
 import { t, registerStrings, formatDateTime, formatNumber } from '../i18n.js';
 import { sourceStatus } from '../lib/sourcestatus.js';
@@ -271,7 +271,7 @@ export function SctPanel({ cert, ctx = {}, now = Date.now }) {
           {
             key: 'standing', label: t('sct.col.standing'), wrap: true, sortable: true,
             sortValue: (r) => r.standing.status, exportValue: (r) => r.standing.status,
-            render: (r) => Badge(t(`sct.standing.${r.standing.status}`), {
+            render: (r) => Tag(t(`sct.standing.${r.standing.status}`), {
               variant: r.standing.status === 'current' || r.standing.status === 'retired' ? 'ok' : (r.standing.status === 'no-list' ? 'neutral' : 'warn')
             })
           }

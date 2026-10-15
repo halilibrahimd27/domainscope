@@ -477,7 +477,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
   const attn = new Map();
   function attentionBadge(id) {
     const n = attn.get(id);
-    return n ? Badge(t('ws.attn', { count: n }), { variant: 'warn', title: t('ws.attnTitle'), className: 'ws-item-attn' }) : null;
+    return n ? Tag(t('ws.attn', { count: n }), { variant: 'warn', title: t('ws.attnTitle'), className: 'ws-item-attn' }) : null;
   }
   let closed = false;
   cleanups.push(() => { closed = true; });

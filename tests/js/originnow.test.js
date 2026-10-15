@@ -10,6 +10,8 @@ import assert from 'node:assert/strict';
 import { originStaleMark, staleKnownUses, hintsNow, serversNow, resultNow, markStaleOrigins } from '../../assets/js/lib/originnow.js';
 import { originIndex } from '../../assets/js/lib/originmap.js';
 import { rankServerGroups } from '../../assets/js/lib/topology.js';
+import { planRenewal } from '../../assets/js/lib/certsets.js';
+import { rolloutRows } from '../../assets/js/lib/rollout.js';
 
 const DAY1 = '2026-09-20T08:00:00.000Z';
 const DAY2 = '2026-10-01T08:00:00.000Z';
@@ -138,5 +140,29 @@ describe('lib/originnow.js', () => {
     assert.deepEqual(ranked.map((x) => x.server.name), ['web2', 'web9', 'web1', 'web10']);
     assert.notEqual(ranked, list);
     assert.deepEqual(list.map((x) => x.server.name), ['web10', 'web2', 'web1', 'web9'], 'the input is not sorted in place');
+  });
+});
+
+describe('the Renewal plan and the Rollout board follow the map', () => {
+  const sets = [{ id: 'A', names: ['example.com', '*.example.com'], notAfter: '2027-01-01T00:00:00Z', certs: [] }];
+  const scanResult = () => {
+    const r = result();
+    r.hosts = ['example.com', 'www.example.com'].map((name) => ({ name, wildcardSuspect: false, resolution: { ipv4: ['203.0.113.10'], ipv6: [], cnames: [] }, servers: [] }));
+    return r;
+  };
+  const needing = (plan) => plan.rows.filter((row) => row.needsCert && row.server).map((row) => row.server.name);
+  const board = (plan, res) => rolloutRows(res, { plan, setKeys: new Map([['A', 'A']]) }).map((row) => row.server.name);
+
+  test('an origin marked stale after the scan no longer counts in the plan or the board', () => {
+    const r = scanResult();
+    const m = map(entry('www.example.com', '192.0.2.40', 443, NOT_HOSTED));
+    const before = planRenewal(r, sets);
+    assert.deepEqual(needing(before), ['web01', 'web03'], 'the scan\'s own view still counts web03');
+    assert.deepEqual(board(before, r), ['web01', 'web03']);
+    const now = resultNow(r, m);
+    const plan = planRenewal(now, sets);
+    assert.deepEqual(needing(plan), ['web01'], 'web03 only had the stale origin');
+    assert.deepEqual(board(plan, now), ['web01']);
+    assert.deepEqual(rolloutRows(now).map((row) => row.server.name), ['web01'], 'without sets the board reads the result');
   });
 });

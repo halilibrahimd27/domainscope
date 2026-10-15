@@ -551,7 +551,8 @@ export function planRenewal(result, sets) {
       continue;
     }
     const cells = {};
-    for (const e of Array.isArray(g.hosts) ? g.hosts : []) if (e && e.covered !== false) addEntry(cells, e.name, e.ip, e.via);
+    // An origin the map has marked stale (lib/originnow.js resultNow) is no tie: neither needs nor candidate.
+    for (const e of Array.isArray(g.hosts) ? g.hosts : []) if (e && e.covered !== false && !e.stale) addEntry(cells, e.name, e.ip, e.via);
     if (!Object.keys(cells).length) continue;
     const all = Object.values(cells).flat();
     const s = g.server;

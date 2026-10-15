@@ -141,7 +141,7 @@ export function rolloutRows(result, { plan = null, setKeys = null } = {}) {
   for (const g of Array.isArray(r.servers) ? r.servers : []) {
     const s = g && g.server;
     if (!s || !g.needsCert || s.terminatesTls === false) continue;
-    const hosts = (g.hosts || []).filter((x) => x && x.covered && x.via !== 'hint');
+    const hosts = (g.hosts || []).filter((x) => x && x.covered && x.via !== 'hint' && !x.stale);
     const targets = [];
     for (const x of hosts) {
       if (x.port) addTarget(targets, x.ip, x.port);

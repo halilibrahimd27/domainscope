@@ -265,11 +265,12 @@ const firstName = (c) => (c && ((c.hostnames && c.hostnames[0]) || c.subjectCN))
 /**
  * The Rollout tab body for a finished scan run with a certificate.
  * @param {{ run: object, ctx: import('../app.js').ViewContext, sets?: object[]|null, plan?: object|null,
- *   onChange?: () => void }} opts `sets` / `plan`: several certificates (lib/certsets.js);
+ *   result?: object|null, onChange?: () => void }} opts `sets` / `plan`: several certificates (lib/certsets.js);
+ *   `result`: the scan's result as the origin map reads it now (lib/originnow.js resultNow), else `run.result`;
  *   `onChange` refreshes the tab badge
  * @returns {{ el: HTMLElement, refresh(): void, badge(): { value: string, variant: string|null }|null, dispose(): void }}
  */
-export function RolloutPanel({ run, ctx, sets = null, plan = null, onChange = null }) {
+export function RolloutPanel({ run, ctx, sets = null, plan = null, result = null, onChange = null }) {
   const store = ctx.state;
   const el = h('div', { class: 'stack ro-panel', dataset: { panel: 'rollout' } });
   const certs = sets ? sets.flatMap((s) => s.certs) : [run.config.cert];
@@ -583,7 +584,7 @@ export function RolloutPanel({ run, ctx, sets = null, plan = null, onChange = nu
     } else fpsOf.set('', list.filter(Boolean));
     id = boardId(list.filter(Boolean));
     const keys = sets ? new Map(sets.map((s) => [s.id, setKey(fpsOf.get(s.id))])) : null;
-    rows = rolloutRows(run.result, { plan: sets ? plan : null, setKeys: keys });
+    rows = rolloutRows(result || run.result, { plan: sets ? plan : null, setKeys: keys });
     renderAll();
     if (onChange) onChange();
   });

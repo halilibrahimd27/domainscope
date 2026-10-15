@@ -4311,7 +4311,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     }
     loadRollout().then(({ RolloutPanel }) => {
       if (rolloutUi !== mine) return;
-      rolloutUi = RolloutPanel({ run, ctx, sets, plan, onChange: renderBadgesSoon });
+      rolloutUi = RolloutPanel({ run, ctx, sets, plan, result: shown(), onChange: renderBadgesSoon });
       rolloutPanel.append(rolloutUi.el);
     }, (err) => {
       if (rolloutUi !== mine) return;
@@ -4549,7 +4549,7 @@ function buildRunUI(run, ctx, { onFinish }) {
       runNotice.append(ErrorBanner(run.error, { title: t('scan.run.failed') }));
     }
     // Several certificates: which set each server needs (the findings and the plan tab read it).
-    plan = sets && run.result ? planRenewal(run.result, sets) : null;
+    plan = sets && run.result ? planRenewal(shown(), sets) : null;
     renderStatsNow();
     renderKey();
     renderNext();
@@ -4670,10 +4670,14 @@ function buildRunUI(run, ctx, { onFinish }) {
     if (!run.result || key !== 'workspaceData' || !value || !(value.parts || []).includes('origins')) return;
     if (!shownMemo || shownMemo.r !== run.result || shownMemo.sig !== staleSig(run.result)) {
       shownMemo = null;
+      // The Renewal plan tab and the Rollout board follow the map's marks too.
+      if (sets) plan = planRenewal(shown(), sets);
       renderStatsNow();
       renderKey();
       renderSummary();
       renderServersTab();
+      renderPlanTab();
+      renderRolloutTab();
       renderTabBadges();
     }
     renderCdnTab();

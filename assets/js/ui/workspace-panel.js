@@ -479,8 +479,11 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
     const n = attn.get(id);
     return n ? Badge(t('ws.attn', { count: n }), { variant: 'warn', title: t('ws.attnTitle'), className: 'ws-item-attn' }) : null;
   }
+  let closed = false;
+  cleanups.push(() => { closed = true; });
   async function loadAttention() {
     for (const ws of state.workspaces) {
+      if (closed) return;
       let n = 0;
       try {
         n = attentionCount(await state.loadWorkspaceParts(ws.id, ['ctSeen', 'rdapSeen', 'waivers']), Date.now());
@@ -778,10 +781,25 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
       class: ['ws-color-btn', { 'is-none': !id }],
       dataset: { action: 'ws-color', color: id || 'none' },
       title: label,
-      attrs: { role: 'radio', 'aria-checked': chosen === (id || '') ? 'true' : 'false', 'aria-label': label },
+      attrs: { role: 'radio', 'aria-checked': chosen === (id || '') ? 'true' : 'false', 'aria-label': label, tabindex: chosen === (id || '') ? '0' : '-1' },
       on: {
+        keydown: (e) => {
+          const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+          if (!step) return;
+          e.preventDefault();
+          const all = [...e.currentTarget.parentElement.querySelectorAll('[data-action="ws-color"]')];
+          const next = all[(all.indexOf(e.currentTarget) + step + all.length) % all.length];
+          next.focus();
+          next.click();
+        },
         click: async () => {
-          const { persisted } = await state.setWorkspaceColor(wsId, id || null);
+          let persisted;
+          try {
+            ({ persisted } = await state.setWorkspaceColor(wsId, id || null));
+          } catch (err) {
+            notSaved(err, workspaceLabel(ws));
+            return;
+          }
           renderCurrent();
           const again = current.querySelector(`[data-action="ws-color"][data-color="${id || 'none'}"]`);
           if (again) again.focus({ preventScroll: true });

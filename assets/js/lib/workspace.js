@@ -1088,7 +1088,7 @@ export function createWorkspaceStore({
       const want = WORKSPACE_PARTS.filter((part) => names.includes(part));
       const full = emptyWorkspaceData();
       if (id === activeId) {
-        for (const part of want) full[part] = copy(data)[part];
+        for (const part of want) full[part] = copy(data[part]);
       } else {
         const values = await db.get(want.map((part) => dataKey(id, part)));
         want.forEach((part, i) => {

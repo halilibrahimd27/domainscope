@@ -18,7 +18,10 @@ import { statusText } from './source-status.js';
 import { t, registerStrings, formatDateTime, formatNumber } from '../i18n.js';
 import { sourceStatus } from '../lib/sourcestatus.js';
 import { errorKind } from '../lib/util.js';
-import { certificateScts, evaluateCtPolicies, indexLogs, loadCtLogList } from '../lib/sct.js';
+import {
+  CT_POLICIES, CT_REASONS, CT_VERDICTS, LOG_STATES, SCT_PROBLEMS, SCT_STATUSES,
+  certificateScts, evaluateCtPolicies, indexLogs, loadCtLogList
+} from '../lib/sct.js';
 
 registerStrings('en', {
   'sct.intro': 'A public CA logs every certificate it issues in Certificate Transparency logs and embeds the logs\' receipts (SCTs) in the certificate. Browsers require them: Chrome and Apple refuse a certificate without enough receipts from the logs they trust.',
@@ -157,6 +160,21 @@ let listLoad = null;
 /** Forget the kept list (tests). */
 export function resetSctList() {
   listLoad = null;
+}
+
+/**
+ * The keys this module builds from lib/sct.js codes (for tests/js/i18n-coverage.test.js).
+ * @returns {string[]}
+ */
+export function generatedKeys() {
+  return [
+    ...SCT_PROBLEMS.map((p) => `sct.problem.${p}`),
+    ...LOG_STATES.map((s) => `sct.state.${s}`),
+    ...SCT_STATUSES.map((s) => `sct.standing.${s}`),
+    ...CT_POLICIES.map((p) => `sct.policy.${p}`),
+    ...CT_VERDICTS.map((v) => `sct.verdict.${v}`),
+    ...CT_REASONS.map((r) => `sct.reason.${r}`)
+  ];
 }
 
 const verdictVariant = { compliant: 'ok', 'not-compliant': 'error', 'cannot-tell': 'info' };

@@ -87,6 +87,8 @@ before(async () => {
   await imp('assets/js/ui/secscore-panel.js');
   // Renewal readiness › Plan: loaded on the panel's first open.
   await imp('assets/js/ui/renewal-planner.js');
+  // Certificate › Transparency: loaded on the tab's first open.
+  await imp('assets/js/ui/sct-panel.js');
   // DNS change request › the check page's cutover assistant: loaded with that page.
   await imp('assets/js/ui/cutover.js');
   // Global DNS › ISP resolvers: loaded on the first click of "Ask ISP resolvers…".
@@ -510,6 +512,8 @@ describe('i18n coverage', () => {
     for (const k of (await imp('assets/js/ui/explain-panel.js')).generatedKeys()) add(k);
     // Renewal readiness › Plan (ui/renewal-planner.js over lib/renewalplan.js): states, groupings, notes, environments, key types.
     for (const k of (await imp('assets/js/ui/renewal-planner.js')).generatedKeys()) add(k);
+    // Certificate › Transparency (ui/sct-panel.js over lib/sct.js): problems, log states, standings, verdicts, reasons.
+    for (const k of (await imp('assets/js/ui/sct-panel.js')).generatedKeys()) add(k);
     // The Rollout tab (ui/rollout-panel.js): steps, stages, Verify verdicts, platforms, options, sections, notes, warnings.
     for (const k of (await imp('assets/js/ui/rollout-panel.js')).generatedKeys()) add(k);
     for (const e of omp.FORM_ERRORS) add(`omp.err.${e}`);

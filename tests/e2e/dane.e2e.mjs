@@ -302,7 +302,7 @@ async function main() {
       await page.waitFor(() => document.querySelector('.cert-overview-cn'), { message: 'certificate loaded' });
       await page.evaluate(() => document.querySelectorAll('.toast').forEach((el) => el.remove()));
       const tabs = await page.evaluate(() => [...document.querySelectorAll('.cert-tabs .tab[data-tab]')].map((b) => b.dataset.tab));
-      assertEqual(tabs, ['names', 'details', 'chain', 'caa', 'dane', 'ct', 'pem', 'compare'], 'tab order');
+      assertEqual(tabs, ['names', 'details', 'chain', 'caa', 'dane', 'ct', 'sct', 'pem', 'compare'], 'tab order');
       await page.click('.cert-tabs .tab[data-tab="dane"]');
       await page.waitFor(() => document.querySelector('.cert-tabs [data-dane="panel"]'), { message: 'DANE panel' });
       await sleep(300);

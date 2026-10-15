@@ -673,7 +673,7 @@ export function mountHistory(host, { ctx, read, preferred, onForget, classStyle,
         }
       },
       columns: [
-        { key: 'ip', label: t('rpt.col.ip'), sortable: true, sortValue: (r) => ipSortValue(r.ip), searchValue: (r) => `${r.ip} ${svc(r)}`,
+        { key: 'ip', label: t('rpt.col.ip'), sortable: true, sortValue: (r) => ipSortValue(r.ip), exportValue: (r) => r.ip, searchValue: (r) => `${r.ip} ${svc(r)}`,
           render: (r) => h('div', { class: 'rpt-addr' }, h('span', { class: 'mono rpt-ip', dataset: { ip: r.ip } }, r.ip),
             r.service ? h('span', { class: 'rpt-svc-meta', dataset: { service: r.service } }, svc(r)) : null) },
         { key: 'cls', label: t('rpt.col.cls'), sortable: true, searchValue: (r) => (r.cls ? t(`rpt.cls.${r.cls}`) : ''),

@@ -1164,7 +1164,7 @@ export function mount(container, ctx) {
           })
         },
         {
-          key: 'prefix', label: t('ptr.asn.col.prefix'), sortable: true, sortValue: (p) => ipSortValue(p.prefix.split('/')[0]), searchValue: (p) => p.prefix,
+          key: 'prefix', label: t('ptr.asn.col.prefix'), sortable: true, sortValue: (p) => ipSortValue(p.prefix.split('/')[0]), exportValue: (p) => p.prefix, searchValue: (p) => p.prefix,
           // On a phone the notes (why a box cannot be ticked) sit under the prefix; their own column is hidden.
           render: (p) => {
             const notes = prefixNotes(p);

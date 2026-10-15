@@ -1692,7 +1692,7 @@ export function VerifyPanel({ run, ctx, onShowTab = null, onChange = null, remem
         render: (r) => (r.setId ? SetBadge(r.setId, { variant: 'neutral' }) : null)
       } : null,
       {
-        key: 'ip', label: t('vfy.col.ip'), sortable: true, sortValue: (r) => ipSortValue(r.ip),
+        key: 'ip', label: t('vfy.col.ip'), sortable: true, sortValue: (r) => ipSortValue(r.ip), exportValue: (r) => r.ip,
         searchValue: (r) => [r.ip, serverLabel(r)].join(' '), render: ipCell
       },
       {

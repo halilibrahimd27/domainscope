@@ -602,7 +602,7 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
         key: 'ips',
         label: t('sub.col.ips'),
         sortable: true,
-        sortValue: (x) => ipSortValue(x.resolution.ipv4[0] || x.resolution.ipv6[0]),
+        sortValue: (x) => ipSortValue(x.resolution.ipv4[0] || x.resolution.ipv6[0]), exportValue: (x) => [...x.resolution.ipv4, ...x.resolution.ipv6].join(' '),
         searchValue: (x) => [...x.resolution.ipv4, ...x.resolution.ipv6].join(' '),
         render: (x) => {
           const ips = [...x.resolution.ipv4, ...x.resolution.ipv6];
@@ -1121,7 +1121,7 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
       rowKey: (x) => x.ip,
       className: 'sub-org-hints',
       columns: [
-        { key: 'ip', label: t('sub.org.col.ip'), sortable: true, sortValue: (x) => ipSortValue(x.ip), render: (x) => ipLinkOrg(x.ip) },
+        { key: 'ip', label: t('sub.org.col.ip'), sortable: true, sortValue: (x) => ipSortValue(x.ip), exportValue: (x) => x.ip, render: (x) => ipLinkOrg(x.ip) },
         {
           key: 'reasons', label: t('sub.org.col.evidence'), wrap: true,
           searchValue: (x) => x.reasons.map((y) => `${y.kind} ${reasonText(y)}`).join(' '),

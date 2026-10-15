@@ -2749,7 +2749,7 @@ export function mount(container, ctx) {
       columns: [
         // The service behind the address under it, in the same cell: a column of its own made the table some 220 px wider,
         // Network off the screen even at 1920 px.
-        { key: 'ip', label: t('rpt.col.ip'), sortable: true, sortValue: (r) => ipSortValue(r.ip),
+        { key: 'ip', label: t('rpt.col.ip'), sortable: true, sortValue: (r) => ipSortValue(r.ip), exportValue: (r) => r.ip,
           searchValue: (r) => {
             const label = serviceLabel(identOf(r), t);
             return [r.ip, ...r.servers, label ? `${label.name} ${label.meta}` : ''].join(' ');
@@ -2896,7 +2896,7 @@ export function mount(container, ctx) {
       columns: [
         { key: 'result_type', label: t('rpt.tls.col.type'), sortable: true, mono: true },
         { key: 'receiving_mx', label: t('rpt.tls.col.mx'), sortable: true, mono: true },
-        { key: 'receiving_ip', label: t('rpt.tls.col.rip'), sortable: true, mono: true, sortValue: (r) => ipSortValue(r.receiving_ip) },
+        { key: 'receiving_ip', label: t('rpt.tls.col.rip'), sortable: true, mono: true, sortValue: (r) => ipSortValue(r.receiving_ip), exportValue: (r) => r.receiving_ip },
         { key: 'organization', label: t('rpt.tls.col.org'), sortable: true },
         { key: 'sending_mta_ip', label: t('rpt.tls.col.sip'), mono: true },
         { key: 'failed_sessions', label: t('rpt.tls.col.sessions'), sortable: true, align: 'end', defaultDir: 'desc' },

@@ -119,6 +119,16 @@
   --focus-ring: 0 0 0 3px rgba(37, 99, 235, 0.25);
   --selection: rgba(37, 99, 235, 0.18);
 
+  /* Workspace colours (lib/wscolor.js): 3:1 or more on the surface. */
+  --wsc-red: #c62828;
+  --wsc-orange: #b45309;
+  --wsc-green: #15803d;
+  --wsc-teal: #0f766e;
+  --wsc-blue: #1d4ed8;
+  --wsc-purple: #7e22ce;
+  --wsc-pink: #be185d;
+  --wsc-gray: #4b5563;
+
   /* Solid status fills carry no text (icons, dots, bars, progress); a count on a status colour
      uses its tint (--*-bg) with the status text colour. The danger button has its own fill. */
   --ok: #157a3d;
@@ -237,6 +247,14 @@
     --focus: #7aa7ff;
     --focus-ring: 0 0 0 3px rgba(122, 167, 255, 0.32);
     --selection: rgba(91, 147, 255, 0.3);
+    --wsc-red: #f87171;
+    --wsc-orange: #fb923c;
+    --wsc-green: #4ade80;
+    --wsc-teal: #2dd4bf;
+    --wsc-blue: #60a5fa;
+    --wsc-purple: #c084fc;
+    --wsc-pink: #f472b6;
+    --wsc-gray: #9ca3af;
     --ok: #62d394;
     --ok-solid: #2fb468;
     --ok-bg: rgba(47, 180, 104, 0.13);
@@ -329,6 +347,14 @@
     --focus: #7aa7ff;
     --focus-ring: 0 0 0 3px rgba(122, 167, 255, 0.32);
     --selection: rgba(91, 147, 255, 0.3);
+    --wsc-red: #f87171;
+    --wsc-orange: #fb923c;
+    --wsc-green: #4ade80;
+    --wsc-teal: #2dd4bf;
+    --wsc-blue: #60a5fa;
+    --wsc-purple: #c084fc;
+    --wsc-pink: #f472b6;
+    --wsc-gray: #9ca3af;
     --ok: #62d394;
     --ok-solid: #2fb468;
     --ok-bg: rgba(47, 180, 104, 0.13);
@@ -848,6 +874,24 @@ hr {
   border-color: var(--border-strong);
   background: var(--surface-hover);
 }
+
+/* A workspace's colour (lib/wscolor.js): a dot beside its name, never the only signal. */
+.ws-dot {
+  flex: none;
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--wsc-gray);
+}
+.ws-dot[data-color="red"] { background: var(--wsc-red); }
+.ws-dot[data-color="orange"] { background: var(--wsc-orange); }
+.ws-dot[data-color="green"] { background: var(--wsc-green); }
+.ws-dot[data-color="teal"] { background: var(--wsc-teal); }
+.ws-dot[data-color="blue"] { background: var(--wsc-blue); }
+.ws-dot[data-color="purple"] { background: var(--wsc-purple); }
+.ws-dot[data-color="pink"] { background: var(--wsc-pink); }
+.ws-dot[data-color="gray"] { background: var(--wsc-gray); }
 
 .ws-switch-icon {
   flex: none;

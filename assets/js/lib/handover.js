@@ -13,7 +13,7 @@
  *   The ciphertext is the JSON of Workspace; "domainscope-workspace/1" and the parameters are
  *   authenticated with it, so no part of the file can change unnoticed.
  * Workspace:
- *   { "name": "Acme", "default": false, "exportedAt": "2026-09-28T09:30:00.000Z", "app": "DomainScope 1.0.0",
+ *   { "name": "Acme", "color": "blue" (optional palette id, lib/wscolor.js), "default": false, "exportedAt": "2026-09-28T09:30:00.000Z", "app": "DomainScope 1.0.0",
  *     "parts": { "inventory": { "text", "updatedAt" }, "learned": { "v": 1, "seq", "labels" }, "wordlist": "…",
  *                "expectedCas": ["…"], "notes": "…", "recent": [{ "value", "at" }],
  *                "origins": { "v": 1, "remember", "entries": [{ "name", "ip", "port", "source", "firstSeen", "lastConfirmed", "server", "stale" }] },
@@ -23,7 +23,8 @@
  *                "policy": "…", "rollout": "<JSON text of lib/rollout.js: { v: 1, boards: [{ id, label, created, updated, rows, total }] }>",
  *                "waivers": "<JSON text of lib/waivers.js: { format, v: 1, waivers: [{ id, kind, domain, ref, reason, owner, created, expires }] }>",
  *                "reportHistory": "<JSON text of lib/dmarchistory.js: { v: 1, keep, updatedAt, domains: { <domain>: { days, sources, recent, policy, seen, cut, checked } } }>",
- *                "digests": "<JSON text of lib/digests.js: { monitor: { at, imported, targets, bad, expiring, incomplete } }>" } } }
+ *                "digests": "<JSON text of lib/digests.js: { monitor: { at, imported, targets, bad, expiring, incomplete } }>",
+ *                "watchlist": ["example.com", …] } } }
  *   An empty part is left out. `default`: exported from the Default workspace.
  *
  * DOM-free; the password is never stored or kept (lib/cryptobox.js).
@@ -35,6 +36,7 @@
  */
 
 import { sealText, openText, BoxError, DEFAULT_ITERATIONS } from './cryptobox.js';
+import { sanitizeColor } from './wscolor.js';
 import { WORKSPACE_PARTS, normalizeWorkspaceName, sanitizeWorkspaceData } from './workspace.js';
 
 /** The `format` of every hand-over file. */
@@ -77,7 +79,7 @@ function fromBox(err) {
  * @param {{ name: string|null, isDefault?: boolean, data: object, app?: string, exportedAt?: Date }} ws
  * @returns {object}
  */
-export function workspacePayload({ name, isDefault = false, data, app = 'DomainScope', exportedAt = new Date() }) {
+export function workspacePayload({ name, isDefault = false, color = null, data, app = 'DomainScope', exportedAt = new Date() }) {
   const clean = sanitizeWorkspaceData(data);
   const parts = {};
   for (const part of WORKSPACE_PARTS) {
@@ -88,6 +90,7 @@ export function workspacePayload({ name, isDefault = false, data, app = 'DomainS
   return {
     name: normalizeWorkspaceName(name) || null,
     default: !!isDefault,
+    ...(sanitizeColor(color) ? { color: sanitizeColor(color) } : {}),
     exportedAt: exportedAt instanceof Date && !Number.isNaN(exportedAt.getTime()) ? exportedAt.toISOString() : null,
     app: String(app),
     parts
@@ -153,6 +156,7 @@ function readPayload(ws) {
   return {
     name: normalizeWorkspaceName(ws.name) || null,
     isDefault: ws.default === true,
+    color: sanitizeColor(ws.color),
     exportedAt,
     app: typeof ws.app === 'string' ? ws.app.slice(0, 80) : null,
     data: sanitizeWorkspaceData(parts)

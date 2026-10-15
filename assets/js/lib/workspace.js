@@ -45,12 +45,14 @@ import { isStorableLabel } from './learned.js';
 import { sanitizeOriginMap } from './originmap.js';
 import { parseTarget } from './session.js';
 import { randomLabel } from './util.js';
+import { sanitizeWatchlist } from './watchlist.js';
+import { sanitizeColor } from './wscolor.js';
 
 /** The workspace that always exists (it cannot be renamed or deleted). */
 export const DEFAULT_WORKSPACE_ID = 'default';
 
 /** What one workspace holds. */
-export const WORKSPACE_PARTS = Object.freeze(['inventory', 'learned', 'wordlist', 'expectedCas', 'notes', 'recent', 'policy', 'origins', 'ctSeen', 'rdapSeen', 'rollout', 'waivers', 'reportHistory', 'digests']);
+export const WORKSPACE_PARTS = Object.freeze(['inventory', 'learned', 'wordlist', 'expectedCas', 'notes', 'recent', 'policy', 'origins', 'ctSeen', 'rdapSeen', 'rollout', 'waivers', 'reportHistory', 'digests', 'watchlist']);
 
 /** Bounds: workspaces, name and notes length (characters), list lengths, stored text sizes. */
 export const WORKSPACE_LIMITS = Object.freeze({
@@ -291,6 +293,8 @@ export function sanitizePart(part, value) {
     case 'reportHistory': return typeof value === 'string' && value.length <= WORKSPACE_LIMITS.reportHistory ? value : '';
     // What a tool found, in counts, for Home (lib/digests.js): JSON text, kept whole or not at all.
     case 'digests': return typeof value === 'string' && value.length <= WORKSPACE_LIMITS.digests ? value : '';
+    // The domains this workspace is responsible for (lib/watchlist.js): registrable domains, in order.
+    case 'watchlist': return sanitizeWatchlist(value);
     default: throw new WorkspaceError('part', `unknown workspace part: ${part}`);
   }
 }
@@ -506,6 +510,7 @@ export function impliesDatabase(err) {
  * @property {string|null} name   null for Default (the UI names it in the page's language)
  * @property {string|null} createdAt   ISO; null only for a Default nothing was ever written to
  * @property {string|null} updatedAt   ISO (the last write to any of its parts); null as createdAt
+ * @property {string} [color]   a lib/wscolor.js palette id; absent: no colour (additive, older records have none)
  */
 
 /** A stored meta record, checked; null when it is not one. */
@@ -515,7 +520,8 @@ function sanitizeMeta(value) {
   const name = isDefault ? null : normalizeWorkspaceName(value.name);
   if (!isDefault && !name) return null;
   const createdAt = isoOrNull(value.createdAt) || new Date(0).toISOString();
-  return { id: value.id, name, createdAt, updatedAt: isoOrNull(value.updatedAt) || createdAt };
+  const color = sanitizeColor(value.color);
+  return { id: value.id, name, createdAt, updatedAt: isoOrNull(value.updatedAt) || createdAt, ...(color ? { color } : {}) };
 }
 
 /**
@@ -533,11 +539,13 @@ function sanitizeMeta(value) {
  *   (false while its parts could not be read)
  * @property {(value: string, at?: Date) => Promise<boolean>} recordRecent
  * @property {(id: string) => Promise<WorkspaceMeta>} switchTo  rejects when its parts could not be read
- * @property {(name: string, data?: object) => Promise<{ meta: WorkspaceMeta, persisted: boolean }>} create
+ * @property {(name: string, data?: object, color?: string|null) => Promise<{ meta: WorkspaceMeta, persisted: boolean }>} create
  * @property {(id: string, name: string) => Promise<{ meta: WorkspaceMeta, persisted: boolean }>} rename
+ * @property {(id: string, color: string|null) => Promise<{ meta: WorkspaceMeta, persisted: boolean }>} setColor  null: no colour
  * @property {(id: string) => Promise<{ switched: boolean, persisted: boolean }>} remove
  * @property {(id: string, data: object) => Promise<{ meta: WorkspaceMeta, persisted: boolean }>} replace
  * @property {(id: string) => Promise<ReturnType<typeof emptyWorkspaceData>>} load  a workspace's parts (a copy; rejects unread)
+ * @property {(id: string, names: string[]) => Promise<object>} loadParts  only those parts of a workspace (a copy; never marks it unread)
  * @property {() => Promise<boolean>} destroy  delete everything; memory is reset at once
  *   (`lastError` null once it succeeded)
  * @property {() => Promise<void>} idle  every write started so far has settled (before a reload, an export)
@@ -696,7 +704,7 @@ export function createWorkspaceStore({
    * {@link uncreated} one, with every part saved to it so far); `name`: a rename.
    * @returns {Promise<boolean>} written
    */
-  function persist(id, parts, { list = false, create = false, name = null } = {}) {
+  function persist(id, parts, { list = false, create = false, name = null, patch = null } = {}) {
     const at = isoOrNull(now());
     const mine = metas.get(id);
     if (mine) metas.set(id, { ...mine, createdAt: mine.createdAt || at, updatedAt: at });
@@ -731,7 +739,12 @@ export function createWorkspaceStore({
         // Default always exists: its first write stores its meta.
         const base = sanitizeMeta(stored) || (id === DEFAULT_WORKSPACE_ID ? defaultMeta() : null);
         if (!base) return undefined;
-        return { ...base, ...(name ? { name } : {}), createdAt: base.createdAt || at, updatedAt: at };
+        const next = { ...base, ...(name ? { name } : {}), createdAt: base.createdAt || at, updatedAt: at };
+        if (patch && 'color' in patch) {
+          if (patch.color) next.color = patch.color;
+          else delete next.color;
+        }
+        return next;
       }
     };
     const written = Object.keys(parts).map((part) => slotKey(id, part));
@@ -997,13 +1010,13 @@ export function createWorkspaceStore({
       return api.active;
     },
 
-    async create(name, parts = null) {
+    async create(name, parts = null, color = null) {
       const clean = checkName(name);
       if (metas.size >= WORKSPACE_LIMITS.count + 1) throw new WorkspaceError('limit');
       const at = isoOrNull(now());
       let id = newId();
       while (metas.has(id) || !/^[a-z0-9-]{1,64}$/.test(id)) id = newId();
-      const meta = { id, name: clean, createdAt: at, updatedAt: at };
+      const meta = { id, name: clean, createdAt: at, updatedAt: at, ...(sanitizeColor(color) ? { color: sanitizeColor(color) } : {}) };
       metas.set(id, meta);
       const persisted = await persist(id, parts ? sanitizeWorkspaceData(parts) : {}, { list: true, create: true });
       return { meta: metaCopy(metas.get(id)), persisted };
@@ -1014,6 +1027,15 @@ export function createWorkspaceStore({
       const clean = checkName(name, id);
       metas.set(id, { ...metas.get(id), name: clean });
       const persisted = await persist(id, {}, { list: true, name: clean });
+      return { meta: metaCopy(metas.get(id)), persisted };
+    },
+
+    async setColor(id, color) {
+      if (!metas.has(id)) throw new WorkspaceError('not-found');
+      const clean = sanitizeColor(color);
+      const { color: _old, ...rest } = metas.get(id);
+      metas.set(id, clean ? { ...rest, color: clean } : rest);
+      const persisted = await persist(id, {}, { list: true, patch: { color: clean } });
       return { meta: metaCopy(metas.get(id)), persisted };
     },
 
@@ -1059,6 +1081,22 @@ export function createWorkspaceStore({
       }
       const persisted = await persist(id, clean);
       return { meta: metaCopy(metas.get(id)), persisted };
+    },
+
+    async loadParts(id, names) {
+      if (!metas.has(id)) throw new WorkspaceError('not-found');
+      const want = WORKSPACE_PARTS.filter((part) => names.includes(part));
+      const full = emptyWorkspaceData();
+      if (id === activeId) {
+        for (const part of want) full[part] = copy(data)[part];
+      } else {
+        const values = await db.get(want.map((part) => dataKey(id, part)));
+        want.forEach((part, i) => {
+          if (values[i] !== undefined) full[part] = sanitizePart(part, values[i]);
+        });
+        withPending(id, full);
+      }
+      return Object.fromEntries(want.map((part) => [part, full[part]]));
     },
 
     async load(id) {

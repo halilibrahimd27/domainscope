@@ -51,7 +51,8 @@ const DATA = {
   // The DMARC report history (lib/dmarchistory.js): its JSON text, one domain kept with the switch on.
   reportHistory: '{"v":1,"keep":true,"updatedAt":"2026-09-28T09:00:00.000Z","domains":{"example.com":{"days":{"2026-09-27":{"msgs":12,"dmarcPass":10,"spfAligned":10,"dkimAligned":9,"quarantine":0,"reject":0,"unknownMsgs":2,"knownFail":0}},"sources":{"192.0.2.10":{"first":"2026-09-27","last":"2026-09-27","msgs":10,"passMsgs":10,"cls":"yours","service":null,"type":null,"checked":true},"203.0.113.9":{"first":"2026-09-27","last":"2026-09-27","msgs":2,"passMsgs":0,"cls":"unknown","service":null,"type":null}},"recent":{"2026-09-27":{"192.0.2.10":[10,10,10,9,0,0],"203.0.113.9":[2,0,0,0,0,0]}},"policy":{"p":"none","sp":"none","pct":100,"seenAt":"2026-09-27T23:59:59.000Z"},"seen":{"2026-09-27":["00000000000000aa"]},"cut":null,"checked":"2026-09-28"}}}',
   // What Home counts of the nightly results (lib/digests.js): counts only.
-  digests: '{"monitor":{"at":"2026-09-28T03:00:00.000Z","imported":"2026-09-28T09:00:00.000Z","targets":4,"bad":1,"expiring":0,"incomplete":0}}'
+  digests: '{"monitor":{"at":"2026-09-28T03:00:00.000Z","imported":"2026-09-28T09:00:00.000Z","targets":4,"bad":1,"expiring":0,"incomplete":0}}',
+  watchlist: ['example.com', 'example.org']
 };
 const WS = { name: 'Acme', data: DATA, app: 'DomainScope 1.0.0', exportedAt: AT };
 
@@ -66,7 +67,7 @@ describe('the plain file', () => {
     assert.equal(file.workspace.default, false);
     assert.equal(file.workspace.exportedAt, '2026-09-28T09:30:00.000Z');
     assert.equal(file.workspace.app, 'DomainScope 1.0.0');
-    assert.deepEqual(Object.keys(file.workspace.parts), ['inventory', 'wordlist', 'expectedCas', 'recent', 'origins', 'ctSeen', 'rdapSeen', 'rollout', 'waivers', 'reportHistory', 'digests']);
+    assert.deepEqual(Object.keys(file.workspace.parts), ['inventory', 'wordlist', 'expectedCas', 'recent', 'origins', 'ctSeen', 'rdapSeen', 'rollout', 'waivers', 'reportHistory', 'digests', 'watchlist']);
     assert.equal(file.workspace.parts.digests, DATA.digests, 'Home\'s digest of the nightly results goes too');
     assert.equal(file.workspace.parts.reportHistory, DATA.reportHistory, 'the DMARC report history goes with the workspace');
     assert.equal(file.workspace.parts.origins.entries.length, 2, 'the origin map goes with the workspace');

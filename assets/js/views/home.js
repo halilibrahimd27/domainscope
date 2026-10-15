@@ -27,9 +27,10 @@ import { h, clear, uid, svg } from '../ui/dom.js';
 import { Button, Icon, MenuButton, RelativeTime, SeverityIcon, Tag, announce } from '../ui/components.js';
 import { StartTaskList } from '../ui/start-tasks.js';
 import { jobList, onJobs } from '../ui/jobs.js';
-import { workspaceLabel } from '../ui/workspace-ui.js';
+import { workspaceLabel, workspaceDot } from '../ui/workspace-ui.js';
 import { t, registerStrings, formatDate, formatNumber, formatPercent } from '../i18n.js';
 import { parseTarget, fillRoute } from '../lib/session.js';
+import { watchlistCoverage } from '../lib/watchlist.js';
 
 /** Route id (`#/home`). */
 export const id = 'home';
@@ -112,6 +113,7 @@ registerStrings('en', {
   'home.wsOrigins': { one: '{count} remembered origin', other: '{count} remembered origins' },
   'home.wsWaivers': { one: '{count} accepted risk', other: '{count} accepted risks' },
   'home.wsEmpty': 'Nothing saved in this workspace yet.',
+  'home.wsWatch': { one: '{checked} of {count} domain checked in the last {days} days', other: '{checked} of {count} domains checked in the last {days} days' },
   'home.manage': 'Manage',
   'home.workspaces': 'Workspaces',
   'home.setup': 'Set up this workspace (optional)',
@@ -187,6 +189,7 @@ registerStrings('tr', {
   'home.wsOrigins': '{count} hatırlanan origin',
   'home.wsWaivers': '{count} kabul edilen risk',
   'home.wsEmpty': 'Bu çalışma alanında henüz kayıtlı bir şey yok.',
+  'home.wsWatch': '{count} alan adından {checked} tanesi son {days} günde denetlendi',
   'home.manage': 'Yönet',
   'home.workspaces': 'Çalışma alanları',
   'home.setup': 'Bu çalışma alanını hazırlayın (isteğe bağlı)',
@@ -215,9 +218,9 @@ registerStrings('tr', {
  *   digests?: string, reportHistory?: string }} ws
  * @returns {boolean}
  */
-export function isEmptyWorkspace({ recent = [], ctSeen = '', rdapSeen = '', waivers = '', servers = 0, rollout = '', digests = '', reportHistory = '' } = {}) {
+export function isEmptyWorkspace({ recent = [], ctSeen = '', rdapSeen = '', waivers = '', servers = 0, rollout = '', digests = '', reportHistory = '', watchlist = [] } = {}) {
   const has = (text) => typeof text === 'string' && text.trim() !== '';
-  return !(Array.isArray(recent) && recent.length) && !(servers > 0) && ![ctSeen, rdapSeen, waivers, rollout, digests, reportHistory].some(has);
+  return !(Array.isArray(recent) && recent.length) && !(Array.isArray(watchlist) && watchlist.length) && !(servers > 0) && ![ctSeen, rdapSeen, waivers, rollout, digests, reportHistory].some(has);
 }
 
 /**
@@ -365,6 +368,7 @@ export function mount(container, ctx) {
     waivers: state.workspaceData('waivers') || '',
     rollout: state.workspaceData('rollout') || '',
     digests: state.workspaceData('digests') || '',
+    watchlist: state.workspaceData('watchlist') || [],
     expectedCas: state.workspaceData('expectedCas') || [],
     notes: state.workspaceData('notes') || '',
     origins: state.workspaceData('origins')
@@ -630,7 +634,11 @@ export function mount(container, ctx) {
       waivers ? t('home.wsWaivers', { count: waivers }) : null
     ].filter(Boolean);
     const note = firstNoteLine(parts.notes);
+    const watch = parts.watchlist.length ? watchlistCoverage(parts.watchlist, parts.rdapSeen, now) : null;
     return card({ role: 'home-workspace', title: t('home.workspace'), className: 'home-ws' },
+      ws.color ? h('p', { class: 'home-ws-name', dataset: { role: 'home-ws-name' } }, workspaceDot(ws), ' ', h('span', null, workspaceLabel(ws))) : null,
+      watch ? h('p', { class: 'home-ws-watch', dataset: { role: 'home-ws-watch', checked: String(watch.checked), total: String(watch.total) } },
+        t('home.wsWatch', { checked: watch.checked, count: watch.total, days: watch.days })) : null,
       h('p', { class: 'home-ws-counts' }, counts.length ? counts.join(' · ') : t('home.wsEmpty')),
       note ? h('p', { class: 'home-ws-note muted' }, `“${note}”`) : null,
       h('p', { class: 'home-ws-links' },

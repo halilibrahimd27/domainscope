@@ -63,7 +63,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ORDER = ['shell', 'home', 'investigate', 'certificates', 'migrate', 'network', 'watch', 'subdomains', 'domain', 'locales', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'lookup', 'explain', 'bulk', 'change', 'cutover', 'ip', 'ptr', 'retire', 'health', 'takeover', 'reports', 'dmarchistory', 'portfolio', 'secscore', 'regwatch', 'revocation', 'waivers', 'monitor', 'carry', 'workspaces', 'origins', 'privacy', 'integration'];
+const ORDER = ['shell', 'home', 'investigate', 'certificates', 'migrate', 'network', 'watch', 'subdomains', 'domain', 'locales', 'zone', 'scan', 'verify', 'renewal', 'cert', 'dane', 'pfx', 'chainfix', 'renew', 'estate', 'global', 'lookup', 'explain', 'bulk', 'change', 'cutover', 'ip', 'ptr', 'retire', 'health', 'takeover', 'reports', 'dmarchistory', 'portfolio', 'secscore', 'regwatch', 'revocation', 'waivers', 'monitor', 'carry', 'workspaces', 'wsextras', 'origins', 'privacy', 'integration'];
 const POSIX = process.platform !== 'win32';
 /** After SIGTERM, how long a timed-out suite gets before SIGKILL. */
 const KILL_GRACE_MS = 5000;

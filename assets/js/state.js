@@ -522,8 +522,20 @@ export function createState({
      * @returns {Promise<{ meta: ActiveWorkspace, persisted: boolean }>}
      * @throws {import('./lib/workspace.js').WorkspaceError} name-empty, name-taken, limit
      */
-    async createWorkspace(name, data = null) {
-      const res = await store.create(name, data);
+    async createWorkspace(name, data = null, color = null) {
+      const res = await store.create(name, data, color);
+      emit('workspaces', api.workspaces);
+      return { meta: activeOf(res.meta), persisted: res.persisted };
+    },
+
+    /**
+     * Set a workspace's colour (a lib/wscolor.js id; null: none).
+     * @param {string} id
+     * @param {string|null} color
+     * @returns {Promise<{ meta: ActiveWorkspace, persisted: boolean }>}
+     */
+    async setWorkspaceColor(id, color) {
+      const res = await store.setColor(id, color);
       emit('workspaces', api.workspaces);
       return { meta: activeOf(res.meta), persisted: res.persisted };
     },
@@ -576,6 +588,16 @@ export function createState({
      */
     loadWorkspace(id) {
       return store.load(id);
+    },
+
+    /**
+     * Only some parts of a workspace (the switcher's attention counts), cheaper than loadWorkspace.
+     * @param {string} id
+     * @param {string[]} names
+     * @returns {Promise<object>}
+     */
+    loadWorkspaceParts(id, names) {
+      return store.loadParts(id, names);
     },
 
     /** Resolves once every workspace write started so far has settled (before a reload, say). */

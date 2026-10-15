@@ -384,3 +384,54 @@
     margin-top: 2px;
   }
 }
+
+/* Colour picker (lib/wscolor.js): a radio group of dots; the dot colours are style.css's. */
+.ws-color-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+
+.ws-color-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.ws-color-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.ws-color-btn[aria-checked="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.ws-color-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.ws-color-btn .ws-dot {
+  width: 16px;
+  height: 16px;
+}
+
+.ws-color-x {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.ws-item-attn {
+  white-space: nowrap;
+}

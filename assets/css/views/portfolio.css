@@ -862,3 +862,15 @@
     display: none !important;
   }
 }
+
+.pf-watch {
+  margin-top: 6px;
+}
+
+.pf-watch .btn {
+  max-width: 100%;
+  height: auto;
+  min-height: 28px;
+  white-space: normal;
+  text-align: start;
+}

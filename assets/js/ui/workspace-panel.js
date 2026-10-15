@@ -31,6 +31,9 @@ import { t, registerStrings, formatRelative, formatDateTime } from '../i18n.js';
 import { parseInventory } from '../lib/inventory.js';
 import { DEFAULT_WORKSPACE_ID, WORKSPACE_LIMITS, WorkspaceError, uniqueWorkspaceName, sanitizeExpectedCas } from '../lib/workspace.js';
 import { exportWorkspaceFile, readWorkspaceFile, openWorkspaceFile, HANDOVER_MAX_BYTES } from '../lib/handover.js';
+import { sanitizeWatchlist, WATCHLIST_MAX } from '../lib/watchlist.js';
+import { WORKSPACE_COLORS } from '../lib/wscolor.js';
+import { attentionCount } from '../lib/wsattention.js';
 import { MIN_PASSWORD_LENGTH } from '../lib/cryptobox.js';
 import { resolveExpectedCa } from '../lib/expectedca.js';
 import {
@@ -39,7 +42,7 @@ import {
 // the accepted risks' texts (wvr.*) and their errors in words
 import { waiverErrorText } from './waivers.js';
 import { readHistory, historySummary } from '../lib/dmarchistory.js';
-import { workspaceLabel, defaultWorkspaceNames, isDefaultWorkspaceName, storageErrorText } from './workspace-ui.js';
+import { workspaceLabel, workspaceDot, defaultWorkspaceNames, isDefaultWorkspaceName, storageErrorText } from './workspace-ui.js';
 
 /** The hand-over file errors the dialog words itself (lib/handover.js HandoverError codes). */
 export const IMPORT_ERRORS = Object.freeze([
@@ -129,6 +132,19 @@ registerStrings('en', {
   'ws.sum.policy': 'a domain policy',
   'ws.sum.ctSeen': 'a CT watch baseline',
   'ws.sum.rdapSeen': 'a registration watch baseline',
+  'ws.sum.watchlist': { one: 'a watchlist of {count} domain', other: 'a watchlist of {count} domains' },
+  'ws.attn': '{count} to look at',
+  'ws.attnTitle': 'Items that need a look in this workspace (Home’s rules, counts only)',
+  'ws.colorLabel': 'Colour',
+  'ws.colorHint': 'A dot beside the workspace’s name in the header, this list and Home, so work does not land in the wrong customer’s workspace.',
+  'ws.colorNone': 'No colour',
+  'ws.colorSet': 'Colour: {color}',
+  'ws.colorNotSaved': 'The colour could not be saved: {reason}.',
+  'ws.color.red': 'Red', 'ws.color.orange': 'Orange', 'ws.color.green': 'Green', 'ws.color.teal': 'Teal',
+  'ws.color.blue': 'Blue', 'ws.color.purple': 'Purple', 'ws.color.pink': 'Pink', 'ws.color.gray': 'Gray',
+  'ws.watchLabel': 'Watchlist',
+  'ws.watchHint': 'The domains you look after for this workspace, one per line (up to {max}). Domain portfolio starts from this list, and Home counts how many of them were checked lately.',
+  'ws.watchCount': { one: '{count} domain', other: '{count} domains' },
   'ws.sum.rollout': 'a Rollout board',
   'ws.sum.reportHistory': { one: 'a DMARC report history of {count} domain', other: 'a DMARC report history of {count} domains' },
   'ws.sum.reportHistoryOn': 'keeping DMARC report summaries is on',
@@ -226,6 +242,19 @@ registerStrings('tr', {
   'ws.sum.policy': 'bir alan adı politikası',
   'ws.sum.ctSeen': 'bir CT izleme referansı',
   'ws.sum.rdapSeen': 'bir kayıt izleme referansı',
+  'ws.sum.watchlist': '{count} alan adlık bir izleme listesi',
+  'ws.attn': '{count} öğe bakılmalı',
+  'ws.attnTitle': 'Bu çalışma alanında bakılması gereken öğeler (Ana sayfa kurallarıyla, yalnızca sayı)',
+  'ws.colorLabel': 'Renk',
+  'ws.colorHint': 'Üst çubukta, bu listede ve Ana sayfada çalışma alanının adının yanında bir nokta görünür; böylece iş yanlış müşterinin çalışma alanına düşmez.',
+  'ws.colorNone': 'Renk yok',
+  'ws.colorSet': 'Renk: {color}',
+  'ws.colorNotSaved': 'Renk kaydedilemedi: {reason}.',
+  'ws.color.red': 'Kırmızı', 'ws.color.orange': 'Turuncu', 'ws.color.green': 'Yeşil', 'ws.color.teal': 'Camgöbeği',
+  'ws.color.blue': 'Mavi', 'ws.color.purple': 'Mor', 'ws.color.pink': 'Pembe', 'ws.color.gray': 'Gri',
+  'ws.watchLabel': 'İzleme listesi',
+  'ws.watchHint': 'Bu çalışma alanı için baktığınız alan adları, her satıra bir tane (en fazla {max}). Alan adı portföyü bu listeden başlar, Ana sayfa da bunlardan kaçının yakın zamanda denetlendiğini sayar.',
+  'ws.watchCount': '{count} alan adı',
   'ws.sum.rollout': 'bir dağıtım panosu',
   'ws.sum.reportHistory': '{count} alan adının DMARC rapor geçmişi',
   'ws.sum.reportHistoryOn': 'DMARC rapor özetlerini tutma açık',
@@ -318,6 +347,7 @@ export function importSummary(ws) {
   if ((d.policy || '').trim()) parts.push(t('ws.sum.policy'));
   if (d.ctSeen) parts.push(t('ws.sum.ctSeen'));
   if (d.rdapSeen) parts.push(t('ws.sum.rdapSeen'));
+  if (d.watchlist && d.watchlist.length) parts.push(t('ws.sum.watchlist', { count: d.watchlist.length }));
   if (d.rollout) parts.push(t('ws.sum.rollout'));
   // the accepted risks the file carries (an entry that cannot be read is left out when they are read)
   const waivers = readWaivers(d.waivers);
@@ -440,6 +470,36 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
     if (!state.workspacePersistence) memoryNote.append(Alert({ variant: 'warn', compact: true, message: t('ws.memoryOnly') }));
   }
 
+  /**
+   * Each workspace's attention count (lib/wsattention.js), read once when the dialog opens, one
+   * workspace at a time and only the three parts it needs. Counts only, never a name.
+   */
+  const attn = new Map();
+  function attentionBadge(id) {
+    const n = attn.get(id);
+    return n ? Badge(t('ws.attn', { count: n }), { variant: 'warn', title: t('ws.attnTitle'), className: 'ws-item-attn' }) : null;
+  }
+  async function loadAttention() {
+    for (const ws of state.workspaces) {
+      let n = 0;
+      try {
+        n = attentionCount(await state.loadWorkspaceParts(ws.id, ['ctSeen', 'rdapSeen', 'waivers']), Date.now());
+      } catch {
+        continue;
+      }
+      const same = (attn.get(ws.id) || 0) === n;
+      attn.set(ws.id, n);
+      if (same) continue;
+      const main = listEl.querySelector(`li[data-ws-id="${CSS.escape(ws.id)}"] .ws-item-main`);
+      if (!main) continue;
+      const old = main.querySelector('.ws-item-attn');
+      if (old) old.remove();
+      const badge = attentionBadge(ws.id);
+      const label = main.querySelector('.ws-item-name');
+      if (badge && label) label.after(badge);
+    }
+  }
+
   /** @param {{ focusId?: string|null, focusAction?: string|null }} [opts] the row to focus, or one of its buttons */
   function renderList({ focusId = null, focusAction = null } = {}) {
     clear(listEl);
@@ -490,7 +550,8 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
       }
       li.append(
         h('div', { class: 'ws-item-main' },
-          h('span', { class: 'ws-item-name' }, Icon('briefcase', { size: 15 }), h('span', { class: 'ws-item-label' }, name)),
+          h('span', { class: 'ws-item-name' }, Icon('briefcase', { size: 15 }), workspaceDot(ws), h('span', { class: 'ws-item-label' }, name)),
+          attentionBadge(ws.id),
           active ? Tag(t('ws.active'), { variant: 'ok', icon: 'check', className: 'ws-item-badge' }) : null,
           // Default nothing was written to yet has no date: it never changed.
           ws.updatedAt ? h('span', { class: 'ws-item-meta' }, t('ws.updated', { when: formatRelative(new Date(ws.updatedAt)) })) : null),
@@ -710,8 +771,56 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
     });
     for (const field of [expected, notes]) field.input.addEventListener('blur', () => flushEdits());
 
+    // Colour: a radio group of the palette's dots (each named for a screen reader)
+    const chosen = ws.color || '';
+    const swatch = (id, label) => h('button', {
+      type: 'button',
+      class: ['ws-color-btn', { 'is-none': !id }],
+      dataset: { action: 'ws-color', color: id || 'none' },
+      title: label,
+      attrs: { role: 'radio', 'aria-checked': chosen === (id || '') ? 'true' : 'false', 'aria-label': label },
+      on: {
+        click: async () => {
+          const { persisted } = await state.setWorkspaceColor(wsId, id || null);
+          renderCurrent();
+          const again = current.querySelector(`[data-action="ws-color"][data-color="${id || 'none'}"]`);
+          if (again) again.focus({ preventScroll: true });
+          const out = current.querySelector('[data-role="ws-color-status"]');
+          if (out) out.textContent = persisted ? t('ws.colorSet', { color: label }) : t('ws.colorNotSaved', { reason: storageErrorText(state.workspaceError) });
+        }
+      }
+    }, id ? h('span', { class: 'ws-dot', dataset: { color: id }, attrs: { 'aria-hidden': 'true' } }) : h('span', { class: 'ws-color-x', attrs: { 'aria-hidden': 'true' } }, '×'));
+    const colorLabelId = uid('ws-color-label');
+    const colorBlock = h('div', { class: 'ws-block ws-color', dataset: { role: 'ws-color' } },
+      h('span', { class: 'field-label', id: colorLabelId }, t('ws.colorLabel')),
+      h('p', { class: 'field-hint' }, t('ws.colorHint')),
+      h('div', { class: 'ws-color-group', attrs: { role: 'radiogroup', 'aria-labelledby': colorLabelId } },
+        swatch(null, t('ws.colorNone')), ...WORKSPACE_COLORS.map((c) => swatch(c.id, t(`ws.color.${c.id}`)))),
+      h('span', { class: 'ws-status', dataset: { role: 'ws-color-status' }, attrs: { 'aria-live': 'polite' } }));
+
+    // Watchlist
+    const watchStatus = h('span', { class: 'ws-status', attrs: { 'aria-live': 'polite' } });
+    const watchCount = h('span', { class: 'field-hint', dataset: { role: 'ws-watch-count' } });
+    const watch = textarea({
+      label: t('ws.watchLabel'),
+      value: state.workspaceData('watchlist').join('\n'),
+      rows: 4,
+      mono: true,
+      wrap: false,
+      hint: t('ws.watchHint', { max: WATCHLIST_MAX }),
+      attrs: { 'data-role': 'ws-watchlist', spellcheck: 'false', autocapitalize: 'none' },
+      onInput: (value) => {
+        watchCount.textContent = t('ws.watchCount', { count: sanitizeWatchlist(value).length });
+        scheduleEdit(wsId, 'watchlist', () => sanitizeWatchlist(watch.value), watchStatus);
+      }
+    });
+    watchCount.textContent = t('ws.watchCount', { count: state.workspaceData('watchlist').length });
+    watch.input.addEventListener('blur', () => flushEdits());
+
     current.append(
       h('h3', { class: 'ws-heading', id: titleId }, t('ws.currentTitle', { name })),
+      colorBlock,
+      h('div', { class: 'ws-block' }, watch.el, watchCount, ' ', watchStatus),
       h('div', { class: 'ws-block' },
         h('div', { class: 'ws-block-head' }, h('span', { class: 'field-label' }, t('ws.recentTitle')), recentClear),
         h('p', { class: 'field-hint' }, t('ws.recentHint')),
@@ -872,7 +981,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
         const active = state.workspace;
         const data = await state.loadWorkspace(active.id);
         const text = await exportWorkspaceFile({
-          name: workspaceLabel(active), isDefault: active.isDefault, data, app: `DomainScope ${appVersion}`.trim(), exportedAt: new Date()
+          name: workspaceLabel(active), isDefault: active.isDefault, color: active.color || null, data, app: `DomainScope ${appVersion}`.trim(), exportedAt: new Date()
         }, { password: password || null });
         const file = exportFileName(workspaceLabel(active), { encrypted: !!password });
         downloadText(file, text, 'application/json;charset=utf-8');
@@ -1013,7 +1122,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
         setButtonBusy(newBtn, true);
         try {
           const unique = uniqueWorkspaceName(name, [...defaultWorkspaceNames(), ...state.workspaces.filter((w) => !w.isDefault).map((w) => w.name)]);
-          const { meta, persisted } = await state.createWorkspace(unique, ws.data);
+          const { meta, persisted } = await state.createWorkspace(unique, ws.data, ws.color);
           pending = null;
           clear(importArea);
           if (persisted) fileOutcome.show(t('ws.imported', { name: meta.name }));
@@ -1097,6 +1206,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
   renderCurrent();
   renderFile();
   modal.open();
+  loadAttention();
   // Straight to the part a link asked for, else to the workspaces — not the dialog's close button.
   const wanted = Object.prototype.hasOwnProperty.call(PANEL_SECTIONS, section) ? body.querySelector(PANEL_SECTIONS[section]) : null;
   const first = wanted || listEl.querySelector('li.is-active') || listEl.querySelector('li');

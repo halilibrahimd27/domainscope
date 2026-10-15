@@ -13,6 +13,7 @@ import { h } from './dom.js';
 import { Button, Icon, toast } from './components.js';
 import { t, registerStrings, LANGS } from '../i18n.js';
 import { normalizeWorkspaceName } from '../lib/workspace.js';
+import { sanitizeColor } from '../lib/wscolor.js';
 
 /** What Default is called in each language (no other workspace may take one of these names). */
 const DEFAULT_NAMES = Object.freeze({ en: 'Default', tr: 'Varsayılan' });
@@ -139,6 +140,16 @@ export function storageErrorText(err) {
 }
 
 /**
+ * The workspace's colour as a dot (decorative: the name is always beside it), or null without one.
+ * @param {{ color?: string|null }|null} ws
+ * @returns {HTMLElement|null}
+ */
+export function workspaceDot(ws) {
+  const color = ws && sanitizeColor(ws.color);
+  return color ? h('span', { class: 'ws-dot', dataset: { color }, attrs: { 'aria-hidden': 'true' } }) : null;
+}
+
+/**
  * The header's switcher: the active workspace's name (cut with an ellipsis when long) and, from
  * 1280 px up (CSS), its server count ("Acme · 12 servers"), on a button that opens the Workspaces
  * dialog. `.ws-switch-name` holds the name alone.
@@ -158,6 +169,7 @@ export function WorkspaceSwitch({ workspace, servers = null, onOpen }) {
     on: { click: () => onOpen() }
   },
   Icon('briefcase', { size: 15, className: 'ws-switch-icon' }),
+  workspaceDot(workspace),
   h('span', { class: 'ws-switch-name' }, name),
   count ? h('span', { class: 'ws-switch-count', attrs: { 'aria-hidden': 'true' } }, ` · ${count}`) : null,
   Icon('chevron-down', { size: 14, className: 'ws-switch-chevron' }));
@@ -203,7 +215,7 @@ export function WorkspaceMenuEntry({ workspace, onOpen }) {
   return h('div', { class: 'navmenu-workspace', dataset: { workspace: workspace.id } },
     h('div', { class: 'navmenu-workspace-text' },
       h('span', { class: 'navmenu-workspace-label' }, t('ws.label')),
-      h('span', { class: 'navmenu-workspace-name' }, Icon('briefcase', { size: 15 }), h('span', null, name))),
+      h('span', { class: 'navmenu-workspace-name' }, Icon('briefcase', { size: 15 }), workspaceDot(workspace), h('span', null, name))),
     Button({
       label: t('ws.menuSwitch'),
       size: 'sm',

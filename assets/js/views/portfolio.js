@@ -110,6 +110,10 @@ registerStrings('en', {
   'pf.count': { one: '{count} domain', other: '{count} domains' },
   'pf.invalid': 'Not a domain, left out: {list}',
   'pf.capped': { one: 'Only the first {max} domains are checked: {count} more is left out.', other: 'Only the first {max} domains are checked: {count} more are left out.' },
+  'pf.watchSave': 'Save as watchlist',
+  'pf.watchSaved': { one: 'Saved {count} domain as the watchlist of {workspace}.', other: 'Saved {count} domains as the watchlist of {workspace}.' },
+  'pf.watchFailed': 'The watchlist could not be saved: {reason}.',
+  'pf.prefilledWatch': 'Filled in from this workspace’s watchlist: edit the list, then press Check portfolio.',
   'pf.prefilled': 'Filled in from this workspace’s recent domains: edit the list, then press Check portfolio.',
   'pf.linkPrompt': { one: 'Opened from a link: press Check portfolio to look up {count} domain. Nothing has been sent yet.', other: 'Opened from a link: press Check portfolio to look up {count} domains. Nothing has been sent yet.' },
   'pf.run': 'Check portfolio',
@@ -322,6 +326,10 @@ registerStrings('tr', {
   'pf.count': '{count} alan adı',
   'pf.invalid': 'Alan adı değil, dışarıda bırakıldı: {list}',
   'pf.capped': 'Yalnızca ilk {max} alan adı kontrol edilir: {count} tanesi dışarıda kalır.',
+  'pf.watchSave': 'İzleme listesi olarak kaydet',
+  'pf.watchSaved': '{count} alan adı {workspace} çalışma alanının izleme listesi olarak kaydedildi.',
+  'pf.watchFailed': 'İzleme listesi kaydedilemedi: {reason}.',
+  'pf.prefilledWatch': 'Bu çalışma alanının izleme listesiyle dolduruldu: listeyi düzenleyip Portföyü kontrol et’e basın.',
   'pf.prefilled': 'Bu çalışma alanında son kullanılan alan adlarıyla dolduruldu: listeyi düzenleyip Portföyü kontrol et’e basın.',
   'pf.linkPrompt': 'Bir bağlantıdan açıldı: {count} alan adını sorgulamak için Portföyü kontrol et’e basın. Henüz hiçbir şey gönderilmedi.',
   'pf.run': 'Portföyü kontrol et',
@@ -771,11 +779,13 @@ export function mount(container, ctx) {
     }
     session.link = routeText;
   } else if (session.text === null) {
-    // The workspace's recent domains, while the box was never touched in this page session.
+    // The workspace's watchlist, else its recent domains, while the box was never touched in this page session.
+    const watched = state.workspaceData('watchlist') || [];
     const recent = (state.workspaceData('recent') || []).map((r) => r.value);
-    const p = parsePortfolioInput(recent.join('\n'));
+    const p = parsePortfolioInput((watched.length ? watched : recent).join('\n'));
     session.text = p.domains.join('\n');
     session.prefilled = p.domains.length > 0;
+    session.prefilledWatch = watched.length > 0;
   }
 
   /* --- region 2: the input (ui/template.js ToolInput, a "Batch" tool) -------------------- */
@@ -819,13 +829,27 @@ export function mount(container, ctx) {
     // Check CT (one primary button at a time); Stop still floats while a check runs.
     hasValue: () => session.tab !== 'ct' && parsePortfolioInput(box.value).domains.length > 0
   });
+  /** Save the box's domains as the workspace's watchlist (lib/watchlist.js); Home counts against it. */
+  const watchStatus = h('span', { class: 'pf-watch-status text-sm muted', dataset: { role: 'pf-watch-status' }, attrs: { 'aria-live': 'polite' } });
+  const watchSave = Button({
+    label: t('pf.watchSave'), icon: 'briefcase', size: 'sm', variant: 'ghost', dataset: { action: 'pf-watch-save' },
+    onClick: async () => {
+      const domains = parsePortfolioInput(box.value).domains;
+      const done = await state.setWorkspaceData('watchlist', domains);
+      watchStatus.textContent = done === false
+        ? t('pf.watchFailed', { reason: storageErrorText(state.workspaceError) })
+        : t('pf.watchSaved', { count: state.workspaceData('watchlist').length, workspace: workspaceLabel(state.workspace) });
+    }
+  });
+  const watchRow = h('div', { class: 'pf-watch' }, watchSave, ' ', watchStatus);
+
   const input = ToolInput({
     className: 'pf-form-card',
     fieldsClass: 'pf-form',
     label: t('nav.portfolio'),
     primary: box.el,
     run: runBar,
-    notes: [boxStatus],
+    notes: [boxStatus, watchRow],
     more: [dkimBox.el],
     // the rest (rdap.org as the fallback, the name servers' own domains) is one click away, in
     // About › Data sources & quotas
@@ -841,7 +865,8 @@ export function mount(container, ctx) {
     boxStatus.append(h('p', null, h('span', { class: 'pf-count' }, t('pf.count', { count: p.domains.length }))));
     if (p.invalid.length) boxStatus.append(h('p', { class: 'pf-invalid', dataset: { issue: 'invalid' } }, t('pf.invalid', { list: p.invalid.slice(0, 8).join(', ') + (p.invalid.length > 8 ? ` ${t('common.moreCount', { count: p.invalid.length - 8 })}` : '') })));
     if (p.capped) boxStatus.append(h('p', { class: 'pf-invalid', dataset: { issue: 'capped' } }, t('pf.capped', { max: formatNumber(PORTFOLIO_MAX_DOMAINS), count: p.capped })));
-    if (session.prefilled && box.value === session.text) boxStatus.append(h('p', { class: 'muted', dataset: { note: 'prefilled' } }, t('pf.prefilled')));
+    if (session.prefilled && box.value === session.text) boxStatus.append(h('p', { class: 'muted', dataset: { note: 'prefilled' } }, t(session.prefilledWatch ? 'pf.prefilledWatch' : 'pf.prefilled')));
+    watchSave.disabled = p.domains.length === 0;
     syncRunBar();
   }
 

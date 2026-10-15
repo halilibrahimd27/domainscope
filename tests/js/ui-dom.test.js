@@ -18,7 +18,7 @@ import * as dom from '../../assets/js/ui/dom.js';
 import { sanitizeFilename, timestampedName, jsonReplacer } from '../../assets/js/ui/download.js';
 import {
   compareValues, ipSortValue, normalizeSearch, csvCell, rowsToCsv, decodeText, describeError, ICON_NAMES, KINDS, CliText,
-  folderOrder, Tag, Badge, Chip, Alert, TAG_VARIANTS, overflowEdges, MenuButton, menuPlacement, menuStep, menuTypeAhead, RelativeTime,
+  folderOrder, Tag, Chip, Alert, TAG_VARIANTS, overflowEdges, MenuButton, menuPlacement, menuStep, menuTypeAhead, RelativeTime,
   CopyButton
 } from '../../assets/js/ui/components.js';
 import {
@@ -1124,16 +1124,16 @@ describe('components.js helpers', () => {
     assert.deepEqual([...KINDS].sort(), ['cdn', 'cloudflare', 'dangling', 'direct', 'nxdomain', 'platform', 'private', 'unresolved']);
   });
 
-  test('Tag is the static tag; Badge() renders the same element with the .badge hooks; an unknown variant is neutral', () => withFakeDocument(() => {
+  test('Tag is the static tag with the .badge hooks; an unknown variant is neutral', () => withFakeDocument(() => {
     const tag = Tag('NOERROR', { variant: 'ok', icon: 'check', title: 'answered' });
     assert.equal(tag.tagName, 'SPAN');
     assert.equal(tag.getAttribute('class'), 'tag badge badge-ok');
     assert.equal(tag.getAttribute('title'), 'answered');
     assert.equal(tag.textContent, 'NOERROR');
     assert.equal(tag.childNodes[0].tagName, 'SVG', 'the icon first');
-    const badge = Badge('RSA 2048', { mono: true, className: 'x-key' });
+    const badge = Tag('RSA 2048', { mono: true, className: 'x-key' });
     assert.equal(badge.getAttribute('class'), 'tag badge badge-neutral mono x-key');
-    assert.equal(Badge('?', { variant: 'rainbow' }).getAttribute('class'), 'tag badge badge-neutral');
+    assert.equal(Tag('?', { variant: 'rainbow' }).getAttribute('class'), 'tag badge badge-neutral');
     for (const v of TAG_VARIANTS) assert.equal(Tag('x', { variant: v }).getAttribute('class'), `tag badge badge-${v}`);
     assert.equal(Tag('<b>x</b>').textContent, '<b>x</b>', 'text, never HTML');
   }));
@@ -2409,7 +2409,7 @@ describe('subdomains / scan view helpers (discovery engine v2)', () => {
       assert.equal(announces.length, 1, `${name}: one stage announcement`);
       const before = src.slice(Math.max(0, announces[0].index - 260), announces[0].index);
       assert.match(before, /run\.stages\[payload\.stage\]\.state === 'active'/, `${name}: only an active (not skipped) stage is announced`);
-      assert.match(src, new RegExp(`x\\._partial && run\\.status === 'running' \\? Badge\\(t\\('sub\\.host\\.resolving'\\)[^\\n]*${prefix}-mini-badge`), `${name}: the badge needs a running run`);
+      assert.match(src, new RegExp(`x\\._partial && run\\.status === 'running' \\? Tag\\(t\\('sub\\.host\\.resolving'\\)[^\\n]*${prefix}-mini-badge`), `${name}: the badge needs a running run`);
       assert.match(src, /\} else if \(run\.found && run\.found\.size\) \{\s*\/\/ Cancelled \/ failed: redraw the streamed partials[^\n]*\n[^\n]*\n\s*for \(const partial of run\.found\.values\(\)\) (?:table|hostsTable)\.updateRow\(partial\);/, `${name}: cancel / failure re-renders each partial row (updateRow, not the cached setRows)`);
       // Thousands of streamed hits: a full record replaces its partial in place, any other one is
       // batch-appended (no per-row table scan), and the stage pills re-render once per frame.

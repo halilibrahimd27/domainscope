@@ -42,7 +42,7 @@
 
 import { h, clear, uid, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, Disclosure, ErrorBanner, ExternalLink, Icon, KeyValueList, KindBadge,
+  Alert, Tag, Button, Card, CodeBlock, Disclosure, ErrorBanner, ExternalLink, Icon, KeyValueList, KindBadge,
   ProgressBar, RelativeTime, SegmentedControl, SeverityIcon, announce, describeError, setButtonBusy, textInput
 } from '../ui/components.js';
 import {
@@ -988,7 +988,7 @@ export function mount(container, ctx) {
       h('span', { class: 'hlt-check-icon' }, SeverityIcon(c.severity, { size: 18 })),
       h('div', { class: 'hlt-check-body' },
         h('div', { class: 'hlt-check-title' }, checkTitle(c),
-          waiver ? Badge(t('wvr.badgeUntil', { date: waiver.expires }), { variant: 'neutral', icon: 'shield', className: 'hlt-waived-badge', title: waiver.reason }) : null),
+          waiver ? Tag(t('wvr.badgeUntil', { date: waiver.expires }), { variant: 'neutral', icon: 'shield', className: 'hlt-waived-badge', title: waiver.reason }) : null),
         h('div', { class: 'hlt-check-detail' }, checkDetail(c)),
         fixable ? fixToggle(c, report) : null));
   }
@@ -1036,14 +1036,14 @@ export function mount(container, ctx) {
       const open = all.filter((c) => !isAccepted(c));
       const accepted = all.length - open.length;
       const counts = SEVERITY_ORDER.filter((sev) => sev !== 'ok' && open.some((c) => c.severity === sev))
-        .map((sev) => Badge(formatNumber(open.filter((c) => c.severity === sev).length), { variant: sev, icon: sev === 'error' ? 'x-circle' : sev === 'warn' ? 'alert' : 'info', title: t(`hlt.count.${sev}`, { count: open.filter((c) => c.severity === sev).length }) }));
-      if (accepted) counts.push(Badge(formatNumber(accepted), { variant: 'neutral', icon: 'shield', className: 'hlt-group-waived', title: t('wvr.section', { count: accepted }) }));
+        .map((sev) => Tag(formatNumber(open.filter((c) => c.severity === sev).length), { variant: sev, icon: sev === 'error' ? 'x-circle' : sev === 'warn' ? 'alert' : 'info', title: t(`hlt.count.${sev}`, { count: open.filter((c) => c.severity === sev).length }) }));
+      if (accepted) counts.push(Tag(formatNumber(accepted), { variant: 'neutral', icon: 'shield', className: 'hlt-group-waived', title: t('wvr.section', { count: accepted }) }));
       const worst = open.length ? open[0].severity : 'ok';
       checksEl.append(Card({
         title: t(`health.group.${group}`),
         icon: { dns: 'globe', email: 'mail', security: 'shield', registration: 'calendar', web: 'lock' }[group],
         className: ['hlt-group', `hlt-group-${worst}`].join(' '),
-        actions: counts.length ? h('div', { class: 'cluster' }, counts) : Badge(t('severity.ok'), { variant: 'ok', icon: 'check' }),
+        actions: counts.length ? h('div', { class: 'cluster' }, counts) : Tag(t('severity.ok'), { variant: 'ok', icon: 'check' }),
         padded: false,
         children: shown.length
           ? h('ul', { class: 'hlt-check-list' }, shown.map((c) => renderCheck(c, report, hw)))
@@ -1089,8 +1089,8 @@ export function mount(container, ctx) {
     } else {
       const days = r.expires ? daysUntil(r.expires) : null;
       const daysBadge = days === null ? null : days < 0
-        ? Badge(t('hlt.rdap.daysAgo', { count: -days }), { variant: 'error', icon: 'x-circle' })
-        : Badge(t('hlt.rdap.daysLeft', { count: days }), { variant: days < 30 ? 'error' : days < 60 ? 'warn' : 'ok', icon: 'clock' });
+        ? Tag(t('hlt.rdap.daysAgo', { count: -days }), { variant: 'error', icon: 'x-circle' })
+        : Tag(t('hlt.rdap.daysLeft', { count: days }), { variant: days < 30 ? 'error' : days < 60 ? 'warn' : 'ok', icon: 'clock' });
       const locked = (s) => /prohibited|lock/.test(s);
       body = KeyValueList([
         { key: t('hlt.rdap.domain'), value: r.domain, mono: true },
@@ -1103,9 +1103,9 @@ export function mount(container, ctx) {
         { key: t('hlt.rdap.created'), value: r.created ? `${formatDate(r.created)} · ${formatRelative(r.created)}` : null },
         { key: t('hlt.rdap.updated'), value: r.updated ? formatDate(r.updated) : null },
         { key: t('hlt.rdap.expires'), value: r.expires ? h('span', { class: 'hlt-expiry', dataset: { days } }, h('strong', null, formatDate(r.expires)), ' ', daysBadge) : null },
-        { key: t('hlt.rdap.status'), value: r.status.length ? h('div', { class: 'cluster' }, r.status.map((s) => Badge(s, { variant: locked(s) ? 'ok' : /hold|delete|redemption/.test(s) ? 'error' : 'neutral', icon: locked(s) ? 'lock' : null }))) : null },
+        { key: t('hlt.rdap.status'), value: r.status.length ? h('div', { class: 'cluster' }, r.status.map((s) => Tag(s, { variant: locked(s) ? 'ok' : /hold|delete|redemption/.test(s) ? 'error' : 'neutral', icon: locked(s) ? 'lock' : null }))) : null },
         { key: t('hlt.rdap.nameservers'), value: r.nameservers.length ? h('div', { class: 'cluster' }, r.nameservers.map((n) => hostLink(n))) : null },
-        { key: t('hlt.rdap.dnssec'), value: r.dnssecSigned === null ? null : r.dnssecSigned ? Badge(t('hlt.rdap.signed'), { variant: 'ok', icon: 'shield' }) : Badge(t('hlt.rdap.unsigned')) },
+        { key: t('hlt.rdap.dnssec'), value: r.dnssecSigned === null ? null : r.dnssecSigned ? Tag(t('hlt.rdap.signed'), { variant: 'ok', icon: 'shield' }) : Tag(t('hlt.rdap.unsigned')) },
         { key: t('hlt.rdap.abuse'), value: r.abuseEmail, mono: true, copy: true },
         { key: t('hlt.rdap.server'), value: r.url ? ExternalLink(r.url, r.rdapServer || r.url) : r.rdapServer }
       ].filter((it) => it.value !== null && it.value !== undefined && it.value !== ''));
@@ -1156,7 +1156,7 @@ export function mount(container, ctx) {
     const ds = report.records.ds || [];
     const keys = report.records.dnskey || [];
     const children = [
-      h('div', { class: 'cluster' }, Badge(t(`hlt.dnssec.${state}`), { variant, icon: state === 'validated' ? 'shield' : state === 'broken' ? 'x-circle' : null })),
+      h('div', { class: 'cluster' }, Tag(t(`hlt.dnssec.${state}`), { variant, icon: state === 'validated' ? 'shield' : state === 'broken' ? 'x-circle' : null })),
       // Below the apex lib/health reports the enclosing zone's state (its DS, and the AD bit).
       report.zone && report.zone !== report.domain && d.signed !== null ? h('p', { class: 'muted text-sm' }, t('hlt.dnssec.fromZone', { zone: report.zone })) : null,
       d.ede && d.ede.length ? Alert({ variant: 'error', compact: true, title: t('hlt.dnssec.ede'), message: d.ede.join(' · ') }) : null,
@@ -1165,7 +1165,7 @@ export function mount(container, ctx) {
         miniTable([t('hlt.col.keyTag'), t('hlt.col.algorithm'), t('hlt.col.digest')], ds.map((x) => [h('span', { class: 'mono' }, String(x.keyTag)), algName(x.algorithm), DS_DIGEST_TYPES[x.digestType] || String(x.digestType)]))) : null,
       keys.length ? h('div', { class: 'stack-sm' }, h('div', { class: 'hlt-subtitle' }, t('hlt.dnssec.dnskey')),
         miniTable([t('hlt.col.keyTag'), t('hlt.col.role'), t('hlt.col.algorithm')], keys.map((k) => [h('span', { class: 'mono' }, String(k.keyTag)),
-          Badge(k.sep ? t('hlt.dnssec.ksk') : t('hlt.dnssec.zsk'), { variant: k.sep ? 'accent' : 'neutral', icon: 'key' }), algName(k.algorithm)]))) : null
+          Tag(k.sep ? t('hlt.dnssec.ksk') : t('hlt.dnssec.zsk'), { variant: k.sep ? 'accent' : 'neutral', icon: 'key' }), algName(k.algorithm)]))) : null
     ];
     return Card({ title: t('hlt.dnssec.title'), icon: 'shield', className: 'hlt-card hlt-dnssec', children: h('div', { class: 'stack-sm' }, children) });
   }
@@ -1181,15 +1181,15 @@ export function mount(container, ctx) {
     const statics = terms.filter((x) => !x.lookup);
     const head = h('div', { class: 'hlt-spf-head' },
       hostLink(node.domain, 'TXT'),
-      Badge(t('hlt.spf.lookupCount', { count: node.count }), { variant: node.count > SPF_LOOKUP_LIMIT ? 'error' : 'neutral' }),
-      node.void ? Badge(t('hlt.spf.voidBadge'), { variant: 'warn' }) : null,
-      ...(node.errors || []).filter((e) => e.domain === node.domain).map((e) => Badge(e.code, { variant: 'error', title: e.detail || null })));
+      Tag(t('hlt.spf.lookupCount', { count: node.count }), { variant: node.count > SPF_LOOKUP_LIMIT ? 'error' : 'neutral' }),
+      node.void ? Tag(t('hlt.spf.voidBadge'), { variant: 'warn' }) : null,
+      ...(node.errors || []).filter((e) => e.domain === node.domain).map((e) => Tag(e.code, { variant: 'error', title: e.detail || null })));
     const items = lookups.map((term) => h('li', { class: 'hlt-spf-term' },
       h('span', { class: 'hlt-spf-term-head' },
         h('span', { class: 'mono hlt-spf-raw' }, term.term),
         h('span', { class: 'muted text-xs' }, '+1'),
-        term.void ? Badge(t('hlt.spf.voidBadge'), { variant: 'warn' }) : null,
-        term.error ? Badge(term.error, { variant: 'error' }) : null),
+        term.void ? Tag(t('hlt.spf.voidBadge'), { variant: 'warn' }) : null,
+        term.error ? Tag(term.error, { variant: 'error' }) : null),
       term.child ? spfTree(term.child, depth + 1) : null));
     return h('div', { class: 'hlt-spf-node' }, head,
       statics.length ? h('div', { class: 'hlt-spf-static' }, statics.map((x) => h('span', { class: ['mono', 'hlt-spf-chip', { 'is-all': x.mechanism === 'all' }] }, x.term))) : null,
@@ -1220,11 +1220,11 @@ export function mount(container, ctx) {
     const align = (v) => (v === 's' ? t('hlt.dmarc.strict') : t('hlt.dmarc.relaxed'));
     const dmarcBlock = h('div', { class: 'stack-sm hlt-mail-block', dataset: { block: 'dmarc' } },
       h('div', { class: 'hlt-subtitle' }, t('hlt.dmarc'),
-        dmarc.inherited ? Badge(t('hlt.dmarc.inherited', { org: dmarc.foundAt }), { variant: 'info' }) : null),
+        dmarc.inherited ? Tag(t('hlt.dmarc.inherited', { org: dmarc.foundAt }), { variant: 'info' }) : null),
       dmarc.record ? CodeBlock(dmarc.record, { wrap: true, label: dmarc.foundAt ? `_dmarc.${dmarc.foundAt}` : 'TXT' }) : h('p', { class: 'muted text-sm' }, t('hlt.dmarc.none')),
       p && p.valid ? KeyValueList([
-        { key: t('hlt.dmarc.p'), value: Badge(p.policy, { variant: p.policy === 'none' ? 'warn' : 'ok', mono: true }) },
-        { key: t('hlt.dmarc.sp'), value: p.subdomainPolicy ? Badge(p.subdomainPolicy, { variant: p.subdomainPolicy === 'none' ? 'warn' : 'ok', mono: true }) : null },
+        { key: t('hlt.dmarc.p'), value: Tag(p.policy, { variant: p.policy === 'none' ? 'warn' : 'ok', mono: true }) },
+        { key: t('hlt.dmarc.sp'), value: p.subdomainPolicy ? Tag(p.subdomainPolicy, { variant: p.subdomainPolicy === 'none' ? 'warn' : 'ok', mono: true }) : null },
         { key: t('hlt.dmarc.pct'), value: `${p.pct}%` },
         { key: t('hlt.dmarc.rua'), value: p.rua.length ? h('div', { class: 'stack-sm' }, p.rua.map((u) => h('span', { class: 'mono text-sm' }, u))) : null },
         { key: t('hlt.dmarc.ruf'), value: p.ruf.length ? h('div', { class: 'stack-sm' }, p.ruf.map((u) => h('span', { class: 'mono text-sm' }, u))) : null },
@@ -1234,10 +1234,10 @@ export function mount(container, ctx) {
     const dkimBlock = h('div', { class: 'stack-sm hlt-mail-block', dataset: { block: 'dkim' } },
       h('div', { class: 'hlt-subtitle' }, t('hlt.dkim')),
       dkim.length ? miniTable([t('hlt.dkim.selector'), t('hlt.dkim.key'), t('hlt.dkim.state')], dkim.map((k) => [
-        k.selector === '*' ? Badge(t('hlt.dkim.wildcard'), { variant: 'info' }) : hostLink(`${k.selector}._domainkey.${report.domain}`, 'TXT'),
+        k.selector === '*' ? Tag(t('hlt.dkim.wildcard'), { variant: 'info' }) : hostLink(`${k.selector}._domainkey.${report.domain}`, 'TXT'),
         k.revoked ? '—' : `${String(k.keyType).toUpperCase()}${k.keyBits ? ` · ${k.keyBits} bit` : ''}`,
-        k.revoked ? Badge(t('hlt.dkim.revoked'), { variant: 'neutral' }) : k.testing ? Badge(t('hlt.dkim.testing'), { variant: 'warn' })
-          : Badge(t('hlt.dkim.active'), { variant: k.keyBits && k.keyBits < 1024 ? 'error' : k.keyBits && k.keyBits < 2048 ? 'info' : 'ok', icon: 'key' })
+        k.revoked ? Tag(t('hlt.dkim.revoked'), { variant: 'neutral' }) : k.testing ? Tag(t('hlt.dkim.testing'), { variant: 'warn' })
+          : Tag(t('hlt.dkim.active'), { variant: k.keyBits && k.keyBits < 1024 ? 'error' : k.keyBits && k.keyBits < 2048 ? 'info' : 'ok', icon: 'key' })
       ])) : h('p', { class: 'muted text-sm' }, t('hlt.dkim.none', { count: selectorsTried })));
 
     const extra = (label, key) => h('div', { class: 'hlt-extra' },
@@ -1264,7 +1264,7 @@ export function mount(container, ctx) {
     const mi = report.mailIdentity;
     if (!mi || !mi.addresses.length) return null;
     const variant = { confirmed: 'ok', mismatch: 'warn', 'no-ptr': 'neutral', nxdomain: 'neutral', servfail: 'error', error: 'error' };
-    const status = (a, className) => Badge(t(`hlt.fcrdns.st.${a.status}`), {
+    const status = (a, className) => Tag(t(`hlt.fcrdns.st.${a.status}`), {
       variant: variant[a.status] || 'neutral', icon: a.status === 'confirmed' ? 'check' : null, title: a.error || null, className
     });
     // On a phone the verdict sits under the address (hlt-fcrdns-st-inline) and its own column is
@@ -1272,12 +1272,12 @@ export function mount(container, ctx) {
     const headers = [t('hlt.fcrdns.col.host'), t('hlt.fcrdns.col.ip'), t('hlt.fcrdns.col.ptr'), t('hlt.fcrdns.col.status')];
     const rows = mi.addresses.map((a) => [
       h('span', { class: 'hlt-fcrdns-host' }, hostLink(a.host),
-        a.own ? null : Badge(t('hlt.fcrdns.provider'), { title: t('hlt.fcrdns.providerTitle') })),
+        a.own ? null : Tag(t('hlt.fcrdns.provider'), { title: t('hlt.fcrdns.providerTitle') })),
       h('span', { class: 'hlt-fcrdns-ip' }, ipLink(a.ip),
         h('a', { class: 'hlt-fcrdns-sweep text-xs', href: ctx.href('ptr', { target: a.ip, focus: report.domain }), title: t('hlt.fcrdns.sweepTitle', { ip: a.ip }) }, t('hlt.fcrdns.sweep')),
         status(a, 'hlt-fcrdns-st-inline')),
       a.names.length ? h('span', { class: 'hlt-fcrdns-ptr' }, h('span', { class: 'mono' }, a.names[0]),
-        a.generic ? Badge(t('hlt.fcrdns.generic'), { variant: 'info' }) : null) : null,
+        a.generic ? Tag(t('hlt.fcrdns.generic'), { variant: 'info' }) : null) : null,
       status(a, 'hlt-fcrdns-st')
     ]);
     const block = h('div', { class: 'stack-sm hlt-mail-block hlt-fcrdns', dataset: { block: 'fcrdns' } },
@@ -1355,7 +1355,7 @@ export function mount(container, ctx) {
     headline.dataset.mtastsHeadline = v.headline;
     const items = [];
     if (p && p.mode) {
-      items.push({ key: t('hlt.mtasts.mode'), value: Badge(p.mode, { variant: { enforce: 'ok', testing: 'info' }[p.mode] || 'neutral', mono: true }) });
+      items.push({ key: t('hlt.mtasts.mode'), value: Tag(p.mode, { variant: { enforce: 'ok', testing: 'info' }[p.mode] || 'neutral', mono: true }) });
     }
     if (p && Number.isInteger(p.maxAge)) {
       items.push({ key: t('hlt.mtasts.maxAge'), value: t('hlt.mtasts.maxAgeValue', { count: Math.floor(p.maxAge / 86400), seconds: formatNumber(p.maxAge) }) });
@@ -1368,7 +1368,7 @@ export function mount(container, ctx) {
       ? miniTable([t('hlt.mtasts.col.host'), t('hlt.mtasts.col.pattern')], v.mx.map((x) => [
         h('span', { class: 'mono', dataset: { mx: x.host, matched: x.matchedBy ? 'true' : 'false' } }, x.host),
         x.matchedBy ? h('span', { class: 'mono' }, x.matchedBy)
-          : Badge(t('hlt.mtasts.noMatch'), { variant: v.mode === 'enforce' ? 'error' : 'warn', icon: 'x-circle' })
+          : Tag(t('hlt.mtasts.noMatch'), { variant: v.mode === 'enforce' ? 'error' : 'warn', icon: 'x-circle' })
       ]), 'hlt-mtasts-mx') : null;
     const probe = f.probe;
     const where = probe ? [probe.city, probe.country ? formatRegion(probe.country) : null].filter(Boolean).join(', ') : '';
@@ -1405,7 +1405,7 @@ export function mount(container, ctx) {
         key: t('hlt.mtasts.txt'),
         value: report.records.mtaSts
           ? h('span', { class: 'hlt-mtasts-txt' }, h('span', { class: 'mono text-sm hlt-extra-value' }, report.records.mtaSts),
-            mtaStsTxtInvalid(report) ? Badge(t('hlt.mtasts.txtInvalid'), { variant: 'warn', className: 'hlt-mtasts-txt-invalid' }) : null)
+            mtaStsTxtInvalid(report) ? Tag(t('hlt.mtasts.txtInvalid'), { variant: 'warn', className: 'hlt-mtasts-txt-invalid' }) : null)
           : h('span', { class: 'muted text-sm' }, t(lookupFailed(report, 'mtaSts') ? 'hlt.lookupFailed' : 'hlt.missing'))
       },
       { key: t('hlt.mtasts.url'), value: h('span', { class: 'mono text-sm hlt-mtasts-url' }, url), copy: url }
@@ -1540,7 +1540,7 @@ export function mount(container, ctx) {
         return [
           h('span', { class: 'hlt-ca-name' }, ca ? ca.name : issuer),
           ca ? h('span', { class: 'muted mono text-xs' }, issuer) : null,
-          ca && ca.distrusted ? Badge(t('hlt.caa.distrusted', { year: ca.distrusted }), { variant: 'error', icon: 'alert' }) : null,
+          ca && ca.distrusted ? Tag(t('hlt.caa.distrusted', { year: ca.distrusted }), { variant: 'error', icon: 'alert' }) : null,
           // Against the workspace's expected CAs: a CAA value that lets another CA issue is flagged.
           ExpectedCaaBadge(issuer)
         ];
@@ -1551,10 +1551,10 @@ export function mount(container, ctx) {
         const problem = x.valid ? x.problem : x.error;
         const state = problem ? (x.valid ? 'unusable' : 'malformed') : x.restricted ? 'restricted' : 'allowed';
         const badges = [];
-        if (x.restricted && x.methods) badges.push(Badge(t('hlt.caa.onlyMethods', { methods: x.methods.join(', ') }), { variant: 'info', icon: 'shield' }));
-        if (x.restricted && x.accountUri) badges.push(Badge(t('hlt.caa.accountOnly'), { variant: 'info', icon: 'key' }));
-        if (state === 'unusable') badges.push(Badge(t('hlt.caa.unusable'), { variant: 'error', icon: 'x-circle' }));
-        if (state === 'malformed') badges.push(Badge(t('hlt.caa.malformed'), { variant: 'error', icon: 'x-circle' }));
+        if (x.restricted && x.methods) badges.push(Tag(t('hlt.caa.onlyMethods', { methods: x.methods.join(', ') }), { variant: 'info', icon: 'shield' }));
+        if (x.restricted && x.accountUri) badges.push(Tag(t('hlt.caa.accountOnly'), { variant: 'info', icon: 'key' }));
+        if (state === 'unusable') badges.push(Tag(t('hlt.caa.unusable'), { variant: 'error', icon: 'x-circle' }));
+        if (state === 'malformed') badges.push(Tag(t('hlt.caa.malformed'), { variant: 'error', icon: 'x-circle' }));
         const notes = x.restricted ? caaRestrictionNotes([x], { wildcard }) : [];
         const body = [
           x.restricted && x.accountUri ? h('div', { class: 'hlt-ca-account mono text-xs' }, x.accountUri) : null,
@@ -1615,7 +1615,7 @@ export function mount(container, ctx) {
       hostLink(ns), ipList((report.nsAddresses || {})[ns] || [])))) : null;
     const mxHosts = report.mxHosts || {};
     const nullMx = rec.mx.length === 1 && rec.mx[0].exchange === '.';
-    const mxValue = nullMx ? Badge(t('hlt.dns.nullMx'), { variant: 'info' }) : rec.mx.length ? h('div', { class: 'stack-sm' }, rec.mx.map((m) => h('div', { class: 'hlt-ns' },
+    const mxValue = nullMx ? Tag(t('hlt.dns.nullMx'), { variant: 'info' }) : rec.mx.length ? h('div', { class: 'stack-sm' }, rec.mx.map((m) => h('div', { class: 'hlt-ns' },
       h('span', { class: 'num muted' }, String(m.preference)), ' ', hostLink(m.exchange),
       ipList(mxHosts[m.exchange] ? [...mxHosts[m.exchange].ipv4, ...mxHosts[m.exchange].ipv6] : []))))
       : lookupFailed(report, 'mx') ? failedText() : null;
@@ -1631,7 +1631,7 @@ export function mount(container, ctx) {
         { key: t('hlt.dns.mx'), value: mxValue },
         { key: t('hlt.dns.a'), value: known('a', addrList(rec.a)) },
         { key: t('hlt.dns.aaaa'), value: known('aaaa', addrList(rec.aaaa)) },
-        { key: t('hlt.dns.https'), value: known('https', https.length ? h('span', { class: 'cluster' }, alpn.map((a) => Badge(a, { mono: true }))) : null) },
+        { key: t('hlt.dns.https'), value: known('https', https.length ? h('span', { class: 'cluster' }, alpn.map((a) => Tag(a, { mono: true }))) : null) },
         { key: t('hlt.dns.txt'), value: known('txt', h('a', { href: ctx.href('lookup', { name: report.domain, type: 'TXT' }) }, t('hlt.dns.txtCount', { count: rec.txt.length }))) },
         // No wildcard probe answered: not known, never "No".
         { key: t('hlt.dns.wildcard'), value: w ? (w.wildcard ? h('span', { class: 'mono text-sm' }, t('hlt.dns.wildcardYes', { values: [...w.cnames, ...w.ipv4, ...w.ipv6].join(', ') })) : w.error ? failedText() : t('hlt.dns.wildcardNo')) : null }

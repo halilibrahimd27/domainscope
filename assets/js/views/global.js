@@ -48,7 +48,7 @@
 
 import { h, clear, append, debounce, scrollBehavior, uid } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, DataTable, Disclosure, ErrorBanner, ExternalLink, Icon, KindBadge, ProgressBar, RelativeTime,
+  Alert, Tag, Button, Card, CopyButton, DataTable, Disclosure, ErrorBanner, ExternalLink, Icon, KindBadge, ProgressBar, RelativeTime,
   Section, SeverityIcon, Tabs, TruncatedList, announce, checkbox, ipSortValue, select, setButtonBusy, textInput
 } from '../ui/components.js';
 import { registerStrings, hasString, formatNumber, formatDuration, formatRegion, formatDateTime, formatRelative, localeTag } from '../i18n.js';
@@ -956,7 +956,7 @@ export function mount(container, ctx) {
     if (isNotAsked(row)) {
       // Not a failure: AliDNS is asked only for the types it answers whole.
       return h('div', { class: 'glb-skip' },
-        h('span', { class: 'cluster' }, Badge(t('glb.value.notAsked'), { variant: 'neutral', icon: 'minus-circle' })),
+        h('span', { class: 'cluster' }, Tag(t('glb.value.notAsked'), { variant: 'neutral', icon: 'minus-circle' })),
         h('span', { class: 'muted text-xs' }, t('glb.value.notAskedShort')));
     }
     if (isBrowserBlocked(row)) {
@@ -966,7 +966,7 @@ export function mount(container, ctx) {
       const cmd = current ? terminalCommand(row.resolver.id, current.name, current.type) : null;
       return h('div', { class: 'glb-skip', title: [t('glb.value.unavailableTitle', { name: row.resolver.name }), res.error].filter(Boolean).join('\n') },
         h('span', { class: 'cluster' },
-          Badge(t('glb.value.unavailable'), { variant: 'neutral', icon: 'minus-circle' }),
+          Tag(t('glb.value.unavailable'), { variant: 'neutral', icon: 'minus-circle' }),
           h('span', { class: 'muted text-xs' }, t('glb.value.unavailableShort'))),
         cmd ? h('span', { class: 'glb-skip-cmd text-xs' },
           Icon('terminal', { size: 12 }), h('span', { class: 'muted' }, t('glb.value.terminal')), h('code', { class: 'mono' }, cmd)) : null);
@@ -978,17 +978,17 @@ export function mount(container, ctx) {
       const tip = [res.error, unreliable ? t('settings.unreliable') : null].filter(Boolean).join('\n') || null;
       return h('div', { class: 'glb-fail', title: tip },
         h('span', { class: 'cluster' },
-          Badge(t('glb.value.failed'), { variant: 'error', icon: 'x-circle' }),
-          unreliable ? Badge('HTTP/3', { variant: 'warn', icon: 'alert', title: t('settings.unreliable') }) : null),
+          Tag(t('glb.value.failed'), { variant: 'error', icon: 'x-circle' }),
+          unreliable ? Tag('HTTP/3', { variant: 'warn', icon: 'alert', title: t('settings.unreliable') }) : null),
         kind ? h('span', { class: 'muted text-xs glb-fail-text' }, kind) : null);
     }
     const parts = [];
     const mark = expectedMark(row);
     if (mark) parts.push(mark);
-    if (row.filtered) parts.push(Badge(t('glb.value.blocked'), { variant: 'warn', icon: 'filter', title: t('glb.value.blockedTitle') }));
-    if (v.length === 1 && v[0] === 'NXDOMAIN') parts.push(Badge('NXDOMAIN', { variant: 'nxdomain', icon: 'x-circle', title: t('class.nxdomain') }));
-    else if (v.length === 1 && v[0] === 'NODATA') parts.push(Badge(t('glb.value.nodata'), { variant: 'unresolved', title: t('glb.value.nodataTitle') }));
-    else if (v.length === 1 && /^[A-Z]+\d*$/.test(v[0]) && !normalizeIP(v[0])) parts.push(Badge(v[0], { variant: 'error', icon: 'alert' }));
+    if (row.filtered) parts.push(Tag(t('glb.value.blocked'), { variant: 'warn', icon: 'filter', title: t('glb.value.blockedTitle') }));
+    if (v.length === 1 && v[0] === 'NXDOMAIN') parts.push(Tag('NXDOMAIN', { variant: 'nxdomain', icon: 'x-circle', title: t('class.nxdomain') }));
+    else if (v.length === 1 && v[0] === 'NODATA') parts.push(Tag(t('glb.value.nodata'), { variant: 'unresolved', title: t('glb.value.nodataTitle') }));
+    else if (v.length === 1 && /^[A-Z]+\d*$/.test(v[0]) && !normalizeIP(v[0])) parts.push(Tag(v[0], { variant: 'error', icon: 'alert' }));
     else {
       const { plain, chain } = splitChain(v);
       if (plain.length) parts.push(TruncatedList(plain, { max: 3, render: (value) => renderValue(value, chain), mono: false }));
@@ -1006,8 +1006,8 @@ export function mount(container, ctx) {
     if (verdict !== 'match' && verdict !== 'mismatch') return null;
     const end = verdict === 'mismatch' ? cacheEnd(row) : null;
     const badge = verdict === 'match'
-      ? Badge(t('glb.exp.match'), { variant: 'ok', icon: 'check', className: 'glb-exp-mark' })
-      : Badge(t('glb.exp.mismatch'), {
+      ? Tag(t('glb.exp.match'), { variant: 'ok', icon: 'check', className: 'glb-exp-mark' })
+      : Tag(t('glb.exp.mismatch'), {
         variant: 'warn', icon: 'clock', className: 'glb-exp-mark',
         title: !end ? t('glb.exp.mismatchTitleNoTtl') : end <= Date.now() ? t('glb.exp.mismatchTitleExpired') : t('glb.exp.mismatchTitle', { time: clockTime(end) })
       });
@@ -1021,13 +1021,13 @@ export function mount(container, ctx) {
     if (!res || !res.ok) return null; // the answer cell explains the failure
     const rc = res.rcode;
     const variant = rc === 'NOERROR' ? 'ok' : rc === 'NXDOMAIN' ? 'nxdomain' : 'error';
-    return Badge(rc, { variant, mono: true, title: (res.ede || []).map((e) => `EDE ${e.code} ${e.name}${e.text ? `: ${e.text}` : ''}`).join('\n') || null });
+    return Tag(rc, { variant, mono: true, title: (res.ede || []).map((e) => `EDE ${e.code} ${e.name}${e.text ? `: ${e.text}` : ''}`).join('\n') || null });
   }
 
   function renderAd(row) {
     if (row.pending || !row.response || !row.response.ok) return null;
     return row.response.ad
-      ? Badge(t('glb.adYes'), { variant: 'ok', icon: 'shield', title: t('glb.adTitle') })
+      ? Tag(t('glb.adYes'), { variant: 'ok', icon: 'shield', title: t('glb.adTitle') })
       : h('span', { class: 'dt-null', title: t('glb.adNo') }, '—');
   }
 
@@ -1097,7 +1097,7 @@ export function mount(container, ctx) {
     {
       key: 'filtering', label: t('glb.col.filtering'), sortable: true, sortValue: (r) => r.resolver.filtering || '',
       exportValue: (r) => r.resolver.filtering || '',
-      render: (r) => (r.resolver.filtering ? Badge(t(`settings.filter.${r.resolver.filtering}`), { icon: 'filter' }) : null)
+      render: (r) => (r.resolver.filtering ? Tag(t(`settings.filter.${r.resolver.filtering}`), { icon: 'filter' }) : null)
     },
     { key: 'ttl', label: t('glb.col.ttl'), sortable: true, align: 'end', sortValue: (r) => (r.pending ? null : minAnswerTtl(r.response)), render: renderTtl },
     { key: 'status', label: t('glb.col.status'), sortable: true, sortValue: (r) => (r.pending ? null : r.response?.rcode || 'ERROR'), render: renderStatus, exportValue: (r) => (r.pending ? '' : r.response?.rcode || (isBrowserBlocked(r) ? 'UNAVAILABLE' : 'ERROR')) },
@@ -1256,7 +1256,7 @@ export function mount(container, ctx) {
         sortValue: (r) => (r.servers.length ? r.servers[0].name : null),
         searchValue: (r) => r.servers.map((s) => s.name).join(' '),
         exportValue: (r) => r.servers.map((s) => s.name).join(' '),
-        render: (r) => (r.servers.length ? h('div', { class: 'cluster' }, r.servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server' }))) : null)
+        render: (r) => (r.servers.length ? h('div', { class: 'cluster' }, r.servers.map((s) => Tag(s.name, { variant: 'direct', icon: 'server' }))) : null)
       }
     ]
   });

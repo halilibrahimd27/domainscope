@@ -22,7 +22,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, Button, CodeBlock, CopyButton, Disclosure, SeverityIcon, Spinner, announce, textInput } from './components.js';
+import { Alert, Tag, Button, CodeBlock, CopyButton, Disclosure, SeverityIcon, Spinner, announce, textInput } from './components.js';
 import { registerStrings, formatNumber, formatDateTime } from '../i18n.js';
 import {
   HEALTH_I18N, spfCheckHost, parseSpfSender, parseSpfHelo, SPF_EVAL_RESULTS, SPF_UNKNOWN_REASONS, SPF_PERMERROR_REASONS, SPF_MACRO_NEEDS
@@ -726,7 +726,7 @@ export function ExplainPanel({ ctx, name, types = [], responses = [], resolver =
 
   /* --- small builders ---------------------------------------------------------------- */
 
-  const resultBadge = (result, extra = {}) => Badge(t(`xpl.res.${result}`), { variant: RESULT_VARIANT[result] || 'neutral', icon: RESULT_ICON[result] || null, className: 'xpl-result', ...extra });
+  const resultBadge = (result, extra = {}) => Tag(t(`xpl.res.${result}`), { variant: RESULT_VARIANT[result] || 'neutral', icon: RESULT_ICON[result] || null, className: 'xpl-result', ...extra });
   const section = (key, title, ...children) => h('section', { class: ['xpl-sec', `xpl-${key}`], dataset: { section: key } },
     h('h3', { class: 'xpl-sec-title' }, title), ...children);
   const recordLine = (text) => h('div', { class: 'xpl-record' }, h('code', { class: 'xpl-record-text mono' }, text), CopyButton(text, { iconOnly: true, size: 'sm' }));
@@ -760,8 +760,8 @@ export function ExplainPanel({ ctx, name, types = [], responses = [], resolver =
       h('span', { class: 'xpl-step-n', attrs: { 'aria-hidden': 'true' } }, String(step.n)),
       h('code', { class: 'xpl-term mono' }, step.term),
       step.result === null ? null : resultBadge(noMatch ? step.result : step.effective || step.result),
-      noMatch ? Badge(t('xpl.res.noMatch'), { variant: 'neutral', icon: 'arrow-right', title: t('xpl.res.noMatchTitle'), className: 'xpl-no-match' }) : null,
-      step.cost ? Badge(t('xpl.spf.cost', { count: step.cost }), { variant: 'neutral', mono: true, className: 'xpl-cost' }) : null);
+      noMatch ? Tag(t('xpl.res.noMatch'), { variant: 'neutral', icon: 'arrow-right', title: t('xpl.res.noMatchTitle'), className: 'xpl-no-match' }) : null,
+      step.cost ? Tag(t('xpl.spf.cost', { count: step.cost }), { variant: 'neutral', mono: true, className: 'xpl-cost' }) : null);
     const p = step.params || {};
     const textParams = {
       ...p,
@@ -798,7 +798,7 @@ export function ExplainPanel({ ctx, name, types = [], responses = [], resolver =
     if (step.child) {
       li.append(Disclosure({
         summary: h('span', { class: 'xpl-child-summary' }, t('xpl.spf.policyOf', { domain: step.child.domain }),
-          step.child.count ? [' ', Badge(t('xpl.spf.costInside', { count: step.child.count }), { variant: 'neutral', mono: true })] : null),
+          step.child.count ? [' ', Tag(t('xpl.spf.costInside', { count: step.child.count }), { variant: 'neutral', mono: true })] : null),
         className: 'xpl-child',
         children: policyBlock(step.child)
       }));
@@ -1056,7 +1056,7 @@ export function ExplainPanel({ ctx, name, types = [], responses = [], resolver =
       const problem = r.problem ? h('div', { class: 'xpl-issue' }, SeverityIcon('error'), ' ', t('xpl.caa.problem', { problem: t(`health.caa.problem.${r.problem}`) })) : null;
       return {
         dataset: { tag: r.tag, kind: r.kind, usable: r.usable ? '1' : '0' },
-        key: [h('code', { class: 'mono' }, `${r.flags} ${r.tag} "${r.value}"`), r.critical ? [' ', Badge(t('xpl.critical'), { variant: 'warn' })] : null],
+        key: [h('code', { class: 'mono' }, `${r.flags} ${r.tag} "${r.value}"`), r.critical ? [' ', Tag(t('xpl.critical'), { variant: 'warn' })] : null],
         meaning: [...lines.map((l) => h('div', null, l)), problem]
       };
     });
@@ -1102,7 +1102,7 @@ export function ExplainPanel({ ctx, name, types = [], responses = [], resolver =
       const kv = (key, value) => items.push(h('div', { class: 'xpl-kv' }, h('dt', { class: 'xpl-kv-key' }, t(`xpl.svcb.k.${key}`)), h('dd', { class: 'xpl-kv-value' }, value)));
       if (r.mode === 'service') {
         if (r.alpn.length || r.defaultAlpn) {
-          kv('alpn', h('span', { class: 'cluster' }, r.alpn.map((a) => Badge(a.name ? `${a.id} · ${a.name}` : a.id, { mono: true })),
+          kv('alpn', h('span', { class: 'cluster' }, r.alpn.map((a) => Tag(a.name ? `${a.id} · ${a.name}` : a.id, { mono: true })),
             r.defaultAlpn ? h('span', { class: 'muted text-sm' }, t('xpl.svcb.defaultAlpn')) : null));
         }
         if (r.port !== null) kv('port', h('span', { class: 'mono' }, String(r.port)));

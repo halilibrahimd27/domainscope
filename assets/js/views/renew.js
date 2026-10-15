@@ -32,7 +32,7 @@
 
 import { h, clear, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, Disclosure, ErrorBanner, ExternalLink, Icon, KeyValueList, ProgressBar, RelativeTime,
+  Alert, Tag, Button, Card, Disclosure, ErrorBanner, ExternalLink, Icon, KeyValueList, ProgressBar, RelativeTime,
   SeverityIcon, Spinner, TruncatedList, announce, describeError, select, textarea
 } from '../ui/components.js';
 import { registerStrings, formatNumber, formatRelative, formatDateTime, formatDuration } from '../i18n.js';
@@ -207,7 +207,7 @@ registerStrings('tr', {
   'rnw.h01.lost': 'HTTP-01 testi yeni kontrolle durduruldu ve kullandığı ölçümler okunmadı. Yeniden test edin.'
 });
 
-/** Verdict → Badge variant and icon. */
+/** Verdict → Tag variant and icon. */
 const VERDICT_STYLE = Object.freeze({ fail: ['error', 'x-circle'], unknown: ['info', 'help'], warnings: ['warn', 'alert'], ready: ['ok', 'check-circle'] });
 /** Finding severities, worst first. */
 const SEVERITIES = ['error', 'warn', 'info', 'ok'];
@@ -978,7 +978,7 @@ export function mount(container, ctx) {
     const [variant, vIcon] = VERDICT_STYLE[r.verdict];
     const summary = h('span', { class: 'rnw-name-head' },
       h('span', { class: 'mono rnw-name-text' }, r.name),
-      Badge(t(`renew.v.${r.verdict}`), { variant, icon: vIcon, className: 'rnw-verdict' }),
+      Tag(t(`renew.v.${r.verdict}`), { variant, icon: vIcon, className: 'rnw-verdict' }),
       counts.length ? h('span', { class: 'muted text-xs rnw-name-counts' }, counts.map(([sev, n]) => t(`sum.count.${sev}`, { count: n })).join(' · ')) : null);
     const body = h('div', { class: 'stack-sm rnw-name-body' });
     for (const area of RENEWAL_AREAS) {

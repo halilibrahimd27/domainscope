@@ -784,6 +784,7 @@ async function paletteGroup(browser, server) {
 
 async function buildGallery() {
   const C = await import('./assets/js/ui/components.js');
+  const T = await import('./assets/js/ui/template.js');
   const { h } = await import('./assets/js/ui/dom.js');
   const body = document.getElementById('page-body');
   body.replaceChildren();
@@ -821,7 +822,7 @@ async function buildGallery() {
       { key: 'ip', label: 'IP', sortable: true, mono: true, sortValue: (r) => C.ipSortValue(r.ip) },
       { key: 'kind', label: 'Status', render: (r) => C.KindBadge(r.kind), sortable: true },
       { key: 'ttl', label: 'TTL', sortable: true, align: 'end', className: 'num' },
-      { key: 'covered', label: 'Cert', render: (r) => (r.covered ? C.Badge('✓ covered', { variant: 'ok' }) : C.Badge('✗ not covered', { variant: 'error' })), sortable: true }
+      { key: 'covered', label: 'Cert', render: (r) => (r.covered ? C.Tag('✓ covered', { variant: 'ok' }) : C.Tag('✗ not covered', { variant: 'error' })), sortable: true }
     ]
   });
   const progress = C.ProgressBar({ label: 'Resolving names' });
@@ -829,7 +830,6 @@ async function buildGallery() {
   const indet = C.ProgressBar({ label: 'Querying crt.sh', indeterminate: true });
   const busyBtn = C.Button({ label: 'Busy', icon: 'play' });
   C.setButtonBusy(busyBtn, true);
-  const stat = (label, value, variant, hint, icon) => C.StatCard({ label, value, variant, hint, icon });
   window.__tabs = C.Tabs([
     { id: 'hosts', label: 'Hosts', badge: 450, icon: 'list', content: () => window.__table.el },
     { id: 'servers', label: 'Servers', badge: 12, icon: 'server', content: () => C.EmptyState({ icon: 'server', title: 'No servers matched', message: 'Add your inventory to match IPs to servers.', action: C.Button({ label: 'Open inventory', icon: 'arrow-right' }) }) },
@@ -841,7 +841,7 @@ async function buildGallery() {
     C.Section({
       title: 'Badges & status',
       children: h('div', { class: 'stack-sm' },
-        h('div', { class: 'cluster' }, ['neutral', 'accent', 'ok', 'info', 'warn', 'error'].map((v) => C.Badge(v, { variant: v }))),
+        h('div', { class: 'cluster' }, ['neutral', 'accent', 'ok', 'info', 'warn', 'error'].map((v) => C.Tag(v, { variant: v }))),
         h('div', { class: 'cluster' }, kinds.map((k) => C.KindBadge(k))),
         h('div', { class: 'cluster' }, ['ok', 'info', 'warn', 'error'].map((s) => C.SeverityIcon(s, { label: true })), ['ok', 'warn', 'error'].map((s) => C.SeverityBadge(s))))
     }),
@@ -860,13 +860,13 @@ async function buildGallery() {
         busyBtn,
         C.ExternalLink('https://crt.sh/?q=example.com', 'crt.sh'))
     }),
-    h('div', { class: 'stat-grid' },
-      stat('Hosts', 1284, 'accent', '312 resolving', 'globe'),
-      stat('Cloudflare', 212, 'cloudflare', 'origin hidden', 'cloud'),
-      stat('CDN', 18, 'cdn', 'Fastly, CloudFront', 'zap'),
-      stat('Direct', 64, 'direct', '41 servers matched', 'server'),
-      stat('Dangling', 3, 'dangling', 'takeover risk', 'unlink'),
-      stat('Errors', 0, 'default', null, 'alert')),
+    T.MetricStrip({ label: 'Counts', metrics: [
+      { id: 'hosts', label: 'Hosts', value: 1284, hint: '312 resolving' },
+      { id: 'cloudflare', label: 'Cloudflare', value: 212, hint: 'origin hidden' },
+      { id: 'cdn', label: 'CDN', value: 18, hint: 'Fastly, CloudFront' },
+      { id: 'direct', label: 'Direct', value: 64, hint: '41 servers matched' },
+      { id: 'dangling', label: 'Dangling', value: 3, severity: 'warn', hint: 'takeover risk' },
+      { id: 'errors', label: 'Errors', value: 0 }] }).el,
     h('div', { class: 'grid-2' },
       h('div', { class: 'stack-sm' },
         C.Alert({ variant: 'info', title: 'Heads up', message: 'crt.sh can take a minute to answer.' }),
@@ -1206,6 +1206,41 @@ async function main() {
       } finally {
         // Never leave a modal open on failure: it would make the rest of the page inert and
         // turn one failed assertion into a cascade of unrelated failures in the next steps.
+        await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+      }
+    });
+
+    await step('settings dialog: Density (Comfortable / Compact) is persisted, applied at once and again on reload', async () => {
+      const dens = () => page.evaluate(() => [document.documentElement.getAttribute('data-density'), JSON.parse(localStorage.getItem('ssds.settings') || '{}').density]);
+      await page.click('[data-control="settings"]');
+      try {
+        await page.waitForSelector('dialog.modal[open] .settings-resolvers');
+        const labels = await page.evaluate(() => [...document.querySelectorAll('dialog.modal[open] select')].map((s) => [s.options.length, s.value, s.labels[0] ? s.labels[0].textContent : '']).filter((x) => /Density/.test(x[2])));
+        assertEqual(labels.length, 1, 'one Density select in the dialog');
+        assertEqual(labels[0].slice(0, 2), [2, 'comfortable'], 'two choices, Comfortable first');
+        await page.evaluate(() => {
+          const sel = [...document.querySelectorAll('dialog.modal[open] select')].find((s) => s.labels[0] && /Density/.test(s.labels[0].textContent));
+          sel.value = 'compact';
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        await page.waitFor(() => document.documentElement.getAttribute('data-density') === 'compact', { message: 'compact applied' });
+        assertEqual(await dens(), ['compact', 'compact'], 'compact: attribute and storage');
+        const fieldH = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--field-h').trim());
+        assertEqual(fieldH, '32px', 'compact tokens apply (--field-h)');
+        await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
+        await page.reload();
+        await waitReady(page);
+        assertEqual(await dens(), ['compact', 'compact'], 'still compact after a reload (boot.js)');
+        await page.click('[data-control="settings"]');
+        await page.waitForSelector('dialog.modal[open] .settings-resolvers');
+        await page.evaluate(() => {
+          const sel = [...document.querySelectorAll('dialog.modal[open] select')].find((s) => s.labels[0] && /Density/.test(s.labels[0].textContent));
+          sel.value = 'comfortable';
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        await page.waitFor(() => !document.documentElement.hasAttribute('data-density'), { message: 'comfortable removes the attribute' });
+        assertEqual((await dens())[1], 'comfortable', 'stored');
+      } finally {
         await page.evaluate(() => document.querySelectorAll('dialog[open]').forEach((d) => d.close()));
       }
     });

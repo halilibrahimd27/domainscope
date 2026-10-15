@@ -21,7 +21,7 @@
  */
 
 import { h } from './dom.js';
-import { Alert, Badge, Button, DataTable, EmptyState, Icon, IconButton, TruncatedList, toast } from './components.js';
+import { Alert, Tag, Button, DataTable, EmptyState, Icon, IconButton, TruncatedList, toast } from './components.js';
 import { downloadText, timestampedName } from './download.js';
 import { t, registerStrings, formatDate, formatNumber } from '../i18n.js';
 import { toCsv } from '../lib/export.js';
@@ -206,7 +206,7 @@ registerStrings('tr', {
  * @returns {HTMLElement}
  */
 export function SetBadge(id, { title = null, variant = 'accent' } = {}) {
-  const b = Badge(t('rw.set', { id }), { variant, icon: 'layers', title, className: 'rw-set-badge' });
+  const b = Tag(t('rw.set', { id }), { variant, icon: 'layers', title, className: 'rw-set-badge' });
   b.dataset.set = id;
   return b;
 }
@@ -353,8 +353,8 @@ export function RenewalSets({ bundle, validity = null, onRemoveLeaf, onRemoveFil
         class: ['rw-leaf', { 'is-replaced': olderBy.has(leaf) }], dataset: { key: leaf.keySlug }
       },
         h('div', { class: 'rw-leaf-facts' },
-          Badge(leaf.keyType, { variant: 'neutral', icon: 'key', mono: true, className: 'rw-key' }),
-          olderBy.has(leaf) ? Badge(t('rw.replaced.badge'), {
+          Tag(leaf.keyType, { variant: 'neutral', icon: 'key', mono: true, className: 'rw-key' }),
+          olderBy.has(leaf) ? Tag(t('rw.replaced.badge'), {
             variant: 'warn', icon: 'alert', className: 'rw-replaced-badge', title: t('rw.replaced.badgeTitle', { file: fileLabel(olderBy.get(leaf).files) })
           }) : null,
           validity ? validity(leaf.cert) : null,
@@ -408,13 +408,13 @@ function serverCell(row) {
     return h('div', { class: 'rw-srv' },
       h('span', { class: 'rw-srv-name mono' }, row.ip),
       h('span', { class: 'cluster rw-srv-badges' },
-        Badge(t('rw.notInList'), { variant: 'neutral' }),
-        row.private ? Badge(t('rw.private'), { variant: 'private', icon: 'lock' }) : null));
+        Tag(t('rw.notInList'), { variant: 'neutral' }),
+        row.private ? Tag(t('rw.private'), { variant: 'private', icon: 'lock' }) : null));
   }
   return h('div', { class: 'rw-srv' },
     h('span', { class: 'rw-srv-name' }, row.server.name),
     row.server.ips.length ? h('span', { class: 'rw-srv-ips mono text-xs muted' }, row.server.ips.join(', ')) : null,
-    row.maybe ? h('span', { class: 'cluster rw-srv-badges' }, Badge(t('rw.maybe'), { variant: 'info', icon: 'help', title: t('rw.maybeTitle') })) : null,
+    row.maybe ? h('span', { class: 'cluster rw-srv-badges' }, Tag(t('rw.maybe'), { variant: 'info', icon: 'help', title: t('rw.maybeTitle') })) : null,
     TopologyNotes(row.topology));
 }
 
@@ -456,7 +456,7 @@ export function RenewalPlanPanel({ plan, inventory, subject = '' }) {
         dataset: { set: set.id, hosts: String(use.names), servers: String(use.servers), addresses: String(use.addresses) }
       },
         h('div', { class: 'rw-plan-set-head' }, SetBadge(set.id),
-          set.keyTypes.map((k) => Badge(k, { variant: 'neutral', icon: 'key', mono: true, className: 'rw-key' }))),
+          set.keyTypes.map((k) => Tag(k, { variant: 'neutral', icon: 'key', mono: true, className: 'rw-key' }))),
         TruncatedList(set.names, { max: 4, inline: true }),
         h('div', { class: 'text-sm muted' }, t(use.addresses ? 'rw.plan.setUseOut' : 'rw.plan.setUse', {
           hosts: formatNumber(use.names), servers: formatNumber(use.servers), addresses: formatNumber(use.addresses),
@@ -522,7 +522,7 @@ export function RenewalPlanPanel({ plan, inventory, subject = '' }) {
         key: 'dns', label: t('rw.col.dns'), sortable: true,
         sortValue: (u) => (u.resolving ? 0 : 1),
         exportValue: (u) => (u.resolving ? 'resolves' : 'no-address'),
-        render: (u) => (u.resolving ? Badge(t('rw.resolves'), { variant: 'direct' }) : Badge(t('rw.noAddress'), { variant: 'neutral' }))
+        render: (u) => (u.resolving ? Tag(t('rw.resolves'), { variant: 'direct' }) : Tag(t('rw.noAddress'), { variant: 'neutral' }))
       }
     ]
   }) : null;

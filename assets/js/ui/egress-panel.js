@@ -11,7 +11,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, Button, DataTable, ExternalLink, Icon, announce } from './components.js';
+import { Alert, Tag, Button, DataTable, ExternalLink, Icon, announce } from './components.js';
 import { t, registerStrings, formatDate, formatNumber } from '../i18n.js';
 import { egressLog, egressMeterStatus } from './egress-meter.js';
 import { ledgerRows, ledgerTotals, NEVER_SENT } from '../lib/egress.js';
@@ -173,7 +173,7 @@ function serviceCell(row) {
   const name = row.kind === 'self' ? t('egress.self') : row.kind === 'unknown' ? row.host : row.name;
   return h('div', { class: 'egress-service' },
     h('div', { class: 'egress-name' }, name,
-      row.kind === 'unknown' ? [' ', Badge(t('egress.unknown'), { variant: 'warn', icon: 'alert', title: t('egress.unknownTitle') })] : null),
+      row.kind === 'unknown' ? [' ', Tag(t('egress.unknown'), { variant: 'warn', icon: 'alert', title: t('egress.unknownTitle') })] : null),
     row.kind !== 'unknown' ? h('div', { class: 'egress-host mono' }, row.host) : null,
     row.role ? h('div', { class: 'egress-role' }, t(`egress.role.${row.role}`)) : null);
 }

@@ -30,7 +30,7 @@
 
 import { h, clear } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, DataTable, ErrorBanner, FileDrop, Icon, KeyValueList, KindBadge,
+  Alert, Tag, Button, DataTable, ErrorBanner, FileDrop, Icon, KeyValueList, KindBadge,
   ProgressBar, Tabs, TruncatedList, announce, checkbox, copyText, ipSortValue, select, textarea, toast
 } from '../ui/components.js';
 import {
@@ -1028,11 +1028,11 @@ export function mount(container, ctx) {
   function renderParse() {
     parsed = parseBulkInput(area.value);
     clear(parseInfo);
-    const bits = [Badge(t('bulk.parsed', { count: parsed.names.length }), { variant: parsed.names.length ? 'ok' : 'neutral', icon: parsed.names.length ? 'check' : null })];
-    if (parsed.duplicates) bits.push(Badge(t('bulk.duplicates', { count: parsed.duplicates }), { variant: 'neutral' }));
-    if (parsed.invalid.length) bits.push(Badge(t('bulk.invalid', { count: parsed.invalid.length }), { variant: 'warn', icon: 'alert', title: parsed.invalid.slice(0, 20).join(' ') }));
-    if (parsed.ips.length) bits.push(Badge(t('bulk.ipsIgnored', { count: parsed.ips.length }), { variant: 'info', icon: 'info' }));
-    if (parsed.truncated) bits.push(Badge(t('bulk.tooMany', { max: formatNumber(MAX_NAMES) }), { variant: 'warn', icon: 'alert' }));
+    const bits = [Tag(t('bulk.parsed', { count: parsed.names.length }), { variant: parsed.names.length ? 'ok' : 'neutral', icon: parsed.names.length ? 'check' : null })];
+    if (parsed.duplicates) bits.push(Tag(t('bulk.duplicates', { count: parsed.duplicates }), { variant: 'neutral' }));
+    if (parsed.invalid.length) bits.push(Tag(t('bulk.invalid', { count: parsed.invalid.length }), { variant: 'warn', icon: 'alert', title: parsed.invalid.slice(0, 20).join(' ') }));
+    if (parsed.ips.length) bits.push(Tag(t('bulk.ipsIgnored', { count: parsed.ips.length }), { variant: 'info', icon: 'info' }));
+    if (parsed.truncated) bits.push(Tag(t('bulk.tooMany', { max: formatNumber(MAX_NAMES) }), { variant: 'warn', icon: 'alert' }));
     parseInfo.append(h('div', { class: 'cluster' }, bits));
     if (parsed.invalid.length) {
       parseInfo.append(h('details', { class: 'bulk-invalid' },
@@ -1364,7 +1364,7 @@ function buildJobUI(job, ctx, { onFinish }) {
       exportValue: (r) => `${r.resolution.status}${r.classification.kind ? ` ${r.classification.dangling ? 'dangling' : r.classification.kind}` : ''}${r.classification.provider ? ` ${r.classification.provider.name}` : ''}`,
       render: (r) => h('div', { class: 'cluster bulk-status' }, KindBadge(r.classification),
         r.resolution.status !== 'NOERROR' && r.resolution.status !== 'NXDOMAIN'
-          ? Badge(r.resolution.status, { variant: 'error', mono: true, title: r.resolution.error || '' }) : null)
+          ? Tag(r.resolution.status, { variant: 'error', mono: true, title: r.resolution.error || '' }) : null)
     },
     {
       key: 'ipv4', label: t('bulk.col.ipv4'), sortable: true, mono: true,
@@ -1465,9 +1465,9 @@ function buildJobUI(job, ctx, { onFinish }) {
       sortValue: (r) => (r.private ? 'a' : r.provider ? `b${r.provider.name}` : 'c'),
       searchValue: (r) => (r.private ? t('bulk.ip.private') : r.provider ? r.provider.name : t('bulk.ip.public')),
       exportValue: (r) => (r.private ? 'private' : r.provider ? r.provider.name : 'public'),
-      render: (r) => (r.private ? Badge(t('bulk.ip.private'), { variant: 'private', icon: 'lock' })
-        : r.provider ? Badge(r.provider.name, { variant: r.provider.id === 'cloudflare' ? 'cloudflare' : r.provider.hidesOrigin ? 'cdn' : 'platform' })
-          : Badge(t('bulk.ip.public'), { variant: 'direct', icon: 'server' }))
+      render: (r) => (r.private ? Tag(t('bulk.ip.private'), { variant: 'private', icon: 'lock' })
+        : r.provider ? Tag(r.provider.name, { variant: r.provider.id === 'cloudflare' ? 'cloudflare' : r.provider.hidesOrigin ? 'cdn' : 'platform' })
+          : Tag(t('bulk.ip.public'), { variant: 'direct', icon: 'server' }))
     },
     {
       key: 'count', label: t('bulk.col.count'), sortable: true, align: 'end', className: 'num', defaultDir: 'desc',
@@ -1486,7 +1486,7 @@ function buildJobUI(job, ctx, { onFinish }) {
       sortValue: (r) => (r.servers[0] ? r.servers[0].name : ''),
       searchValue: (r) => r.servers.map((s) => s.name).join(' '),
       exportValue: (r) => r.servers.map((s) => s.name).join(' '),
-      render: (r) => (r.servers.length ? h('div', { class: 'cluster' }, r.servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server' }))) : null)
+      render: (r) => (r.servers.length ? h('div', { class: 'cluster' }, r.servers.map((s) => Tag(s.name, { variant: 'direct', icon: 'server' }))) : null)
     },
     showPtr ? {
       key: 'ptr', label: t('bulk.col.ptr'), sortable: true, mono: true,
@@ -1505,7 +1505,7 @@ function buildJobUI(job, ctx, { onFinish }) {
         ? h('span', null, h('span', { class: 'mono' }, `AS${r.info.asn}`), r.info.holder ? ` ${r.info.holder}` : '')
         : (!r.private && (r.enriching || r.ptr === null) ? pendingCell()
           : r.skipped ? skippedCell()
-            : naOf(r, 'network') || (r.enrichError && !r.info ? Badge(t('common.error'), { variant: 'error', title: r.enrichError }) : null)))
+            : naOf(r, 'network') || (r.enrichError && !r.info ? Tag(t('common.error'), { variant: 'error', title: r.enrichError }) : null)))
     } : null,
     showAsn ? {
       key: 'country', label: t('bulk.col.country'), sortable: true,

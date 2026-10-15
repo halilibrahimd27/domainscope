@@ -29,7 +29,7 @@
 
 import { h, clear } from './dom.js';
 import {
-  Alert, Badge, Button, ButtonLink, Card, CodeBlock, DataTable, EmptyState, ErrorBanner, ExternalLink, Icon,
+  Alert, Tag, Button, ButtonLink, Card, CodeBlock, DataTable, EmptyState, ErrorBanner, ExternalLink, Icon,
   KeyValueList, Modal, ProgressBar, SegmentedControl, announce, checkbox, ipSortValue, setButtonBusy, toast
 } from './components.js';
 import { Flag } from './flag.js';
@@ -977,7 +977,7 @@ function failureText(row) {
 /* ------------------------------------------------------------------------ */
 
 function miniBadge(text, variant, icon, title, dataset) {
-  const b = Badge(text, { variant, icon, title, className: 'vfy-mini' });
+  const b = Tag(text, { variant, icon, title, className: 'vfy-mini' });
   Object.assign(b.dataset, dataset);
   return b;
 }
@@ -986,33 +986,33 @@ function primaryBadge(row) {
   let b;
   switch (row.state) {
     case 'skipped':
-      b = Badge(SKIP_REASONS.includes(row.skip) ? t(`vfy.skip.${row.skip}`) : String(row.skip || ''), {
+      b = Tag(SKIP_REASONS.includes(row.skip) ? t(`vfy.skip.${row.skip}`) : String(row.skip || ''), {
         variant: 'private', icon: 'lock', title: row.skip === 'cdn-edge' ? t('vfy.skip.cdn-edge.title') : null
       });
       b.dataset.vfySkip = row.skip || '';
       break;
     case 'running':
-      // Badge() has no spinner: a plain badge with the shared .spinner (reduced motion is handled globally).
+      // Tag() has no spinner: a plain badge with the shared .spinner (reduced motion is handled globally).
       b = h('span', { class: 'badge badge-neutral vfy-running' },
         h('span', { class: 'spinner', attrs: { 'aria-hidden': 'true' } }), h('span', { class: 'badge-text' }, t('vfy.state.running')));
       break;
     case 'pending':
-      b = Badge(t('vfy.state.pending'), { variant: 'neutral', icon: 'clock' });
+      b = Tag(t('vfy.state.pending'), { variant: 'neutral', icon: 'clock' });
       break;
     case 'not-run': {
       const reason = NOT_RUN_REASONS.includes(row.notRun) ? ` · ${t(`vfy.notRun.${row.notRun}`)}` : '';
-      b = Badge(`${t('vfy.state.not-run')}${reason}`, { variant: 'neutral', icon: 'minus-circle' });
+      b = Tag(`${t('vfy.state.not-run')}${reason}`, { variant: 'neutral', icon: 'minus-circle' });
       b.dataset.vfyNotRun = row.notRun || '';
       break;
     }
     case 'error':
-      b = Badge(t('vfy.state.error'), { variant: 'error', icon: 'alert', title: errorText(row) });
+      b = Tag(t('vfy.state.error'), { variant: 'error', icon: 'alert', title: errorText(row) });
       b.dataset.vfyError = errCode(row);
       break;
     default: {
       const spec = statusBadgeSpec(row);
-      b = spec ? Badge(t(spec.key), { variant: spec.variant, icon: spec.icon, title: reasonSentence(row) })
-        : Badge(t('vfy.state.error'), { variant: 'error', icon: 'alert' });
+      b = spec ? Tag(t(spec.key), { variant: spec.variant, icon: spec.icon, title: reasonSentence(row) })
+        : Tag(t('vfy.state.error'), { variant: 'error', icon: 'alert' });
       if (row.status) b.dataset.vfyStatus = row.status;
     }
   }

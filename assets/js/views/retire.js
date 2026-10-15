@@ -39,7 +39,7 @@
 
 import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, Disclosure, ErrorBanner, Icon, ProgressBar, RelativeTime, announce, textarea, toast
+  Alert, Tag, Button, Card, Disclosure, ErrorBanner, Icon, ProgressBar, RelativeTime, announce, textarea, toast
 } from '../ui/components.js';
 import { t, registerStrings, formatNumber, formatRelative, getLang } from '../i18n.js';
 import {
@@ -1132,8 +1132,8 @@ function mountCheck(container, ctx) {
     clear(parsedEl);
     clear(issuesEl);
     const bits = [];
-    if (parsed.ok) bits.push(Badge(t('retire.parsed', { count: parsed.total }), { variant: 'ok', icon: 'check' }));
-    if (domainList.domains.length) bits.push(Badge(t('retire.parsedDomains', { count: domainList.domains.length }), { variant: 'ok', icon: 'check' }));
+    if (parsed.ok) bits.push(Tag(t('retire.parsed', { count: parsed.total }), { variant: 'ok', icon: 'check' }));
+    if (domainList.domains.length) bits.push(Tag(t('retire.parsedDomains', { count: domainList.domains.length }), { variant: 'ok', icon: 'check' }));
     if (session.filled && session.filled.length) {
       bits.push(h('span', { class: 'muted retire-filled', dataset: { filled: session.filled.join(' ') } },
         t('retire.filled', { sources: session.filled.map((s) => t(`retire.filled.${s}`)).join(', ') })));
@@ -1896,13 +1896,13 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onDiscover, onFinish }) {
 
   /* the change list, one card per group */
   function severityBadge(c) {
-    const b = Badge(t(`retire.sev.${c.severity}`), { variant: SEVERITY_VARIANT[c.severity] || 'neutral', title: t(`retire.sevTitle.${c.severity}`) });
+    const b = Tag(t(`retire.sev.${c.severity}`), { variant: SEVERITY_VARIANT[c.severity] || 'neutral', title: t(`retire.sevTitle.${c.severity}`) });
     b.dataset.severity = c.severity;
     return b;
   }
 
   function verifiedBadge(c) {
-    const b = Badge(t(`retire.ver.${c.verified}`), { variant: VERIFIED_VARIANT[c.verified] || 'neutral', icon: c.verified === 'live' ? 'check' : null, title: t(`retire.verTitle.${c.verified}`) });
+    const b = Tag(t(`retire.ver.${c.verified}`), { variant: VERIFIED_VARIANT[c.verified] || 'neutral', icon: c.verified === 'live' ? 'check' : null, title: t(`retire.verTitle.${c.verified}`) });
     b.dataset.verified = c.verified;
     return b;
   }
@@ -1947,7 +1947,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onDiscover, onFinish }) {
   function recordCell(c) {
     return h('div', { class: 'retire-record' },
       h('span', { class: 'mono retire-name' }, c.name),
-      Badge(c.type === 'TXT' && c.spf ? 'SPF' : c.type, { mono: true, className: 'retire-type' }));
+      Tag(c.type === 'TXT' && c.spf ? 'SPF' : c.type, { mono: true, className: 'retire-type' }));
   }
 
   function valueCell(c) {
@@ -2045,7 +2045,7 @@ function buildJobUI(job, ctx, { onPassive, onCheckToo, onDiscover, onFinish }) {
       className: ['retire-group', `retire-group-${g.kind}`].join(' '),
       title,
       subtitle,
-      actions: count ? Badge(t('retire.group.count', { count }), { variant: g.changes.some((c) => c.severity === 'mail' || c.severity === 'ns') ? 'error' : 'neutral' }) : null,
+      actions: count ? Tag(t('retire.group.count', { count }), { variant: g.changes.some((c) => c.severity === 'mail' || c.severity === 'ns') ? 'error' : 'neutral' }) : null,
       children: h('div', { class: 'stack-sm' }, body)
     });
     card.dataset.group = g.key;

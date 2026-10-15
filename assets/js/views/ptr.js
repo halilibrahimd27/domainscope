@@ -36,7 +36,7 @@
 
 import { h, clear, debounce } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, DataTable, ErrorBanner, Icon, KeyValueList, KindBadge,
+  Alert, Tag, Button, Card, CodeBlock, DataTable, ErrorBanner, Icon, KeyValueList, KindBadge,
   Modal, ProgressBar, TruncatedList, announce, checkbox, ipSortValue, normalizeSearch, select, textInput, textarea, toast
 } from '../ui/components.js';
 import {
@@ -769,7 +769,7 @@ export function mount(container, ctx) {
     if (parsed.kind === 'asn' && parsed.ok) {
       parsedEl.append(Icon('info', { size: 13 }), h('span', null, t('ptr.parsed.asn', { asn: parsed.asn })));
     } else if (parsed.kind === 'addresses' && parsed.addresses.length) {
-      parsedEl.append(Badge(t('ptr.parsed.addresses', { count: parsed.addresses.length }), { variant: 'ok', icon: 'check' }),
+      parsedEl.append(Tag(t('ptr.parsed.addresses', { count: parsed.addresses.length }), { variant: 'ok', icon: 'check' }),
         h('span', { class: 'muted' }, t('ptr.parsed.lookups', { count: parsed.addresses.length })));
     }
     for (const issue of parsed.issues) {
@@ -1094,10 +1094,10 @@ export function mount(container, ctx) {
      */
     function prefixNotes(p) {
       const bits = [];
-      if (p.version === 6) bits.push(Badge(t('ptr.asn.v6only'), { title: t('ptr.issue.v6-range', { items: p.prefix }) }));
-      else if (p.skipped) bits.push(Badge(t(`ptr.asn.${p.skipped}`), { title: t(`ptr.asn.${p.skipped}Title`), className: 'ptr-asn-skipped' }));
+      if (p.version === 6) bits.push(Tag(t('ptr.asn.v6only'), { title: t('ptr.issue.v6-range', { items: p.prefix }) }));
+      else if (p.skipped) bits.push(Tag(t(`ptr.asn.${p.skipped}`), { title: t(`ptr.asn.${p.skipped}Title`), className: 'ptr-asn-skipped' }));
       else if (!p.sweepable) {
-        bits.push(Badge(t('ptr.asn.tooLarge'), { variant: 'warn' }));
+        bits.push(Tag(t('ptr.asn.tooLarge'), { variant: 'warn' }));
         if (p.part) {
           bits.push(h('button', {
             type: 'button', class: 'link-btn text-sm', title: t('ptr.asn.partTitle'), dataset: { action: 'ptr-asn-part', part: p.part },
@@ -1115,7 +1115,7 @@ export function mount(container, ctx) {
           }, t('ptr.asn.part', { part: p.part })));
         }
       }
-      if (!p.current) bits.push(Badge(t('ptr.asn.gone'), { title: t('ptr.asn.goneTitle') }));
+      if (!p.current) bits.push(Tag(t('ptr.asn.gone'), { title: t('ptr.asn.goneTitle') }));
       return bits.length ? h('div', { class: 'cluster' }, bits) : null;
     }
 
@@ -1315,7 +1315,7 @@ function templateEl(template) {
 }
 
 function statusBadge(status) {
-  return Badge(t(`ptr.st.${status}`), { variant: STATUS_VARIANT[status] || 'neutral', icon: STATUS_ICON[status] || null, title: t(`ptr.st.${status}.title`) });
+  return Tag(t(`ptr.st.${status}`), { variant: STATUS_VARIANT[status] || 'neutral', icon: STATUS_ICON[status] || null, title: t(`ptr.st.${status}.title`) });
 }
 
 /**
@@ -1397,7 +1397,7 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
 
   const hostLink = (name, type = 'A,AAAA') => h('a', { class: 'mono', href: ctx.href('lookup', { name, type }) }, name);
   const serversCell = (servers) => (servers.length
-    ? h('div', { class: 'cluster' }, servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server', title: s.ip })))
+    ? h('div', { class: 'cluster' }, servers.map((s) => Tag(s.name, { variant: 'direct', icon: 'server', title: s.ip })))
     : null);
 
   // A pattern row's search text holds every member's (addresses, names, statuses, operators,
@@ -1410,7 +1410,7 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
   const checkCell = (r) => {
     if (r.type === 'pattern') {
       const all = r.counts.confirmed === r.members.length;
-      const badge = Badge(t('ptr.pattern.check', { confirmed: formatNumber(r.counts.confirmed), count: r.members.length }), { variant: all ? 'ok' : 'warn', icon: all ? 'check' : 'alert' });
+      const badge = Tag(t('ptr.pattern.check', { confirmed: formatNumber(r.counts.confirmed), count: r.members.length }), { variant: all ? 'ok' : 'warn', icon: all ? 'check' : 'alert' });
       const kept = narrowed() ? rowResults(r).length : r.members.length;
       return kept < r.members.length
         ? h('div', { class: 'ptr-check' }, badge, h('span', { class: 'ptr-matching text-xs muted', title: t('ptr.pattern.matchingTitle'), dataset: { kept: String(kept) } },
@@ -1439,7 +1439,7 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
       render: (r) => {
         if (r.type === 'pattern') {
           return h('div', { class: 'ptr-pattern', title: t('ptr.pattern.title', { count: r.members.length }) },
-            templateEl(r.template), Badge(t('ptr.pattern.badge'), { variant: 'info', icon: 'layers' }));
+            templateEl(r.template), Tag(t('ptr.pattern.badge'), { variant: 'info', icon: 'layers' }));
         }
         const res = r.result;
         if (!res.names.length) return null;
@@ -1449,8 +1449,8 @@ function buildJobUI(job, ctx, { focus, onFinish }) {
             max: 2,
             render: (n) => h('span', { class: ['ptr-name', { 'is-focus': isFocusName(n, f) }] }, hostLink(n))
           }),
-          r.focus ? Badge(t('ptr.focusBadge'), { variant: 'accent' }) : null,
-          res.template && !r.focus ? Badge(t('ptr.templated'), { title: t('ptr.templatedTitle') }) : null);
+          r.focus ? Tag(t('ptr.focusBadge'), { variant: 'accent' }) : null,
+          res.template && !r.focus ? Tag(t('ptr.templated'), { title: t('ptr.templatedTitle') }) : null);
       }
     },
     {

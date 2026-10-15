@@ -136,6 +136,8 @@ const JS = join(ASSETS, 'js');
  * rows and cells only, and below 360 px a label sits above its value). lib/summarycore.js by 30 bytes: the Copy summary kinds of Bulk Resolve
  * and Reverse DNS and their link params. The tools, lib/certtools.js, lib/netresults.js, lib/summary.js's builders and the Watch & report
  * libraries load with their views, never with Home.
+ * Clean-up (docs/DESIGN.md §8): the StatCard / Badge adapters and the .stat* rules are gone, Density joined Settings: ≈ 275 KB (281,507 bytes),
+ * 97,373 bytes under the budget.
  * Raise it only for a reason you can name in the commit.
  */
 const START_ROUTE_BUDGET = 370 * 1024;

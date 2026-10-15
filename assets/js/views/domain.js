@@ -31,7 +31,7 @@
 
 import { h, clear, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, ExternalLink, Icon, KeyValueList, KindBadge, ProgressBar, RelativeTime, SeverityIcon,
+  Alert, Tag, Button, Card, ExternalLink, Icon, KeyValueList, KindBadge, ProgressBar, RelativeTime, SeverityIcon,
   announce, textInput
 } from '../ui/components.js';
 import { registerStrings, hasString, formatNumber, formatDate, formatRelative, getLang } from '../i18n.js';
@@ -811,12 +811,12 @@ export function mount(container, ctx) {
         ]));
     }
     const daysBadge = card.daysLeft === null ? null : card.daysLeft < 0
-      ? Badge(t('dov.reg.daysAgo', { count: -card.daysLeft }), { variant: 'error', icon: 'x-circle' })
-      : Badge(t('dov.reg.daysLeft', { count: card.daysLeft }), { variant: card.expiry === 'ok' ? 'ok' : card.expiry, icon: 'clock' });
+      ? Tag(t('dov.reg.daysAgo', { count: -card.daysLeft }), { variant: 'error', icon: 'x-circle' })
+      : Tag(t('dov.reg.daysLeft', { count: card.daysLeft }), { variant: card.expiry === 'ok' ? 'ok' : card.expiry, icon: 'clock' });
     const lock = card.transferLock === true
-      ? Badge(t('dov.reg.lockOn'), { variant: 'ok', icon: 'lock' })
+      ? Tag(t('dov.reg.lockOn'), { variant: 'ok', icon: 'lock' })
       : card.transferLock === false
-        ? h('span', { class: 'stack-xs' }, Badge(t('dov.reg.lockOff'), { variant: 'warn', icon: 'unlock' }), h('span', { class: 'text-xs muted dov-note' }, t('dov.reg.lockOffNote')))
+        ? h('span', { class: 'stack-xs' }, Tag(t('dov.reg.lockOff'), { variant: 'warn', icon: 'unlock' }), h('span', { class: 'text-xs muted dov-note' }, t('dov.reg.lockOffNote')))
         : h('span', { class: 'muted' }, t('dov.reg.lockUnknown'));
     return kv([
       card.domain && card.domain !== d ? { key: t('dov.reg.registryDomain'), value: mono(card.domain) } : null,
@@ -828,8 +828,8 @@ export function mount(container, ctx) {
       { key: t('dov.reg.created'), value: card.created ? formatDate(card.created) : null },
       { key: t('dov.reg.expires'), value: card.expires ? h('span', { class: 'dov-expiry', dataset: { days: card.daysLeft, expiry: card.expiry } }, h('strong', null, formatDate(card.expires)), ' ', daysBadge) : null },
       { key: t('dov.reg.lock'), value: h('span', { class: 'dov-lock', dataset: { lock: String(card.transferLock) } }, lock) },
-      { key: t('dov.reg.status'), value: card.flags.length ? chips(card.flags.map((x) => Badge(x.code, { variant: flagVariant(x.kind), icon: x.kind === 'lock' ? 'lock' : null }))) : null },
-      { key: t('dov.reg.dnssec'), value: card.dnssec === null ? null : card.dnssec ? Badge(t('dov.reg.signed'), { variant: 'ok', icon: 'shield' }) : Badge(t('dov.reg.unsigned')) },
+      { key: t('dov.reg.status'), value: card.flags.length ? chips(card.flags.map((x) => Tag(x.code, { variant: flagVariant(x.kind), icon: x.kind === 'lock' ? 'lock' : null }))) : null },
+      { key: t('dov.reg.dnssec'), value: card.dnssec === null ? null : card.dnssec ? Tag(t('dov.reg.signed'), { variant: 'ok', icon: 'shield' }) : Tag(t('dov.reg.unsigned')) },
       { key: t('dov.reg.nameservers'), value: card.nameservers.length ? hostList(card.nameservers) : null }
     ]);
   }
@@ -839,9 +839,9 @@ export function mount(container, ctx) {
     const { providers, self, other } = card.hosting;
     const nsFailure = failureFor(card, 'ns');
     const who = [
-      ...providers.map((p) => Badge(p.name, { variant: 'accent', title: p.hosts.join(', ') })),
-      self.length ? Badge(t('dov.dns.own'), { title: self.join(', ') }) : null,
-      other.length ? Badge(`${t('dov.dns.other')} (${formatNumber(other.length)})`, { title: other.join(', ') }) : null
+      ...providers.map((p) => Tag(p.name, { variant: 'accent', title: p.hosts.join(', ') })),
+      self.length ? Tag(t('dov.dns.own'), { title: self.join(', ') }) : null,
+      other.length ? Tag(`${t('dov.dns.other')} (${formatNumber(other.length)})`, { title: other.join(', ') }) : null
     ].filter(Boolean);
     const soa = card.soa;
     const soaFailure = failureFor(card, 'soa');
@@ -859,7 +859,7 @@ export function mount(container, ctx) {
             soa.serialDate ? h('span', { class: 'muted text-xs' }, t('dov.dns.serialDate', { date: soa.serialDate })) : null) : null
         },
         soa && soa.email ? { key: t('dov.dns.contact'), value: mono(soa.email) } : null,
-        { key: t('dov.dns.dnssec'), value: card.dnssec ? Badge(t(`dov.dns.dnssec.${card.dnssec}`), { variant: dnssecVariant, icon: card.dnssec === 'validated' ? 'shield' : card.dnssec === 'failing' ? 'x-circle' : null }) : dsFailure ? na(dsFailure) : null }
+        { key: t('dov.dns.dnssec'), value: card.dnssec ? Tag(t(`dov.dns.dnssec.${card.dnssec}`), { variant: dnssecVariant, icon: card.dnssec === 'validated' ? 'shield' : card.dnssec === 'failing' ? 'x-circle' : null }) : dsFailure ? na(dsFailure) : null }
       ]),
       providers.length > 1 ? h('p', { class: 'text-sm muted dov-note', dataset: { note: 'multi' } }, t('dov.dns.multi', { count: providers.length })) : null,
       card.delegation ? Alert({
@@ -878,8 +878,8 @@ export function mount(container, ctx) {
     else if (mx && mx.state === 'null') receives = h('span', { class: 'text-sm' }, t('dov.mail.nullMx'));
     else if (mx) {
       receives = chips([
-        ...mx.platforms.map((p) => Badge(p.kind === 'mailbox' ? p.name : `${p.name} · ${t(`dov.mail.kind.${p.kind}`)}`, { variant: 'accent', title: p.hosts.join(', ') })),
-        ...(mx.other.length ? [Badge(`${t('dov.dns.other')} (${formatNumber(mx.other.length)})`, { title: mx.other.join(', ') })] : [])
+        ...mx.platforms.map((p) => Tag(p.kind === 'mailbox' ? p.name : `${p.name} · ${t(`dov.mail.kind.${p.kind}`)}`, { variant: 'accent', title: p.hosts.join(', ') })),
+        ...(mx.other.length ? [Tag(`${t('dov.dns.other')} (${formatNumber(mx.other.length)})`, { title: mx.other.join(', ') })] : [])
       ]);
     }
     const txtFailure = failureFor(card, 'txt');
@@ -900,13 +900,13 @@ export function mount(container, ctx) {
       if (dm.state === 'ok') {
         const extra = [dm.pct < 100 ? t('dov.mail.dmarc.pct', { pct: dm.pct }) : null, dm.reports ? t('dov.mail.dmarc.reports', { count: dm.reports }) : null].filter(Boolean);
         dmarcValue = h('span', { class: 'text-sm', dataset: { dmarc: dm.policy || 'none' } },
-          Badge(t(`dov.mail.dmarc.${dm.policy || 'none'}`), { variant: dm.policy === 'reject' ? 'ok' : dm.policy === 'quarantine' ? 'info' : 'warn' }),
+          Tag(t(`dov.mail.dmarc.${dm.policy || 'none'}`), { variant: dm.policy === 'reject' ? 'ok' : dm.policy === 'quarantine' ? 'info' : 'warn' }),
           extra.length ? h('span', { class: 'muted text-xs' }, ` ${extra.join(' · ')}`) : null);
       } else dmarcValue = h('span', { class: 'text-sm', dataset: { dmarc: dm.state } }, t(dm.state === 'none' ? 'dov.mail.dmarc.missing' : `dov.mail.dmarc.${dm.state}`, { count: dm.count }));
     }
     const senders = spf && spf.state === 'ok' && (spf.senders.length || spf.other.length) ? chips([
-      ...spf.senders.map((s) => Badge(s.name)),
-      ...spf.other.slice(0, 3).map((o) => Badge(o, { mono: true })),
+      ...spf.senders.map((s) => Tag(s.name)),
+      ...spf.other.slice(0, 3).map((o) => Tag(o, { mono: true })),
       spf.other.length > 3 ? h('span', { class: 'muted text-xs' }, t('common.moreCount', { count: spf.other.length - 3 })) : null
     ].filter(Boolean)) : null;
     return h('div', { class: 'stack-sm' },
@@ -943,7 +943,7 @@ export function mount(container, ctx) {
     const httpsText = (x, failure) => {
       if (failure) return na(failure);
       if (!x) return null;
-      return x.present ? chips([Badge(t('common.yes'), { variant: 'ok', icon: 'check' }), ...x.alpn.map((a) => Badge(a, { mono: true }))]) : h('span', { class: 'muted text-sm' }, t('dov.web.httpsNone'));
+      return x.present ? chips([Tag(t('common.yes'), { variant: 'ok', icon: 'check' }), ...x.alpn.map((a) => Tag(a, { mono: true }))]) : h('span', { class: 'muted text-sm' }, t('dov.web.httpsNone'));
     };
     const [apex, www] = card.hosts;
     return h('div', { class: 'stack-sm' },
@@ -957,7 +957,7 @@ export function mount(container, ctx) {
   }
 
   function caEntry(e) {
-    return Badge(e.ca ? e.ca.name : e.issuer, {
+    return Tag(e.ca ? e.ca.name : e.issuer, {
       variant: 'accent', icon: e.restricted ? 'lock' : null,
       title: e.restricted ? `${e.issuer} · ${t('dov.certs.restrictedTitle')}` : e.issuer
     });
@@ -985,10 +985,10 @@ export function mount(container, ctx) {
         h('div', null, RetryButton({ sources, target: t('dov.certs.ct'), dataset: { action: 'dov-ct-retry' }, onClick: (e) => lookupCt(e.currentTarget) })));
     }
     const verdictBadge = (v) => {
-      if (v === 'allowed') return Badge(t('dov.certs.ctAllowed'), { variant: 'ok', icon: 'check' });
-      if (v === 'restricted') return Badge(t('dov.certs.ctRestricted'), { variant: 'info', icon: 'lock' });
-      if (v === 'denied') return Badge(t('dov.certs.ctDenied'), { variant: 'error', icon: 'x-circle' });
-      if (v === 'unknown') return Badge(t('dov.certs.ctUnknown'));
+      if (v === 'allowed') return Tag(t('dov.certs.ctAllowed'), { variant: 'ok', icon: 'check' });
+      if (v === 'restricted') return Tag(t('dov.certs.ctRestricted'), { variant: 'info', icon: 'lock' });
+      if (v === 'denied') return Tag(t('dov.certs.ctDenied'), { variant: 'error', icon: 'x-circle' });
+      if (v === 'unknown') return Tag(t('dov.certs.ctUnknown'));
       return null;
     };
     const rows = ct.issuers.map((i) => h('li', { class: 'dov-issuer', dataset: { verdict: i.verdict || '' } },
@@ -1046,7 +1046,7 @@ export function mount(container, ctx) {
     return h('div', { class: 'stack-sm' },
       s.vendors.length
         ? h('ul', { class: 'dov-vendors', attrs: { 'aria-label': t('dov.card.saas') } }, s.vendors.map((v) => h('li', { class: 'dov-vendor', dataset: { vendor: v.id }, title: v.key },
-          Badge(v.count > 1 ? t('dov.saas.chip', { name: v.name, count: v.count }) : v.name, { variant: 'accent' }))))
+          Tag(v.count > 1 ? t('dov.saas.chip', { name: v.name, count: v.count }) : v.name, { variant: 'accent' }))))
         : h('p', { class: 'text-sm muted' }, t('dov.saas.none')),
       s.other ? h('p', { class: 'text-xs muted' }, t('dov.saas.other', { count: s.other })) : null,
       h('p', { class: 'text-xs muted' }, t('dov.saas.note')));

@@ -17,7 +17,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, Button, DataTable, announce, checkbox, select, setButtonBusy, textInput } from './components.js';
+import { Alert, Tag, Button, DataTable, announce, checkbox, select, setButtonBusy, textInput } from './components.js';
 import { t, registerStrings, formatNumber, formatRegion, formatDate } from '../i18n.js';
 import { Flag } from './flag.js';
 import { registerRunning } from './jobs.js';
@@ -226,7 +226,7 @@ export function mountIspPanel(el, host, { restored = null } = {}) {
   const resolverCell = (r) => {
     const res = (r.isp && r.isp.resolver) || {};
     if (r.pending && !res.address && !res.private) return null;
-    if (res.private && !res.address) return Badge(t('isp.resolver.private'), { variant: 'neutral', icon: 'network', title: t('isp.resolver.privateTitle') });
+    if (res.private && !res.address) return Tag(t('isp.resolver.private'), { variant: 'neutral', icon: 'network', title: t('isp.resolver.privateTitle') });
     if (res.address) {
       return h('div', { class: 'glb-isp-res' }, h('span', { class: 'mono' }, res.address),
         res.publicName ? h('span', { class: 'muted text-xs', title: t('isp.resolver.public') }, `${res.publicName} · ${t('isp.resolver.public')}`) : null);
@@ -257,7 +257,7 @@ export function mountIspPanel(el, host, { restored = null } = {}) {
         render: (r) => (r.isp && (r.isp.network || r.isp.asn) ? h('div', { class: 'glb-isp' },
           h('span', null, r.isp.network || ''),
           h('span', { class: 'cluster text-xs' }, r.isp.asn ? h('span', { class: 'muted mono' }, `AS${r.isp.asn}`) : null,
-            r.isp.kind === 'datacenter' ? Badge(t('isp.datacenter'), { variant: 'neutral', title: t('isp.eyeballHint') }) : null)) : null)
+            r.isp.kind === 'datacenter' ? Tag(t('isp.datacenter'), { variant: 'neutral', title: t('isp.eyeballHint') }) : null)) : null)
       },
       {
         key: 'resolver', label: t('isp.col.resolver'), sortable: true, render: resolverCell,

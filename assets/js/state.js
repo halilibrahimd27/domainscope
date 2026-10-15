@@ -71,6 +71,17 @@ export const CONCURRENCY_RANGE = Object.freeze({ min: 1, max: 32 });
 export const DENSITIES = Object.freeze(['comfortable', 'compact']);
 
 /**
+ * The density the page shows: compact only when it is chosen and the primary pointer is not a
+ * touch screen (those keep large targets; boot.js repeats this rule in ES5).
+ * @param {unknown} value the saved setting
+ * @param {boolean} coarse true on `(pointer: coarse)`
+ * @returns {'comfortable'|'compact'}
+ */
+export function effectiveDensity(value, coarse) {
+  return value === 'compact' && !coarse ? 'compact' : 'comfortable';
+}
+
+/**
  * Default settings (lang null = follow the browser). `startTasks`: Home shows its "Start a job"
  * cards expanded (app.js folds them to a compact list once they are folded or the visitor ran
  * something). `density`: the page's spacing (style.css; touch screens keep large targets either

@@ -34,7 +34,7 @@
 
 import { h, append, clear, svg } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, CodeBlock, DataTable, Disclosure, ExternalLink, FileDrop, Icon, IconButton, RelativeTime, SegmentedControl, Spinner, Tabs,
+  Alert, Tag, Button, CodeBlock, DataTable, Disclosure, ExternalLink, FileDrop, Icon, IconButton, RelativeTime, SegmentedControl, Spinner, Tabs,
   announce, checkbox, select, textInput, toast
 } from '../ui/components.js';
 import { EmptyState, MetricStrip, PrivacyNote, ResultActions, ResultHeader, ResultTitle, StatusSummary } from '../ui/template.js';
@@ -592,7 +592,7 @@ export function monitorDigestOf(view, data, now = Date.now()) {
   });
 }
 
-/** Badge variant of a number of days left. */
+/** Tag variant of a number of days left. */
 export function daysVariant(days) {
   if (days === null || days === undefined) return 'neutral';
   if (days < 7) return 'error';
@@ -600,17 +600,17 @@ export function daysVariant(days) {
   return 'ok';
 }
 
-/** Badge variant of a health grade. */
+/** Tag variant of a health grade. */
 export function gradeVariant(grade) {
   return { A: 'ok', B: 'ok', C: 'info', D: 'warn', E: 'error', F: 'error' }[grade] || 'neutral';
 }
 
-/** Badge variant of a change's tone. */
+/** Tag variant of a change's tone. */
 export function toneVariant(tone) {
   return { bad: 'error', good: 'ok', info: 'info' }[tone] || 'neutral';
 }
 
-/** Badge variant of a `tls` status. */
+/** Tag variant of a `tls` status. */
 export function tlsVariant(status) {
   if (status === 'OK') return 'ok';
   if (status === 'SKIPPED' || !status) return 'neutral';
@@ -1185,9 +1185,9 @@ export function mount(container, ctx) {
     const c = row.cells.health;
     if (!c) return h('span', { class: 'muted' }, '—');
     return h('div', { class: 'mon-cell' },
-      c.grade ? Badge(c.grade, { variant: gradeVariant(c.grade), className: 'mon-grade' }) : null,
+      c.grade ? Tag(c.grade, { variant: gradeVariant(c.grade), className: 'mon-grade' }) : null,
       Number.isFinite(c.score) ? h('span', { class: 'num' }, `${num(c.score)}/100`) : null,
-      c.ok === false ? Badge(t('mon.incompleteCheck'), { variant: 'warn' }) : null);
+      c.ok === false ? Tag(t('mon.incompleteCheck'), { variant: 'warn' }) : null);
   }
 
   function certsCell(row) {
@@ -1196,11 +1196,11 @@ export function mount(container, ctx) {
     if (!tls && !ct) return h('span', { class: 'muted' }, '—');
     const days = row.minDaysLeft;
     return h('div', { class: 'mon-cell' },
-      days !== null ? Badge(daysText(days), { variant: daysVariant(days), className: 'mon-days' }) : null,
-      tls && tls.worst && tls.worst !== 'OK' ? Badge(t(`mon.tls.${tls.worst}`), { variant: tlsVariant(tls.worst), title: tls.worst, className: 'mon-tls' }) : null,
-      ct && ct.newIssuers && ct.newIssuers.length ? Badge(t('mon.newIssuers', { count: ct.newIssuers.length }), { variant: 'warn', title: ct.newIssuers.join(', '), className: 'mon-issuers' }) : null,
-      ct && ct.unexpected ? Badge(t('mon.unexpected', { count: ct.unexpected }), { variant: 'warn' }) : null,
-      ct && ct.revoked ? Badge(t('mon.revoked', { count: ct.revoked }), { variant: 'error' }) : null);
+      days !== null ? Tag(daysText(days), { variant: daysVariant(days), className: 'mon-days' }) : null,
+      tls && tls.worst && tls.worst !== 'OK' ? Tag(t(`mon.tls.${tls.worst}`), { variant: tlsVariant(tls.worst), title: tls.worst, className: 'mon-tls' }) : null,
+      ct && ct.newIssuers && ct.newIssuers.length ? Tag(t('mon.newIssuers', { count: ct.newIssuers.length }), { variant: 'warn', title: ct.newIssuers.join(', '), className: 'mon-issuers' }) : null,
+      ct && ct.unexpected ? Tag(t('mon.unexpected', { count: ct.unexpected }), { variant: 'warn' }) : null,
+      ct && ct.revoked ? Tag(t('mon.revoked', { count: ct.revoked }), { variant: 'error' }) : null);
   }
 
   function problemsCell(row) {
@@ -1209,25 +1209,25 @@ export function mount(container, ctx) {
     if (!tk && !au) return h('span', { class: 'muted' }, '—');
     return h('div', { class: 'mon-cell' },
       tk && Number.isFinite(tk.risks) ? (tk.risks
-        ? Badge(t('mon.risks', { count: tk.risks }), { variant: tk.worst === 'critical' || tk.worst === 'high' ? 'error' : 'warn', className: 'mon-risks' })
-        : Badge(t('mon.risksNone'), { variant: 'ok', className: 'mon-risks' })) : null,
+        ? Tag(t('mon.risks', { count: tk.risks }), { variant: tk.worst === 'critical' || tk.worst === 'high' ? 'error' : 'warn', className: 'mon-risks' })
+        : Tag(t('mon.risksNone'), { variant: 'ok', className: 'mon-risks' })) : null,
       au && Number.isFinite(au.fail) ? (au.fail
-        ? Badge(t('mon.auditFail', { count: au.fail }), { variant: 'error', className: 'mon-audit' })
-        : Badge(t('mon.auditPass'), { variant: 'ok', className: 'mon-audit' })) : null,
+        ? Tag(t('mon.auditFail', { count: au.fail }), { variant: 'error', className: 'mon-audit' })
+        : Tag(t('mon.auditPass'), { variant: 'ok', className: 'mon-audit' })) : null,
       au && au.security ? h('span', { class: 'muted text-xs' }, t('mon.security', { score: num(au.security.score), max: num(au.security.max) })) : null);
   }
 
   function changesCell(row) {
     return h('div', { class: 'mon-cell' },
-      row.bad7 ? Badge(t('mon.badChanges', { count: row.bad7 }), { variant: 'error', className: 'mon-bad' }) : h('span', { class: 'muted text-sm' }, t('mon.noBad')),
+      row.bad7 ? Tag(t('mon.badChanges', { count: row.bad7 }), { variant: 'error', className: 'mon-bad' }) : h('span', { class: 'muted text-sm' }, t('mon.noBad')),
       row.lastChange ? h('span', { class: 'muted text-xs' }, t('mon.lastChange', { tag: row.lastChange.tag, when: day(row.lastChange.ms) })) : null);
   }
 
   function statusCell(row) {
-    const bad = row.incomplete.map((c) => Badge(row.cells[c].stale ? `${cmdName(c)}: ${t('mon.staleCheck', { date: day(row.cells[c].ms) })}` : `${cmdName(c)}: ${t('mon.incompleteCheck')}`,
+    const bad = row.incomplete.map((c) => Tag(row.cells[c].stale ? `${cmdName(c)}: ${t('mon.staleCheck', { date: day(row.cells[c].ms) })}` : `${cmdName(c)}: ${t('mon.incompleteCheck')}`,
       { variant: 'warn', className: 'mon-incomplete', title: row.cells[c].stale ? null : t('mon.incompleteCheck') }));
     return h('div', { class: 'mon-cell' },
-      bad.length ? bad : Badge(t('mon.completed'), { variant: 'ok' }),
+      bad.length ? bad : Tag(t('mon.completed'), { variant: 'ok' }),
       h('span', { class: 'muted text-xs nowrap' }, t('mon.checkedAt', { when: day(row.ms) })));
   }
 
@@ -1380,10 +1380,10 @@ export function mount(container, ctx) {
       list.push(h('li', { class: ['mon-tl-entry', `mon-tl-${e.tone}`], dataset: { tag: e.tag, tone: e.tone, command: e.command } },
         h('div', { class: 'mon-tl-head' },
           h('span', { class: 'mon-tl-time num muted text-xs' }, `${e.at.slice(11, 16)} UTC`),
-          Badge(e.tag, { variant: toneVariant(e.tone), mono: true, title: MONITOR_TAGS.includes(e.tag) ? t(`mon.tag.${e.tag}`) : null, className: 'mon-tl-tag' }),
+          Tag(e.tag, { variant: toneVariant(e.tone), mono: true, title: MONITOR_TAGS.includes(e.tag) ? t(`mon.tag.${e.tag}`) : null, className: 'mon-tl-tag' }),
           h('span', { class: 'mon-tl-target mono' }, e.target),
           h('span', { class: 'muted text-sm' }, cmdName(e.command)),
-          e.counts ? Badge(t('mon.tl.counted'), { variant: 'neutral', title: t('mon.tl.countedTitle') }) : null,
+          e.counts ? Tag(t('mon.tl.counted'), { variant: 'neutral', title: t('mon.tl.countedTitle') }) : null,
           e.run ? ExternalLink(e.run, t('mon.tl.run'), { className: 'mon-tl-run text-xs' }) : null),
         e.text ? h('div', { class: 'mon-tl-text text-sm' }, e.text) : e.item ? h('div', { class: 'mon-tl-item mono text-xs' }, e.item) : null));
     }

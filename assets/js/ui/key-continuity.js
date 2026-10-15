@@ -21,7 +21,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, Button, Card, CopyButton, DataTable, ErrorBanner, ExternalLink, Spinner } from './components.js';
+import { Alert, Tag, Button, Card, CopyButton, DataTable, ErrorBanner, ExternalLink, Spinner } from './components.js';
 import { t, registerStrings, formatDate, formatNumber } from '../i18n.js';
 import { lookupKeyContinuity, spkiSha256, KEY_MAX_ROWS } from '../lib/keycontinuity.js';
 import { errorKind } from '../lib/util.js';
@@ -233,7 +233,7 @@ export function KeyContinuityCard({ cert, ctx, cache, cacheKey, publicCa = false
             key: 'id', label: t('key.col.id'),
             render: (c) => h('span', { class: 'cluster cert-key-id' },
               c.ids.length ? ExternalLink(c.url, c.ids[0], { className: 'mono' }) : '—',
-              c.isThis ? Badge(t('key.this'), { variant: 'accent' }) : null)
+              c.isThis ? Tag(t('key.this'), { variant: 'accent' }) : null)
           },
           { key: 'issuer', label: t('key.col.issuer'), wrap: true },
           { key: 'notBefore', label: t('key.col.from'), sortable: true, render: (c) => formatDate(c.notBefore) },

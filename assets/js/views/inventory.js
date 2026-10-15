@@ -20,7 +20,7 @@
 
 import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
 import {
-  Badge, Button, Card, CodeBlock, DataTable, Disclosure, FileDrop, Icon, Modal, Tabs,
+  Tag, Button, Card, CodeBlock, DataTable, Disclosure, FileDrop, Icon, Modal, Tabs,
   TruncatedList, confirmDialog, ipSortValue, textarea, toast
 } from '../ui/components.js';
 import { downloadText, timestampedName } from '../ui/download.js';
@@ -342,7 +342,7 @@ export function mount(container, ctx) {
     primary: editor.el,
     run: runBar,
     notes: [h('div', { class: 'inv-actions' },
-      Badge(t('inv.workspace', { name: wsName }), {
+      Tag(t('inv.workspace', { name: wsName }), {
         icon: 'briefcase', variant: 'accent', className: 'inv-workspace', title: t('inv.workspaceTitle', { name: wsName })
       }),
       statusEl, clearBtn)],
@@ -386,8 +386,8 @@ export function mount(container, ctx) {
         h('span', { class: 'inv-name-main' }, s.name),
         s.aliases && s.aliases.length ? h('span', { class: 'inv-aliases' }, t('inv.aliases', { names: s.aliases.join(', ') })) : null,
         s.backends || !terminatesTls(s) ? h('span', { class: 'cluster inv-topo' },
-          s.backends ? Badge(t('inv.badge.lb'), { variant: 'accent', icon: 'git-branch' }) : null,
-          terminatesTls(s) ? null : Badge(t('inv.badge.plain'), { variant: 'ok', icon: 'unlock' })) : null)
+          s.backends ? Tag(t('inv.badge.lb'), { variant: 'accent', icon: 'git-branch' }) : null,
+          terminatesTls(s) ? null : Tag(t('inv.badge.plain'), { variant: 'ok', icon: 'unlock' })) : null)
     },
     {
       key: 'ips',
@@ -399,7 +399,7 @@ export function mount(container, ctx) {
       render: (s) => TruncatedList(endpointsOf(s), {
         max: 4,
         render: (e) => h('span', { class: 'inv-ip' }, e.target,
-          isPrivateIP(e.ip) ? Badge(t('inv.private'), { variant: 'private', className: 'inv-ip-badge' }) : null)
+          isPrivateIP(e.ip) ? Tag(t('inv.private'), { variant: 'private', className: 'inv-ip-badge' }) : null)
       })
     },
     {
@@ -409,7 +409,7 @@ export function mount(container, ctx) {
       sortValue: (s) => s.groups[0],
       searchValue: (s) => s.groups.join(' '),
       exportValue: (s) => s.groups.join(' '),
-      render: (s) => (s.groups.length ? h('div', { class: 'cluster inv-groups' }, s.groups.map((g) => Badge(g, { variant: 'neutral' }))) : null)
+      render: (s) => (s.groups.length ? h('div', { class: 'cluster inv-groups' }, s.groups.map((g) => Tag(g, { variant: 'neutral' }))) : null)
     },
     {
       key: 'line',
@@ -512,7 +512,7 @@ export function mount(container, ctx) {
     clear(statusEl);
     const dirty = isDirty();
     if (dirty) {
-      statusEl.append(Badge(t('inv.unsaved'), { variant: 'warn', icon: 'alert', title: t('inv.unsavedHint') }));
+      statusEl.append(Tag(t('inv.unsaved'), { variant: 'warn', icon: 'alert', title: t('inv.unsavedHint') }));
     } else if (state.inventory.updatedAt) {
       statusEl.append(h('span', { class: 'muted text-sm', title: state.inventory.updatedAt.toLocaleString() },
         Icon('check', { size: 14 }), ' ', t('inv.savedAt', { when: formatRelative(state.inventory.updatedAt) })));

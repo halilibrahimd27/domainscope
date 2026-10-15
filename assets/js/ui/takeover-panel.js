@@ -28,7 +28,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, Button, Card, DataTable, ExternalLink, ProgressBar, announce } from './components.js';
+import { Alert, Tag, Button, Card, DataTable, ExternalLink, ProgressBar, announce } from './components.js';
 import { NaMark, RetryButton, setRetryBusy } from './source-status.js';
 import { registerRunning } from './jobs.js';
 import { t, registerStrings, formatDate, formatNumber } from '../i18n.js';
@@ -512,7 +512,7 @@ function auditView(ctx, { input, blocked = () => false, runKey = 'tko.run' }) {
       columns: [
         {
           key: 'severity', label: t('tko.col.severity'), sortable: true, sortValue: (f) => SEVERITY_ORDER.indexOf(f.severity),
-          exportValue: (f) => f.severity, render: (f) => Badge(t(`tko.sev.${f.severity}`), { variant: SEVERITY_BADGE[f.severity] || 'neutral' })
+          exportValue: (f) => f.severity, render: (f) => Tag(t(`tko.sev.${f.severity}`), { variant: SEVERITY_BADGE[f.severity] || 'neutral' })
         },
         { key: 'host', label: t('tko.col.host'), sortable: true, mono: true, render: (f) => f.host },
         { key: 'kind', label: t('tko.col.kind'), sortable: true, exportValue: (f) => f.kind, render: (f) => t(`tko.kind.${f.kind}`) },
@@ -521,7 +521,7 @@ function auditView(ctx, { input, blocked = () => false, runKey = 'tko.run' }) {
           key: 'service', label: t('tko.col.service'), sortable: true, sortValue: (f) => (f.service ? f.service.name : ''), exportValue: (f) => (f.service ? f.service.name : ''),
           render: (f) => (f.service ? h('span', { class: 'stack-sm' },
             h('span', null, f.service.name),
-            Badge(t(`tko.status.${f.service.status}`), { variant: f.service.status === 'vulnerable' ? 'error' : f.service.status === 'edge' ? 'warn' : 'ok' }),
+            Tag(t(`tko.status.${f.service.status}`), { variant: f.service.status === 'vulnerable' ? 'error' : f.service.status === 'edge' ? 'warn' : 'ok' }),
             ExternalLink(f.service.ref, t('tko.ref'))) : '—')
         },
         { key: 'status', label: t('tko.col.status'), display: false, exportValue: (f) => (f.service ? f.service.status : '') },
@@ -600,7 +600,7 @@ function auditView(ctx, { input, blocked = () => false, runKey = 'tko.run' }) {
     const summary = atRisk.length
       ? h('div', { class: 'cluster', attrs: { role: 'status' }, dataset: { part: 'tko-summary', risks: String(atRisk.length) } },
         h('span', { class: 'text-sm' }, t('tko.found', { count: atRisk.length, checked: t('tko.checked', { count: result.references }) })),
-        ...counts.map(([sev, n]) => Badge(`${t(`tko.sev.${sev}`)} ${formatNumber(n)}`, { variant: SEVERITY_BADGE[sev] })))
+        ...counts.map(([sev, n]) => Tag(`${t(`tko.sev.${sev}`)} ${formatNumber(n)}`, { variant: SEVERITY_BADGE[sev] })))
       : h('p', { class: 'text-sm', attrs: { role: 'status' }, dataset: { part: 'tko-summary', risks: '0' } },
         t('tko.none', { count: result.references, domains: t('tko.domains', { count: result.checked }) }));
     body.append(summary);

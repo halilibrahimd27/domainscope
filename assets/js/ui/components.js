@@ -18,7 +18,6 @@
  *   C.Icon('globe', { size: 16 });                         // inline SVG, aria-hidden
  *   C.Tag('NOERROR', { variant: 'ok', icon: 'check' });    // static 4 px tag; variants: neutral accent ok info warn error
  *                                                           //   + kinds cloudflare cdn platform direct private unresolved nxdomain dangling
- *   C.Badge('NOERROR', { variant: 'ok' });                  // the same Tag under its old name
  *   C.Chip({ label: 'example.com', mono: true, onClick });  // interactive pill; `pressed` for a filter, `href` for a link
  *   C.KindBadge(host.classification);                       // 'Cloudflare' / 'CDN · Fastly' / 'Dangling CNAME' + tooltip reason
  *   C.SeverityIcon('warn', { label: true });  C.SeverityBadge('error');
@@ -40,7 +39,6 @@
  *   // Layout
  *   C.Section({ title: 'Results', actions: [btn], children: [...] });
  *   C.Card({ title: 'Certificate', subtitle: 'leaf', children: [...] });
- *   C.StatCard({ label: 'Hosts', value: 42, hint: '3 behind Cloudflare', variant: 'accent' });
  *   C.KeyValueList([['Issuer', cert.issuerDN], { key: 'SHA-256', value: fp, mono: true, copy: true }]);
  *   C.CodeBlock('python3 ssl_origin_scan.py -t targets.txt', { label: 'Command' });
  *   C.CliText(t('about.st.ORIGIN_CERT'));                  // prose whose --options never wrap
@@ -246,16 +244,6 @@ export function Tag(text, { variant = 'neutral', icon = null, title = null, clas
 }
 
 /**
- * The tag under its old name: every caller of Badge() gets a {@link Tag} (the same options).
- * @param {string|number} text
- * @param {{ variant?: string, icon?: string, title?: string, className?: string, mono?: boolean }} [opts]
- * @returns {HTMLSpanElement}
- */
-export function Badge(text, opts = {}) {
-  return Tag(text, opts);
-}
-
-/**
  * An interactive chip: a pill — an example that fills a field in, a filter (`pressed` makes it a
  * toggle with aria-pressed), a job to start (`href` makes it a link). 28 px tall, 36 on a touch
  * screen. Classes: .chip (.mono).
@@ -305,7 +293,7 @@ export function KindBadge(input, { provider = undefined, showProvider = true, ti
   if (showProvider && prov && prov.name && kind !== 'cloudflare') label = `${label} · ${prov.name}`;
   const tip = title !== undefined ? title
     : (info.reasonKey ? t(info.reasonKey, { provider: prov && prov.name ? prov.name : t('common.unknown') }) : null);
-  const el = Badge(label, { variant: kind, icon: KIND_ICONS[kind], title: tip });
+  const el = Tag(label, { variant: kind, icon: KIND_ICONS[kind], title: tip });
   el.dataset.kind = kind;
   return el;
 }
@@ -335,7 +323,7 @@ export function SeverityIcon(severity, { label = false, size = 16 } = {}) {
  */
 export function SeverityBadge(severity, text) {
   const sev = SEVERITY_ICONS[severity] ? severity : 'info';
-  return Badge(text ?? t(`severity.${sev}`), { variant: sev, icon: SEVERITY_ICONS[sev] });
+  return Tag(text ?? t(`severity.${sev}`), { variant: sev, icon: SEVERITY_ICONS[sev] });
 }
 
 /**
@@ -974,44 +962,6 @@ export function Card({ title = null, subtitle = null, icon = null, actions = nul
       actions ? h('div', { class: 'card-actions' }, actions) : null) : null,
     h('div', { class: ['card-body', { 'card-body-flush': !padded }] }, children),
     footer ? h('div', { class: 'card-foot' }, footer) : null);
-}
-
-/**
- * Metric tile. Pass onClick to make it a button (e.g. click "Cloudflare 12" to filter).
- * @param {{ label: string, value?: string|number, hint?: string|Node, icon?: string, variant?: string,
- *   onClick?: Function, pressed?: boolean }} opts
- * @returns {{ el: HTMLElement, set(patch: { value?, hint?, variant?, label?, pressed? }): void }}
- */
-export function StatCard({ label, value = '—', hint = null, icon = null, variant = 'default', onClick = null, pressed = null }) {
-  const valueEl = h('div', { class: 'stat-value num' });
-  const hintEl = h('div', { class: 'stat-hint' });
-  const labelEl = h('div', { class: 'stat-label' }, label);
-  const el = h(onClick ? 'button' : 'div', {
-    class: ['stat', { 'stat-button': !!onClick }],
-    type: onClick ? 'button' : null,
-    on: onClick ? { click: onClick } : null
-  },
-  h('div', { class: 'stat-top' }, icon ? h('span', { class: 'stat-icon' }, Icon(icon, { size: 15 })) : null, labelEl),
-  valueEl, hintEl);
-  const api = {
-    el,
-    set({ value: v, hint: hi, variant: va, label: la, pressed: pr } = {}) {
-      if (v !== undefined) valueEl.textContent = typeof v === 'number' ? formatNumber(v) : String(v ?? '—');
-      if (hi !== undefined) {
-        clear(hintEl);
-        if (hi !== null) hintEl.append(isNode(hi) ? hi : String(hi));
-        hintEl.hidden = hi === null || hi === '';
-      }
-      if (va !== undefined) {
-        [...el.classList].filter((c) => c.startsWith('stat-v-')).forEach((c) => el.classList.remove(c));
-        if (va && va !== 'default') el.classList.add(`stat-v-${va}`);
-      }
-      if (la !== undefined) labelEl.textContent = la;
-      if (pr !== undefined && onClick) el.setAttribute('aria-pressed', String(!!pr));
-    }
-  };
-  api.set({ value, hint, variant, pressed: pressed === null ? undefined : pressed });
-  return api;
 }
 
 function kvItems(items) {

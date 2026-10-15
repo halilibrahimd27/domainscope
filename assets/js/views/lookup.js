@@ -39,7 +39,7 @@
 
 import { h, clear, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, CopyButton, Disclosure, Icon, KeyValueList, KindBadge,
+  Alert, Tag, Button, Card, CodeBlock, CopyButton, Disclosure, Icon, KeyValueList, KindBadge,
   Spinner, announce, checkbox, checkboxGroup, select, setButtonBusy, textInput
 } from '../ui/components.js';
 import { registerStrings, hasString, formatNumber, formatDuration, formatDateTime, formatDate } from '../i18n.js';
@@ -878,7 +878,7 @@ export function mount(container, ctx) {
       return [
         ipLink(ip),
         KindBadge(classifyIp(ip, cnames)),
-        servers.length ? h('div', { class: 'cluster' }, servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server' }))) : null,
+        servers.length ? h('div', { class: 'cluster' }, servers.map((s) => Tag(s.name, { variant: 'direct', icon: 'server' }))) : null,
         { cell: ttlCell(rr.ttl), className: 'dt-align-end' }
       ];
     }));
@@ -928,7 +928,7 @@ export function mount(container, ctx) {
     const kinds = txtKinds(joined);
     return h('li', { class: 'lkp-txt' },
       h('div', { class: 'lkp-txt-head cluster' },
-        kinds.map((k) => Badge(k.kind === 'verification' ? t('lkp.txt.verification', { service: k.service }) : k.kind.toUpperCase(), {
+        kinds.map((k) => Tag(k.kind === 'verification' ? t('lkp.txt.verification', { service: k.service }) : k.kind.toUpperCase(), {
           variant: k.kind === 'verification' ? 'neutral' : 'accent', icon: k.kind === 'verification' ? 'check' : 'mail'
         })),
         h('span', { class: 'muted text-xs' }, t('lkp.txt.chars', { count: joined.length })),
@@ -973,8 +973,8 @@ export function mount(container, ctx) {
 
   function renderCaa(rrs) {
     return simpleTable([t('lkp.col.flags'), t('lkp.col.tag'), t('lkp.col.value'), t('lkp.col.meaning'), t('lkp.col.ttl')], rrs.map((rr) => [
-      h('span', { class: 'cluster' }, h('span', { class: 'num' }, String(rr.data.flags)), rr.data.critical ? Badge(t('lkp.caa.critical'), { variant: 'warn' }) : null),
-      Badge(rr.data.tag, { mono: true, variant: 'accent' }),
+      h('span', { class: 'cluster' }, h('span', { class: 'num' }, String(rr.data.flags)), rr.data.critical ? Tag(t('lkp.caa.critical'), { variant: 'warn' }) : null),
+      Tag(rr.data.tag, { mono: true, variant: 'accent' }),
       { cell: h('span', { class: 'mono lkp-wrap' }, rr.data.value || '""'), className: 'dt-wrap' },
       { cell: caaMeaning(rr.data), className: 'dt-wrap' },
       { cell: ttlCell(rr.ttl), className: 'dt-align-end' }
@@ -986,11 +986,11 @@ export function mount(container, ctx) {
     for (const [key, value] of Object.entries(params || {})) {
       let shown;
       if (key === 'ipv4hint' || key === 'ipv6hint') shown = h('span', { class: 'cluster' }, (value || []).map((ip) => ipLink(ip)));
-      else if (key === 'alpn') shown = h('span', { class: 'cluster' }, (value || []).map((a) => Badge(a, { mono: true })));
+      else if (key === 'alpn') shown = h('span', { class: 'cluster' }, (value || []).map((a) => Tag(a, { mono: true })));
       else if (key === 'ech') {
         const bytes = Math.floor((String(value).replace(/=+$/, '').length * 3) / 4);
-        shown = Badge(t('lkp.svcb.ech', { bytes: formatNumber(bytes) }), { variant: 'ok', icon: 'lock', title: String(value) });
-      } else if (value === true) shown = Badge(key, { mono: true });
+        shown = Tag(t('lkp.svcb.ech', { bytes: formatNumber(bytes) }), { variant: 'ok', icon: 'lock', title: String(value) });
+      } else if (value === true) shown = Tag(key, { mono: true });
       else shown = h('span', { class: 'mono' }, Array.isArray(value) ? value.join(',') : String(value));
       items.push(h('div', { class: 'lkp-svc-param' }, h('span', { class: 'lkp-svc-key mono' }, key), shown));
     }
@@ -1000,7 +1000,7 @@ export function mount(container, ctx) {
   function renderSvcb(rrs) {
     const sorted = [...rrs].sort((a, b) => a.data.priority - b.data.priority);
     return simpleTable([t('lkp.col.priority'), t('lkp.col.target'), t('lkp.col.params'), t('lkp.col.ttl')], sorted.map((rr) => [
-      rr.data.priority === 0 ? Badge(t('lkp.svcb.alias'), { variant: 'info' }) : h('span', { class: 'num' }, String(rr.data.priority)),
+      rr.data.priority === 0 ? Tag(t('lkp.svcb.alias'), { variant: 'info' }) : h('span', { class: 'num' }, String(rr.data.priority)),
       rr.data.target === '.' ? h('span', { class: 'muted' }, t('lkp.svcb.sameName')) : hostLink(rr.data.target),
       { cell: svcParams(rr.data.params), className: 'dt-wrap' },
       { cell: ttlCell(rr.ttl), className: 'dt-align-end' }
@@ -1029,9 +1029,9 @@ export function mount(container, ctx) {
     const sorted = [...rrs].sort((a, b) => (b.data.sep ? 1 : 0) - (a.data.sep ? 1 : 0) || a.data.keyTag - b.data.keyTag);
     return simpleTable([t('lkp.col.keyTag'), t('lkp.col.role'), t('lkp.col.algorithm'), t('lkp.col.key'), t('lkp.col.ttl')], sorted.map((rr) => {
       const d = rr.data;
-      const role = d.revoked ? Badge(t('lkp.dnskey.revoked'), { variant: 'error' })
-        : d.sep ? Badge(t('lkp.dnskey.ksk'), { variant: 'accent', icon: 'key', title: t('lkp.dnskey.kskTitle') })
-          : Badge(t('lkp.dnskey.zsk'), { variant: 'neutral', icon: 'key', title: t('lkp.dnskey.zskTitle') });
+      const role = d.revoked ? Tag(t('lkp.dnskey.revoked'), { variant: 'error' })
+        : d.sep ? Tag(t('lkp.dnskey.ksk'), { variant: 'accent', icon: 'key', title: t('lkp.dnskey.kskTitle') })
+          : Tag(t('lkp.dnskey.zsk'), { variant: 'neutral', icon: 'key', title: t('lkp.dnskey.zskTitle') });
       const key = String(d.publicKey || '');
       return [
         h('span', { class: 'num mono' }, String(d.keyTag)),
@@ -1048,12 +1048,12 @@ export function mount(container, ctx) {
       const d = rr.data;
       const st = rrsigStatus(d);
       const title = `${formatDateTime(d.inception, { utc: true })} → ${formatDateTime(d.expiration, { utc: true })}`;
-      const badge = st === 'valid' ? Badge(t('lkp.rrsig.validShort'), { variant: 'ok', icon: 'check', title: t('lkp.rrsig.valid', { date: formatDateTime(d.expiration, { utc: true }) }) })
-        : st === 'expired' ? Badge(t('lkp.rrsig.expiredShort'), { variant: 'error', icon: 'x-circle', title: t('lkp.rrsig.expired', { date: formatDateTime(d.expiration, { utc: true }) }) })
-          : st === 'future' ? Badge(t('lkp.rrsig.futureShort'), { variant: 'warn', icon: 'clock', title: t('lkp.rrsig.future', { date: formatDateTime(d.inception, { utc: true }) }) })
+      const badge = st === 'valid' ? Tag(t('lkp.rrsig.validShort'), { variant: 'ok', icon: 'check', title: t('lkp.rrsig.valid', { date: formatDateTime(d.expiration, { utc: true }) }) })
+        : st === 'expired' ? Tag(t('lkp.rrsig.expiredShort'), { variant: 'error', icon: 'x-circle', title: t('lkp.rrsig.expired', { date: formatDateTime(d.expiration, { utc: true }) }) })
+          : st === 'future' ? Tag(t('lkp.rrsig.futureShort'), { variant: 'warn', icon: 'clock', title: t('lkp.rrsig.future', { date: formatDateTime(d.inception, { utc: true }) }) })
             : null;
       return [
-        Badge(d.typeCovered, { mono: true }),
+        Tag(d.typeCovered, { mono: true }),
         algName(d.algorithm),
         h('span', { class: 'num mono' }, String(d.keyTag)),
         hostLink(d.signerName, 'DNSKEY'),
@@ -1067,7 +1067,7 @@ export function mount(container, ctx) {
     return simpleTable([t('lkp.col.name'), t('lkp.col.next'), t('lkp.col.types')], rrs.map((rr) => [
       h('span', { class: 'mono' }, rr.name),
       h('span', { class: 'mono' }, rr.type === 'NSEC3' ? String(rr.data.nextHashedOwner || '').toUpperCase() : rr.data.nextDomain),
-      { cell: h('span', { class: 'cluster lkp-nsec-types' }, (rr.data.types || []).map((x) => Badge(x, { mono: true }))), className: 'dt-wrap' }
+      { cell: h('span', { class: 'cluster lkp-nsec-types' }, (rr.data.types || []).map((x) => Tag(x, { mono: true }))), className: 'dt-wrap' }
     ]));
   }
 
@@ -1102,7 +1102,7 @@ export function mount(container, ctx) {
 
   function renderGeneric(rrs) {
     return simpleTable([t('lkp.col.name'), t('lkp.col.type'), t('lkp.col.data'), t('lkp.col.ttl')], rrs.map((rr) => [
-      h('span', { class: 'mono' }, rr.name), Badge(rr.type, { mono: true }),
+      h('span', { class: 'mono' }, rr.name), Tag(rr.type, { mono: true }),
       { cell: h('span', { class: 'mono lkp-wrap' }, rr.text), className: 'dt-wrap' },
       { cell: ttlCell(rr.ttl), className: 'dt-align-end' }
     ]));
@@ -1184,9 +1184,9 @@ export function mount(container, ctx) {
   }
 
   function rcodeBadge(response) {
-    if (!response.ok) return Badge(t('lkp.card.failed'), { variant: 'error', icon: 'x-circle' });
+    if (!response.ok) return Tag(t('lkp.card.failed'), { variant: 'error', icon: 'x-circle' });
     const rc = response.rcode;
-    return Badge(rc, { variant: rc === 'NOERROR' ? 'ok' : rc === 'NXDOMAIN' ? 'nxdomain' : 'error', mono: true });
+    return Tag(rc, { variant: rc === 'NOERROR' ? 'ok' : rc === 'NXDOMAIN' ? 'nxdomain' : 'error', mono: true });
   }
 
   function statusMessage(response, type, hasChain) {
@@ -1290,7 +1290,7 @@ export function mount(container, ctx) {
       const bad = states.filter((x) => x === 'expired' || x === 'future').length;
       body.push(Disclosure({
         summary: h('span', { class: 'lkp-sig-summary' }, Icon('shield', { size: 13 }), ` ${t('lkp.rrsig.title')} · ${formatNumber(sigs.length)} `,
-          bad ? Badge(t('lkp.rrsig.problems', { count: bad }), { variant: 'error', icon: 'alert' }) : Badge(t('lkp.rrsig.allValid'), { variant: 'ok', icon: 'check' })),
+          bad ? Tag(t('lkp.rrsig.problems', { count: bad }), { variant: 'error', icon: 'alert' }) : Tag(t('lkp.rrsig.allValid'), { variant: 'ok', icon: 'check' })),
         className: 'lkp-sigs',
         open: bad > 0,
         children: renderRrsigs(sigs)
@@ -1311,7 +1311,7 @@ export function mount(container, ctx) {
     const querying = () => h('div', { class: 'lkp-querying' }, Spinner({ size: 'sm' }), h('span', { class: 'muted text-sm' }, t('lkp.card.querying')));
     const body = h('div', { class: 'stack lkp-card-body' }, querying());
     const card = Card({
-      title: h('span', { class: 'lkp-card-title' }, Badge(type, { variant: 'accent', mono: true, className: 'lkp-type-badge' }), countEl),
+      title: h('span', { class: 'lkp-card-title' }, Tag(type, { variant: 'accent', mono: true, className: 'lkp-type-badge' }), countEl),
       actions: [statusEl, copyWrap],
       className: 'lkp-card',
       children: body
@@ -1526,8 +1526,8 @@ export function mount(container, ctx) {
         Number.isFinite(elapsed) && done === q.types.length ? h('span', null, t('lkp.sum.time', { time: formatDuration(elapsed) })) : null,
         stopped
           ? h('span', { class: 'lkp-sum-stopped', dataset: { role: 'lkp-stopped' } }, Icon('stop', { size: 13 }), ' ', t('lkp.sum.stopped', { count: q.types.length - done })) : null,
-        q.dnssec ? Badge('DO', { variant: 'accent', title: t('lkp.dnssec') }) : null,
-        q.cd ? Badge('CD', { variant: 'warn', title: t('lkp.cd') }) : null),
+        q.dnssec ? Tag('DO', { variant: 'accent', title: t('lkp.dnssec') }) : null,
+        q.cd ? Tag('CD', { variant: 'warn', title: t('lkp.cd') }) : null),
       shared.flags ? h('div', { class: 'lkp-sum-flags' }, flagsRow(shared.flags)) : null
     ]);
     // The counts: a failed query opens its card, the types with no records their line.

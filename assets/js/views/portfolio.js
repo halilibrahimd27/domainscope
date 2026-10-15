@@ -38,7 +38,7 @@
 
 import { h, clear, debounce } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, DataTable, ErrorBanner, ExternalLink, Icon, ProgressBar, RelativeTime, Spinner, Tabs,
+  Alert, Tag, Button, Card, DataTable, ErrorBanner, ExternalLink, Icon, ProgressBar, RelativeTime, Spinner, Tabs,
   announce, checkbox, select, textInput, textarea, toast
 } from '../ui/components.js';
 import { registerStrings, formatBytes, formatNumber, formatDate, formatRelative, t as translate } from '../i18n.js';
@@ -911,8 +911,8 @@ export function mount(container, ctx) {
   const pendingCell = () => h('span', { class: 'pf-pending muted text-sm', attrs: { 'aria-busy': 'true' } }, h('span', { class: 'spinner spinner-inline', attrs: { 'aria-hidden': 'true' } }), ' ', t('pf.pending'));
   const stack = (...children) => h('span', { class: 'pf-cell' }, children.filter(Boolean));
   const daysBadge = (days, band) => (days < 0
-    ? Badge(t('pf.daysAgo', { count: -days }), { variant: 'error', icon: 'x-circle' })
-    : Badge(t('pf.daysLeft', { count: days }), { variant: band === 'ok' ? 'ok' : band === 'warn' ? 'warn' : 'error', icon: 'clock' }));
+    ? Tag(t('pf.daysAgo', { count: -days }), { variant: 'error', icon: 'x-circle' })
+    : Tag(t('pf.daysLeft', { count: days }), { variant: band === 'ok' ? 'ok' : band === 'warn' ? 'warn' : 'error', icon: 'clock' }));
 
   /**
    * A cell's content when its lookups have not all landed, or failed: a spinner while the run
@@ -966,15 +966,15 @@ export function mount(container, ctx) {
     // what the registry says now that it did not at the workspace's last check of the domain
     const changed = changedOf(row.domain);
     const changedEl = changed ? h('span', { class: 'pf-changed', title: t('pf.chg.title'), dataset: { changed: changed.changes.map((c) => c.code).join(' '), tone: changed.tone } },
-      Badge(t('pf.chg.badge'), { variant: changed.tone === 'bad' ? 'error' : changed.tone === 'good' ? 'ok' : 'info', icon: changed.tone === 'good' ? 'check' : 'alert' }),
+      Tag(t('pf.chg.badge'), { variant: changed.tone === 'bad' ? 'error' : changed.tone === 'good' ? 'ok' : 'info', icon: changed.tone === 'good' ? 'check' : 'alert' }),
       ' ', h('span', { class: 'text-sm pf-changed-what' }, t('pf.chg.since', { date: formatDate(new Date(changed.at)), list: changedWords(changed.changes, t) }))) : null;
     // A registry without RDAP: the row says it is partial, never that the registration is fine.
     const partial = f.registration.state === 'unsupported'
-      ? h('span', { class: 'pf-partial', dataset: { partial: 'no-rdap' }, title: t('pf.partialTitle', { tld: f.registration.tld || '' }) }, Badge(t('pf.partial'), { icon: 'info' }))
+      ? h('span', { class: 'pf-partial', dataset: { partial: 'no-rdap' }, title: t('pf.partialTitle', { tld: f.registration.tld || '' }) }, Tag(t('pf.partial'), { icon: 'info' }))
       : null;
     return stack(
       h('strong', { class: 'mono pf-break pf-domain' }, row.domain),
-      risk && RISK_BADGES.includes(risk) ? Badge(t(`pf.risk.${risk}`), { variant: risk === 'warn' || risk === 'hijack' ? 'warn' : 'error', className: 'pf-risk' }) : null,
+      risk && RISK_BADGES.includes(risk) ? Tag(t(`pf.risk.${risk}`), { variant: risk === 'warn' || risk === 'hijack' ? 'warn' : 'error', className: 'pf-risk' }) : null,
       changedEl,
       partial,
       reduced.length ? muted(reduced.join(', ')) : null,
@@ -985,10 +985,10 @@ export function mount(container, ctx) {
     const reg = f.registration;
     if (reg.state === 'unsupported') {
       const w = reg.whois;
-      return stack(h('span', { title: t('pf.noRdapTitle', { tld: reg.tld || '' }), dataset: { rdap: 'unsupported' } }, Badge(t('pf.noRdap'))),
+      return stack(h('span', { title: t('pf.noRdapTitle', { tld: reg.tld || '' }), dataset: { rdap: 'unsupported' } }, Tag(t('pf.noRdap'))),
         w ? ExternalLink(w.url, w.iana ? t('pf.whoisIana', { tld: reg.tld || '' }) : t('pf.whois', { registry: w.name }), { className: 'text-xs pf-whois' }) : null);
     }
-    if (reg.state === 'not-found') return Badge(t('pf.notRegistered'), { variant: 'error', icon: 'x-circle' });
+    if (reg.state === 'not-found') return Tag(t('pf.notRegistered'), { variant: 'error', icon: 'x-circle' });
     if (reg.state === 'invalid') return muted(t('pf.invalidReg'));
     if (!reg.expires) return muted(t('pf.noExpiry'));
     return h('span', { class: 'pf-cell pf-expiry', dataset: { days: reg.daysLeft, expiry: reg.expiry } },
@@ -1003,7 +1003,7 @@ export function mount(container, ctx) {
    */
   function lockBadge(reg) {
     const level = reg.lockLevel;
-    const badge = (text, title, variant, icon) => h('span', { title, dataset: { lockLevel: level || 'none' } }, Badge(text, { variant, icon }));
+    const badge = (text, title, variant, icon) => h('span', { title, dataset: { lockLevel: level || 'none' } }, Tag(text, { variant, icon }));
     if (reg.transferLock === false) return badge(t('pf.lockOff'), t('pf.lockOffTitle'), 'warn', 'unlock');
     if (!level || reg.transferLock !== true) return muted(t('pf.noStatus'));
     if (level === 'registry') return badge(t('pf.registryLock'), t('pf.registryLockTitle'), 'ok', 'lock');
@@ -1021,7 +1021,7 @@ export function mount(container, ctx) {
     const reg = f.registration;
     if (reg.state !== 'ok') return reg.state === 'unsupported' ? muted(t('pf.noRdap')) : null;
     const lock = lockBadge(reg);
-    const critical = (reg.critical || []).map((c) => h('span', { title: t('pf.criticalTitle') }, Badge(c, { variant: 'error', icon: 'alert', mono: true })));
+    const critical = (reg.critical || []).map((c) => h('span', { title: t('pf.criticalTitle') }, Tag(c, { variant: 'error', icon: 'alert', mono: true })));
     // The flags not said yet: the critical ones and the transfer prohibitions have their badges above,
     // as have the prohibitions the lock's badge names (a registry lock's server ones, the registrar's
     // full lock's client ones); an operation under way (a pending transfer, renewal, update) is a
@@ -1031,7 +1031,7 @@ export function mount(container, ctx) {
     const said = new Set([...CRITICAL_STATUSES, ...(reg.transferCodes || []), ...lockCodes].map(squashStatus));
     const rest = (reg.flags || []).filter((x) => !said.has(squashStatus(x.code)));
     const pending = rest.filter((x) => x.kind === 'pending')
-      .map((x) => h('span', { title: t('pf.pendingTitle'), dataset: { flag: squashStatus(x.code) } }, Badge(x.code, { variant: 'warn', icon: 'clock', mono: true })));
+      .map((x) => h('span', { title: t('pf.pendingTitle'), dataset: { flag: squashStatus(x.code) } }, Tag(x.code, { variant: 'warn', icon: 'clock', mono: true })));
     const other = rest.filter((x) => x.kind !== 'pending');
     return h('span', { class: 'pf-cell pf-status', dataset: { risk: reg.risk || '', lock: String(reg.transferLock) } },
       critical, pending, lock,
@@ -1047,7 +1047,7 @@ export function mount(container, ctx) {
     const name = reg.registrar ? h('span', { class: 'pf-registrar' }, reg.registrar) : null;
     if (!corp) return name;
     return stack(name, h('span', { title: t('pf.corporateTitle', { id: corp.id, brand: corp.brand }), dataset: { registrarClass: 'corporate' } },
-      Badge(t('pf.corporate'), { variant: 'ok', icon: 'shield' })));
+      Tag(t('pf.corporate'), { variant: 'ok', icon: 'shield' })));
   }
 
   function dnssecCell(f) {
@@ -1057,7 +1057,7 @@ export function mount(container, ctx) {
     const yes = t('common.yes');
     const no = t('common.no');
     return h('span', { dataset: { dnssec: d.state }, title: t('pf.dnssec.title', { ds: d.dsCount ? yes : no, ad: d.state === 'validated' ? yes : no }) },
-      Badge(t(`pf.dnssec.${d.state}`), { variant, icon: d.state === 'validated' ? 'shield' : d.state === 'failing' ? 'x-circle' : null }));
+      Tag(t(`pf.dnssec.${d.state}`), { variant, icon: d.state === 'validated' ? 'shield' : d.state === 'failing' ? 'x-circle' : null }));
   }
 
   /**
@@ -1076,20 +1076,20 @@ export function mount(container, ctx) {
 
   function nsCell(f, row) {
     const ns = f.ns;
-    if (ns.state === 'nxdomain') return Badge(t('pf.nxdomain'), { variant: 'error' });
+    if (ns.state === 'nxdomain') return Tag(t('pf.nxdomain'), { variant: 'error' });
     if (ns.state === 'none') return muted(t('pf.ns.none'));
     if (ns.state !== 'ok') return null;
     return h('span', { class: 'pf-cell pf-ns' }, ns.domains.map((d) => h('span', { class: 'pf-ns-domain', dataset: { ns: d.domain, own: String(d.own), days: d.daysLeft ?? '' }, title: d.hosts.join('\n') },
       mono(d.domain), ' ',
-      d.own ? h('span', { title: t('pf.ns.ownTitle') }, Badge(t('pf.ns.own'))) : Number.isFinite(d.daysLeft) ? daysBadge(d.daysLeft, d.expiry)
-        : d.state === 'not-found' ? h('span', { title: t('pf.ns.notRegisteredTitle'), dataset: { nsState: 'not-found' } }, Badge(t('pf.ns.notRegistered'), { variant: 'error', icon: 'alert' }))
-          : d.state === 'unsupported' ? Badge(t('pf.noRdap')) : d.state === 'pending' ? nsPending(row, d.domain) : null)));
+      d.own ? h('span', { title: t('pf.ns.ownTitle') }, Tag(t('pf.ns.own'))) : Number.isFinite(d.daysLeft) ? daysBadge(d.daysLeft, d.expiry)
+        : d.state === 'not-found' ? h('span', { title: t('pf.ns.notRegisteredTitle'), dataset: { nsState: 'not-found' } }, Tag(t('pf.ns.notRegistered'), { variant: 'error', icon: 'alert' }))
+          : d.state === 'unsupported' ? Tag(t('pf.noRdap')) : d.state === 'pending' ? nsPending(row, d.domain) : null)));
   }
 
   function caaCell(f) {
     const c = f.caa;
     if (!c.state) return null;
-    if (c.state !== 'present') return h('span', { dataset: { caa: c.state } }, Badge(t(`pf.caa.${c.state}`), { variant: c.state === 'none' || c.state === 'unrestricted' ? 'neutral' : c.state === 'critical' ? 'error' : 'info' }));
+    if (c.state !== 'present') return h('span', { dataset: { caa: c.state } }, Tag(t(`pf.caa.${c.state}`), { variant: c.state === 'none' || c.state === 'unrestricted' ? 'neutral' : c.state === 'critical' ? 'error' : 'info' }));
     // one issuer a line: a CA's domain never breaks in its middle
     return h('span', { class: 'pf-cell pf-caa', dataset: { caa: 'present' } },
       c.issuers.map((x) => h('span', { class: 'mono pf-caa-issuer' }, x)),
@@ -1099,32 +1099,32 @@ export function mount(container, ctx) {
   function spfCell(f) {
     const s = f.spf;
     if (!s.state) return null;
-    if (s.state !== 'ok') return h('span', { dataset: { spf: s.state } }, Badge(t(`pf.spf.${s.state}`, { count: s.count || 0 }), { variant: s.state === 'none' ? 'warn' : 'error' }));
+    if (s.state !== 'ok') return h('span', { dataset: { spf: s.state } }, Tag(t(`pf.spf.${s.state}`, { count: s.count || 0 }), { variant: s.state === 'none' ? 'warn' : 'error' }));
     const all = s.all ? `${s.all}all` : s.redirect ? t('pf.spf.redirect') : t('pf.spf.noAll');
     const lookups = Number.isFinite(s.lookups)
-      ? Badge(t(s.lookupsState === 'partial' ? 'pf.spf.lookupsPartial' : 'pf.spf.lookups', { count: s.lookups }), { variant: s.over ? 'error' : s.lookups >= 9 ? 'warn' : 'neutral' })
+      ? Tag(t(s.lookupsState === 'partial' ? 'pf.spf.lookupsPartial' : 'pf.spf.lookups', { count: s.lookups }), { variant: s.over ? 'error' : s.lookups >= 9 ? 'warn' : 'neutral' })
       : null;
-    return h('span', { class: 'pf-cell', dataset: { spf: 'ok', all: s.all || '' } }, Badge(all, { mono: true, variant: s.all === '+' ? 'error' : s.all === '?' ? 'warn' : 'neutral' }), lookups);
+    return h('span', { class: 'pf-cell', dataset: { spf: 'ok', all: s.all || '' } }, Tag(all, { mono: true, variant: s.all === '+' ? 'error' : s.all === '?' ? 'warn' : 'neutral' }), lookups);
   }
 
   function dmarcCell(f) {
     const d = f.dmarc;
     if (!d.state) return null;
-    if (d.state !== 'ok') return h('span', { dataset: { dmarc: d.state } }, Badge(t(`pf.dmarc.${d.state}`, { count: d.count || 0 }), { variant: d.state === 'none' ? 'warn' : 'error' }));
-    return h('span', { dataset: { dmarc: d.policy } }, Badge(`p=${d.policy}${d.pct < 100 ? ` pct=${d.pct}` : ''}`, { mono: true, variant: d.policy === 'reject' ? 'ok' : d.policy === 'quarantine' ? 'info' : 'warn' }));
+    if (d.state !== 'ok') return h('span', { dataset: { dmarc: d.state } }, Tag(t(`pf.dmarc.${d.state}`, { count: d.count || 0 }), { variant: d.state === 'none' ? 'warn' : 'error' }));
+    return h('span', { dataset: { dmarc: d.policy } }, Tag(`p=${d.policy}${d.pct < 100 ? ` pct=${d.pct}` : ''}`, { mono: true, variant: d.policy === 'reject' ? 'ok' : d.policy === 'quarantine' ? 'info' : 'warn' }));
   }
 
   function dkimCell(f) {
     const d = f.dkim;
     if (!d.state) return null;
     if (d.state === 'off') return muted(t('pf.dkim.off'));
-    if (d.state === 'none') return h('span', { dataset: { dkim: 'none' } }, Badge(t('pf.dkim.none', { count: d.asked || 0 })));
-    return h('span', { class: 'pf-cell', dataset: { dkim: 'found' } }, d.selectors.map((s) => Badge(s, { mono: true, variant: 'ok' })));
+    if (d.state === 'none') return h('span', { dataset: { dkim: 'none' } }, Tag(t('pf.dkim.none', { count: d.asked || 0 })));
+    return h('span', { class: 'pf-cell', dataset: { dkim: 'found' } }, d.selectors.map((s) => Tag(s, { mono: true, variant: 'ok' })));
   }
 
   function mtaStsCell(f) {
     const rec = (label, part) => (part.state ? h('span', { class: 'pf-rec', dataset: { rec: label, state: part.state } }, `${label} `,
-      Badge(t(`pf.rec.${part.state}`), { variant: part.state === 'present' ? 'ok' : part.state === 'invalid' ? 'error' : 'neutral' })) : null);
+      Tag(t(`pf.rec.${part.state}`), { variant: part.state === 'present' ? 'ok' : part.state === 'invalid' ? 'error' : 'neutral' })) : null);
     if (!f.mtaSts.state && !f.tlsRpt.state) return null;
     return h('span', { class: 'pf-cell' }, rec('MTA-STS', f.mtaSts), rec('TLS-RPT', f.tlsRpt));
   }
@@ -1133,22 +1133,22 @@ export function mount(container, ctx) {
     const p = f.parked;
     if (p.parked === null) return null;
     if (!p.parked) return muted(t('pf.parked.mail'));
-    if (p.complete) return h('span', { dataset: { parked: 'locked' }, title: t('pf.parked.title') }, Badge(t('pf.parked.locked'), { variant: 'ok', icon: 'lock' }));
+    if (p.complete) return h('span', { dataset: { parked: 'locked' }, title: t('pf.parked.title') }, Tag(t('pf.parked.locked'), { variant: 'ok', icon: 'lock' }));
     const missing = [p.nullMx ? null : 'null MX', p.spfFail === false ? '-all' : null, p.dmarcReject === false ? 'p=reject' : null].filter(Boolean);
     if (!missing.length) return null;
     // each value whole: a narrow card would break "-all" after its hyphen
     return h('span', { dataset: { parked: 'open' }, title: t('pf.parked.title') },
-      Badge(keepWhole(t('pf.parked.open', { list: missing.join(', ') }), /(null MX|-all|p=reject)/), { variant: 'warn', icon: 'unlock' }));
+      Tag(keepWhole(t('pf.parked.open', { list: missing.join(', ') }), /(null MX|-all|p=reject)/), { variant: 'warn', icon: 'unlock' }));
   }
 
   function policyCell(row) {
     const r = audit ? audit.rows.find((x) => x.domain === row.domain) : null;
     if (!r) return null;
-    const accepted = r.waived ? Badge(t('pf.policy.waived', { count: r.waived }), { icon: 'shield' }) : null;
-    if (!r.fail && !r.unknown) return h('span', { class: 'pf-cell', dataset: { policy: 'pass' } }, Badge(t('pf.policy.pass'), { variant: 'ok', icon: 'check' }), accepted);
+    const accepted = r.waived ? Tag(t('pf.policy.waived', { count: r.waived }), { icon: 'shield' }) : null;
+    if (!r.fail && !r.unknown) return h('span', { class: 'pf-cell', dataset: { policy: 'pass' } }, Tag(t('pf.policy.pass'), { variant: 'ok', icon: 'check' }), accepted);
     return h('span', { class: 'pf-cell', dataset: { policy: r.fail ? 'fail' : 'unknown' } },
-      r.fail ? Badge(t('pf.policy.fail', { count: r.fail }), { variant: 'error', icon: 'x-circle' }) : null,
-      r.unknown ? Badge(t('pf.policy.unknown', { count: r.unknown })) : null,
+      r.fail ? Tag(t('pf.policy.fail', { count: r.fail }), { variant: 'error', icon: 'x-circle' }) : null,
+      r.unknown ? Tag(t('pf.policy.unknown', { count: r.unknown })) : null,
       accepted);
   }
 
@@ -1921,10 +1921,10 @@ export function mount(container, ctx) {
       {
         key: 'result', label: t('pf.matrix.result'), sortable: true, sortValue: (r) => -(r.fail * 100 + r.unknown),
         render: (r) => h('span', { class: 'pf-cell', dataset: { result: r.fail ? 'fail' : r.unknown ? 'unknown' : 'pass' } },
-          r.fail ? Badge(t('pf.policy.fail', { count: r.fail }), { variant: 'error', icon: 'x-circle' }) : null,
-          r.unknown ? Badge(t('pf.policy.unknown', { count: r.unknown })) : null,
-          !r.fail && !r.unknown ? Badge(t('pf.policy.pass'), { variant: 'ok', icon: 'check' }) : null,
-          r.waived ? Badge(t('pf.policy.waived', { count: r.waived }), { icon: 'shield' }) : null)
+          r.fail ? Tag(t('pf.policy.fail', { count: r.fail }), { variant: 'error', icon: 'x-circle' }) : null,
+          r.unknown ? Tag(t('pf.policy.unknown', { count: r.unknown })) : null,
+          !r.fail && !r.unknown ? Tag(t('pf.policy.pass'), { variant: 'ok', icon: 'check' }) : null,
+          r.waived ? Tag(t('pf.policy.waived', { count: r.waived }), { icon: 'shield' }) : null)
       }
     ];
     (audit ? audit.rules : []).forEach((rule, i) => cols.push({
@@ -1948,7 +1948,7 @@ export function mount(container, ctx) {
           dataset: { action: 'pf-accept', waive: rule.id }, onClick: () => acceptRule(r.domain, rule)
         }) : null;
         return h('span', { class: 'pf-cell', dataset: { status: c.status, rule: c.id, domain: r.domain }, attrs: c.status === 'waived' ? { tabindex: '-1' } : {} },
-          Badge(t(`pol.st.${c.status}`), { variant, icon }),
+          Tag(t(`pol.st.${c.status}`), { variant, icon }),
           h('span', { class: 'text-xs pf-evidence' }, keepDates(evidenceText(c, t))),
           waiver ? h('span', { class: ['text-xs', 'pf-waiver', { 'is-expired': !c.waiver }], dataset: { role: 'pf-waiver' } }, keepDates(waiver)) : null,
           accept);

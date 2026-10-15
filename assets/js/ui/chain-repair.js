@@ -24,7 +24,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, Button, ExternalLink, Icon } from './components.js';
+import { Alert, Tag, Button, ExternalLink, Icon } from './components.js';
 import { t, registerStrings, formatDate, localeTag } from '../i18n.js';
 import { createIntermediateStore, fileChain, repairChain, STORES } from '../lib/chainfix.js';
 
@@ -499,7 +499,7 @@ export function ChainRepairChainPart(load, { store = null } = {}) {
           h('div', { class: 'cert-chain-node', attrs: { 'aria-hidden': 'true' } }, Icon('git-branch', { size: 16 })),
           h('div', { class: 'cert-chain-body card' },
             h('div', { class: 'cert-chain-head' },
-              Badge(t('chainfix.chain.addedBadge'), { variant: 'info', icon: 'download' }),
+              Tag(t('chainfix.chain.addedBadge'), { variant: 'info', icon: 'download' }),
               h('span', { class: 'cert-chain-cn mono' }, cert.subjectCN || cert.subjectDN)),
             h('div', { class: 'cert-chain-meta text-sm' },
               h('span', null, t('chainfix.addedMeta', { issuer: cert.issuerCN || cert.issuerDN, owner: owner || '—', date: day(cert.notAfter) }))))))));

@@ -40,7 +40,7 @@
 
 import { h, clear, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, DataTable, ErrorBanner, ExternalLink, Icon, KeyValueList, KindBadge, ProgressBar, RelativeTime,
+  Alert, Tag, Button, DataTable, ErrorBanner, ExternalLink, Icon, KeyValueList, KindBadge, ProgressBar, RelativeTime,
   TruncatedList, announce, ipSortValue, setButtonBusy, textarea
 } from '../ui/components.js';
 import { registerStrings, formatNumber, formatRegion, formatRelative, localeTag } from '../i18n.js';
@@ -555,7 +555,7 @@ export function mount(container, ctx) {
       sortValue: (r) => (r.servers.length ? r.servers[0].name : null),
       searchValue: (r) => r.servers.map((s) => s.name).join(' '),
       exportValue: (r) => r.servers.map((s) => s.name).join(' '),
-      render: (r) => (r.servers.length ? h('div', { class: 'cluster' }, r.servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server' }))) : null)
+      render: (r) => (r.servers.length ? h('div', { class: 'cluster' }, r.servers.map((s) => Tag(s.name, { variant: 'direct', icon: 'server' }))) : null)
     },
     {
       key: 'ptr', label: t('ipi.col.ptr'), sortable: true, className: 'ipi-col-ptr', sortValue: (r) => (r.info && r.info.ptr[0]) || null,
@@ -570,7 +570,7 @@ export function mount(container, ctx) {
       render: (r) => {
         if (r.pending || !r.info) return null;
         if (!r.info.asn && !r.info.holder) {
-          return naCell(r, 'network') || (r.info.announced === false ? Badge(t('ipi.notAnnounced'), { title: t('ipi.notAnnouncedTitle') }) : null);
+          return naCell(r, 'network') || (r.info.announced === false ? Tag(t('ipi.notAnnounced'), { title: t('ipi.notAnnouncedTitle') }) : null);
         }
         const same = !r.info.holder || r.info.asName === r.info.holder;
         return h('div', { class: 'ipi-holder' },
@@ -680,7 +680,7 @@ export function mount(container, ctx) {
     if (!hint) return KindBadge(r.classification);
     const text = hintText(hint);
     const edge = hint.relation === 'cdn-edge';
-    const badge = Badge(text.badge, { variant: edge ? 'cdn' : 'direct', icon: edge ? 'zap' : (hint.category === 'hosting' ? 'server' : 'cloud'), title: text.long });
+    const badge = Tag(text.badge, { variant: edge ? 'cdn' : 'direct', icon: edge ? 'zap' : (hint.category === 'hosting' ? 'server' : 'cloud'), title: text.long });
     badge.dataset.kind = r.classification.kind;
     return h('div', { class: 'ipi-op', dataset: { network: hint.id, relation: hint.relation, source: hint.source } },
       badge, h('span', { class: 'muted text-xs ipi-op-note' }, text.short));
@@ -709,11 +709,11 @@ export function mount(container, ctx) {
     const res = rev.result;
     if (res.ok) {
       return h('div', { class: 'ipi-rev', dataset: { state: 'done', count: res.domains.length } },
-        Badge(t('ipi.rev.count', { count: res.domains.length }), { variant: res.domains.length ? 'accent' : 'neutral', icon: 'globe' }),
+        Tag(t('ipi.rev.count', { count: res.domains.length }), { variant: res.domains.length ? 'accent' : 'neutral', icon: 'globe' }),
         res.domains.length ? TruncatedList(res.domains, { max: 5, render: hostLink }) : null, local);
     }
     return h('div', { class: 'ipi-rev', dataset: { state: 'error' } },
-      Badge(t('ipi.rev.failed'), { variant: 'error', icon: 'x-circle', title: t('ipi.rev.failedTitle') }),
+      Tag(t('ipi.rev.failed'), { variant: 'error', icon: 'x-circle', title: t('ipi.rev.failedTitle') }),
       RetryButton({ sources: ['hackertarget', 'thc', 'otx', 'robtex', 'internetdb'], target: r.ip, onClick: () => openReverse([r.ip]) }));
   }
 

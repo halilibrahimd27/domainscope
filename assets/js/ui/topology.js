@@ -15,7 +15,7 @@
  */
 
 import { h } from './dom.js';
-import { Alert, Badge, Card, Icon } from './components.js';
+import { Alert, Tag, Card, Icon } from './components.js';
 import { t, registerStrings } from '../i18n.js';
 import { inventoryTopology, terminatesTls } from '../lib/topology.js';
 
@@ -295,13 +295,13 @@ export function TopologyCard(servers) {
     section('lbs', t('topo.lbs'), h('ul', { class: 'topo-tree' }, topo.lbs.map(({ server, backends }) => {
       const tls = terminatesTls(server);
       return h('li', { class: 'topo-lb', dataset: { server: server.name } },
-        serverLine(server, Badge(t(tls ? 'topo.terminates' : 'topo.passthrough'), { variant: tls ? 'warn' : 'neutral', icon: tls ? 'lock' : 'arrow-right' })),
+        serverLine(server, Tag(t(tls ? 'topo.terminates' : 'topo.passthrough'), { variant: tls ? 'warn' : 'neutral', icon: tls ? 'lock' : 'arrow-right' })),
         backends.length
           ? h('ul', { class: 'topo-backends' }, backends.map((b) => {
             const own = terminatesTls(b);
             return h('li', { class: 'topo-backend', dataset: { server: b.name, tls: String(own) } },
               // a short badge says what the backend does, the text after it what that means (it wraps on a phone)
-              serverLine(b, Badge(t(own ? 'topo.reencrypts' : 'topo.plain'), { variant: own ? 'warn' : 'ok', icon: own ? 'lock' : 'unlock' }),
+              serverLine(b, Tag(t(own ? 'topo.reencrypts' : 'topo.plain'), { variant: own ? 'warn' : 'ok', icon: own ? 'lock' : 'unlock' }),
                 h('span', { class: 'topo-badge-note' }, t(own ? 'topo.reencryptsNote' : 'topo.plainNote'))));
           }))
           : h('p', { class: 'muted text-xs topo-empty' }, t('topo.noBackends')),

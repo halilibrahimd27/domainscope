@@ -22,7 +22,7 @@
 
 import { h, clear } from './dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, Icon, KeyValueList, ProgressBar,
+  Alert, Tag, Button, Card, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, Icon, KeyValueList, ProgressBar,
   TruncatedList, toast
 } from './components.js';
 import { downloadText, timestampedName } from './download.js';
@@ -527,9 +527,9 @@ function viaText(ep) {
 }
 
 function adBadge(value) {
-  if (value === true) return Badge(t('dane.ad.yes'), { variant: 'ok', icon: 'lock' });
-  if (value === false) return Badge(t('dane.ad.no'), { variant: 'warn', icon: 'unlock' });
-  return Badge(t('dane.ad.unknown'), { variant: 'neutral' });
+  if (value === true) return Tag(t('dane.ad.yes'), { variant: 'ok', icon: 'lock' });
+  if (value === false) return Tag(t('dane.ad.no'), { variant: 'warn', icon: 'unlock' });
+  return Tag(t('dane.ad.unknown'), { variant: 'neutral' });
 }
 
 const REC_ICONS = { match: 'check-circle', no: 'x-circle', unknown: 'help', unusable: 'minus-circle' };
@@ -556,7 +556,7 @@ function recordChip(r, anchors) {
 function statusBadge(ep) {
   const sev = DANE_SEVERITY[ep.status] || 'neutral';
   const icon = { error: 'x-circle', warn: 'alert', info: 'info', ok: 'check-circle', neutral: 'minus-circle' }[sev];
-  const b = Badge(t(`dane.st.${ep.status}`), { variant: sev, icon });
+  const b = Tag(t(`dane.st.${ep.status}`), { variant: sev, icon });
   b.dataset.daneStatus = ep.status;
   return b;
 }
@@ -816,7 +816,7 @@ export function DanePanel({ certs, ctx, holder, extraNames = [], compact = false
           searchValue: (ep) => `${ep.qname} ${ep.via.join(' ')}`,
           render: (ep) => h('div', { class: 'dane-ep' },
             h('div', { class: 'dane-ep-name' },
-              Badge(t(`dane.svc.${ep.service}`), { variant: 'neutral', icon: ep.service === 'smtp' ? 'mail' : 'globe' }),
+              Tag(t(`dane.svc.${ep.service}`), { variant: 'neutral', icon: ep.service === 'smtp' ? 'mail' : 'globe' }),
               h('span', { class: 'mono dane-qname' }, ep.qname)),
             h('div', { class: 'dane-ep-via text-sm muted' }, viaText(ep)))
         },

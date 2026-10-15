@@ -21,7 +21,7 @@
 
 import { h, clear } from './dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, Disclosure, Icon, KeyValueList, Spinner, Tabs, TruncatedList, announce, select, textarea
+  Alert, Tag, Button, Card, CodeBlock, Disclosure, Icon, KeyValueList, Spinner, Tabs, TruncatedList, announce, select, textarea
 } from './components.js';
 import { NaMark, RetryButton, statusText } from './source-status.js';
 import { downloadText } from './download.js';
@@ -315,7 +315,7 @@ export function RenewalPlanner({ ctx, cert = () => null, names = () => '', ca = 
       dataset: { step: s.id },
       cells: [
         h('span', null, s.from ? utcDate(s.from) : t('rpl.sched.before', { date: utcDate(LIFETIME_SCHEDULE[i + 1].from) }),
-          s.id === current ? [' ', Badge(t('rpl.sched.now'), { variant: 'info' })] : null),
+          s.id === current ? [' ', Tag(t('rpl.sched.now'), { variant: 'info' })] : null),
         days(s.maxDays),
         days(s.dcvDays)
       ]
@@ -423,7 +423,7 @@ export function RenewalPlanner({ ctx, cert = () => null, names = () => '', ca = 
     }
     const names = leaf.hostnames && leaf.hostnames.length ? leaf.hostnames : leaf.dnsNames || [];
     const stateVariant = { 'not-yet-valid': 'info', 'before-window': 'ok', 'in-window': 'warn', 'past-window': 'error', expired: 'error' }[plan.state];
-    body.append(h('div', { class: 'rpl-state', dataset: { state: plan.state, source: plan.window.source } }, Badge(t(`rpl.state.${plan.state}`), { variant: stateVariant })));
+    body.append(h('div', { class: 'rpl-state', dataset: { state: plan.state, source: plan.window.source } }, Tag(t(`rpl.state.${plan.state}`), { variant: stateVariant })));
     body.append(KeyValueList([
       [t('rpl.cert.names'), names.length ? TruncatedList(names, { max: 4, inline: true }) : '—'],
       [t('rpl.cert.issued'), formatDateTime(leaf.notBefore)],

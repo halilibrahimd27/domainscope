@@ -12,7 +12,7 @@
  */
 
 import { h, clear, append } from './dom.js';
-import { Badge, Button, CopyButton, ExternalLink, KeyValueList, TruncatedList, announce, setButtonBusy } from './components.js';
+import { Tag, Button, CopyButton, ExternalLink, KeyValueList, TruncatedList, announce, setButtonBusy } from './components.js';
 import { t, registerStrings, formatDate, formatNumber } from '../i18n.js';
 import {
   createIpEnrich, cidrLevels, serversInLevels, knownFromInfo, peeringdbTypeCode, ENRICH_SOURCES, PEERINGDB_TYPE_CODES,
@@ -170,7 +170,7 @@ export function generatedKeys() {
   ];
 }
 
-/** Badge variants of the RPKI statuses. */
+/** Tag variants of the RPKI statuses. */
 const RPKI_VARIANTS = Object.freeze({ valid: 'ok', 'invalid-asn': 'error', 'invalid-length': 'error', 'not-found': 'warn' });
 const RPKI_ICONS = Object.freeze({ valid: 'check-circle', 'invalid-asn': 'x-circle', 'invalid-length': 'x-circle', 'not-found': 'alert' });
 /** Servers listed per breadcrumb level before "+N more". */
@@ -317,7 +317,7 @@ function resultItems(r) {
   } else if (networkNa) {
     items.push({ key: t('ipe.prefix'), value: networkNa });
   } else if (r.announced === false) {
-    items.push({ key: t('ipe.prefix'), value: Badge(t('ipe.notAnnounced'), { variant: 'warn', icon: 'alert', className: 'ipe-unannounced' }) });
+    items.push({ key: t('ipe.prefix'), value: Tag(t('ipe.notAnnounced'), { variant: 'warn', icon: 'alert', className: 'ipe-unannounced' }) });
   }
 
   // The sources that need a prefix: n/a with the prefix's failure while it is missing.
@@ -329,7 +329,7 @@ function resultItems(r) {
       key: t('ipe.rpki'),
       value: h('div', { class: 'stack-sm ipe-rpki' }, r.rpki.map((x) => h('div', { class: 'ipe-rpki-row', dataset: { asn: x.asn, status: x.status } },
         h('div', { class: 'cluster' },
-          Badge(t(`ipe.rpki.${x.status}`), { variant: RPKI_VARIANTS[x.status] || 'neutral', icon: RPKI_ICONS[x.status] || null }),
+          Tag(t(`ipe.rpki.${x.status}`), { variant: RPKI_VARIANTS[x.status] || 'neutral', icon: RPKI_ICONS[x.status] || null }),
           r.rpki.length > 1 ? h('span', { class: 'mono text-xs' }, `AS${x.asn}`) : null),
         h('span', { class: 'muted text-xs' }, t(`ipe.rpkiDesc.${x.status}`, { asn: x.asn, prefix: r.prefix })),
         x.roas.length ? h('ul', { class: 'ipe-roas mono text-xs' }, x.roas.slice(0, 6).map((o) => h('li', null,
@@ -351,8 +351,8 @@ function resultItems(r) {
       key: t('ipe.routing'),
       value: h('div', { class: 'stack-sm ipe-routing', dataset: { flags: g.flags.join(' ') } },
         clean
-          ? h('span', null, Badge(seen ? t('ipe.routingOk', seen) : t('ipe.routingOne'), { variant: 'ok', icon: 'check-circle' }))
-          : h('div', { class: 'cluster' }, g.flags.map((f) => Badge(t(`ipe.flag.${f}`), {
+          ? h('span', null, Tag(seen ? t('ipe.routingOk', seen) : t('ipe.routingOne'), { variant: 'ok', icon: 'check-circle' }))
+          : h('div', { class: 'cluster' }, g.flags.map((f) => Tag(t(`ipe.flag.${f}`), {
             variant: f === 'more-specifics' ? 'info' : 'warn', icon: 'alert', title: flagText(f, g), className: 'ipe-flag'
           }))),
         ...g.flags.map((f) => h('span', { class: 'muted text-xs ipe-flag-desc', dataset: { flag: f } }, flagText(f, g))),
@@ -387,7 +387,7 @@ function resultItems(r) {
         ? h('div', { class: 'ipe-pdb-net', dataset: { asn } },
           h('div', { class: 'cluster' },
             ExternalLink(`https://www.peeringdb.com/net/${net.id}`, net.name, { title: t('ipe.pdbOpen', { asn }) }),
-            ...net.types.map((label) => Badge(peeringdbTypeCode(label) ? t(`ipe.pdbType.${peeringdbTypeCode(label)}`) : label, { variant: 'info' }))),
+            ...net.types.map((label) => Tag(peeringdbTypeCode(label) ? t(`ipe.pdbType.${peeringdbTypeCode(label)}`) : label, { variant: 'info' }))),
           h('span', { class: 'muted text-xs' }, [net.aka, net.policy ? t('ipe.pdbPolicy', { policy: net.policy }) : null,
             net.scope ? t('ipe.pdbScope', { scope: net.scope }) : null].filter(Boolean).join(' · ')),
           net.website ? ExternalLink(net.website, net.website.replace(/^https?:\/\//, '').replace(/\/$/, ''), { className: 'text-xs', title: t('ipe.website') }) : null)
@@ -466,6 +466,6 @@ function showServers(list, level, haveInventory) {
     h('ul', { class: 'ipe-server-list' }, level.servers.slice(0, MAX_SERVERS).map((s) => h('li', { dataset: { server: s.id } },
       h('span', { class: 'ipe-server-name' }, s.name), ' ',
       h('span', { class: 'mono muted text-xs' }, s.ips.join(', ')),
-      s.here ? [' ', Badge(t('ipe.serversHere'), { variant: 'direct', className: 'ipe-here' })] : null))),
+      s.here ? [' ', Tag(t('ipe.serversHere'), { variant: 'direct', className: 'ipe-here' })] : null))),
     level.servers.length > MAX_SERVERS ? h('p', { class: 'muted text-xs' }, `+${formatNumber(level.servers.length - MAX_SERVERS)}`) : null);
 }

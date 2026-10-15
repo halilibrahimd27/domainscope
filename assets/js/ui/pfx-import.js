@@ -15,7 +15,7 @@
  */
 
 import { h } from './dom.js';
-import { Alert, Badge, Icon, KeyValueList, Modal, checkbox, setButtonBusy, textInput } from './components.js';
+import { Alert, Tag, Icon, KeyValueList, Modal, checkbox, setButtonBusy, textInput } from './components.js';
 import { t, registerStrings } from '../i18n.js';
 
 registerStrings('en', {
@@ -224,7 +224,7 @@ function schemeText(e) {
   let text = `${e.cipher} · ${e.kdf} · ${t('pfx.note.iterations', { count: e.iterations })}`;
   if (e.unsupported) text += ` · ${t('pfx.note.notSupported')}`;
   if (e.strength === 'weak' || e.strength === 'legacy') {
-    return h('span', null, text, ' ', Badge(t(`pfx.strength.${e.strength}`), {
+    return h('span', null, text, ' ', Tag(t(`pfx.strength.${e.strength}`), {
       variant: e.strength === 'weak' ? 'warn' : 'neutral', title: t(`pfx.strength.${e.strength}Title`), className: 'pfx-strength'
     }), h('span', { class: 'muted text-xs pfx-strength-why' }, t(`pfx.strength.${e.strength}Title`)));
   }
@@ -277,7 +277,7 @@ export function PfxNote(summary, { actions = [], certName = (c) => c.subjectCN |
     // No certificate was read: the alerts above say why; a key check has nothing to say.
   } else if (kc.status === 'match') {
     verdict = h('div', { class: 'pfx-key-verdict cluster' },
-      Badge(t('pfx.key.match'), { variant: 'ok', icon: 'check-circle' }),
+      Tag(t('pfx.key.match'), { variant: 'ok', icon: 'check-circle' }),
       kc.algorithm ? h('span', { class: 'muted text-sm mono' }, kc.algorithm) : null);
   } else if (kc.status === 'mismatch') {
     const a = Alert({

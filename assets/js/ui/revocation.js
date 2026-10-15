@@ -12,7 +12,7 @@
  */
 
 import { h } from './dom.js';
-import { Badge, Disclosure, ExternalLink } from './components.js';
+import { Tag, Disclosure, ExternalLink } from './components.js';
 import { t, hasString, localeTag, registerStrings, formatDate, formatDateTime } from '../i18n.js';
 
 /** The ARI errors of the CLI's --ari the estate names (cli/ssl_origin_scan.py _ARI_WHY). */
@@ -269,9 +269,9 @@ export function AriCell(ari, where) {
   const state = isObj(where) ? where.state : null;
   return h('div', { class: 'rev-cell', dataset: { ari: state || 'none' } }, spaced(
     h('span', { class: 'rev-window' }, windowText(ari)),
-    state === 'before' ? Badge(t('rev.ari.opensIn', { count: where.days }), { variant: 'neutral' }) : null,
-    state === 'open' ? Badge(t('rev.ari.open'), { variant: 'error' }) : null,
-    state === 'past' ? Badge(t('rev.ari.past'), { variant: 'error' }) : null,
+    state === 'before' ? Tag(t('rev.ari.opensIn', { count: where.days }), { variant: 'neutral' }) : null,
+    state === 'open' ? Tag(t('rev.ari.open'), { variant: 'error' }) : null,
+    state === 'past' ? Tag(t('rev.ari.past'), { variant: 'error' }) : null,
     isObj(ari.carried) && ari.carried.from ? h('span', { class: 'muted text-xs' }, t('rev.ari.asOf', { date: formatDate(ari.carried.from, { utc: true }) })) : null));
 }
 
@@ -290,7 +290,7 @@ export function RevocationCell(rev) {
   const status = rev.status === 'good' || rev.status === 'revoked' ? rev.status : 'unknown';
   const variant = status === 'revoked' ? 'error' : status === 'good' ? 'ok' : 'neutral';
   return h('div', { class: 'rev-cell', dataset: { revocation: status } }, spaced(
-    Badge(t(`rev.st.${status}`), { variant, title: status !== 'unknown' && rev.signature === 'not-verified' ? t('rev.sigNotVerified') : null }),
+    Tag(t(`rev.st.${status}`), { variant, title: status !== 'unknown' && rev.signature === 'not-verified' ? t('rev.sigNotVerified') : null }),
     status === 'revoked' ? RevokedLine(rev, { className: 'text-xs' }) : null,
     status === 'unknown' ? h('span', { class: 'muted text-xs' }, unknownText(rev.error)) : null));
 }

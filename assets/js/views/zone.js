@@ -44,7 +44,7 @@
 
 import { h, clear, uid } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, FileDrop, Icon, ProgressBar,
+  Alert, Tag, Button, Card, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, FileDrop, Icon, ProgressBar,
   SegmentedControl, SeverityIcon, Spinner, Tabs, announce, checkbox, copyText, radioGroup, select,
   textInput, textarea, toast
 } from '../ui/components.js';
@@ -1662,7 +1662,7 @@ export function mount(container, ctx) {
       text: [
         h('span', { class: 'zone-summary-title' }, z.origin ? t('zone.sum.zone', { origin: z.origin }) : t('zone.sum.noOrigin')),
         ' · ',
-        Badge(fmtLabel(z), { variant: 'neutral', title: (z.markers || []).join(' · ') || null, className: 'zone-format-badge' })
+        Tag(fmtLabel(z), { variant: 'neutral', title: (z.markers || []).join(' · ') || null, className: 'zone-format-badge' })
       ]
     }));
     head.set('meta', [
@@ -1913,7 +1913,7 @@ export function mount(container, ctx) {
         if (r.comment) items.push(h('div', null, h('strong', null, `${t('zone.detail.comment')}: `), r.comment));
         if (r.tags && Object.keys(r.tags).length) {
           items.push(h('div', { class: 'cluster' }, h('strong', null, `${t('zone.detail.tags')}:`),
-            Object.keys(r.tags).map((k) => Badge(r.tags[k] ? `${k}: ${r.tags[k]}` : k, { variant: 'neutral', className: 'zone-tag' }))));
+            Object.keys(r.tags).map((k) => Tag(r.tags[k] ? `${k}: ${r.tags[k]}` : k, { variant: 'neutral', className: 'zone-tag' }))));
         }
         if (r.routing) items.push(h('div', { class: 'mono text-sm' }, JSON.stringify(r.routing)));
         const probs = S.problems.filter((p) => p.name === r.name && (!p.line || p.line === r.line));
@@ -1930,7 +1930,7 @@ export function mount(container, ctx) {
               h('strong', null, rel), rel !== r.name && rel !== '@' ? h('span', { class: 'muted' }, `.${origin}`) : null,
               r.intendedName ? h('span', { class: 'zone-intended', title: t('zone.note.intended', { served: r.name, intended: r.intendedName }) }, ' ', Icon('alert', { size: 13 })) : null);
           } },
-        { key: 'type', label: t('zone.col.type'), sortable: true, width: '5.5rem', render: (r) => Badge(r.type, { variant: 'neutral', mono: true }), exportValue: (r) => r.type },
+        { key: 'type', label: t('zone.col.type'), sortable: true, width: '5.5rem', render: (r) => Tag(r.type, { variant: 'neutral', mono: true }), exportValue: (r) => r.type },
         { key: 'ttl', label: t('zone.col.ttl'), sortable: true, align: 'end', className: 'num', sortValue: (r) => r.ttl ?? -1, exportValue: (r) => (r.ttl ?? ''),
           render: (r) => (r.ttlAuto ? h('span', { title: t('zone.ttl.autoTitle') }, t('zone.ttl.auto')) : r.ttl === null ? '—' : formatNumber(r.ttl)) },
         { key: 'value', label: t('zone.col.value'), wrap: true, mono: true, searchValue: (r) => r.text || (r.alias ? r.alias.target : ''),
@@ -1941,7 +1941,7 @@ export function mount(container, ctx) {
           } },
         { key: 'proxy', label: t('zone.col.proxy'), sortable: true, sortValue: (r) => (r.proxied === true ? 0 : r.proxied === false ? 1 : 2),
           exportValue: (r) => (r.proxied === true ? 'proxied' : r.proxied === false ? 'dns-only' : ''),
-          render: (r) => (r.proxied === true ? Badge(t('zone.proxy.on'), { variant: 'cloudflare' }) : r.proxied === false ? h('span', { class: 'muted text-sm' }, t('zone.proxy.off')) : '') },
+          render: (r) => (r.proxied === true ? Tag(t('zone.proxy.on'), { variant: 'cloudflare' }) : r.proxied === false ? h('span', { class: 'muted text-sm' }, t('zone.proxy.off')) : '') },
         { key: 'server', label: t('zone.col.server'), searchValue: serverOf, exportValue: serverOf, render: (r) => serverOf(r) },
         { key: 'notes', label: t('zone.col.notes'), wrap: true, searchValue: (r) => notes(r).join(' '), exportValue: (r) => notes(r).join('; '),
           render: (r) => h('span', { class: 'text-sm muted' }, notes(r).join(' · ')) }
@@ -2003,7 +2003,7 @@ export function mount(container, ctx) {
           render: (r) => h('span', { class: 'zone-origin-cell' },
             r.kind === 'ip' ? r.ips.join(' ') : r.host || r.target || (r.ips || []).join(' '),
             r.via.length ? h('span', { class: 'muted text-sm' }, ` ${t('zone.origin.via', { name: r.via.join(' → ') })}`) : null,
-            r.private ? h('span', { class: 'text-sm' }, ' ', Badge(t('zone.origin.private'), { variant: 'private' })) : null) },
+            r.private ? h('span', { class: 'text-sm' }, ' ', Tag(t('zone.origin.private'), { variant: 'private' })) : null) },
         { key: 'kind', label: t('zone.col.kind'), wrap: true, render: (r) => h('span', { class: `zone-kind zone-kind-${r.kind}`, dataset: { kind: r.kind } }, kindText(r)) },
         { key: 'server', label: t('zone.col.server'), render: (r) => serverCell(r.servers) },
         { key: 'exposure', label: t('zone.col.exposure'), wrap: true,
@@ -2024,13 +2024,13 @@ export function mount(container, ctx) {
         { key: 'names', label: t('zone.col.names'), wrap: true, searchValue: (r) => r.names.map((n) => n.name).join(' '),
           render: (r) => h('span', { class: 'zone-addr-names' }, r.names.map((n) => h('span', { class: 'zone-addr-name' },
             relativeName(n.name, z.origin),
-            n.proxied === true ? Badge(t('zone.proxy.on'), { variant: 'cloudflare' }) : null,
-            n.exposed ? Badge(t('zone.addr.exposed'), { variant: 'error', icon: 'alert' }) : null))) },
+            n.proxied === true ? Tag(t('zone.proxy.on'), { variant: 'cloudflare' }) : null,
+            n.exposed ? Tag(t('zone.addr.exposed'), { variant: 'error', icon: 'alert' }) : null))) },
         { key: 'flags', label: t('zone.col.notes'),
           render: (r) => h('span', { class: 'cluster' },
-            r.private ? Badge(t('zone.addr.private'), { variant: 'private' }) : null,
-            r.placeholder ? Badge(t('zone.addr.placeholder'), { variant: 'neutral' }) : null,
-            r.provider === 'cloudflare' ? Badge(t('zone.addr.cloudflare'), { variant: 'cloudflare' }) : null) }
+            r.private ? Tag(t('zone.addr.private'), { variant: 'private' }) : null,
+            r.placeholder ? Tag(t('zone.addr.placeholder'), { variant: 'neutral' }) : null,
+            r.provider === 'cloudflare' ? Tag(t('zone.addr.cloudflare'), { variant: 'cloudflare' }) : null) }
       ]
     });
     addrTable.setRows(S.addresses);
@@ -2442,9 +2442,9 @@ export function mount(container, ctx) {
       export: { filename: 'zone-drift', formats: ['csv', 'json'] },
       columns: [
         { key: 'status', label: t('zone.col.status'), sortable: true, exportValue: (r) => r.status,
-          render: (r) => h('span', { dataset: { status: r.status } }, Badge(t(`zone.drift.${r.status}`), { variant: sevVariant(r.status) })) },
+          render: (r) => h('span', { dataset: { status: r.status } }, Tag(t(`zone.drift.${r.status}`), { variant: sevVariant(r.status) })) },
         { key: 'name', label: t('zone.col.name'), sortable: true, render: (r) => h('strong', null, relativeName(r.name, z.origin)), exportValue: (r) => r.name },
-        { key: 'type', label: t('zone.col.type'), sortable: true, render: (r) => Badge(r.type, { variant: 'neutral', mono: true }) },
+        { key: 'type', label: t('zone.col.type'), sortable: true, render: (r) => Tag(r.type, { variant: 'neutral', mono: true }) },
         { key: 'file', label: t('zone.col.file'), mono: true, wrap: true, searchValue: (r) => r.file.join(' '),
           exportValue: (r) => redactValues(r.file, sec, S.live.includeOrigins).join(' '), render: (r) => valueLines(r.file) },
         { key: 'live', label: t('zone.col.live'), mono: true, wrap: true, searchValue: (r) => r.live.join(' '),

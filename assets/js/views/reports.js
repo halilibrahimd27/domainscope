@@ -46,7 +46,7 @@
 
 import { h, clear } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Card, DataTable, Disclosure, FileDrop, Icon, KeyValueList, ProgressBar, RelativeTime, SegmentedControl, Tabs,
+  Alert, Tag, Button, Card, DataTable, Disclosure, FileDrop, Icon, KeyValueList, ProgressBar, RelativeTime, SegmentedControl, Tabs,
   announce, checkbox, confirmDialog, ipSortValue, select, toast
 } from '../ui/components.js';
 import { EmptyState, MetricStrip, PrivacyNote, ResultActions, ResultHeader, ResultTitle, StatusSummary } from '../ui/template.js';
@@ -106,7 +106,7 @@ export const HISTORY_SYNC_MS = 300;
 /** The SPF states (lib/dmarcreport.js SpfContext status) under which the classes rest on the current SPF. */
 export const SPF_CHECKED_STATES = Object.freeze(['ok', 'none', 'multiple']);
 
-/** Badge / tile look of each source class. */
+/** Tag / tile look of each source class. */
 export const CLASS_STYLE = Object.freeze({
   yours: Object.freeze({ variant: 'ok', icon: 'server' }),
   'third-party': Object.freeze({ variant: 'info', icon: 'briefcase' }),
@@ -2419,7 +2419,7 @@ export function mount(container, ctx) {
         h('div', { class: 'rpt-fix-head' },
           h('span', { class: 'mono rpt-fix-ip' }, r.ip), ' ',
           svc ? [h('span', { class: 'rpt-fix-svc' }, svc.name), ' '] : null,
-          Badge(t(`rpt.clsOne.${r.cls}`), { variant: style.variant, icon: style.icon }), ' ',
+          Tag(t(`rpt.clsOne.${r.cls}`), { variant: style.variant, icon: style.icon }), ' ',
           h('span', { class: 'rpt-fix-why text-sm' }, whyText(r)), ' ',
           h('span', { class: 'rpt-fix-count text-sm' }, count)),
         r.fixes.length ? h('ul', { class: 'rpt-fix-steps text-sm' }, r.fixes.map((f) => h('li', { dataset: { fix: f } }, fixText(r, f, agg.domain)))) : null);
@@ -2483,9 +2483,9 @@ export function mount(container, ctx) {
 
   function alignedCell(passed, total) {
     const a = alignedState(passed, total);
-    if (a.state === 'pass') return Badge(t('rpt.aligned.pass'), { variant: 'ok' });
-    if (a.state === 'fail') return Badge(t('rpt.aligned.fail'), { variant: 'error' });
-    return Badge(t('rpt.aligned.part', { pct: share(a.ratio) }), { variant: 'warn' });
+    if (a.state === 'pass') return Tag(t('rpt.aligned.pass'), { variant: 'ok' });
+    if (a.state === 'fail') return Tag(t('rpt.aligned.fail'), { variant: 'error' });
+    return Tag(t('rpt.aligned.part', { pct: share(a.ratio) }), { variant: 'warn' });
   }
 
   function networkCell(r) {
@@ -2683,7 +2683,7 @@ export function mount(container, ctx) {
         { key: 'dkim', label: t('rpt.col.dkim'), sortable: true, sortValue: (g) => (g.messages ? g.dkimAligned / g.messages : 0), render: (g) => alignedCell(g.dkimAligned, g.messages) },
         { key: 'classes', label: t('rpt.grp.col.classes'), wrap: true, searchValue: (g) => Object.keys(g.classes).map((c) => t(`rpt.cls.${c}`)).join(' '),
           render: (g) => h('div', { class: 'rpt-grp-classes' }, SOURCE_CLASSES.filter((c) => g.classes[c]).map((c) => {
-            const b = Badge(`${t(`rpt.clsOne.${c}`)} ${num(g.classes[c])}`, { variant: CLASS_STYLE[c].variant, icon: CLASS_STYLE[c].icon, title: t(`rpt.clsDesc.${c}`) });
+            const b = Tag(`${t(`rpt.clsOne.${c}`)} ${num(g.classes[c])}`, { variant: CLASS_STYLE[c].variant, icon: CLASS_STYLE[c].icon, title: t(`rpt.clsDesc.${c}`) });
             b.dataset.cls = c;
             return b;
           })) }
@@ -2705,7 +2705,7 @@ export function mount(container, ctx) {
       g.evidence.length ? [t('rpt.grp.evidence'), h('span', { class: 'mono text-sm' }, g.evidence.slice(0, 8).join(', '), g.evidence.length > 8 ? ` ${t('common.moreCount', { count: g.evidence.length - 8 })}` : '')] : null,
       [t('rpt.grp.list'), h('ul', { class: 'rpt-grp-list' }, shown.map((r) => h('li', { dataset: { ip: r.ip } },
         h('span', { class: 'mono' }, r.ip), ' ',
-        Badge(t(`rpt.clsOne.${r.cls}`), { variant: CLASS_STYLE[r.cls].variant, icon: CLASS_STYLE[r.cls].icon }), ' ',
+        Tag(t(`rpt.clsOne.${r.cls}`), { variant: CLASS_STYLE[r.cls].variant, icon: CLASS_STYLE[r.cls].icon }), ' ',
         h('span', { class: 'text-sm muted' }, t('rpt.det.count', { count: r.messages })))),
       g.rows.length > shown.length ? h('li', { class: 'text-sm muted' }, t('common.moreCount', { count: num(g.rows.length - shown.length) })) : null)]
     ];
@@ -2757,7 +2757,7 @@ export function mount(container, ctx) {
           render: (r) => h('div', { class: 'rpt-addr' }, h('span', { class: 'mono rpt-ip', dataset: { ip: r.ip } }, r.ip), serviceCell(r)) },
         { key: 'cls', label: t('rpt.col.cls'), sortable: true, sortValue: (r) => SOURCE_CLASSES.indexOf(r.cls), searchValue: (r) => t(`rpt.cls.${r.cls}`),
           render: (r) => {
-            const b = Badge(t(`rpt.clsOne.${r.cls}`), { variant: CLASS_STYLE[r.cls].variant, icon: CLASS_STYLE[r.cls].icon, title: t(`rpt.clsDesc.${r.cls}`) });
+            const b = Tag(t(`rpt.clsOne.${r.cls}`), { variant: CLASS_STYLE[r.cls].variant, icon: CLASS_STYLE[r.cls].icon, title: t(`rpt.clsDesc.${r.cls}`) });
             b.dataset.cls = r.cls;
             return b;
           } },
@@ -2832,7 +2832,7 @@ export function mount(container, ctx) {
     strip.el.querySelector('[data-metric="rate"] .metric-value').classList.add('rpt-tls-rate');
     const stats = strip.el;
     const policies = h('ul', { class: 'rpt-tls-policies' }, s.policies.map((p) => h('li', { dataset: { policy: p.type } },
-      Badge(TLS_POLICY_TYPES.includes(p.type) ? t(`rpt.tls.policy.${p.type}`) : p.type, { variant: p.type === 'no-policy-found' ? 'neutral' : 'accent', icon: p.type === 'no-policy-found' ? null : 'lock' }),
+      Tag(TLS_POLICY_TYPES.includes(p.type) ? t(`rpt.tls.policy.${p.type}`) : p.type, { variant: p.type === 'no-policy-found' ? 'neutral' : 'accent', icon: p.type === 'no-policy-found' ? null : 'lock' }),
       p.mode ? [' ', h('code', { class: 'mono' }, `mode: ${p.mode}`)] : null,
       ' ', h('span', { class: 'text-sm muted' }, t('rpt.tls.policySessions', { ok: num(p.success), failed: num(p.failure) })))));
     const body = h('div', { class: 'stack' }, stats,

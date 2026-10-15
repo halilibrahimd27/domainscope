@@ -24,7 +24,7 @@
 
 import { h, clear, uid } from './dom.js';
 import {
-  Alert, Badge, Button, FileDrop, Icon, IconButton, Modal, announce, confirmDialog, setButtonBusy, textInput, textarea
+  Alert, Tag, Button, FileDrop, Icon, IconButton, Modal, announce, confirmDialog, setButtonBusy, textInput, textarea
 } from './components.js';
 import { downloadText, timestampedName } from './download.js';
 import { t, registerStrings, formatRelative, formatDateTime } from '../i18n.js';
@@ -491,7 +491,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
       li.append(
         h('div', { class: 'ws-item-main' },
           h('span', { class: 'ws-item-name' }, Icon('briefcase', { size: 15 }), h('span', { class: 'ws-item-label' }, name)),
-          active ? Badge(t('ws.active'), { variant: 'ok', icon: 'check', className: 'ws-item-badge' }) : null,
+          active ? Tag(t('ws.active'), { variant: 'ok', icon: 'check', className: 'ws-item-badge' }) : null,
           // Default nothing was written to yet has no date: it never changed.
           ws.updatedAt ? h('span', { class: 'ws-item-meta' }, t('ws.updated', { when: formatRelative(new Date(ws.updatedAt)) })) : null),
         actions);
@@ -673,7 +673,7 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
       clear(expectedList);
       for (const entry of entries) {
         const r = resolveExpectedCa(entry);
-        expectedList.append(Badge(r.ca ? r.ca.name : entry, {
+        expectedList.append(Tag(r.ca ? r.ca.name : entry, {
           variant: r.ca ? 'ok' : 'neutral',
           icon: r.ca ? 'shield' : 'file-text',
           title: r.ca ? t('ws.expectedKnown', { ca: r.ca.name, domains: r.ca.domains.slice(0, 3).join(', ') }) : t('ws.expectedText'),
@@ -767,10 +767,10 @@ export function openWorkspacePanel({ state, switchTo, setTarget, onClose = null,
       return h('li', { class: ['ws-waiver', `is-${st}`], dataset: { role: 'ws-waiver', id: w.id, kind: w.kind, state: st } },
         h('div', { class: 'ws-waiver-main' },
           h('span', { class: 'ws-waiver-what' },
-            Badge(t(`wvr.kind.${w.kind}`), { variant: w.kind === 'cert' ? 'ok' : 'neutral', icon: 'shield' }), ' ',
+            Tag(t(`wvr.kind.${w.kind}`), { variant: w.kind === 'cert' ? 'ok' : 'neutral', icon: 'shield' }), ' ',
             h('span', { class: 'mono ws-waiver-domain' }, w.domain), ' ',
             h('span', { class: 'mono ws-waiver-ref' }, w.ref)),
-          h('span', { class: 'ws-waiver-when' }, Badge(st === 'expired' ? t('wvr.ws.expiredOn', { date: w.expires }) : t('wvr.ws.until', { date: w.expires }),
+          h('span', { class: 'ws-waiver-when' }, Tag(st === 'expired' ? t('wvr.ws.expiredOn', { date: w.expires }) : t('wvr.ws.until', { date: w.expires }),
             { variant: st === 'expired' ? 'error' : st === 'expiring' ? 'warn' : 'neutral', icon: 'clock' })),
           h('span', { class: 'ws-waiver-why' }, w.owner ? `${w.owner}: ${w.reason}` : w.reason)),
         (() => {

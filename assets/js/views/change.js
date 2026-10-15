@@ -43,7 +43,7 @@
 
 import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Icon, announce, checkbox, checkboxGroup, describeError, select, textInput, textarea
+  Alert, Tag, Button, Icon, announce, checkbox, checkboxGroup, describeError, select, textInput, textarea
 } from '../ui/components.js';
 import { registerStrings, hasString, localeTag, formatDateTime, formatDuration, formatNumber } from '../i18n.js';
 import { state as stateSingleton } from '../state.js';
@@ -838,7 +838,7 @@ function mountCheck(container, ctx) {
   const stopHost = h('div', { class: 'chg-stop-host' });
   const planSlot = h('div', { class: 'chg-cut-slot' });
   let cut = null;
-  head.set('meta', [Badge(t('chg.check.zone', { zone: check.zone }), { variant: 'neutral', mono: true, className: 'chg-zone' }), metaEl]);
+  head.set('meta', [Tag(t('chg.check.zone', { zone: check.zone }), { variant: 'neutral', mono: true, className: 'chg-zone' }), metaEl]);
   head.set('notes', [stopHost, watchSlot]);
   head.set('status', status.el);
   head.set('actions', actions.el);
@@ -889,7 +889,7 @@ function mountCheck(container, ctx) {
       const cached = !live && r && v === 'pending' && Number.isFinite(r.ttl) && r.ttl > 0 ? t('chg.check.cached', { time: clockTime(r.at + r.ttl * 1000) }) : null;
       list.append(h('li', { class: ['chg-res', `chg-res-${v}`], dataset: { resolver: rid, verdict: v, reason: r && r.reason ? r.reason : '' } },
         h('span', { class: 'chg-res-name' }, resolverName(rid)),
-        Badge(label, { variant, icon: iconName, className: 'chg-res-verdict' }),
+        Tag(label, { variant, icon: iconName, className: 'chg-res-verdict' }),
         showSeen || cached || live ? h('div', { class: 'chg-res-detail text-sm' },
           showSeen ? [h('span', { class: 'muted' }, `${t('chg.check.seen')}: `), h('span', { class: 'mono chg-res-seen' }, r.seen.length ? r.seen.map((x) => valueText(exp.type, x)).join(', ') : t('chg.check.nothing'))] : null,
           cached ? h('span', { class: 'muted chg-res-cached' }, `${showSeen ? ' · ' : ''}${cached}`) : null,

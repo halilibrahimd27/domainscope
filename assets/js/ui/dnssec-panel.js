@@ -21,7 +21,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, Button, Spinner, select, announce } from './components.js';
+import { Alert, Tag, Button, Spinner, select, announce } from './components.js';
 import { registerStrings, formatDateTime, formatDate, formatNumber } from '../i18n.js';
 import { validateChain, DNSSEC_STATUSES, DNSSEC_REASONS, SIG_RESULTS, MAX_ALIASES, MAX_NSEC3_ITERATIONS } from '../lib/dnssec.js';
 import { DNSSEC_ALGORITHMS, DS_DIGEST_TYPES } from '../lib/dnswire.js';
@@ -274,7 +274,7 @@ const stamp = (ms) => (Number.isFinite(ms) ? formatDateTime(new Date(ms), { utc:
 const tags = (list) => [...new Set(list)].join(', ') || '—';
 
 function statusBadge(t, status) {
-  return Badge(t(`dsec.status.${status}`), { variant: STATUS_VARIANT[status] || 'neutral', icon: STATUS_ICON[status] || null, className: 'dsec-status' });
+  return Tag(t(`dsec.status.${status}`), { variant: STATUS_VARIANT[status] || 'neutral', icon: STATUS_ICON[status] || null, className: 'dsec-status' });
 }
 
 function table(headers, rows, className) {
@@ -368,7 +368,7 @@ export function DnssecPanel({ ctx, name, types, resolver = null }) {
         algText(c.algorithm),
         h('span', { class: 'dsec-window', title: `${stamp(c.inception)} → ${stamp(c.expiration)}` }, `${day(c.inception)} → ${day(c.expiration)}`),
         h('span', { class: 'dsec-sig', dataset: { result: c.result } },
-          Badge(t(`dsec.sig.${c.result}`), { variant: SIG_VARIANT[c.result] || 'error' }))
+          Tag(t(`dsec.sig.${c.result}`), { variant: SIG_VARIANT[c.result] || 'error' }))
       ]), 'dsec-sig-table'));
   }
 
@@ -378,8 +378,8 @@ export function DnssecPanel({ ctx, name, types, resolver = null }) {
       algText(d.algorithm),
       digestText(d.digestType),
       d.matches !== null && d.matches !== undefined
-        ? Badge(t('dsec.match.key', { tag: d.matches }), { variant: 'ok', icon: 'check' })
-        : Badge(t(d.supported && z.keys.length ? 'dsec.match.none' : 'dsec.match.unchecked'), { variant: d.supported && z.keys.length ? 'error' : 'neutral' })
+        ? Tag(t('dsec.match.key', { tag: d.matches }), { variant: 'ok', icon: 'check' })
+        : Tag(t(d.supported && z.keys.length ? 'dsec.match.none' : 'dsec.match.unchecked'), { variant: d.supported && z.keys.length ? 'error' : 'neutral' })
     ]);
     return h('div', { class: 'dsec-ds' },
       h('h4', { class: 'dsec-sub' }, z.dsSource === 'anchor' ? t('dsec.anchors') : t('dsec.ds', { parent: z.parent || '.' })),
@@ -394,10 +394,10 @@ export function DnssecPanel({ ctx, name, types, resolver = null }) {
       table([t('dsec.col.keyTag'), t('dsec.col.role'), t('dsec.col.algorithm'), t('dsec.col.size')], z.keys.map((k) => [
         h('span', { class: 'mono num' }, String(k.keyTag)),
         h('span', { class: 'dsec-role cluster' },
-          Badge(t(`dsec.role.${k.role}`), { variant: k.role === 'ksk' ? 'accent' : 'neutral', mono: true }),
-          k.matchesDs ? Badge(t('dsec.key.ds'), { variant: 'ok' }) : null,
-          k.signsKeys ? Badge(t('dsec.key.signs'), { variant: 'ok' }) : null,
-          k.revoked ? Badge(t('dsec.key.revoked'), { variant: 'warn' }) : null),
+          Tag(t(`dsec.role.${k.role}`), { variant: k.role === 'ksk' ? 'accent' : 'neutral', mono: true }),
+          k.matchesDs ? Tag(t('dsec.key.ds'), { variant: 'ok' }) : null,
+          k.signsKeys ? Tag(t('dsec.key.signs'), { variant: 'ok' }) : null,
+          k.revoked ? Tag(t('dsec.key.revoked'), { variant: 'warn' }) : null),
         algText(k.algorithm),
         k.bits ? t('dsec.bits', { bits: formatNumber(k.bits) }) : null
       ]), 'dsec-key-table'),

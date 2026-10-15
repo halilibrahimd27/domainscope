@@ -17,7 +17,7 @@
  */
 
 import { h, clear, uid } from './dom.js';
-import { Alert, Badge, Button, Disclosure, ExternalLink, TruncatedList } from './components.js';
+import { Alert, Tag, Button, Disclosure, ExternalLink, TruncatedList } from './components.js';
 import { t, registerStrings, formatDate, formatNumber } from '../i18n.js';
 import { relatedDomains, SHARED_CERT_DOMAINS } from '../lib/ctrelated.js';
 
@@ -146,8 +146,8 @@ export function RelatedDomains({ onScanWith }) {
       h('div', { class: 'sub-rel-with' }, h('span', { class: 'muted' }, `${t('rel.cert.with')}: `),
         TruncatedList(c.ownNames, { max: 3, inline: true })),
       c.shared || c.partial ? h('div', { class: 'sub-rel-flags' },
-        c.shared ? Badge(t('rel.cert.shared', { count: c.domains }), { variant: 'neutral', title: t('rel.cert.sharedTitle', { max: SHARED_CERT_DOMAINS }) }) : null,
-        c.partial ? Badge(t('rel.cert.partial'), { variant: 'neutral' }) : null) : null);
+        c.shared ? Tag(t('rel.cert.shared', { count: c.domains }), { variant: 'neutral', title: t('rel.cert.sharedTitle', { max: SHARED_CERT_DOMAINS }) }) : null,
+        c.partial ? Tag(t('rel.cert.partial'), { variant: 'neutral' }) : null) : null);
   }
 
   /** Turn a "Scan too" button on or off (a scan running blocks a new one). */
@@ -180,10 +180,10 @@ export function RelatedDomains({ onScanWith }) {
       h('div', { class: 'sub-rel-head' },
         h('span', { class: 'sub-rel-domain mono' }, d.domain),
         h('span', { class: 'sub-rel-badges' },
-          Badge(t('rel.certs', { count: d.certs }), { variant: 'accent', icon: 'certificate' }),
-          d.current ? Badge(t('rel.current'), { variant: 'ok', title: t('rel.currentTitle') })
-            : Badge(t('rel.expired'), { variant: 'neutral', title: t('rel.expiredTitle') }),
-          d.platform ? Badge(t('rel.platform', { name: d.platform }), { variant: 'info', title: t('rel.platformTitle') }) : null),
+          Tag(t('rel.certs', { count: d.certs }), { variant: 'accent', icon: 'certificate' }),
+          d.current ? Tag(t('rel.current'), { variant: 'ok', title: t('rel.currentTitle') })
+            : Tag(t('rel.expired'), { variant: 'neutral', title: t('rel.expiredTitle') }),
+          d.platform ? Tag(t('rel.platform', { name: d.platform }), { variant: 'info', title: t('rel.platformTitle') }) : null),
         scanButton(d, run, busy)),
       h('div', { class: 'sub-rel-names' },
         TruncatedList(d.names, { max: 4, inline: true }),

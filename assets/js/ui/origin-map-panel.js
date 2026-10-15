@@ -27,7 +27,7 @@
 
 import { h, clear, append } from './dom.js';
 import {
-  Alert, Badge, Button, Card, DataTable, FileDrop, IconButton, announce, checkbox, confirmDialog, textInput
+  Alert, Tag, Button, Card, DataTable, FileDrop, IconButton, announce, checkbox, confirmDialog, textInput
 } from './components.js';
 import { t, registerStrings, formatDate, formatDateTime, formatNumber } from '../i18n.js';
 import { state } from '../state.js';
@@ -340,7 +340,7 @@ export function OriginMapPanel({ ctx }) {
           exportValue: (e) => (e.stale ? `stale: ${e.stale.reason}` : 'active'),
           render: (e) => (e.stale
             ? h('div', { class: 'om-status', dataset: { stale: e.stale.reason } }, StaleBadge(e), h('span', { class: 'text-sm om-why' }, staleText(e)))
-            : Badge(t('omp.active'), { variant: 'ok', icon: 'check' }))
+            : Tag(t('omp.active'), { variant: 'ok', icon: 'check' }))
         },
         {
           key: 'actions', label: t('omp.col.actions'), export: false,

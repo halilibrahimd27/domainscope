@@ -34,7 +34,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, Button, DataTable, Disclosure, ExternalLink, Icon, ProgressBar, RelativeTime, announce, select, textInput, toast } from './components.js';
+import { Alert, Tag, Button, DataTable, Disclosure, ExternalLink, Icon, ProgressBar, RelativeTime, announce, select, textInput, toast } from './components.js';
 import { EmptyState, MetricStrip, PrivacyNote, ResultActions, ResultHeader, ResultTitle, StatusSummary } from './template.js';
 import { registerStrings, formatDate, formatDateTime, formatNumber, formatRelative } from '../i18n.js';
 import {
@@ -417,7 +417,7 @@ export function mountCtWatch(host, { ctx, domains }) {
   const cellOf = (...children) => h('span', { class: 'pf-cell' }, children.filter(Boolean));
   const flagBadge = (f) => {
     const variant = { new: 'info', unexpected: 'warn', precert: 'warn', wildcard: 'neutral', revoked: 'error', superseded: 'neutral', known: 'ok' }[f];
-    const el = Badge(t(`ctw.flag.${f}`), { variant, icon: f === 'known' ? 'shield' : null, title: t(`ctw.flagTitle.${f}`) });
+    const el = Tag(t(`ctw.flag.${f}`), { variant, icon: f === 'known' ? 'shield' : null, title: t(`ctw.flagTitle.${f}`) });
     el.dataset.flag = f;
     return el;
   };
@@ -448,7 +448,7 @@ export function mountCtWatch(host, { ctx, domains }) {
   const expiryBadge = (r) => {
     if (!r.current) return null;
     const variant = r.band === null ? 'ok' : r.band === days.length - 1 ? 'error' : 'warn';
-    return Badge(t('ctw.daysLeft', { count: Math.max(0, r.daysLeft) }), { variant, icon: 'clock' });
+    return Tag(t('ctw.daysLeft', { count: Math.max(0, r.daysLeft) }), { variant, icon: 'clock' });
   };
   const namesCell = (r) => {
     const shown = r.names.slice(0, 3);

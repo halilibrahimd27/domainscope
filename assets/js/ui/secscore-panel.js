@@ -11,7 +11,7 @@
  */
 
 import { h, svg, clear } from './dom.js';
-import { Badge, Button, Card, DataTable, toast } from './components.js';
+import { Tag, Button, Card, DataTable, toast } from './components.js';
 import { registerStrings, formatNumber, formatPercent } from '../i18n.js';
 import {
   SECURITY_I18N, SECURITY_MAX, SECURITY_MEASURES, scoreBand, securityAdoption, securityCsv, securityScores, securityTotals
@@ -184,11 +184,11 @@ export function mountSecurity(host, { ctx, source, subject }) {
     const c = row.measures[i];
     const [variant, icon] = STATUS_LOOK[c.status] || STATUS_LOOK.unknown;
     return h('span', { class: 'pf-cell', dataset: { status: c.status, measure: c.id } },
-      Badge(t(`sec.st.${c.status}`), { variant, icon }),
+      Tag(t(`sec.st.${c.status}`), { variant, icon }),
       h('span', { class: 'text-xs pf-evidence' }, evidenceText(c, t)));
   };
   const scoreCell = (row) => h('span', { class: 'pf-cell pf-sec-score', dataset: { score: row.score, unknown: row.unknown }, title: t('sec.scoreTitle', { max: SECURITY_MAX }) },
-    Badge(`${row.score}/${SECURITY_MAX}`, { variant: scoreBand(row.score), mono: true }),
+    Tag(`${row.score}/${SECURITY_MAX}`, { variant: scoreBand(row.score), mono: true }),
     row.unknown ? h('span', { class: 'muted text-xs' }, t('sec.scoreUnknown', { count: row.unknown })) : null);
 
   const csvBtn = Button({ label: t('sec.csv'), icon: 'download', size: 'sm', dataset: { action: 'sec-csv' }, title: t('sec.csvTitle'), onClick: () => exportCsv() });

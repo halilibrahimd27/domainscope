@@ -54,7 +54,7 @@
 
 import { h, clear, append, scrollBehavior, uid } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, ButtonLink, Card, CliText, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
+  Alert, Tag, Button, ButtonLink, Card, CliText, CodeBlock, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
   FileDrop, Icon, KeyValueList, KindBadge, ProgressBar, SegmentedControl, Tabs, TruncatedList, announce, checkbox,
   checkboxGroup, ipSortValue, radioGroup, select, textInput, textarea, toast
 } from '../ui/components.js';
@@ -1733,8 +1733,8 @@ export function mount(container, ctx) {
       stepSr[key].textContent = done ? ` ${t('scan.req.done')}` : issue ? ` ${t('scan.step.attention', { issue })}` : '';
       stepSr[key].hidden = !done && !issue;
       clear(stepStatus[key]);
-      if (done) stepStatus[key].append(Badge(badges[key], { variant: 'ok' }));
-      else if (issue) stepStatus[key].append(Badge(issue, { variant: 'warn' }));
+      if (done) stepStatus[key].append(Tag(badges[key], { variant: 'ok' }));
+      else if (issue) stepStatus[key].append(Tag(issue, { variant: 'warn' }));
     }
     const met = p.ready ? 'met' : 'unmet';
     // A certificate is loaded and still nothing meets the requirement: its names are missing, so
@@ -3251,8 +3251,8 @@ function buildRunUI(run, ctx, { onFinish }) {
         searchValue: (x) => [x.name, ...x.resolution.cnames, ...x.origins.map(originLabel), x.classification.provider ? x.classification.provider.name : ''].join(' '),
         render: (x) => h('div', { class: 'scan-host' },
           h('span', { class: 'scan-host-name mono' }, x.name),
-          x.origins.includes('cert') ? Badge(t('scan.host.inCert'), { variant: 'accent', title: t('scan.host.inCertTitle'), className: 'scan-mini-badge' }) : null,
-          x.wildcardSuspect ? Badge(t('scan.host.wildcard'), { variant: 'warn', title: t('scan.host.wildcardTitle'), className: 'scan-mini-badge' }) : null)
+          x.origins.includes('cert') ? Tag(t('scan.host.inCert'), { variant: 'accent', title: t('scan.host.inCertTitle'), className: 'scan-mini-badge' }) : null,
+          x.wildcardSuspect ? Tag(t('scan.host.wildcard'), { variant: 'warn', title: t('scan.host.wildcardTitle'), className: 'scan-mini-badge' }) : null)
       },
       {
         key: 'kind',
@@ -3262,9 +3262,9 @@ function buildRunUI(run, ctx, { onFinish }) {
         searchValue: (x) => `${t(`kind.${x.classification.dangling ? 'dangling' : x.classification.kind}`)} ${x.resolution.status}`,
         render: (x) => h('div', { class: 'cluster scan-kind' }, KindBadge(x.classification),
           // A streamed partial is "resolving…" only while the run lives (a cancelled run never resolves it).
-          x._partial && run.status === 'running' ? Badge(t('sub.host.resolving'), { variant: 'neutral', icon: 'clock', title: t('sub.host.resolvingTitle'), className: 'scan-mini-badge' }) : null,
+          x._partial && run.status === 'running' ? Tag(t('sub.host.resolving'), { variant: 'neutral', icon: 'clock', title: t('sub.host.resolvingTitle'), className: 'scan-mini-badge' }) : null,
           x.resolution.status !== 'NOERROR' && x.resolution.status !== 'NXDOMAIN'
-            ? Badge(x.resolution.status, { variant: 'error', title: x.resolution.error || '', mono: true }) : null)
+            ? Tag(x.resolution.status, { variant: 'error', title: x.resolution.error || '', mono: true }) : null)
       },
       {
         key: 'ips',
@@ -3293,8 +3293,8 @@ function buildRunUI(run, ctx, { onFinish }) {
         sortValue: (x) => (x.cert && x.cert.covered ? 1 : 0),
         searchValue: (x) => (x.cert && x.cert.covered ? t('scan.host.covered') : t('scan.host.notCovered')),
         render: (x) => (x.cert && x.cert.covered
-          ? Badge(t('scan.host.covered'), { variant: 'ok', icon: 'check', title: t('scan.host.coveredBy', { name: x.cert.by }) })
-          : Badge(t('scan.host.notCovered'), { variant: 'neutral', icon: 'x' }))
+          ? Tag(t('scan.host.covered'), { variant: 'ok', icon: 'check', title: t('scan.host.coveredBy', { name: x.cert.by }) })
+          : Tag(t('scan.host.notCovered'), { variant: 'neutral', icon: 'x' }))
       } : null,
       // Several certificates: the set the host gets (an exact name before a wildcard, …).
       sets ? {
@@ -3307,7 +3307,7 @@ function buildRunUI(run, ctx, { onFinish }) {
         render: (x) => {
           const id = x.cert && x.cert.covered ? setOf(x.name) : null;
           return id ? SetBadge(id, { variant: 'ok', title: t('rw.host.setTitle', { id, name: x.cert.by }) })
-            : Badge(t('scan.host.notCovered'), { variant: 'neutral', icon: 'x' });
+            : Tag(t('scan.host.notCovered'), { variant: 'neutral', icon: 'x' });
         }
       } : null,
       {
@@ -3411,11 +3411,11 @@ function buildRunUI(run, ctx, { onFinish }) {
         exportValue: (r) => (r.ok ? (r.partial ? 'partial' : 'ok') : `failed:${r.errorKind}`),
         render: (r) => {
           let b;
-          if (r.ok) b = r.partial ? Badge(t('scan.src.partial'), { variant: 'warn', icon: 'alert' }) : Badge(t('scan.src.ok'), { variant: 'ok', icon: 'check' });
-          else if (r.errorKind === 'rate-limit') b = Badge(t('source.state.rate-limited'), { variant: 'warn', icon: 'clock' });
-          else if (r.errorKind === 'unavailable') b = Badge(t('source.state.unavailable'), { variant: 'error', icon: 'x-circle' });
-          else if (r.errorKind === 'timeout') b = Badge(t('source.state.timeout'), { variant: 'error', icon: 'clock' });
-          else b = Badge(t('scan.src.failed'), { variant: 'error', icon: 'x-circle' });
+          if (r.ok) b = r.partial ? Tag(t('scan.src.partial'), { variant: 'warn', icon: 'alert' }) : Tag(t('scan.src.ok'), { variant: 'ok', icon: 'check' });
+          else if (r.errorKind === 'rate-limit') b = Tag(t('source.state.rate-limited'), { variant: 'warn', icon: 'clock' });
+          else if (r.errorKind === 'unavailable') b = Tag(t('source.state.unavailable'), { variant: 'error', icon: 'x-circle' });
+          else if (r.errorKind === 'timeout') b = Tag(t('source.state.timeout'), { variant: 'error', icon: 'clock' });
+          else b = Tag(t('scan.src.failed'), { variant: 'error', icon: 'x-circle' });
           b.dataset.status = r.ok ? (r.partial ? 'partial' : 'ok') : 'failed';
           return b;
         }
@@ -3690,7 +3690,7 @@ function buildRunUI(run, ctx, { onFinish }) {
             searchValue: (g) => [g.server.name, ...(g.server.groups || []), ...(g.topology ? g.topology.behind : [])].join(' '),
             render: (g) => h('div', { class: 'scan-srv', dataset: { server: g.server.name } },
               h('span', { class: 'scan-srv-name' }, g.server.name),
-              g.server.groups && g.server.groups.length ? h('span', { class: 'cluster scan-srv-groups' }, g.server.groups.map((x) => Badge(x))) : null,
+              g.server.groups && g.server.groups.length ? h('span', { class: 'cluster scan-srv-groups' }, g.server.groups.map((x) => Tag(x))) : null,
               TopologyNotes(g.topology))
           },
           {
@@ -3702,7 +3702,7 @@ function buildRunUI(run, ctx, { onFinish }) {
               const s = statusOf(g);
               const variant = { needs: 'warn', serves: 'info', maybe: 'info', none: 'neutral', plain: 'ok', passthrough: 'ok' }[s];
               const ic = { needs: 'alert', serves: 'server', maybe: 'help', none: 'minus-circle', plain: 'unlock', passthrough: 'arrow-right' }[s];
-              const b = Badge(statusLabel(s), { variant, icon: ic });
+              const b = Tag(statusLabel(s), { variant, icon: ic });
               b.dataset.status = s;
               return b;
             }
@@ -3750,8 +3750,8 @@ function buildRunUI(run, ctx, { onFinish }) {
             key: 'owner', label: t('scan.srv.col.owner'), sortable: true,
             sortValue: (u) => (u.private ? 0 : 1),
             exportValue: (u) => (u.private ? 'private' : (u.provider ? u.provider.name : 'public')),
-            render: (u) => (u.private ? Badge(t('scan.srv.private'), { variant: 'private', icon: 'lock' })
-              : u.provider ? Badge(u.provider.name, { variant: 'platform' }) : Badge(t('scan.srv.public'), { variant: 'direct', icon: 'server' }))
+            render: (u) => (u.private ? Tag(t('scan.srv.private'), { variant: 'private', icon: 'lock' })
+              : u.provider ? Tag(u.provider.name, { variant: 'platform' }) : Tag(t('scan.srv.public'), { variant: 'direct', icon: 'server' }))
           },
           {
             key: 'hosts', label: t('scan.srv.col.hosts'),
@@ -3779,15 +3779,15 @@ function buildRunUI(run, ctx, { onFinish }) {
         {
           key: 'via', label: t('scan.srv.col.via'),
           render: (x) => h('span', { class: 'cluster scan-srv-via' },
-            Badge(t(`scan.srv.via.${x.via}`), { variant: x.via === 'dns' ? 'direct' : (x.via === 'zone' || x.via === 'known') && !x.stale ? 'ok' : 'info' }),
+            Tag(t(`scan.srv.via.${x.via}`), { variant: x.via === 'dns' ? 'direct' : (x.via === 'zone' || x.via === 'known') && !x.stale ? 'ok' : 'info' }),
             // A remembered origin the map has since marked stale: why, in its tooltip.
             x.stale ? StaleBadge(x) : null,
-            x.lbs ? Badge(t('topo.via.lb', { lb: x.lbs.join(', ') }), { variant: 'neutral', icon: 'git-branch' }) : null,
-            x.through ? Badge(x.through === 'vip' ? 'VIP' : 'NAT', { variant: 'neutral', icon: x.through === 'vip' ? 'share' : 'swap' }) : null)
+            x.lbs ? Tag(t('topo.via.lb', { lb: x.lbs.join(', ') }), { variant: 'neutral', icon: 'git-branch' }) : null,
+            x.through ? Tag(x.through === 'vip' ? 'VIP' : 'NAT', { variant: 'neutral', icon: x.through === 'vip' ? 'share' : 'swap' }) : null)
         },
         cert ? {
           key: 'covered', label: t('scan.srv.col.covered'),
-          render: (x) => (x.covered ? Badge(t('scan.host.covered'), { variant: 'ok', icon: 'check' }) : Badge(t('scan.host.notCovered'), { variant: 'neutral', icon: 'x' }))
+          render: (x) => (x.covered ? Tag(t('scan.host.covered'), { variant: 'ok', icon: 'check' }) : Tag(t('scan.host.notCovered'), { variant: 'neutral', icon: 'x' }))
         } : null
       ].filter(Boolean)
     }).el;
@@ -3822,7 +3822,7 @@ function buildRunUI(run, ctx, { onFinish }) {
     }
     const updated = rangesInfo().updated;
     const netBadge = (label) => {
-      const el = Badge(t('scan.net.badge', { name: label.name }), {
+      const el = Tag(t('scan.net.badge', { name: label.name }), {
         variant: 'direct', icon: label.category === 'hosting' ? 'server' : 'cloud', className: 'scan-net-label',
         title: t(`scan.net.title.${label.relation}`, { name: label.name, updated })
       });
@@ -3918,7 +3918,7 @@ function buildRunUI(run, ctx, { onFinish }) {
             {
               key: 'origin', label: t('scan.cdn.col.knownOrigin'), mono: true, searchValue: (r) => r.target, exportValue: (r) => r.target,
               render: (r) => h('div', { class: 'cluster' },
-                r.stale ? StaleBadge(r.entry) : Badge(t('scan.hint.known'), { variant: 'ok', icon: 'map-pin', title: t('scan.hint.known.title') }),
+                r.stale ? StaleBadge(r.entry) : Tag(t('scan.hint.known'), { variant: 'ok', icon: 'map-pin', title: t('scan.hint.known.title') }),
                 h('span', null, r.target), r.entry && r.entry.server ? h('span', { class: 'muted' }, `(${r.entry.server})`) : null)
             },
             {
@@ -3948,7 +3948,7 @@ function buildRunUI(run, ctx, { onFinish }) {
             {
               key: 'origin', label: t('scan.cdn.col.zoneOrigin'), mono: true,
               searchValue: (p) => p.zone.map((z) => z.ip).join(' '),
-              render: (p) => h('div', { class: 'cluster' }, Badge(t('scan.hint.zone'), { variant: 'ok', title: t('scan.hint.zone.title') }),
+              render: (p) => h('div', { class: 'cluster' }, Tag(t('scan.hint.zone'), { variant: 'ok', title: t('scan.hint.zone.title') }),
                 TruncatedList(p.zone.map((z) => z.ip), { max: 3, inline: true }))
             }
           ]
@@ -3988,7 +3988,7 @@ function buildRunUI(run, ctx, { onFinish }) {
           key: 'cert', label: t('scan.col.cert'), sortable: true,
           sortValue: (x) => (x.cert && x.cert.covered ? 1 : 0),
           exportValue: (x) => !!(x.cert && x.cert.covered),
-          render: (x) => (x.cert && x.cert.covered ? Badge(t('scan.host.covered'), { variant: 'ok', icon: 'check' }) : Badge(t('scan.host.notCovered'), { variant: 'neutral', icon: 'x' }))
+          render: (x) => (x.cert && x.cert.covered ? Tag(t('scan.host.covered'), { variant: 'ok', icon: 'check' }) : Tag(t('scan.host.notCovered'), { variant: 'neutral', icon: 'x' }))
         } : null
       ].filter(Boolean)
     }).el);
@@ -4056,7 +4056,7 @@ function buildRunUI(run, ctx, { onFinish }) {
               render: (n) => h('div', { class: 'cluster scan-net-sweep', dataset: { sweep: n.sweep, shared: n.shared ? '1' : '0' } },
                 h('span', { class: 'scan-net-sweep-label', title: n.sweep === 'cidr' ? t('sub.org.sweep.cidrTitle') : t('sub.org.sweep.ipsTitle') },
                   n.sweep === 'cidr' ? t('sub.org.sweep.cidr') : t('sub.org.sweep.ips', { count: n.ips.length })),
-                n.shared ? Badge(t('sub.org.shared'), { variant: 'warn', icon: 'alert', title: t('sub.org.sharedTitle') }) : null)
+                n.shared ? Tag(t('sub.org.shared'), { variant: 'warn', icon: 'alert', title: t('sub.org.sharedTitle') }) : null)
             },
             {
               key: 'owner', label: t('scan.cdn.col.owner'),
@@ -4169,7 +4169,7 @@ function buildRunUI(run, ctx, { onFinish }) {
             exportValue: (o) => o.reasons.map((x) => `${x.kind}: ${x.detail}${x.stale ? ` (stale: ${x.stale.reason})` : ''}`).join(' | '),
             render: (o) => h('div', { class: 'stack-sm scan-hint-reasons' }, o.reasons.slice(0, 4).map((x) => h('div', { class: 'scan-hint-reason' },
               x.stale ? StaleBadge(x)
-                : Badge(HINT_KINDS.includes(x.kind) ? t(`scan.hint.${x.kind}`) : x.kind, { variant: 'info', title: HINT_KINDS.includes(x.kind) ? t(`scan.hint.${x.kind}.title`) : null }),
+                : Tag(HINT_KINDS.includes(x.kind) ? t(`scan.hint.${x.kind}`) : x.kind, { variant: 'info', title: HINT_KINDS.includes(x.kind) ? t(`scan.hint.${x.kind}.title`) : null }),
               h('span', { class: 'mono text-xs scan-hint-detail' }, reasonText(x)))),
             o.reasons.length > 4 ? h('span', { class: 'muted text-xs' }, t('common.moreCount', { count: o.reasons.length - 4 })) : null)
           },
@@ -4179,8 +4179,8 @@ function buildRunUI(run, ctx, { onFinish }) {
             searchValue: (o) => o.servers.map((s) => s.name).join(' '),
             exportValue: (o) => o.servers.map((s) => s.name).join(' '),
             render: (o) => {
-              if (o.servers.length) return h('div', { class: 'cluster' }, o.servers.map((s) => Badge(s.name, { variant: 'direct', icon: 'server' })));
-              if (o.provider) return Badge(o.provider.name, { variant: 'platform' });
+              if (o.servers.length) return h('div', { class: 'cluster' }, o.servers.map((s) => Tag(s.name, { variant: 'direct', icon: 'server' })));
+              if (o.provider) return Tag(o.provider.name, { variant: 'platform' });
               // Not one of your servers, in no edge range: whose published space holds it (a cloud server's).
               const label = networkLabel({ ip: o.ip });
               return label ? netBadge(label) : null;
@@ -4434,10 +4434,10 @@ function buildRunUI(run, ctx, { onFinish }) {
           render: (c) => {
             const s = ctStatus(c, now);
             return h('div', { class: 'cluster' },
-              c.matchesCert ? Badge(t('scan.ct.this'), { variant: 'accent', icon: 'certificate' }) : null,
-              s.state === 'expired' ? Badge(t('scan.ct.expired'), { variant: 'neutral' })
-                : s.state === 'expiring' ? Badge(t('scan.ct.expiring', { count: Math.max(0, s.days) }), { variant: 'warn', icon: 'clock' })
-                  : s.state === 'valid' ? Badge(t('scan.ct.valid'), { variant: 'ok' }) : null);
+              c.matchesCert ? Tag(t('scan.ct.this'), { variant: 'accent', icon: 'certificate' }) : null,
+              s.state === 'expired' ? Tag(t('scan.ct.expired'), { variant: 'neutral' })
+                : s.state === 'expiring' ? Tag(t('scan.ct.expiring', { count: Math.max(0, s.days) }), { variant: 'warn', icon: 'clock' })
+                  : s.state === 'valid' ? Tag(t('scan.ct.valid'), { variant: 'ok' }) : null);
           }
         },
         { key: 'issuer', label: t('scan.ct.col.issuer'), sortable: true, wrap: true },

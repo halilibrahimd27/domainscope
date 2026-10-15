@@ -22,7 +22,7 @@
 
 import { h, svg, clear } from './dom.js';
 import {
-  Alert, Badge, Button, Card, DataTable, Disclosure, EmptyState, SegmentedControl, checkbox, confirmDialog, ipSortValue, select, toast
+  Alert, Tag, Button, Card, DataTable, Disclosure, EmptyState, SegmentedControl, checkbox, confirmDialog, ipSortValue, select, toast
 } from './components.js';
 import { MetricStrip } from './template.js';
 import { downloadText, timestampedName } from './download.js';
@@ -680,13 +680,13 @@ export function mountHistory(host, { ctx, read, preferred, onForget, classStyle,
           render: (r) => {
             if (!r.cls) return h('span', { class: 'muted' }, '—');
             const look = classStyle[r.cls] || { variant: 'neutral', icon: null };
-            const b = Badge(t(`rpt.clsOne.${r.cls}`), { variant: look.variant, icon: look.icon, title: t(`rpt.clsDesc.${r.cls}`) });
+            const b = Tag(t(`rpt.clsOne.${r.cls}`), { variant: look.variant, icon: look.icon, title: t(`rpt.clsDesc.${r.cls}`) });
             b.dataset.cls = r.cls;
             return b;
           } },
         { key: 'first', label: t('rpt.hist.col.first'), sortable: true,
           render: (r) => h('div', { class: 'rh-first' }, h('span', null, day(r.first)),
-            r.isNew ? Badge(t('rpt.hist.new', { date: day(r.first) }), { variant: 'accent', icon: 'plus', className: 'rh-new' }) : null) },
+            r.isNew ? Tag(t('rpt.hist.new', { date: day(r.first) }), { variant: 'accent', icon: 'plus', className: 'rh-new' }) : null) },
         { key: 'last', label: t('rpt.hist.col.last'), sortable: true, render: (r) => day(r.last) },
         { key: 'msgs', label: t('rpt.col.messages'), sortable: true, align: 'end', defaultDir: 'desc' },
         { key: 'passMsgs', label: t('rpt.col.pass'), sortable: true, align: 'end', sortValue: (r) => (r.msgs ? r.passMsgs / r.msgs : 0),
@@ -741,7 +741,7 @@ export function mountHistory(host, { ctx, read, preferred, onForget, classStyle,
         { key: 'verdict', label: t('rpt.hist.col.verdict'), sortable: true, wrap: true, sortValue: (x) => ['enforced-losing', 'fix-first', 'ready', 'enforced', 'no-mail'].indexOf(x.verdict),
           searchValue: (x) => t(`rpt.hist.verdict.${x.verdict}`),
           render: (x) => h('div', { class: 'rh-verdict', dataset: { verdict: x.verdict } },
-            Badge(t(`rpt.hist.verdict.${x.verdict}`), { variant: VERDICT_LOOK[x.verdict] || 'neutral' }),
+            Tag(t(`rpt.hist.verdict.${x.verdict}`), { variant: VERDICT_LOOK[x.verdict] || 'neutral' }),
             !x.checked && x.msgs ? h('span', { class: 'text-xs muted rh-not-checked' }, t('rpt.hist.notChecked')) : null) },
         { key: 'last', label: t('rpt.hist.col.lastReport'), sortable: true, render: (x) => (x.last ? day(x.last) : '—') }
       ]

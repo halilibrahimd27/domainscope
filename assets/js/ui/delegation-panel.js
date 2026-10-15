@@ -19,7 +19,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, Button, Disclosure, ErrorBanner, ExternalLink, KeyValueList, ProgressBar, SeverityIcon, announce, checkbox, CodeBlock } from './components.js';
+import { Alert, Tag, Button, Disclosure, ErrorBanner, ExternalLink, KeyValueList, ProgressBar, SeverityIcon, announce, checkbox, CodeBlock } from './components.js';
 import { registerRunning } from './jobs.js';
 import { gateProbes, noteQuota, sharedQuota, liveQuota, whenText, measurementUrl } from './globalping-gate.js';
 import { t, registerStrings, formatNumber, formatRelative, formatDateTime } from '../i18n.js';
@@ -495,10 +495,10 @@ export function DelegationPanel({ ctx, holder, start = false }) {
   function serverTable(result) {
     const rows = result.servers.map((s) => {
       const nsCell = s.nsSet
-        ? h('div', { class: 'stack-xs' }, Badge(t(`dlg.nsState.${s.nsState}`), { variant: s.nsState === 'same' ? 'ok' : 'warn' }),
+        ? h('div', { class: 'stack-xs' }, Tag(t(`dlg.nsState.${s.nsState}`), { variant: s.nsState === 'same' ? 'ok' : 'warn' }),
           s.missing.length ? h('span', { class: 'mono text-xs' }, t('dlg.missingNs', { names: s.missing.join(', ') })) : null,
           s.extra.length ? h('span', { class: 'mono text-xs' }, t('dlg.extraNs', { names: s.extra.join(', ') })) : null)
-        : Badge(t(`dlg.nsState.${s.nsState}`), { variant: 'neutral' });
+        : Tag(t(`dlg.nsState.${s.nsState}`), { variant: 'neutral' });
       const probe = s.probe ? [s.probe.city, s.probe.country].filter(Boolean).join(', ') + (s.probe.network ? ` · ${s.probe.network}` : '') : '';
       const links = s.measurementIds.map((id, i) => {
         const url = measurementUrl(id);
@@ -506,12 +506,12 @@ export function DelegationPanel({ ctx, holder, start = false }) {
       }).filter(Boolean);
       return h('tr', { class: 'dt-row', dataset: { ns: s.ns, state: s.state } },
         h('td', null, h('div', { class: 'stack-xs' }, h('span', { class: 'mono' }, s.ns),
-          s.provider ? Badge(s.provider.name, { variant: TAKEOVER_STATES.includes(s.state) ? 'error' : 'neutral', title: t(`dlg.risk.${s.provider.risk}`) }) : null,
+          s.provider ? Tag(s.provider.name, { variant: TAKEOVER_STATES.includes(s.state) ? 'error' : 'neutral', title: t(`dlg.risk.${s.provider.risk}`) }) : null,
           s.nsid ? h('span', { class: 'muted text-xs mono' }, `NSID ${s.nsid}`) : null)),
-        h('td', null, Badge(t(`dlg.state.${s.state}`), { variant: stateVariant(s.state) })),
+        h('td', null, Tag(t(`dlg.state.${s.state}`), { variant: stateVariant(s.state) })),
         h('td', { class: 'num' }, Number.isFinite(s.serial) ? String(s.serial) : na()),
         h('td', null, nsCell),
-        h('td', null, Badge(t(`dlg.rec.${s.recursion}`), { variant: s.recursion === 'open' ? 'warn' : s.recursion === 'closed' ? 'ok' : 'neutral' })),
+        h('td', null, Tag(t(`dlg.rec.${s.recursion}`), { variant: s.recursion === 'open' ? 'warn' : s.recursion === 'closed' ? 'ok' : 'neutral' })),
         h('td', { class: 'text-sm' }, probe ? h('span', null, probe, Number.isFinite(s.rttMs) ? h('span', { class: 'muted' }, ` · ${t('dlg.rtt', { ms: formatNumber(s.rttMs) })}`) : null) : na()),
         h('td', null, links.length ? h('span', { class: 'cluster text-sm' }, links) : na()));
     });
@@ -523,7 +523,7 @@ export function DelegationPanel({ ctx, holder, start = false }) {
     const p = result.parent;
     const items = [
       { key: t('dlg.delegation'), value: h('span', { class: 'mono text-sm' }, result.delegation.join(', ')) },
-      { key: t('dlg.parentAt', { zone: p.zone, server: p.server || '—' }), value: Badge(t(`dlg.parent.${p.state}`), { variant: p.state === 'ok' ? 'ok' : p.state === 'not-run' ? 'neutral' : 'error' }) }
+      { key: t('dlg.parentAt', { zone: p.zone, server: p.server || '—' }), value: Tag(t(`dlg.parent.${p.state}`), { variant: p.state === 'ok' ? 'ok' : p.state === 'not-run' ? 'neutral' : 'error' }) }
     ];
     if (p.ns.length) items.push({ key: t('dlg.parentNs'), value: h('span', { class: 'mono text-sm' }, p.ns.join(', ')) });
     return h('div', { class: 'stack-xs dlg-parent', dataset: { parent: p.state } }, KeyValueList(items, { className: 'hlt-kv' }),
@@ -536,7 +536,7 @@ export function DelegationPanel({ ctx, holder, start = false }) {
       h('td', { class: 'mono' }, g.host),
       h('td', { class: 'mono text-sm' }, list(g.glue).length ? list(g.glue).join(', ') : na()),
       h('td', { class: 'mono text-sm' }, list(g.child).length ? list(g.child).join(', ') : na()),
-      h('td', null, Badge(t(`dlg.glue.${g.state}`), { variant: g.state === 'ok' ? 'ok' : g.state === 'missing' ? 'error' : g.state === 'unknown' ? 'neutral' : g.state === 'partial' ? 'info' : 'warn' }))));
+      h('td', null, Tag(t(`dlg.glue.${g.state}`), { variant: g.state === 'ok' ? 'ok' : g.state === 'missing' ? 'error' : g.state === 'unknown' ? 'neutral' : g.state === 'partial' ? 'info' : 'warn' }))));
     return table('dlg-table dlg-glue-table', [t('dlg.col.glueHost'), t('dlg.col.glue'), t('dlg.col.child'), t('dlg.col.glueState')], rows);
   }
 

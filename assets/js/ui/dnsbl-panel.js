@@ -18,7 +18,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Badge, Button, CopyButton, ExternalLink, announce } from './components.js';
+import { Tag, Button, CopyButton, ExternalLink, announce } from './components.js';
 import { t, registerStrings, formatNumber, formatDateTime } from '../i18n.js';
 import {
   createDnsblChecker, dnsblCounts, dnsblTarget, listsFor, DNSBL_ERRORS, DNSBL_MEANINGS, DNSBL_REFUSALS, DNSBL_SKIPS, DNSBL_STATUSES
@@ -292,7 +292,7 @@ function detailsOf(r) {
 function resultRow(l, r) {
   return h('tr', { class: 'ipi-bl-row', dataset: { list: l.id, status: r.status } },
     h('th', { attrs: { scope: 'row' } }, h('span', { class: 'ipi-bl-name' }, l.name), h('span', { class: 'mono muted text-xs ipi-bl-zone' }, r.zone || l.zone)),
-    h('td', { class: 'ipi-bl-result' }, Badge(t(`dnsbl.status.${r.status}`), STATUS_BADGE[r.status])),
+    h('td', { class: 'ipi-bl-result' }, Tag(t(`dnsbl.status.${r.status}`), STATUS_BADGE[r.status])),
     h('td', null, detailsOf(r)));
 }
 

@@ -19,7 +19,7 @@
 
 import { h, clear } from './dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, CopyButton, DataTable, Disclosure, FileDrop, Icon, SegmentedControl, SeverityIcon,
+  Alert, Tag, Button, Card, CodeBlock, CopyButton, DataTable, Disclosure, FileDrop, Icon, SegmentedControl, SeverityIcon,
   announce, checkbox, textInput, textarea, toast
 } from './components.js';
 import { downloadText } from './download.js';
@@ -521,7 +521,7 @@ export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact, 
       h('div', { class: 'zcmp-other-main' },
         h('h3', { class: 'zcmp-other-title', tabindex: -1 }, z.origin ? t('zcmp.other', { origin: z.origin }) : t('zcmp.otherNoOrigin')),
         h('div', { class: 'cluster zcmp-other-meta' },
-          z.fatal ? null : Badge(formatLabel(z), { variant: 'accent', className: 'zcmp-format-badge' }),
+          z.fatal ? null : Tag(formatLabel(z), { variant: 'accent', className: 'zcmp-format-badge' }),
           z.fatal ? null : h('span', { class: 'text-sm', dataset: { role: 'zcmp-other-counts' } },
             t('zcmp.otherCounts', { count: z.records.length, files: `${files} · ${formatBytes(size)}` })))),
       h('div', { class: 'cluster zcmp-other-actions' },
@@ -658,10 +658,10 @@ export function CompareTab({ ctx, zone, C, parse, samples, formatLabel, redact, 
       },
       columns: [
         { key: 'status', label: t('zcmp.col.status'), sortable: true, sortValue: (r) => DIFF_STATUSES.indexOf(r.status),
-          render: (r) => h('span', { dataset: { status: r.status } }, Badge(t(`zcmp.st.${r.status}`), { variant: STATUS_VARIANT[r.status] })) },
+          render: (r) => h('span', { dataset: { status: r.status } }, Tag(t(`zcmp.st.${r.status}`), { variant: STATUS_VARIANT[r.status] })) },
         { key: 'name', label: t('zcmp.col.name'), sortable: true, sortValue: (r) => r.rel, searchValue: (r) => `${r.rel} ${r.name}`, wrap: true, className: 'zcmp-name-col',
           render: (r) => h('strong', { class: 'zcmp-name' }, r.rel) },
-        { key: 'type', label: t('zcmp.col.type'), sortable: true, sortValue: (r) => r.type, render: (r) => Badge(r.type, { variant: 'neutral', mono: true }) },
+        { key: 'type', label: t('zcmp.col.type'), sortable: true, sortValue: (r) => r.type, render: (r) => Tag(r.type, { variant: 'neutral', mono: true }) },
         { key: 'a', label: t('zcmp.col.a'), mono: true, wrap: true, searchValue: (r) => (r.a ? r.a.values.join(' ') : ''),
           render: (r) => (r.a ? valueLines(r.a.values) : h('span')) },
         { key: 'b', label: t('zcmp.col.b'), mono: true, wrap: true, searchValue: (r) => (r.b ? r.b.values.join(' ') : ''), render: otherCell },
@@ -810,7 +810,7 @@ export function ConvertTab({ zone, V }) {
             names.length ? h('span', { class: 'zconv-names text-sm' },
               names.map((n) => h('code', { class: 'zconv-name' }, n)),
               p.names.length > NOTE_NAMES ? h('span', { class: 'muted' }, t('common.moreCount', { count: p.names.length - NOTE_NAMES })) : null) : null),
-          Badge(formatNumber(p.count), { variant: 'neutral', title: t('zconv.countTitle', { count: p.count }), className: 'zconv-count' }));
+          Tag(formatNumber(p.count), { variant: 'neutral', title: t('zconv.countTitle', { count: p.count }), className: 'zconv-count' }));
       })));
   }
 

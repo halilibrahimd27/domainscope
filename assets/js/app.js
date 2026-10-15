@@ -58,11 +58,11 @@
 import {
   t, setLang, getLang, detectLang, onLangChange, formatNumber, formatRegion, hasString
 } from './i18n.js';
-import { state, CONCURRENCY_RANGE } from './state.js';
+import { state, CONCURRENCY_RANGE, effectiveDensity } from './state.js';
 import { h, clear, uid, append } from './ui/dom.js';
 import {
   Icon, SegmentedControl, IconButton, Button, Alert, ErrorBanner, Spinner, Modal, toast,
-  select, Badge, confirmDialog, announce, describeError, setButtonBusy
+  select, Tag, confirmDialog, announce, describeError, setButtonBusy
 } from './ui/components.js';
 import { RESOLVERS, getResolver } from './lib/resolvers.js';
 import {
@@ -1269,6 +1269,13 @@ function remountCurrent() {
 /* Shell rendering                                                          */
 /* ------------------------------------------------------------------------ */
 
+function applyDensity(value) {
+  const root = document.documentElement;
+  const coarse = !!(globalThis.matchMedia && globalThis.matchMedia('(pointer: coarse)').matches);
+  if (effectiveDensity(value, coarse) === 'compact') root.dataset.density = 'compact';
+  else delete root.dataset.density;
+}
+
 function applyTheme(theme) {
   const root = document.documentElement;
   if (theme === 'light' || theme === 'dark') root.dataset.theme = theme;
@@ -2128,12 +2135,12 @@ export function settingsFocusAfter(kind, pos, len) {
 }
 
 function resolverMeta(r) {
-  const bits = [Badge(r.countryCode ? formatRegion(r.countryCode, r.location) : t('settings.anycast'), { icon: r.countryCode ? 'map-pin' : 'globe' })];
-  if (r.dnssecValidating) bits.push(Badge(t('settings.flagDnssec'), { variant: 'ok', icon: 'shield' }));
-  if (r.ecs) bits.push(Badge(t('settings.flagEcs'), { variant: 'info', icon: 'map-pin' }));
-  if (r.filtering) bits.push(Badge(`${t('settings.flagFilter')}: ${t(`settings.filter.${r.filtering}`)}`, { variant: 'neutral', icon: 'filter' }));
-  if (r.browserReliable === false) bits.push(Badge(t('settings.flagBrowser'), { variant: 'warn', icon: 'alert', title: t('settings.unreliable') }));
-  else if (MAY_BE_UNREACHABLE.includes(r.id)) bits.push(Badge(t('settings.flagReach'), { variant: 'warn', icon: 'alert' }));
+  const bits = [Tag(r.countryCode ? formatRegion(r.countryCode, r.location) : t('settings.anycast'), { icon: r.countryCode ? 'map-pin' : 'globe' })];
+  if (r.dnssecValidating) bits.push(Tag(t('settings.flagDnssec'), { variant: 'ok', icon: 'shield' }));
+  if (r.ecs) bits.push(Tag(t('settings.flagEcs'), { variant: 'info', icon: 'map-pin' }));
+  if (r.filtering) bits.push(Tag(`${t('settings.flagFilter')}: ${t(`settings.filter.${r.filtering}`)}`, { variant: 'neutral', icon: 'filter' }));
+  if (r.browserReliable === false) bits.push(Tag(t('settings.flagBrowser'), { variant: 'warn', icon: 'alert', title: t('settings.unreliable') }));
+  else if (MAY_BE_UNREACHABLE.includes(r.id)) bits.push(Tag(t('settings.flagReach'), { variant: 'warn', icon: 'alert' }));
   const noteKey = resolverNoteKey(r);
   // A flex item of .settings-resolver-meta: long text wraps onto its own line under the badges.
   if (noteKey) bits.push(h('span', { class: 'settings-resolver-note', dataset: { note: r.id } }, t(noteKey)));
@@ -2227,12 +2234,24 @@ function openSettings() {
     onChange: (v) => state.updateSettings({ concurrency: Number(v) })
   });
 
+  const density = select({
+    label: t('shell.density'),
+    hint: t('settings.densityHint'),
+    options: [
+      { value: 'comfortable', label: t('shell.densityComfortable') },
+      { value: 'compact', label: t('shell.densityCompact') }
+    ],
+    value: state.settings.density,
+    onChange: (v) => state.updateSettings({ density: v })
+  });
+
   const content = h('div', { class: 'stack' },
     h('div', { class: 'stack-sm' },
       h('div', { class: 'field-label' }, t('settings.dohChain')),
       h('div', { class: 'field-hint', id: 'settings-chain-hint' }, t('settings.dohChainHint')),
       list, errorEl),
     concurrency.el,
+    density.el,
     h('div', { class: 'settings-danger' },
       h('div', null, h('div', { class: 'field-label' }, t('settings.clearData')), h('div', { class: 'field-hint' }, t('settings.clearDataHint'))),
       Button({
@@ -2376,6 +2395,7 @@ function boot() {
   if (state.settings.startTasks && hasUsedBefore(storedKeys())) noteRun();
   const settings = state.settings;
   applyTheme(settings.theme);
+  applyDensity(settings.density);
   setLang(detectLang({
     saved: settings.lang,
     languages: globalThis.navigator ? globalThis.navigator.languages : undefined,
@@ -2409,6 +2429,7 @@ function boot() {
     if (key === 'workspace' || key === 'workspaces' || key === 'cleared' || key === 'inventory') renderWorkspaceSwitch();
     if (key === 'settings') {
       updateNavStatus();
+      applyDensity(value.density);
       syncTheme(value.theme); // also covers "restore defaults" / "delete all local data" / other tabs
       if (origin === 'external') {
         // Another tab changed language/theme: follow it.

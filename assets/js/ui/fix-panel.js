@@ -20,7 +20,7 @@
 
 import { h, clear, append } from './dom.js';
 import {
-  Alert, Badge, Button, ButtonLink, CodeBlock, Icon, SegmentedControl, SeverityIcon, Tabs, describeError, setButtonBusy
+  Alert, Tag, Button, ButtonLink, CodeBlock, Icon, SegmentedControl, SeverityIcon, Tabs, describeError, setButtonBusy
 } from './components.js';
 import { downloadText, sanitizeFilename } from './download.js';
 import { t, registerStrings, getLang, hasString, formatNumber } from '../i18n.js';
@@ -182,7 +182,7 @@ function SetItem(r, edit = false) {
   if (r.family && r.mode !== 'none') notes.push(t('fixp.familyOthers'));
   return h('li', { class: ['fix-set', `fix-set-${action}`], dataset: { action, name: r.name, type: r.type } },
     h('div', { class: 'fix-set-head' },
-      Badge(t(`fix.ins.action.${action}`), { variant: ACTION_BADGE[action] }),
+      Tag(t(`fix.ins.action.${action}`), { variant: ACTION_BADGE[action] }),
       h('span', { class: 'fix-set-type' }, r.family ? `${r.type} · ${TXT_FAMILIES[r.family]}` : r.type),
       h('span', { class: 'fix-set-name mono' }, r.name),
       r.mode !== 'none' ? h('span', { class: 'fix-set-ttl muted' }, t('fixp.ttl', { ttl: r.ttl })) : null),

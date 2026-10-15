@@ -23,7 +23,7 @@
 
 import { h, clear } from './dom.js';
 import {
-  Alert, Badge, Button, Card, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, Spinner, announce
+  Alert, Tag, Button, Card, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, Spinner, announce
 } from './components.js';
 import { MetricStrip, PrivacyNote } from './template.js';
 import { t, registerStrings, formatNumber } from '../i18n.js';
@@ -43,7 +43,7 @@ export const EXPOSURE_PURPOSE = 'origin-exposure';
 /** Above this many probes a run asks again even after consent (a large origin map). */
 const CONFIRM_ABOVE = 20;
 
-/** A severity → the Badge variant that colours it. */
+/** A severity → the Tag variant that colours it. */
 const SEV_VARIANT = Object.freeze({ critical: 'error', high: 'warn', medium: 'accent', low: 'neutral', info: 'info' });
 
 registerStrings('en', {
@@ -421,7 +421,7 @@ export function ExposurePanel({ ctx }) {
       columns: [
         {
           key: 'severity', label: t('exp.col.severity'), sortable: true, sortValue: (f) => EXPOSURE_SEVERITIES.indexOf(f.severity),
-          exportValue: (f) => f.severity, render: (f) => Badge(t(`exp.sev.${f.severity}`), { variant: SEV_VARIANT[f.severity] || 'neutral' })
+          exportValue: (f) => f.severity, render: (f) => Tag(t(`exp.sev.${f.severity}`), { variant: SEV_VARIANT[f.severity] || 'neutral' })
         },
         { key: 'finding', label: t('exp.col.finding'), sortable: true, exportValue: (f) => f.kind, sortValue: (f) => EXPOSURE_FINDINGS.indexOf(f.kind), render: (f) => t(`exp.finding.${f.kind}`) },
         { key: 'name', label: t('exp.col.name'), mono: true, exportValue: (f) => f.names.join(' '), searchValue: (f) => f.names.join(' '), render: (f) => namesCell(f) },
@@ -443,7 +443,7 @@ export function ExposurePanel({ ctx }) {
 
   function whereCell(f) {
     return h('span', { class: 'exp-where' },
-      f.recordType ? Badge(f.recordType, { variant: 'neutral', className: 'exp-rt' }) : null,
+      f.recordType ? Tag(f.recordType, { variant: 'neutral', className: 'exp-rt' }) : null,
       h('code', null, f.record),
       f.detail ? h('span', { class: 'muted text-sm exp-detail' }, f.detail) : null);
   }
@@ -464,10 +464,10 @@ export function ExposurePanel({ ctx }) {
       const variant = r.result === 'exposed' ? 'error' : r.result === 'error' ? 'warn' : r.result === 'filtered' || r.result === 'closed' ? 'ok' : 'info';
       const text = r.result === 'error' ? t('exp.reach.unreachable') : t(`exp.reach.${r.result}`);
       const link = r.ids && measurementUrl(r.ids[r.ids.length - 1]);
-      const badge = Badge(text, { variant });
+      const badge = Tag(text, { variant });
       return link ? h('span', { class: 'cluster' }, badge, h('a', { class: 'link text-sm', href: link, attrs: { target: '_blank', rel: 'noopener noreferrer' } }, t('exp.measurement'))) : badge;
     }
-    if (target.skip) return Badge(t(`exp.skip.${target.skip}`), { variant: 'neutral' });
+    if (target.skip) return Tag(t(`exp.skip.${target.skip}`), { variant: 'neutral' });
     return h('span', { class: 'muted text-sm' }, t('exp.toAudit'));
   }
 

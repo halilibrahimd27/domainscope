@@ -17,7 +17,7 @@
  */
 
 import { h } from './dom.js';
-import { Badge, Button, Card, Disclosure, ExternalLink, Icon, KeyValueList, SeverityIcon, announce, checkbox, setButtonBusy } from './components.js';
+import { Tag, Button, Card, Disclosure, ExternalLink, Icon, KeyValueList, SeverityIcon, announce, checkbox, setButtonBusy } from './components.js';
 import { registerStrings, t, formatNumber, formatDateTime, formatRelative } from '../i18n.js';
 import { HEALTH_SCORE_GROUPS, SCORE_CAPS, problemsFirst, scoreHealth, whatIfHealth } from '../lib/healthscore.js';
 import { WAIVERS_I18N, isWaivableCheck } from '../lib/waivers.js';
@@ -289,11 +289,11 @@ export function ProblemsPanel(report, { checkTitle, checkDetail, fixToggle, fixa
             dataset: { action: 'hv2-waiver-remove', check: c.id }, onClick: () => onRemove(w, c)
           })) : null));
     }))) : null;
-  const counts = sections.map((s) => Badge(t(`hv2.problems.${s.severity}`, { count: s.count }), { variant: s.severity }));
-  if (accepted.length) counts.push(Badge(t('wvr.section', { count: accepted.length }), { variant: 'neutral', icon: 'shield' }));
+  const counts = sections.map((s) => Tag(t(`hv2.problems.${s.severity}`, { count: s.count }), { variant: s.severity }));
+  if (accepted.length) counts.push(Tag(t('wvr.section', { count: accepted.length }), { variant: 'neutral', icon: 'shield' }));
   return Card({
     title: t('hv2.problems.title'), icon: 'alert', className: 'hlt-card hv2-problems',
-    actions: sections.length || accepted.length ? h('div', { class: 'cluster' }, counts) : Badge(t('severity.ok'), { variant: 'ok', icon: 'check' }),
+    actions: sections.length || accepted.length ? h('div', { class: 'cluster' }, counts) : Tag(t('severity.ok'), { variant: 'ok', icon: 'check' }),
     children: h('div', { class: 'stack' }, ScoreBreakdown(report, { waived: ids }), body, acceptedEl, WhatIfPanel(report, ids, checkTitle))
   });
 }
@@ -324,7 +324,7 @@ export function WebPanel(report, { ctx, state, onReport }) {
   const alpn = [...new Set(https.flatMap((x) => (x.params && x.params.alpn) || []))];
   const ech = https.some((x) => x.params && x.params.ech);
   const httpsValue = failed ? h('span', { class: 'hv2-failed text-sm' }, Icon('alert', { size: 14 }), ' ', t('hv2.web.httpsFailed'))
-    : https.length ? h('span', { class: 'cluster' }, [...alpn.map((a) => Badge(a, { mono: true })), ech ? Badge(t('hv2.web.ech'), { variant: 'ok' }) : null].filter(Boolean))
+    : https.length ? h('span', { class: 'cluster' }, [...alpn.map((a) => Tag(a, { mono: true })), ech ? Tag(t('hv2.web.ech'), { variant: 'ok' }) : null].filter(Boolean))
       : h('span', { class: 'muted text-sm' }, t('hv2.web.httpsNone'));
   const www = web.www || null;
   let wwwValue;

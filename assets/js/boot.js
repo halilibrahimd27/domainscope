@@ -22,7 +22,10 @@
   var theme = settings && settings.theme;
   if (theme === 'light' || theme === 'dark') root.setAttribute('data-theme', theme);
   // Comfortable is the default (no attribute); style.css keeps touch targets large either way.
-  if (settings && settings.density === 'compact') root.setAttribute('data-density', 'compact');
+  // Never compact on a touch screen (same rule as state.effectiveDensity).
+  var coarse = false;
+  try { coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); } catch (e) { coarse = false; }
+  if (settings && settings.density === 'compact' && !coarse) root.setAttribute('data-density', 'compact');
 
   var nav = (window.navigator && (navigator.languages && navigator.languages[0] || navigator.language)) || '';
   var lang = settings && (settings.lang === 'tr' || settings.lang === 'en')

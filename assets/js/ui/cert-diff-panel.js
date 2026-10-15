@@ -19,7 +19,7 @@
 
 import { h, clear } from './dom.js';
 import {
-  Alert, Badge, Button, ButtonLink, CopyButton, Disclosure, ErrorBanner, ExternalLink, Spinner, announce, textInput, toast
+  Alert, Tag, Button, ButtonLink, CopyButton, Disclosure, ErrorBanner, ExternalLink, Spinner, announce, textInput, toast
 } from './components.js';
 import { t, registerStrings, formatDate, formatNumber } from '../i18n.js';
 import {
@@ -433,7 +433,7 @@ registerStrings('tr', {
   'cdiff.c.subject-changed.body': '{from} → {to}. İstemciler konuyu değil adları eşleştirir.'
 });
 
-/** Badge variant per severity. */
+/** Tag variant per severity. */
 const SEVERITY_VARIANT = Object.freeze({ blocker: 'error', action: 'warn', check: 'info', info: 'neutral' });
 /** Alert variant per verdict. */
 const VERDICT_VARIANT = Object.freeze({ identical: 'info', blocked: 'error', steps: 'warn', check: 'info', safe: 'success' });
@@ -817,8 +817,8 @@ export function CertDiffPanel({ ctx, load, kit, onOpenTab = null }) {
     return h('div', { class: 'cdiff-table-wrap' },
       h('table', { class: 'cdiff-table' },
         h('thead', null, h('tr', null, h('th', { attrs: { scope: 'col' } }, h('span', { class: 'sr-only' }, t('cdiff.row.cert'))),
-          h('th', { attrs: { scope: 'col' } }, Badge(t('cdiff.old'), { variant: 'neutral' })),
-          h('th', { attrs: { scope: 'col' } }, Badge(t('cdiff.new'), { variant: 'accent' })))),
+          h('th', { attrs: { scope: 'col' } }, Tag(t('cdiff.old'), { variant: 'neutral' })),
+          h('th', { attrs: { scope: 'col' } }, Tag(t('cdiff.new'), { variant: 'accent' })))),
         h('tbody', null, rows.map(([key, fn]) => h('tr', { dataset: { row: key } },
           h('th', { attrs: { scope: 'row' } }, t(`cdiff.row.${key}`)), cell(fn(o)), cell(fn(n)))))));
   }
@@ -843,7 +843,7 @@ export function CertDiffPanel({ ctx, load, kit, onOpenTab = null }) {
     }
     return h('li', { class: ['cdiff-item', `cdiff-item-${c.severity}`], dataset: { code: c.code, severity: c.severity } },
       h('div', { class: 'cdiff-item-head' },
-        Badge(t(`cdiff.sev.${c.severity}`), { variant: SEVERITY_VARIANT[c.severity] }),
+        Tag(t(`cdiff.sev.${c.severity}`), { variant: SEVERITY_VARIANT[c.severity] }),
         h('span', { class: 'cdiff-item-title' }, changeTitle(c))),
       h('p', { class: 'cdiff-item-body text-sm' }, changeBody(c)),
       ...extra.filter(Boolean));

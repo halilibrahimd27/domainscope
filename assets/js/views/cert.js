@@ -47,7 +47,7 @@
 
 import { h, clear, debounce, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, ButtonLink, Card, CodeBlock, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
+  Alert, Tag, Button, ButtonLink, Card, CodeBlock, CopyButton, DataTable, Disclosure, EmptyState, ErrorBanner, ExternalLink,
   FileDrop, Icon, KeyValueList, Spinner, Tabs, TruncatedList, announce, copyText, describeError, select, setButtonBusy, textInput, textarea, toast
 } from '../ui/components.js';
 // The page template (docs/DESIGN.md §5; phase 3): the file input, the result header and its parts.
@@ -1026,7 +1026,7 @@ export function validityText(v) {
 }
 
 /**
- * Badge variant for a validity state.
+ * Tag variant for a validity state.
  * @param {{ state: string }} v
  * @returns {'ok'|'warn'|'error'}
  */
@@ -1045,7 +1045,7 @@ export function validityVariant(v) {
 export function ValidityBadge(cert, now = Date.now()) {
   const v = validityState(cert, now);
   const variant = validityVariant(v);
-  const el = Badge(validityText(v), {
+  const el = Tag(validityText(v), {
     variant,
     icon: variant === 'ok' ? 'check-circle' : variant === 'warn' ? 'clock' : 'x-circle',
     title: `${cert.notBefore.toISOString()} → ${cert.notAfter.toISOString()}`
@@ -1838,8 +1838,8 @@ export function pfxFocusTarget(root) {
 export function certSourceBadge(load) {
   if (!load) return null;
   let el = null;
-  if (load.source === 'ct') el = Badge(t('cert.src.ctBadge'), { variant: 'info', icon: 'eye', title: t('cert.src.ct') });
-  else if (load.source === 'sample') el = Badge(t('cert.src.sampleBadge'), { variant: 'accent', icon: 'file-text' });
+  if (load.source === 'ct') el = Tag(t('cert.src.ctBadge'), { variant: 'info', icon: 'eye', title: t('cert.src.ct') });
+  else if (load.source === 'sample') el = Tag(t('cert.src.sampleBadge'), { variant: 'accent', icon: 'file-text' });
   if (el) el.dataset.certSource = load.source;
   return el;
 }
@@ -2073,10 +2073,10 @@ export function CertSummary(load, { actions = null, maxNames = 8 } = {}) {
     h('div', { class: 'cluster cert-summary-badges' },
       certSourceBadge(load),
       ValidityBadge(cert),
-      Badge(t('cert.names.count', { count: cert.dnsNames.length }), { variant: 'neutral', icon: 'globe' }),
-      cert.hostnames.some((n) => n.startsWith('*.')) ? Badge(t('cert.badge.wildcard'), { variant: 'accent', icon: 'layers' }) : null,
-      cert.validationLevel ? Badge(cert.validationLevel, { variant: 'info', title: t(`cert.level.${cert.validationLevel}`) }) : null,
-      cert.selfSigned ? Badge(t('cert.badge.selfSigned'), { variant: 'warn', icon: 'alert' }) : null),
+      Tag(t('cert.names.count', { count: cert.dnsNames.length }), { variant: 'neutral', icon: 'globe' }),
+      cert.hostnames.some((n) => n.startsWith('*.')) ? Tag(t('cert.badge.wildcard'), { variant: 'accent', icon: 'layers' }) : null,
+      cert.validationLevel ? Tag(cert.validationLevel, { variant: 'info', title: t(`cert.level.${cert.validationLevel}`) }) : null,
+      cert.selfSigned ? Tag(t('cert.badge.selfSigned'), { variant: 'warn', icon: 'alert' }) : null),
     names.length ? TruncatedList(names, { max: maxNames, inline: true }) : null);
 }
 
@@ -2487,14 +2487,14 @@ export function mount(container, ctx) {
       head.set('notes', [
         h('div', { class: 'cluster cert-overview-badges' },
           certSourceBadge(load),
-          Badge(t('cert.names.count', { count: leaf.dnsNames.length }), { variant: 'neutral', icon: 'globe' }),
-          leaf.hostnames.some((n) => n.startsWith('*.')) ? Badge(t('cert.badge.wildcard'), { variant: 'accent', icon: 'layers' }) : null,
-          leaf.validationLevel ? Badge(t(`cert.level.${leaf.validationLevel}`), { variant: 'info', icon: 'shield' }) : null,
-          leaf.selfSigned ? Badge(t('cert.badge.selfSigned'), { variant: 'warn', icon: 'alert' }) : null,
-          leaf.isCA ? Badge(t('cert.badge.ca'), { variant: 'neutral', icon: 'git-branch' }) : null,
-          leaf.isPrecertificate ? Badge(t('cert.badge.precert'), { variant: 'warn' }) : null,
-          leaf.mustStaple ? Badge(t('cert.badge.mustStaple'), { variant: 'neutral' }) : null,
-          Badge(`${leaf.keyAlgorithm}${leaf.keyBits ? ` ${leaf.keyBits}` : ''}${leaf.curve ? ` · ${leaf.curve}` : ''}`, { variant: 'neutral', icon: 'key', mono: true })),
+          Tag(t('cert.names.count', { count: leaf.dnsNames.length }), { variant: 'neutral', icon: 'globe' }),
+          leaf.hostnames.some((n) => n.startsWith('*.')) ? Tag(t('cert.badge.wildcard'), { variant: 'accent', icon: 'layers' }) : null,
+          leaf.validationLevel ? Tag(t(`cert.level.${leaf.validationLevel}`), { variant: 'info', icon: 'shield' }) : null,
+          leaf.selfSigned ? Tag(t('cert.badge.selfSigned'), { variant: 'warn', icon: 'alert' }) : null,
+          leaf.isCA ? Tag(t('cert.badge.ca'), { variant: 'neutral', icon: 'git-branch' }) : null,
+          leaf.isPrecertificate ? Tag(t('cert.badge.precert'), { variant: 'warn' }) : null,
+          leaf.mustStaple ? Tag(t('cert.badge.mustStaple'), { variant: 'neutral' }) : null,
+          Tag(`${leaf.keyAlgorithm}${leaf.keyBits ? ` ${leaf.keyBits}` : ''}${leaf.curve ? ` · ${leaf.curve}` : ''}`, { variant: 'neutral', icon: 'key', mono: true })),
         picker ? picker.el : null
       ]);
 
@@ -2594,7 +2594,7 @@ export function mount(container, ctx) {
         rowKey: (r) => `${r.type}:${r.value}:${r.i}`,
         export: { filename: 'certificate-names', subject: certDisplayName(cert) },
         columns: [
-          { key: 'type', label: t('cert.names.col.type'), sortable: true, render: (r) => Badge(sanTypeLabel(r.type), { variant: r.type === 'dns' ? 'accent' : 'neutral' }), searchValue: (r) => r.type, width: '6rem' },
+          { key: 'type', label: t('cert.names.col.type'), sortable: true, render: (r) => Tag(sanTypeLabel(r.type), { variant: r.type === 'dns' ? 'accent' : 'neutral' }), searchValue: (r) => r.type, width: '6rem' },
           {
             key: 'value',
             label: t('cert.names.col.value'),
@@ -2604,7 +2604,7 @@ export function mount(container, ctx) {
             searchValue: (r) => r.value,
             exportValue: (r) => r.value,
             render: (r) => h('span', { class: 'cert-san' }, r.value,
-              r.type === 'dns' && String(r.value).startsWith('*.') ? Badge(t('cert.badge.wildcard'), { variant: 'accent', className: 'cert-san-badge' }) : null)
+              r.type === 'dns' && String(r.value).startsWith('*.') ? Tag(t('cert.badge.wildcard'), { variant: 'accent', className: 'cert-san-badge' }) : null)
           },
           hasIdn ? {
             key: 'unicode',
@@ -2641,8 +2641,8 @@ export function mount(container, ctx) {
         check.setError(null);
         const r = certCovers(cert.hostnames, host);
         checkResult.append(r.covered
-          ? Badge(t('cert.check.covered', { name: r.by }), { variant: 'ok', icon: 'check-circle' })
-          : Badge(t('cert.check.notCovered', { host }), { variant: 'error', icon: 'x-circle' }));
+          ? Tag(t('cert.check.covered', { name: r.by }), { variant: 'ok', icon: 'check-circle' })
+          : Tag(t('cert.check.notCovered', { host }), { variant: 'error', icon: 'x-circle' }));
         checkResult.firstChild.dataset.covered = String(r.covered);
       }
 
@@ -2715,11 +2715,11 @@ export function mount(container, ctx) {
         card(t('cert.d.key'), 'key', [
           [t('cert.f.algorithm'), `${cert.keyAlgorithm}${cert.keyAlgorithmName && cert.keyAlgorithmName !== cert.keyAlgorithm ? ` (${cert.keyAlgorithmName})` : ''}`],
           [t('cert.f.keySize'), cert.keyBits ? h('span', null, t('cert.f.bits', { bits: cert.keyBits }),
-            weak && cert.keyBits < 2048 ? Badge(t('cert.f.weakKey'), { variant: 'error', className: 'cert-inline-badge' }) : null) : null],
+            weak && cert.keyBits < 2048 ? Tag(t('cert.f.weakKey'), { variant: 'error', className: 'cert-inline-badge' }) : null) : null],
           cert.curve ? [t('cert.f.curve'), cert.curve] : null,
           cert.rsaExponent ? [t('cert.f.exponent'), String(cert.rsaExponent)] : null,
           [t('cert.f.sigAlg'), h('span', { class: 'mono' }, cert.signatureAlgorithm,
-            /sha1|md5/i.test(cert.signatureAlgorithm) ? Badge(t('cert.f.weakKey'), { variant: 'error', className: 'cert-inline-badge' }) : null)]
+            /sha1|md5/i.test(cert.signatureAlgorithm) ? Tag(t('cert.f.weakKey'), { variant: 'error', className: 'cert-inline-badge' }) : null)]
         ]),
         card(t('cert.d.usage'), 'sliders', [
           [t('cert.f.keyUsage'), ku.length ? ku.join(', ') : null],
@@ -2759,7 +2759,7 @@ export function mount(container, ctx) {
             key: e.name || e.oid,
             hint: e.name ? e.oid : null,
             value: h('span', { class: 'cluster' }, h('span', { class: 'mono text-sm' }, `${formatNumber(e.length)} B`),
-              e.critical ? Badge(t('cert.f.critical'), { variant: 'warn' }) : null)
+              e.critical ? Tag(t('cert.f.critical'), { variant: 'warn' }) : null)
           })),
           cert.parseErrors && cert.parseErrors.length ? {
             key: t('cert.f.parseErrors'),
@@ -2822,13 +2822,13 @@ export function mount(container, ctx) {
           h('div', { class: 'cert-chain-node', attrs: { 'aria-hidden': 'true' } }, Icon(role === 'leaf' ? 'certificate' : role === 'root' ? 'shield' : 'git-branch', { size: 16 })),
           h('div', { class: 'cert-chain-body card' },
             h('div', { class: 'cert-chain-head' },
-              Badge(t(`cert.role.${role}`), { variant: role === 'leaf' ? 'accent' : role === 'unrelated' ? 'warn' : 'neutral' }),
+              Tag(t(`cert.role.${role}`), { variant: role === 'leaf' ? 'accent' : role === 'unrelated' ? 'warn' : 'neutral' }),
               h('span', { class: 'cert-chain-cn mono' }, certDisplayName(c)),
               ValidityBadge(c),
               Button({ label: t('cert.chain.show'), size: 'sm', variant: 'ghost', icon: 'eye', onClick: () => showCert(c) })),
             h('div', { class: 'cert-chain-meta text-sm' },
               h('span', null, t('cert.chain.issuedBy', { name: issuerDisplayName(c) })),
-              keyMatch ? Badge(t('cert.chain.keyMatch'), { variant: 'ok', icon: 'check' }) : null,
+              keyMatch ? Tag(t('cert.chain.keyMatch'), { variant: 'ok', icon: 'check' }) : null,
               h('span', { class: 'muted mono' }, `${c.keyAlgorithm}${c.keyBits ? ` ${c.keyBits}` : ''} · ${formatDate(c.notAfter)}`))));
       };
       const list = h('ol', { class: 'cert-chain' },
@@ -2950,7 +2950,7 @@ export function mount(container, ctx) {
                 return extra.length ? `${r.verdict.reason}: ${extra.join(' | ')}` : r.verdict.reason;
               },
               render: (r) => (r.verdict ? caaVerdictCell(r.verdict, r.wildcard)
-                : Badge(t('cert.caa.error'), { variant: 'error', icon: 'x-circle', title: r.error || '' }))
+                : Tag(t('cert.caa.error'), { variant: 'error', icon: 'x-circle', title: r.error || '' }))
             },
             {
               // RFC 8657 values (an accounturi) make records long: they wrap.
@@ -2965,7 +2965,7 @@ export function mount(container, ctx) {
 
       /** Where the name's CAA record set was found: its owner, "none", or the lookup error. */
       function caaAt(r) {
-        return r.error ? Badge(t('cert.caa.error'), { variant: 'error', title: r.error })
+        return r.error ? Tag(t('cert.caa.error'), { variant: 'error', title: r.error })
           : r.foundAt || h('span', { class: 'muted' }, t('cert.caa.none'));
       }
 
@@ -2987,7 +2987,7 @@ export function mount(container, ctx) {
         const restrictions = v.restrictions || [];
         const unusable = v.unusable || [];
         return h('div', { class: 'cert-caa-verdict', dataset: { caaVerdict: v.verdict } },
-          Badge(t(spec[0]), { variant: spec[1], icon: spec[2] }),
+          Tag(t(spec[0]), { variant: spec[1], icon: spec[2] }),
           h('span', { class: 'muted text-sm' }, t(v.reasonKey)),
           restrictions.length ? h('ul', { class: 'cert-caa-list' }, restrictions.map((x) => h('li', { class: 'mono text-xs' }, combo(x)))) : null,
           notes.length ? h('ul', { class: 'cert-caa-notes' }, notes.map((n) => h('li', { class: 'text-sm', dataset: { note: n.code } }, t(n.key, n.params)))) : null,

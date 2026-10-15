@@ -22,7 +22,7 @@
 
 import { h, clear } from './dom.js';
 import {
-  Alert, Badge, Button, Card, CodeBlock, DataTable, Disclosure, ErrorBanner, Icon, ProgressBar, SegmentedControl, SeverityIcon,
+  Alert, Tag, Button, Card, CodeBlock, DataTable, Disclosure, ErrorBanner, Icon, ProgressBar, SegmentedControl, SeverityIcon,
   announce, checkbox, radioGroup, textarea, toast
 } from './components.js';
 import { downloadText } from './download.js';
@@ -776,7 +776,7 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
         SeverityIcon(sev),
         h('span', { class: 'par-server-body' },
           h('strong', { class: 'mono' }, s.ns), ' ',
-          Badge(t(`par.role.${s.role}`), { variant: 'neutral' }), ' ',
+          Tag(t(`par.role.${s.role}`), { variant: 'neutral' }), ' ',
           h('span', null, t(`par.ns.${s.state}`, { serial: s.serial ?? '', origin: result.origin })),
           where ? h('span', { class: 'muted text-sm' }, ` · ${t('par.ns.probe', { where })}`) : null,
           link ? h('span', { class: 'text-sm' }, ' · ', h('a', { href: link, class: 'link', attrs: { target: '_blank', rel: 'noopener noreferrer' } }, t('par.ns.measurement'))) : null));
@@ -809,13 +809,13 @@ export function ParityTab({ ctx, zone, P, redact = (values) => values, onDone = 
     const sevVariant = (s) => SEV_VARIANT[PARITY_SEVERITY[s]] || 'neutral';
     const columns = [
       { key: 'status', label: t('par.col.status'), sortable: true, exportValue: (r) => r.status,
-        render: (r) => h('span', { dataset: { status: r.status } }, Badge(t(`par.status.${r.status}`), { variant: sevVariant(r.status) })) },
+        render: (r) => h('span', { dataset: { status: r.status } }, Tag(t(`par.status.${r.status}`), { variant: sevVariant(r.status) })) },
       // With several servers compared, each row names its server under the record's name (a column
       // of its own would push the notes out of a 1280 px screen); the exports have it as a column.
       { key: 'name', label: t('par.col.name'), sortable: true, exportValue: (r) => r.name, searchValue: (r) => `${r.name} ${r.ns}`,
         render: (r) => h('span', { class: 'par-name' }, h('strong', null, relName(r.name, result.origin)),
           several ? h('span', { class: 'par-name-ns mono' }, r.ns) : null) },
-      { key: 'type', label: t('par.col.type'), sortable: true, render: (r) => Badge(r.type, { variant: 'neutral', mono: true }) },
+      { key: 'type', label: t('par.col.type'), sortable: true, render: (r) => Tag(r.type, { variant: 'neutral', mono: true }) },
       { key: 'file', label: t('par.col.file'), mono: true, wrap: true, searchValue: (r) => r.file.join(' '),
         exportValue: (r) => redact(r.file, P.includeOrigins).join(' '), render: (r) => valueLines(r.file) },
       { key: 'live', label: t('par.col.new'), mono: true, wrap: true, searchValue: (r) => r.live.join(' '),

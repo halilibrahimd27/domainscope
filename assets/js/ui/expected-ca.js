@@ -9,7 +9,7 @@
  * Every string is rendered through h() / text nodes.
  */
 
-import { Badge } from './components.js';
+import { Tag } from './components.js';
 import { t, registerStrings } from '../i18n.js';
 import { expectedCaStatus, expectedCaaStatus } from '../lib/expectedca.js';
 import { state } from '../state.js';
@@ -37,8 +37,8 @@ function badgeOf(status, expected, { caa }) {
   if (!status) return null;
   const list = expected.join(', ');
   const el = status.expected
-    ? Badge(t('eca.expected'), { variant: 'ok', icon: 'check-circle', title: t(caa ? 'eca.caaExpectedTitle' : 'eca.expectedTitle', { entry: status.entry }) })
-    : Badge(t('eca.unexpected'), { variant: 'warn', icon: 'alert', title: t(caa ? 'eca.caaUnexpectedTitle' : 'eca.unexpectedTitle', { list }) });
+    ? Tag(t('eca.expected'), { variant: 'ok', icon: 'check-circle', title: t(caa ? 'eca.caaExpectedTitle' : 'eca.expectedTitle', { entry: status.entry }) })
+    : Tag(t('eca.unexpected'), { variant: 'warn', icon: 'alert', title: t(caa ? 'eca.caaUnexpectedTitle' : 'eca.unexpectedTitle', { list }) });
   el.classList.add('eca-badge');
   el.dataset.expectedCa = status.expected ? 'expected' : 'unexpected';
   return el;

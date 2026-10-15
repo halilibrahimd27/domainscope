@@ -11,7 +11,7 @@
  */
 
 import { h } from './dom.js';
-import { Alert, Badge, toast } from './components.js';
+import { Alert, Tag, toast } from './components.js';
 import { t, registerStrings, formatDate, formatNumber } from '../i18n.js';
 import { state } from '../state.js';
 import { lookupServers } from '../lib/inventory.js';
@@ -126,7 +126,7 @@ export function staleText(entry) {
 
 /** "Stale" with the reason as its tooltip. */
 export function StaleBadge(entry) {
-  return Badge(t('om.stale'), { variant: 'warn', icon: 'clock', title: staleText(entry), className: 'om-stale' });
+  return Tag(t('om.stale'), { variant: 'warn', icon: 'clock', title: staleText(entry), className: 'om-stale' });
 }
 
 /**

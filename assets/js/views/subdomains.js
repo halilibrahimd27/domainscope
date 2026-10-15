@@ -62,7 +62,7 @@
 
 import { h, clear, uid, debounce, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, Disclosure, ErrorBanner, Icon, SegmentedControl, checkbox, checkboxGroup, decodeText,
+  Alert, Tag, Button, Disclosure, ErrorBanner, Icon, SegmentedControl, checkbox, checkboxGroup, decodeText,
   radioGroup, select, textInput, textarea, toast
 } from '../ui/components.js';
 import { EmptyState, ExampleChips, PrivacyNote, ResultHeader, ResultTitle, RunBar, ToolInput } from '../ui/template.js';
@@ -3071,7 +3071,7 @@ export function mount(container, ctx) {
         bfLabels[mode].append(h('span', { class: 'sub-bf-packs' },
           packs.map((p) => t('sub.plan.pack', { count: formatNumber(p.count), language: languageName(p.code) })).join(', ')));
       }
-      if (mode === 'smart') bfLabels[mode].append(Badge(t('sub.opt.bf.recommended'), { variant: 'accent', className: 'sub-bf-rec' }));
+      if (mode === 'smart') bfLabels[mode].append(Tag(t('sub.opt.bf.recommended'), { variant: 'accent', className: 'sub-bf-rec' }));
       bfHints[mode].append(t(`sub.opt.bf.${mode}Hint`, { time: estimateText(wc.count + extra, 1, sweepWidth()), size: levelSize(mode) }));
     }
   }

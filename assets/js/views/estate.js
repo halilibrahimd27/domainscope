@@ -34,7 +34,7 @@
 
 import { h, clear, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Badge, Button, CodeBlock, DataTable, Disclosure, EmptyState, FileDrop, IconButton, Tabs,
+  Alert, Tag, Button, CodeBlock, DataTable, Disclosure, EmptyState, FileDrop, IconButton, Tabs,
   TruncatedList, announce, select, textarea, toast
 } from '../ui/components.js';
 // The page template (docs/DESIGN.md §5; phase 3): the file input, the result header, the figures, the notes.
@@ -462,7 +462,7 @@ export function estateSummaryFacts(estate, reports) {
 }
 
 /**
- * Badge variant of an expiry bucket.
+ * Tag variant of an expiry bucket.
  * @param {string} bucket
  * @returns {'error'|'warn'|'info'|'ok'}
  */
@@ -790,8 +790,8 @@ export function mount(container, ctx) {
         }))),
       h('div', { class: 'estate-report-badges cluster' },
         report.estate
-          ? Badge(t('estate.reports.estate'), { variant: 'accent', title: t('estate.reports.estateTitle'), mono: true })
-          : Badge(t('estate.reports.plain'), { variant: 'neutral', title: t('estate.reports.plainTitle') }),
+          ? Tag(t('estate.reports.estate'), { variant: 'accent', title: t('estate.reports.estateTitle'), mono: true })
+          : Tag(t('estate.reports.plain'), { variant: 'neutral', title: t('estate.reports.plainTitle') }),
         IconButton({ icon: 'x', label: t('estate.reports.remove', { name: report.name }), size: 'sm', onClick: () => removeReport(report) })));
   }
 
@@ -896,7 +896,7 @@ export function mount(container, ctx) {
           key: 'expires', label: t('estate.col.expires'), sortable: true, sortValue: (c) => c.daysLeft,
           render: (c) => h('div', { class: 'estate-expires' },
             h('span', { class: 'nowrap' }, c.notAfter ? formatDate(new Date(c.notAfter), { utc: true }) : '—'),
-            Badge(daysText(c.daysLeft), { variant: bucketVariant(c.expiry), className: 'estate-days' }))
+            Tag(daysText(c.daysLeft), { variant: bucketVariant(c.expiry), className: 'estate-days' }))
         },
         ...(hasAri ? [{
           key: 'ari', label: t('rev.col.ari'), sortable: true, searchable: false, className: 'estate-col-ari',
@@ -918,7 +918,7 @@ export function mount(container, ctx) {
           key: 'key', label: t('estate.col.key'), sortable: true, sortValue: (c) => c.key,
           render: (c) => h('div', { class: 'estate-key' },
             h('span', { class: 'nowrap' }, c.key),
-            c.weak.map((w) => Badge(t(`estate.weakShort.${w}`), { variant: 'error', title: t(`estate.weak.${w}`) })))
+            c.weak.map((w) => Tag(t(`estate.weakShort.${w}`), { variant: 'error', title: t(`estate.weak.${w}`) })))
         },
         {
           key: 'served', label: t('estate.col.served'), sortable: true, wrap: true, sortValue: (c) => c.endpoints.length,
@@ -938,12 +938,12 @@ export function mount(container, ctx) {
   }
 
   function kindBadge(kind) {
-    return Badge(t(`estate.kind.${kind}`), { variant: kind === 'origin-ca' ? 'cloudflare' : 'private' });
+    return Tag(t(`estate.kind.${kind}`), { variant: kind === 'origin-ca' ? 'cloudflare' : 'private' });
   }
 
   function flagBadge(flag, label = null) {
     const variant = flag === 'weak' || flag === 'stale' || flag === 'untrusted' ? 'error' : flag === 'covers-none' ? 'neutral' : 'warn';
-    return Badge(label || t(`estate.flag.${flag}`), { variant, title: t(`estate.flagTitle.${flag}`, { hosts: SHARED_KEY_WIDE_HOSTS }), className: `estate-flag estate-flag-${flag}` });
+    return Tag(label || t(`estate.flag.${flag}`), { variant, title: t(`estate.flagTitle.${flag}`, { hosts: SHARED_KEY_WIDE_HOSTS }), className: `estate-flag estate-flag-${flag}` });
   }
 
   /** Why the CLI's machine does not trust an endpoint's chain, in the page's language when the CLI named a verify code. */
@@ -989,7 +989,7 @@ export function mount(container, ctx) {
           const report = reportName(e, c);
           return h('li', null,
             h('span', { class: 'mono' }, endpointText(e)),
-            e.defaultCert ? Badge(t('estate.default'), { variant: 'neutral', title: t('estate.defaultTitle') }) : null,
+            e.defaultCert ? Tag(t('estate.default'), { variant: 'neutral', title: t('estate.defaultTitle') }) : null,
             e.names.length ? h('span', { class: 'muted text-sm' }, t('estate.d.servedFor', { names: e.names.join(', ') })) : null,
             // the CLI's trust check: why its machine does not trust the chain served here
             e.trusted === false ? h('span', { class: 'estate-untrusted cluster' },
@@ -1012,7 +1012,7 @@ export function mount(container, ctx) {
           return h('li', { class: ['estate-conflict-cert', { 'is-stale': item.stale }], dataset: { sha: item.sha256 } },
             h('div', { class: 'estate-conflict-head' },
               h('span', { class: 'estate-cert-name mono' }, cert.subjectCN || cert.subjectDN || t('estate.noSubject')),
-              Badge(daysText(cert.daysLeft), { variant: bucketVariant(cert.expiry) }),
+              Tag(daysText(cert.daysLeft), { variant: bucketVariant(cert.expiry) }),
               cert.kind !== 'other' ? kindBadge(cert.kind) : null,
               item.stale ? flagBadge('stale') : null),
             h('div', { class: 'muted text-sm' }, t('estate.conflicts.cert', {
@@ -1035,8 +1035,8 @@ export function mount(container, ctx) {
       estate.sharedKeys.map((group) => h('section', { class: 'estate-key-group', dataset: { spki: group.spkiSha256, look: String(sharedKeyNeedsLook(group)) } },
         h('div', { class: 'estate-key-head' },
           h('h3', { class: 'estate-key-title' }, group.key),
-          Badge(t('estate.keys.hosts', { count: group.hosts }), { variant: group.hosts >= SHARED_KEY_WIDE_HOSTS ? 'warn' : 'neutral' }),
-          Badge(t('estate.keys.certs', { count: group.certificates.length }), { variant: group.certificates.length > 1 ? 'warn' : 'neutral' }),
+          Tag(t('estate.keys.hosts', { count: group.hosts }), { variant: group.hosts >= SHARED_KEY_WIDE_HOSTS ? 'warn' : 'neutral' }),
+          Tag(t('estate.keys.certs', { count: group.certificates.length }), { variant: group.certificates.length > 1 ? 'warn' : 'neutral' }),
           sharedKeyNeedsLook(group) ? flagBadge('shared-key', t('estate.keys.look')) : null),
         h('dl', { class: 'estate-d' },
           h('div', { class: 'estate-d-row' }, h('dt', { class: 'estate-d-key' }, t('estate.keys.spki')), h('dd', { class: 'estate-d-value mono' }, group.spkiSha256)),

@@ -15,7 +15,7 @@
  */
 
 import { h, clear, append } from './dom.js';
-import { Alert, Badge, Button, Card, DataTable, Disclosure, Icon, TruncatedList, announce, select, textInput } from './components.js';
+import { Alert, Tag, Button, Card, DataTable, Disclosure, Icon, TruncatedList, announce, select, textInput } from './components.js';
 import { t, registerStrings, formatNumber, formatDate, formatDateTime } from '../i18n.js';
 import {
   createReverseIp, mergeNames, reverseCounts, reverseExportRows, isLocalOnly, REVERSE_SOURCES, KEYED_SOURCES, NAME_STATUSES,
@@ -389,7 +389,7 @@ export function ReverseIpPanel({ ctx, getIntel, workspaceFor, onNames = null }) 
     const icon = { here: 'check-circle', moved: 'swap', cdn: 'cloud', none: 'minus-circle', failed: 'alert', internal: 'lock', workspace: 'lock' }[r.status] || null;
     let title = t(`rip.stTitle.${r.status}`);
     if (r.status === 'failed' && r.rcode) title += ` (${r.rcode})`;
-    const badge = Badge(t(`rip.st.${r.status}`), { variant, icon, title });
+    const badge = Tag(t(`rip.st.${r.status}`), { variant, icon, title });
     badge.dataset.status = r.status;
     const extra = r.status === 'cdn' && r.provider ? h('span', { class: 'muted text-xs' }, t('rip.cdnBy', { provider: r.provider })) : null;
     return h('div', { class: 'rip-status' }, badge, extra);

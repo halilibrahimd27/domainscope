@@ -19,7 +19,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Alert, Badge, Button, Card, CodeBlock, DataTable, EmptyState, ProgressBar, announce, confirmDialog, select, textInput, toast } from './components.js';
+import { Alert, Tag, Button, Card, CodeBlock, DataTable, EmptyState, ProgressBar, announce, confirmDialog, select, textInput, toast } from './components.js';
 import { t, registerStrings, formatDateTime, formatNumber } from '../i18n.js';
 import { downloadText, timestampedName } from './download.js';
 import { toCsv } from '../lib/export.js';
@@ -348,13 +348,13 @@ export function RolloutPanel({ run, ctx, sets = null, plan = null, onChange = nu
     });
     return h('label', { class: 'ro-step' }, input,
       when ? h('span', { class: 'ro-when muted' }, formatDateTime(new Date(when))) : null,
-      step === 'verified' && row.verifiedBy === 'verify' ? Badge(t('ro.byVerify'), { variant: 'ok', icon: 'check' }) : null);
+      step === 'verified' && row.verifiedBy === 'verify' ? Tag(t('ro.byVerify'), { variant: 'ok', icon: 'check' }) : null);
   }
 
   function serverCell(row) {
     const tags = [];
-    if (!row.server) tags.push(Badge(t(row.private ? 'ro.private' : 'ro.outside'), { variant: 'neutral' }));
-    if (row.saved) tags.push(Badge(t('ro.savedRow'), { variant: 'neutral', icon: 'clock' }));
+    if (!row.server) tags.push(Tag(t(row.private ? 'ro.private' : 'ro.outside'), { variant: 'neutral' }));
+    if (row.saved) tags.push(Tag(t('ro.savedRow'), { variant: 'neutral', icon: 'clock' }));
     return h('div', { class: 'stack-sm' }, h('span', { class: 'mono ro-name' }, row.name), tags.length ? h('div', { class: 'cluster' }, ...tags) : null);
   }
 
@@ -368,7 +368,7 @@ export function RolloutPanel({ run, ctx, sets = null, plan = null, onChange = nu
   function verifyCell(row) {
     const v = row.verify;
     if (!v || v.status === 'unchecked') return h('span', { class: 'muted' }, t('ro.vfy.unchecked'));
-    const b = Badge(t(`ro.vfy.${v.status}`), { variant: VERIFY_VARIANT[v.status] || 'neutral' });
+    const b = Tag(t(`ro.vfy.${v.status}`), { variant: VERIFY_VARIANT[v.status] || 'neutral' });
     b.dataset.verify = v.status;
     return b;
   }
@@ -383,7 +383,7 @@ export function RolloutPanel({ run, ctx, sets = null, plan = null, onChange = nu
     rowClass: (r) => ({ 'ro-row-done': r.stage === 'verified', 'ro-row-saved': r.saved }),
     columns: [
       { key: 'server', label: t('ro.col.server'), sortable: true, sortValue: (r) => r.name, render: serverCell },
-      sets ? { key: 'set', label: t('ro.col.set'), sortable: true, sortValue: (r) => r.set || '', render: (r) => (r.set ? Badge(t('rw.set', { id: r.set }), { variant: 'info' }) : '') } : null,
+      sets ? { key: 'set', label: t('ro.col.set'), sortable: true, sortValue: (r) => r.set || '', render: (r) => (r.set ? Tag(t('rw.set', { id: r.set }), { variant: 'info' }) : '') } : null,
       { key: 'targets', label: t('ro.col.targets'), mono: true, wrap: true, sortValue: (r) => (r.targets[0] ? r.targets[0].ip : ''), render: (r) => r.targets.map(targetText).join(' ') },
       { key: 'names', label: t('ro.col.names'), wrap: true, sortValue: (r) => r.names[0] || '', render: namesCell },
       ...ROLLOUT_STEPS.map((step) => ({ key: step, label: t(`ro.step.${step}`), sortable: true, sortValue: (r) => r[step] || '', render: (r) => stepCell(r, step) })),

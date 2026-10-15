@@ -26,7 +26,7 @@ import { hostSegments, summaryAlerts, initialSubTab, SUB_TABS, subTabParams, nex
 import { h, clear, scrollBehavior, uid } from './dom.js';
 import { sourceHealthSummary, SOURCES } from '../lib/sourceinfo.js';
 import {
-  ProgressBar, Alert, Icon, SegmentedControl, checkbox, DataTable, Badge, ipSortValue, TruncatedList, KindBadge,
+  ProgressBar, Alert, Icon, SegmentedControl, checkbox, DataTable, Tag, ipSortValue, TruncatedList, KindBadge,
   CopyButton, toast, Button, CodeBlock, textInput, ButtonLink, Disclosure, EmptyState, Tabs, announce, ErrorBanner, select
 } from './components.js';
 import { MetricStrip, NextSteps, ResultActions, ResultHeader, ResultTitle, StatusSummary, withSubject } from './template.js';
@@ -596,7 +596,7 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
         searchValue: (x) => [x.name, ...x.resolution.cnames, x.classification.provider ? x.classification.provider.name : ''].join(' '),
         render: (x) => h('div', { class: 'sub-host' },
           h('a', { class: 'sub-host-name mono', href: ctx.href('lookup', { name: x.name }), title: t('sub.host.lookup', { name: x.name }) }, hostNameNodes(x.name)),
-          x.wildcardSuspect ? Badge(t('sub.host.wildcard'), { variant: 'warn', title: t('sub.filter.wildcardHint'), className: 'sub-mini-badge' }) : null)
+          x.wildcardSuspect ? Tag(t('sub.host.wildcard'), { variant: 'warn', title: t('sub.filter.wildcardHint'), className: 'sub-mini-badge' }) : null)
       },
       {
         key: 'ips',
@@ -617,9 +617,9 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
         searchValue: (x) => `${t(`kind.${x.classification.dangling ? 'dangling' : x.classification.kind}`)} ${x.classification.provider ? x.classification.provider.name : ''} ${x.resolution.status}`,
         render: (x) => h('div', { class: 'cluster sub-kind' }, KindBadge(x.classification),
           // A streamed partial is "resolving…" only while the run lives (a cancelled run never resolves it).
-          x._partial && run.status === 'running' ? Badge(t('sub.host.resolving'), { variant: 'neutral', icon: 'clock', title: t('sub.host.resolvingTitle'), className: 'sub-mini-badge' }) : null,
+          x._partial && run.status === 'running' ? Tag(t('sub.host.resolving'), { variant: 'neutral', icon: 'clock', title: t('sub.host.resolvingTitle'), className: 'sub-mini-badge' }) : null,
           x.resolution.status !== 'NOERROR' && x.resolution.status !== 'NXDOMAIN'
-            ? Badge(x.resolution.status, { variant: 'error', title: x.resolution.error || null, mono: true }) : null,
+            ? Tag(x.resolution.status, { variant: 'error', title: x.resolution.error || null, mono: true }) : null,
           originCandidates.has(x.name) ? h('button', {
             type: 'button',
             class: 'sub-origin-hint',
@@ -664,7 +664,7 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
           const byName = new Map();
           for (const s of x.servers) byName.set(s.name, [...(byName.get(s.name) || []), s.ip]);
           return byName.size
-            ? h('div', { class: 'cluster sub-servers' }, [...byName].map(([name, ips]) => Badge(name, { variant: 'direct', icon: 'server', title: ips.join(', ') })))
+            ? h('div', { class: 'cluster sub-servers' }, [...byName].map(([name, ips]) => Tag(name, { variant: 'direct', icon: 'server', title: ips.join(', ') })))
             : null;
         }
       } : null
@@ -942,7 +942,7 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
               title: sweepWhole ? t('sub.org.sweep.cidrTitle') : t('sub.org.sweep.ipsTitle')
             }, Icon(sweepWhole ? 'network' : 'server', { size: 12 }),
             sweepWhole ? t('sub.org.sweep.cidr') : t('sub.org.sweep.ips', { count: net.ips.length })),
-            net.shared ? Badge(t('sub.org.shared'), { variant: 'warn', icon: 'alert', title: t('sub.org.sharedTitle'), className: 'sub-org-shared-badge' }) : null,
+            net.shared ? Tag(t('sub.org.shared'), { variant: 'warn', icon: 'alert', title: t('sub.org.sharedTitle'), className: 'sub-org-shared-badge' }) : null,
             ownerEl,
             ptrLink),
           h('div', { class: 'sub-org-net-body' },
@@ -1089,18 +1089,18 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
           render: (p) => {
             const items = [
               ...p.known.map((k) => h('span', { class: 'sub-org-cand', dataset: { kind: 'known' } },
-                Badge(t('sub.hint.known'), { variant: 'ok', title: t('sub.hint.known.title') }), zoneIpEl(k.target))),
+                Tag(t('sub.hint.known'), { variant: 'ok', title: t('sub.hint.known.title') }), zoneIpEl(k.target))),
               ...p.zone.map((z) => h('span', { class: 'sub-org-cand', dataset: { kind: 'zone' } },
-                Badge(t('sub.hint.zone'), { variant: 'ok', title: t('sub.hint.zone.title') }), zoneIpEl(z.ip))),
+                Tag(t('sub.hint.zone'), { variant: 'ok', title: t('sub.hint.zone.title') }), zoneIpEl(z.ip))),
               ...p.leaks.map((l) => h('span', { class: 'sub-org-cand', dataset: { kind: 'resolver-leak' } },
-                Badge(t('sub.hint.resolver-leak'), { variant: 'warn', title: t('sub.hint.resolver-leak.title') }), ipLinkOrg(l.ip))),
+                Tag(t('sub.hint.resolver-leak'), { variant: 'warn', title: t('sub.hint.resolver-leak.title') }), ipLinkOrg(l.ip))),
               ...p.siblings.map((s) => h('span', { class: 'sub-org-cand', dataset: { kind: 'sibling-domain' } },
-                Badge(t('sub.org.cand.sibling'), { variant: 'accent', title: t('sub.org.cand.siblingTitle') }), ipLinkOrg(s.ip),
+                Tag(t('sub.org.cand.sibling'), { variant: 'accent', title: t('sub.org.cand.siblingTitle') }), ipLinkOrg(s.ip),
                 s.sibling ? h('span', { class: 'sub-org-via' }, t('sub.org.cand.siblingVia', { sibling: s.sibling })) : null)),
               ...p.history.map((x) => h('span', { class: 'sub-org-cand', dataset: { kind: 'history' } },
-                Badge(t('sub.hint.history'), { variant: 'info', title: t('sub.hint.history.title') }), ipLinkOrg(x.ip))),
+                Tag(t('sub.hint.history'), { variant: 'info', title: t('sub.hint.history.title') }), ipLinkOrg(x.ip))),
               p.networks.length ? h('span', { class: 'sub-org-cand muted', dataset: { kind: 'network' } },
-                Badge(t('sub.org.cand.network'), { variant: 'neutral', title: t('sub.org.cand.networkTitle') }),
+                Tag(t('sub.org.cand.network'), { variant: 'neutral', title: t('sub.org.cand.networkTitle') }),
                 h('span', { class: 'sub-org-cand-nets mono' }, p.networks.join(', '))) : null
             ].filter(Boolean);
             return items.length ? h('div', { class: 'sub-org-cands' }, items) : h('span', { class: 'muted' }, t('sub.org.candNone'));
@@ -1126,7 +1126,7 @@ export function buildRunUI(run, ctx, { session, onFinish, onScanWith }) {
           key: 'reasons', label: t('sub.org.col.evidence'), wrap: true,
           searchValue: (x) => x.reasons.map((y) => `${y.kind} ${reasonText(y)}`).join(' '),
           render: (x) => h('div', { class: 'stack-sm' }, x.reasons.slice(0, 3).map((y) => h('div', { class: 'sub-org-reason' },
-            Badge(HINT_KINDS.includes(y.kind) ? t(`sub.hint.${y.kind}`) : y.kind, { variant: 'info', title: HINT_KINDS.includes(y.kind) ? t(`sub.hint.${y.kind}.title`) : null }),
+            Tag(HINT_KINDS.includes(y.kind) ? t(`sub.hint.${y.kind}`) : y.kind, { variant: 'info', title: HINT_KINDS.includes(y.kind) ? t(`sub.hint.${y.kind}.title`) : null }),
             h('span', { class: 'mono text-xs sub-org-detail' }, reasonText(y)))))
         },
         { key: 'hosts', label: t('sub.org.col.about'), mono: true, render: (x) => ((x.hosts || []).length ? TruncatedList(x.hosts, { max: 2 }) : null) }

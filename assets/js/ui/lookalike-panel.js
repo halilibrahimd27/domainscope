@@ -19,7 +19,7 @@
  */
 
 import { h, clear } from './dom.js';
-import { Badge, Button, Card, DataTable, ProgressBar, announce, checkbox, select } from './components.js';
+import { Tag, Button, Card, DataTable, ProgressBar, announce, checkbox, select } from './components.js';
 import { t, registerStrings, formatDate, formatNumber } from '../i18n.js';
 import { sourceStatus } from '../lib/sourcestatus.js';
 import { NaMark, RetryButton, setRetryBusy, statusText } from './source-status.js';
@@ -238,7 +238,7 @@ export function generatedKeys() {
   ];
 }
 
-/** Badge variants of the levels. */
+/** Tag variants of the levels. */
 const LEVEL_VARIANTS = Object.freeze({ high: 'error', medium: 'warn', low: 'info', unknown: 'neutral', none: 'neutral', pending: 'neutral', own: 'ok' });
 
 /**
@@ -355,7 +355,7 @@ export function LookalikePanel({ ctx, domain }) {
         const risk = riskOf(r);
         if (risk.level === 'unknown') return h('span', { class: 'lk-risk', dataset: { level: risk.level } }, na(r.dns.failures));
         return h('span', { class: 'lk-risk', dataset: { level: risk.level } },
-          Badge(t(`lk.level.${risk.level}`), { variant: LEVEL_VARIANTS[risk.level] }),
+          Tag(t(`lk.level.${risk.level}`), { variant: LEVEL_VARIANTS[risk.level] }),
           risk.score !== null && risk.level !== 'none' ? h('span', { class: 'muted text-xs num lk-score', title: t('lk.cell.score', { score: risk.score }) }, String(risk.score)) : null);
       }
     },
@@ -372,7 +372,7 @@ export function LookalikePanel({ ctx, domain }) {
         const reasons = riskOf(r).reasons;
         if (!reasons.length) return null;
         const params = { domain, days: reasons.includes('new') ? LOOKALIKE_NEW_DAYS : LOOKALIKE_RECENT_DAYS };
-        return h('span', { class: 'lk-reasons' }, reasons.map((x) => Badge(t(`lk.reason.${x}`), {
+        return h('span', { class: 'lk-reasons' }, reasons.map((x) => Tag(t(`lk.reason.${x}`), {
           variant: x === 'same-ns' || x === 'same-ip' ? 'ok' : 'neutral', title: t(`lk.reason.${x}.title`, params), className: 'lk-reason'
         })));
       }

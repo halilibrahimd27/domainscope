@@ -15,7 +15,7 @@
 
 import { h } from '../ui/dom.js';
 import {
-  Badge, ButtonLink, Button, CliText, CodeBlock, Disclosure, ExternalLink, Icon, Section, confirmDialog
+  Tag, ButtonLink, Button, CliText, CodeBlock, Disclosure, ExternalLink, Icon, Section, confirmDialog
 } from '../ui/components.js';
 import { registerStrings, formatDate, formatNumber, formatRegion } from '../i18n.js';
 import { RESOLVERS, RESOLVERS_VERIFIED, GEO_VANTAGES, DEFAULT_CHAIN, getResolver } from '../lib/resolvers.js';
@@ -559,7 +559,7 @@ export function mount(container, ctx) {
         h('p', null, t('about.cfBody3'))),
       h('div', { class: 'about-flows' },
         h('figure', { class: 'about-flow card' },
-          h('figcaption', { class: 'about-flow-caption' }, Badge(t('kind.cloudflare'), { variant: 'cloudflare', icon: 'cloud' }), ' ', t('about.flowPublic')),
+          h('figcaption', { class: 'about-flow-caption' }, Tag(t('kind.cloudflare'), { variant: 'cloudflare', icon: 'cloud' }), ' ', t('about.flowPublic')),
           h('div', { class: 'about-flow-row' },
             flowNode('users', t('about.flowVisitor')),
             flowArrow(),
@@ -567,7 +567,7 @@ export function mount(container, ctx) {
             flowArrow(),
             flowNode('server', t('about.flowOrigin'), `10.0.1.20 · ${t('about.flowHidden')}`, 'hidden'))),
         h('figure', { class: 'about-flow card' },
-          h('figcaption', { class: 'about-flow-caption' }, Badge('CLI', { variant: 'accent', icon: 'terminal' }), ' ', t('about.flowCli')),
+          h('figcaption', { class: 'about-flow-caption' }, Tag('CLI', { variant: 'accent', icon: 'terminal' }), ' ', t('about.flowCli')),
           h('div', { class: 'about-flow-row' },
             flowNode('terminal', t('about.flowJump'), 'ssl_origin_scan.py'),
             flowArrow(t('about.flowSni')),
@@ -597,10 +597,10 @@ export function mount(container, ctx) {
             h('div', null, h('div', { class: 'about-res-name' }, r.name), h('div', { class: 'muted text-xs' }, r.operator)),
             r.countryCode ? formatRegion(r.countryCode, r.location) : t('settings.anycast'),
             h('div', { class: 'cluster' },
-              r.dnssecValidating ? Badge('DNSSEC', { variant: 'ok', icon: 'shield' }) : null,
-              r.ecs ? Badge('ECS', { variant: 'info', icon: 'map-pin' }) : null,
-              r.filtering ? Badge(t(`settings.filter.${r.filtering}`), { variant: 'neutral', icon: 'filter' }) : null,
-              r.browserReliable === false ? Badge('HTTP/3', { variant: 'warn', icon: 'alert', title: t('settings.unreliable') }) : null)
+              r.dnssecValidating ? Tag('DNSSEC', { variant: 'ok', icon: 'shield' }) : null,
+              r.ecs ? Tag('ECS', { variant: 'info', icon: 'map-pin' }) : null,
+              r.filtering ? Tag(t(`settings.filter.${r.filtering}`), { variant: 'neutral', icon: 'filter' }) : null,
+              r.browserReliable === false ? Tag('HTTP/3', { variant: 'warn', icon: 'alert', title: t('settings.unreliable') }) : null)
           ]), 'about-resolvers')
       }),
       h('p', { class: 'muted text-sm' },
@@ -684,7 +684,7 @@ export function mount(container, ctx) {
       h('div', { class: 'about-examples' }, CLI_EXAMPLES.map((ex) => CodeBlock(ex.cmd, { label: t(ex.key), wrap: true }))),
       h('h3', { class: 'about-subtitle' }, t('about.statusesTitle')),
       simpleTable([t('common.status'), t('common.details')], CLI_STATUSES.map((s) => [
-        Badge(s.code, { variant: s.variant, icon: s.icon, mono: true }),
+        Tag(s.code, { variant: s.variant, icon: s.icon, mono: true }),
         CliText(t(`about.st.${s.code}`))
       ]), 'about-statuses'),
       h('div', { class: 'about-cli-bar card' },
@@ -730,8 +730,8 @@ export function mount(container, ctx) {
       h('p', { class: 'muted' }, t('about.wordlistCredits'), ' ', t('about.ccadbCredits'), ' ', t('about.rangesCredits'), ' ', t('about.sendersCredits'), ' ',
         h('a', { href: LICENSES_URL, target: '_blank', rel: 'noopener' }, t('about.wordlistLicenses'))),
       h('div', { class: 'cluster' },
-        Badge('MIT', { variant: 'accent', icon: 'book' }),
-        Badge(t('about.version', { version: ctx.version }), { variant: 'neutral' }),
+        Tag('MIT', { variant: 'accent', icon: 'book' }),
+        Tag(t('about.version', { version: ctx.version }), { variant: 'neutral' }),
         ExternalLink(ctx.repoUrl, 'GitHub')))
   });
 

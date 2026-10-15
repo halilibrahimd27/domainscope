@@ -291,6 +291,13 @@ async function main() {
       assertEqual(rows, [`shop.${APEX} | Remembered192.0.2.20`, `www.${APEX} | Remembered192.0.2.10`], 'rows');
       const cmd = await page.evaluate(() => document.querySelector('.scan-cli-quick code')?.textContent || '');
       assert(cmd.includes('192.0.2.10 192.0.2.20'), `Behind CDN command: ${cmd}`);
+      // The CLI card points at the content audit for the same names, with a link to About › CLI.
+      const audit = await page.evaluate(() => {
+        const p = document.querySelector('.scan-cli [data-role="audit-hint"]');
+        return p ? { code: p.querySelector('code')?.textContent, href: p.querySelector('a')?.getAttribute('href') } : null;
+      });
+      assertEqual(audit && audit.code, 'python3 content_audit.py audit -t names.txt', 'content audit hint');
+      assert(/#\/about\?section=cli$/.test(audit.href), `About › CLI link: ${audit.href}`);
       await page.evaluate(() => document.querySelector('.scan-known-origins')?.scrollIntoView());
       await shotPage(page, opts, 'origins-scan-cdn-desktop-light-en');
     });

@@ -550,6 +550,8 @@ registerStrings('en', {
   'scan.cli.result': 'UPDATED: already serves the new certificate · NEEDS_UPDATE: serves a certificate for the name, but not the new one — install it there · ORIGIN_CERT: serves a Cloudflare Origin CA certificate, right behind Cloudflare Full (strict) · PRIVATE_CERT: serves a self-signed or --private-ca certificate · NOT_HOSTED: the name is not served there. ORIGIN_CERT and PRIVATE_CERT are not counted as needing the new certificate unless you add --strict-public.',
   'scan.cli.download': 'ssl_origin_scan.py',
   'scan.cli.command': 'Command',
+  'scan.cli.auditHint': 'Check the same servers for files that should not be public (an open .git, .env, backups):',
+  'scan.cli.auditLink': 'About › CLI',
 
   'scan.src.col.source': 'Source',
   'scan.src.col.domain': 'Domain',
@@ -979,6 +981,8 @@ registerStrings('tr', {
   'scan.cli.result': 'UPDATED: yeni sertifikayı zaten sunuyor · NEEDS_UPDATE: ad için bir sertifika sunuyor ama yenisini değil — buraya kurun · ORIGIN_CERT: Cloudflare Origin CA sertifikası sunuyor, Cloudflare Full (strict) arkasında doğru · PRIVATE_CERT: kendinden imzalı ya da --private-ca sertifikası sunuyor · NOT_HOSTED: ad orada sunulmuyor. --strict-public eklemezseniz ORIGIN_CERT ve PRIVATE_CERT yeni sertifika gerektiren sunucular arasında sayılmaz.',
   'scan.cli.download': 'ssl_origin_scan.py',
   'scan.cli.command': 'Komut',
+  'scan.cli.auditHint': 'Aynı sunucularda herkese açık olmaması gereken dosyaları (açık .git, .env, yedekler) kontrol edin:',
+  'scan.cli.auditLink': 'Hakkında › CLI',
 
   'scan.src.col.source': 'Kaynak',
   'scan.src.col.domain': 'Alan adı',
@@ -4265,7 +4269,11 @@ function buildRunUI(run, ctx, { onFinish }) {
           commandHost),
         h('li', null,
           h('div', { class: 'scan-cli-step-title' }, t('scan.cli.step4')),
-          h('p', { class: 'text-sm text-2' }, CliText(t('scan.cli.result')))))
+          h('p', { class: 'text-sm text-2' }, CliText(t('scan.cli.result'))))),
+      // The same names, checked for files that should not be public (content_audit.py; About › CLI).
+      footer: h('p', { class: 'muted text-sm scan-cli-audit', dataset: { role: 'audit-hint' } },
+        t('scan.cli.auditHint'), ' ', h('code', null, 'python3 content_audit.py audit -t names.txt'), ' · ',
+        h('a', { href: ctx.href('about', { section: 'cli' }) }, t('scan.cli.auditLink')))
     });
   }
 

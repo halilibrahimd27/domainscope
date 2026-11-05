@@ -78,13 +78,28 @@ const SELF_PEM = read('starttls_ec_leaf.pem');
 const SELF_KEY = read('starttls_ec_leaf.key');
 
 /**
+ * An OCSP staple for the in-process server: a well-formed OCSPResponse (RFC 6960: status
+ * successful, responseBytes of type id-pkix-ocsp-basic around an empty SEQUENCE). The runner only
+ * records that one was stapled, but OpenSSL 4 (Node 26) drops a staple that is not DER of an
+ * OCSPResponse before the client sees it, so a made-up byte string reads as no staple there.
+ */
+const OCSP_STAPLE = Buffer.from('30160a0100a011300f06092b0601050507300101040230' + '00', 'hex');
+
+/**
  * An in-process TLS server on 127.0.0.1 that completes the handshake and closes; `staple`: the
  * OCSP response it staples when asked (a Buffer, or null for none); `setCert` swaps what it serves.
+ * `close` destroys the connections still open: on Node 26 a server socket that ended its side
+ * never sees the client's FIN after a request it did not read, and server.close() waits for it.
  */
 async function tlsServer({ cert = Buffer.concat([LEAF_PEM, CA_PEM]), key = LEAF_KEY, staple } = {}) {
+  const sockets = new Set();
   const server = tls.createServer({ key, cert }, (s) => {
     s.on('error', () => {});
     s.end();
+  });
+  server.on('connection', (raw) => {
+    sockets.add(raw);
+    raw.on('close', () => sockets.delete(raw));
   });
   server.on('tlsClientError', () => {});
   if (staple !== undefined) server.on('OCSPRequest', (c, issuer, done) => done(null, staple));
@@ -92,7 +107,10 @@ async function tlsServer({ cert = Buffer.concat([LEAF_PEM, CA_PEM]), key = LEAF_
   return {
     port: server.address().port,
     setCert: (next) => server.setSecureContext({ key: next.key || key, cert: next.cert }),
-    close: () => new Promise((resolve) => server.close(resolve))
+    close: () => new Promise((resolve) => {
+      for (const raw of sockets) raw.destroy();
+      server.close(resolve);
+    })
   };
 }
 
@@ -770,7 +788,7 @@ describe('the monitor\'s handshakes: fixture certificates on a local server', ()
     servers.lone = await tlsServer({ cert: CROSS_LEAF_PEM, key: CROSS_LEAF_KEY });
     servers.withInter = await tlsServer({ cert: Buffer.concat([CROSS_LEAF_PEM, CROSS_INTER_PEM]), key: CROSS_LEAF_KEY });
     servers.expiredInter = await tlsServer({ cert: Buffer.concat([CROSS_LEAF_PEM, CROSS_INTER_OLD_PEM]), key: CROSS_LEAF_KEY });
-    servers.stapled = await tlsServer({ staple: Buffer.from('a stapled OCSP response') });
+    servers.stapled = await tlsServer({ staple: OCSP_STAPLE });
     servers.noStaple = await tlsServer({ staple: null });
   });
   after(async () => {

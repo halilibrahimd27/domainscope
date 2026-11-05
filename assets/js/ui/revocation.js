@@ -19,7 +19,7 @@ import { t, hasString, localeTag, registerStrings, formatDate, formatDateTime } 
 export const ARI_ERROR_CODES = Object.freeze(['not-found', 'unsupported', 'no-key-id', 'no-renewal-info', 'bad-window', 'rate-limit', 'http', 'timeout',
   'network', 'parse']);
 /** Why the CLI's --revocation could not tell (cli/ssl_origin_scan.py _REVOCATION_WHY). */
-export const REVOCATION_UNKNOWN_CODES = Object.freeze(['no-crl', 'too-large', 'http', 'timeout', 'network', 'parse', 'issuer-mismatch',
+export const REVOCATION_UNKNOWN_CODES = Object.freeze(['no-crl', 'not-checked', 'redirect', 'too-large', 'http', 'timeout', 'network', 'parse', 'issuer-mismatch',
   'critical-extension', 'delta', 'scope', 'reasons', 'stale']);
 /** The RFC 5280 reason names the page words (lib/crl.js REVOCATION_REASON_NAMES; tests/js/revocation.test.js keeps them in step). */
 export const REASON_KEYS = Object.freeze(['unspecified', 'keyCompromise', 'cACompromise', 'affiliationChanged', 'superseded', 'cessationOfOperation',
@@ -66,6 +66,8 @@ registerStrings('en', {
   'rev.st.unknown': 'Unknown',
   'rev.sigNotVerified': 'CRL signature not verified',
   'rev.unknown.no-crl': 'The certificate names no CRL to read (OCSP is not asked).',
+  'rev.unknown.not-checked': 'Its CRL was not read: neither the new certificate nor one the CLI’s machine trusts (a server can write any address into a certificate it makes).',
+  'rev.unknown.redirect': 'Its CRL address redirects to another host (not followed).',
   'rev.unknown.too-large': 'Its CRL is larger than 20 MB.',
   'rev.unknown.http': 'Its CRL could not be downloaded (HTTP error).',
   'rev.unknown.timeout': 'Its CRL download timed out.',
@@ -135,6 +137,8 @@ registerStrings('tr', {
   'rev.st.unknown': 'Bilinmiyor',
   'rev.sigNotVerified': 'CRL imzası doğrulanmadı',
   'rev.unknown.no-crl': 'Sertifika okunacak bir CRL belirtmiyor (OCSP’ye sorulmaz).',
+  'rev.unknown.not-checked': 'CRL’si okunmadı: ne yeni sertifika ne de CLI’ın makinesinin güvendiği bir sertifika (bir sunucu kendi ürettiği sertifikaya herhangi bir adres yazabilir).',
+  'rev.unknown.redirect': 'CRL adresi başka bir sunucuya yönlendiriyor (izlenmedi).',
   'rev.unknown.too-large': 'CRL’si 20 MB’tan büyük.',
   'rev.unknown.http': 'CRL’si indirilemedi (HTTP hatası).',
   'rev.unknown.timeout': 'CRL’sinin indirilmesi zaman aşımına uğradı.',

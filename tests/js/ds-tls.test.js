@@ -305,7 +305,7 @@ test('a CRL signature verifies with its issuer’s key (ECDSA and RSA), not with
   assert.equal(issuerFromChain(LEAF, [LEAF, { ...CA, subjectKeyId: 'ab'.repeat(20) }]), null, 'the same name, another key');
 });
 
-test('revocation: revoked with its reason, good, another CA’s CRL, a bad signature; each CRL read once', async () => {
+test('revocation: revoked with its reason, unverified (the leaf alone) unknown, good, another CA’s CRL, a bad signature; each CRL read once', async () => {
   const at = () => NOW;
   const revoked = createRevocationChecker({ fetchImpl: routesFetch({ [DP]: [200, read('crl_revoked.der'), { 'content-type': 'application/pkix-crl' }] }), now: at });
   const got = await revoked.check([{ key: 'a', cert: LEAF, chain: [LEAF, CA] }, { key: 'b', cert: LEAF2, chain: [LEAF2] }]);
@@ -315,7 +315,16 @@ test('revocation: revoked with its reason, good, another CA’s CRL, a bad signa
     thisUpdate: '2026-10-01T00:00:00.000Z', nextUpdate: '2026-10-15T00:00:00.000Z', signature: 'verified', signatureNote: null, error: null
   });
   const b = got.get('b');
-  assert.deepEqual([b.status, b.reason, b.signature, b.signatureNote], ['revoked', 'superseded', 'not-verified', 'issuer-not-sent'], 'the leaf alone: the status stands, unverified');
+  assert.deepEqual([b.status, b.error, b.reason, b.signature, b.signatureNote], ['unknown', 'unverified', 'superseded', 'not-verified', 'issuer-not-sent'],
+    'the leaf alone: the CRL\'s word kept, but a revocation whose signature was not checked is unknown (a CRL comes over plain http)');
+  const text = (parts) => parts.map((p) => (typeof p === 'string' ? p : p.code ?? p.strong)).join('');
+  assert.equal(text(revocationParts(b)),
+    `Revocation unknown: its CRL lists it as revoked, but the CRL’s signature could not be verified, so it is not counted as revoked (the server does not send the issuer; the CRL says superseded on ${b.time.slice(0, 16).replace('T', ' ')} UTC) (${DP})`);
+  // a change in the run: never REVOKED from an unverified CRL
+  const unverifiedRun = diffTls(report([tgt([ep('127.0.0.1', 'OK', { cert: cert('b') })])]), report([tgt([ep('127.0.0.1', 'OK', { cert: cert('b'), revocation: b })])]));
+  assert.ok(!unverifiedRun.some((c) => c.tag === 'REVOKED'), JSON.stringify(unverifiedRun.map((c) => c.tag)));
+  const verifiedRun = diffTls(report([tgt([ep('127.0.0.1', 'OK', { cert: cert('b') })])]), report([tgt([ep('127.0.0.1', 'OK', { cert: cert('b'), revocation: got.get('a') })])]));
+  assert.ok(verifiedRun.some((c) => c.tag === 'REVOKED'), 'the same served certificate with a verified revocation: REVOKED');
 
   const good = await createRevocationChecker({ fetchImpl: routesFetch({ [DP]: [200, read('crl_empty.der')] }), now: at }).check([{ key: 'a', cert: LEAF, chain: [LEAF, CA] }]);
   assert.deepEqual([good.get('a').status, good.get('a').signature, good.get('a').error], ['good', 'verified', null]);

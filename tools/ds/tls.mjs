@@ -443,6 +443,7 @@ export const REVOCATION_WHY = Object.freeze({
   network: 'its CRL could not be downloaded',
   parse: 'what its CRL URL returned is not a CRL',
   'bad-signature': 'the CRL’s signature does not verify with the issuer’s key',
+  unverified: 'its CRL lists it as revoked, but the CRL’s signature could not be verified, so it is not counted as revoked',
   'issuer-mismatch': 'the CRL is another CA’s',
   'critical-extension': 'the CRL has a critical extension DomainScope does not read',
   delta: 'it is a delta CRL',
@@ -499,6 +500,10 @@ export function revocationParts(rev) {
     return [strong('REVOKED'), ` on ${minute(rev.time)} (${rev.reason || 'no reason given'}); ${crl}${sig ? `, ${sig}` : ''}`];
   }
   if (rev.status === 'good') return [`Not revoked (${crl}${sig ? `, ${sig}` : ''})`];
+  if (rev.error === 'unverified') {
+    const why = rev.signatureNote === 'issuer-not-sent' ? 'the server does not send the issuer' : 'DomainScope has no scheme for its algorithm';
+    return [`Revocation unknown: ${REVOCATION_WHY.unverified} (${why}; the CRL says ${rev.reason || 'no reason given'}${rev.time ? ` on ${minute(rev.time)}` : ''})`, ...(rev.crl ? [' (', code(rev.crl), ')'] : [])];
+  }
   return [`Revocation unknown: ${REVOCATION_WHY[rev.error] || REVOCATION_WHY.unknown}`, ...(rev.crl ? [' (', code(rev.crl), ')'] : [])];
 }
 

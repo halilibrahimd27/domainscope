@@ -11,7 +11,7 @@ handshake with SNI = each hostname. The certificate a server returns for a name
 tells you whether it hosts that name and whether it already serves the renewed
 certificate.
 
-Run it from a machine inside your network (a jump host). Python 3.8+, stdlib only,
+Run it from a machine inside your network (a jump host). Python 3.9+, stdlib only,
 single file - copy it anywhere.
 
 Pipeline:
@@ -11843,7 +11843,7 @@ Find which of your servers serve a TLS certificate for given hostnames - and whi
 them still need the new (renewed) certificate - by connecting to every server IP
 directly and asking for each hostname via SNI. Because it talks to your servers' own
 IPs it sees through Cloudflare / CDN proxies. Run it from a machine inside your network
-(e.g. a jump host). Python 3.8+, standard library only."""
+(e.g. a jump host). Python 3.9+, standard library only."""
 
 EPILOG = """\
 examples:

@@ -24,7 +24,7 @@ resolver: HERE (it resolves to the address now), MOVED (to other addresses only)
 NO_ADDRESS. A source that fails is a status of its address (RATE_LIMITED, REFUSED, TIMEOUT,
 ERROR), never a silent gap. Keys are never printed, logged or written to a report.
 
-Python 3.8+, standard library only, single file - copy it anywhere.
+Python 3.9+, standard library only, single file - copy it anywhere.
 
 The module is importable: parse_targets(), normalize_name(), parse_certificate(), the
 parse_<source>() parsers, ask_source(), run_domains(), render_text(), report_to_dict(),
@@ -1886,7 +1886,7 @@ def _ports(values: Optional[Sequence[str]]) -> List[int]:
 def build_parser() -> argparse.ArgumentParser:
     description = ('The names an IP address serves, or served: its TLS certificates, PTR, free passive '
                    'DNS sources and the sources of your own keys, each name checked with the system '
-                   'resolver. Python 3.8+, standard library only.')
+                   'resolver. Python 3.9+, standard library only.')
     parser = argparse.ArgumentParser(prog=PROG, formatter_class=argparse.RawDescriptionHelpFormatter,
                                      description=description, epilog=EPILOG)
     parser.add_argument('--version', action='version', version='%(prog)s ' + __version__)

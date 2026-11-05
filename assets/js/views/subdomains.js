@@ -128,7 +128,7 @@ export const LEARNED_TRY_MAX = 1000;
 export const CUSTOM_FILE_MAX_BYTES = 5 * 1024 * 1024;
 /** Shells the origin sweep command is offered for. */
 export const SHELLS = Object.freeze(['posix', 'powershell']);
-/** Python launcher per shell (the CLI needs Python 3.8+). */
+/** Python launcher per shell (the CLI needs Python 3.9+). */
 export const PYTHON_FOR_SHELL = Object.freeze({ posix: 'python3', powershell: 'python' });
 /** Every table filter: the Hosts toolbar's Show select offers all but the last, which the status summary's "behind a CDN" picks. */
 export const FILTERS = Object.freeze(['all', 'resolving', 'cloudflare', 'direct', 'unresolved', 'cdn', 'dangling', 'behind']);

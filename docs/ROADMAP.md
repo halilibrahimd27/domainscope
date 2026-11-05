@@ -13,6 +13,7 @@ Constraints every item respects: runs in a browser from a static page (only CORS
 - **Wave 7 — shipping (2026-10-08)** ([what shipped and where](#wave-7--shipping-2026-10-08)): tests on a fixed clock; adaptive locale packs; DNS Lookup › Explain (the SPF term by term, `check_host()` for an address, the HTTPS / SVCB parameters); the cutover assistant's Global DNS half (an expected value and the worst-case wait); the provider network of a direct address; the runner's CT watch; the CLI TLS audit's follow-ups (RDP, `--profile`, the chain check); the CLI's content audit (`cli/content_audit.py`, exposed files on your own servers); a batched nits pass over the origin map and its neighbours; and the UI redesign ([DESIGN.md](DESIGN.md) §8) through its phase 5 and the tools of its phase 6: the design tokens, a sidebar in six groups by job and Home as the start page, then one page template for Domain overview, Domain Health, Subdomains and DNS Lookup, and the same template for Deploy & renew certificates, Change & migrate DNS, Map IPs to servers (with Servers and About) and Watch & report.
 - **Wave 7b — competitor gaps (2026-10-09)** ([what shipped and where](#wave-7b--competitor-gaps-2026-10-09)): all ten gaps ranked in [COMPETITORS.md](COMPETITORS.md) — the domain security score, the DMARC sender names, alert channels for the runner, the takeover watch, renewal windows and revocation, a served-certificate monitor, a registration and record change watch, a monitoring view, DMARC history, and accepted risks.
 - **Wave 9 — shipping (2026-10-15)** ([what shipped and where](#wave-9--shipping-2026-10-15)): the UI phase 6 clean-up with a Density setting, the Certificate › Transparency tab with stale origins out of the Renewal plan and Rollout board and IP columns that export addresses, and the workspace watchlist, colour and attention count.
+- **Wave 10 — shipped (2026-11-05)** ([what shipped and where](#wave-10--shipped-2026-11-05)): IP Scan — which addresses of a range are free, from the new `cli/ip_scan.py` (ping, TCP ports, the ARP table, reverse DNS) with the server list on top — and the fixes of a whole-project review: Node 26 and Python 3.9–3.13 in CI, the runner's outage semantics (`--max-carry-days`), the CLIs' broken-host, deadline, exit-code and trust fixes, the data bots.
 - **P0** — high value, verified feasible, next iteration
   - [P0.1 Verify the served certificate from the internet (Globalping SNI probe)](#p01-verify-the-served-certificate-from-the-internet-globalping-sni-probe)
   - [P0.2 Origin exposure audit for Cloudflare/CDN-proxied hosts](#p02-origin-exposure-audit-for-cloudflarecdn-proxied-hosts) — **shipped (Servers › Exposure audit, 2026-10-08)**
@@ -260,6 +261,17 @@ Three branches worked off the pick-up list above, merged in this order.
 | Workspace extras: the `watchlist` part (Domain portfolio starts from it, Home counts against it), an optional workspace colour, and an attention count per workspace in the dialog; the `wsextras` offline E2E suite | `lib/watchlist.js`, `lib/wscolor.js`, `lib/wsattention.js`, `ui/workspace-panel.js`, SPEC §5.39a | [DESIGN.md](DESIGN.md) Appendix C: C5, C6, C7 |
 
 **Status (2026-10-15): with wave 9 merged, the start route is at 284,790 bytes gzip of its 370 KB budget.**
+
+## Wave 10 — shipped (2026-11-05)
+
+| Feature | Where | Roadmap item |
+| --- | --- | --- |
+| **IP Scan**: a range as a map of used, claimed, free (confirmed by ARP) and reserved addresses, the server list claiming its silent addresses, the free addresses to use, CSV and free.txt; offline, nothing sent | `views/ipscan.js`, `lib/ipscan.js`, `lib/ipscansummary.js`, SPEC §5.103, §6 | new (an Angry IP Scanner for placing servers) |
+| `cli/ip_scan.py`: ping (unprivileged ICMP, raw, or the Windows API), TCP ports (a reset proves a machine), the ARP table, reverse DNS, the web Server header; `--free`, `--expect-free` | `cli/ip_scan.py`, SPEC §7.4 | new |
+| CI: Node 22 / 24 / 26 with a per-test time limit, Python 3.9 / 3.12 / 3.13 and Windows, job time limits, a weekly run 60 days ahead (`date-check.yml`); the data bots start CI themselves and say which setting blocks their pull request | `.github/workflows/` | review findings |
+| Runner: a resolver outage is no change in subdomains, drift, renew and dane; data carried longer than `--max-carry-days` (7) is stale, exit 6; an unverified CRL revocation is unknown; UDP answers only from the server asked; the nightly template in a read-only and a write job | `tools/ds/`, `docs/examples/` | review findings |
+| CLIs: one broken host never aborts or looks clean (content_audit), total deadlines instead of per-read timeouts, exit 70 for a crash and 6 for "nothing could be read" (ssl_origin_scan), CRLs only for certificates that matter, private-CA trust by a real handshake, Python 3.13's partial-chain flag cleared, report files checked and written atomically | `cli/` | review findings |
+
 
 ## P0 — next iteration
 

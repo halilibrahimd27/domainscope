@@ -16,7 +16,7 @@ at a name of the file that the file does not have (EXTRA: a provider's parking a
 default MX), TTL differences, whether the server is authoritative for the zone and its SOA
 serial, and the order of the move.
 
-Python 3.8+, standard library only, single file - copy it anywhere.
+Python 3.9+, standard library only, single file - copy it anywhere.
 
 With --axfr ZONE it tries a zone transfer (AXFR, over TCP) at every name server of the zone
 instead, and says whether anyone can download the whole zone (the records are only counted).
@@ -2075,7 +2075,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG, formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EPILOG,
         description='Before a DNS provider move: ask the NEW name servers for every record set of a '
-                    'BIND zone file and list what is missing, different or extra there. Python 3.8+, '
+                    'BIND zone file and list what is missing, different or extra there. Python 3.9+, '
                     'standard library only.')
     parser.add_argument('zonefile', nargs='?', help='the zone file (BIND / RFC 1035 master format; "-" for stdin)')
     parser.add_argument('--ns', metavar='SERVER', action='extend', nargs='+',

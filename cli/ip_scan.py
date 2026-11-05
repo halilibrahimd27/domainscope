@@ -35,7 +35,7 @@ addresses, one a line, for a script. Exit code 0; 1 with `--expect-free` when an
 expected to be free is used or claimed; 2 for a usage error, 3 when a report file could not be
 written, 70 for an internal error, 130 when interrupted.
 
-Python 3.8+, standard library only, single file - copy it anywhere.
+Python 3.9+, standard library only, single file - copy it anywhere.
 
 The module is importable: parse_targets(), Block, HostResult, verdict(), tcp_probe(),
 IcmpSweeper, parse_proc_arp(), parse_arp_command(), read_arp_table(), ptr_names(),
@@ -1280,7 +1280,7 @@ confirmed free."""
 
 def build_parser() -> argparse.ArgumentParser:
     description = ('Which addresses of an IPv4 range are in use, and which are free: ping, a few '
-                   'TCP ports, the ARP table and reverse DNS, per address. Python 3.8+, stdlib only.')
+                   'TCP ports, the ARP table and reverse DNS, per address. Python 3.9+, stdlib only.')
     parser = argparse.ArgumentParser(prog=PROG, formatter_class=argparse.RawDescriptionHelpFormatter,
                                      description=description, epilog=EPILOG)
     parser.add_argument('--version', action='version', version='%(prog)s ' + __version__)

@@ -708,8 +708,9 @@ async function paletteGroup(browser, server) {
         wide: b.getBoundingClientRect().width >= 280
       };
     });
+    // the browser runs here, and Apple platforms show ⌘K (lib/shellnav.js paletteKeyHint)
     assertEqual(btn, {
-      tag: 'BUTTON', text: 'Search tools, domains, IPs…', key: 'Ctrl K', keys: 'Control+K Meta+K', popup: 'dialog', label: null,
+      tag: 'BUTTON', text: 'Search tools, domains, IPs…', key: process.platform === 'darwin' ? '⌘K' : 'Ctrl K', keys: 'Control+K Meta+K', popup: 'dialog', label: null,
       title: 'Search the tools, or act on a domain or an IP address', wide: true
     }, 'the header\'s search');
     await pal.click('#header-actions [data-control="palette"]');
@@ -2710,11 +2711,22 @@ async function main() {
         }
       });
 
-      // Chrome keeps a failed module fetch for the rest of the document: back online, opening that
-      // view again fails at once although its file answers, so only a reload can load it.
-      await step('back online, the view whose download failed offers a page reload, which loads it', async () => {
+      // Chrome has kept a failed module fetch for the rest of the document: back online, opening that
+      // view again failed at once although its file answered, so only a reload could load it — the
+      // shell then offers one ('stuck'). Newer Chrome builds fetch the module again: the view loads at
+      // once. Either way the view comes back without a stale claim; the reload path is checked when
+      // the browser takes it.
+      await step('back online, the view whose download failed loads: at once, or through the page reload offered when the browser keeps the failure', async () => {
         await tab.evaluate(() => { window.location.hash = '#/health'; });
-        await tab.waitFor(() => !!document.querySelector('#page-body [data-action="reload-page"]'), { message: 'reload offered' });
+        await tab.waitFor(() => !!document.querySelector('#page-body [data-action="reload-page"]')
+          || (document.querySelector('#page-body')?.dataset.view === 'health' && document.querySelector('#page-body').childElementCount > 0
+            && !document.querySelector('#page-body .page-loading, #page-body > .alert')), { timeout: 15000, message: 'reload offered, or Domain Health loaded' });
+        if (!await tab.evaluate(() => !!document.querySelector('#page-body [data-action="reload-page"]'))) {
+          console.log('        (this browser fetched the failed module again: no reload needed)');
+          await tab.resetProblems(); // the failed import of the offline step is logged on purpose
+          await assertClean(tab, 'loaded again');
+          return;
+        }
         setNodeLang('en');
         const text = await tab.evaluate(() => document.querySelector('#page-body .alert').textContent);
         assert(text.includes(translate('shell.viewStuck')) && !text.includes(translate('shell.viewOutdated')), `banner: ${text}`);
@@ -2872,6 +2884,11 @@ async function main() {
         const sent = await pwa.evaluate(() => performance.getEntriesByType('resource').filter((e) => /dns-query|\/resolve\?/.test(e.name)).length);
         assertEqual(sent, 0, 'no DoH request');
         await assertClean(pwa, 'offline', { offline: true });
+        // Leave the shared link while still offline: opened online, `#/health?domain=…` (no run=0) runs
+        // its check, so the update reloads of the next steps would send Domain Health's queries to the
+        // real resolvers — out to the internet from an offline suite, and failures that land in a
+        // later step's problems wherever egress is blocked.
+        await gotoRoute(pwa, 'about');
         await pwa.resetProblems(); // the browser's own offline failures must not count once it is back online
       });
 
@@ -2905,6 +2922,7 @@ async function main() {
         const two = (await deployed()).names;
         assertEqual(after, [two.shell, two.wordlists].sort(), 'caches');
         assertEqual(await pwa.evaluate(() => !!document.querySelector('.toast[data-toast="pwa-update"]')), false, 'toast gone');
+        assertEqual(await pwa.evaluate(() => performance.getEntriesByType('resource').filter((e) => /dns-query|\/resolve\?/.test(e.name)).length), 0, 'no DoH request after the reload');
         await assertClean(pwa, 'after the update');
       });
 
@@ -2967,6 +2985,7 @@ async function main() {
           return k.length === 2 && k.includes(name) && k;
         }, { args: [rebuilt], timeout: 15000, message: 'the earlier build\'s cache dropped' });
         assertEqual(keys, [rebuilt, (await deployed()).names.wordlists].sort(), 'caches');
+        assertEqual(await pwa.evaluate(() => performance.getEntriesByType('resource').filter((e) => /dns-query|\/resolve\?/.test(e.name)).length), 0, 'no DoH request after the reload');
         await assertClean(pwa, 'after the rebuilt update');
       });
     } finally {

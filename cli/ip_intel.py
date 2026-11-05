@@ -42,11 +42,13 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import socket
 import ssl
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -97,6 +99,7 @@ EXIT_OK = 0
 EXIT_SOURCE_ERRORS = 1   # only with --fail-on-error
 EXIT_USAGE = 2
 EXIT_OUTPUT_ERROR = 3    # a --json / --csv file could not be written after the run
+EXIT_INTERNAL_ERROR = 70  # a bug: an unexpected exception (the traceback goes to stderr)
 EXIT_INTERRUPTED = 130
 
 DEFAULT_PORTS = (443,)
@@ -1852,7 +1855,8 @@ source statuses (per address): OK, SKIPPED (not asked: a private address, or IPv
 
 exit codes: 0 done, 1 PTR or a source failed for an address (only with --fail-on-error; a TLS
   port that does not answer is a state of the address, not a failure), 2 usage error, 3 a
-  report file could not be written, 130 interrupted.
+  report file could not be written, 70 internal error (a bug; the traceback goes to stderr,
+  keys redacted), 130 interrupted.
 
 Türkçe: Bir IP adresinin bugün sunduğu ya da geçmişte sunduğu alan adlarını kendi
   ağınızdan bulur: adresin sunduğu sertifikalar (SNI'li ve SNI'siz), PTR, ücretsiz pasif DNS
@@ -1927,13 +1931,67 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# --- report files: checked before the run, written whole or not at all ------------------
+
+def _same_path(first: Optional[str], second: Optional[str]) -> bool:
+    """True when two command-line paths name the same file (never for ``-``)."""
+    if not first or not second or '-' in (first, second):
+        return False
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
+def _check_output_paths(json_path: Optional[str], csv_path: Optional[str]) -> None:
+    """Refuse report files that cannot be written before the run, not after it: both on one
+    file (the second would replace the first), stdout twice, a missing directory, a directory,
+    a read-only file. Nothing is truncated or left behind."""
+    if json_path == '-' and csv_path == '-':
+        raise UsageError('--json - and --csv - cannot both write to stdout')
+    if _same_path(json_path, csv_path):
+        raise UsageError('--json and --csv name the same file %s: give each its own'
+                         % _plain(json_path or ''))
+    for path, option in ((json_path, '--json'), (csv_path, '--csv')):
+        if not path or path == '-':
+            continue
+        directory = os.path.dirname(os.path.abspath(path))
+        if not os.path.isdir(directory):
+            raise UsageError('%s: directory does not exist: %s' % (option, _plain(directory)))
+        if os.path.isdir(path):
+            raise UsageError('%s: %s is a directory' % (option, _plain(path)))
+        try:
+            if os.path.isfile(path):
+                with open(path, 'r+b'):  # open for writing, without truncating
+                    pass
+            elif not os.path.exists(path):
+                with open(path, 'xb'):
+                    pass
+                os.remove(path)
+        except OSError as exc:
+            raise UsageError('%s: cannot write %s: %s' % (option, _plain(path), exc.strerror or exc))
+
+
 def _write(path: str, text: str, encoding: str = 'utf-8') -> None:
+    """``-`` is stdout; a file is written whole or not at all (a temporary file next to it,
+    renamed over it), so an interrupted run leaves the previous report as it was."""
     if path == '-':
         sys.stdout.write(text)
         sys.stdout.flush()
         return
-    with open(path, 'w', encoding=encoding, newline='') as handle:
-        handle.write(text)
+    temp = '%s.%d.tmp' % (path, os.getpid())
+    try:
+        with open(temp, 'x', encoding=encoding, newline='') as handle:
+            handle.write(text)
+        if os.path.isfile(path):
+            try:
+                shutil.copymode(path, temp)
+            except OSError:
+                pass  # keep the default mode rather than fail the report
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        raise
 
 
 def _run_domains(args: argparse.Namespace) -> int:
@@ -1946,8 +2004,7 @@ def _run_domains(args: argparse.Namespace) -> int:
         raise UsageError('--max must be between 1 and %d' % MAX_ADDRESSES)
     if not 0 <= args.sni_max <= 256:
         raise UsageError('--sni-max must be between 0 and 256')
-    if args.json == '-' and args.csv == '-':
-        raise UsageError('--json - and --csv - cannot both write to stdout')
+    _check_output_paths(args.json, args.csv)
     ports = _ports(args.ports)
     keys = {} if args.no_keys else load_keys(os.environ)
     sources = select_sources(args.sources, passive=not args.no_passive, keys=keys)
@@ -1999,8 +2056,22 @@ def _run_domains(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _internal_error(exc: BaseException) -> int:
+    """An unexpected exception is a bug: its traceback (any key of the environment redacted),
+    one line saying so, and exit 70, never the 1 that means "a source failed"."""
+    secrets = list(load_keys(os.environ).values())
+    trace = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    text = str(exc)
+    text = text if len(text) <= 160 else text[:157] + '...'
+    sys.stderr.write(redact(trace, secrets))
+    print(redact('%s: internal error: %s%s (exit %d; please report it)'
+                 % (PROG, type(exc).__name__, ': ' + text if text else '', EXIT_INTERNAL_ERROR), secrets),
+          file=sys.stderr)
+    return EXIT_INTERNAL_ERROR
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Command-line entry point; returns the exit code (0, 1, 2, 3 or 130)."""
+    """Command-line entry point; returns the exit code (0, 1, 2, 3, 70 or 130)."""
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(errors='replace')  # the Turkish help on a console that lacks a letter
@@ -2023,6 +2094,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyboardInterrupt:
         print('\ninterrupted', file=sys.stderr)
         return EXIT_INTERRUPTED
+    except Exception as exc:
+        return _internal_error(exc)
 
 
 if __name__ == '__main__':

@@ -55,7 +55,7 @@ import { zoneHandoffScript } from './scan.e2e.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = path.join(HERE, 'screenshots');
 const BASE = '/domainscope/';
-const ROUTES = ['home', 'domain', 'health', 'subdomains', 'lookup', 'scan', 'cert', 'renew', 'estate', 'change', 'global', 'zone', 'retire', 'ip', 'bulk', 'ptr', 'ipscan', 'portfolio', 'monitor', 'reports', 'inventory', 'about'];
+const ROUTES = ['home', 'domain', 'health', 'subdomains', 'lookup', 'dirmap', 'scan', 'cert', 'renew', 'estate', 'change', 'global', 'zone', 'retire', 'ip', 'bulk', 'ptr', 'ipscan', 'portfolio', 'monitor', 'reports', 'inventory', 'about'];
 
 /** The page's <h1> for a route: the tool's name, or on Home the workspace's (Default in this profile). */
 const HOME_TITLE = { en: 'Default workspace', tr: 'Varsayılan çalışma alanı' };
@@ -2286,7 +2286,7 @@ async function main() {
       assert(menu.modal && menu.sheet && menu.full, `a modal sheet over the whole screen (focus trap, the page inert): ${JSON.stringify(menu)}`);
       assertEqual(menu.title, 'Tools', 'dialog title');
       assertEqual(menu.groups, [
-        [null, ['home']], ['Investigate a domain', ['domain', 'health', 'subdomains', 'lookup']], ['Deploy & renew certificates', ['scan', 'cert', 'renew', 'estate']],
+        [null, ['home']], ['Investigate a domain', ['domain', 'health', 'subdomains', 'lookup', 'dirmap']], ['Deploy & renew certificates', ['scan', 'cert', 'renew', 'estate']],
         ['Change & migrate DNS', ['change', 'global', 'zone', 'retire']], ['Map IPs to servers', ['ip', 'bulk', 'ptr', 'ipscan']],
         ['Watch & report', ['portfolio', 'monitor', 'reports']], ['Setup & help', ['inventory', 'about']]
       ], 'groups');
@@ -2857,7 +2857,7 @@ async function main() {
           title: document.querySelector('#page-offline .alert-title')?.textContent,
           tools: [...document.querySelectorAll('#page-offline a[data-view]')].map((a) => a.dataset.view)
         }));
-        assertEqual(note, { hidden: false, title: translate('shell.offlineTitle'), tools: ['cert', 'estate', 'change', 'zone', 'ipscan', 'monitor', 'reports', 'inventory', 'about'] }, 'offline note');
+        assertEqual(note, { hidden: false, title: translate('shell.offlineTitle'), tools: ['dirmap', 'cert', 'estate', 'change', 'zone', 'ipscan', 'monitor', 'reports', 'inventory', 'about'] }, 'offline note');
         await pwa.type('[data-role="lookup-name"]', 'example.com');
         await pwa.click('[data-action="run"]');
         await pwa.waitFor((text) => [...document.querySelectorAll('.toast')].some((el) => el.textContent.includes(text)),

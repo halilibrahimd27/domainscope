@@ -287,7 +287,7 @@ describe('web app manifests', () => {
     await import('../../assets/js/views/about.js'); // registers about.privOffline
     assert.equal(VIEWS.find((v) => v.id === 'home').offline, true, 'Home reads only what the browser keeps');
     const offline = VIEWS.filter((v) => v.offline && v.group !== 'home').map((v) => v.id);
-    assert.deepEqual(offline, ['cert', 'estate', 'change', 'zone', 'ipscan', 'monitor', 'reports', 'inventory', 'about']);
+    assert.deepEqual(offline, ['dirmap', 'cert', 'estate', 'change', 'zone', 'ipscan', 'monitor', 'reports', 'inventory', 'about']);
     const prev = getLang();
     try {
       for (const [m, lang] of [[en, 'en'], [tr, 'tr']]) {

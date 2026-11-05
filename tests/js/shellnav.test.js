@@ -70,7 +70,7 @@ describe('groupViews — the tool groups', () => {
     const groups = groupViews(VIEWS);
     assert.deepEqual(ids(groups), ['home', 'investigate', 'certs', 'change', 'network', 'watch', 'setup']);
     assert.deepEqual(groups.map((g) => ids(g.views)), [
-      ['home'], ['domain', 'health', 'subdomains', 'lookup'], ['scan', 'cert', 'renew', 'estate'], ['change', 'global', 'zone', 'retire'],
+      ['home'], ['domain', 'health', 'subdomains', 'lookup', 'dirmap'], ['scan', 'cert', 'renew', 'estate'], ['change', 'global', 'zone', 'retire'],
       ['ip', 'bulk', 'ptr', 'ipscan'], ['portfolio', 'monitor', 'reports'], ['inventory', 'about']
     ]);
     assert.deepEqual(groups.flatMap((g) => ids(g.views)).sort(), ids(VIEWS).sort());

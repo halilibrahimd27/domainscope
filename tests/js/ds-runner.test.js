@@ -1772,11 +1772,14 @@ describe('the documented commands', () => {
     const all = Number(/RUN_MINUTES: (\d+)/.exec(yml)[1]);
     assert.ok(check <= all && all + 10 <= job, `${check} / ${all} / ${job}`);
     assert.match(yml, /end=\$\(\( \$\(date \+%s\) \+ RUN_MINUTES \* 60 \)\)/);
-    assert.match(yml, /FAILED: \$\{\{ steps\.ds\.outputs\.failed \}\}\n\s+RESULTS:/, 'the issue step knows what failed');
+    assert.match(yml, /FAILED: \$\{\{ needs\.checks\.outputs\.failed \}\}\n\s+RESULTS:/, 'the issue step knows what failed');
     const issueStep = yml.slice(yml.indexOf('- name: Open, update or close the issue'), yml.indexOf('- name: Fail when a check did not complete'));
     const close = issueStep.indexOf('gh issue close');
     assert.ok(close > issueStep.indexOf('elif [ -n "$FAILED" ]; then'), 'closed only after the failed nights are handled');
     assert.match(issueStep, /elif \[ -n "\$FAILED" \]; then\n(?:.*\n){1,2}\s+if \[ -n "\$issue" \]; then\n\s+gh issue comment "\$issue" --body "Not closed: /);
+    // "every check completed" only on a night nothing failed, and a check that carried data past
+    // --max-carry-days fails, so the closing words can say nothing stale was carried
+    assert.match(issueStep, /gh issue close "\$issue" --comment "No change since the previous nightly run: every check completed, and nothing was carried past its age limit \(--max-carry-days\)/);
     assert.match(yml, /--sources crtsh/);
     const readme = readFileSync(join(ROOT, 'docs', 'examples', 'README.md'), 'utf8');
     assert.match(readme, /`--sources crtsh` on the `ct` line/);
@@ -1789,7 +1792,22 @@ describe('the documented commands', () => {
     assert.match(yml, /Never commit inventories or zone files unless you mean to/);
     assert.match(yml, /No secret is needed/);
     assert.match(yml, /^ {4}- cron: '\d+ \d+ \* \* \*'/m);
-    assert.match(yml, /^permissions:\n {2}contents: write[^\n]*\n {2}issues: write[^\n]*\n\n/m);
+    // Read-only by default; DomainScope's code runs in a job that can only read, and the job that
+    // can write (commit, issue) runs none of it: it only takes the results the first one uploaded.
+    assert.match(yml, /^permissions:\n {2}contents: read[^\n]*\n\n/m);
+    const checksJob = yml.slice(yml.indexOf('\n  checks:\n'), yml.indexOf('\n  publish:\n'));
+    const publishJob = yml.slice(yml.indexOf('\n  publish:\n'));
+    assert.ok(checksJob.length > 0 && publishJob.length > 0, 'the checks and publish jobs');
+    assert.match(checksJob, /\n {4}permissions:\n {6}contents: read[^\n]*\n {4}outputs:/);
+    assert.doesNotMatch(checksJob, /: write\b/);
+    assert.match(checksJob, /- name: Check out DomainScope/);
+    assert.match(checksJob, /node \.domainscope\/tools\/ds\.mjs/);
+    assert.match(checksJob, /uses: actions\/upload-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+\n {8}with:\n {10}name: domainscope-results\n {10}path: results\//);
+    assert.match(publishJob, /^ {4}needs: checks$/m);
+    assert.match(publishJob, /\n {4}permissions:\n {6}contents: write[^\n]*\n {6}issues: write[^\n]*\n {4}steps:/);
+    assert.doesNotMatch(publishJob, /\.domainscope|halilibrahimd27\/domainscope|setup-node/, 'no DomainScope code where the token can write');
+    assert.match(publishJob, /uses: actions\/download-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+\n {8}with:\n {10}name: domainscope-results\n/);
+    for (const output of ['changed', 'failed', 'results']) assert.match(checksJob, new RegExp(`\\n {6}${output}: \\$\\{\\{ steps\\.ds\\.outputs\\.${output} \\}\\}\\n`), output);
     // The only secrets are the optional alert channels (unset: empty, nothing is sent).
     const secretNames = [...yml.matchAll(/\$\{\{ secrets\.([A-Z_]+) \}\}/g)].map((m) => m[1]);
     assert.deepEqual(secretNames, ['DOMAINSCOPE_NOTIFY_URL', 'DOMAINSCOPE_NOTIFY_BAD_URL', 'DOMAINSCOPE_NOTIFY_SECRET', 'DOMAINSCOPE_NTFY_TOKEN']);
@@ -1810,7 +1828,9 @@ describe('the documented commands', () => {
     for (const name of secretNames) assert.match(checks, new RegExp(`\\n {10}${name}: \\$\\{\\{ secrets\\.${name} \\}\\}\\n`), name);
     const commit = steps.find((s) => s.includes('- name: Commit the results'));
     assert.match(commit, /auth="http\.\$GITHUB_SERVER_URL\/\.extraheader=AUTHORIZATION: basic \$\(printf 'x-access-token:%s' "\$GH_TOKEN" \| base64 -w0\)"\n\s+git -c "\$auth" pull -q --rebase\n\s+git -c "\$auth" push -q/);
-    assert.match(yml, /ref: main {3}# pin a commit SHA \(or a release tag once there is one\)/);
+    // pinned to a commit out of the box, never main (every night would run whatever was pushed last)
+    assert.match(yml, /\n {10}ref: [0-9a-f]{40} {3}# pinned; move it forward on purpose, never to main\n/);
+    assert.doesNotMatch(yml, /\n\s+ref: main\b/);
     const readme = readFileSync(join(ROOT, 'docs', 'examples', 'README.md'), 'utf8');
     for (const rule of ['Use it in a private repository', 'Never commit inventories or zone files unless you mean to', 'No secret is needed']) assert.ok(readme.includes(rule), rule);
   });

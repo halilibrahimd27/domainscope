@@ -1,7 +1,7 @@
 {
   "format": 1,
-  "generated": "2026-10-05",
-  "digest": "3634e2b32e2620135aef1227a241671d3222f2ee1bcc333689fd94fe39d57448",
+  "generated": "2026-11-02",
+  "digest": "a5d153adf3a3ba30b05b6da28bd95dfa873cbb1b76bcbef6ad8cb6661ddc829e",
   "sources": [
     {
       "id": "intermediates",
@@ -44,12 +44,12 @@
     }
   },
   "counts": {
-    "intermediates": 2304,
-    "keys": 2149,
-    "roots": 245,
-    "events": 35,
+    "intermediates": 2284,
+    "keys": 2143,
+    "roots": 243,
+    "events": 33,
     "distrustEvents": 31,
-    "expiryEvents": 4
+    "expiryEvents": 2
   },
   "lifecycleWindow": {
     "from": "2025-01-01",

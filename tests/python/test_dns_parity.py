@@ -422,10 +422,25 @@ class MessageTests(unittest.TestCase):
                                                                                 ('example.com', 'A', '192.0.2.10')])
 
     def test_malformed_replies(self):
+        too_long = b''.join(b'\x3f' + b'a' * 63 for _ in range(4)) + b'\x00'  # 4 * 64 + 1 = 257 octets
         for bad in (b'\x00' * 5, struct.pack('!HHHHHH', 1, 0x8000, 1, 0, 0, 0) + b'\x03abc',
-                    struct.pack('!HHHHHH', 1, 0x8000, 1, 0, 0, 0) + b'\xc0\x0c\x00\x01\x00\x01'):
+                    struct.pack('!HHHHHH', 1, 0x8000, 1, 0, 0, 0) + b'\xc0\x0c\x00\x01\x00\x01',
+                    struct.pack('!HHHHHH', 1, 0x8000, 1, 0, 0, 0) + too_long + b'\x00\x01\x00\x01'):
             with self.assertRaises(dp.DnsError):
                 dp.parse_message(bad)
+        # 255 octets exactly is a valid name: three 63-octet labels and one of 61.
+        longest = b''.join(b'\x3f' + b'a' * 63 for _ in range(3)) + b'\x3d' + b'b' * 61 + b'\x00'
+        msg = struct.pack('!HHHHHH', 1, 0x8000, 1, 0, 0, 0) + longest + b'\x00\x01\x00\x01'
+        self.assertEqual(len(dp.parse_message(msg).question[0]), 255 - 2)
+
+    def test_a_malformed_soa_makes_the_server_unreachable_never_a_serial(self):
+        def query(address, port, name, rtype, timeout, tcp):
+            return dp.Message(1, 'NOERROR', True, False, True, (name, 6),
+                              [dp.RR(name, 'SOA', 3600, ('#', '0001'), '\\# 2 0001')], [], [])
+        ns = dp.parse_nameserver('192.0.2.53')
+        dp.check_nameserver(dp.Asker(ns, 1.0, False, query=query), 'example.com')
+        self.assertEqual((ns.state, ns.serial), (dp.NS_UNREACHABLE, None))
+        self.assertIn('malformed SOA', ns.detail)
 
 
 class NameServerArgTests(unittest.TestCase):
@@ -672,6 +687,27 @@ class CommandLineTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
+    def test_report_files_are_checked_before_any_question(self):
+        same = os.path.join(self.tmp.name, 'both.out')
+        with mock.patch.object(dp, 'run_parity') as run:
+            code, _, err = run_main(self.zone, '--ns', '192.0.2.53', '--json', same, '--csv', same)
+            self.assertEqual(code, 2)
+            self.assertIn('same file', err)
+            code, _, err = run_main(self.zone, '--ns', '192.0.2.53', '--json',
+                                    os.path.join(self.tmp.name, 'missing', 'out.json'))
+            self.assertEqual(code, 2)
+            self.assertIn('directory does not exist', err)
+        run.assert_not_called()
+        self.assertFalse(os.path.exists(same))
+
+    def test_an_internal_error_exits_70_with_the_traceback(self):
+        with mock.patch.object(dp, '_run', side_effect=KeyError('surprise')):
+            code, _, err = run_main(self.zone, '--ns', '192.0.2.53')
+        self.assertEqual(code, dp.EXIT_INTERNAL_ERROR)
+        self.assertEqual(code, 70)
+        self.assertIn('Traceback', err)
+        self.assertIn("dns_parity.py: internal error: KeyError: 'surprise'", err)
+
     def test_reports_and_exit_codes(self):
         server = FakeAuthority('example.com', GOOD, cuts=DEV_CUT)
         out_json = os.path.join(self.tmp.name, 'parity.json')
@@ -890,6 +926,24 @@ class FakeTransfer:
                     conn.sendall(self._message(msg_id, question, [], 5 if self.mode == 'refused' else 9))
                 elif self.mode == 'nosoa':
                     conn.sendall(self._message(msg_id, question, body))
+                elif self.mode == 'shortsoa':
+                    # A SOA whose rdata holds its two names but only 2 bytes of the 20 that follow.
+                    data = enc_name('ns1.example.net') + enc_name('hostmaster.example.com') + b'\x00\x01'
+                    bad = enc_name(self.zone) + struct.pack('!HHIH', CODES['SOA'], 1, 3600, len(data)) + data
+                    conn.sendall(self._message(msg_id, question, [bad] + body))
+                elif self.mode == 'longname':
+                    # An owner name of five 63-octet labels: 321 octets, over the 255 of RFC 1035.
+                    long_name = b''.join(b'\x3f' + b'a' * 63 for _ in range(5)) + b'\x00'
+                    rr = long_name + struct.pack('!HHIH', CODES['A'], 1, 3600, 4) + bytes([192, 0, 2, 1])
+                    conn.sendall(self._message(msg_id, question, [soa, rr]))
+                elif self.mode == 'drip':
+                    # The zone's first message one byte every 0.3 s: no read ever times out.
+                    message = self._message(msg_id, question, [soa] + body)
+                    for i in range(len(message)):
+                        if not self.alive:
+                            break
+                        conn.sendall(message[i:i + 1])
+                        time.sleep(0.3)
                 elif self.mode == 'silent':
                     continue
             except OSError:
@@ -1002,6 +1056,35 @@ class AxfrTests(unittest.TestCase):
                               'nameserver not-an-address\noptions ndots:1\n', encoding='utf-8')
         self.assertEqual(dp.system_resolvers(conf), ['192.0.2.53', 'fe80::1'])
         self.assertEqual(dp.system_resolvers(os.path.join(self.tmp.name, 'none')), [])
+
+    def test_a_malformed_soa_or_an_overlong_name_is_a_malformed_answer_never_a_crash(self):
+        short = self.server('shortsoa')
+        result = dp.try_axfr('127.0.0.1', short.port, 'example.com', timeout=2)
+        self.assertEqual((result.status, result.serial, result.records), (dp.AXFR_ERROR, None, 0))
+        self.assertIn('SOA record is cut short', result.detail)
+        long_name = self.server('longname')
+        result = dp.try_axfr('127.0.0.1', long_name.port, 'example.com', timeout=2)
+        self.assertEqual((result.status, result.records), (dp.AXFR_ERROR, 0))
+        self.assertIn('longer than 255 octets', result.detail)
+        code, out, err = run_main('--axfr', 'example.com', '--ns', '127.0.0.1:%d' % short.port,
+                                  '127.0.0.1:%d' % long_name.port, '--timeout', '2')
+        self.assertEqual(code, 0, err)
+        self.assertNotIn('Traceback', err)
+        self.assertRegex(out, r'127\.0\.0\.1\s+ERROR\s+a malformed answer: the SOA record is cut short')
+
+    def test_a_server_that_drips_is_cut_at_the_timeout(self):
+        drip = self.server('drip')
+        started = time.monotonic()
+        result = dp.try_axfr('127.0.0.1', drip.port, 'example.com', timeout=1.0)
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertEqual(result.status, dp.AXFR_ERROR)
+        self.assertIn('no answer in 1s', result.detail)
+
+    def test_one_server_s_bug_costs_its_own_line(self):
+        srv = self.server('open')
+        with mock.patch.object(dp, 'try_axfr', side_effect=IndexError('odd')):
+            results = dp.run_axfr('example.com', [dp.parse_nameserver('127.0.0.1:%d' % srv.port)], timeout=1)
+        self.assertEqual([(r.status, r.detail) for r in results], [(dp.AXFR_ERROR, 'a malformed answer (IndexError)')])
 
     def test_the_resolver_query_asks_for_recursion(self):
         self.assertEqual(struct.unpack('!H', dp.build_query('example.com', 'NS', 1, rd=True)[2:4])[0], 0x0100)

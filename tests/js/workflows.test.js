@@ -5,8 +5,9 @@
  * - Deploy to GitHub Pages runs CI first and deploys only when it passes, never cancels a running
  *   deployment, and publishes the bundle of tools/assemble-site.mjs;
  * - Intermediates rebuilds the CCADB intermediate list weekly, checks it, and proposes a change
- *   only as a pull request from its own branch; Ranges and Senders do the same for the provider
- *   ranges and the sender lists.
+ *   only as a pull request from its own branch, on which it starts CI; Ranges and Senders do the
+ *   same for the provider ranges and the sender lists;
+ * - Date check runs the unit and CLI tests weekly with the clock 60 days ahead, gating nothing.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -64,11 +65,40 @@ describe('ci.yml', () => {
   test('has the unit, CLI and offline E2E jobs', () => {
     const j = jobs(ci);
     assert.deepEqual(Object.keys(j).sort(), ['e2e', 'js', 'python']);
-    assert.match(j.js, /node --test "tests\/js\/\*\.test\.js"/);
+    assert.match(j.js, /run: node --test --test-timeout=\d+ "tests\/js\/\*\.test\.js"/);
     assert.match(j.python, /python -m unittest discover -s tests\/python/);
     assert.match(j.e2e, /runs-on: ubuntu-latest/);
     assert.match(j.e2e, /run: npm run test:e2e:offline/);
     assert.match(j.e2e, /timeout-minutes: \d+/, 'a hung browser must not hold the deploy');
+  });
+
+  test('a hung test fails its test and its job, never holds the deploy for hours', () => {
+    // node --test has no default timeout and a job's default is six hours
+    const j = jobs(ci);
+    for (const id of ['js', 'python', 'e2e']) assert.match(j[id], /^ {4}timeout-minutes: \d+$/m, id);
+    const perTest = Number(/--test-timeout=(\d+)/.exec(j.js)[1]);
+    assert.ok(perTest >= 60000 && perTest <= 300000, `${perTest} ms`);
+    // npm test runs what CI runs
+    assert.equal(pkg.scripts.test, `node --test --test-timeout=${perTest} "tests/js/*.test.js"`);
+  });
+
+  test('the unit tests run on the Node floor of package.json and the LTS lines after it; one failing cancels none', () => {
+    const j = jobs(ci);
+    const nodes = /^ {8}node: \[([^\]]+)\]$/m.exec(j.js)[1].split(',').map((v) => Number(v.trim()));
+    assert.equal(nodes[0], Number(pkg.engines.node.replace('>=', '')), 'the floor first');
+    for (const v of [22, 24, 26]) assert.ok(nodes.includes(v), `Node ${v}`);
+    assert.match(j.js, /^ {6}fail-fast: false$/m);
+    assert.match(j.python, /^ {6}fail-fast: false$/m);
+  });
+
+  test('the CLI tests run on the Python floor, on the version after the ssl default change, and on Windows', () => {
+    const j = jobs(ci);
+    const rows = [...j.python.matchAll(/- \{ python: '([\d.]+)', os: ([\w.-]+) \}/g)].map((m) => [m[1], m[2]]);
+    // the floor stays on an image setup-python builds it for (3.9: Ubuntu 22.04 and 24.04)
+    assert.deepEqual(rows[0], ['3.9', 'ubuntu-24.04']);
+    assert.ok(rows.some(([v, os]) => v === '3.13' && os.startsWith('ubuntu')), '3.13: VERIFY_X509_PARTIAL_CHAIN is a default from it');
+    assert.ok(rows.some(([, os]) => os.startsWith('windows')), 'Windows');
+    assert.ok(!rows.some(([v]) => v === '3.8'), 'Python 3.8 is past its end of life');
   });
 
   test('npm run test:py calls python3, which macOS and Linux have (the CLI job gets python from setup-python)', () => {
@@ -125,11 +155,11 @@ describe('intermediates.yml', () => {
   test('builds, checks the data before anything is pushed, and only ever proposes it in a pull request', () => {
     assert.deepEqual(Object.keys(j), ['rebuild']);
     assert.doesNotMatch(block(yml, 'permissions').join('\n'), /write/, 'write access only in the job');
-    assert.match(j.rebuild, /^ {6}contents: write$/m);
-    assert.match(j.rebuild, /^ {6}pull-requests: write$/m);
+    assert.match(j.rebuild, /^ {6}contents: write\b/m);
+    assert.match(j.rebuild, /^ {6}pull-requests: write\b/m);
     const build = j.rebuild.indexOf('run: node tools/build-intermediates.mjs');
     const check = j.rebuild.indexOf('run: node --test tests/js/build-intermediates.test.js');
-    const push = j.rebuild.indexOf('git push --force origin "$branch"');
+    const push = j.rebuild.indexOf('push --force origin "$branch"');
     assert.ok(build > 0 && check > build && push > check, 'build, then check, then push');
     assert.match(j.rebuild, /^ {10}branch=bot\/intermediates$/m);
     assert.match(j.rebuild, /git add -- assets\/data\/intermediates/);
@@ -153,11 +183,11 @@ describe('ranges.yml', () => {
   test('builds, checks the data before anything is pushed, and only ever proposes it in a pull request', () => {
     assert.deepEqual(Object.keys(j), ['rebuild']);
     assert.doesNotMatch(block(yml, 'permissions').join('\n'), /write/, 'write access only in the job');
-    assert.match(j.rebuild, /^ {6}contents: write$/m);
-    assert.match(j.rebuild, /^ {6}pull-requests: write$/m);
+    assert.match(j.rebuild, /^ {6}contents: write\b/m);
+    assert.match(j.rebuild, /^ {6}pull-requests: write\b/m);
     const build = j.rebuild.indexOf('run: node tools/build-ranges.mjs');
     const check = j.rebuild.indexOf('run: node --test tests/js/build-ranges.test.js');
-    const push = j.rebuild.indexOf('git push --force origin "$branch"');
+    const push = j.rebuild.indexOf('push --force origin "$branch"');
     assert.ok(build > 0 && check > build && push > check, 'build, then check, then push');
     assert.match(j.rebuild, /^ {10}branch=bot\/ranges$/m);
     assert.match(j.rebuild, /git add -- assets\/data\/ranges/);
@@ -181,17 +211,74 @@ describe('senders.yml', () => {
   test('builds, checks the data before anything is pushed, and only ever proposes it in a pull request', () => {
     assert.deepEqual(Object.keys(j), ['rebuild']);
     assert.doesNotMatch(block(yml, 'permissions').join('\n'), /write/, 'write access only in the job');
-    assert.match(j.rebuild, /^ {6}contents: write$/m);
-    assert.match(j.rebuild, /^ {6}pull-requests: write$/m);
+    assert.match(j.rebuild, /^ {6}contents: write\b/m);
+    assert.match(j.rebuild, /^ {6}pull-requests: write\b/m);
     const build = j.rebuild.indexOf('run: node tools/build-senders.mjs');
     const check = j.rebuild.indexOf('run: node --test tests/js/build-senders.test.js');
-    const push = j.rebuild.indexOf('git push --force origin "$branch"');
+    const push = j.rebuild.indexOf('push --force origin "$branch"');
     assert.ok(build > 0 && check > build && push > check, 'build, then check, then push');
     assert.match(j.rebuild, /^ {10}branch=bot\/senders$/m);
     assert.match(j.rebuild, /git add -- assets\/data\/senders/);
     assert.match(j.rebuild, /gh pr create --head "\$branch" --base main/);
     assert.doesNotMatch(j.rebuild, /push[^\n]*\bmain\b/, 'never pushes to main');
     assert.ok(existsSync(join(ROOT, 'tools', 'build-senders.mjs')));
+  });
+});
+
+describe('the data bots (intermediates, ranges, senders)', () => {
+  for (const name of ['intermediates', 'ranges', 'senders']) {
+    const yml = read(`.github/workflows/${name}.yml`);
+    const j = jobs(yml).rebuild;
+
+    test(`${name}: no token on disk while downloaded data is built and checked; the push alone gets it`, () => {
+      assert.match(j, /uses: actions\/checkout@[0-9a-f]{40} # v[\d.]+\n {8}with:\n(?: {10}#[^\n]*\n)* {10}persist-credentials: false\n/);
+      const lines = j.split('\n');
+      const pushes = lines.filter((l) => /^\s*git\b.*\bpush\b/.test(l));
+      assert.deepEqual(pushes.map((l) => l.trim()), ['git -c "http.$GITHUB_SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" push --force origin "$branch"']);
+      assert.match(j, /echo "::add-mask::\$auth"/);
+    });
+
+    test(`${name}: CI runs on the bot branch, and a pull request Actions may not open is said in the summary, failing the job`, () => {
+      assert.match(j, /^ {6}actions: write\b/m);
+      assert.match(j, /\n {10}gh workflow run ci\.yml --ref "\$branch"\n {10}exit "\$code"\n/);
+      assert.ok(j.indexOf('gh workflow run ci.yml') > j.indexOf('gh pr create'), 'after the pull request');
+      assert.match(j, /not permitted to create or approve pull requests/);
+      assert.match(j, />> "\$GITHUB_STEP_SUMMARY"/);
+      assert.match(j, /Settings › Actions › General › Workflow permissions › \\"Allow GitHub Actions to create and approve pull requests\\"/);
+      assert.match(j, /compare="\$GITHUB_SERVER_URL\/\$GITHUB_REPOSITORY\/compare\/main\.\.\.\$branch\?expand=1"/);
+      assert.match(j, /\n {14}code=1\n/);
+      assert.doesNotMatch(yml, /[Cc]lose and reopen/, 'CI is started, not asked for');
+    });
+  }
+});
+
+describe('date-check.yml', () => {
+  const yml = read('.github/workflows/date-check.yml');
+  const j = jobs(yml);
+
+  test('runs weekly and by hand, read-only, and nothing waits for it', () => {
+    assert.match(yml, /^name: Date check$/m);
+    assert.deepEqual(keysAt(block(yml, 'on'), 2).sort(), ['schedule', 'workflow_dispatch']);
+    assert.match(block(yml, 'on').join('\n'), /schedule:\n {4}- cron: '\d+ \d+ \* \* \d'/);
+    assert.match(yml, /^permissions:\n {2}contents: read$/m);
+    assert.doesNotMatch(yml, /: write\b/);
+    assert.doesNotMatch(pages, /date-check/, 'never gates a deploy');
+    assert.doesNotMatch(yml, /workflow_call/);
+  });
+
+  test('moves the clock 60 days ahead for the unit tests and the CLI tests', () => {
+    assert.deepEqual(Object.keys(j), ['ahead']);
+    assert.match(j.ahead, /days="\$\{DAYS:-60\}"/);
+    assert.match(yml, /default: '60'/);
+    // the input reaches the script through the environment and only as a whole number
+    assert.match(j.ahead, /DAYS: \$\{\{ inputs\.days \}\}/);
+    assert.doesNotMatch(j.ahead.split('run: |')[1] || '', /\$\{\{ inputs/);
+    assert.match(j.ahead, /''\|\*\[!0-9\]\*\)/);
+    assert.match(j.ahead, /run: node tests\/time-travel\.mjs "\$DAY" -- node --test --test-timeout=\d+ "tests\/js\/\*\.test\.js"/);
+    assert.match(j.ahead, /run: node tests\/time-travel\.mjs "\$DAY" -- python -m unittest discover -s tests\/python/);
+    assert.match(j.ahead, /if: \$\{\{ !cancelled\(\) && steps\.day\.outcome == 'success' \}\}/, 'the CLI tests run when the unit tests failed too');
+    assert.match(j.ahead, /^ {4}timeout-minutes: \d+$/m);
+    assert.ok(existsSync(join(ROOT, 'tests', 'time-travel.mjs')));
   });
 });
 
@@ -225,7 +312,7 @@ describe('pages.yml', () => {
 test('every action of the workflows and the nightly template is pinned to a commit SHA, its version in a comment', () => {
   // A tag can be moved; a commit cannot. The deploy job can write to Pages, the bot job to this
   // repository, and the template's copies to their users' repositories.
-  for (const file of ['.github/workflows/ci.yml', '.github/workflows/intermediates.yml', '.github/workflows/ranges.yml', '.github/workflows/senders.yml', '.github/workflows/pages.yml', 'docs/examples/nightly-domainscope.yml']) {
+  for (const file of ['.github/workflows/ci.yml', '.github/workflows/intermediates.yml', '.github/workflows/ranges.yml', '.github/workflows/senders.yml', '.github/workflows/pages.yml', '.github/workflows/date-check.yml', 'docs/examples/nightly-domainscope.yml']) {
     const uses = [...read(file).matchAll(/^ +(?:- )?uses: (.+)$/gm)].map((m) => m[1]).filter((u) => !u.startsWith('./'));
     assert.ok(uses.length >= 2, file);
     for (const u of uses) assert.match(u, /^actions\/[a-z-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/, `${file}: ${u}`);

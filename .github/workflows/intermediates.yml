@@ -23,10 +23,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: write
-      pull-requests: write
+      contents: write        # push the bot branch
+      pull-requests: write   # open the pull request
+      actions: write         # start CI on the bot branch
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # the builder and the checks run on downloaded data: no token in .git/config while they
+          # do; the push below is handed it for that one command
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -35,9 +40,11 @@ jobs:
       # the dataset's own checks, the repair over the fixtures and the repository hygiene scan
       - name: Check the dataset
         run: node --test tests/js/build-intermediates.test.js tests/js/chainfix.test.js tests/js/pwa.test.js tests/js/repo-hygiene.test.js
-      # A pull request opened with this workflow's token does not start CI by itself: close and
-      # reopen it (or run CI by hand) before merging. The repository must allow GitHub Actions to
-      # create pull requests (Settings › Actions › General).
+      # A pull request opened with this workflow's token starts no workflow by itself, so the step
+      # starts CI on the bot branch (workflow_dispatch is the one event that token may trigger); its
+      # checks show on the pull request. Opening the pull request needs Settings › Actions ›
+      # General › Workflow permissions › "Allow GitHub Actions to create and approve pull
+      # requests"; without it the job summary links the branch to open it by hand, and the job fails.
       - name: Open or update the pull request
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,14 +54,40 @@ jobs:
             exit 0
           fi
           branch=bot/intermediates
+          title="data(intermediates): weekly refresh from ccadb"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
           git add -- assets/data/intermediates
-          git commit -m "data(intermediates): weekly refresh from ccadb"
-          git push --force origin "$branch"
+          git commit -m "$title"
+          # The checkout kept no token: it is handed to this one command, never written to disk.
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c "http.$GITHUB_SERVER_URL/.extraheader=AUTHORIZATION: basic $auth" push --force origin "$branch"
+          code=0
           if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
-            gh pr create --head "$branch" --base main \
-              --title "data(intermediates): weekly refresh from ccadb" \
-              --body "The weekly rebuild of assets/data/intermediates by tools/build-intermediates.mjs from the CCADB reports (see assets/data/intermediates/manifest.json for the counts). Close and reopen this pull request to run CI before merging."
+            if ! out=$(gh pr create --head "$branch" --base main \
+                --title "$title" \
+                --body "The weekly rebuild of assets/data/intermediates by tools/build-intermediates.mjs from the CCADB reports (see assets/data/intermediates/manifest.json for the counts). This workflow starts CI on the branch itself; merge once it is green." 2>&1); then
+              code=1
+              printf '%s\n' "$out"
+              compare="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$branch?expand=1"
+              if [[ "$out" == *'not permitted to create or approve pull requests'* ]]; then
+                {
+                  echo "### The pull request could not be opened"
+                  echo
+                  echo "GitHub Actions may not create pull requests in this repository, so the refreshed data waits on the \`$branch\` branch."
+                  echo
+                  echo "- Open the pull request by hand: $compare"
+                  echo "- To let this workflow open it from now on, enable **Settings › Actions › General › Workflow permissions › \"Allow GitHub Actions to create and approve pull requests\"**."
+                } >> "$GITHUB_STEP_SUMMARY"
+                echo "::error::GitHub Actions may not create pull requests here: enable Settings › Actions › General › Workflow permissions › \"Allow GitHub Actions to create and approve pull requests\", or open $compare by hand (see the job summary)."
+              else
+                echo "::error::The pull request could not be opened: open $compare by hand."
+              fi
+            fi
           fi
+          # CI on the branch, whether or not the pull request could be opened: its checks are
+          # there when it is
+          gh workflow run ci.yml --ref "$branch"
+          exit "$code"

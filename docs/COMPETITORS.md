@@ -2,7 +2,7 @@
 
 A summary of the wave 7 competitor research (2026-10-08): about 60 paid products for certificate management, DNS and registrar monitoring, DMARC and security ratings, and about 70 candidate gaps, each compared with the code, the README and the [ROADMAP](ROADMAP.md). Gaps DomainScope already covers, or that break the constraints below, were dropped. The ten that remain are ranked at the end of this page.
 
-**Constraints every item keeps.** The browser side is a static page that calls keyless (or user-keyed) endpoints with CORS and stores nothing on a server. The CLI is Python 3.8, standard library only. The runner (`tools/ds.mjs`) is Node 22 with no dependency and runs in the user's own GitHub Actions. There is no hosted backend, so "monitoring" means that runner, or a check made when you open the page.
+**Constraints every item keeps.** The browser side is a static page that calls keyless (or user-keyed) endpoints with CORS and stores nothing on a server. The CLI is Python 3.9, standard library only. The runner (`tools/ds.mjs`) is Node 22 with no dependency and runs in the user's own GitHub Actions. There is no hosted backend, so "monitoring" means that runner, or a check made when you open the page.
 
 ## Paid products and their published prices
 

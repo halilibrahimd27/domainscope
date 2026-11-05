@@ -1445,6 +1445,13 @@ class HostileServerTests(unittest.TestCase):
         self.assertIn('Traceback', err)
         self.assertIn('content_audit.py: internal error: RuntimeError: unexpected', err)
 
+    def test_a_closed_pipe_is_a_quiet_exit(self):
+        with mock.patch.object(ca, '_run_audit', side_effect=BrokenPipeError()), \
+                mock.patch.object(ca, '_discard_stdout') as discard:
+            code, _, err = run_main('audit', 'example.com')
+        self.assertEqual((code, err), (ca.EXIT_OK, ''))
+        discard.assert_called_once_with()
+
 
 class ReportFileTests(unittest.TestCase):
     def test_json_and_csv_on_one_file_is_refused_before_the_run(self):

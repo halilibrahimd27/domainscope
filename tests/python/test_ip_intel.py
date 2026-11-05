@@ -824,6 +824,13 @@ class ReportAndErrorTests(unittest.TestCase):
         self.assertIn('ip_intel.py: internal error: RuntimeError: failed with [key]', err)
         self.assertNotIn(key, err)
 
+    def test_a_closed_pipe_is_a_quiet_exit(self):
+        with mock.patch.object(ii, '_run_domains', side_effect=BrokenPipeError()), \
+                mock.patch.object(ii, '_discard_stdout') as discard:
+            code, _, err = run_main('domains', '192.0.2.10')
+        self.assertEqual((code, err), (ii.EXIT_OK, ''))
+        discard.assert_called_once_with()
+
 
 class CompatibilityTests(unittest.TestCase):
     """The CLI must stay runnable on Python 3.8 (the rules of test_ssl_origin_scan.py)."""

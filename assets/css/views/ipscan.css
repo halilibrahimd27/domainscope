@@ -1,0 +1,398 @@
+/*
+ * views/ipscan.css — "IP Scan" view (.ipscan-*): the range, the reports of ip_scan.py, the free
+ * addresses to use, the map (one grid of 16 columns per /24) with a cell's details, and the list
+ * (labelled cards on a phone). The input card, the file input, the result header and the empty
+ * state are the page template's (style.css § 4). Status colours follow docs/DESIGN.md §6.2: a
+ * cell carries text, so it uses the tints (--*-bg) with the status text colour, never a solid
+ * fill; the solid fill is only the confirmed mark's dot.
+ */
+
+.ipscan-view,
+.ipscan-results-host {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
+  min-width: 0;
+}
+
+.ipscan-results-host:empty {
+  display: none;
+}
+
+.ipscan-range .textarea {
+  min-height: 64px;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.ipscan-parsed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ipscan-parsed:empty,
+.ipscan-issues:empty {
+  display: none;
+}
+
+/* ---- reports ----------------------------------------------------------------- */
+
+.ipscan-import .filedrop-compact {
+  padding: 10px 14px;
+}
+
+.ipscan-reports {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.ipscan-report {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 8px 10px 8px 12px;
+}
+
+.ipscan-report + .ipscan-report {
+  border-top: 1px solid var(--border);
+}
+
+.ipscan-report-text {
+  display: flex;
+  flex: 1 1 16rem;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ipscan-report-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ipscan-report-badges {
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.ipscan-errors {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+.ipscan-how .codeblock,
+.ipscan-noscan .codeblock {
+  margin: 0;
+}
+
+/* ---- the free addresses to use -------------------------------------------------- */
+
+.ipscan-pick {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+}
+
+.ipscan-pick-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--fs-md);
+}
+
+.ipscan-pick-title .icon {
+  color: var(--ok);
+}
+
+.ipscan-picks {
+  gap: 6px;
+}
+
+.ipscan-pick-ip.is-confirmed .icon {
+  color: var(--ok);
+}
+
+.ipscan-runs {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---- the map ----------------------------------------------------------------------- */
+
+.ipscan-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+
+.ipscan-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ipscan-swatch {
+  position: relative;
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+}
+
+.ipscan-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.ipscan-group-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.ipscan-grid {
+  display: grid;
+  grid-template-columns: repeat(16, minmax(0, 1fr));
+  gap: 3px;
+  max-width: 720px;
+}
+
+.ipscan-cell,
+.ipscan-cell-pad {
+  min-width: 0;
+  height: 30px;
+}
+
+.ipscan-cell {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font: inherit;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  cursor: pointer;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-xs);
+}
+
+.ipscan-cell:hover {
+  border-color: var(--border-strong);
+}
+
+.ipscan-cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ipscan-cell.is-selected {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.ipscan-cell.is-dimmed {
+  opacity: 0.28;
+}
+
+/* the states: a cell and its legend swatch look alike */
+.ipscan-cell.is-used,
+.ipscan-swatch.is-used {
+  color: var(--text);
+  font-weight: 600;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+}
+
+.ipscan-cell.is-claimed,
+.ipscan-swatch.is-claimed {
+  color: var(--warn);
+  font-weight: 600;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+}
+
+.ipscan-cell.is-free,
+.ipscan-swatch.is-free {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border: 1px solid var(--ok-border);
+}
+
+.ipscan-cell.is-reserved,
+.ipscan-swatch.is-reserved {
+  color: var(--text-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.ipscan-cell.is-unscanned,
+.ipscan-swatch.is-unscanned {
+  color: var(--text-3);
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+
+/* a confirmed free address: a small solid dot in the corner (a solid fill carries no text) */
+.ipscan-cell.is-confirmed::after,
+.ipscan-swatch.is-confirmed::after {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  content: "";
+  background: var(--ok-solid);
+  border-radius: 50%;
+}
+
+.ipscan-swatch.is-confirmed::after {
+  top: 2px;
+  right: 2px;
+  width: 4px;
+  height: 4px;
+}
+
+.ipscan-detail-host:empty {
+  display: none;
+}
+
+.ipscan-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 720px;
+  padding: var(--space-3) var(--space-4);
+}
+
+.ipscan-detail > p {
+  margin: 0;
+}
+
+.ipscan-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ipscan-detail-ip {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.ipscan-detail-actions {
+  gap: 4px;
+  margin-left: auto;
+}
+
+.ipscan-detail-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.ipscan-detail-item {
+  display: contents;
+}
+
+.ipscan-detail-item dt {
+  color: var(--text-2);
+}
+
+.ipscan-detail-item dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---- the list ------------------------------------------------------------------------ */
+
+.ipscan-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ipscan-servers {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.ipscan-table .dt-row.is-claimed {
+  box-shadow: inset 3px 0 0 var(--warn-solid);
+}
+
+/* ---- narrow screens ---------------------------------------------------------------------- */
+
+@media (max-width: 719px) {
+  .ipscan-detail-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .ipscan-detail-item dd {
+    margin-bottom: 6px;
+  }
+}
+
+/* A phone: 16 columns stay (a column is one last octet mod 16), the cells and their text shrink. */
+@media (max-width: 479px) {
+  .ipscan-grid {
+    gap: 2px;
+  }
+
+  .ipscan-cell,
+  .ipscan-cell-pad {
+    height: 24px;
+  }
+
+  .ipscan-cell {
+    font-size: 9px;
+    letter-spacing: -0.02em;
+  }
+
+  .ipscan-cell.is-confirmed::after {
+    top: 2px;
+    right: 2px;
+    width: 4px;
+    height: 4px;
+  }
+}
+
+@media print {
+  .ipscan-import,
+  .ipscan-form-card,
+  .ipscan-pick-all,
+  .ipscan-detail-actions {
+    display: none;
+  }
+
+  .ipscan-cell {
+    border-style: solid;
+    print-color-adjust: exact;
+  }
+}

@@ -1,0 +1,348 @@
+{
+  "schema": "domainscope.ip-scan/1",
+  "tool": "ip_scan",
+  "version": "1.0.0",
+  "startedAt": "2026-11-05T08:30:00Z",
+  "finishedAt": "2026-11-05T08:30:19Z",
+  "targets": [
+    "192.0.2.0/28"
+  ],
+  "methods": {
+    "icmp": "dgram",
+    "arp": "proc",
+    "tcpPorts": [
+      22,
+      80,
+      443,
+      3389
+    ],
+    "ptr": true,
+    "web": true,
+    "timeout": 0.1
+  },
+  "summary": {
+    "addresses": 16,
+    "used": 5,
+    "claimed": 1,
+    "free": 8,
+    "freeConfirmed": 7,
+    "reserved": 2
+  },
+  "warnings": [],
+  "results": [
+    {
+      "ip": "192.0.2.0",
+      "state": "reserved",
+      "confirmed": false,
+      "reasons": [],
+      "reserved": "network",
+      "rttMs": null,
+      "open": [],
+      "refused": [],
+      "mac": null,
+      "onLink": null,
+      "ptr": [],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.1",
+      "state": "used",
+      "confirmed": false,
+      "reasons": [
+        "icmp",
+        "tcp-open",
+        "arp",
+        "ptr"
+      ],
+      "reserved": null,
+      "rttMs": 0.4,
+      "open": [
+        22,
+        443
+      ],
+      "refused": [],
+      "mac": "00:00:5e:00:53:01",
+      "onLink": true,
+      "ptr": [
+        "gw.example.net"
+      ],
+      "ptrTemplated": false,
+      "web": {
+        "443": "Apache"
+      },
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.2",
+      "state": "used",
+      "confirmed": false,
+      "reasons": [
+        "icmp",
+        "tcp-open",
+        "tcp-refused",
+        "arp",
+        "ptr"
+      ],
+      "reserved": null,
+      "rttMs": 1.2,
+      "open": [
+        80
+      ],
+      "refused": [
+        443
+      ],
+      "mac": "00:00:5e:00:53:02",
+      "onLink": true,
+      "ptr": [
+        "web1.example.net"
+      ],
+      "ptrTemplated": false,
+      "web": {
+        "80": "nginx/1.24.0"
+      },
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.3",
+      "state": "free",
+      "confirmed": true,
+      "reasons": [
+        "arp-incomplete"
+      ],
+      "reserved": null,
+      "rttMs": null,
+      "open": [],
+      "refused": [],
+      "mac": null,
+      "onLink": true,
+      "ptr": [],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.4",
+      "state": "free",
+      "confirmed": true,
+      "reasons": [
+        "arp-incomplete"
+      ],
+      "reserved": null,
+      "rttMs": null,
+      "open": [],
+      "refused": [],
+      "mac": null,
+      "onLink": true,
+      "ptr": [],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.5",
+      "state": "free",
+      "confirmed": true,
+      "reasons": [
+        "arp-incomplete"
+      ],
+      "reserved": null,
+      "rttMs": null,
+      "open": [],
+      "refused": [],
+      "mac": null,
+      "onLink": true,
+      "ptr": [],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.6",
+      "state": "used",
+      "confirmed": false,
+      "reasons": [
+        "arp"
+      ],
+      "reserved": null,
+      "rttMs": null,
+      "open": [],
+      "refused": [],
+      "mac": "00:00:5e:00:53:06",
+      "onLink": true,
+      "ptr": [],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.7",
+      "state": "free",
+      "confirmed": true,
+      "reasons": [
+        "arp-incomplete"
+      ],
+      "reserved": null,
+      "rttMs": null,
+      "open": [],
+      "refused": [],
+      "mac": null,
+      "onLink": true,
+      "ptr": [],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.8",
+      "state": "free",
+      "confirmed": true,
+      "reasons": [
+        "arp-incomplete"
+      ],
+      "reserved": null,
+      "rttMs": null,
+      "open": [],
+      "refused": [],
+      "mac": null,
+      "onLink": true,
+      "ptr": [],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.9",
+      "state": "claimed",
+      "confirmed": false,
+      "reasons": [
+        "ptr"
+      ],
+      "reserved": null,
+      "rttMs": null,
+      "open": [],
+      "refused": [],
+      "mac": null,
+      "onLink": false,
+      "ptr": [
+        "old-db.example.net"
+      ],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.10",
+      "state": "used",
+      "confirmed": false,
+      "reasons": [
+        "icmp",
+        "tcp-open",
+        "arp"
+      ],
+      "reserved": null,
+      "rttMs": 0.9,
+      "open": [
+        3389
+      ],
+      "refused": [],
+      "mac": "00:00:5e:00:53:0a",
+      "onLink": true,
+      "ptr": [],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.11",
+      "state": "used",
+      "confirmed": false,
+      "reasons": [
+        "tcp-refused"
+      ],
+      "reserved": null,
+      "rttMs": null,
+      "open": [],
+      "refused": [
+        22
+      ],
+      "mac": null,
+      "onLink": false,
+      "ptr": [],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.12",
+      "state": "free",
+      "confirmed": false,
+      "reasons": [],
+      "reserved": null,
+      "rttMs": null,
+      "open": [],
+      "refused": [],
+      "mac": null,
+      "onLink": false,
+      "ptr": [
+        "192-0-2-12.dhcp.example.net"
+      ],
+      "ptrTemplated": true,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.13",
+      "state": "free",
+      "confirmed": true,
+      "reasons": [
+        "arp-incomplete"
+      ],
+      "reserved": null,
+      "rttMs": null,
+      "open": [],
+      "refused": [],
+      "mac": null,
+      "onLink": true,
+      "ptr": [],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.14",
+      "state": "free",
+      "confirmed": true,
+      "reasons": [
+        "arp-incomplete"
+      ],
+      "reserved": null,
+      "rttMs": null,
+      "open": [],
+      "refused": [],
+      "mac": null,
+      "onLink": true,
+      "ptr": [],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    },
+    {
+      "ip": "192.0.2.15",
+      "state": "reserved",
+      "confirmed": false,
+      "reasons": [],
+      "reserved": "broadcast",
+      "rttMs": null,
+      "open": [],
+      "refused": [],
+      "mac": null,
+      "onLink": null,
+      "ptr": [],
+      "ptrTemplated": false,
+      "web": {},
+      "errors": []
+    }
+  ]
+}

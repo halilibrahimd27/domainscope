@@ -40,6 +40,7 @@ export const PALETTE_ACTIONS = Object.freeze([
   { id: 'ptr', view: 'ptr', kinds: ['ip'], param: 'target' },
   { id: 'retire', view: 'retire', kinds: ['ip'] },
   { id: 'sweep', view: 'ptr', kinds: ['cidr', 'asn'], param: 'target' },
+  { id: 'freeIps', view: 'ipscan', kinds: ['cidr'], param: 'range' },
   { id: 'cert', view: 'cert', kinds: ['cert'] }
 ].map((a) => Object.freeze({ ...a, kinds: Object.freeze(a.kinds), params: Object.freeze({ ...(a.params || {}) }) })));
 
@@ -65,6 +66,7 @@ export const TOOL_KEYWORDS = Object.freeze({
   change: 'change request ticket terraform octodns',
   ip: 'ip asn geo owner cdn whois',
   ptr: 'ptr reverse sweep rdns',
+  ipscan: 'ip scan scanner free unused available address ping arp subnet angry',
   retire: 'retire decommission renumber',
   health: 'health spf dmarc dkim mx dnssec',
   reports: 'dmarc rua tls-rpt reports',

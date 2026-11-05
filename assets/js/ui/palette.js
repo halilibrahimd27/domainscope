@@ -49,6 +49,7 @@ registerStrings('en', {
   'pal.act.ptr': 'Reverse DNS of {value}',
   'pal.act.retire': 'Retire {value}',
   'pal.act.sweep': 'Reverse DNS sweep of {value}',
+  'pal.act.freeIps': 'Free addresses in {value} (IP Scan)',
   'pal.act.cert': 'Open the pasted certificate'
 });
 
@@ -82,6 +83,7 @@ registerStrings('tr', {
   'pal.act.ptr': '{value} için ters DNS',
   'pal.act.retire': '{value} adresini emekliye ayır',
   'pal.act.sweep': '{value} için ters DNS taraması',
+  'pal.act.freeIps': '{value} içindeki boş adresler (IP Tarama)',
   'pal.act.cert': 'Yapıştırılan sertifikayı aç'
 });
 

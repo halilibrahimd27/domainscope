@@ -38,10 +38,16 @@ export { DS_TOOL, DS_VERSION };
  * Exit codes, numbered as the Python CLI's (cli/ssl_origin_scan.py); FAILED: an unexpected error
  * (printed). CHANGED: something changed since --baseline (with --fail-on-change) or, for `audit`,
  * a rule of the policy failed — 4, as the CLI's `--compare --fail-on-change` says "look here".
- * NOTIFY: a notification was not delivered (with --fail-on-notify-error). When several apply: 3,
- * then 5, then 4, as in the CLI.
+ * NOTIFY: a notification was not delivered (with --fail-on-notify-error). STALE: the run and its
+ * reports completed, but something a run could not read has been carried from its last read for
+ * more than --max-carry-days days (a source or the resolvers down that long: the check is blind
+ * there). When several apply: 3, then 5, then 6, then 4.
  */
-export const EXIT = Object.freeze({ OK: 0, FAILED: 1, USAGE: 2, WRITE: 3, CHANGED: 4, NOTIFY: 5, INTERRUPTED: 130 });
+export const EXIT = Object.freeze({ OK: 0, FAILED: 1, USAGE: 2, WRITE: 3, CHANGED: 4, NOTIFY: 5, STALE: 6, INTERRUPTED: 130 });
+
+/** `--max-carry-days`: what was carried from its last read for longer than this is stale (exit 6); 0: never. */
+export const DS_DEFAULT_MAX_CARRY_DAYS = 7;
+export const DS_MAX_MAX_CARRY_DAYS = 365;
 
 /** The subcommands, in help order. */
 export const COMMANDS = Object.freeze(['health', 'subdomains', 'drift', 'ct', 'renew', 'dane', 'audit', 'tls', 'takeover', 'watch']);
@@ -210,6 +216,7 @@ const OPTION_SPEC = Object.freeze({
   baseline: { type: 'string' },
   history: { type: 'string' },
   'fail-on-change': { type: 'boolean' },
+  'max-carry-days': { type: 'string' },
   resolver: { type: 'string' },
   concurrency: { type: 'string' },
   list: { type: 'string', multiple: true },
@@ -254,7 +261,7 @@ const OPTION_SPEC = Object.freeze({
 });
 
 /** Options every subcommand takes. */
-const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'history', 'fail-on-change', 'resolver', 'concurrency', 'quiet', 'no-color', 'show-all', 'help', 'version',
+const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'history', 'fail-on-change', 'max-carry-days', 'resolver', 'concurrency', 'quiet', 'no-color', 'show-all', 'help', 'version',
   'notify', 'notify-bad', 'notify-format', 'notify-always', 'fail-on-notify-error']);
 
 /**
@@ -264,6 +271,7 @@ const COMMON_OPTIONS = new Set(['json', 'md', 'baseline', 'history', 'fail-on-ch
  * @property {string|null} baseline the previous `--json` report of the same subcommand
  * @property {string|null} history a directory: one JSON line per target appended to its YYYY-MM.jsonl (tools/ds/history.mjs)
  * @property {boolean} failOnChange exit 4 when a change that counts was found
+ * @property {number} maxCarryDays what was carried from its last read for longer than this many days is stale: exit 6 (0: never)
  * @property {string[]} chain DoH failover chain (resolver ids)
  * @property {boolean} chainGiven `--resolver` was given
  * @property {number} concurrency parallel DoH requests
@@ -544,6 +552,7 @@ export function parseCommandLine(argv) {
   options.baseline = v.baseline ?? null;
   options.history = v.history ?? null;
   options.failOnChange = v['fail-on-change'] === true;
+  options.maxCarryDays = intOption(v['max-carry-days'], 'max-carry-days', 0, DS_MAX_MAX_CARRY_DAYS, DS_DEFAULT_MAX_CARRY_DAYS);
   options.chain = resolverChain(v.resolver);
   options.chainGiven = v.resolver !== undefined;
   options.concurrency = intOption(v.concurrency, 'concurrency', CONCURRENCY_RANGE.min, CONCURRENCY_RANGE.max, DEFAULT_SETTINGS.concurrency);
@@ -695,7 +704,7 @@ export function parseCommandLine(argv) {
 /** @returns {DsOptions} */
 function defaults() {
   return {
-    json: null, md: null, baseline: null, history: null, failOnChange: false, chain: [...NODE_CHAIN], chainGiven: false,
+    json: null, md: null, baseline: null, history: null, failOnChange: false, maxCarryDays: DS_DEFAULT_MAX_CARRY_DAYS, chain: [...NODE_CHAIN], chainGiven: false,
     concurrency: DEFAULT_SETTINGS.concurrency, lists: [], quiet: false, noColor: false, showAll: false,
     exact: null, level: DS_DEFAULT_LEVEL, sources: null, days: DS_DEFAULT_DAYS, radar: [...DS_DEFAULT_RADAR], expectedCas: [],
     origin: null, includeOrigins: false, maxQueries: DRIFT_DEFAULT_BUDGET, ca: null, challenge: 'unknown',
@@ -805,6 +814,10 @@ options:
                        not read (a failed lookup, a source that was down), its report carries
                        from the last run that read it: the next run compares with that read.
   --fail-on-change     exit 4 when anything that counts changed since --baseline
+  --max-carry-days N   what a run could not read and carried from its last read for more than
+                       N days is stale: said, listed in the report (stale) and exit 6, so a
+                       source or resolver outage of weeks is not silent (default ${DS_DEFAULT_MAX_CARRY_DAYS},
+                       0-${DS_MAX_MAX_CARRY_DAYS}; 0: never). A failed lookup never counts as a change by itself
   --history DIR        also append one JSON line per target to DIR/YYYY-MM.jsonl: whether the
                        check completed, the health score and grade, the soonest certificate
                        expiry and what changed (tags and items, never a record's value), for
@@ -918,8 +931,9 @@ exit codes: 0 done, 1 the run failed (an unexpected error, printed), 2 usage err
   cannot be compared, are refused before the run), 3 a report file could not be written
   after the run, 4 a rule of the policy failed (audit), or something changed since --baseline
   (only with --fail-on-change), 5 a notification was not delivered (only with
-  --fail-on-notify-error), 130 interrupted (nothing written). When several apply: 3, then 5,
-  then 4.
+  --fail-on-notify-error), 6 something has been carried unread for more than --max-carry-days
+  days (the reports are written), 130 interrupted (nothing written). When several apply: 3,
+  then 5, then 6, then 4.
   A rule that could not be checked (a lookup failed, a TLD without RDAP) is no failure, unless it
   failed when last checked (--baseline): it still counts as failed. A rule a waiver accepts
   (--waivers) is no failure either, nor is a change of an accepted item.

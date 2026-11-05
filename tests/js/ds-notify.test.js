@@ -26,7 +26,7 @@ import {
 import { parseCommandLine, UsageError, EXIT, USAGE, DS_TOOL, DS_VERSION } from '../../tools/ds/args.mjs';
 import { diffReports } from '../../tools/ds/diff.mjs';
 import { setupStrings, changeText } from '../../tools/ds/render.mjs';
-import { carryHealth, carryHosts } from '../../tools/ds/carry.mjs';
+import { carryHealth, carryHosts, carryDriftRows, carryRenewNames, carryDaneEndpoints } from '../../tools/ds/carry.mjs';
 import { TAKEOVER_COUNTED } from '../../tools/ds/states.mjs';
 import { COUNTED_SEVERITY } from '../../tools/ds/takeover.mjs';
 import { main } from '../../tools/ds.mjs';
@@ -761,8 +761,11 @@ describe('PagerDuty over several nights', () => {
           return carried.length ? { ...x, carried } : x;
         }
         if (command === 'subdomains') return { ...x, hosts: carryHosts(x.hosts, p || null, { prevAt: prev ? prev.startedAt : null }) };
+        if (command === 'drift') return { ...x, rows: carryDriftRows(x.rows, p || null, { prevAt: prev ? prev.startedAt : null }) };
+        if (command === 'dane') return { ...x, endpoints: carryDaneEndpoints(x.endpoints, prev) };
         return x;
       });
+      if (command === 'renew') targets.splice(0, targets.length, ...carryRenewNames(targets, prev));
       const report = { tool: DS_TOOL, version: DS_VERSION, command, startedAt, finishedAt: startedAt, options: {}, targets };
       const night = { changes: [], triggers: [], resolves: [], open: [] };
       if (prev) {
@@ -833,11 +836,11 @@ describe('PagerDuty over several nights', () => {
     assert.deepEqual(fixed, { changes: ['BETTER/good'], triggers: [], resolves: ['WORSE transferLock'], open: [] });
   });
 
-  test('renew: a name that could not be checked, then checked again at "warnings" (an info change) — its FAILED is resolved', async () => {
+  test('renew: a name that could not be checked is listed, never paged; checked again as it was, it is no change', async () => {
     const name = (verdict) => [{ target: 'www.example.com', verdict, findings: [] }];
     const [, failed, again] = await nights('renew', [name('warnings'), name('unknown'), name('warnings')]);
-    assert.deepEqual(failed, { changes: ['FAILED/bad'], triggers: ['FAILED'], resolves: [], open: ['FAILED'] });
-    assert.deepEqual(again, { changes: ['RECOVERED/info'], triggers: [], resolves: ['FAILED'], open: [] });
+    assert.deepEqual(failed, { changes: ['FAILED/listed'], triggers: [], resolves: [], open: [] });
+    assert.deepEqual(again, { changes: [], triggers: [], resolves: [], open: [] });
   });
 
   test('renew: a verdict worse stays paged while it stands and through a night it could not be checked, until it is back', async () => {
@@ -845,8 +848,8 @@ describe('PagerDuty over several nights', () => {
     const [, worse, same, unchecked, back] = await nights('renew', [name('ready'), name('warnings'), name('warnings'), name('unknown'), name('ready')]);
     assert.deepEqual(worse.open, ['WORSE']);
     assert.deepEqual([same.resolves, same.open], [[], ['WORSE']]);
-    assert.deepEqual([unchecked.triggers, unchecked.resolves, unchecked.open], [['FAILED'], [], ['WORSE', 'FAILED']]);
-    assert.deepEqual([back.changes, back.resolves, back.open], [['RECOVERED/good'], ['WORSE', 'FAILED'], []]);
+    assert.deepEqual([unchecked.changes, unchecked.triggers, unchecked.resolves, unchecked.open], [['FAILED/listed'], [], [], ['WORSE']], 'a night it could not be checked proves nothing');
+    assert.deepEqual([back.changes, back.resolves, back.open], [['BETTER/good'], ['WORSE'], []], 'compared with the verdict carried through the failed night');
   });
 
   test('health: a finding worse stays paged through a night its lookup failed, and is resolved when it is back where it was', async () => {
@@ -1134,7 +1137,7 @@ describe('runs of the runner (main)', () => {
     }
   });
 
-  test('exit codes: 3, then 5, then 4', async () => {
+  test('exit codes: 3, then 5, then 6, then 4', async () => {
     const dir = tmp();
     try {
       const base = join(dir, 'base.json');
@@ -1154,7 +1157,7 @@ describe('runs of the runner (main)', () => {
       const three = await runDs([...argv(join(outDir, 'c.json')), '--fail-on-notify-error'], { table: movedZone(), hook: gone });
       assert.equal(three.code, EXIT.WRITE, `3 before 5: ${three.err}`);
       assert.equal(EXIT.NOTIFY, 5);
-      assert.match(USAGE, /5 a notification was not delivered \(only with\n {2}--fail-on-notify-error\), 130 interrupted \(nothing written\)\. When several apply: 3, then 5,\n {2}then 4\./);
+      assert.match(USAGE, /5 a notification was not delivered \(only with\n {2}--fail-on-notify-error\), 6 something has been carried unread for more than --max-carry-days\n {2}days \(the reports are written\), 130 interrupted \(nothing written\)\. When several apply: 3,\n {2}then 5, then 6, then 4\./);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

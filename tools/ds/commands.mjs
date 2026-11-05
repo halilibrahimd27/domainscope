@@ -17,7 +17,10 @@
 import { createHash } from 'node:crypto';
 import { NODE_UNREADABLE, CT_SOURCES, DS_DEFAULT_RADAR, DS_VERSION, UsageError } from './args.mjs';
 import { code, strong, isoDay, isoTime, summaryDoc, valueParts, localYesNo, sourceName, certCount } from './render.mjs';
-import { targetOf, carryHealth, carryHosts, carryCt, ctIssuers, ctCertOrder, lookupFailed, failedAreas, checkAreas, isLookupError } from './carry.mjs';
+import {
+  targetOf, carryHealth, carryHosts, carryCt, ctIssuers, ctCertOrder, lookupFailed, failedAreas, checkAreas, isLookupError,
+  resolverFailed, carryDriftRows, carryRenewNames, carryDaneEndpoints, driftLookupFailed, renewLookupFailed, daneLookupFailed
+} from './carry.mjs';
 import { isSubdomainOf, sortHostnames } from '../../assets/js/lib/domain.js';
 import { chunk, throwIfAborted } from '../../assets/js/lib/util.js';
 import { textParts, renderParts, cleanText } from '../../assets/js/lib/summary.js';
@@ -40,6 +43,19 @@ const MAX_LINES = 5;
 const CRTSH_DOWN = new Set(['unavailable', 'rate-limit', 'network']);
 /** crt.sh timeouts on this many domains in a row: not asked again (one very large domain can be too slow alone). */
 const CRTSH_TIMEOUTS = 2;
+
+/**
+ * The run warning for what the resolvers gave no answer for: listed, never counted as a change, and
+ * kept from its last check for the run after (carry.mjs); null when nothing failed.
+ * @param {string} where "subdomains example.com", "drift example.com", …
+ * @param {number} failed how many
+ * @param {string} what "hosts", "record sets", …
+ * @param {boolean} baselined a --baseline was read (the last check is carried from it)
+ */
+export function outageWarning(where, failed, what, baselined) {
+  if (!failed) return null;
+  return `${where}: ${failed} ${what} got no answer from the resolvers this run: not counted as changes${baselined ? ', their last check is kept for the next comparison' : ''}`;
+}
 
 /**
  * The passive sources a run stops asking, so a list of domains neither prolongs a rate limit nor
@@ -365,6 +381,8 @@ async function runSubdomains(targets, options, env) {
       hosts: carryHosts(reportHosts(scanHostRows(result).map((row) => hostRow(row, seeded)), { exact, seeded }),
         targetOf(env.baseline, domain), { prevAt: env.baseline ? env.baseline.startedAt ?? null : null })
     });
+    const unanswered = outageWarning(`subdomains ${domain}`, out[out.length - 1].hosts.filter(resolverFailed).length, 'hosts', !!env.baseline);
+    if (unanswered) warnings.push(unanswered);
     const run = { status: 'done', config: { domains: [domain] }, result, hosts: result.hosts, found: new Map(), sourceResults: result.sources, finishedAt: result.finishedAt };
     const doc = subdomainsSummary(subdomainsSummaryFacts(run), { t: env.t, now: env.now() });
     const unasked = breaker.skipped(notAsked).map((s) => `${sourceName(s.source)} (${s.state.replace('-', ' ')} earlier in this run)`);
@@ -755,7 +773,7 @@ async function runDrift(targets, options, env) {
   const redact = (values) => redactValues(values || [], secrets, options.includeOrigins);
   env.progress(`drift ${zone.origin}: ${zone.records.length} records`);
   const result = await driftZone(zone, {
-    dns: env.dns, signal: env.signal, maxQueries: options.maxQueries,
+    dns: env.dns, signal: env.signal, maxQueries: options.maxQueries, now: env.now,
     onProgress: ({ done, total }) => {
       if (done === total || done % 100 === 0) env.progress(`drift ${zone.origin}: ${done}/${total}`);
     }
@@ -775,8 +793,12 @@ async function runDrift(targets, options, env) {
     finishedAt: isoTime(result.finishedAt),
     preflight: { ...result.preflight },
     counts: { ...result.counts },
-    rows: result.rows.map((r) => driftRow(r, { severity: DRIFT_SEVERITY, redact }))
+    // a record set the resolvers gave no answer for keeps its last check (carry.mjs): the next run compares with it
+    rows: carryDriftRows(result.rows.map((r) => driftRow(r, { severity: DRIFT_SEVERITY, redact })), targetOf(env.baseline, zone.origin),
+      { prevAt: env.baseline ? env.baseline.startedAt ?? null : null })
   };
+  const unanswered = outageWarning(`drift ${zone.origin}`, target.rows.filter(driftLookupFailed).length, 'record sets', !!env.baseline);
+  if (unanswered) warnings.push(unanswered);
   return {
     options: { origin: zone.origin, file: name, maxQueries: options.maxQueries, includeOrigins: options.includeOrigins, resolvers: [...options.chain] },
     targets: [target],
@@ -837,9 +859,12 @@ async function runRenew(targets, options, env) {
   }
   // The HTTP-01 reachability test needs Globalping and a click: never run here (tested: 0).
   const doc = renewSummary({ names: facts, ca: caName, challenge: options.challenge, tested: 0, at: finishedAt }, { t, now: env.now() });
+  // a name that could not be checked keeps its last verdict (carry.mjs): the next run compares with it
+  const targetsOut = carryRenewNames(out, env.baseline);
+  const unanswered = outageWarning('renew', targetsOut.filter(renewLookupFailed).length, `name${targetsOut.filter(renewLookupFailed).length === 1 ? '' : 's'} (a lookup the verdict rests on)`, !!env.baseline);
   return {
     options: { ca: options.ca, challenge: options.challenge, resolvers, chain: [...options.chain] },
-    targets: out, docs: [doc], warnings: []
+    targets: targetsOut, docs: [doc], warnings: unanswered ? [unanswered] : []
   };
 }
 
@@ -897,10 +922,13 @@ async function runDane(targets, options, env) {
     serialHex: leaf.serialHex,
     notAfter: isoTime(leaf.notAfter),
     headline: s.headline,
-    endpoints: report.endpoints.map((ep) => ({ key: `${ep.service}|${ep.host}`, qname: ep.qname, service: ep.service, port: ep.port, host: ep.host, status: ep.status, severity: ep.severity })),
+    // an endpoint whose TLSA lookup got no answer keeps its last status (carry.mjs): the next run compares with it
+    endpoints: carryDaneEndpoints(report.endpoints.map((ep) => ({ key: `${ep.service}|${ep.host}`, qname: ep.qname, service: ep.service, port: ep.port, host: ep.host, status: ep.status, severity: ep.severity })), env.baseline),
     domains: report.domains.map((d) => ({ domain: d.domain, error: d.error || null, nullMx: !!d.nullMx })),
     detail: daneExportJson(report, { app: APP, version: DS_VERSION })
   };
+  const unanswered = outageWarning(`dane ${subject}`, target.endpoints.filter(daneLookupFailed).length, 'TLSA lookups', !!env.baseline);
+  if (unanswered) warnings.push(unanswered);
   return {
     options: { certificate: name, serialHex: leaf.serialHex, resolvers: [...options.chain] },
     targets: [target],

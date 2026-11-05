@@ -12,7 +12,12 @@
  *   and per source the time of its last full read (`lastFullAt`);
  * - subdomains: a host whose lookup failed keeps its last answer (`lastGood`);
  * - takeover: a risk whose lookup failed is carried as last read (`carried: { from }`), never
- *   "gone" and never better.
+ *   "gone" and never better;
+ * - drift, renew, dane: a record set, name or endpoint the resolvers gave no answer for keeps its
+ *   last checked status (`lastGood: { at, … }`), so a resolver outage is no change by itself and
+ *   the run after it compares with that check.
+ * {@link staleCarried} lists what has been carried, not read, for more than --max-carry-days days:
+ * an outage of weeks is said (exit 6), never silent.
  * Pure: no I/O. tools/ds/commands.mjs (writing a report) and tools/ds/diff.mjs (reading a
  * baseline) share these definitions of "failed" and "read in full".
  */
@@ -226,6 +231,13 @@ export const LOOKUP_FAILED = new Set(['SERVFAIL', 'REFUSED', 'ERROR']);
 /** Did a host's lookup fail? */
 export const lookupFailed = (h) => !!h && LOOKUP_FAILED.has(h.status);
 
+/**
+ * Did the resolvers give no answer for a host (ERROR: a timeout, a transport or HTTP failure, every
+ * resolver of the chain down)? Not the domain's state: never a change by itself. SERVFAIL and
+ * REFUSED are answers about the zone (a broken delegation, a lame server) and still count.
+ */
+export const resolverFailed = (h) => !!h && h.status === 'ERROR';
+
 /** What a host's answer is, for `lastGood`. */
 const ANSWER = ['status', 'kind', 'provider', 'providerId', 'hidesOrigin', 'dangling', 'ipv4', 'ipv6', 'cnames'];
 
@@ -290,4 +302,180 @@ export function carryRisks(target, prev, { prevAt = null } = {}) {
     byKey.set(p.key, { ...p, carried: { from: p.carried && p.carried.from !== undefined ? p.carried.from : from } });
   }
   return [...byKey.values()].sort(riskOrder);
+}
+
+/* ------------------------------------------------------------------------ */
+/* drift, renew, dane                                                       */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Why a drift row could not be compared that is the zone's own answer (lib/zonedrift.js failReason:
+ * SERVFAIL, REFUSED; an origin that does not exist). Every other reason of an `error` row — a
+ * timeout, a transport failure, the query budget, a filtering resolver — is the resolver's.
+ */
+export const DRIFT_ZONE_FAILURES = Object.freeze(['servfail', 'refused', 'nxdomain']);
+
+/** A drift row the resolvers gave no answer for: `error` with no reason that is the zone's own answer. */
+export const driftLookupFailed = (r) => !!r && r.status === 'error' && !(r.reasons || []).some((x) => DRIFT_ZONE_FAILURES.includes(x));
+
+/** A renew name whose verdict rests on a lookup that got no answer (lib/renewal.js: "could not be checked"). */
+export const renewLookupFailed = (x) => !!x && x.verdict === 'unknown';
+
+/** A DANE endpoint whose TLSA lookup got no answer (lib/dane.js `error`; SERVFAIL is `servfail`, the zone's). */
+export const daneLookupFailed = (e) => !!e && e.status === 'error';
+
+const copyList = (v) => (Array.isArray(v) ? [...v] : []);
+
+/**
+ * Items of this run with, on each whose lookup failed, the last state the baseline checked
+ * (`lastGood: { at, …fields }`) — or the one the baseline carried when its lookup failed then too.
+ * @param {object[]} items this run's rows, names or endpoints
+ * @param {object[]|null|undefined} prevItems the baseline's
+ * @param {{ key: (x: object) => string, failed: (x: object) => boolean, keep: (y: object) => object, at: string|null }} how
+ * @returns {object[]}
+ */
+function carryLast(items, prevItems, { key, failed, keep, at }) {
+  if (!Array.isArray(prevItems) || !prevItems.length) return items;
+  const old = new Map(prevItems.filter((y) => y && isStr(key(y))).map((y) => [key(y), y]));
+  return items.map((x) => {
+    const y = failed(x) ? old.get(key(x)) : null;
+    if (!y) return x;
+    const last = failed(y) ? y.lastGood : { at, ...keep(y) };
+    return last ? { ...x, lastGood: last } : x;
+  });
+}
+
+/**
+ * The drift rows of this run, each the resolvers gave no answer for with its last checked status.
+ * @param {object[]} rows this run's report rows (commands.mjs driftRow)
+ * @param {object|null} prev the baseline's target of the same zone
+ * @param {{ prevAt?: string|null }} [opts]
+ */
+export function carryDriftRows(rows, prev, { prevAt = null } = {}) {
+  const at = prev && isStr(prev.finishedAt) ? prev.finishedAt : prevAt;
+  return carryLast(rows, prev && prev.rows, {
+    key: (r) => r.key, failed: driftLookupFailed, at,
+    keep: (y) => ({ status: y.status, reasons: copyList(y.reasons), added: copyList(y.added), removed: copyList(y.removed) })
+  });
+}
+
+/**
+ * The renew names of this run, each that could not be checked with its last verdict and findings.
+ * @param {object[]} targets this run's report targets (one per name)
+ * @param {object|null} baseline the baseline report
+ */
+export function carryRenewNames(targets, baseline) {
+  const at = baseline ? (isStr(baseline.finishedAt) ? baseline.finishedAt : isStr(baseline.startedAt) ? baseline.startedAt : null) : null;
+  return carryLast(targets, baseline && baseline.targets, {
+    key: (x) => x.target, failed: renewLookupFailed, at,
+    keep: (y) => ({ verdict: y.verdict, findings: Array.isArray(y.findings) ? y.findings.map((f) => ({ ...f })) : [] })
+  });
+}
+
+/**
+ * The DANE endpoints of this run, each whose TLSA lookup got no answer with its last status. One
+ * certificate per run: the baseline's target is compared whatever its name (diff.mjs does too).
+ * @param {object[]} endpoints this run's report endpoints
+ * @param {object|null} baseline the baseline report
+ */
+export function carryDaneEndpoints(endpoints, baseline) {
+  const prev = baseline && Array.isArray(baseline.targets) ? baseline.targets[0] : null;
+  const at = baseline ? (isStr(baseline.finishedAt) ? baseline.finishedAt : isStr(baseline.startedAt) ? baseline.startedAt : null) : null;
+  return carryLast(endpoints, prev && prev.endpoints, {
+    key: (e) => e.key, failed: daneLookupFailed, at,
+    keep: (y) => ({ status: y.status, severity: y.severity ?? null })
+  });
+}
+
+/* ------------------------------------------------------------------------ */
+/* Stale: carried for too long                                              */
+/* ------------------------------------------------------------------------ */
+
+const DAY_MS = 86400000;
+
+/**
+ * What one target of a report carries instead of reading it, each with when it was last read:
+ * `[{ what, from }]` (`from` null: no run read it, so its age is not known).
+ * @param {string} command
+ * @param {object} x the report's target
+ * @returns {Array<{ what: string, from: string|null }>}
+ */
+export function carriedItems(command, x) {
+  if (!x || typeof x !== 'object') return [];
+  const out = [];
+  const add = (what, from) => out.push({ what, from: isStr(from) ? from : null });
+  const many = (list, what) => {
+    const froms = list.map((v) => (isStr(v) ? v : null));
+    const known = froms.filter(Boolean).sort();
+    if (froms.length) add(`${froms.length} ${what}`, known.length ? known[0] : null);
+  };
+  switch (command) {
+    case 'health':
+      for (const c of Array.isArray(x.carried) ? x.carried : []) if (c && isStr(c.area)) add(`the ${c.area} checks`, c.from);
+      break;
+    case 'ct': {
+      // blind when no source read the domain in full this run and the newest full read is old
+      const sources = Array.isArray(x.sources) ? x.sources : [];
+      if (sources.length && !sources.some(fullRead)) {
+        const times = sources.map((s) => s && s.lastFullAt).filter(isStr).sort();
+        add('Certificate Transparency (no source read the domain in full)', times.length ? times[times.length - 1] : null);
+      }
+      break;
+    }
+    case 'subdomains':
+      many((x.hosts || []).filter((h) => resolverFailed(h) && h.lastGood).map((h) => h.lastGood.at), 'hosts the resolvers gave no answer for');
+      break;
+    case 'drift':
+      many((x.rows || []).filter((r) => driftLookupFailed(r) && r.lastGood).map((r) => r.lastGood.at), 'record sets the resolvers gave no answer for');
+      break;
+    case 'renew':
+      if (renewLookupFailed(x) && x.lastGood) add('the renewal checks (could not be checked)', x.lastGood.at);
+      break;
+    case 'dane':
+      many((x.endpoints || []).filter((e) => daneLookupFailed(e) && e.lastGood).map((e) => e.lastGood.at), 'TLSA lookups without an answer');
+      break;
+    case 'tls':
+      if (x.carried) add(x.carried.why === 'max-endpoints' ? 'the endpoints (past --max-endpoints)' : 'the endpoints (the DNS lookup failed)', x.carried.from);
+      break;
+    case 'takeover':
+      many((x.risks || []).filter((r) => r && r.carried).map((r) => r.carried.from), 'takeover risks whose lookups failed');
+      break;
+    case 'audit':
+      many((x.rules || []).filter((r) => r && r.status === 'unknown' && r.last).map((r) => r.last.from), 'policy rules that could not be checked');
+      break;
+    case 'watch': {
+      const reg = x.registration;
+      if (reg && reg.carried) add('the registration (RDAP)', reg.carried.from);
+      const d = x.delegation || {};
+      if (d.nsCarried) add('the NS records', d.nsCarried.from);
+      if (d.dsCarried) add('the DS records', d.dsCarried.from);
+      many((x.records || []).filter((r) => r && r.carried).map((r) => r.carried.from), 'record sets not read');
+      break;
+    }
+    default:
+      break;
+  }
+  return out;
+}
+
+/**
+ * What a report carries from a read older than `maxDays` days at `now`: the outage behind it has
+ * lasted that long, and the check is blind there. Items whose last read is not known are left out.
+ * @param {string} command
+ * @param {object} report this run's report (targets)
+ * @param {{ now: Date, maxDays: number }} opts `maxDays` 0: never stale
+ * @returns {Array<{ target: string, what: string, from: string, days: number }>}
+ */
+export function staleCarried(command, report, { now, maxDays }) {
+  if (!(maxDays > 0) || !report || !Array.isArray(report.targets)) return [];
+  const out = [];
+  for (const x of report.targets) {
+    for (const item of carriedItems(command, x)) {
+      const from = item.from ? Date.parse(item.from) : NaN;
+      if (!Number.isFinite(from)) continue;
+      const days = Math.floor((now.getTime() - from) / DAY_MS);
+      if (days > maxDays) out.push({ target: isStr(x.target) ? x.target : '?', what: item.what, from: item.from, days });
+    }
+  }
+  return out;
 }

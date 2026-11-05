@@ -202,9 +202,10 @@ describe('paletteResults — the entries, best first', () => {
     assert.equal(results('mx example.com').entries.length, 8, 'the other actions stay, after it');
   });
 
-  test('an address offers IP Intel, its domains, Reverse DNS and Retire an IP; a network or an AS the sweep', () => {
+  test('an address offers IP Intel, its domains, Reverse DNS and Retire an IP; a network the sweep and its free addresses; an AS the sweep', () => {
     assert.deepEqual(keys(results('192.0.2.10')), ['action:ip', 'action:reverseIp', 'action:ptr', 'action:retire']);
-    assert.deepEqual(keys(results('198.51.100.0/24')), ['action:sweep']);
+    assert.deepEqual(keys(results('198.51.100.0/24')), ['action:sweep', 'action:freeIps']);
+    assert.deepEqual(results('10.0.5.0/24').entries.find((e) => e.key === 'action:freeIps').params, { range: '10.0.5.0/24', run: '0' }, 'a private network too (the map sends nothing, so it is drawn at once)');
     assert.deepEqual(keys(results('AS64496')), ['action:sweep']);
     const cert = results('-----BEGIN CERTIFICATE-----MIIB-----END CERTIFICATE-----');
     assert.deepEqual(keys(cert), ['action:cert']);

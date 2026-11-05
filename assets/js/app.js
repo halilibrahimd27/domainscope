@@ -98,7 +98,7 @@ const WORKSPACE_WAIT_MS = 8000;
  */
 export const VIEW_CSS_ORDER = Object.freeze([
   'views/home.css', 'views/subdomains.css', 'views/domain.css', 'views/fix.css', 'views/zone.css', 'views/zonetools.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css',
-  'views/renew.css', 'views/estate.css', 'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/change.css', 'views/ip.css', 'views/ptr.css', 'views/retire.css',
+  'views/renew.css', 'views/estate.css', 'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/change.css', 'views/ip.css', 'views/ptr.css', 'views/ipscan.css', 'views/retire.css',
   'views/health.css', 'views/reports.css', 'views/portfolio.css', 'views/monitor.css', 'views/inventory.css', 'views/topology.css', 'views/about.css'
 ]);
 
@@ -159,6 +159,8 @@ export const VIEWS = Object.freeze([
   { id: 'ip', group: 'network', icon: 'network', css: ['views/ip.css'], load: () => import('./views/ip.js') },
   { id: 'bulk', group: 'network', icon: 'list', css: ['views/bulk.css'], load: () => import('./views/bulk.js') },
   { id: 'ptr', group: 'network', icon: 'swap', css: ['views/ptr.css'], load: () => import('./views/ptr.js') },
+  // which addresses of a range are free: cli/ip_scan.py's reports and the server list, read in the browser (nothing sent)
+  { id: 'ipscan', group: 'network', icon: 'map-pin', css: ['views/ipscan.css'], offline: true, load: () => import('./views/ipscan.js') },
   // Watch & report: many domains over time; customer-facing reports
   // many domains, one row each, and the workspace's policy audit (RDAP and DoH: needs the network)
   { id: 'portfolio', group: 'watch', icon: 'box', css: ['views/portfolio.css'], load: () => import('./views/portfolio.js') },

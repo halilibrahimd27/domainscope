@@ -71,7 +71,7 @@ describe('groupViews — the tool groups', () => {
     assert.deepEqual(ids(groups), ['home', 'investigate', 'certs', 'change', 'network', 'watch', 'setup']);
     assert.deepEqual(groups.map((g) => ids(g.views)), [
       ['home'], ['domain', 'health', 'subdomains', 'lookup'], ['scan', 'cert', 'renew', 'estate'], ['change', 'global', 'zone', 'retire'],
-      ['ip', 'bulk', 'ptr'], ['portfolio', 'monitor', 'reports'], ['inventory', 'about']
+      ['ip', 'bulk', 'ptr', 'ipscan'], ['portfolio', 'monitor', 'reports'], ['inventory', 'about']
     ]);
     assert.deepEqual(groups.flatMap((g) => ids(g.views)).sort(), ids(VIEWS).sort());
     assert.deepEqual(groups.flatMap((g) => ids(g.views)), ids(VIEWS), 'the registry is in navigation order');
@@ -83,7 +83,7 @@ describe('groupViews — the tool groups', () => {
     const at = VIEWS.findIndex((v) => v.id === 'ptr') + 1;
     const views = [...VIEWS.slice(0, at), { id: 'whois', group: 'network', icon: 'network' }, ...VIEWS.slice(at)];
     const ip = groupViews(views).find((g) => g.id === 'network');
-    assert.deepEqual(ids(ip.views), ['ip', 'bulk', 'ptr', 'whois']);
+    assert.deepEqual(ids(ip.views), ['ip', 'bulk', 'ptr', 'whois', 'ipscan']);
   });
 
   test('a missing or unknown group lands in a trailing "More tools" group, never dropped', () => {

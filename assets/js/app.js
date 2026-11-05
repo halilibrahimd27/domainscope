@@ -98,7 +98,7 @@ const WORKSPACE_WAIT_MS = 8000;
  */
 export const VIEW_CSS_ORDER = Object.freeze([
   'views/home.css', 'views/subdomains.css', 'views/domain.css', 'views/fix.css', 'views/zone.css', 'views/zonetools.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css',
-  'views/renew.css', 'views/estate.css', 'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/change.css', 'views/ip.css', 'views/ptr.css', 'views/ipscan.css', 'views/retire.css',
+  'views/renew.css', 'views/clisteps.css', 'views/estate.css', 'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/change.css', 'views/ip.css', 'views/ptr.css', 'views/ipscan.css', 'views/retire.css',
   'views/health.css', 'views/reports.css', 'views/portfolio.css', 'views/monitor.css', 'views/inventory.css', 'views/topology.css', 'views/about.css'
 ]);
 
@@ -143,7 +143,7 @@ export const VIEWS = Object.freeze([
   // the certificate block reuses the Certificate view's loader (its module graph brings the DANE panel's classes)
   { id: 'renew', group: 'certs', icon: 'refresh', css: ['views/dane.css', 'views/cert.css', 'views/renew.css'], load: () => import('./views/renew.js') },
   // the CLI's --json reports, read in the browser (nothing sent)
-  { id: 'estate', group: 'certs', icon: 'certificate', css: ['views/estate.css'], offline: true, load: () => import('./views/estate.js') },
+  { id: 'estate', group: 'certs', icon: 'certificate', css: ['views/clisteps.css', 'views/estate.css'], offline: true, cli: true, load: () => import('./views/estate.js') },
   // Change & migrate DNS: plan a change, check it propagated, move zones, retire addresses
   // the form, its validation and every output need no network; Read and the check page say so in place
   { id: 'change', group: 'change', icon: 'edit', css: ['views/fix.css', 'views/change.css'], offline: true, load: () => import('./views/change.js') },
@@ -160,7 +160,7 @@ export const VIEWS = Object.freeze([
   { id: 'bulk', group: 'network', icon: 'list', css: ['views/bulk.css'], load: () => import('./views/bulk.js') },
   { id: 'ptr', group: 'network', icon: 'swap', css: ['views/ptr.css'], load: () => import('./views/ptr.js') },
   // which addresses of a range are free: cli/ip_scan.py's reports and the server list, read in the browser (nothing sent)
-  { id: 'ipscan', group: 'network', icon: 'map-pin', css: ['views/ipscan.css'], offline: true, load: () => import('./views/ipscan.js') },
+  { id: 'ipscan', group: 'network', icon: 'map-pin', css: ['views/clisteps.css', 'views/ipscan.css'], offline: true, cli: true, load: () => import('./views/ipscan.js') },
   // Watch & report: many domains over time; customer-facing reports
   // many domains, one row each, and the workspace's policy audit (RDAP and DoH: needs the network)
   { id: 'portfolio', group: 'watch', icon: 'box', css: ['views/portfolio.css'], load: () => import('./views/portfolio.js') },
@@ -1429,6 +1429,16 @@ function chainLabel(chain) {
  * link per tool (the current one marked with a neutral fill and an accent bar), and a footer of
  * two lines — the saved servers and the DoH chain (each a way to its place), and where it runs.
  */
+/**
+ * The "CLI" tag of a tool that needs the command line (VIEWS[].cli): what a browser cannot do on
+ * its own, which the tool's page shows as steps (ui/cli-steps.js). Its text joins the link's name.
+ * @param {{ cli?: boolean }} view
+ * @returns {HTMLElement|null}
+ */
+function navCliTag(view) {
+  return view.cli ? h('span', { class: 'nav-cli', title: t('shell.cliTag') }, 'CLI') : null;
+}
+
 function renderNav() {
   const activeId = current ? current.id : null;
   const groups = groupViews(VIEWS).map((g) => {
@@ -1441,7 +1451,7 @@ function renderNav() {
           href: navHref(v.id),
           dataset: { view: v.id },
           attrs: { 'aria-current': v.id === activeId ? 'page' : null }
-        }, Icon(v.icon, { size: 18 }), h('span', { class: 'nav-label' }, t(`nav.${v.id}`)))))));
+        }, Icon(v.icon, { size: 18 }), h('span', { class: 'nav-label' }, t(`nav.${v.id}`)), navCliTag(v))))));
   });
   dom.navInventory = h('span');
   dom.navDoh = h('span');
@@ -1741,7 +1751,7 @@ function openNavMenu() {
               menu.close({ view: v.id });
             }
           }
-        }, Icon(v.icon, { size: 18 }), h('span', { class: 'navmenu-name' }, t(`nav.${v.id}`)),
+        }, Icon(v.icon, { size: 18 }), h('span', { class: 'navmenu-name' }, t(`nav.${v.id}`)), navCliTag(v),
         here ? Icon('check', { size: 16, className: 'navmenu-check' }) : null));
       })));
   }));

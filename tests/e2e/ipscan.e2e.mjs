@@ -132,12 +132,21 @@ async function main() {
       assert(page0.empty, 'the empty state');
       const how = await page.evaluate(() => ({
         drop: !!document.querySelector('.ipscan-import .ipscan-drop'),
-        code: [...document.querySelectorAll('.ipscan-how pre, .ipscan-how code')].map((c) => c.textContent).join('\n'),
-        download: document.querySelector('.ipscan-how a[download]')?.getAttribute('href')
+        first: document.querySelector('.ipscan-view > :first-child')?.classList.contains('ipscan-steps-host'),
+        compact: document.querySelector('.ipscan-steps')?.classList.contains('is-compact'),
+        title: document.querySelector('.ipscan-steps .cli-steps-title')?.textContent,
+        places: [...document.querySelectorAll('.ipscan-steps .cli-step')].map((li) => li.dataset.place),
+        code: [...document.querySelectorAll('.ipscan-steps .cli-step[data-place="machine"] pre, .ipscan-steps .cli-step[data-place="machine"] code')].map((c) => c.textContent).join('\n'),
+        download: document.querySelector('.ipscan-steps a[download]')?.getAttribute('href'),
+        navTag: document.querySelector('.nav-link[data-view="ipscan"] .nav-cli')?.textContent,
+        navLabel: document.querySelector('.nav-link[data-view="ipscan"] .nav-label')?.textContent
       }));
       assert(how.drop, 'the drop zone');
+      assertEqual([how.first, how.compact, how.title], [true, false, 'The scan does not run in the browser'], 'the steps, in full, first on the page');
+      assertEqual(how.places, ['browser', 'machine', 'browser'], 'download here, run on your network, open here');
       assert(how.code.includes('python3 ip_scan.py 10.0.5.0/24 --json scan.json'), `the command: ${how.code}`);
       assertEqual(how.download, 'cli/ip_scan.py', 'the CLI to download');
+      assertEqual([how.navTag, how.navLabel], ['CLI', 'IP Scan'], 'the nav marks a tool that needs the command line');
     });
 
     await run.step('Show map: the range at once, not scanned yet; reserved and claimed addresses; the route keeps the range', async () => {
@@ -145,6 +154,8 @@ async function main() {
       const v = await info(page);
       assertEqual(v.title, '192.0.2.0/28 · 16 addresses', 'title');
       assert(v.noScan, 'the not-scanned note');
+      const cmd = await page.evaluate(() => document.querySelector('.ipscan-steps .cli-step[data-place="machine"] pre, .ipscan-steps .cli-step[data-place="machine"] code')?.textContent || '');
+      assert(cmd.includes('python3 ip_scan.py 192.0.2.0/28 --json scan.json'), `step 2 follows the range: ${cmd}`);
       assertEqual([v.cells['192.0.2.0'], v.cells['192.0.2.15'], v.cells['192.0.2.3'], v.cells['192.0.2.2'], v.cells['192.0.2.4']],
         ['reserved', 'reserved', 'claimed', 'claimed', 'unscanned'], 'cells');
       assertEqual(v.status, { claimed: 2, unscanned: 12 }, 'counts');
@@ -167,6 +178,12 @@ async function main() {
       assertEqual([v.cells['192.0.2.1'], v.cells['192.0.2.3'], v.cells['192.0.2.4'], v.cells['192.0.2.9'], v.cells['192.0.2.12']],
         ['used', 'claimed', 'free*', 'claimed', 'free'], 'cells');
       assert(!v.noScan, 'no not-scanned note');
+      const steps = await page.evaluate(() => ({
+        compact: document.querySelector('.ipscan-steps')?.classList.contains('is-compact'),
+        open: document.querySelector('.ipscan-steps details')?.open,
+        line: document.querySelector('.ipscan-steps .cli-steps-summary-text')?.textContent
+      }));
+      assertEqual(steps, { compact: true, open: false, line: 'Scanned on your network with ip_scan.py · 1 report open' }, 'the steps fold into one line');
       await removeToasts(page);
       await page.click('.ipscan-pick-ip');
       assertEqual(await takeClipboard(page), ['192.0.2.4'], 'a pick copies its address');

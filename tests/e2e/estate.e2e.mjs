@@ -258,8 +258,10 @@ async function main() {
           nav: group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '')) : [],
           title: document.querySelector('h1')?.textContent,
           drop: !!document.querySelector('.estate-import .estate-drop'),
-          how: document.querySelector('.estate-how')?.open,
-          cmd: document.querySelector('.estate-how pre, .estate-how code')?.textContent || '',
+          how: !!document.querySelector('.estate-steps:not(.is-compact)'),
+          cmd: document.querySelector('.estate-steps .cli-step[data-place="machine"] pre, .estate-steps .cli-step[data-place="machine"] code')?.textContent || '',
+          download: document.querySelector('.estate-steps a[download]')?.getAttribute('href'),
+          navTag: document.querySelector('.nav-link[data-view="estate"] .nav-cli')?.textContent,
           privacy: document.querySelector('.estate-import .tool-input-foot .privacy-note')?.textContent || '',
           alert: !!document.querySelector('#page-body .alert-ok'),
           empty: document.querySelector('.estate-page > .estate-empty .tool-empty-message')?.textContent || '',
@@ -270,7 +272,8 @@ async function main() {
       assertEqual(info.nav, ['scan', 'cert', 'renew', 'estate'], 'Deploy & renew certificates group');
       assertEqual(info.title, 'Certificate estate', 'title');
       assert(info.drop, 'drop zone in the input card');
-      assert(info.how, 'the command is shown while nothing is open');
+      assert(info.how, 'the steps are shown in full while nothing is open');
+      assertEqual([info.download, info.navTag], ['cli/ssl_origin_scan.py', 'CLI'], 'the CLI to download; the nav marks the tool');
       assert(info.cmd.includes('--estate --json estate.json'), `command: ${info.cmd}`);
       // The privacy note is one quiet line in the card's footer, not a green alert (docs/DESIGN.md §5.6).
       assert(/^The reports are read here and kept only in this tab/.test(info.privacy) && !info.alert, `privacy note: ${info.privacy}`);

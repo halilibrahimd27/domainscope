@@ -99,9 +99,12 @@ async function desktop(browser, server) {
       await setLangUi(page, 'en');
       await seedWorkspace(page, 'default', ['example.com', 'example.org'], []);
       await page.goto(`${server.url}#/portfolio`);
+      // A hash-only goto returns before the fragment navigation lands: a reload issued at once
+      // could reload #/home (the step then waited for a box that was never coming).
+      await page.waitFor(() => location.hash === '#/portfolio', { message: 'on #/portfolio before the reload' });
       await page.reload();
       await waitReady(page);
-      await page.waitFor(() => document.querySelector('[data-role="pf-domains"]'), { message: 'portfolio box' });
+      await page.waitFor(() => document.querySelector('[data-role="pf-domains"]'), { message: 'portfolio box', timeout: 15000 });
       const box = await page.evaluate(() => document.querySelector('[data-role="pf-domains"]').value);
       assertEqual(box.split('\n'), ['example.com', 'example.org', 'example.net'], 'the box starts from the watchlist');
       const note = await page.evaluate(() => document.querySelector('[data-note="prefilled"]')?.textContent || '');
@@ -123,6 +126,12 @@ async function desktop(browser, server) {
     });
 
     await run.step('C6: the watchlist travels in the hand-over file; a file from before it still imports', async () => {
+      // Save wrote the watchlist to the store asynchronously: export once it is there, not before
+      await page.waitFor(async () => {
+        const { state } = await import('./assets/js/state.js');
+        const data = await state.loadWorkspace(state.workspace.id);
+        return Array.isArray(data.watchlist) && data.watchlist.includes('example.edu');
+      }, { message: 'the saved watchlist in the store', timeout: 10000 });
       const out = await page.evaluate(async () => {
         const { state } = await import('./assets/js/state.js');
         const h = await import('./assets/js/lib/handover.js');

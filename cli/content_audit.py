@@ -1903,6 +1903,19 @@ def _run_audit(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _discard_stdout() -> None:
+    """After a broken pipe (``... | head``): point stdout at the null device, so what is still
+    buffered is dropped quietly instead of failing again at exit."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, sys.stdout.fileno())
+        finally:
+            os.close(devnull)
+    except (OSError, ValueError, AttributeError, io.UnsupportedOperation):
+        pass  # not a real file (a test's StringIO)
+
+
 def _internal_error(exc: BaseException) -> int:
     """An unexpected exception is a bug: its traceback, one line saying so, and exit 70, never
     the 1 that means "something is exposed"."""
@@ -1936,6 +1949,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyboardInterrupt:
         print('\ninterrupted', file=sys.stderr)
         return EXIT_INTERRUPTED
+    except BrokenPipeError:  # `... | head`: the reader has what it wanted
+        _discard_stdout()
+        return EXIT_OK
     except Exception as exc:
         return _internal_error(exc)
 

@@ -708,6 +708,13 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn('Traceback', err)
         self.assertIn("dns_parity.py: internal error: KeyError: 'surprise'", err)
 
+    def test_a_closed_pipe_is_a_quiet_exit(self):
+        with mock.patch.object(dp, '_run', side_effect=BrokenPipeError()), \
+                mock.patch.object(dp, '_discard_stdout') as discard:
+            code, _, err = run_main(self.zone, '--ns', '192.0.2.53')
+        self.assertEqual((code, err), (dp.EXIT_OK, ''))
+        discard.assert_called_once_with()
+
     def test_reports_and_exit_codes(self):
         server = FakeAuthority('example.com', GOOD, cuts=DEV_CUT)
         out_json = os.path.join(self.tmp.name, 'parity.json')

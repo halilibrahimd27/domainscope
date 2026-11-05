@@ -1,0 +1,64 @@
+name: Date check
+
+# Weekly: the unit tests and the CLI tests with the clock moved 60 days ahead
+# (tests/time-travel.mjs), so a fixture certificate that expires or a deadline that passes shows up
+# two months before it would turn CI red and, through it, stop the deploy (pages.yml deploys only
+# once CI passes). Nothing needs this workflow: it never gates a deploy; a red run is the warning.
+# What it cannot move is the C library's clock (a TLS handshake still checks today's dates): see
+# tests/time-travel.mjs.
+on:
+  schedule:
+    - cron: '7 6 * * 4'   # Thursdays, 06:07 UTC
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'How many days ahead to move the clock'
+        required: false
+        default: '60'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: date-check
+  cancel-in-progress: false
+
+jobs:
+  ahead:
+    name: Unit and CLI tests, days ahead
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      # The day, computed with Node so it reads the same on any runner (GNU and BSD date differ);
+      # the input reaches the script only through the environment, as a whole number.
+      - name: The day to move the clock to
+        id: day
+        env:
+          DAYS: ${{ inputs.days }}
+        run: |
+          days="${DAYS:-60}"
+          case "$days" in
+            ''|*[!0-9]*) echo "::error::days must be a whole number, not: $days"; exit 1 ;;
+          esac
+          day=$(node -e 'console.log(new Date(Date.now() + Number(process.argv[1]) * 864e5).toISOString().slice(0, 10))' "$days")
+          echo "day=$day" >> "$GITHUB_OUTPUT"
+          echo "The tests run with the clock on $day ($days days ahead)." >> "$GITHUB_STEP_SUMMARY"
+      - name: Unit tests on that day
+        env:
+          DAY: ${{ steps.day.outputs.day }}
+        run: node tests/time-travel.mjs "$DAY" -- node --test --test-timeout=120000 "tests/js/*.test.js"
+      # also when the unit tests failed: which of the two a date breaks is the finding
+      - name: CLI tests on that day
+        if: ${{ !cancelled() && steps.day.outcome == 'success' }}
+        env:
+          DAY: ${{ steps.day.outputs.day }}
+        run: node tests/time-travel.mjs "$DAY" -- python -m unittest discover -s tests/python -v

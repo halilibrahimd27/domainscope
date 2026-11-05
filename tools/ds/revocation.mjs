@@ -9,8 +9,10 @@
  * - The CRL must be the certificate issuer's (name and key identifier) and cover it (its issuing
  *   distribution point); its signature is verified with node:crypto and the issuer's public key from
  *   the handshake chain ({@link issuerFromChain}). Without the issuer in the chain (a server that
- *   sends the leaf alone) the status stands with `signature: 'not-verified'`; a signature that does
- *   not verify makes it unknown (`bad-signature`).
+ *   sends the leaf alone) or with an algorithm lib/crl.js has no scheme for, the signature is
+ *   `not-verified`: "good" stands, but "revoked" is unknown (`unverified`, the CRL's reason and time
+ *   kept) — a CRL comes over plain http, so one whose signature was not checked never pages as a
+ *   revocation. A signature that does not verify makes it unknown (`bad-signature`).
  * - No OCSP: Let's Encrypt has been CRL-only since 2025-08-06, and a CRL tells every certificate of
  *   a run at once.
  *
@@ -29,7 +31,7 @@ export const CRL_TIMEOUT_MS = 15000;
 /** CRL downloads in flight at once. */
 export const CRL_CONCURRENCY = 4;
 /** Why a status is unknown beyond lib/crl.js CRL_UNKNOWN: no CRL URL, a download or a CRL that cannot be used. */
-export const REVOCATION_ERRORS = Object.freeze(['no-crl', 'too-large', 'http', 'timeout', 'network', 'parse', 'bad-signature', 'unknown']);
+export const REVOCATION_ERRORS = Object.freeze(['no-crl', 'too-large', 'http', 'timeout', 'network', 'parse', 'bad-signature', 'unverified', 'unknown']);
 
 /**
  * The certificate of `chain` that issued `leaf`: its subject is the leaf's issuer and, when both
@@ -130,9 +132,10 @@ const isoOf = (d) => (d instanceof Date && !Number.isNaN(d.getTime()) ? d.toISOS
 /**
  * @typedef {object} RevocationRecord the report's `revocation` of a certificate
  * @property {'good'|'revoked'|'unknown'} status
- * @property {string|null} reason lib/crl.js reasonName (null: none given, or not revoked)
+ * @property {string|null} reason lib/crl.js reasonName (null: none given, or not revoked; with the error
+ *   `unverified`, what the CRL whose signature was not checked says)
  * @property {number|null} reasonCode
- * @property {string|null} time when it was revoked (ISO)
+ * @property {string|null} time when it was revoked (ISO; with `unverified`, as the CRL says)
  * @property {string|null} crl the CRL URL the status comes from
  * @property {string} checkedAt
  * @property {string|null} thisUpdate the CRL's (ISO)
@@ -223,6 +226,9 @@ export function createRevocationChecker({ fetchImpl = globalThis.fetch, signal, 
       Object.assign(out, sig === 'verified' ? { signature: 'verified' } : { signature: 'not-verified', signatureNote: 'algorithm' });
     }
     if (verdict.status === 'unknown') return { ...out, error: verdict.code };
-    return { ...out, status: verdict.status, reason: verdict.reason, reasonCode: verdict.reasonCode, time: isoOf(verdict.time) };
+    const listed = { reason: verdict.reason, reasonCode: verdict.reasonCode, time: isoOf(verdict.time) };
+    // a revocation read from a CRL whose signature was not checked is no revocation: it may be forged on the way
+    if (verdict.status === 'revoked' && out.signature !== 'verified') return { ...out, ...listed, error: 'unverified' };
+    return { ...out, status: verdict.status, ...listed };
   }
 }

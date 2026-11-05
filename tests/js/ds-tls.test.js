@@ -78,13 +78,28 @@ const SELF_PEM = read('starttls_ec_leaf.pem');
 const SELF_KEY = read('starttls_ec_leaf.key');
 
 /**
+ * An OCSP staple for the in-process server: a well-formed OCSPResponse (RFC 6960: status
+ * successful, responseBytes of type id-pkix-ocsp-basic around an empty SEQUENCE). The runner only
+ * records that one was stapled, but OpenSSL 4 (Node 26) drops a staple that is not DER of an
+ * OCSPResponse before the client sees it, so a made-up byte string reads as no staple there.
+ */
+const OCSP_STAPLE = Buffer.from('30160a0100a011300f06092b0601050507300101040230' + '00', 'hex');
+
+/**
  * An in-process TLS server on 127.0.0.1 that completes the handshake and closes; `staple`: the
  * OCSP response it staples when asked (a Buffer, or null for none); `setCert` swaps what it serves.
+ * `close` destroys the connections still open: on Node 26 a server socket that ended its side
+ * never sees the client's FIN after a request it did not read, and server.close() waits for it.
  */
 async function tlsServer({ cert = Buffer.concat([LEAF_PEM, CA_PEM]), key = LEAF_KEY, staple } = {}) {
+  const sockets = new Set();
   const server = tls.createServer({ key, cert }, (s) => {
     s.on('error', () => {});
     s.end();
+  });
+  server.on('connection', (raw) => {
+    sockets.add(raw);
+    raw.on('close', () => sockets.delete(raw));
   });
   server.on('tlsClientError', () => {});
   if (staple !== undefined) server.on('OCSPRequest', (c, issuer, done) => done(null, staple));
@@ -92,7 +107,10 @@ async function tlsServer({ cert = Buffer.concat([LEAF_PEM, CA_PEM]), key = LEAF_
   return {
     port: server.address().port,
     setCert: (next) => server.setSecureContext({ key: next.key || key, cert: next.cert }),
-    close: () => new Promise((resolve) => server.close(resolve))
+    close: () => new Promise((resolve) => {
+      for (const raw of sockets) raw.destroy();
+      server.close(resolve);
+    })
   };
 }
 
@@ -287,7 +305,7 @@ test('a CRL signature verifies with its issuer’s key (ECDSA and RSA), not with
   assert.equal(issuerFromChain(LEAF, [LEAF, { ...CA, subjectKeyId: 'ab'.repeat(20) }]), null, 'the same name, another key');
 });
 
-test('revocation: revoked with its reason, good, another CA’s CRL, a bad signature; each CRL read once', async () => {
+test('revocation: revoked with its reason, unverified (the leaf alone) unknown, good, another CA’s CRL, a bad signature; each CRL read once', async () => {
   const at = () => NOW;
   const revoked = createRevocationChecker({ fetchImpl: routesFetch({ [DP]: [200, read('crl_revoked.der'), { 'content-type': 'application/pkix-crl' }] }), now: at });
   const got = await revoked.check([{ key: 'a', cert: LEAF, chain: [LEAF, CA] }, { key: 'b', cert: LEAF2, chain: [LEAF2] }]);
@@ -297,7 +315,16 @@ test('revocation: revoked with its reason, good, another CA’s CRL, a bad signa
     thisUpdate: '2026-10-01T00:00:00.000Z', nextUpdate: '2026-10-15T00:00:00.000Z', signature: 'verified', signatureNote: null, error: null
   });
   const b = got.get('b');
-  assert.deepEqual([b.status, b.reason, b.signature, b.signatureNote], ['revoked', 'superseded', 'not-verified', 'issuer-not-sent'], 'the leaf alone: the status stands, unverified');
+  assert.deepEqual([b.status, b.error, b.reason, b.signature, b.signatureNote], ['unknown', 'unverified', 'superseded', 'not-verified', 'issuer-not-sent'],
+    'the leaf alone: the CRL\'s word kept, but a revocation whose signature was not checked is unknown (a CRL comes over plain http)');
+  const text = (parts) => parts.map((p) => (typeof p === 'string' ? p : p.code ?? p.strong)).join('');
+  assert.equal(text(revocationParts(b)),
+    `Revocation unknown: its CRL lists it as revoked, but the CRL’s signature could not be verified, so it is not counted as revoked (the server does not send the issuer; the CRL says superseded on ${b.time.slice(0, 16).replace('T', ' ')} UTC) (${DP})`);
+  // a change in the run: never REVOKED from an unverified CRL
+  const unverifiedRun = diffTls(report([tgt([ep('127.0.0.1', 'OK', { cert: cert('b') })])]), report([tgt([ep('127.0.0.1', 'OK', { cert: cert('b'), revocation: b })])]));
+  assert.ok(!unverifiedRun.some((c) => c.tag === 'REVOKED'), JSON.stringify(unverifiedRun.map((c) => c.tag)));
+  const verifiedRun = diffTls(report([tgt([ep('127.0.0.1', 'OK', { cert: cert('b') })])]), report([tgt([ep('127.0.0.1', 'OK', { cert: cert('b'), revocation: got.get('a') })])]));
+  assert.ok(verifiedRun.some((c) => c.tag === 'REVOKED'), 'the same served certificate with a verified revocation: REVOKED');
 
   const good = await createRevocationChecker({ fetchImpl: routesFetch({ [DP]: [200, read('crl_empty.der')] }), now: at }).check([{ key: 'a', cert: LEAF, chain: [LEAF, CA] }]);
   assert.deepEqual([good.get('a').status, good.get('a').signature, good.get('a').error], ['good', 'verified', null]);
@@ -770,7 +797,7 @@ describe('the monitor\'s handshakes: fixture certificates on a local server', ()
     servers.lone = await tlsServer({ cert: CROSS_LEAF_PEM, key: CROSS_LEAF_KEY });
     servers.withInter = await tlsServer({ cert: Buffer.concat([CROSS_LEAF_PEM, CROSS_INTER_PEM]), key: CROSS_LEAF_KEY });
     servers.expiredInter = await tlsServer({ cert: Buffer.concat([CROSS_LEAF_PEM, CROSS_INTER_OLD_PEM]), key: CROSS_LEAF_KEY });
-    servers.stapled = await tlsServer({ staple: Buffer.from('a stapled OCSP response') });
+    servers.stapled = await tlsServer({ staple: OCSP_STAPLE });
     servers.noStaple = await tlsServer({ staple: null });
   });
   after(async () => {

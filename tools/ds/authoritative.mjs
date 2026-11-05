@@ -33,6 +33,7 @@ import dgram from 'node:dgram';
 import net from 'node:net';
 import { randomInt } from 'node:crypto';
 import { encodeQuery, decodeMessage } from '../../assets/js/lib/dnswire.js';
+import { normalizeIP } from '../../assets/js/lib/ip.js';
 import { createLimiter, throwIfAborted, AbortError } from '../../assets/js/lib/util.js';
 import { rrsetOf, recordKey, cdnRotation } from './watchdiff.mjs';
 
@@ -64,8 +65,13 @@ function answers(msg, { id, name, type }) {
   return !!msg && msg.id === id && msg.flags && msg.flags.qr === true && !!q && canon(q.name) === canon(name) && q.type === type;
 }
 
-/** One UDP attempt: resolves `{ message }`, `{ timeout: true }` or `{ error, code }`; rejects on an abort. */
+/**
+ * One UDP attempt: resolves `{ message }`, `{ timeout: true }` or `{ error, code }`; rejects on an abort.
+ * Only a datagram from the server asked (its address and port) is read: another sender that guessed
+ * the query ID and the question is ignored, as is one from the right port of another address.
+ */
 function udpOnce({ address, port, family, query, id, name, type, timeoutMs, createSocket, signal }) {
+  const from = normalizeIP(address);
   return new Promise((resolve, reject) => {
     let socket = null;
     let done = false;
@@ -89,7 +95,7 @@ function udpOnce({ address, port, family, query, id, name, type, timeoutMs, crea
       socket = createSocket(family === 6 ? 'udp6' : 'udp4');
       socket.on('error', (err) => finish({ error: String((err && err.message) || err), code: err && err.code }));
       socket.on('message', (buf, rinfo) => {
-        if (rinfo && rinfo.port !== port) return;
+        if (!rinfo || rinfo.port !== port || normalizeIP(rinfo.address) !== from) return;
         let msg;
         try {
           msg = decodeMessage(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));

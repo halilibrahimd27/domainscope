@@ -42,6 +42,7 @@ import { setupStrings, renderRunText, renderRunMarkdown, changeText } from './ds
 import { baselineProblem, baselineInfo, baselineNotes, diffReports, notableChanges } from './ds/diff.mjs';
 import { notifyRoutes, sendNotifications, openKeysOf, NotifyConfigError, PAGERDUTY_MAX_EVENTS } from './ds/notify.mjs';
 import { checkHistoryDir, appendHistory } from './ds/history.mjs';
+import { staleCarried } from './ds/carry.mjs';
 import { DohClient } from '../assets/js/lib/doh.js';
 import { parseHostList } from '../assets/js/lib/domain.js';
 import { toJson } from '../assets/js/lib/export.js';
@@ -381,6 +382,12 @@ export async function main(argv, io = {}) {
   // A check stopped half-way is no report: it would be the next run's baseline.
   if (signal && signal.aborted) return interrupted();
   for (const w of result.warnings) warn(w);
+  // What has been carried from its last read for more than --max-carry-days: the outage behind it
+  // has lasted that long and the check is blind there — said, listed in the report, exit 6.
+  const stale = staleCarried(command, { targets: result.targets }, { now: now(), maxDays: options.maxCarryDays });
+  for (const x of stale) {
+    warn(`${x.target}: ${x.what} not read since ${x.from.slice(0, 10)} (${x.days} days, more than --max-carry-days ${options.maxCarryDays}): the last read stands in, the check is blind there until it can be read again`);
+  }
   const report = {
     tool: DS_TOOL,
     version: DS_VERSION,
@@ -389,6 +396,7 @@ export async function main(argv, io = {}) {
     finishedAt: now().toISOString(),
     options: result.options,
     ...(warnings.length ? { warnings: [...warnings] } : {}),
+    ...(stale.length ? { stale } : {}),
     targets: result.targets
   };
 
@@ -480,6 +488,7 @@ export async function main(argv, io = {}) {
 
   if (writeFailed) return EXIT.WRITE;
   if (notifyFailed && options.failOnNotifyError) return EXIT.NOTIFY;
+  if (stale.length) return EXIT.STALE;
   // audit: a rule of the policy failed (one that could not be checked is no failure, unless it
   // failed when last checked (--baseline): it still counts as failed; one a waiver accepts is none)
   if (result.failed) return EXIT.CHANGED;

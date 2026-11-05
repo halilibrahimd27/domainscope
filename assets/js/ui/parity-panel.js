@@ -225,7 +225,7 @@ registerStrings('en', {
   'par.step.nsUnknown': 'the new provider’s name servers',
 
   'par.cli.title': 'Every record, from your own machine (CLI)',
-  'par.cli.lead': 'dns_parity.py asks each new name server directly (UDP / TCP port 53), for every record set of the file, CAA and TLSA included, and every name server: no probes, no limit. Python 3.8+, no packages.',
+  'par.cli.lead': 'dns_parity.py asks each new name server directly (UDP / TCP port 53), for every record set of the file, CAA and TLSA included, and every name server: no probes, no limit. Python 3.9+, no packages.',
   'par.cli.zone': 'Download the zone (BIND)',
   'par.cli.script': 'dns_parity.py',
   'par.cli.shell': 'Shell',
@@ -383,7 +383,7 @@ registerStrings('tr', {
   'par.step.nsUnknown': 'yeni sağlayıcının ad sunucuları',
 
   'par.cli.title': 'Her kayıt, kendi makinenizden (CLI)',
-  'par.cli.lead': 'dns_parity.py dosyadaki her kayıt kümesini (CAA ve TLSA dahil) her yeni ad sunucusuna doğrudan sorar (UDP / TCP, 53 numaralı port): ölçüm yok, sınır yok. Python 3.8+, ek paket gerekmez.',
+  'par.cli.lead': 'dns_parity.py dosyadaki her kayıt kümesini (CAA ve TLSA dahil) her yeni ad sunucusuna doğrudan sorar (UDP / TCP, 53 numaralı port): ölçüm yok, sınır yok. Python 3.9+, ek paket gerekmez.',
   'par.cli.zone': 'Zone’u indir (BIND)',
   'par.cli.script': 'dns_parity.py',
   'par.cli.shell': 'Kabuk',

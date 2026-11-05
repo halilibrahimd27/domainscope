@@ -130,8 +130,10 @@ jobs:
           # report. Exit 4 means "changed since last night"; 5 that a notification was not
           # delivered (the changes still open the issue - so does a night on which only a PagerDuty
           # resolve failed, with no change to list -, last night's NAME.json is kept so the next
-          # night sends them again, and the job fails); anything else but 0 is a failure (124:
-          # stopped at its time limit), which leaves last night's files as they were.
+          # night sends them again, and the job fails); 6 that data a source could not read was carried
+          # longer than --max-carry-days (the report is written, its summary goes into the issue -
+          # changes included, which exit 6 outranks - and the job fails); anything else but 0 is a
+          # failure (124: stopped at its time limit), which leaves last night's files as they were.
           ds() {
             local name=$1
             shift
@@ -144,6 +146,7 @@ jobs:
               --md "results/$name.md" --history results/history --fail-on-change --fail-on-notify-error --no-color || code=$?
             if [ "$code" -eq 4 ]; then changed+=("$name")
             elif [ "$code" -eq 5 ]; then changed+=("$name"); failed+=("$name:notify")
+            elif [ "$code" -eq 6 ]; then changed+=("$name"); failed+=("$name:stale")
             elif [ "$code" -ne 0 ]; then failed+=("$name:$code"); fi
           }
           ds health health --list domains.txt
@@ -265,7 +268,7 @@ jobs:
               echo "Changed since the previous nightly run: $CHANGED. Results: $RESULTS · run: $RUN"
               if [ -n "$FAILED" ]; then
                 echo
-                echo "These checks did not complete (name:exit code), so nothing of theirs was compared, or could not send their notification (name:notify): $FAILED."
+                echo "These checks did not complete (name:exit code), so nothing of theirs was compared, could not send their notification (name:notify), or carried data a source has not read for longer than --max-carry-days (name:stale; their summary below says what): $FAILED."
               fi
               echo
               for name in $CHANGED; do

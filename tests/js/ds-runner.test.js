@@ -1894,6 +1894,8 @@ describe('the documented commands', () => {
     assert.match(yml, /if \[ "\$code" -eq 4 \]; then changed\+=/);
     // 5: a notification was not delivered — the changes still open the issue, and the job fails
     assert.match(yml, /elif \[ "\$code" -eq 5 \]; then changed\+=\("\$name"\); failed\+=\("\$name:notify"\)\n/);
+    // 6: data carried past --max-carry-days — the report is written, its summary goes into the issue, the job fails
+    assert.match(yml, /elif \[ "\$code" -eq 6 \]; then changed\+=\("\$name"\); failed\+=\("\$name:stale"\)\n/);
   });
 
   test('every check has a time limit inside the job\'s, and a night a check failed never closes the issue', () => {

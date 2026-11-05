@@ -31,7 +31,7 @@ sw.js                         # the service worker (classic script, scope = the 
 manifest.webmanifest          # web app manifest, English (start_url / scope ./, icons, shortcuts); manifest.tr.webmanifest: the same in Turkish
 icons/                        # PNG app icons drawn from favicon.svg by tools/build-icons.mjs (192, 512, maskable 512, apple-touch 180)
 .nojekyll
-package.json                  # {"name":"domainscope","private":true,"type":"module","scripts":{"test":"node --test --test-timeout=120000 \"tests/js/*.test.js\"","test:py":"python3 -m unittest discover -s tests/python -v","test:e2e:offline":"node tests/e2e/run-all.mjs --only shell,home,subdomains,zone,scan,verify,renewal,dane,pfx,chainfix,renew,estate,global,ptr,retire,carry,ip,lookup,health,workspaces,wsextras,origins,domain,change,cutover,privacy,reports,portfolio,secscore,locales,explain,revocation,takeover,waivers,regwatch,dmarchistory,monitor,investigate,certificates,migrate,network,watch,transparency --offline --no-shots","serve":"node tests/e2e/serve.mjs 8080"}}
+package.json                  # {"name":"domainscope","private":true,"type":"module","scripts":{"test":"node --test --test-timeout=120000 \"tests/js/*.test.js\"","test:py":"python3 -m unittest discover -s tests/python -v","test:e2e:offline":"node tests/e2e/run-all.mjs --only shell,home,subdomains,zone,scan,verify,renewal,dane,pfx,chainfix,renew,estate,global,ptr,ipscan,retire,carry,ip,lookup,health,workspaces,wsextras,origins,domain,change,cutover,privacy,reports,portfolio,secscore,locales,explain,revocation,takeover,waivers,regwatch,dmarchistory,monitor,investigate,certificates,migrate,network,watch,transparency --offline --no-shots","serve":"node tests/e2e/serve.mjs 8080"}}
 .github/workflows/ci.yml      # unit (Node 22/24/26), CLI (Python 3.9/3.12/3.13, Linux + 3.12 on Windows) and offline E2E (headless Chrome) jobs, each with a time limit and fail-fast off; on push to main, pull requests, by hand and workflow_call
 .github/workflows/intermediates.yml  # weekly (and by hand): tools/build-intermediates.mjs, the dataset's tests, then a pull request from bot/intermediates when the data changed and CI started on that branch (`gh workflow run ci.yml --ref`); never a commit to main; the checkout keeps no token, the push alone gets it; a pull request Actions may not open fails the job with the setting and the compare link in its summary
 .github/workflows/ranges.yml  # weekly (and by hand): tools/build-ranges.mjs, the dataset's tests, then a pull request from bot/ranges when the data changed and CI started on that branch; as intermediates.yml
@@ -39,7 +39,7 @@ package.json                  # {"name":"domainscope","private":true,"type":"mod
 .github/workflows/date-check.yml  # weekly (and by hand, with the days): the unit and CLI tests under tests/time-travel.mjs with the clock 60 days ahead; read-only, gates nothing
 .github/workflows/pages.yml   # Deploy to GitHub Pages: runs ci.yml first (`needs: test`), then publishes tools/assemble-site.mjs's bundle; one run at a time, never cancelling a running deployment
 assets/css/style.css          # design system (§5.99, docs/DESIGN.md §6): tokens (light/dark, compact density, touch sizes), the shell, the base components
-assets/css/views/{home,subdomains,domain,fix,zone,zonetools,scan,verify,dane,cert,renew,estate,global,lookup,bulk,change,ip,ptr,retire,health,reports,portfolio,monitor,inventory,topology,about}.css   # per-view styles (verify, dane, fix, zonetools, topology: the ui/ panels), injected with their view (app.js VIEWS[].css)
+assets/css/views/{home,subdomains,domain,fix,zone,zonetools,scan,verify,dane,cert,renew,estate,global,lookup,bulk,change,ip,ptr,ipscan,retire,health,reports,portfolio,monitor,inventory,topology,about}.css   # per-view styles (verify, dane, fix, zonetools, topology: the ui/ panels), injected with their view (app.js VIEWS[].css)
 assets/css/workspace.css      # the Workspaces dialog, injected with it on first use
 assets/css/palette.css        # the command palette, injected with it on first use (§5.77)
 assets/js/app.js              # bootstrap: router, i18n, theme, shared state; VIEWS (css / preload / offline), the offline note, ctx.requireOnline
@@ -104,7 +104,7 @@ assets/js/ui/revocation.js    # the renewal radar's words: revocation reasons, a
 assets/js/ui/revocation-card.js  # Certificate › CT logs › Is it revoked? (§5.94), loaded with the tab; styles in cert.css
 assets/js/ui/locale-evidence.js  # the market packs a scan's evidence added and why, in the run header of Subdomains and SSL Targets (§5.89); loaded with them, off the start route; styles in subdomains.css
 assets/js/ui/subdomains-run.js  # Subdomains: a scan's run — the progress panel, the result tabs (§5.31), the Hosts exports, the ORIGIN / sweep cards and the Copy summary facts, with the strings only the results use; loaded with the first scan (and by tools/ds), off the start route (§6)
-assets/js/views/{home,subdomains,domain,zone,scan,cert,renew,estate,global,lookup,bulk,change,ip,ptr,retire,health,reports,portfolio,monitor,inventory,about}.js   # each exports {id, titleKey, icon, mount(container, ctx), unmount?()} + registers its i18n strings; home is the default route (§6)
+assets/js/views/{home,subdomains,domain,zone,scan,cert,renew,estate,global,lookup,bulk,change,ip,ptr,ipscan,retire,health,reports,portfolio,monitor,inventory,about}.js   # each exports {id, titleKey, icon, mount(container, ctx), unmount?()} + registers its i18n strings; home is the default route (§6)
 assets/js/lib/util.js
 assets/js/lib/x509.js
 assets/js/lib/fixes.js        # DNS change requests: record-set changes, the templates, validation with the zone linter, BIND / Route 53 / Cloudflare API / octoDNS / Terraform, the admin's instructions EN / TR, the fixes of Domain Health checks and Zone File findings (§5.50)
@@ -1944,7 +1944,7 @@ export function cleanText(v) / mdEscape(v) / mdCode(v) / utcStamp(date)   // con
 export function textParts(t, key, params) -> Part[]   // a translated text with its string params (not plain numbers) as code parts: what problem lines use
 export function renderParts(parts, format = 'markdown') -> string   // one line of parts by renderMarkdown's / renderPlainText's rule
                                                    // (both also used by the headless runner's "Changes since the baseline", §9)
-export const SUMMARY_KINDS /* navigation order: subdomains, domain, zone, scan, cert, renew, estate, global, lookup, change, ip, bulk, ptr, retire, health, reports, portfolio, monitor */, SUMMARY_FORMATS,
+export const SUMMARY_KINDS /* navigation order: subdomains, domain, zone, scan, cert, renew, estate, global, lookup, change, ip, bulk, ptr, ipscan, retire, health, reports, portfolio, monitor */, SUMMARY_FORMATS,
   PERMALINK_PARAMS /* domain: ['name'] */, CERT_SUMMARY_WARNINGS = ['SELF_SIGNED', 'CA', 'NO_SAN', 'PRECERT', 'WEAK'], CHANGE_SET_STATES = ['done', 'pending', 'wrong', 'unknown'],
   SUMMARY_I18N /* lib/summary.js */, SUMMARY_CORE_I18N /* lib/summarycore.js */
 ```

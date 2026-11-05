@@ -32,7 +32,7 @@ error, every path redirected to another origin); 2 for a usage error, 3 when a r
 could not be written, 70 for an internal error (a bug; the traceback goes to stderr), 130
 when interrupted.
 
-Python 3.8+, standard library only, single file - copy it anywhere.
+Python 3.9+, standard library only, single file - copy it anywhere.
 
 The module is importable: parse_targets(), Target, PROBES, Probe, http_get(), probe_baseline(),
 classify(), HostPacer, audit_host(), run_audit(), render_text(), report_to_dict(), render_csv(),
@@ -1693,7 +1693,7 @@ def build_parser() -> argparse.ArgumentParser:
     description = ('An authorised self-audit of your own web servers for exposed paths: open '
                    'version-control directories, environment and config files, backups and '
                    'status / debug pages. A baseline request per target suppresses catch-all '
-                   'pages; a per-host rate cap keeps it polite. Python 3.8+, stdlib only.')
+                   'pages; a per-host rate cap keeps it polite. Python 3.9+, stdlib only.')
     parser = argparse.ArgumentParser(prog=PROG, formatter_class=argparse.RawDescriptionHelpFormatter,
                                      description=description, epilog=EPILOG)
     parser.add_argument('--version', action='version', version='%(prog)s ' + __version__)

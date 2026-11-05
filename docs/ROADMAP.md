@@ -271,6 +271,7 @@ Three branches worked off the pick-up list above, merged in this order.
 | CI: Node 22 / 24 / 26 with a per-test time limit, Python 3.9 / 3.12 / 3.13 and Windows, job time limits, a weekly run 60 days ahead (`date-check.yml`); the data bots start CI themselves and say which setting blocks their pull request | `.github/workflows/` | review findings |
 | Runner: a resolver outage is no change in subdomains, drift, renew and dane; data carried longer than `--max-carry-days` (7) is stale, exit 6; an unverified CRL revocation is unknown; UDP answers only from the server asked; the nightly template in a read-only and a write job | `tools/ds/`, `docs/examples/` | review findings |
 | CLIs: one broken host never aborts or looks clean (content_audit), total deadlines instead of per-read timeouts, exit 70 for a crash and 6 for "nothing could be read" (ssl_origin_scan), CRLs only for certificates that matter, private-CA trust by a real handshake, Python 3.13's partial-chain flag cleared, report files checked and written atomically | `cli/` | review findings |
+| **Endpoint map**: a web host's directories and endpoints from `cli/dir_scan.py` (a ~200-name wordlist plus your own, a baseline per host, a polite rate), read in the browser as found / listing / protected / redirect; the "the scan does not run in the browser" steps and a CLI nav tag | `views/dirmap.js`, `lib/dirmap.js`, `cli/dir_scan.py`, SPEC §5.105 / §6 / §7.5 | the directory & content discovery line |
 
 
 ## P0 — next iteration

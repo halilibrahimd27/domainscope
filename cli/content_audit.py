@@ -27,8 +27,10 @@ This is a self-audit, not a scanner for the whole web:
 JSON (`--json`) and CSV (`--csv`) outputs carry every result; the text summary shows the
 findings first and says which paths could not be checked. Exit code 0; 1 with
 `--fail-on-finding` when anything is exposed, or with `--fail-on-error` when a target could not
-be fully audited; 2 for a usage error, 3 when a report file could not be written, 130 when
-interrupted.
+be fully audited (unreachable, a path rate limited, timed out, failed or answered a server
+error, every path redirected to another origin); 2 for a usage error, 3 when a report file
+could not be written, 70 for an internal error (a bug; the traceback goes to stderr), 130
+when interrupted.
 
 Python 3.8+, standard library only, single file - copy it anywhere.
 
@@ -41,17 +43,20 @@ from __future__ import annotations
 
 import argparse
 import csv
+import http.client
 import io
 import ipaddress
 import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import ssl
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -111,6 +116,7 @@ EXIT_FINDINGS = 1          # only with --fail-on-finding
 EXIT_INCOMPLETE = 1        # only with --fail-on-error: a target unreachable or a path not checked
 EXIT_USAGE = 2
 EXIT_OUTPUT_ERROR = 3      # a --json / --csv file could not be written after the audit
+EXIT_INTERNAL_ERROR = 70   # a bug: an unexpected exception (the traceback goes to stderr)
 EXIT_INTERRUPTED = 130
 
 DEFAULT_SCHEME = 'https'
@@ -140,7 +146,7 @@ class HttpFailure(Exception):
 
     def __init__(self, kind: str, message: str) -> None:
         super().__init__(message)
-        self.kind = kind  # 'timeout' | 'network'
+        self.kind = kind  # 'timeout' | 'network' | 'protocol'
 
 
 # ---------------------------------------------------------------------------------------
@@ -689,6 +695,7 @@ class Response:
     final_url: str
     redirects: List[str] = field(default_factory=list)   # each redirect's target origin, in order
     location: str = ''               # the answer is a redirect not followed: its target's origin
+    requested: str = ''              # the URL asked for (final_url differs after a redirect)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -702,17 +709,106 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
 
+# ---------------------------------------------------------------------------------------
+# The deadline of one request: a socket timeout bounds each read, not the request. A server
+# that drips a byte every few hundred milliseconds would hold a request (and its worker) for
+# hours, so the sockets a request opens are shut down once its time is up.
+# ---------------------------------------------------------------------------------------
+
+class _Deadline:
+    """A watchdog for one request: every socket registered while it is current is shut down
+    when ``seconds`` have passed, which ends any read blocked on it at once (TLS handshake,
+    status line, headers or body). :attr:`expired` says it fired."""
+
+    def __init__(self, seconds: float) -> None:
+        self.expired = False
+        self._sockets = []  # type: List[socket.socket]
+        self._lock = threading.Lock()
+        self._timer = threading.Timer(max(0.0, seconds), self._fire)
+        self._timer.daemon = True
+
+    def __enter__(self) -> '_Deadline':
+        _CURRENT.deadline = self
+        self._timer.start()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._timer.cancel()
+        _CURRENT.deadline = None
+
+    def add(self, sock: socket.socket) -> None:
+        with self._lock:
+            if self.expired:
+                _shutdown(sock)
+            else:
+                self._sockets.append(sock)
+
+    def _fire(self) -> None:
+        with self._lock:
+            self.expired = True
+            sockets, self._sockets = self._sockets, []
+        for sock in sockets:
+            _shutdown(sock)
+
+
+_CURRENT = threading.local()  # the deadline of the request this thread is making
+
+
+def _shutdown(sock: socket.socket) -> None:
+    """The plain socket call, never SSLSocket.shutdown (which drops its SSL object under a
+    read that may be running in another thread)."""
+    try:
+        socket.socket.shutdown(sock, socket.SHUT_RDWR)
+    except (OSError, ValueError):
+        pass
+
+
+def _watch(sock: socket.socket) -> None:
+    deadline = getattr(_CURRENT, 'deadline', None)
+    if deadline is not None:
+        deadline.add(sock)
+
+
+class _WatchedHTTPConnection(http.client.HTTPConnection):
+    def connect(self) -> None:
+        super().connect()
+        _watch(self.sock)
+
+
+class _WatchedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req: Any) -> Any:
+        return self.do_open(_WatchedHTTPConnection, req)
+
+
+class _WatchedContext(ssl.SSLContext):
+    """An SSLContext whose sockets are put under the request's deadline before the handshake."""
+
+    def wrap_socket(self, sock: Any, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        handshake = kwargs.pop('do_handshake_on_connect', True)
+        tls = super().wrap_socket(sock, *args, do_handshake_on_connect=False, **kwargs)
+        _watch(tls)
+        if handshake:
+            tls.do_handshake()
+        return tls
+
+
 _OPENERS = {}  # type: Dict[Tuple[bool, Optional[str]], urllib.request.OpenerDirector]
 _OPENER_LOCK = threading.Lock()
 
 
 def _make_context(insecure: bool, cafile: Optional[str]) -> ssl.SSLContext:
+    """What ``ssl.create_default_context`` gives (a client context that verifies the chain and
+    the host name against the system store or ``cafile``), as a :class:`_WatchedContext`."""
+    context = _WatchedContext(ssl.PROTOCOL_TLS_CLIENT)
     if insecure:
-        context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         return context
-    return ssl.create_default_context(cafile=cafile)
+    if cafile:
+        context.load_verify_locations(cafile=cafile)
+    else:
+        context.load_default_certs(ssl.Purpose.SERVER_AUTH)
+    return context
 
 
 def _opener(insecure: bool, cafile: Optional[str]) -> urllib.request.OpenerDirector:
@@ -722,6 +818,7 @@ def _opener(insecure: bool, cafile: Optional[str]) -> urllib.request.OpenerDirec
         opener = _OPENERS.get(key)
         if opener is None:
             opener = urllib.request.build_opener(
+                _WatchedHTTPHandler(),
                 urllib.request.HTTPSHandler(context=_make_context(insecure, key[1])), _NoRedirect)
             _OPENERS[key] = opener
         return opener
@@ -776,8 +873,11 @@ def http_get(url: str, headers: Optional[Mapping[str, str]] = None, timeout: flo
     the same origin (scheme, host and port). A redirect anywhere else is returned as the answer,
     with its target's origin in :attr:`Response.location`, so a request to a server you audit
     never carries your ``--header`` to another host, another port or plain http, and another
-    service's file is never taken for the audited one. Raises :class:`HttpFailure` without an
-    answer. The message never holds the URL."""
+    service's file is never taken for the audited one. ``timeout`` bounds each request as a
+    whole (connect, TLS, headers and body), not each read. Raises :class:`HttpFailure` without
+    an answer: a timeout, a network error, or an answer that is not valid HTTP (a garbled
+    status line, too many or too long headers, a body cut short). The message never holds
+    the URL."""
     current = url
     redirects = []  # type: List[str]
     opener = _opener(insecure, cafile)
@@ -788,40 +888,73 @@ def http_get(url: str, headers: Optional[Mapping[str, str]] = None, timeout: flo
         request.add_header('Accept-Encoding', 'identity')
         for key, value in (headers or {}).items():
             request.add_header(key, value)
-        try:
-            with opener.open(request, timeout=timeout) as response:
-                body = response.read(MAX_BODY)
-                return Response(response.status, body, _ctype(response.headers), len(body),
-                                current, redirects)
-        except urllib.error.HTTPError as exc:
-            status = exc.code
+        with _Deadline(timeout) as deadline:
             try:
-                body = exc.read(MAX_BODY) or b''
-            except (OSError, ValueError):
-                body = b''
-            finally:
-                exc.close()
-            ctype = _ctype(exc.headers) if exc.headers else ''
-            if status in REDIRECT_CODES:
-                location = exc.headers.get('Location') if exc.headers else None
-                target = _join(current, location) if location else ''
-                origin = _origin(target) if target else ''
-                redirects.append(origin)
-                if origin and _same_origin(current, target):
-                    current = target
-                    continue
-                # Another origin, or no usable Location: the redirect is the answer.
-                return Response(status, body, ctype, len(body), current, redirects, origin)
-            return Response(status, body, ctype, len(body), current, redirects)
-        except urllib.error.URLError as exc:
-            if isinstance(exc.reason, (socket.timeout, TimeoutError)):
-                raise HttpFailure('timeout', 'no answer in %g s' % timeout)
-            raise HttpFailure('network', _reason_text(exc.reason))
-        except (socket.timeout, TimeoutError):
-            raise HttpFailure('timeout', 'no answer in %g s' % timeout)
-        except (OSError, ValueError) as exc:
-            raise HttpFailure('network', _reason_text(exc))
+                answer = _one_request(opener, request, timeout, current)
+            except HttpFailure:
+                if deadline.expired:
+                    raise HttpFailure('timeout', 'no complete answer in %g s' % timeout)
+                raise
+            if deadline.expired:
+                raise HttpFailure('timeout', 'no complete answer in %g s' % timeout)
+        status, body, ctype, location = answer
+        if status in REDIRECT_CODES and location is not None:
+            target = _join(current, location) if location else ''
+            origin = _origin(target) if target else ''
+            redirects.append(origin)
+            if origin and _same_origin(current, target):
+                current = target
+                continue
+            # Another origin, or no usable Location: the redirect is the answer.
+            return Response(status, body, ctype, len(body), current, redirects, origin, url)
+        return Response(status, body, ctype, len(body), current, redirects, '', url)
     raise HttpFailure('network', 'too many redirects (> %d)' % max_redirects)
+
+
+def _one_request(opener: urllib.request.OpenerDirector, request: urllib.request.Request,
+                 timeout: float, url: str) -> Tuple[int, bytes, str, Optional[str]]:
+    """One request -> (status, body, content type, Location: '' when a redirect has none, None
+    when the answer is no redirect)."""
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            body = response.read(MAX_BODY)
+            return response.status, body, _ctype(response.headers), None
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        try:
+            body = exc.read(MAX_BODY) or b''
+        except (OSError, ValueError, http.client.HTTPException):
+            body = b''
+        finally:
+            exc.close()
+        ctype = _ctype(exc.headers) if exc.headers else ''
+        location = None  # type: Optional[str]
+        if status in REDIRECT_CODES:
+            location = (exc.headers.get('Location') if exc.headers else None) or ''
+        return status, body, ctype, location
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, (socket.timeout, TimeoutError)):
+            raise HttpFailure('timeout', 'no answer in %g s' % timeout)
+        raise HttpFailure('network', _reason_text(exc.reason))
+    except (socket.timeout, TimeoutError):
+        raise HttpFailure('timeout', 'no answer in %g s' % timeout)
+    except http.client.HTTPException as exc:
+        # Before OSError: RemoteDisconnected is both. A garbled status line (another protocol
+        # on the port), too many or too long headers, a chunked body cut short.
+        raise HttpFailure('protocol', _http_error_text(exc))
+    except (OSError, ValueError) as exc:
+        raise HttpFailure('network', _reason_text(exc))
+
+
+def _http_error_text(exc: Exception) -> str:
+    if isinstance(exc, http.client.RemoteDisconnected):
+        return 'the server closed the connection without an answer'
+    if isinstance(exc, http.client.BadStatusLine):
+        return 'not an HTTP answer (another protocol on this port?)'
+    if isinstance(exc, http.client.IncompleteRead):
+        return 'the answer was cut short'
+    text = str(exc) or type(exc).__name__
+    return 'not a valid HTTP answer: %s' % (text if len(text) <= 120 else text[:117] + '...')
 
 
 def _reason_text(reason: Any) -> str:
@@ -925,6 +1058,10 @@ def probe_baseline(target: Target, fetch: Callable[[str], Response]) -> Baseline
         base.note = ('every unknown path answers %d, so a %d says nothing about a path here (the '
                      'whole host behind auth? -H "Name: value" for an authorised audit)'
                      % (status, status))
+    elif agree and 500 <= status < 600:
+        base.kind = STATUS_ONLY
+        base.note = ('the server answers %d (a server error) for unknown paths: a path that answers '
+                     'the same is not checked' % status)
     elif agree:
         base.kind = STATUS_ONLY
         base.note = 'the server answers %d for unknown paths; results are status-only' % status
@@ -971,11 +1108,27 @@ def _catchall_like(resp: Response, baseline: Baseline, path: str) -> bool:
             and _similar_length(_stable_length(resp.body, path), baseline.length))
 
 
+def _moved(resp: Response) -> bool:
+    """A same-origin redirect led to another path (``/admin`` -> ``/login``): the 2xx that
+    followed is that page, not the path. A trailing slash added (``/.git`` -> ``/.git/``) or a
+    query string is no move."""
+    if not resp.redirects or not resp.requested or not resp.final_url:
+        return False
+    try:
+        asked = urllib.parse.urlsplit(resp.requested).path or '/'
+        got = urllib.parse.urlsplit(resp.final_url).path or '/'
+    except ValueError:
+        return True
+    return asked.rstrip('/') != got.rstrip('/')
+
+
 def classify(probe: Probe, resp: Response, baseline: Baseline) -> Tuple[str, str, str]:
     """-> (verdict, confidence, detail). A 2xx is judged by the probe's content check, against
     the host's baseline: where the catch-all page passes the check too, the check proves
     nothing, so an answer like that page is BASELINE and another body only LIKELY. On a host
-    that denies every unknown path, the same 401 / 403 says nothing about the path either."""
+    that denies every unknown path, the same 401 / 403 says nothing about the path either. A
+    server error (5xx but 503) is ERROR: the path was not checked. A 2xx reached through a
+    same-origin redirect to another path is that page (a login page), not the path."""
     status = resp.status
 
     if status in (401, 403):
@@ -990,10 +1143,14 @@ def classify(probe: Probe, resp: Response, baseline: Baseline) -> Tuple[str, str
         # A redirect to another origin (http_get follows the same-origin ones).
         where = _plain(resp.location) if resp.location else 'another location'
         return REDIRECT, '', 'redirects to %s' % where
+    if 500 <= status < 600:
+        # A server error says nothing about the path: not checked, never "not found".
+        return ERROR, '', 'the server answered %d (a server error says nothing about the path)' % status
     if not (200 <= status < 300):
         return NOT_FOUND, '', 'status %d' % status
 
     catchall = _catchall_like(resp, baseline, probe.path)
+    moved = _moved(resp)
     if probe.confirm is not None:
         # The check runs on the body with the echoed request path removed, so a page that quotes
         # the path cannot satisfy it (and the text checks reject an HTML page).
@@ -1005,12 +1162,19 @@ def classify(probe: Probe, resp: Response, baseline: Baseline) -> Tuple[str, str
                 return BASELINE, '', 'same as the catch-all page, which passes the content check too'
             return verdict, LIKELY, ('the content check matches, but it matches the catch-all page '
                                      'too; this body is unlike that page')
+        if moved:
+            return verdict, LIKELY, ('the content check matches, but the path redirected to another '
+                                     'page on the site first')
         return verdict, CONFIRMED, 'content matches the expected file'
 
     # No content check (a custom path): the baseline is all we have. A 2xx that is
-    # indistinguishable from the catch-all page is not reported.
+    # indistinguishable from the catch-all page is not reported, nor is the page a redirect
+    # led to (a login page, the home page): the path itself served nothing.
     if catchall:
         return BASELINE, '', 'same as the catch-all page'
+    if moved:
+        return REDIRECT, '', ('redirects to another page on the site (a login or home page?); '
+                              'the path itself served nothing')
     if baseline.soft_404:
         return EXPOSED, LIKELY, 'a %d answer unlike the catch-all page' % status
     return EXPOSED, LIKELY, 'a %d answer' % status
@@ -1027,9 +1191,13 @@ class HostReport:
     error: str = ''
     baseline: Baseline = field(default_factory=Baseline)
     results: List[Result] = field(default_factory=list)
+    not_audited: str = ''   # why nothing on a reachable target could be judged
 
     def findings(self) -> List[Result]:
         return [r for r in self.results if r.finding]
+
+    def complete(self) -> bool:
+        return self.reachable and not self.not_audited and not self.unchecked()
 
     def notable(self) -> List[Result]:
         return [r for r in self.results if r.verdict in NOTABLE_VERDICTS]
@@ -1050,7 +1218,7 @@ class AuditReport:
 
     def complete(self) -> bool:
         """Every target answered and every path was checked."""
-        return all(h.reachable and not h.unchecked() for h in self.hosts)
+        return all(h.complete() for h in self.hosts)
 
 
 def _sort_results(results: List[Result]) -> None:
@@ -1131,6 +1299,10 @@ def audit_host(target: Target, probes: Sequence[Probe], rate: float = DEFAULT_RA
         report.baseline = probe_baseline(target, paced_get)
     except _Stopped:
         return report
+    except Exception as exc:  # a bug must cost this target, never the run
+        report.reachable = False
+        report.error = 'internal error while learning the baseline: %s' % _exception_text(exc)
+        return report
     if report.baseline.kind == NO_ANSWER:
         report.reachable = False
         report.error = report.baseline.note
@@ -1148,24 +1320,46 @@ def audit_host(target: Target, probes: Sequence[Probe], rate: float = DEFAULT_RA
                         probe.note)
         try:
             resp = paced_get(result.url)
+            result.status = resp.status
+            result.content_type = resp.content_type
+            result.length = resp.length
+            result.location = resp.location
+            result.verdict, result.confidence, result.detail = classify(probe, resp, report.baseline)
         except _Stopped:
             break
         except HttpFailure as exc:
             result.verdict = TIMEOUT if exc.kind == 'timeout' else ERROR
             result.detail = str(exc)
-            report.results.append(result)
-            continue
-        result.status = resp.status
-        result.content_type = resp.content_type
-        result.length = resp.length
-        result.location = resp.location
-        result.verdict, result.confidence, result.detail = classify(probe, resp, report.baseline)
+        except Exception as exc:  # a bug must cost this path, never the run
+            result.verdict, result.confidence = ERROR, ''
+            result.detail = 'internal error: %s' % _exception_text(exc)
         if result.verdict == BLOCKED:
             pacer.blocked.set()
         report.results.append(result)
     report.baseline.body = b''  # only needed while this target is audited
+    report.not_audited = _not_audited(report)
     _sort_results(report.results)
     return report
+
+
+def _not_audited(report: HostReport) -> str:
+    """Every path answered a redirect to another origin (an http target that sends everything
+    to https, a host moved away): nothing on this target was judged."""
+    if not report.results or any(r.verdict != REDIRECT or not r.status or r.status not in REDIRECT_CODES
+                                 for r in report.results):
+        return ''
+    targets = sorted({r.location for r in report.results})
+    if len(targets) == 1 and targets[0]:
+        return ('every path redirects to %s: nothing was audited here (audit that origin instead)'
+                % targets[0])
+    return 'every path redirects to another origin: nothing was audited here'
+
+
+def _exception_text(exc: BaseException) -> str:
+    text = str(exc)
+    if len(text) > 160:
+        text = text[:157] + '...'
+    return '%s: %s' % (type(exc).__name__, text) if text else type(exc).__name__
 
 
 def run_audit(targets: Sequence[Target], probes: Sequence[Probe], rate: float = DEFAULT_RATE,
@@ -1194,9 +1388,13 @@ def run_audit(targets: Sequence[Target], probes: Sequence[Probe], rate: float = 
         if stop.is_set():
             return
         target = targets[index]
-        report.hosts[index] = audit_host(target, probes, timeout=timeout, insecure=insecure,
-                                         cafile=cafile, headers=headers, stop=stop, get=get,
-                                         pacer=pacers[target.host])
+        try:
+            report.hosts[index] = audit_host(target, probes, timeout=timeout, insecure=insecure,
+                                             cafile=cafile, headers=headers, stop=stop, get=get,
+                                             pacer=pacers[target.host])
+        except Exception as exc:  # a bug must cost this target, never the run
+            report.hosts[index] = HostReport(target, reachable=False,
+                                             error='internal error: %s' % _exception_text(exc))
         if progress:
             with lock:
                 done[0] += 1
@@ -1271,14 +1469,17 @@ def _result_line(result: Result, color: _Color) -> str:
 def _unchecked_line(results: Sequence[Result]) -> str:
     """Why paths were not checked: never a clean result, and what to do about it."""
     count = {v: sum(1 for r in results if r.verdict == v) for v in UNCHECKED_VERDICTS}
+    server_errors = sum(1 for r in results if r.verdict == ERROR and r.status is not None)
     why = []
     if count[BLOCKED]:
         why.append('%d blocked, the server rate-limited the audit (rerun later or lower --rate)'
                    % count[BLOCKED])
     if count[TIMEOUT]:
         why.append('%d timed out (raise --timeout)' % count[TIMEOUT])
-    if count[ERROR]:
-        why.append('%d failed (--show-all says why)' % count[ERROR])
+    if server_errors:
+        why.append('%d answered a server error (5xx)' % server_errors)
+    if count[ERROR] - server_errors:
+        why.append('%d failed (--show-all says why)' % (count[ERROR] - server_errors))
     return '%s not checked: %s' % (_plural(len(results), 'path'), '; '.join(why))
 
 
@@ -1294,6 +1495,13 @@ def render_text(report: AuditReport, color: Optional[_Color] = None, show_all: b
             continue
         if host.baseline.note:
             lines.append('  %s' % color.dim('baseline: ' + _plain(host.baseline.note)))
+        if host.not_audited:
+            lines.append('  %s' % color.yellow(_plain(host.not_audited)))
+            if show_all:
+                for result in host.results:
+                    lines.append(_result_line(result, color))
+            lines.append('')
+            continue
         notable = host.notable()
         unchecked = host.unchecked()
         checked = len(host.results) - len(unchecked)
@@ -1323,10 +1531,13 @@ def render_text(report: AuditReport, color: Optional[_Color] = None, show_all: b
                   counts['high'], counts['medium'], counts['low'], counts[PROTECTED]))
     lines.append(summary)
     unreachable = len(report.hosts) - reachable
-    if unreachable or counts['unchecked']:
+    not_audited = sum(1 for h in report.hosts if h.reachable and h.not_audited)
+    if unreachable or not_audited or counts['unchecked']:
         gaps = []
         if unreachable:
             gaps.append('%s unreachable' % _plural(unreachable, 'target'))
+        if not_audited:
+            gaps.append('%s redirected away' % _plural(not_audited, 'target'))
         if counts['unchecked']:
             gaps.append('%s not checked' % _plural(counts['unchecked'], 'path'))
         lines.append(color.yellow('incomplete: %s (--fail-on-error exits 1 on this)' % ', '.join(gaps)))
@@ -1371,6 +1582,8 @@ def report_to_dict(report: AuditReport) -> Dict[str, Any]:
                          'samples': host.baseline.samples, 'note': host.baseline.note},
             'findings': len(host.findings()),
             'unchecked': len(host.unchecked()),
+            'notAudited': host.not_audited or None,
+            'complete': host.complete(),
             'results': [_result_dict(r) for r in host.results],
         })
     return {
@@ -1530,7 +1743,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help='exit with code 1 when anything is exposed (for CI)')
     out.add_argument('--fail-on-error', action='store_true',
                      help='exit with code 1 when a target could not be fully audited: unreachable, '
-                          'or paths not checked (rate limited, timed out, failed)')
+                          'paths not checked (rate limited, timed out, failed, a server error), '
+                          'or every path redirected to another origin')
     out.add_argument('--no-color', action='store_true', help='no ANSI colors')
     out.add_argument('-q', '--quiet', action='store_true', help='no progress or warnings on stderr')
 
@@ -1539,13 +1753,67 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# --- report files: checked before the run, written whole or not at all ------------------
+
+def _same_path(first: Optional[str], second: Optional[str]) -> bool:
+    """True when two command-line paths name the same file (never for ``-``)."""
+    if not first or not second or '-' in (first, second):
+        return False
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
+def _check_output_paths(json_path: Optional[str], csv_path: Optional[str]) -> None:
+    """Refuse report files that cannot be written before the run, not after it: both on one
+    file (the second would replace the first), stdout twice, a missing directory, a directory,
+    a read-only file. Nothing is truncated or left behind."""
+    if json_path == '-' and csv_path == '-':
+        raise UsageError('--json - and --csv - cannot both write to stdout')
+    if _same_path(json_path, csv_path):
+        raise UsageError('--json and --csv name the same file %s: give each its own'
+                         % _plain(json_path or ''))
+    for path, option in ((json_path, '--json'), (csv_path, '--csv')):
+        if not path or path == '-':
+            continue
+        directory = os.path.dirname(os.path.abspath(path))
+        if not os.path.isdir(directory):
+            raise UsageError('%s: directory does not exist: %s' % (option, _plain(directory)))
+        if os.path.isdir(path):
+            raise UsageError('%s: %s is a directory' % (option, _plain(path)))
+        try:
+            if os.path.isfile(path):
+                with open(path, 'r+b'):  # open for writing, without truncating
+                    pass
+            elif not os.path.exists(path):
+                with open(path, 'xb'):
+                    pass
+                os.remove(path)
+        except OSError as exc:
+            raise UsageError('%s: cannot write %s: %s' % (option, _plain(path), exc.strerror or exc))
+
+
 def _write(path: str, text: str, encoding: str = 'utf-8') -> None:
+    """``-`` is stdout; a file is written whole or not at all (a temporary file next to it,
+    renamed over it), so an interrupted run leaves the previous report as it was."""
     if path == '-':
         sys.stdout.write(text)
         sys.stdout.flush()
         return
-    with open(path, 'w', encoding=encoding, newline='') as handle:
-        handle.write(text)
+    temp = '%s.%d.tmp' % (path, os.getpid())
+    try:
+        with open(temp, 'x', encoding=encoding, newline='') as handle:
+            handle.write(text)
+        if os.path.isfile(path):
+            try:
+                shutil.copymode(path, temp)
+            except OSError:
+                pass  # keep the default mode rather than fail the report
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        raise
 
 
 def _run_audit(args: argparse.Namespace) -> int:
@@ -1558,8 +1826,7 @@ def _run_audit(args: argparse.Namespace) -> int:
         raise UsageError('--workers must be between 1 and %d' % MAX_WORKERS)
     if not 1 <= args.max_hosts <= MAX_HOSTS:
         raise UsageError('--max-hosts must be between 1 and %d' % MAX_HOSTS)
-    if args.json == '-' and args.csv == '-':
-        raise UsageError('--json - and --csv - cannot both write to stdout')
+    _check_output_paths(args.json, args.csv)
     if args.cafile and args.insecure:
         raise UsageError('--cafile and --insecure cannot be combined')
     if args.cafile and not os.path.isfile(args.cafile):
@@ -1636,8 +1903,30 @@ def _run_audit(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _discard_stdout() -> None:
+    """After a broken pipe (``... | head``): point stdout at the null device, so what is still
+    buffered is dropped quietly instead of failing again at exit."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, sys.stdout.fileno())
+        finally:
+            os.close(devnull)
+    except (OSError, ValueError, AttributeError, io.UnsupportedOperation):
+        pass  # not a real file (a test's StringIO)
+
+
+def _internal_error(exc: BaseException) -> int:
+    """An unexpected exception is a bug: its traceback, one line saying so, and exit 70, never
+    the 1 that means "something is exposed"."""
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    print('%s: internal error: %s (exit %d; please report it)'
+          % (PROG, _exception_text(exc), EXIT_INTERNAL_ERROR), file=sys.stderr)
+    return EXIT_INTERNAL_ERROR
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Command-line entry point; returns the exit code (0, 1, 2, 3 or 130)."""
+    """Command-line entry point; returns the exit code (0, 1, 2, 3, 70 or 130)."""
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(errors='replace')
@@ -1660,6 +1949,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyboardInterrupt:
         print('\ninterrupted', file=sys.stderr)
         return EXIT_INTERRUPTED
+    except BrokenPipeError:  # `... | head`: the reader has what it wanted
+        _discard_stdout()
+        return EXIT_OK
+    except Exception as exc:
+        return _internal_error(exc)
 
 
 if __name__ == '__main__':

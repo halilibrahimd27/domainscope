@@ -1218,6 +1218,273 @@ class CliTests(unittest.TestCase):
             self.assertLessEqual(len(line), 100, line)
 
 
+# ---------------------------------------------------------------------------------------
+# Hostile and broken servers: one must never cost the run, nor look clean
+# ---------------------------------------------------------------------------------------
+
+class RawServer:
+    """A loopback TCP server that answers every connection with ``handler(conn)``: raw bytes,
+    another protocol, a drip. Each connection is handled in its own thread and closed after."""
+
+    def __init__(self, handler: Callable[[socket.socket], None]) -> None:
+        self.handler = handler
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(('127.0.0.1', 0))
+        self.sock.listen(16)
+        self.sock.settimeout(0.05)
+        self.stop = threading.Event()
+        self.connections = 0
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self) -> None:
+        while not self.stop.is_set():
+            try:
+                conn, _ = self.sock.accept()
+            except (socket.timeout, OSError):
+                continue
+            self.connections += 1
+            threading.Thread(target=self._one, args=(conn,), daemon=True).start()
+
+    def _one(self, conn: socket.socket) -> None:
+        try:
+            conn.settimeout(5.0)
+            self.handler(conn)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    @property
+    def port(self) -> int:
+        return self.sock.getsockname()[1]
+
+    def url(self, path: str = '') -> str:
+        return 'http://127.0.0.1:%d%s' % (self.port, path)
+
+    def __enter__(self) -> 'RawServer':
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.stop.set()
+        self.thread.join(2)
+        self.sock.close()
+
+
+def _read_request(conn: socket.socket) -> None:
+    data = b''
+    while b'\r\n\r\n' not in data:
+        chunk = conn.recv(4096)
+        if not chunk:
+            return
+        data += chunk
+
+
+def _ssh_banner(conn: socket.socket) -> None:
+    conn.sendall(b'SSH-2.0-OpenSSH_9.6\r\n')
+    _read_request(conn)
+
+
+def _too_many_headers(conn: socket.socket) -> None:
+    _read_request(conn)
+    conn.sendall(b'HTTP/1.1 200 OK\r\n' + b''.join(b'X-H%d: v\r\n' % i for i in range(150)) + b'\r\n')
+
+
+def _cut_chunked(conn: socket.socket) -> None:
+    _read_request(conn)
+    conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n'
+                 b'10\r\nAPP_ENV=prod\n')  # 16 bytes promised, 13 sent, then the connection closes
+
+
+def _drip(where: str, step: float = 0.3, total: int = 40) -> Callable[[socket.socket], None]:
+    """Answer one byte every ``step`` seconds: in the status line and headers, or in the body."""
+    def handler(conn: socket.socket) -> None:
+        _read_request(conn)
+        head = b'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n' % total
+        if where == 'body':
+            conn.sendall(head)
+            data = b'A' * total
+        else:
+            data = head + b'A' * total
+        for i in range(len(data)):
+            conn.sendall(data[i:i + 1])
+            time.sleep(step)
+    return handler
+
+
+class HostileServerTests(unittest.TestCase):
+    def setUp(self):
+        ca._reset_openers()
+
+    def test_not_http_on_the_port_is_a_protocol_failure(self):
+        for handler, words in ((_ssh_banner, 'another protocol'), (_too_many_headers, 'headers'),
+                               (_cut_chunked, 'cut short')):
+            with self.subTest(handler=handler.__name__), RawServer(handler) as raw, no_proxy():
+                with self.assertRaises(ca.HttpFailure) as cm:
+                    ca.http_get(raw.url('/.env'), timeout=3.0)
+                self.assertEqual(cm.exception.kind, 'protocol')
+                self.assertIn(words, str(cm.exception))
+
+    def test_a_drip_ends_at_the_request_deadline(self):
+        # One byte every 0.3 s never trips a per-read timeout of 1 s; the request as a whole
+        # must still end near 1 s, in the headers and in the body alike.
+        for where in ('head', 'body'):
+            with self.subTest(where=where), RawServer(_drip(where)) as raw, no_proxy():
+                started = time.monotonic()
+                with self.assertRaises(ca.HttpFailure) as cm:
+                    ca.http_get(raw.url('/slow'), timeout=1.0)
+                elapsed = time.monotonic() - started
+                self.assertEqual(cm.exception.kind, 'timeout')
+                self.assertLess(elapsed, 2.0)
+
+    def test_deadline_does_not_cut_a_quick_answer(self):
+        with Server({'/ok': (200, {'Content-Type': 'text/plain'}, b'fine')}) as s, no_proxy():
+            for _ in range(3):
+                self.assertEqual(ca.http_get(s.url('/ok'), timeout=1.0).body, b'fine')
+
+    def test_one_bad_host_never_costs_the_run(self):
+        with RawServer(_ssh_banner) as raw, RawServer(_cut_chunked) as cut, \
+                Server(dict(EXPOSED_ROUTES)) as good, tempfile.TemporaryDirectory() as d:
+            raw_port, good_port = raw.port, good.port
+            jpath = os.path.join(d, 'out.json')
+            code, out, err = run_main('audit', raw.url(''), cut.url(''), good.url(''), '--rate', '50',
+                                      '--timeout', '3', '--no-color', '--json', jpath,
+                                      '--fail-on-error')
+            with open(jpath, encoding='utf-8') as fh:
+                doc = json.load(fh)
+        self.assertEqual(code, ca.EXIT_INCOMPLETE, err)
+        self.assertNotIn('Traceback', err)
+        hosts = {h['port']: h for h in doc['hosts']}
+        self.assertFalse(hosts[raw_port]['reachable'])
+        self.assertIn('another protocol', hosts[raw_port]['error'])
+        self.assertGreaterEqual(hosts[good_port]['findings'], 2)
+        self.assertIn('EXPOSED', out)
+
+    def test_server_errors_are_never_clean(self):
+        broken = lambda path: (502, {'Content-Type': 'text/html'}, b'<html>bad gateway</html>')
+        with Server({}, default=broken) as s:
+            code, out, err = run_main('audit', s.url(''), '--rate', '50', '--no-color', '--fail-on-error')
+            plain_code, _, _ = run_main('audit', s.url(''), '--rate', '50', '--no-color', '-q')
+        self.assertEqual(code, ca.EXIT_INCOMPLETE)
+        self.assertEqual(plain_code, ca.EXIT_OK)
+        self.assertNotIn('nothing exposed', out)
+        self.assertIn('answered a server error (5xx)', out)
+        self.assertIn('(a server error) for unknown paths', out)
+
+    def test_a_500_on_one_path_is_not_checked_not_not_found(self):
+        verdict, _, detail = ca.classify(_probe('.env'), _resp(500),
+                                         ca.Baseline(kind=ca.HARD_404, status=404))
+        self.assertEqual(verdict, ca.ERROR)
+        self.assertIn('500', detail)
+        self.assertIn(ca.ERROR, ca.UNCHECKED_VERDICTS)
+
+    def test_every_path_redirected_away_is_not_audited(self):
+        away = lambda path: (301, {'Location': 'https://example.com' + path}, b'')
+        with Server({}, default=away) as s, tempfile.TemporaryDirectory() as d:
+            jpath = os.path.join(d, 'out.json')
+            code, out, err = run_main('audit', s.url(''), '--rate', '50', '--no-color', '--fail-on-error',
+                                      '--json', jpath)
+            with open(jpath, encoding='utf-8') as fh:
+                doc = json.load(fh)
+        self.assertEqual(code, ca.EXIT_INCOMPLETE)
+        self.assertNotIn('nothing exposed', out)
+        self.assertIn('every path redirects to https://example.com', out)
+        self.assertIn('1 target redirected away', out)
+        self.assertFalse(doc['summary']['complete'])
+        self.assertFalse(doc['hosts'][0]['complete'])
+        self.assertIn('https://example.com', doc['hosts'][0]['notAudited'])
+
+    def test_redirect_to_a_login_page_is_no_finding(self):
+        # Unknown paths are a hard 404, but /admin redirects (same origin) to /login, a 200.
+        routes = {'/admin': (302, {'Location': '/login'}, b''),
+                  '/login': (200, {'Content-Type': 'text/html'}, b'<html><form>sign in</form></html>' * 4),
+                  '/.git': (301, {'Location': '/.git/'}, b''),
+                  '/.git/': (200, {'Content-Type': 'text/html'},
+                             b'<html><title>Index of /.git</title><body><h1>Index of /.git</h1>'
+                             b'<a href="HEAD">HEAD</a></body></html>')}
+        with Server(routes) as s, tempfile.TemporaryDirectory() as d, no_proxy():
+            paths = _write(d, 'paths.txt', 'admin\n')
+            target = ca.parse_target(s.url(''))
+            report = ca.audit_host(target, ca.paths_for([ca.LISTING], ca._custom_paths(paths)),
+                                   rate=50.0, timeout=5.0)
+        by_path = {r.path: r for r in report.results}
+        self.assertEqual(by_path['admin'].verdict, ca.REDIRECT)
+        self.assertFalse(by_path['admin'].finding)
+        self.assertIn('login', by_path['admin'].detail)
+        listed = [r for r in report.findings() if r.verdict == ca.LISTED]
+        self.assertTrue(listed, [(r.path, r.verdict, r.detail) for r in report.results])
+
+    def test_a_bug_costs_one_target_never_the_run(self):
+        def get(url, **kw):
+            if 'broken.example.net' in url:
+                raise RuntimeError('boom')
+            return _resp(404, 'text/html', b'x')
+
+        targets = [ca.parse_target('https://broken.example.net/'), ca.parse_target('https://example.com/')]
+        report = ca.run_audit(targets, ca.paths_for([ca.VCS]), rate=50.0, get=get,
+                              clock=lambda: 0.0, sleep=lambda s: None)
+        self.assertFalse(report.hosts[0].reachable)
+        self.assertIn('RuntimeError: boom', report.hosts[0].error)
+        self.assertTrue(report.hosts[1].complete())
+
+    def test_a_bug_while_classifying_costs_one_path(self):
+        with mock.patch.object(ca, 'classify', side_effect=ValueError('bad')):
+            report = ca.audit_host(ca.parse_target('https://example.com/'), ca.paths_for([ca.VCS]),
+                                   rate=50.0, get=lambda url, **kw: _resp(404),
+                                   clock=lambda: 0.0, sleep=lambda s: None)
+        self.assertTrue(report.results)
+        self.assertTrue(all(r.verdict == ca.ERROR and 'ValueError: bad' in r.detail for r in report.results))
+        self.assertFalse(report.complete())
+
+    def test_internal_error_exits_70_with_the_traceback(self):
+        with mock.patch.object(ca, '_run_audit', side_effect=RuntimeError('unexpected')):
+            code, out, err = run_main('audit', 'example.com')
+        self.assertEqual(code, ca.EXIT_INTERNAL_ERROR)
+        self.assertEqual(ca.EXIT_INTERNAL_ERROR, 70)
+        self.assertIn('Traceback', err)
+        self.assertIn('content_audit.py: internal error: RuntimeError: unexpected', err)
+
+    def test_a_closed_pipe_is_a_quiet_exit(self):
+        with mock.patch.object(ca, '_run_audit', side_effect=BrokenPipeError()), \
+                mock.patch.object(ca, '_discard_stdout') as discard:
+            code, _, err = run_main('audit', 'example.com')
+        self.assertEqual((code, err), (ca.EXIT_OK, ''))
+        discard.assert_called_once_with()
+
+
+class ReportFileTests(unittest.TestCase):
+    def test_json_and_csv_on_one_file_is_refused_before_the_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            same = os.path.join(d, 'out')
+            with mock.patch.object(ca, 'run_audit') as run:
+                code, _, err = run_main('audit', 'example.com', '--json', same, '--csv', same)
+            run.assert_not_called()
+            self.assertEqual(os.listdir(d), [])
+        self.assertEqual(code, ca.EXIT_USAGE)
+        self.assertIn('same file', err)
+
+    def test_missing_directory_is_refused_before_the_run(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(ca, 'run_audit') as run:
+            code, _, err = run_main('audit', 'example.com', '--json', os.path.join(d, 'no', 'out.json'))
+        run.assert_not_called()
+        self.assertEqual(code, ca.EXIT_USAGE)
+        self.assertIn('directory does not exist', err)
+
+    def test_write_is_whole_or_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = _write(d, 'out.json', 'previous\n')
+            ca._write(path, 'new\n')
+            with open(path, encoding='utf-8') as fh:
+                self.assertEqual(fh.read(), 'new\n')
+            with mock.patch.object(ca.os, 'replace', side_effect=OSError(28, 'No space left')):
+                with self.assertRaises(OSError):
+                    ca._write(path, 'lost\n')
+            with open(path, encoding='utf-8') as fh:
+                self.assertEqual(fh.read(), 'new\n')
+            self.assertEqual(os.listdir(d), ['out.json'])  # no temporary file left behind
+
+
 class CompatibilityTests(unittest.TestCase):
     """The CLI must stay runnable on Python 3.8 (the rules of test_ssl_origin_scan.py)."""
 
@@ -1247,9 +1514,10 @@ class CompatibilityTests(unittest.TestCase):
         source_text = CLI_PATH.read_text(encoding='utf-8')
         self.assertTrue(source_text.startswith('#!/usr/bin/env python3'))
         imports = set(re.findall(r'^(?:from|import) ([a-zA-Z_][\w.]*)', source_text, re.M))
-        stdlib = {'__future__', 'argparse', 'concurrent.futures', 'csv', 'dataclasses', 'datetime', 'io',
-                  'ipaddress', 'json', 'os', 're', 'secrets', 'socket', 'ssl', 'sys', 'threading', 'time',
-                  'typing', 'urllib.error', 'urllib.parse', 'urllib.request'}
+        stdlib = {'__future__', 'argparse', 'concurrent.futures', 'csv', 'dataclasses', 'datetime',
+                  'http.client', 'io', 'ipaddress', 'json', 'os', 're', 'secrets', 'shutil', 'socket',
+                  'ssl', 'sys', 'threading', 'time', 'traceback', 'typing', 'urllib.error',
+                  'urllib.parse', 'urllib.request'}
         self.assertLessEqual(imports, stdlib, imports - stdlib)
 
 

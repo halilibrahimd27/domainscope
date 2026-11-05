@@ -735,7 +735,13 @@ class CommandLineTests(unittest.TestCase):
             code, _, _ = run_main('domains', '203.0.113.10', '--no-tls', '--sources', 'otx', '--fail-on-error')
             self.assertEqual(code, ii.EXIT_SOURCE_ERRORS)
             with tempfile.TemporaryDirectory() as tmp:
+                # A directory is refused before the run; a write that fails after it exits 3.
                 code, _, err = run_main('domains', '203.0.113.10', '--no-tls', '--no-passive', '--json', tmp)
+                self.assertEqual(code, ii.EXIT_USAGE, err)
+                self.assertIn('is a directory', err)
+                with mock.patch.object(ii, '_write', side_effect=OSError(28, 'No space left on device')):
+                    code, _, err = run_main('domains', '203.0.113.10', '--no-tls', '--no-passive', '--json',
+                                            os.path.join(tmp, 'out.json'))
                 self.assertEqual(code, ii.EXIT_OUTPUT_ERROR, err)
                 self.assertIn('cannot write', err)
 
@@ -794,6 +800,38 @@ class CommandLineTests(unittest.TestCase):
         self.assertNotIn('’', ii.EPILOG.split('Türkçe')[1])
 
 
+class ReportAndErrorTests(unittest.TestCase):
+    def test_json_and_csv_on_one_file_are_refused_before_any_lookup(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(ii, 'run_domains') as run:
+            same = os.path.join(d, 'out')
+            code, _, err = run_main('domains', '192.0.2.10', '--json', same, '--csv', same)
+            self.assertEqual(code, ii.EXIT_USAGE)
+            self.assertIn('same file', err)
+            code, _, err = run_main('domains', '192.0.2.10', '--csv', os.path.join(d, 'none', 'x.csv'))
+            self.assertEqual(code, ii.EXIT_USAGE)
+            self.assertIn('directory does not exist', err)
+            self.assertEqual(os.listdir(d), [])
+        run.assert_not_called()
+
+    def test_an_internal_error_exits_70_and_never_prints_a_key(self):
+        key = 'k3y-' + 'abcdef0123456789'
+        with mock.patch.dict(os.environ, {ii.KEY_VARIABLES[0]: key}), \
+                mock.patch.object(ii, '_run_domains', side_effect=RuntimeError('failed with ' + key)):
+            code, _, err = run_main('domains', '192.0.2.10')
+        self.assertEqual(code, ii.EXIT_INTERNAL_ERROR)
+        self.assertEqual(code, 70)
+        self.assertIn('Traceback', err)
+        self.assertIn('ip_intel.py: internal error: RuntimeError: failed with [key]', err)
+        self.assertNotIn(key, err)
+
+    def test_a_closed_pipe_is_a_quiet_exit(self):
+        with mock.patch.object(ii, '_run_domains', side_effect=BrokenPipeError()), \
+                mock.patch.object(ii, '_discard_stdout') as discard:
+            code, _, err = run_main('domains', '192.0.2.10')
+        self.assertEqual((code, err), (ii.EXIT_OK, ''))
+        discard.assert_called_once_with()
+
+
 class CompatibilityTests(unittest.TestCase):
     """The CLI must stay runnable on Python 3.8 (the rules of test_ssl_origin_scan.py)."""
 
@@ -824,8 +862,8 @@ class CompatibilityTests(unittest.TestCase):
         self.assertTrue(source_text.startswith('#!/usr/bin/env python3'))
         imports = set(re.findall(r'^(?:from|import) ([a-zA-Z_][\w.]*)', source_text, re.M))
         stdlib = {'__future__', 'argparse', 'base64', 'csv', 'hashlib', 'io', 'ipaddress', 'json', 'os', 're',
-                  'socket', 'ssl', 'sys', 'threading', 'time', 'concurrent.futures', 'dataclasses', 'datetime',
-                  'typing', 'urllib.error', 'urllib.parse', 'urllib.request'}
+                  'shutil', 'socket', 'ssl', 'sys', 'threading', 'time', 'traceback', 'concurrent.futures',
+                  'dataclasses', 'datetime', 'typing', 'urllib.error', 'urllib.parse', 'urllib.request'}
         self.assertLessEqual(imports, stdlib, imports - stdlib)
 
 

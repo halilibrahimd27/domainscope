@@ -37,10 +37,13 @@ import json
 import os
 import random
 import re
+import shutil
 import socket
 import struct
 import sys
 import threading
+import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -76,6 +79,7 @@ EXIT_OK = 0
 EXIT_DIFFERENCES = 1   # only with --fail-on-diff
 EXIT_USAGE = 2
 EXIT_OUTPUT_ERROR = 3  # a --json / --csv file could not be written after the run
+EXIT_INTERNAL_ERROR = 70  # a bug: an unexpected exception (the traceback goes to stderr)
 EXIT_INTERRUPTED = 130
 
 DEFAULT_PORT = 53
@@ -828,9 +832,16 @@ def build_query(name: str, rtype: str, msg_id: int, edns: bool = True, rd: bool 
     return header + question + opt
 
 
+MAX_NAME_OCTETS = 255  # RFC 1035 3.1, the wire form with its length octets
+
+
 def _read_name(msg: bytes, pos: int) -> Tuple[str, int]:
+    """A (possibly compressed) name at ``pos`` -> (text, the position after it). A malformed
+    name - cut short, a pointer loop, a bad label type, longer than 255 octets - raises
+    :class:`DnsError` ('format'), never another exception."""
     labels = []  # type: List[bytes]
     jumps = 0
+    octets = 1  # the root label
     end = None  # type: Optional[int]
     while True:
         if pos >= len(msg):
@@ -853,6 +864,9 @@ def _read_name(msg: bytes, pos: int) -> Tuple[str, int]:
             break
         if pos + length > len(msg):
             raise DnsError('format', 'truncated label')
+        octets += 1 + length
+        if octets > MAX_NAME_OCTETS:
+            raise DnsError('format', 'name longer than %d octets' % MAX_NAME_OCTETS)
         labels.append(msg[pos:pos + length])
         pos += length
     return labels_to_text(labels), end if end is not None else pos
@@ -932,6 +946,8 @@ def _rdata(msg: bytes, rtype: str, start: int, length: int) -> Tuple[Any, str]:
     if rtype == 'SOA':
         mname, pos = _read_name(msg, start)
         rname, pos = _read_name(msg, pos)
+        if pos + 20 > start + length:
+            raise DnsError('format', 'truncated SOA')
         serial, refresh, retry, expire, minimum = struct.unpack('!IIIII', msg[pos:pos + 20])
         return (serial,), '%s. %s. %d %d %d %d %d' % (mname, rname, serial, refresh, retry, expire, minimum)
     return ('#', data.hex()), '\\# %d %s' % (length, data.hex())
@@ -975,9 +991,27 @@ def parse_message(msg: bytes) -> Message:
                    question, sections[0], sections[1], sections[2])
 
 
-def _recv_exact(sock: socket.socket, size: int) -> bytes:
+def soa_serial(rr: RR) -> Optional[int]:
+    """The serial of a SOA record, None when its data was malformed (kept as raw bytes)."""
+    serial = rr.key[0] if rr.rtype == 'SOA' and isinstance(rr.key, tuple) and rr.key else None
+    return serial if isinstance(serial, int) else None
+
+
+def _left(deadline: float) -> float:
+    """Seconds until ``deadline`` (time.monotonic()), raising socket.timeout once it passed."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise socket.timeout('timed out')
+    return left
+
+
+def _recv_exact(sock: socket.socket, size: int, deadline: Optional[float] = None) -> bytes:
+    """Exactly ``size`` bytes. With ``deadline`` (time.monotonic()) the whole read ends by then
+    however the server paces its bytes: a socket timeout bounds one recv, not the read."""
     data = b''
     while len(data) < size:
+        if deadline is not None:
+            sock.settimeout(_left(deadline))
         chunk = sock.recv(size - len(data))
         if not chunk:
             raise DnsError('network', 'connection closed')
@@ -998,9 +1032,11 @@ def query_dns(server: str, port: int, name: str, rtype: str, timeout: float = DE
         for _attempt in range(TRIES):
             sock = socket.socket(family, socket.SOCK_DGRAM)
             try:
+                deadline = time.monotonic() + timeout
                 sock.settimeout(timeout)
                 sock.sendto(query, (server, port))
-                while True:
+                while True:  # foreign or garbled datagrams do not extend the wait
+                    sock.settimeout(_left(deadline))
                     data, _ = sock.recvfrom(65535)
                     try:
                         reply = parse_message(data)
@@ -1026,10 +1062,11 @@ def query_dns(server: str, port: int, name: str, rtype: str, timeout: float = DE
     except OSError as exc:
         raise DnsError('network', exc.strerror or str(exc))
     try:
+        deadline = time.monotonic() + timeout
         sock.settimeout(timeout)
         sock.sendall(struct.pack('!H', len(query)) + query)
-        size = struct.unpack('!H', _recv_exact(sock, 2))[0]
-        reply = parse_message(_recv_exact(sock, size))
+        size = struct.unpack('!H', _recv_exact(sock, 2, deadline))[0]
+        reply = parse_message(_recv_exact(sock, size, deadline))
     except socket.timeout:
         raise DnsError('timeout', 'no TCP answer from %s in %gs' % (server, timeout))
     except OSError as exc:
@@ -1287,7 +1324,10 @@ def check_nameserver(asker: Asker, origin: str) -> None:
     if reply.rcode != 'NOERROR' or not soa:
         ns.state, ns.detail = NS_NO_ZONE, 'has no SOA for %s (%s)' % (origin, reply.rcode)
         return
-    ns.serial = soa[0].key[0]
+    ns.serial = soa_serial(soa[0])
+    if ns.serial is None:
+        ns.state, ns.detail = NS_UNREACHABLE, 'sent a malformed SOA for %s' % origin
+        return
     if not reply.aa:
         ns.state, ns.detail = NS_NOT_AUTHORITATIVE, 'answers for %s without the authoritative flag' % origin
         return
@@ -1777,8 +1817,10 @@ def try_axfr(address: str, port: int, zone: str, timeout: float = DEFAULT_TIMEOU
         sock.sendall(struct.pack('!H', len(query)) + query)
         while soas < 2 and received < max_bytes:
             try:
-                size = struct.unpack('!H', _recv_exact(sock, 2))[0]
-                reply = parse_message(_recv_exact(sock, size))
+                # Each message within --timeout, however the server paces its bytes.
+                deadline = time.monotonic() + timeout
+                size = struct.unpack('!H', _recv_exact(sock, 2, deadline))[0]
+                reply = parse_message(_recv_exact(sock, size, deadline))
             except socket.timeout:
                 result.detail = ('no more data in %gs: the transfer stopped before the closing SOA' % timeout
                                  if result.records else 'no answer in %gs' % timeout)
@@ -1804,12 +1846,15 @@ def try_axfr(address: str, port: int, zone: str, timeout: float = DEFAULT_TIMEOU
                                        or canonical_name(reply.answers[0].name) != zone):
                 result.status, result.detail = AXFR_DENIED, 'no zone in the answer'
                 break
+            if not result.records and soa_serial(reply.answers[0]) is None:
+                result.detail = 'a malformed answer: the SOA record is cut short'
+                break
             for rr in reply.answers:
                 result.records += 1
                 if rr.rtype == 'SOA' and canonical_name(rr.name) == zone:
                     soas += 1
                     if result.serial is None:
-                        result.serial = rr.key[0]
+                        result.serial = soa_serial(rr)
                     if soas == 2:
                         break
     except OSError as exc:
@@ -1868,7 +1913,11 @@ def run_axfr(zone: str, nameservers: Sequence[NameServer], timeout: float = DEFA
     def one(ns: NameServer) -> AxfrResult:
         if not ns.address:
             return AxfrResult(ns.label, '', ns.port, AXFR_ERROR, detail=ns.detail or 'its name does not resolve')
-        result = try_axfr(ns.address, ns.port, zone, timeout, max_bytes)
+        try:
+            result = try_axfr(ns.address, ns.port, zone, timeout, max_bytes)
+        except Exception as exc:  # whatever one server sends costs its own line, never the run
+            return AxfrResult(ns.label, ns.address, ns.port, AXFR_ERROR,
+                              detail='a malformed answer (%s)' % type(exc).__name__)
         result.ns = ns.label
         return result
     if not nameservers:
@@ -1925,6 +1974,7 @@ def _run_axfr(args: argparse.Namespace) -> int:
         raise UsageError('--axfr takes a zone name, not a zone file')
     if args.csv:
         raise UsageError('--csv does not apply to --axfr (use --json)')
+    _check_output_paths(args.json, None)
     try:
         zone = canonical_name(args.axfr.strip().rstrip('.').lower())
     except ValueError:
@@ -2009,7 +2059,7 @@ verdict (the web app's): FIX while something is MISSING or DIFFERENT or a server
 exit codes: 0 done, 1 something missing, different, extra or unproxied, a record set without
   an answer, or a server that does not serve the zone (only with --fail-on-diff: stricter
   than the verdict, UNPROXIED and EXTRA fail it too), 2 usage error, 3 a report file could
-  not be written, 130 interrupted.
+  not be written, 70 internal error (a bug; the traceback goes to stderr), 130 interrupted.
 
 Türkçe: DNS sağlayıcısını değiştirmeden önce yeni ad sunucularının zone dosyasındaki her
   kaydı sunup sunmadığını kontrol eder (eksik, farklı, fazladan kayıtlar, TTL farkları).
@@ -2076,13 +2126,67 @@ def _read_zone_text(path: str) -> str:
     return raw.decode('latin-1')
 
 
+# --- report files: checked before the run, written whole or not at all ------------------
+
+def _same_path(first: Optional[str], second: Optional[str]) -> bool:
+    """True when two command-line paths name the same file (never for ``-``)."""
+    if not first or not second or '-' in (first, second):
+        return False
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
+def _check_output_paths(json_path: Optional[str], csv_path: Optional[str]) -> None:
+    """Refuse report files that cannot be written before the run, not after it: both on one
+    file (the second would replace the first), stdout twice, a missing directory, a directory,
+    a read-only file. Nothing is truncated or left behind."""
+    if json_path == '-' and csv_path == '-':
+        raise UsageError('--json - and --csv - cannot both write to stdout')
+    if _same_path(json_path, csv_path):
+        raise UsageError('--json and --csv name the same file %s: give each its own'
+                         % _plain(json_path or ''))
+    for path, option in ((json_path, '--json'), (csv_path, '--csv')):
+        if not path or path == '-':
+            continue
+        directory = os.path.dirname(os.path.abspath(path))
+        if not os.path.isdir(directory):
+            raise UsageError('%s: directory does not exist: %s' % (option, _plain(directory)))
+        if os.path.isdir(path):
+            raise UsageError('%s: %s is a directory' % (option, _plain(path)))
+        try:
+            if os.path.isfile(path):
+                with open(path, 'r+b'):  # open for writing, without truncating
+                    pass
+            elif not os.path.exists(path):
+                with open(path, 'xb'):
+                    pass
+                os.remove(path)
+        except OSError as exc:
+            raise UsageError('%s: cannot write %s: %s' % (option, _plain(path), exc.strerror or exc))
+
+
 def _write(path: str, text: str, encoding: str = 'utf-8') -> None:
+    """``-`` is stdout; a file is written whole or not at all (a temporary file next to it,
+    renamed over it), so an interrupted run leaves the previous report as it was."""
     if path == '-':
         sys.stdout.write(text)
         sys.stdout.flush()
         return
-    with open(path, 'w', encoding=encoding, newline='') as handle:
-        handle.write(text)
+    temp = '%s.%d.tmp' % (path, os.getpid())
+    try:
+        with open(temp, 'x', encoding=encoding, newline='') as handle:
+            handle.write(text)
+        if os.path.isfile(path):
+            try:
+                shutil.copymode(path, temp)
+            except OSError:
+                pass  # keep the default mode rather than fail the report
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        raise
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -2100,8 +2204,7 @@ def _run(args: argparse.Namespace) -> int:
     if not args.zonefile or not args.ns:
         raise UsageError('the following arguments are required: %s' % ', '.join(
             n for n, v in (('zonefile', args.zonefile), ('--ns', args.ns)) if not v))
-    if args.json == '-' and args.csv == '-':
-        raise UsageError('--json - and --csv - cannot both write to stdout')
+    _check_output_paths(args.json, args.csv)
     values = [v for item in args.ns for v in re.split(r'[\s,]+', item) if v]
     if len(values) > MAX_NAMESERVERS:
         raise UsageError('at most %d name servers' % MAX_NAMESERVERS)
@@ -2164,8 +2267,32 @@ def _run(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _discard_stdout() -> None:
+    """After a broken pipe (``... | head``): point stdout at the null device, so what is still
+    buffered is dropped quietly instead of failing again at exit."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, sys.stdout.fileno())
+        finally:
+            os.close(devnull)
+    except (OSError, ValueError, AttributeError, io.UnsupportedOperation):
+        pass  # not a real file (a test's StringIO)
+
+
+def _internal_error(exc: BaseException) -> int:
+    """An unexpected exception is a bug: its traceback, one line saying so, and exit 70, never
+    the 1 that means "differences"."""
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    text = str(exc)
+    text = text if len(text) <= 160 else text[:157] + '...'
+    print('%s: internal error: %s%s (exit %d; please report it)'
+          % (PROG, type(exc).__name__, ': ' + text if text else '', EXIT_INTERNAL_ERROR), file=sys.stderr)
+    return EXIT_INTERNAL_ERROR
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Command-line entry point; returns the exit code (0, 1, 2, 3 or 130)."""
+    """Command-line entry point; returns the exit code (0, 1, 2, 3, 70 or 130)."""
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(errors='replace')  # the Turkish help on a console that lacks a letter
@@ -2185,6 +2312,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyboardInterrupt:
         print('\ninterrupted', file=sys.stderr)
         return EXIT_INTERRUPTED
+    except BrokenPipeError:  # `... | head`: the reader has what it wanted
+        _discard_stdout()
+        return EXIT_OK
+    except Exception as exc:
+        return _internal_error(exc)
 
 
 if __name__ == '__main__':

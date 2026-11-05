@@ -43,7 +43,7 @@ const subdomainsSource = async () => [
   await readFile(path.join(ROOT, 'assets', 'js', 'ui', 'subdomains-run.js'), 'utf8')
 ].join('\n');
 const SPEC_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; base-uri 'none'; form-action 'none'; manifest-src 'self'";
-const VIEW_IDS = ['home', 'domain', 'health', 'subdomains', 'lookup', 'scan', 'cert', 'renew', 'estate', 'change', 'global', 'zone', 'retire', 'ip', 'bulk', 'ptr', 'portfolio', 'monitor', 'reports', 'inventory', 'about'];
+const VIEW_IDS = ['home', 'domain', 'health', 'subdomains', 'lookup', 'scan', 'cert', 'renew', 'estate', 'change', 'global', 'zone', 'retire', 'ip', 'bulk', 'ptr', 'ipscan', 'portfolio', 'monitor', 'reports', 'inventory', 'about'];
 
 /* ------------------------------------------------------------------------ */
 /* Minimal fake DOM (just enough for dom.js)                                */
@@ -1045,6 +1045,7 @@ describe('components.js helpers', () => {
     assert.equal(csvCell('say "hi"'), '"say ""hi"""');
     assert.equal(csvCell('line1\nline2'), '"line1\nline2"');
     assert.equal(csvCell('semi;colon'), '"semi;colon"', 'Excel TR uses ; as separator');
+    assert.equal(csvCell('v=spf1\t=1+1'), '"v=spf1\t=1+1"', 'a TAB inside is quoted: a tab-splitting import never makes =1+1 a cell');
     assert.equal(csvCell(' padded'), '" padded"');
     assert.equal(csvCell('=HYPERLINK("x")'), '"\'=HYPERLINK(""x"")"');
     assert.equal(csvCell('+1'), "'+1");

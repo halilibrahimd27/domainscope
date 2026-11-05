@@ -2081,7 +2081,10 @@ export function csvCell(value) {
   let s = valueToText(value);
   if (typeof value === 'string' && /^[=+@\t\r]/.test(s)) s = `'${s}`;
   else if (typeof value === 'string' && /^-/.test(s) && !/^-\d+(?:[.,]\d+)?$/.test(s)) s = `'${s}`;
-  return /[",\r\n;]/.test(s) || /^\s|\s$/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  // `;` and TAB are quoted whatever the delimiter (as lib/export.js toCsv does): Excel splits a
+  // double-clicked file on the locale's list separator, and a tab-splitting import would turn
+  // the text after an unquoted TAB into a cell of its own that the apostrophe does not reach.
+  return /[",\r\n;\t]/.test(s) || /^\s|\s$/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 /**

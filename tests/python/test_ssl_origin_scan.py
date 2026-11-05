@@ -4876,7 +4876,11 @@ class _Listener:
     def __init__(self, host: str = '127.0.0.1', port: int = 0) -> None:
         family = socket.AF_INET6 if ':' in host else socket.AF_INET
         self.sock = socket.socket(family, socket.SOCK_STREAM)
-        self.sock.bind((host, port))
+        try:
+            self.sock.bind((host, port))  # 127.0.0.2 is no local address on macOS
+        except OSError:
+            self.sock.close()
+            raise
         self.sock.listen(128)
         self.sock.settimeout(0.2)
         self.port = self.sock.getsockname()[1]
@@ -5384,7 +5388,7 @@ class CompatibilityTests(unittest.TestCase):
         imports = set(re.findall(r'^(?:from|import) ([a-zA-Z_][\w.]*)', source, re.M))
         stdlib = {'__future__', 'argparse', 'base64', 'binascii', 'bisect', 'csv', 'hashlib', 'hmac',
                   'io', 'ipaddress', 'json', 'math', 'os', 're', 'shutil', 'socket', 'ssl', 'sys',
-                  'textwrap', 'threading', 'time', 'concurrent.futures', 'dataclasses',
+                  'textwrap', 'threading', 'time', 'traceback', 'concurrent.futures', 'dataclasses',
                   'datetime', 'typing', 'ctypes', 'msvcrt', 'codecs', 'stat', 'unicodedata',
                   'encodings', 'http.client', 'urllib.error', 'urllib.parse',
                   'urllib.request', 'warnings', 'email.utils'}

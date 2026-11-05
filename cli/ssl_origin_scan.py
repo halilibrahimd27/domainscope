@@ -63,6 +63,7 @@ import sys
 import textwrap
 import threading
 import time
+import traceback
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -93,6 +94,8 @@ STATUSES = (UPDATED, NEEDS_UPDATE, ORIGIN_CERT, PRIVATE_CERT, NOT_HOSTED, TLS_ER
 # PRIVATE_CERT come from another kind of CA than the new certificate: not counted as
 # needing it, unless --strict-public (then they are NEEDS_UPDATE).
 HOSTED_STATUSES = (NEEDS_UPDATE, ORIGIN_CERT, PRIVATE_CERT)
+# A server with one of these overall statuses served nothing that could be read.
+UNREAD_STATUSES = (TLS_ERROR, TIMEOUT, CLOSED)
 
 OPEN = 'OPEN'  # endpoint state after a successful TCP connect (phase 1)
 # Not a scan status: a target address removed by --exclude (CSV rows only, never probed).
@@ -114,6 +117,8 @@ EXIT_USAGE = 2
 EXIT_OUTPUT_ERROR = 3   # the scan ran, but a --json / --csv file could not be written
 EXIT_CHANGED = 4        # something changed since --baseline (only with --fail-on-change)
 EXIT_NOTIFY_ERROR = 5   # the --notify message was not delivered (--fail-on-notify-error)
+EXIT_UNCHECKED = 6      # servers could not be read: none at all (--fail-on-needs-update), any (--fail-on-error)
+EXIT_INTERNAL_ERROR = 70  # a bug: an unexpected exception (the traceback goes to stderr)
 EXIT_INTERRUPTED = 130
 
 DEFAULT_PORTS = '443'
@@ -205,11 +210,6 @@ def endpoint_protocol(port: int, overrides: Optional[Dict[int, str]] = None) -> 
     if overrides and number in overrides:
         return overrides[number]
     return PORT_PROTOCOLS.get(number, PROTO_TLS)
-
-
-def port_label(port: int, protocol: str) -> str:
-    """``443``, ``25/smtp``: a port as -p takes it, with the protocol unless it is TLS."""
-    return '%d' % port if protocol == PROTO_TLS else '%d/%s' % (port, protocol)
 
 
 def _utcnow() -> datetime:
@@ -3948,6 +3948,11 @@ class ScanReport:
         PRIVATE_CERT servers do not count, unless --strict-public made them NEEDS_UPDATE)."""
         return any(s.status == NEEDS_UPDATE for s in self.server_summaries())
 
+    def unread_servers(self) -> List[ServerSummary]:
+        """The servers nothing could be read from: every port closed, timed out or failing the
+        TLS handshake (:data:`UNREAD_STATUSES`). Such a server says nothing about the rollout."""
+        return [s for s in self.server_summaries() if s.status in UNREAD_STATUSES]
+
 
 def is_relevant(row: ProbeResult) -> bool:
     """False for a name the new certificate does not cover (installing it would not help)."""
@@ -4147,14 +4152,59 @@ class StartTlsError(Exception):
     """The exchange before TLS failed: no STARTTLS offered, refused, or not that protocol."""
 
 
+class _Deadline:
+    """The end of one operation, however a server paces its bytes. A socket timeout bounds
+    each read, never the operation: a server that sends a byte now and then would hold it for
+    hours. :meth:`left` is for a read loop that sets the socket's timeout before each recv;
+    :meth:`watch` shuts a socket down once the time is up, for reads inside a library
+    (http.client). As a context manager the watch ends with the block."""
+
+    def __init__(self, seconds: float) -> None:
+        self.at = time.monotonic() + seconds
+        self.expired = False
+        self._timer = None  # type: Optional[threading.Timer]
+
+    def left(self) -> float:
+        """The seconds left; socket.timeout once there are none."""
+        left = self.at - time.monotonic()
+        if left <= 0:
+            self.expired = True
+            raise socket.timeout('timed out')
+        return left
+
+    def watch(self, sock: socket.socket) -> '_Deadline':
+        self._timer = threading.Timer(max(0.0, self.at - time.monotonic()), self._fire, (sock,))
+        self._timer.daemon = True
+        self._timer.start()
+        return self
+
+    def _fire(self, sock: socket.socket) -> None:
+        self.expired = True
+        try:  # the plain call: SSLSocket.shutdown would drop the SSL object under a running read
+            socket.socket.shutdown(sock, socket.SHUT_RDWR)
+        except (OSError, ValueError):
+            pass
+
+    def __enter__(self) -> '_Deadline':
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+
+
 class _PlainChannel:
-    """The plain socket before STARTTLS: bounded reads of lines, bytes and XML up to a marker."""
+    """The plain socket before STARTTLS: bounded reads of lines, bytes and XML up to a marker.
+    Each read (a line, a reply, an element) ends within the socket's timeout as a whole
+    (:class:`_Deadline`), not within it per recv."""
 
     def __init__(self, sock: socket.socket, protocol: str) -> None:
         self.sock = sock
         self.label = PROTOCOL_LABELS.get(protocol, protocol)
         self.buffer = b''
         self.total = 0
+        self.timeout = sock.gettimeout()
+        self._deadline = None  # type: Optional[_Deadline]
 
     def fail(self, text: str) -> StartTlsError:
         return StartTlsError('%s: %s' % (self.label, text))
@@ -4162,7 +4212,21 @@ class _PlainChannel:
     def send(self, data: bytes) -> None:
         self.sock.sendall(data)
 
+    def _begin(self) -> bool:
+        """Start the deadline of a read unless one runs (a reply reads several lines)."""
+        if self._deadline is not None or not self.timeout:
+            return False
+        self._deadline = _Deadline(self.timeout)
+        return True
+
+    def _end(self, owner: bool) -> None:
+        if owner:
+            self._deadline = None
+            self.sock.settimeout(self.timeout)
+
     def _fill(self) -> None:
+        if self._deadline is not None:
+            self.sock.settimeout(self._deadline.left())
         chunk = self.sock.recv(4096)
         if not chunk:
             raise self.fail('the server closed the connection before TLS started')
@@ -4172,35 +4236,54 @@ class _PlainChannel:
         self.buffer += chunk
 
     def line(self) -> str:
-        while b'\n' not in self.buffer:
-            if len(self.buffer) > _STARTTLS_LINE_MAX:
-                raise self.fail('a line longer than %d bytes' % _STARTTLS_LINE_MAX)
-            self._fill()
+        owner = self._begin()
+        try:
+            while b'\n' not in self.buffer:
+                if len(self.buffer) > _STARTTLS_LINE_MAX:
+                    raise self.fail('a line longer than %d bytes' % _STARTTLS_LINE_MAX)
+                self._fill()
+        finally:
+            self._end(owner)
         line, _, self.buffer = self.buffer.partition(b'\n')
         return line.rstrip(b'\r').decode('latin-1')
 
     def exact(self, size: int) -> bytes:
-        while len(self.buffer) < size:
-            self._fill()
+        owner = self._begin()
+        try:
+            while len(self.buffer) < size:
+                self._fill()
+        finally:
+            self._end(owner)
         data, self.buffer = self.buffer[:size], self.buffer[size:]
         return data
 
     def element(self, *markers: bytes) -> Tuple[bytes, bytes]:
         """Read until one of ``markers`` and the ``>`` that closes it: (that marker, what was
         read up to there); the rest stays buffered."""
-        while True:
-            hits = [(self.buffer.find(m), m) for m in markers if m in self.buffer]
-            if hits:
-                at, marker = min(hits)
-                close = self.buffer.find(b'>', at)
-                if close >= 0:
-                    data, self.buffer = self.buffer[:close + 1], self.buffer[close + 1:]
-                    return marker, data
-            self._fill()
+        owner = self._begin()
+        try:
+            while True:
+                hits = [(self.buffer.find(m), m) for m in markers if m in self.buffer]
+                if hits:
+                    at, marker = min(hits)
+                    close = self.buffer.find(b'>', at)
+                    if close >= 0:
+                        data, self.buffer = self.buffer[:close + 1], self.buffer[close + 1:]
+                        return marker, data
+                self._fill()
+        finally:
+            self._end(owner)
 
     def reply(self, ftp: bool = False) -> Tuple[int, List[str]]:
         """An SMTP / FTP reply: its code and the text of its lines (``250-...`` continues;
         an FTP reply may hold lines without the code until ``NNN text``)."""
+        owner = self._begin()
+        try:
+            return self._reply(ftp)
+        finally:
+            self._end(owner)
+
+    def _reply(self, ftp: bool) -> Tuple[int, List[str]]:
         first = self.line()
         if len(first) < 3 or not first[:3].isdigit() or first[3:4] not in ('', ' ', '-'):
             raise self.fail('not a %s reply: %s' % (self.label, _clip_text(first)))
@@ -4825,7 +4908,8 @@ def _verdict(server: str, endpoint: Endpoint, name: Optional[str], sni: Optional
 # (3.10+), the chain sent with it: one leaf sent with or without its intermediate is two
 # answers - with this machine's trust store (ssl.create_default_context: CERT_REQUIRED and the
 # name checked, VERIFY_X509_STRICT taken off as verify_context does), or with only the CAs of
-# --cafile. A certificate a --private-ca issued counts as trusted (its dates checked).
+# --cafile. A certificate a --private-ca issued counts as trusted once a second handshake
+# against those CAs alone verifies it (signature, dates, name): its issuer's name is not enough.
 # OpenSSL's verify code says why not (TRUST_DETAILS). Python on Windows reads the Windows
 # store, which fetches the roots it lacks on demand: an untrusted verdict there may be a root
 # it has not fetched yet, which the summary says (--cafile names a bundle to check against).
@@ -4881,32 +4965,75 @@ def trust_context(cafile: Optional[str] = None) -> ssl.SSLContext:
     return verify_context(True, cafile=cafile) if cafile else verify_context(True)
 
 
+# X509_V_FLAG_PARTIAL_CHAIN: ssl names it from Python 3.10 only.
+_PARTIAL_CHAIN = getattr(ssl, 'VERIFY_X509_PARTIAL_CHAIN', 0x80000)
+
+
+def private_ca_context(private_cas: Sequence[CertInfo]) -> ssl.SSLContext:
+    """A verifying client that trusts the ``--private-ca`` certificates and nothing else, each
+    a trust anchor whether or not it is a root (VERIFY_X509_PARTIAL_CHAIN: you named the CA that
+    issues your servers' certificates). OpenSSL checks the signatures, the dates and the name."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    for ca in private_cas:
+        context.load_verify_locations(cadata=ca.der)
+    context.verify_flags |= _PARTIAL_CHAIN
+    context.options |= getattr(ssl, 'OP_LEGACY_SERVER_CONNECT', 0)
+    return context
+
+
+def _verifying_handshake(address: str, port: int, name: str, timeout: float, protocol: str,
+                         context: ssl.SSLContext) -> None:
+    with socket.create_connection((address, port), timeout=timeout) as raw:
+        starttls(raw, protocol, name)
+        with context.wrap_socket(raw, server_hostname=name):
+            return
+
+
+def _verify_error_detail(exc: ssl.SSLCertVerificationError) -> str:
+    code = getattr(exc, 'verify_code', None)
+    return trust_detail(code if isinstance(code, int) else None,
+                        getattr(exc, 'verify_message', '') or _clean_ssl_message(exc))
+
+
 def _verify_side(address: str, port: int, name: str, timeout: float, cert: CertInfo,
                  private_cas: Sequence[CertInfo], protocol: str = PROTO_TLS,
-                 context: Optional[ssl.SSLContext] = None) -> Tuple[Optional[bool], str]:
+                 context: Optional[ssl.SSLContext] = None,
+                 private_context: Optional[ssl.SSLContext] = None) -> Tuple[Optional[bool], str]:
     """``(trusted, detail)`` from a verifying handshake with ``context`` (:func:`trust_context`,
     this machine's store by default), after STARTTLS where ``protocol`` says so; None when it
-    could not be made. ``detail``: :func:`trust_detail` when not trusted, 'issued by a
-    --private-ca' for a certificate one of ``private_cas`` issued (trusted, its dates checked as
-    for a public one: OpenSSL names only the unknown issuer)."""
+    could not be made. ``detail``: :func:`trust_detail` when not trusted. A certificate that
+    names one of ``private_cas`` as its issuer and fails the first check gets a second
+    handshake against those CAs alone (``private_context``, else :func:`private_ca_context`):
+    trusted - 'issued by a --private-ca' - only when OpenSSL verifies its signature, dates and
+    name there, never on the issuer's name alone."""
     context = context or trust_context()
     try:
-        with socket.create_connection((address, port), timeout=timeout) as raw:
-            starttls(raw, protocol, name)
-            with context.wrap_socket(raw, server_hostname=name):
-                return True, ''
+        _verifying_handshake(address, port, name, timeout, protocol, context)
+        return True, ''
     except ssl.SSLCertVerificationError as exc:
-        code = getattr(exc, 'verify_code', None)
-        detail = trust_detail(code if isinstance(code, int) else None,
-                              getattr(exc, 'verify_message', '') or _clean_ssl_message(exc))
-        if cert.covers(name)[0] and any(issued_by(cert, ca) for ca in private_cas):
-            now = _utcnow()
-            if cert.not_after < now:
-                return False, trust_detail(10)
-            if cert.not_before > now:
-                return False, trust_detail(9)
-            return True, 'issued by a --private-ca'
-        return False, detail
+        detail = _verify_error_detail(exc)
+        if not any(issued_by(cert, ca) for ca in private_cas):
+            return False, detail
+    except (OSError, ssl.SSLError, StartTlsError) as exc:
+        return None, _clean_ssl_message(exc)
+    try:
+        private_context = private_context or private_ca_context(private_cas)
+    except (ssl.SSLError, ValueError) as exc:
+        return False, '%s; the --private-ca could not be loaded: %s' % (detail, _clean_ssl_message(exc))
+    try:
+        _verifying_handshake(address, port, name, timeout, protocol, private_context)
+        # OpenSSL read the dates on this machine's clock; the run's clock (a test's, a
+        # time-travel run's) has the last word, as it has for every other date of the report.
+        now = _utcnow()
+        if cert.not_after < now:
+            return False, trust_detail(10)
+        if cert.not_before > now:
+            return False, trust_detail(9)
+        return True, 'issued by a --private-ca'
+    except ssl.SSLCertVerificationError as exc:
+        return False, _verify_error_detail(exc)
     except (OSError, ssl.SSLError, StartTlsError) as exc:
         return None, _clean_ssl_message(exc)
 
@@ -4928,11 +5055,12 @@ def trust_verifier(cafile: Optional[str] = None, private_cas: Sequence[CertInfo]
     """``verify(ip, port, protocol, name, timeout, cert)``: :func:`_verify_side` with one
     :func:`trust_context` (``context``, else made from ``cafile``) for the whole scan."""
     context = context or trust_context(cafile)
+    private_context = private_ca_context(private_cas) if private_cas else None
 
     def verify(ip: str, port: int, protocol: str, name: str, timeout: float,
                cert: CertInfo) -> Tuple[Optional[bool], str]:
         return _verify_side(_connect_address(ip), port, name, timeout, cert, private_cas,
-                            protocol=protocol, context=context)
+                            protocol=protocol, context=context, private_context=private_context)
     return verify
 
 
@@ -5191,15 +5319,17 @@ def _cipher_context(spec: str, label: str) -> AuditContext:
 def verify_context(check_hostname: bool = True, cafile: Optional[str] = None) -> ssl.SSLContext:
     """The chain check's verifying client: this machine's trust store (ssl.create_default_context)
     - or with ``cafile`` (--cafile) only that file's CAs - and, with ``check_hostname``, the name
-    asked. VERIFY_X509_STRICT (on from Python 3.13) is taken off: clients do not refuse what it
-    adds, so neither does the check. Like today's clients it stops at the first certificate it
-    trusts (VERIFY_X509_TRUSTED_FIRST, OpenSSL's default from 1.1.0): an expired cross-signed
-    copy of a trusted root is not followed."""
+    asked. VERIFY_X509_STRICT and VERIFY_X509_PARTIAL_CHAIN (both on from Python 3.13) are taken
+    off, so every Python gives the same verdict: clients do not refuse what STRICT adds, and a
+    chain must reach a root - a --cafile holding only an intermediate does not make a leaf
+    trusted. Like today's clients it stops at the first certificate it trusts
+    (VERIFY_X509_TRUSTED_FIRST, OpenSSL's default from 1.1.0): an expired cross-signed copy of
+    a trusted root is not followed."""
     context = ssl.create_default_context(cafile=cafile) if cafile else ssl.create_default_context()
     context.check_hostname = check_hostname
-    strict = getattr(ssl, 'VERIFY_X509_STRICT', 0)
-    if strict and context.verify_flags & strict:
-        context.verify_flags &= ~strict
+    for flag in (getattr(ssl, 'VERIFY_X509_STRICT', 0), _PARTIAL_CHAIN):
+        if flag and context.verify_flags & flag:
+            context.verify_flags &= ~flag
     context.verify_flags |= getattr(ssl, 'VERIFY_X509_TRUSTED_FIRST', 0)
     context.options |= getattr(ssl, 'OP_LEGACY_SERVER_CONNECT', 0)
     return context
@@ -9473,7 +9603,8 @@ def _parse_retry_after(value: Optional[str], now: datetime) -> Optional[float]:
 
 class StatusFetchError(Exception):
     """A request of --ari / --revocation that brought no answer: ``code`` is ``timeout``,
-    ``network``, ``too-large``, ``http`` or ``parse``; ``status`` the HTTP status if any."""
+    ``network``, ``too-large``, ``http``, ``redirect`` (to another host, not followed) or
+    ``parse``; ``status`` the HTTP status if any."""
 
     def __init__(self, code: str, message: str = '', status: Optional[int] = None) -> None:
         Exception.__init__(self, message or code)
@@ -9503,19 +9634,41 @@ def _read_body(response: Any, size: Optional[int], deadline: float) -> Tuple[byt
     return b''.join(chunks), True
 
 
+class _SameHostRedirect(urllib.request.HTTPRedirectHandler):
+    """Redirects are followed on the same host only (http -> https included): a CRL URL comes
+    from a certificate any scanned server may have made, so its redirect must not send this
+    machine to another host - an address inside your network, say."""
+
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any,
+                         newurl: str) -> Any:
+        try:
+            old_host = (urllib.parse.urlsplit(req.full_url).hostname or '').lower()
+            new = urllib.parse.urlsplit(newurl)
+            new_host = (new.hostname or '').lower()
+        except ValueError:
+            old_host, new_host, new = '', '', None
+        if not old_host or new_host != old_host or new is None or new.scheme.lower() not in ('http', 'https'):
+            raise StatusFetchError('redirect', 'a redirect to another host (not followed)', code)
+        return urllib.request.HTTPRedirectHandler.redirect_request(self, req, fp, code, msg, headers, newurl)
+
+
+_STATUS_OPENER = urllib.request.build_opener(_SameHostRedirect)
+
+
 def http_get(url: str, timeout: float, max_bytes: Optional[int] = None
              ) -> Tuple[int, Dict[str, str], bytes]:
-    """GET ``url`` (http or https, redirects followed): ``(status, headers, body)`` for any
-    answer - a 4xx / 5xx one with its first 4 KiB -, :class:`StatusFetchError` for none, a
-    body larger than ``max_bytes``, or one still arriving ``timeout`` seconds after the request
-    began (``timeout`` bounds each socket operation and the whole download). Header names are
+    """GET ``url`` (http or https, redirects followed on the same host only):
+    ``(status, headers, body)`` for any answer - a 4xx / 5xx one with its first 4 KiB -,
+    :class:`StatusFetchError` for none, a redirect to another host, a body larger than
+    ``max_bytes``, or one still arriving ``timeout`` seconds after the request began
+    (``timeout`` bounds each socket operation and the whole download). Header names are
     lower case."""
     if not re.match(r'^https?://', url, re.I):
         raise StatusFetchError('network', 'not an http(s) URL')
     deadline = time.monotonic() + timeout
     request = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT, 'Accept': '*/*'})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        with _STATUS_OPENER.open(request, timeout=timeout) as response:
             headers = {key.lower(): value for key, value in response.headers.items()}
             declared = headers.get('content-length', '')
             if max_bytes is not None and declared.isdigit() and int(declared) > max_bytes:
@@ -9928,11 +10081,9 @@ class RevocationChecker:
         self._timeout = timeout
         self._max_bytes = max_bytes
         self._workers = workers
-        self.downloads = 0
 
     def _load(self, item: Tuple[str, Set[str]]) -> Tuple[str, Any]:
         url, serials = item
-        self.downloads += 1
         try:
             status, _headers, body = self._fetch(url, self._timeout, self._max_bytes)
         except StatusFetchError as exc:
@@ -9993,12 +10144,37 @@ class RevocationChecker:
                           reasonCode=verdict['reasonCode'], time=iso_utc(verdict['time']))
         return record
 
+    def not_checked(self) -> Dict[str, Any]:
+        """The record of a certificate whose CRL is not read (:func:`revocation_candidates`)."""
+        return self._record(error='not-checked')
+
     def _record(self, **fields: Any) -> Dict[str, Any]:
         record = {'status': 'unknown', 'reason': None, 'reasonCode': None, 'time': None,
                   'crl': None, 'checkedAt': iso_utc(self._now()), 'thisUpdate': None,
                   'nextUpdate': None, 'signature': None, 'error': None}  # type: Dict[str, Any]
         record.update(fields)
         return record
+
+
+def revocation_candidates(report: ScanReport) -> Set[str]:
+    """The served certificates whose CRLs --revocation reads (SHA-256s): your new certificate
+    (UPDATED), and one served for a name that this machine trusts after a real verification -
+    the system store, --cafile or a --private-ca. Never a server's default certificate, a
+    self-signed one or another it made up: its CRL URL could send this machine anywhere. Without
+    a trust check (an injected scan) the certificates served for a name the server hosts."""
+    wanted = set()  # type: Set[str]
+    for row in report.results:
+        if row.cert is None:
+            continue
+        if row.status == UPDATED:
+            wanted.add(row.cert.sha256)
+        elif report.trust_checked:
+            if row.trusted is True and row.status in HOSTED_STATUSES:
+                wanted.add(row.cert.sha256)
+        elif row.status == NEEDS_UPDATE and row.cert.covers(row.name or row.sni or '')[0] \
+                and not row.cert.self_signed:
+            wanted.add(row.cert.sha256)
+    return wanted
 
 
 def check_certificate_status(report: ScanReport, ari: bool = False, revocation: bool = False,
@@ -10018,8 +10194,12 @@ def check_certificate_status(report: ScanReport, ari: bool = False, revocation: 
         return status
     if revocation:
         checker = revocation_checker or RevocationChecker()
-        for sha, record in checker.check(served).items():
+        wanted = revocation_candidates(report)
+        for sha, record in checker.check({sha: served[sha] for sha in served if sha in wanted}).items():
             status[sha]['revocation'] = record
+        for sha in served:
+            if sha not in wanted:
+                status[sha]['revocation'] = checker.not_checked()
     if ari:
         client = ari_client or AriClient()
         prev_certs = baseline.get('certificates') if isinstance(baseline, dict) else None
@@ -10161,6 +10341,10 @@ _ARI_WHY = {'not-found': 'the CA does not know this certificate (404)',
             'network': "the CA's ARI server could not be reached",
             'parse': "the CA's answer could not be read"}
 _REVOCATION_WHY = {'no-crl': 'the certificate names no CRL to read (OCSP is not asked)',
+                   'not-checked': ('its CRL was not read: neither your new certificate nor one this '
+                                   'machine trusts (a server can write any URL into a certificate it '
+                                   'makes)'),
+                   'redirect': 'its CRL URL redirects to another host (not followed)',
                    'too-large': 'its CRL is larger than %d MB' % (CRL_MAX_BYTES >> 20),
                    'http': 'its CRL could not be downloaded (HTTP error)',
                    'timeout': 'its CRL download timed out',
@@ -11268,10 +11452,19 @@ def fetch_side(ip: str, port: int, name: str, path: str, timeout: float,
         conn = http.client.HTTPConnection(name, port, timeout=timeout)
         conn.sock = tls  # the request goes over this TLS connection, never a new one
         host = name if port == 443 else '%s:%d' % (name, port)
-        conn.request('GET', path, headers={'Host': host, 'User-Agent': _USER_AGENT, 'Accept': '*/*',
-                                           'Accept-Encoding': 'identity', 'Connection': 'close'})
-        response = conn.getresponse()
-        body = response.read(COMPARE_BODY_LIMIT + 1)
+        # The answer, headers and body, within --timeout as a whole, however the server paces it.
+        with _Deadline(timeout).watch(tls) as answer_deadline:
+            conn.request('GET', path, headers={'Host': host, 'User-Agent': _USER_AGENT, 'Accept': '*/*',
+                                               'Accept-Encoding': 'identity', 'Connection': 'close'})
+            try:
+                response = conn.getresponse()
+                body = response.read(COMPARE_BODY_LIMIT + 1)
+            except (OSError, http.client.HTTPException, ValueError):
+                if answer_deadline.expired:
+                    raise socket.timeout('no complete answer in %g s' % timeout)
+                raise
+            if answer_deadline.expired and len(body) <= COMPARE_BODY_LIMIT:
+                raise socket.timeout('no complete answer in %g s' % timeout)
         side.status = response.status
         side.location = response.getheader('Location')
         side.content_type = response.getheader('Content-Type')
@@ -11583,6 +11776,7 @@ def _run_compare(args: argparse.Namespace) -> int:
         ('-t/--targets', args.targets), ('--exclude', args.exclude), ('--cert', args.cert), ('--csv', args.csv),
         ('--baseline', args.baseline), ('--warn-days', args.warn_days is not None), ('--notify', args.notify),
         ('--strict-public', args.strict_public), ('--fail-on-needs-update', args.fail_on_needs_update),
+        ('--fail-on-error', args.fail_on_error),
         ('--estate', args.estate), ('--include-backends', args.include_backends),
         ('--profile', args.profile), ('--ari', args.ari), ('--revocation', args.revocation)) if used]
     if unsupported:
@@ -11796,7 +11990,10 @@ renewal windows and revocation (--ari, --revocation; with a scan or --estate): e
   serial number, both public); a 404 means the CA does not know the certificate. A CA is
   not asked again before the Retry-After of its last answer (the --baseline report's): the
   last answer is carried, as of its time. --revocation downloads the CRL the certificate
-  names (at most 20 MB; OCSP is never asked) and says revoked with the reason and the time,
+  names (at most 20 MB; OCSP is never asked; a redirect only on the same host) for your new
+  certificate and the ones this machine trusts - never a server's default, self-signed or
+  made-up certificate, whose CRL URL could point anywhere ("not checked") - and says revoked
+  with the reason and the time,
   good, or unknown with why (another CA's CRL, a CRL for other certificates, a stale one, no
   CRL named ...); this Python cannot check the CRL's signature: "CRL signature not
   verified" (the web app's headless runner, tools/ds.mjs tls --revocation, checks it). The
@@ -11882,7 +12079,8 @@ trust (every scan): the scan's handshakes read whatever is served and trust noth
   them, one verifying handshake per certificate served for a name - and, on Python 3.10+,
   per chain sent with it: a leaf sent with or without its intermediate is two answers -
   against this machine's trust store (CERT_REQUIRED and the name checked), or only the CAs
-  of --cafile FILE (a PEM bundle). A certificate a --private-ca issued counts as trusted.
+  of --cafile FILE (a PEM bundle). A certificate a --private-ca issued counts as trusted
+  when OpenSSL verifies it against that CA (its signature, not only its issuer's name).
   Not trusted, with OpenSSL's verify code: missing intermediate or private CA (20), missing
   intermediate (21), self-signed (18), a root this machine does not trust (19), expired
   (10), not yet valid (9), hostname mismatch (62). On Windows the store fetches the roots
@@ -11966,7 +12164,7 @@ old versus new server (--compare OLD_IP NEW_IP -n NAME, instead of a scan):
   Opens one TLS connection to each address with SNI = NAME (whatever certificate is
   served), sends one GET of --path over it (Host: NAME, Accept-Encoding: identity) and
   reads up to 1 MiB of the body; then one verifying handshake per address (this machine's
-  trust store and the name; a certificate issued by a --private-ca counts as trusted).
+  trust store and the name; a certificate a --private-ca verifies counts as trusted).
   Prints both answers side by side - reached, HTTP status, Location, Content-Type,
   <title>, body SHA-256, HSTS, Server, and the certificate: its names (subject CN and SANs),
   covers the name, trusted, issuer, expiry, SHA-256 fingerprint - with ERROR (the new server
@@ -11997,8 +12195,11 @@ exit codes: 0 done, 1 NEEDS_UPDATE found (only with --fail-on-needs-update; ORIG
             the scan), 3 a report file could not be written after the scan (the
             summary and the other report are still written), 4 something changed
             since --baseline (only with --fail-on-change), 5 the --notify message
-            was not delivered (only with --fail-on-notify-error), 130 interrupted
-            (Ctrl-C). When several apply: 3, then 5, then 4, then 1.
+            was not delivered (only with --fail-on-notify-error), 6 servers could
+            not be read (any with --fail-on-error; with --fail-on-needs-update when
+            not a single one could), 70 internal error (a bug; the traceback goes
+            to stderr), 130 interrupted (Ctrl-C).
+            When several apply: 3, then 5, then 4, then 1, then 6.
 
 output encoding: follows the reader - the console code page when piped on Windows
   (cmd, PowerShell), UTF-8 for files, Git Bash and other systems. PYTHONIOENCODING=utf-8
@@ -12183,7 +12384,12 @@ def build_parser() -> argparse.ArgumentParser:
                      help='no progress line, no warnings on stderr')
     out.add_argument('--fail-on-needs-update', action='store_true',
                      help='exit with code 1 when any server needs the new certificate '
-                          '(ORIGIN_CERT / PRIVATE_CERT servers only with --strict-public)')
+                          '(ORIGIN_CERT / PRIVATE_CERT servers only with --strict-public); '
+                          'code 6 when not a single server could be read')
+    out.add_argument('--fail-on-error', action='store_true',
+                     help='exit with code 6 when any server could not be read (every port '
+                          'closed, timed out or a TLS error): for a list of servers that should '
+                          'all answer, not for a CIDR sweep')
     mon = parser.add_argument_group('monitoring (cron)')
     mon.add_argument('--baseline', metavar='FILE',
                      help='a previous --json report: list what changed since (served '
@@ -12618,6 +12824,8 @@ def _run(args: argparse.Namespace) -> int:
         raise UsageError('--timeout must be > 0 and <= %d seconds' % MAX_TIMEOUT)
     if args.json == '-' and args.csv == '-':
         raise UsageError('--json - and --csv - cannot both write to stdout')
+    if _same_path(args.json, args.csv):
+        raise UsageError('--json and --csv name the same file %s: give each its own' % args.json)
     if sum(list(values).count('-') for values in (args.targets, args.names, args.exclude)) > 1:
         raise UsageError('stdin ("-") can be used only once')
     json_is_baseline = _same_path(args.baseline, args.json)
@@ -12896,6 +13104,16 @@ def _run(args: argparse.Namespace) -> int:
         return EXIT_CHANGED
     if args.fail_on_needs_update and report.needs_update():
         return EXIT_NEEDS_UPDATE
+    unread = report.unread_servers()
+    nothing_read = bool(report.servers) and len(unread) == len(report.servers)
+    if (args.fail_on_error and unread) or (args.fail_on_needs_update and nothing_read):
+        if not quiet:
+            what = ('no server could be read (closed, timed out or a TLS error): the scan says '
+                    'nothing about the rollout' if nothing_read else
+                    '%d of %d servers could not be read (closed, timed out or a TLS error): what '
+                    'they serve is not known' % (len(unread), len(report.servers)))
+            print('%s: %s (exit %d)' % (PROG, what, EXIT_UNCHECKED), file=err)
+        return EXIT_UNCHECKED
     return EXIT_OK
 
 
@@ -12935,8 +13153,33 @@ def _notify_settings(args: argparse.Namespace, warnings: List[str]
 BUNDLE_LEADING_FLAGS = ('--no-color', '--write-haproxy')
 
 
+def _internal_error(exc: BaseException, notify_url: Optional[str] = None) -> int:
+    """An unexpected exception is a bug: its traceback, one line saying so, and exit 70 -
+    never the 1 of NEEDS_UPDATE nor the 1 of a failed bundle-check. The webhook URL, the ntfy
+    token and the signing secret are taken out of both (:func:`redact_url`)."""
+    trace = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    text = str(exc)
+    line = '%s: internal error: %s%s (exit %d; please report it)' % (
+        PROG, type(exc).__name__, ': ' + (text if len(text) <= 160 else text[:157] + '...') if text else '',
+        EXIT_INTERNAL_ERROR)
+    url = notify_url or os.environ.get(NOTIFY_ENV, '').strip()
+    extra = [os.environ.get(NOTIFY_SECRET_ENV, '').strip(), os.environ.get(NTFY_TOKEN_ENV, '').strip()]
+    if url or any(extra):
+        try:
+            secrets = _redaction_secrets(url, extra) if url else [s for s in extra if s]
+        except ValueError:
+            secrets = [url] + [s for s in extra if s]
+        trace, line = _redact_with(trace, secrets), _redact_with(line, secrets)
+    try:
+        sys.stderr.write(trace)
+        print(line, file=sys.stderr)
+    except (OSError, ValueError):
+        pass
+    return EXIT_INTERNAL_ERROR
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Command-line entry point; returns the exit code (0, 1, 2, 3, 4, 5 or 130).
+    """Command-line entry point; returns the exit code (0, 1, 2, 3, 4, 5, 6, 70 or 130).
 
     ``bundle-check FILE...`` as the first argument - or after
     :data:`BUNDLE_LEADING_FLAGS` only - runs :func:`bundle_main` instead (the scan always
@@ -12947,7 +13190,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if 'bundle-check' in args_list:
         at = args_list.index('bundle-check')
         if all(token in BUNDLE_LEADING_FLAGS for token in args_list[:at]):
-            return bundle_main(args_list[:at] + args_list[at + 1:])
+            try:
+                return bundle_main(args_list[:at] + args_list[at + 1:])
+            except (KeyboardInterrupt, BrokenPipeError):
+                raise
+            except Exception as exc:  # a bug: never the 1 of a failed check
+                return _internal_error(exc)
     parser = build_parser()
     try:
         args = parser.parse_args(args_list)
@@ -12967,6 +13215,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyboardInterrupt:
         print('\ninterrupted - no report written', file=sys.stderr)
         return EXIT_INTERRUPTED
+    except BrokenPipeError:
+        raise  # `... | head`: the caller below leaves quietly
+    except Exception as exc:
+        return _internal_error(exc, getattr(args, 'notify', None))
 
 
 if __name__ == '__main__':

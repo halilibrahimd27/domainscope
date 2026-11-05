@@ -7,7 +7,7 @@
 # (subdomain discovery, zone drift, renewal readiness and the policy audit are there to switch on),
 # commits the JSON reports and Markdown summaries under results/, and keeps ONE issue: opened or
 # updated when something changed since the night before, closed on a night with no change when
-# every check completed. The
+# every check completed and nothing was carried past its age limit (see below). The
 # results/*.json of one night are the next night's baseline; git history keeps every night, and
 # results/history/YYYY-MM.jsonl one line per domain and check a night (the score, the soonest
 # certificate expiry, the changes; 13 months kept): open the results folder, or this repository
@@ -19,13 +19,16 @@
 # - Never commit inventories or zone files unless you mean to. The drift step below reads a zone
 #   export from this repository: leave it commented out unless that file belongs here. Origin
 #   addresses behind proxied names stay hidden in the results unless you add --include-origins.
-# - No secret is needed. The job uses the workflow's own GITHUB_TOKEN (contents: write to commit
-#   the results, issues: write for the issue); the checks ask keyless public services only (DNS
-#   over HTTPS, RDAP, crt.sh, Cert Spotter, the passive subdomain sources), and the tls check
-#   your own hosts (a TLS handshake with each address, from GitHub's runners). Nothing goes to
-#   Globalping: the checks that need a probe stay in the web app, behind a click. The checkout
-#   keeps no token while the checks run (persist-credentials: false): only the commit step and
-#   the issue step are given it.
+# - No secret is needed. The workflow's own GITHUB_TOKEN does it, split over two jobs so that the
+#   code you did not write never holds write access: "checks" checks out DomainScope and runs it
+#   with a read-only token (contents: read) and uploads results/ as an artifact of the run;
+#   "publish" runs none of DomainScope's code: it takes that artifact, commits it (contents:
+#   write) and opens, updates or closes the issue (issues: write). The checks ask keyless public
+#   services only (DNS over HTTPS, RDAP, crt.sh, Cert Spotter, the passive subdomain sources),
+#   and the tls check your own hosts (a TLS handshake with each address, from GitHub's runners).
+#   Nothing goes to Globalping: the checks that need a probe stay in the web app, behind a click.
+#   No checkout keeps a token (persist-credentials: false): only the commit step and the issue
+#   step are given it.
 # - Alerts are optional, from Actions secrets of this repository (Settings > Secrets and
 #   variables > Actions); a secret that is not set is empty, and then nothing is sent:
 #   DOMAINSCOPE_NOTIFY_URL     the changes that count, to Slack, Teams, Discord, Telegram,
@@ -41,9 +44,14 @@
 #   those changes again.
 # - GitHub's hosted runners share their IP addresses, and the anonymous quotas of the passive
 #   sources are per address: a source may answer "rate limited" on some night. The report says
-#   so, nothing a source could not read counts as a change, and the next night compares with the
-#   last read that worked (a new certificate authority issued during a crt.sh outage still comes
-#   out as a new issuer once crt.sh answers). Cert Spotter answers about 10
+#   so, and in no check does a lookup that failed count as a change (an outage of every DNS
+#   resolver is a failed night, never fifty "stopped resolving" alerts): what a night could not
+#   read is carried from the last read that worked, and the next night compares with that (a new
+#   certificate authority issued during a crt.sh outage still comes out as a new issuer once
+#   crt.sh answers). Carrying has an age limit: data carried, not read again, for more than
+#   --max-carry-days (7 by default; add it to a check's line to change it) is reported stale and
+#   fails the run, so a source blocked for a week keeps the issue open instead of passing quietly.
+#   Cert Spotter answers about 10
 #   full-domain queries an hour: after its first "rate limited" of a night the runner stops
 #   asking it, so with more than about 10 domains most of them are read from crt.sh alone. Add
 #   --sources crtsh to the ct line to leave Cert Spotter out altogether.
@@ -51,8 +59,11 @@
 #   the checks"), well inside the job's timeout-minutes: on a slow night (crt.sh down, a big
 #   discovery) a check fails, and the results and the issue still get their turn. Raise the
 #   three together when you switch more checks on.
-# - Pin the DomainScope version: set `ref:` below to a commit SHA of DomainScope (or to a release
-#   tag once there is one). On `main` every night runs whatever was pushed last.
+# - The DomainScope version is pinned: `ref:` below is a commit SHA of DomainScope this template
+#   was checked against, so it works as it is. Move it forward on purpose, after reading what
+#   changed (the commit history of halilibrahimd27/domainscope), and never to `main`: then every
+#   night would run whatever was pushed last, with this repository's read token and the alert
+#   URLs in its environment.
 # - The actions are pinned to commit SHAs too, their versions in comments: a moved tag changes
 #   nothing in a job that can write to this repository. Update a SHA and its comment together
 #   (Dependabot does both).
@@ -64,17 +75,23 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # commit results/
-  issues: write     # open, update or close the one issue
+  contents: read   # each job asks for what it needs below
 
 concurrency:
   group: domainscope-nightly
   cancel-in-progress: false
 
 jobs:
-  check:
+  # DomainScope's code runs here, with a token that can only read this repository.
+  checks:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read   # check out domains.txt and last night's results
+    outputs:
+      changed: ${{ steps.ds.outputs.changed }}
+      failed: ${{ steps.ds.outputs.failed }}
+      results: ${{ steps.ds.outputs.results }}
     steps:
       - name: Check out this repository (domains.txt and last night's results)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -85,7 +102,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: halilibrahimd27/domainscope
-          ref: main   # pin a commit SHA (or a release tag once there is one)
+          ref: 4e3bbf815b40bfa7394f7a44e0906436521ab8a8   # pinned; move it forward on purpose, never to main
           path: .domainscope
           persist-credentials: false
 
@@ -171,6 +188,46 @@ jobs:
           # [ -f tls-hosts.txt ] && ds tls tls --list tls-hosts.txt --ct results/ct.json --ari --revocation --http
           echo "changed=${changed[*]}" >> "$GITHUB_OUTPUT"
           echo "failed=${failed[*]}" >> "$GITHUB_OUTPUT"
+          # nothing to hand over on a first night whose every check failed
+          if [ -n "$(ls -A results)" ]; then echo "results=yes" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Hand the results to the publish job
+        if: steps.ds.outputs.results == 'yes'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: domainscope-results
+          path: results/
+          if-no-files-found: error
+          retention-days: 1   # only for the next job; the commit keeps the results
+
+  # Write access, and none of DomainScope's code: commit what the checks wrote, keep the issue.
+  publish:
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # commit results/
+      issues: write     # open, update or close the one issue
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false   # the token goes to the commit and issue steps only
+
+      - name: Take the results of the checks
+        if: needs.checks.outputs.results == 'yes'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: domainscope-results
+          path: ${{ runner.temp }}/results
+
+      - name: Put them in place
+        if: needs.checks.outputs.results == 'yes'
+        shell: bash
+        run: |
+          # replaced whole, so a file the runner removed (history past 13 months) goes too
+          rm -rf results
+          mv "$RUNNER_TEMP/results" results
 
       - name: Commit the results
         id: commit
@@ -178,6 +235,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          mkdir -p results
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add results
@@ -194,8 +252,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          CHANGED: ${{ steps.ds.outputs.changed }}
-          FAILED: ${{ steps.ds.outputs.failed }}
+          CHANGED: ${{ needs.checks.outputs.changed }}
+          FAILED: ${{ needs.checks.outputs.failed }}
           RESULTS: ${{ github.server_url }}/${{ github.repository }}/tree/${{ steps.commit.outputs.sha }}/results
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -224,19 +282,20 @@ jobs:
               gh issue create --label "$label" --title 'DomainScope: changes since the last nightly run' --body-file "$RUNNER_TEMP/issue.md"
             fi
           elif [ -n "$FAILED" ]; then
-            # A check that failed compared nothing: that is no "no change", so the issue stays open.
+            # A check that failed compared nothing, and one that carried data past --max-carry-days
+            # fails too: that is no "no change", so the issue stays open.
             if [ -n "$issue" ]; then
-              gh issue comment "$issue" --body "Not closed: these checks did not complete tonight (name:exit code): $FAILED ($RUN)."
+              gh issue comment "$issue" --body "Not closed: these checks did not complete tonight, or carried data a source has not read for longer than their --max-carry-days (name:exit code): $FAILED ($RUN)."
             fi
           elif [ -n "$issue" ]; then
-            gh issue close "$issue" --comment "No change since the previous nightly run, and every check completed ($RUN)."
+            gh issue close "$issue" --comment "No change since the previous nightly run: every check completed, and nothing was carried past its age limit (--max-carry-days) ($RUN)."
           fi
 
       - name: Fail when a check did not complete
-        if: steps.ds.outputs.failed != ''
+        if: needs.checks.outputs.failed != ''
         shell: bash
         env:
-          FAILED: ${{ steps.ds.outputs.failed }}
+          FAILED: ${{ needs.checks.outputs.failed }}
         run: |
-          echo "::error::These checks did not complete (name:exit code; 124: stopped at its time limit) or could not send their notification (name:notify): $FAILED. See the log of 'Run the checks'."
+          echo "::error::These checks did not complete (name:exit code; 124: stopped at its time limit; a check that carried data past --max-carry-days fails too) or could not send their notification (name:notify): $FAILED. See the log of the checks job's 'Run the checks'."
           exit 1

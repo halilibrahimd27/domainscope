@@ -143,8 +143,24 @@ export function migrateSettings(data) {
   return { data: out, migrated: true };
 }
 
+/**
+ * Node's own Web Storage (Node 22+, an accessor on globalThis): reading `localStorage` without
+ * `--localstorage-file` prints an ExperimentalWarning on every run of the headless runner, which
+ * imports this module for its defaults. The settings have no use for it in Node, so it is not read
+ * there; a storage a test defines as a plain value is.
+ * @param {'localStorage'|'sessionStorage'} name
+ * @returns {boolean}
+ */
+function isNodeWebStorage(name) {
+  const proc = globalThis.process;
+  if (!proc || !proc.versions || !proc.versions.node) return false;
+  const desc = Object.getOwnPropertyDescriptor(globalThis, name);
+  return !!desc && typeof desc.get === 'function';
+}
+
 /** Resolve the browser's localStorage without throwing (SecurityError in some sandboxes). */
 function defaultStorage() {
+  if (isNodeWebStorage('localStorage')) return null;
   try {
     const s = globalThis.localStorage;
     if (!s) return null;
@@ -159,6 +175,7 @@ function defaultStorage() {
 
 /** Resolve the browser's sessionStorage without throwing (it held this tab's custom wordlist before workspaces). */
 function defaultSessionStorage() {
+  if (isNodeWebStorage('sessionStorage')) return null;
   try {
     return globalThis.sessionStorage || null;
   } catch {

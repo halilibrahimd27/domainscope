@@ -42,6 +42,18 @@ const NOW = new Date('2026-10-09T03:00:00Z');
 const DAY = 86400000;
 const t = await setupStrings();
 
+/**
+ * The tests with two name servers put the second on 127.0.0.2 (the servers are told apart by their
+ * address). Linux answers the whole of 127/8; macOS has only 127.0.0.1 unless the address is added
+ * (`sudo ifconfig lo0 alias 127.0.0.2 up`), so there they are skipped, said with the reason.
+ */
+const SECOND_LOOPBACK = await new Promise((resolve) => {
+  const probe = net.createServer();
+  probe.once('error', () => resolve(false));
+  probe.listen(0, '127.0.0.2', () => probe.close(() => resolve(true)));
+});
+const TWO_SERVERS = SECOND_LOOPBACK ? {} : { skip: '127.0.0.2 cannot be bound on this machine (macOS: sudo ifconfig lo0 alias 127.0.0.2 up)' };
+
 const tmp = () => mkdtempSync(join(tmpdir(), 'ds-watch-'));
 function sink() {
   return { text: '', isTTY: false, write(s) { this.text += s; return true; } };
@@ -845,6 +857,37 @@ describe('watch --authoritative: the name servers asked directly', () => {
     s.behave.silent = false;
   });
 
+  test('UDP: an answer from another address (the right port, the query ID and the question guessed) is ignored; the server\'s own is read', async () => {
+    const zone = watchZone({ now: NOW.getTime() });
+    const s = await start({ address: '127.0.0.1', table: zone.table });
+    const forged = [];
+    const transport = {
+      createSocket: (type) => {
+        const real = dgram.createSocket(type);
+        const send = real.send.bind(real);
+        real.send = (query, port, address, cb) => {
+          // node:dgram calls send again with a list of buffers once the socket is bound
+          if (Array.isArray(query)) return send(query, port, address, cb);
+          const q = decodeMessage(new Uint8Array(query));
+          const answer = Buffer.from(encodeMessage({
+            id: q.id, flags: { qr: true, aa: true }, questions: q.questions,
+            answers: [{ name: 'example.com', type: 'SOA', ttl: 300, data: { mname: 'ns.attacker.example.org', rname: 'x.example.org', serial: 1, refresh: 1, retry: 1, expire: 1, minimum: 1 } }]
+          }));
+          // before the server's answer: the right port of another address, then the right address from another port
+          real.emit('message', answer, { address: '192.0.2.66', family: 'IPv4', port, size: answer.length });
+          real.emit('message', answer, { address, family: 'IPv4', port: port + 1, size: answer.length });
+          forged.push(q.id);
+          send(query, port, address, cb);
+        };
+        return real;
+      }
+    };
+    const soa = await askServer({ address: s.address, port: s.port, name: 'example.com', type: 'SOA', transport, ...fast });
+    assert.equal(forged.length, 1, 'two forged datagrams before the one question was sent');
+    assert.equal(soa.ok, true);
+    assert.deepEqual(soaStanding(soa.message, 'example.com'), { status: 'ok', reason: null, serial: 2026100901, mname: 'ns1.example.net' }, 'the server\'s own answer');
+  });
+
   test('an IPv6 address this machine has no route to is skipped, never lame', async () => {
     const unreachable = (code) => Object.assign(new Error('network unreachable'), { code });
     const transport = {
@@ -868,7 +911,7 @@ describe('watch --authoritative: the name servers asked directly', () => {
     assert.deepEqual(r, { ok: false, skipped: 'no-ipv6-route', error: 'no IPv6 route from this machine' });
   });
 
-  test('checkAuthoritative: in sync, a lagging secondary, servers out of sync at one serial, a lame one, the budget; port 53 blocked falls back', async () => {
+  test('checkAuthoritative: in sync, a lagging secondary, servers out of sync at one serial, a lame one, the budget; port 53 blocked falls back', TWO_SERVERS, async () => {
     const zone = watchZone({ now: NOW.getTime() });
     const a = await start({ address: '127.0.0.1', table: zone.table });
     const b = await start({ address: '127.0.0.2', table: zone.table });
@@ -914,7 +957,7 @@ describe('watch --authoritative: the name servers asked directly', () => {
     assert.equal((await checkAuthoritative('example.com', { nsHosts: ['nowhere.example.org'], keys, dns, maxQueries: 10 })).view, 'none');
   });
 
-  test('a server that answers its SOA, then nothing: given up after 3 questions (one try over UDP, one over TCP each); one whose UDP never answers: TCP alone after 3', async () => {
+  test('a server that answers its SOA, then nothing: given up after 3 questions (one try over UDP, one over TCP each); one whose UDP never answers: TCP alone after 3', TWO_SERVERS, async () => {
     const zone = watchZone({ now: NOW.getTime() });
     const a = await start({ address: '127.0.0.1', table: zone.table });
     const b = await start({ address: '127.0.0.2', table: zone.table, behave: { drop: WATCH_TYPES.filter((x) => x !== 'SOA') } });
@@ -941,7 +984,7 @@ describe('watch --authoritative: the name servers asked directly', () => {
     assert.deepEqual([tcp.compared.length, tcp.mismatches], [keys.length, []]);
   });
 
-  test('main(): a lame server and servers out of sync counted, back in sync the night after; --ttl compares their TTLs', async () => {
+  test('main(): a lame server and servers out of sync counted, back in sync the night after; --ttl compares their TTLs', TWO_SERVERS, async () => {
     const dir = tmp();
     try {
       const zone = watchZone({ now: NOW.getTime() });

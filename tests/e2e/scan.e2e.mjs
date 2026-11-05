@@ -191,13 +191,19 @@ export async function stubClipboard(page, { fail = false } = {}) {
   }, fail);
 }
 
-/** Texts written to the stubbed clipboard since the last call ({@link stubClipboard}). */
-export async function takeClipboard(page) {
-  return page.evaluate(() => {
+/**
+ * Texts written to the stubbed clipboard since the last call ({@link stubClipboard}). A copy
+ * button writes asynchronously, so a read right after the click waits up to `timeout` ms for the
+ * first text (and returns at once when one is there; an empty list after the wait).
+ */
+export async function takeClipboard(page, { timeout = 3000 } = {}) {
+  return page.evaluate(async (ms) => {
+    const until = Date.now() + ms;
+    while (!(window.__clip || []).length && Date.now() < until) await new Promise((r) => setTimeout(r, 30));
     const list = window.__clip || [];
     window.__clip = [];
     return list;
-  });
+  }, timeout);
 }
 
 /** Downloads captured since the last call: [{ name, text, bom, type }] (Blob.text() drops a BOM, `bom` reports it). */

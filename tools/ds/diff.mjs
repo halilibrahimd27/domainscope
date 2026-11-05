@@ -22,8 +22,11 @@
  *   or name that may only have been missed before (see surelyNew), a renewed certificate from a
  *   known issuer for known names (CERT), a certificate crossing a radar threshold while its
  *   automatic renewal is not overdue yet (EXPIRING, tools/ds/ctwatch.mjs radarCrossing) and a
- *   revoked certificate that was not the one in use. What a run could not read, its report carries
- *   from the last run that read it (tools/ds/carry.mjs): the run after is compared with that;
+ *   revoked certificate that was not the one in use, and a lookup the resolvers gave no answer for
+ *   (subdomains' ERROR, drift's `error` rows that are not the zone's answer, renew's "could not be
+ *   checked", DANE's `error`: FAILED, listed only — an outage is not the domain's change; SERVFAIL
+ *   and REFUSED are the zone's answers and still count). What a run could not read, its report
+ *   carries from the last run that read it (tools/ds/carry.mjs): the run after is compared with that;
  * - `target` / `item`: the domain, name, zone or certificate, and what inside it moved (a
  *   finding id, a host, an RRset key, an issuer, an endpoint), null for the target itself;
  * - `parts`: the line as lib/summary.js parts, its untrusted values as code parts.
@@ -31,7 +34,9 @@
  */
 
 import { code, isoDay, localYesNo, sourceName, certCount } from './render.mjs';
-import { isLookupError, checkAreas, failedAreas, knownChecks, carriedFrom, lastFullTimes, lookupFailed } from './carry.mjs';
+import {
+  isLookupError, checkAreas, failedAreas, knownChecks, carriedFrom, lastFullTimes, lookupFailed, resolverFailed, driftLookupFailed, renewLookupFailed, daneLookupFailed
+} from './carry.mjs';
 import { seenOf, radarCrossing } from './ctwatch.mjs';
 import { diffTls, tlsNotes } from './tlsdiff.mjs';
 import { diffTakeover, takeoverNotes } from './takeover.mjs';
@@ -234,7 +239,7 @@ function hostMove(domain, name, y, x, note = []) {
     return change('BETTER', domain, name, [...where, 'no longer a dangling CNAME: ', ...hostState(x), ...note], { tone: 'good', before: y.status, after: x.status });
   }
   if (!resolves(x)) return null;
-  const moved = y.kind !== x.kind || (y.providerId || y.provider) !== (x.providerId || x.provider);
+  const moved = y.kind !== x.kind || (y.providerId || y.provider || null) !== (x.providerId || x.provider || null);
   if (moved && y.hidesOrigin && !x.hidesOrigin && DIRECT.has(x.kind)) {
     return change('EXPOSED', domain, name, [...where, 'no longer behind ', code(y.provider || y.kind), ': now ', ...hostState(x), ...note], { tone: 'bad', before: y.kind, after: x.kind });
   }
@@ -251,12 +256,34 @@ function diffHosts(domain, b, a) {
   const now = new Map((a.hosts || []).filter((h) => !h.wildcardSuspect).map((h) => [h.name, h]));
   const exact = a.mode === 'exact';
   for (const [name, x] of now) {
-    const y = old.get(name);
+    let y = old.get(name);
     const where = [code(name), ' — '];
     if (!y) {
       if (x.dangling) out.push(change('DANGLING', domain, name, ['new host ', ...where, ...hostState(x)], { tone: 'bad', kind: 'appeared', after: x.status }));
       else if (resolves(x)) out.push(change('NEW', domain, name, ['new host ', ...where, ...hostState(x)], { kind: 'appeared', after: x.status }));
       continue;
+    }
+    // The resolvers gave no answer this run (ERROR): not the domain's change. Listed, never
+    // counted; the report carries its last answer (carry.mjs carryHosts) for the run after.
+    if (resolverFailed(x)) {
+      if (!resolverFailed(y)) {
+        out.push(change('FAILED', domain, name, [...where, ...hostState(x), '; was ', ...hostState(y), ' (no answer from the resolvers: not counted, compared with that answer once it answers)'],
+          { tone: 'quiet', counts: false, before: y.status, after: x.status }));
+      }
+      continue;
+    }
+    let note = [];
+    if (resolverFailed(y)) {
+      // Answered after a resolver outage: compared with its last answer before it (the outage is no change).
+      const last = isObj(y.lastGood) ? y.lastGood : null;
+      if (!last) {
+        // no earlier answer known: what it is now counts only when it is bad
+        const bad = lookupFailed(x) || !!x.dangling || !resolves(x);
+        out.push(change('RECOVERED', domain, name, [...where, 'answers again: ', ...hostState(x)], { tone: bad ? 'bad' : 'good', counts: bad, before: y.status, after: x.status }));
+        continue;
+      }
+      note = [` (compared with its answer ${last.at ? `of ${isoDay(last.at)}` : 'of an earlier run'}, before the resolvers failed)`];
+      y = { ...last, name };
     }
     const yFail = lookupFailed(y);
     const xFail = lookupFailed(x);
@@ -265,7 +292,7 @@ function diffHosts(domain, b, a) {
       continue;
     }
     if (xFail) {
-      out.push(change('FAILED', domain, name, [...where, ...hostState(x), '; was ', ...hostState(y)], { tone: 'bad', before: y.status, after: x.status }));
+      out.push(change('FAILED', domain, name, [...where, ...hostState(x), '; was ', ...hostState(y), ...note], { tone: 'bad', before: y.status, after: x.status }));
       continue;
     }
     if (yFail) {
@@ -277,7 +304,7 @@ function diffHosts(domain, b, a) {
         { tone: last || (resolves(x) && !x.dangling) ? 'good' : 'bad', before: y.status, after: x.status }));
       continue;
     }
-    const moved = hostMove(domain, name, y, x);
+    const moved = hostMove(domain, name, y, x, note);
     if (moved) out.push(moved);
   }
   for (const [name, y] of old) {
@@ -490,7 +517,7 @@ function diffDrift(before, after, { t }) {
     const oldRows = new Map((b.rows || []).map((r) => [r.key, r]));
     const newKeys = new Set((a.rows || []).map((r) => r.key));
     for (const x of a.rows || []) {
-      const y = oldRows.get(x.key);
+      let y = oldRows.get(x.key);
       if (!y) {
         if (needsLook(x.status)) {
           const failed = x.status === 'error';
@@ -498,16 +525,37 @@ function diffDrift(before, after, { t }) {
         }
         continue;
       }
+      // The resolvers gave no answer this run (a timeout, a transport failure, a filtering
+      // resolver): not the zone's change. Listed only; the report carries the row's last check
+      // (carry.mjs carryDriftRows) and the run after compares with that.
+      if (driftLookupFailed(x)) {
+        if (!driftLookupFailed(y)) {
+          out.push(change('FAILED', origin, x.key, [...rowWhere(x), `${label(y.status)} → ${label(x.status)} (no answer from the resolvers: not counted, compared with that check once it answers)`],
+            { tone: 'quiet', counts: false, before: y.status, after: x.status }));
+        }
+        continue;
+      }
+      let note = '';
+      if (driftLookupFailed(y)) {
+        const last = isObj(y.lastGood) ? y.lastGood : null;
+        if (!last) {
+          const bad = notable(driftSev(x.status));
+          out.push(change('RECOVERED', origin, x.key, [...rowWhere(x), `${label(y.status)} → ${label(x.status)}`], { tone: bad ? 'bad' : 'good', counts: bad, before: y.status, after: x.status }));
+          continue;
+        }
+        note = ` (compared with its check ${last.at ? `of ${isoDay(last.at)}` : 'of an earlier run'}, before the resolvers failed)`;
+        y = { ...y, ...last };
+      }
       if (x.status === y.status) {
         // sets, not lists: `added` is in the resolver's answer order, and a rotating answer order is no change
         const vals = (r) => JSON.stringify([r.added, r.removed, r.reasons].map((list) => [...(list || [])].sort()));
         if (needsLook(x.status) && x.status !== 'error' && vals(x) !== vals(y)) {
-          out.push(change('CHANGED', origin, x.key, [...rowWhere(x), label(x.status), ', live values changed: ', ...((x.added || []).length ? ['now also ', ...x.added.slice(0, 3).flatMap((v, i) => (i ? [', ', code(v)] : [code(v)]))] : ['values moved'])],
+          out.push(change('CHANGED', origin, x.key, [...rowWhere(x), label(x.status), ', live values changed: ', ...((x.added || []).length ? ['now also ', ...x.added.slice(0, 3).flatMap((v, i) => (i ? [', ', code(v)] : [code(v)]))] : ['values moved']), ...(note ? [note] : [])],
             { before: y.added || [], after: x.added || [] }));
         }
         continue;
       }
-      const move = [...rowWhere(x), `${label(y.status)} → ${label(x.status)}`];
+      const move = [...rowWhere(x), `${label(y.status)} → ${label(x.status)}`, ...(note ? [note] : [])];
       if (x.status === 'error') out.push(change('FAILED', origin, x.key, move, { tone: 'bad', before: y.status, after: x.status }));
       else if (y.status === 'error') out.push(change('RECOVERED', origin, x.key, move, { tone: notable(driftSev(x.status)) ? 'bad' : 'good', before: y.status, after: x.status }));
       else if (x.status === 'skipped' || y.status === 'skipped') {
@@ -545,10 +593,28 @@ function diffRenew(before, after, { t, localParams }) {
   const title = (f) => textParts(t, `renew.f.${f.id}.title`, localParams({ params: f.params || {} }, t));
   const problems = (x) => new Map((x.findings || []).filter((f) => notable(f.severity) && !f.unchecked).map((f) => [f.id, f]));
   for (const [name, a] of now) {
-    const b = old.get(name);
+    let b = old.get(name);
     if (!b) {
       out.push(change('NEW', name, null, [`now checked: ${verdict(a.verdict)}`], { tone: VERDICT_RANK[a.verdict] <= 1 ? 'bad' : 'info', kind: 'appeared', after: a.verdict }));
       continue;
+    }
+    // Could not be checked this run (a lookup it rests on got no answer): not the name's change.
+    // Listed only; the report carries its last verdict (carry.mjs carryRenewNames).
+    if (renewLookupFailed(a) && !renewLookupFailed(b)) {
+      out.push(change('FAILED', name, null, [`${verdict(b.verdict)} → ${verdict(a.verdict)} (a lookup got no answer: not counted, compared with that check once it answers)`],
+        { tone: 'quiet', counts: false, before: b.verdict, after: a.verdict }));
+      continue;
+    }
+    let note = [];
+    if (renewLookupFailed(b) && !renewLookupFailed(a)) {
+      const last = isObj(b.lastGood) ? b.lastGood : null;
+      if (!last) {
+        const tone = RECOVERED_TONE[a.verdict] || 'info';
+        out.push(change('RECOVERED', name, null, [`${verdict(b.verdict)} → ${verdict(a.verdict)}`], { tone, counts: tone === 'bad', before: b.verdict, after: a.verdict }));
+        continue;
+      }
+      note = [` (compared with its check ${last.at ? `of ${isoDay(last.at)}` : 'of an earlier run'}, before the lookups failed)`];
+      b = { ...b, verdict: last.verdict, findings: Array.isArray(last.findings) ? last.findings : [] };
     }
     const pb = problems(b);
     const pa = problems(a);
@@ -557,7 +623,8 @@ function diffRenew(before, after, { t, localParams }) {
     const detail = [
       ...added.slice(0, 3).flatMap((f) => ['; new: ', ...title(f)]),
       ...gone.slice(0, 3).flatMap((f) => ['; gone: ', ...title(f)]),
-      ...(added.length + gone.length > 6 ? [` (+${added.length + gone.length - 6} more)`] : [])
+      ...(added.length + gone.length > 6 ? [` (+${added.length + gone.length - 6} more)`] : []),
+      ...note
     ];
     if (a.verdict === b.verdict) {
       if (!added.length && !gone.length) continue;
@@ -603,14 +670,33 @@ function diffDane(before, after, { t }) {
       continue;
     }
     if (x.status === y.status) continue;
-    const move = [...where, `${label(y.status)} → ${label(x.status)}`];
-    if (x.status === 'error') out.push(change('FAILED', target, x.key, move, { tone: 'bad', before: y.status, after: x.status }));
-    else if (y.status === 'error') out.push(change('RECOVERED', target, x.key, move, { tone: notable(DANE_SEVERITY[x.status]) ? 'bad' : 'good', before: y.status, after: x.status }));
+    // The TLSA lookup got no answer this run: not the endpoint's change. Listed only; the report
+    // carries its last status (carry.mjs carryDaneEndpoints) and the run after compares with that.
+    if (daneLookupFailed(x)) {
+      out.push(change('FAILED', target, x.key, [...where, `${label(y.status)} → ${label(x.status)} (no answer from the resolvers: not counted, compared with that check once it answers)`],
+        { tone: 'quiet', counts: false, before: y.status, after: x.status }));
+      continue;
+    }
+    let note = '';
+    let was = y.status;
+    if (daneLookupFailed(y)) {
+      const last = isObj(y.lastGood) ? y.lastGood : null;
+      if (!last) {
+        const bad = notable(DANE_SEVERITY[x.status]);
+        out.push(change('RECOVERED', target, x.key, [...where, `${label(y.status)} → ${label(x.status)}`], { tone: bad ? 'bad' : 'good', counts: bad, before: y.status, after: x.status }));
+        continue;
+      }
+      if (last.status === x.status) continue; // as it was before the lookup failed
+      was = last.status;
+      note = ` (compared with its check ${last.at ? `of ${isoDay(last.at)}` : 'of an earlier run'}, before the lookup failed)`;
+    }
+    const move = [...where, `${label(was)} → ${label(x.status)}`, ...(note ? [note] : [])];
+    if (was === 'error') out.push(change('RECOVERED', target, x.key, move, { tone: notable(DANE_SEVERITY[x.status]) ? 'bad' : 'good', before: was, after: x.status }));
     else {
-      const rb = SEVERITY_RANK[DANE_SEVERITY[y.status]] ?? 0;
+      const rb = SEVERITY_RANK[DANE_SEVERITY[was]] ?? 0;
       const ra = SEVERITY_RANK[DANE_SEVERITY[x.status]] ?? 0;
       const tag = ra > rb ? 'WORSE' : ra < rb ? 'BETTER' : 'CHANGED';
-      out.push(change(tag, target, x.key, move, { tone: tag === 'WORSE' ? 'bad' : tag === 'BETTER' ? 'good' : 'info', before: y.status, after: x.status }));
+      out.push(change(tag, target, x.key, move, { tone: tag === 'WORSE' ? 'bad' : tag === 'BETTER' ? 'good' : 'info', before: was, after: x.status }));
     }
   }
   for (const y of b.endpoints || []) {

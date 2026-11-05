@@ -25,7 +25,7 @@ import {
   ctCertId, ctTarget, ctDoc, hostRow, baselineSeeds, reportHosts, createSourceBreaker, stageProgress, scanWarningParts, securityDoc, SECURITY_MAX_ROWS
 } from '../../tools/ds/commands.mjs';
 import * as secscore from '../../assets/js/lib/secscore.js';
-import { failedAreas, checkAreas, carryHealth, carryCt, carryHosts, lastFullTimes } from '../../tools/ds/carry.mjs';
+import { failedAreas, checkAreas, carryHealth, carryCt, carryHosts, lastFullTimes, carryDriftRows, carryRenewNames, carryDaneEndpoints, staleCarried } from '../../tools/ds/carry.mjs';
 import { main, decodeText, skippedWarnings } from '../../tools/ds.mjs';
 import { renderParts } from '../../assets/js/lib/summary.js';
 import { zoneTable, createFakeFetch, CF_EXPORT, portfolioZone, createPortfolioFetch } from './ds-fake-doh.mjs';
@@ -35,6 +35,7 @@ import { issuerName, dnPart } from '../../assets/js/lib/passport.js';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DS = join(ROOT, 'tools', 'ds.mjs');
 const NOW = new Date('2026-09-28T03:00:00Z');
+const DAY = 86400000;
 const t = await setupStrings();
 
 /** A report envelope of `command` with these targets. */
@@ -775,13 +776,19 @@ describe('diff: drift, renew, dane', () => {
       ]
     }]);
     const changes = diffReports('drift', b, a, { t });
+    // a row the resolvers gave no answer for is listed only (FAILED?), and one answering again after it, with no earlier check known, counts only when it is bad
     assert.deepEqual(tags(changes), [
-      'WORSE example.com NS', 'WORSE example.com www.example.com|A', 'BETTER example.com api.example.com|A', 'FAILED example.com mail.example.com|A',
-      'RECOVERED example.com vpn.example.com|A', 'CHANGED example.com ftp.example.com|A', 'NEW example.com new.example.com|A',
-      'CHANGED? example.com big.example.com|TXT', 'GONE? example.com old.example.com|A'
+      'WORSE example.com NS', 'WORSE example.com www.example.com|A', 'BETTER example.com api.example.com|A',
+      'CHANGED example.com ftp.example.com|A', 'NEW example.com new.example.com|A',
+      'FAILED? example.com mail.example.com|A', 'RECOVERED? example.com vpn.example.com|A', 'CHANGED? example.com big.example.com|TXT', 'GONE? example.com old.example.com|A'
     ]);
     assert.match(changeText(changes[1]), /www\.example\.com A — Proxied, origin hidden → Origin exposed: proxy is off/);
-    assert.match(changeText(changes[5]), /live values changed: now also 192\.0\.2\.8/);
+    assert.match(changeText(changes[3]), /live values changed: now also 192\.0\.2\.8/);
+    assert.match(changeText(changes[5]), /mail\.example\.com A — .* \(no answer from the resolvers: not counted, compared with that check once it answers\)$/);
+    // a row whose error is the zone's (SERVFAIL, REFUSED, NXDOMAIN) still counts
+    const zoneErr = diffReports('drift', report('drift', [{ target: 'example.com', rows: [row('mail.example.com|A', 'match')] }]),
+      report('drift', [{ target: 'example.com', rows: [row('mail.example.com|A', 'error', { reasons: ['servfail'] })] }]), { t });
+    assert.deepEqual(tags(zoneErr), ['FAILED example.com mail.example.com|A']);
   });
 
   test('drift: a problem row\'s live values are a set, so a rotating answer order is no change', () => {
@@ -814,10 +821,11 @@ describe('diff: drift, renew, dane', () => {
       { target: 'h.example.com', verdict: 'ready', findings: [] }
     ]);
     const changes = diffReports('renew', b, a, { t });
-    assert.deepEqual(tags(changes), ['WORSE a.example.com', 'BETTER b.example.com', 'FAILED c.example.com', 'RECOVERED d.example.com',
-      'CHANGED e.example.com', 'NEW h.example.com', 'GONE g.example.com', 'FAILING? f.example.com']);
+    // could not be checked (a lookup got no answer): listed only; checked again with no earlier check known: counted only when bad
+    assert.deepEqual(tags(changes), ['WORSE a.example.com', 'BETTER b.example.com',
+      'CHANGED e.example.com', 'NEW h.example.com', 'GONE g.example.com', 'FAILED? c.example.com', 'RECOVERED? d.example.com', 'FAILING? f.example.com']);
     assert.match(changeText(changes[0]), /^a\.example\.com: Ready → Will fail; new: /);
-    assert.match(changeText(changes[4]), /Ready, with warnings; new: .*; gone: /);
+    assert.match(changeText(changes[2]), /Ready, with warnings; new: .*; gone: /);
   });
 
   test('dane: endpoints compared by service and host, whatever the certificate\'s name', () => {
@@ -825,8 +833,8 @@ describe('diff: drift, renew, dane', () => {
     const b = report('dane', [{ target: 'example.com', serialHex: '01', endpoints: [ep('smtp|mail.example.com', 'safe'), ep('https|example.com', 'none'), ep('https|www.example.com', 'error'), ep('smtp|mx2.example.net', 'none')] }]);
     const a = report('dane', [{ target: 'www.example.com', serialHex: '02', endpoints: [ep('smtp|mail.example.com', 'danger'), ep('https|example.com', 'insecure'), ep('https|www.example.com', 'safe'), ep('smtp|mx3.example.net', 'none')] }]);
     const changes = diffReports('dane', b, a, { t });
-    assert.deepEqual(tags(changes), ['WORSE www.example.com smtp|mail.example.com', 'WORSE www.example.com https|example.com', 'RECOVERED www.example.com https|www.example.com',
-      'NEW www.example.com smtp|mx3.example.net', 'GONE www.example.com smtp|mx2.example.net']);
+    assert.deepEqual(tags(changes), ['WORSE www.example.com smtp|mail.example.com', 'WORSE www.example.com https|example.com',
+      'NEW www.example.com smtp|mx3.example.net', 'GONE www.example.com smtp|mx2.example.net', 'RECOVERED? www.example.com https|www.example.com']);
     assert.match(changeText(changes[0]), /_25\._tcp\.mail\.example\.com — Safe → Will break/);
   });
 
@@ -844,6 +852,85 @@ describe('diff: drift, renew, dane', () => {
     const dn = (status) => report('dane', [{ target: 'example.com', endpoints: [{ key: 'smtp|mail.example.com', qname: '_25._tcp.mail.example.com', status }] }]);
     assert.equal(diffReports('dane', dn('error'), dn('danger'), { t })[0].tone, 'bad');
     assert.equal(diffReports('dane', dn('error'), dn('safe'), { t })[0].tone, 'good');
+  });
+
+  test('a resolver outage is no change: carried from the last check (lastGood) and compared with it the night after', () => {
+    const at = '2026-10-01T03:00:00.000Z';
+    // drift: proxied-ok → (resolvers down) → origin-exposed counts against the carried check; → proxied-ok again is nothing
+    const dr = (r) => report('drift', [{ target: 'example.com', finishedAt: at, rows: [r] }]);
+    const n1 = dr(row('www.example.com|A', 'proxied-ok'));
+    const down = row('www.example.com|A', 'error', { reasons: ['transport'] });
+    const n2 = dr(carryDriftRows([down], n1.targets[0])[0]);
+    assert.deepEqual(n2.targets[0].rows[0].lastGood, { at, status: 'proxied-ok', reasons: [], added: [], removed: [] });
+    assert.deepEqual(tags(diffReports('drift', n1, n2, { t })), ['FAILED? example.com www.example.com|A']);
+    const n3 = dr(carryDriftRows([{ ...down }], n2.targets[0])[0]);
+    assert.deepEqual(n3.targets[0].rows[0].lastGood, n2.targets[0].rows[0].lastGood, 'a second night down keeps the first read');
+    assert.deepEqual(diffReports('drift', n2, n3, { t }), [], 'still down: nothing');
+    assert.deepEqual(diffReports('drift', n3, dr(row('www.example.com|A', 'proxied-ok')), { t }), [], 'answering as before: nothing');
+    const exposed = diffReports('drift', n3, dr(row('www.example.com|A', 'origin-exposed')), { t });
+    assert.deepEqual(tags(exposed), ['WORSE example.com www.example.com|A']);
+    assert.match(changeText(exposed[0]), /Proxied, origin hidden → Origin exposed: proxy is off \(compared with its check of 2026-10-01, before the resolvers failed\)$/);
+
+    // renew: ready → (unknown) → fail counts as WORSE against "ready"; → ready is nothing
+    const f = (id, severity, extra = {}) => ({ id, severity, params: {}, ...extra });
+    const rn = (x) => ({ ...report('renew', [x]), finishedAt: at });
+    const r1 = rn({ target: 'example.com', verdict: 'ready', findings: [] });
+    const r2 = rn(carryRenewNames([{ target: 'example.com', verdict: 'unknown', findings: [f('caa.error', 'warn', { unchecked: true })] }], r1)[0]);
+    assert.deepEqual(r2.targets[0].lastGood, { at, verdict: 'ready', findings: [] });
+    assert.deepEqual(tags(diffReports('renew', r1, r2, { t })), ['FAILED? example.com']);
+    assert.deepEqual(diffReports('renew', r2, rn({ target: 'example.com', verdict: 'ready', findings: [] }), { t }), []);
+    const worse = diffReports('renew', r2, rn({ target: 'example.com', verdict: 'fail', findings: [f('caa.denied', 'error')] }), { t });
+    assert.deepEqual(tags(worse), ['WORSE example.com']);
+    assert.match(changeText(worse[0]), /^example\.com: Ready → Will fail; new: .* \(compared with its check of 2026-10-01, before the lookups failed\)$/);
+
+    // dane: safe → (error) → safe is nothing; → danger counts
+    const dn = (e) => ({ ...report('dane', [{ target: 'example.com', endpoints: [e] }]), finishedAt: at });
+    const ep = (status) => ({ key: 'smtp|mail.example.com', qname: '_25._tcp.mail.example.com', status });
+    const d1 = dn(ep('safe'));
+    const d2 = dn(carryDaneEndpoints([ep('error')], d1)[0]);
+    assert.deepEqual(d2.targets[0].endpoints[0].lastGood, { at, status: 'safe', severity: null });
+    assert.deepEqual(tags(diffReports('dane', d1, d2, { t })), ['FAILED? example.com smtp|mail.example.com']);
+    assert.deepEqual(diffReports('dane', d2, dn(ep('safe')), { t }), []);
+    assert.deepEqual(tags(diffReports('dane', d2, dn(ep('danger')), { t })), ['WORSE example.com smtp|mail.example.com']);
+
+    // subdomains: a host the resolvers gave no answer for (ERROR) is listed only; SERVFAIL (the zone's) still counts
+    const host = (status, extra = {}) => ({ name: 'www.example.com', status, kind: 'direct', ipv4: ['192.0.2.10'], ipv6: [], cnames: [], ...extra });
+    const sd = (h) => report('subdomains', [{ target: 'example.com', finishedAt: at, hosts: [h] }]);
+    const s1 = sd(host('NOERROR'));
+    const s2 = sd(carryHosts([host('ERROR', { kind: null, ipv4: [] })], s1.targets[0])[0]);
+    assert.deepEqual(tags(diffReports('subdomains', s1, s2, { t })), ['FAILED? example.com www.example.com']);
+    assert.deepEqual(diffReports('subdomains', s2, sd(host('NOERROR')), { t }), [], 'the same answer as before the outage: nothing');
+    const moved = diffReports('subdomains', s2, sd(host('NOERROR', { ipv4: ['192.0.2.20'] })), { t });
+    assert.deepEqual(tags(moved), ['CHANGED example.com www.example.com']);
+    assert.match(changeText(moved[0]), /before the resolvers failed\)$/);
+    assert.deepEqual(tags(diffReports('subdomains', s1, sd(host('SERVFAIL', { kind: null, ipv4: [] })), { t })), ['FAILED example.com www.example.com'], 'SERVFAIL is the zone\'s answer: counted');
+  });
+
+  test('stale: what was carried unread for more than --max-carry-days, per command; an unknown last read is left out', () => {
+    const now = new Date('2026-10-20T03:00:00Z');
+    const old = '2026-10-01T03:00:00.000Z';
+    const recent = '2026-10-18T03:00:00.000Z';
+    const stale = (command, targets, maxDays = 7) => staleCarried(command, { targets }, { now, maxDays }).map((x) => `${x.target}: ${x.what} ${x.days}`);
+    assert.deepEqual(stale('health', [{ target: 'example.com', carried: [{ area: 'dmarc', from: old, checks: [] }, { area: 'mx', from: recent, checks: [] }, { area: 'caa', from: null, checks: [] }] }]),
+      ['example.com: the dmarc checks 19']);
+    assert.deepEqual(stale('health', [{ target: 'example.com', carried: [{ area: 'dmarc', from: old, checks: [] }] }], 0), [], '0: never stale');
+    assert.deepEqual(stale('ct', [{ target: 'example.com', sources: [{ source: 'crtsh', ok: false, lastFullAt: old }, { source: 'certspotter', ok: false, lastFullAt: '2026-10-05T03:00:00.000Z' }] }]),
+      ['example.com: Certificate Transparency (no source read the domain in full) 15'], 'the newest full read of any source');
+    assert.deepEqual(stale('ct', [{ target: 'example.com', sources: [{ source: 'crtsh', ok: false, lastFullAt: old }, { source: 'certspotter', ok: true, state: 'ok' }] }]), [], 'one source read it in full');
+    assert.deepEqual(stale('subdomains', [{ target: 'example.com', hosts: [
+      { name: 'a.example.com', status: 'ERROR', lastGood: { at: old } }, { name: 'b.example.com', status: 'ERROR', lastGood: { at: recent } },
+      { name: 'c.example.com', status: 'SERVFAIL', lastGood: { at: old } }
+    ] }]), ['example.com: 2 hosts the resolvers gave no answer for 19'], 'the oldest read of the carried hosts; SERVFAIL is a state, not an outage');
+    assert.deepEqual(stale('drift', [{ target: 'example.com', rows: [{ key: 'www.example.com|A', status: 'error', reasons: ['timeout'], lastGood: { at: old } }] }]),
+      ['example.com: 1 record sets the resolvers gave no answer for 19']);
+    assert.deepEqual(stale('renew', [{ target: 'example.com', verdict: 'unknown', lastGood: { at: old } }]), ['example.com: the renewal checks (could not be checked) 19']);
+    assert.deepEqual(stale('dane', [{ target: 'example.com', endpoints: [{ key: 'k', status: 'error', lastGood: { at: old } }] }]), ['example.com: 1 TLSA lookups without an answer 19']);
+    assert.deepEqual(stale('tls', [{ target: 'www.example.com', carried: { from: old } }]), ['www.example.com: the endpoints (the DNS lookup failed) 19']);
+    assert.deepEqual(stale('takeover', [{ target: 'example.com', risks: [{ key: 'k', carried: { from: old } }, { key: 'l' }] }]), ['example.com: 1 takeover risks whose lookups failed 19']);
+    assert.deepEqual(stale('audit', [{ target: 'example.com', rules: [{ id: 'r', status: 'unknown', last: { status: 'pass', from: old } }, { id: 's', status: 'pass' }] }]),
+      ['example.com: 1 policy rules that could not be checked 19']);
+    assert.deepEqual(stale('watch', [{ target: 'example.com', registration: { state: 'ok', carried: { from: old } }, delegation: { nsCarried: { from: recent } }, records: [] }]),
+      ['example.com: the registration (RDAP) 19']);
   });
 
   test('changes that count come first; an unknown command or a missing translator is refused', () => {
@@ -996,6 +1083,50 @@ async function runMain(argv, { fetchImpl, now = NOW } = {}) {
 const HIDDEN_ORIGINS = ['192.0.2.14', '192.0.2.40', '2001:db8::10', 'origin-lb.example.net'];
 
 describe('offline runs (fake DoH)', () => {
+  test('drift with the resolvers down: listed, never counted; carried; stale after --max-carry-days (exit 6); back as before: nothing', async () => {
+    const dir = tmp();
+    try {
+      const table = zoneTable();
+      const json = join(dir, 'drift.json');
+      const argv = (...extra) => ['drift', CF_EXPORT, '--baseline', json, '--json', json, '--fail-on-change', ...extra];
+      const down = async () => new Response('resolver down', { status: 503 });
+      const first = await runMain(argv(), { fetchImpl: createFakeFetch(table) });
+      assert.equal(first.code, EXIT.OK, first.err);
+      const doc1 = JSON.parse(readFileSync(json, 'utf8'));
+
+      // night 2: every resolver answers 503 — nothing counts, the warning says so, each row keeps its last check
+      const night2 = await runMain(argv(), { fetchImpl: down, now: new Date(NOW.getTime() + DAY) });
+      assert.equal(night2.code, EXIT.OK, `a resolver outage is no change: ${JSON.stringify(JSON.parse(readFileSync(json, 'utf8')).changes.filter((c) => c.counts))}`);
+      assert.match(night2.err, /warning: drift example\.com: \d+ record sets got no answer from the resolvers this run: not counted as changes, their last check is kept for the next comparison/);
+      const doc2 = JSON.parse(readFileSync(json, 'utf8'));
+      assert.ok(doc2.changes.length && doc2.changes.every((c) => c.counts === false && c.tag === 'FAILED'), JSON.stringify(doc2.changes.map((c) => `${c.tag}/${c.counts}`)));
+      const www = doc2.targets[0].rows.find((r) => r.key === 'www.example.com|A');
+      assert.deepEqual([www.status, www.reasons, www.lastGood.status, www.lastGood.at],
+        ['error', ['transport'], doc1.targets[0].rows.find((r) => r.key === 'www.example.com|A').status, doc1.targets[0].finishedAt], 'the check of night 1 kept');
+      assert.equal(doc2.stale, undefined, 'one day: not stale');
+
+      // night 10: still down, the first read is now 9 days old: stale (exit 6), said and listed in the report
+      const night10 = await runMain(argv(), { fetchImpl: down, now: new Date(NOW.getTime() + 9 * DAY) });
+      assert.equal(night10.code, EXIT.STALE, night10.err);
+      assert.match(night10.err, /warning: example\.com: \d+ record sets the resolvers gave no answer for not read since 2026-09-28 \(9 days, more than --max-carry-days 7\): the last read stands in, the check is blind there until it can be read again/);
+      const doc10 = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(doc10.stale.map((x) => [x.target, x.days]), [['example.com', 9]]);
+      assert.deepEqual(doc10.changes, [], 'still down: no change');
+      // the limit raised, or off: no exit 6
+      assert.equal((await runMain([...argv(), '--max-carry-days', '30'], { fetchImpl: down, now: new Date(NOW.getTime() + 9 * DAY) })).code, EXIT.OK);
+      assert.equal((await runMain([...argv(), '--max-carry-days', '0'], { fetchImpl: down, now: new Date(NOW.getTime() + 9 * DAY) })).code, EXIT.OK);
+
+      // night 11: the resolvers answer again and nothing moved since night 1: no change at all
+      const back = await runMain(argv(), { fetchImpl: createFakeFetch(table), now: new Date(NOW.getTime() + 10 * DAY) });
+      assert.equal(back.code, EXIT.OK, back.err);
+      const doc11 = JSON.parse(readFileSync(json, 'utf8'));
+      assert.deepEqual(doc11.changes.filter((c) => c.counts), [], JSON.stringify(doc11.changes));
+      assert.equal(doc11.stale, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('drift: the Zone File e2e zone, origins hidden, nothing internal sent, then a baseline with changes and --fail-on-change', async () => {
     const dir = tmp();
     try {

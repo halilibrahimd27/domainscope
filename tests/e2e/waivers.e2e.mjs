@@ -634,7 +634,8 @@ async function main() {
         return out;
       });
       assertEqual([tiles.new, tiles.unexpected], ['0', '0'], 'the figures follow');
-      assertEqual(await page.evaluate(() => document.activeElement?.dataset.role), 'ct-known-line', 'the focus on the row\'s known line');
+      // the panel focuses the line two frames after the rows are drawn (ui/ctwatch-panel.js): wait for it, a slow runner lags
+      await page.waitFor(() => document.activeElement?.dataset.role === 'ct-known-line', { message: 'the focus on the row\'s known line', timeout: 5000 });
       // the focus scrolled the table to the row's line: back to its start for the picture
       await page.evaluate(() => document.querySelectorAll('.pf-ct-table .dt-scroll').forEach((el) => { el.scrollLeft = 0; }));
       await shotEl(page, 'waivers-ct-1440-en', '.pf-ct-table');

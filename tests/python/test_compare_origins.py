@@ -127,7 +127,9 @@ class CompareIntegrationTests(unittest.TestCase):
         names = next(f for f in doc['fields'] if f['key'] == 'cert_subject')
         self.assertEqual([names['old'], names['new']], ['*.wild.example.net, wild.example.net'] * 2)
         for server in (old, new):
-            self.assertEqual(server.sni, [NAME, NAME], 'the GET connection and the verifying handshake')
+            # the GET connection, the verifying handshake against the system's roots (it fails: a
+            # private CA), then the one against the --private-ca alone that trusts it
+            self.assertEqual(server.sni, [NAME, NAME, NAME], 'the GET, the system roots, the --private-ca')
             self.assertEqual(len(server.requests), 1, 'one GET, over the first TLS connection')
             request = server.requests[0].decode('latin-1')
             self.assertTrue(request.startswith('GET /healthz?x=1 HTTP/1.1\r\n'), request)

@@ -150,11 +150,14 @@ export async function askPfxPassword({ name, open }) {
       if (done) modal.close('open');
     });
   };
+  // The bundle's password is read once, never stored: password managers are asked not to offer
+  // saving it for the site (as the zone-fetch and GitHub token fields do).
   const password = textInput({
     label: t('pfx.password'),
     type: 'password',
     hint: t('pfx.passwordHint'),
-    attrs: { 'data-role': 'pfx-password' },
+    autocomplete: 'off',
+    attrs: { 'data-role': 'pfx-password', 'data-1p-ignore': 'true', 'data-lpignore': 'true', 'data-form-type': 'other' },
     onEnter: submitAndClose
   });
   const check = checkbox({ label: t('pfx.checkKey'), hint: t('pfx.checkKeyHint') });

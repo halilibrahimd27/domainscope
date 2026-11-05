@@ -11,15 +11,22 @@ what it found and tells you when something changed.
 records. **Never commit inventories or zone files unless you mean to**: the zone drift step reads
 a zone export from the repository, so it stays commented out until that file belongs there (the
 origin addresses behind proxied names are hidden in the results unless you add
-`--include-origins`). **No secret is needed**: the job uses the workflow's own `GITHUB_TOKEN`, and
-the checks ask keyless public services only, and the tls check your own hosts (the alerts below
-are optional secrets). The checkout
-keeps no token while the checks run (`persist-credentials: false`): only the commit step and the
-issue step are given it.
+`--include-origins`). **No secret is needed**: the workflow's own `GITHUB_TOKEN` does it, and the
+checks ask keyless public services only, and the tls check your own hosts (the alerts below are
+optional secrets).
+
+The workflow has two jobs, so code you did not write never runs with write access to your
+repository. `checks` checks out DomainScope and runs it with a token that can only read
+(`contents: read`), then uploads `results/` as an artifact of the run (kept one day). `publish`
+runs none of DomainScope's code: it downloads that artifact, commits it (`contents: write`) and
+opens, updates or closes the issue (`issues: write`). No checkout keeps a token
+(`persist-credentials: false`): only the commit step and the issue step are given it.
 
 1. Create a private repository with a `domains.txt`: one domain per line, `#` comments.
-2. Copy `nightly-domainscope.yml` to its `.github/workflows/`, and pin `ref:` to a DomainScope
-   commit SHA (or to a release tag once there is one).
+2. Copy `nightly-domainscope.yml` to its `.github/workflows/`. Its `ref:` is pinned to the
+   DomainScope commit the template was checked against, so it works as it is; move it forward on
+   purpose, after reading what changed, and never to `main` (every night would then run whatever
+   was pushed last, with your repository's token and your alert URLs).
 3. Switch on the steps you want (health, the Certificate Transparency watch, the takeover watch
    and the change watch run by default, and the served-certificate monitor when the repository
    has a `tls-hosts.txt`; subdomain discovery, an exact host list, the takeover watch over the
@@ -45,11 +52,11 @@ both the baseline and the new report) and:
 - opens **one** issue labelled `domainscope` when something that counts changed — or updates the
   open one and comments on it — with each changed check's "Changes since the baseline" and
   summary;
-- closes that issue on a night with no change on which every check completed. A check that did
-  not complete compared nothing, so on such a night the open issue stays open, with a comment
-  naming the check;
-- fails the job when a check did not complete: a usage error, a report it could not write, or
-  its time limit.
+- closes that issue on a night with no change on which every check completed and nothing was
+  carried past its age limit (below). A check that did not complete compared nothing, so on such
+  a night the open issue stays open, with a comment naming the check;
+- fails the job when a check did not complete: a usage error, a report it could not write, its
+  time limit, or data it had to carry for longer than `--max-carry-days`.
 
 **Alerts.** The issue keeps the record; an alert reaches you where you already look. Set any of
 these Actions secrets in the repository (Settings › Secrets and variables › Actions). A secret that
@@ -101,9 +108,12 @@ verdict, a served certificate whose renewal is overdue entering its warning days
 address serving an untrusted chain, a certificate without the name or an older one than the
 renewal CT logged. Moves between failure states, Certificate Transparency sources that
 could not be read, what a failed lookup or source may hide and renewed certificates from known
-issuers are listed but never counted. GitHub's hosted runners share their IP addresses and the
-anonymous quotas of the passive sources are per address, so a source may be rate limited on some
-night: the report says so, and nothing a source could not read counts as a change.
+issuers are listed but never counted. In no check does a lookup that failed count as a change:
+a host whose lookup failed has not "stopped resolving", a record set that could not be read has
+not changed, so an outage of every DNS resolver on the runner is a failed night, not a page per
+host. GitHub's hosted runners share their IP addresses and the anonymous quotas of the passive
+sources are per address, so a source may be rate limited on some night: the report says so, and
+nothing a source could not read counts as a change.
 
 What a night could not read, its report carries from the last night that read it, so the night
 after compares with that read and not with the gap: a certificate from a new certificate
@@ -114,6 +124,11 @@ meanwhile is said as such). An issuer or a name is new only when a source that l
 the domain in full before, or when its certificate was issued after the first of those full
 reads; issuers are named from the certificate's issuer DN, so crt.sh and Cert Spotter name them
 alike.
+
+Carrying has an age limit, so a source that stays blocked cannot hide a problem for weeks: data a
+check has carried, not read again, for more than `--max-carry-days` (7 by default; add the option
+to a line of the template to change it) is reported stale, and the run fails. The issue then stays
+open and the job is red until the source answers again.
 
 **The policy audit.** `audit` checks each domain of the list against the rules of a policy (a
 `policy.json` exported from the app's Domain portfolio, or `--preset baseline`, `strict-mail`,

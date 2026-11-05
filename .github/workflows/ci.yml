@@ -16,9 +16,14 @@ jobs:
   js:
     name: JavaScript tests (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    # the whole suite takes about two minutes; a hung test must not hold the deploy for six hours
+    timeout-minutes: 20
     strategy:
+      # one Node version failing must not cancel the others: which versions fail is the finding
+      fail-fast: false
       matrix:
-        node: [22, 24]
+        # 22 is the floor (package.json engines), 24 and 26 the LTS lines after it
+        node: [22, 24, 26]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -26,17 +31,27 @@ jobs:
           node-version: ${{ matrix.node }}
       # includes tests/js/repo-hygiene.test.js: every IPv4 literal in code, tests, fixtures,
       # docs and the gzip wordlists must be documentation space or well-known infrastructure
+      # --test-timeout: node --test has no default, so one test that never settles (a socket
+      # whose close never comes) would otherwise hang the job; two minutes is far above the
+      # slowest test (a few seconds)
       - name: Unit tests (+ repo hygiene)
-        run: node --test "tests/js/*.test.js"
+        run: node --test --test-timeout=120000 "tests/js/*.test.js"
 
   python:
     name: CLI tests (Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - { python: '3.8', os: ubuntu-22.04 }
+          # the floor: setup-python builds 3.9 for Ubuntu 22.04 and 24.04, not for 26.04, so it
+          # stays on 24.04 rather than ubuntu-latest; 3.9 and 3.12 read the served chain
+          # differently (3.10+ can), 3.13 changed the ssl defaults the CLI's trust check
+          # branches on (VERIFY_X509_PARTIAL_CHAIN, VERIFY_X509_STRICT)
+          - { python: '3.9', os: ubuntu-24.04 }
           - { python: '3.12', os: ubuntu-latest }
+          - { python: '3.13', os: ubuntu-latest }
           - { python: '3.12', os: windows-latest }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,8 +63,9 @@ jobs:
   e2e:
     name: E2E offline suites (headless Chrome)
     runs-on: ubuntu-latest
-    # a hung browser must not hold the deploy for run-all's 20 minutes per suite
-    timeout-minutes: 20
+    # a hung browser must not hold the deploy for run-all's 20 minutes per suite; the 43 suites
+    # take about 14 minutes on a laptop, so 30 leaves room for a slower runner
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

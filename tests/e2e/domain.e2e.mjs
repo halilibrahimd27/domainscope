@@ -270,7 +270,7 @@ async function main() {
         const group = [...document.querySelectorAll('.nav-list')].find((ul) => ul.querySelector('[href$="#/health"]'));
         return group ? [...group.querySelectorAll('.nav-link')].map((a) => a.getAttribute('href').replace(/^.*#\//, '').split('?')[0]) : [];
       });
-      assertEqual(nav, ['domain', 'health', 'subdomains', 'lookup'], 'Investigate a domain group');
+      assertEqual(nav, ['domain', 'health', 'subdomains', 'lookup', 'dirmap'], 'Investigate a domain group (Endpoint map last)');
       assertEqual(await text(page, 'h1'), 'Domain overview', 'title');
       assert(await page.evaluate(() => !!document.querySelector('.dov-empty .tool-empty')), 'empty state');
       assertEqual(await counts(page), { dns: 0, rdap: 0, ct: 0 }, 'nothing sent');

@@ -98,7 +98,7 @@ const WORKSPACE_WAIT_MS = 8000;
  */
 export const VIEW_CSS_ORDER = Object.freeze([
   'views/home.css', 'views/subdomains.css', 'views/domain.css', 'views/fix.css', 'views/zone.css', 'views/zonetools.css', 'views/scan.css', 'views/verify.css', 'views/dane.css', 'views/cert.css',
-  'views/renew.css', 'views/clisteps.css', 'views/estate.css', 'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/change.css', 'views/ip.css', 'views/ptr.css', 'views/ipscan.css', 'views/retire.css',
+  'views/renew.css', 'views/clisteps.css', 'views/estate.css', 'views/dirmap.css', 'views/global.css', 'views/lookup.css', 'views/bulk.css', 'views/change.css', 'views/ip.css', 'views/ptr.css', 'views/ipscan.css', 'views/retire.css',
   'views/health.css', 'views/reports.css', 'views/portfolio.css', 'views/monitor.css', 'views/inventory.css', 'views/topology.css', 'views/about.css'
 ]);
 
@@ -133,6 +133,8 @@ export const VIEWS = Object.freeze([
   // Targets, ui/locale-evidence.js) load with its first scan, after the engine.
   { id: 'subdomains', group: 'investigate', icon: 'layers', css: ['views/subdomains.css'], preload: [...ENGINE_MODULES, 'ui/subdomains-run.js', 'ui/locale-evidence.js', 'lib/export.js', 'lib/subtabs.js', 'lib/originnow.js'], load: () => import('./views/subdomains.js') },
   { id: 'lookup', group: 'investigate', icon: 'search', css: ['views/lookup.css'], load: () => import('./views/lookup.js') },
+  // which directories and endpoints a host serves: cli/dir_scan.py's reports, read in the browser (nothing sent)
+  { id: 'dirmap', group: 'investigate', icon: 'folder', css: ['views/clisteps.css', 'views/dirmap.css'], offline: true, cli: true, load: () => import('./views/dirmap.js') },
   // Deploy & renew certificates: the certificate's lifecycle, from the file to every server
   {
     id: 'scan', group: 'certs', icon: 'target', preload: ENGINE_MODULES, load: () => import('./views/scan.js'),

@@ -65,6 +65,7 @@ export const TOOL_KEYWORDS = Object.freeze({
   bulk: 'bulk resolve many hostnames',
   change: 'change request ticket terraform octodns',
   ip: 'ip asn geo owner cdn whois',
+  dirmap: 'endpoint directory discovery dir path url dirscan gobuster ffuf dirsearch fuzz content',
   ptr: 'ptr reverse sweep rdns',
   ipscan: 'ip scan scanner free unused available address ping arp subnet angry',
   retire: 'retire decommission renumber',

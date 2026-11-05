@@ -1,0 +1,149 @@
+{
+  "schema": "domainscope.dir-scan/1",
+  "tool": "dir_scan",
+  "version": "1.0.0",
+  "generatedAt": "2026-11-05T09:30:00Z",
+  "options": {
+    "rate": 5.0,
+    "names": 213,
+    "builtin": true
+  },
+  "summary": {
+    "hosts": 2,
+    "reachable": 2,
+    "paths": 10,
+    "found": 3,
+    "listing": 1,
+    "protected": 1,
+    "redirect": 1,
+    "complete": false
+  },
+  "warnings": [],
+  "hosts": [
+    {
+      "host": "web.example.com",
+      "url": "https://web.example.com/",
+      "scheme": "https",
+      "port": 443,
+      "reachable": true,
+      "error": "",
+      "baseline": {
+        "kind": "hard-404",
+        "status": 404,
+        "note": "the server returns 404 for unknown paths"
+      },
+      "notMapped": "",
+      "counts": {
+        "found": 2,
+        "listing": 1,
+        "protected": 1,
+        "redirect": 1,
+        "unchecked": 0
+      },
+      "results": [
+        {
+          "path": "/api",
+          "url": "https://web.example.com/api",
+          "verdict": "FOUND",
+          "status": 200,
+          "detail": "a 200 answer",
+          "contentType": "application/json",
+          "length": 42
+        },
+        {
+          "path": "/health",
+          "url": "https://web.example.com/health",
+          "verdict": "FOUND",
+          "status": 200,
+          "detail": "a 200 answer",
+          "contentType": "text/plain",
+          "length": 2
+        },
+        {
+          "path": "/files",
+          "url": "https://web.example.com/files",
+          "verdict": "LISTING",
+          "status": 200,
+          "detail": "a directory listing is served (its files are visible)",
+          "contentType": "text/html",
+          "length": 310
+        },
+        {
+          "path": "/admin",
+          "url": "https://web.example.com/admin",
+          "verdict": "PROTECTED",
+          "status": 401,
+          "detail": "exists but is behind auth (401)"
+        },
+        {
+          "path": "/old",
+          "url": "https://web.example.com/old",
+          "verdict": "REDIRECT",
+          "status": 301,
+          "detail": "redirects to https://cdn.example.net",
+          "location": "https://cdn.example.net"
+        },
+        {
+          "path": "/missing",
+          "url": "https://web.example.com/missing",
+          "verdict": "NOT_FOUND",
+          "status": 404,
+          "detail": "not found (404)"
+        },
+        {
+          "path": "/secret",
+          "url": "https://web.example.com/secret",
+          "verdict": "NOT_FOUND",
+          "status": 404,
+          "detail": "not found (404)"
+        }
+      ]
+    },
+    {
+      "host": "app.example.net",
+      "url": "https://app.example.net/",
+      "scheme": "https",
+      "port": 443,
+      "reachable": true,
+      "error": "",
+      "baseline": {
+        "kind": "soft-404",
+        "status": 200,
+        "note": "the server answers 200 for unknown paths (a catch-all page)"
+      },
+      "notMapped": "",
+      "counts": {
+        "found": 1,
+        "listing": 0,
+        "protected": 0,
+        "redirect": 0,
+        "unchecked": 1
+      },
+      "results": [
+        {
+          "path": "/graphql",
+          "url": "https://web.example.com/graphql",
+          "verdict": "FOUND",
+          "status": 200,
+          "detail": "a 200 answer unlike the catch-all page",
+          "contentType": "application/json",
+          "length": 88
+        },
+        {
+          "path": "/admin",
+          "url": "https://web.example.com/admin",
+          "verdict": "TIMEOUT",
+          "status": null,
+          "detail": "no answer in 10 s"
+        },
+        {
+          "path": "/login",
+          "url": "https://web.example.com/login",
+          "verdict": "NOT_FOUND",
+          "status": 200,
+          "detail": "same as the catch-all page"
+        }
+      ]
+    }
+  ]
+}

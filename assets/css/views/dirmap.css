@@ -1,0 +1,110 @@
+/*
+ * views/dirmap.css — "Endpoint map" view (.dirmap-*): the steps schema (ui/cli-steps.js), the
+ * dir_scan.py reports, the answered paths ready to copy, and the path list (labelled cards on a
+ * phone). The file input, the result header and the empty state are the page template's
+ * (style.css § 4). Status colours follow docs/DESIGN.md §6.2. Design tokens only.
+ */
+
+.dirmap-view,
+.dirmap-results-host {
+  display: flex;
+  flex-direction: column;
+  gap: var(--stack-gap);
+  min-width: 0;
+}
+
+.dirmap-results-host:empty {
+  display: none;
+}
+
+/* ---- reports ----------------------------------------------------------------- */
+
+.dirmap-import .filedrop-compact {
+  padding: 10px 14px;
+}
+
+.dirmap-reports {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.dirmap-report {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 8px 10px 8px 12px;
+}
+
+.dirmap-report + .dirmap-report {
+  border-top: 1px solid var(--border);
+}
+
+.dirmap-report-text {
+  display: flex;
+  flex: 1 1 16rem;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dirmap-report-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.dirmap-errors {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+/* ---- the answered paths to copy -------------------------------------------------- */
+
+.dirmap-found {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+}
+
+.dirmap-found-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--fs-md);
+}
+
+.dirmap-found-title .icon {
+  color: var(--ok);
+}
+
+.dirmap-found-list {
+  gap: 6px;
+}
+
+.dirmap-found-path.is-listing .icon {
+  color: var(--error);
+}
+
+/* ---- the list ------------------------------------------------------------------------ */
+
+.dirmap-table .dt-row td a {
+  overflow-wrap: anywhere;
+}
+
+@media print {
+  .dirmap-import,
+  .dirmap-steps,
+  .dirmap-copy-all {
+    display: none;
+  }
+}

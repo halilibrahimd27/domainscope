@@ -1,0 +1,53 @@
+{
+  "schema": "domainscope.dir-scan/1",
+  "tool": "dir_scan",
+  "version": "1.0.0",
+  "generatedAt": "2026-10-29T09:30:00Z",
+  "options": {},
+  "summary": {
+    "hosts": 1,
+    "reachable": 1,
+    "paths": 1,
+    "found": 1,
+    "listing": 0,
+    "protected": 0,
+    "redirect": 0,
+    "complete": true
+  },
+  "warnings": [],
+  "hosts": [
+    {
+      "host": "web.example.com",
+      "url": "https://web.example.com/",
+      "scheme": "https",
+      "port": 443,
+      "reachable": true,
+      "error": "",
+      "baseline": {
+        "kind": "hard-404",
+        "status": 404,
+        "note": "the server returns 404 for unknown paths"
+      },
+      "notMapped": "",
+      "counts": {
+        "found": 1,
+        "listing": 0,
+        "protected": 0,
+        "redirect": 0,
+        "unchecked": 0
+      },
+      "results": [
+        {
+          "path": "/api",
+          "url": "https://web.example.com/api",
+          "verdict": "FOUND",
+          "status": 200,
+          "detail": "a 200 answer",
+          "contentType": "application/json",
+          "length": 40
+        }
+      ],
+      "generatedAt": null
+    }
+  ]
+}

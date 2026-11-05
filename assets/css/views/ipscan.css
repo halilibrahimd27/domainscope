@@ -91,11 +91,6 @@
   overflow-wrap: anywhere;
 }
 
-.ipscan-how .codeblock,
-.ipscan-noscan .codeblock {
-  margin: 0;
-}
-
 /* ---- the free addresses to use -------------------------------------------------- */
 
 .ipscan-pick {

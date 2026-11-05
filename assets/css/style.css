@@ -1122,6 +1122,23 @@ hr {
   }
 }
 
+/* A tool that needs the command line (VIEWS[].cli; ui/cli-steps.js shows its steps): a quiet
+   "CLI" tag after the label, in the sidebar and the Tools menu. */
+.nav-cli {
+  flex: none;
+  margin-left: auto;
+  padding: 0 5px;
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+}
+.nav-link.is-busy .nav-cli {
+  margin-right: 14px;
+}
 /* A job running in this view (ui/jobs.js): a small progress ring after the label, also while
    another view is open. It replaces the busy dot. */
 .nav-job {

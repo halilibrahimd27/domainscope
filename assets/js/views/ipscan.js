@@ -34,6 +34,7 @@ import {
 } from '../ui/template.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { CliSteps } from '../ui/cli-steps.js';
 import { formatDateTime, formatNumber, registerStrings } from '../i18n.js';
 import { permalinkParams, registerSummaryBuilder } from '../lib/summarycore.js';
 import { toCsv } from '../lib/export.js';
@@ -95,8 +96,23 @@ registerStrings('en', {
   'ipscan.paste.summary': 'Paste a report',
   'ipscan.paste.label': 'Report (JSON, as --json - prints it)',
   'ipscan.paste.read': 'Read report',
-  'ipscan.how.summary': 'How to scan',
-  'ipscan.how.body': 'A browser cannot ping or reach your network, so the scan runs from a machine on it: download ip_scan.py (Python 3, nothing to install) and run the command. It pings every address, tries a few TCP ports (a closed port that answers still proves a machine), reads the machine’s ARP table and asks reverse DNS. Run it on the same network as the range: only there can an address be confirmed free.',
+  'ipscan.steps.title': 'The scan does not run in the browser',
+  'ipscan.steps.why': 'A web page can neither ping nor reach your internal network, so the scan runs on a machine on that network, with ip_scan.py from this site. This page then reads its report and draws the map; nothing is sent from here.',
+  'ipscan.steps.cannot.ping': 'ping an address',
+  'ipscan.steps.cannot.ports': 'try the TCP ports of a machine on your network',
+  'ipscan.steps.cannot.arp': 'read the ARP table, the one place an address is confirmed free',
+  'ipscan.steps.can.map': 'draws the range as a map: used, claimed, free',
+  'ipscan.steps.can.servers': 'puts your server list on top',
+  'ipscan.steps.can.pick': 'picks the free addresses to use',
+  'ipscan.steps.s1': 'Download ip_scan.py',
+  'ipscan.steps.s1Text': 'One Python 3 file, nothing to install. Copy it to a machine on the network you scan.',
+  'ipscan.steps.s2': 'Run it on that network',
+  'ipscan.steps.s2Text': 'From a machine on the same network as the range: only there can an address be confirmed free.',
+  'ipscan.steps.s3': 'Open the report here',
+  'ipscan.steps.s3Text': 'Drop scan.json on the page or choose it: the map fills in, and nothing leaves the browser.',
+  'ipscan.steps.s3Open': 'Open the report',
+  'ipscan.steps.tips': 'Also from the command line',
+  'ipscan.steps.summary': { one: 'Scanned on your network with ip_scan.py · {count} report open', other: 'Scanned on your network with ip_scan.py · {count} reports open' },
   'ipscan.how.download': 'Download ip_scan.py',
   'ipscan.how.free': 'Only the free addresses, one a line:',
   'ipscan.how.check': 'Before you assign one address (exit code 1 when it is taken):',
@@ -158,7 +174,7 @@ registerStrings('en', {
   'ipscan.noneToExport': 'No free address to export',
 
   'ipscan.noScan.title': 'Not scanned yet',
-  'ipscan.noScan.body': 'Run ip_scan.py from a machine on this network and open its report here. Until then the map marks only the addresses your server list claims.',
+  'ipscan.noScan.body': 'Follow the steps above: run ip_scan.py on this network and open its report here. Until then the map marks only the addresses your server list claims.',
   'ipscan.outside': { one: '{count} address of the reports is outside this range.', other: '{count} addresses of the reports are outside this range.' },
   'ipscan.outsideUse': 'Map the reports’ range',
   'ipscan.unscannedNote': { one: '{count} address of the range is in no report: scan it too.', other: '{count} addresses of the range are in no report: scan them too.' },
@@ -250,8 +266,23 @@ registerStrings('tr', {
   'ipscan.paste.summary': 'Bir raporu yapıştırın',
   'ipscan.paste.label': 'Rapor (JSON, --json - çıktısı gibi)',
   'ipscan.paste.read': 'Raporu oku',
-  'ipscan.how.summary': 'Nasıl taranır',
-  'ipscan.how.body': 'Tarayıcı ping atamaz ve ağınıza erişemez; bu yüzden tarama o ağdaki bir makineden çalışır: ip_scan.py’yi indirin (Python 3, kurulum gerekmez) ve komutu çalıştırın. Her adrese ping atar, birkaç TCP portunu dener (yanıt veren kapalı bir port da makinenin orada olduğunu kanıtlar), makinenin ARP tablosunu okur ve ters DNS’e sorar. Aralıkla aynı ağda çalıştırın: bir adresin boş olduğu yalnızca orada doğrulanabilir.',
+  'ipscan.steps.title': 'Tarama tarayıcıda çalışmaz',
+  'ipscan.steps.why': 'Bir web sayfası ping atamaz ve iç ağınıza erişemez; bu yüzden tarama o ağdaki bir makinede, bu sitedeki ip_scan.py ile yapılır. Bu sayfa sonra raporunu okur ve haritayı çizer; buradan hiçbir şey gönderilmez.',
+  'ipscan.steps.cannot.ping': 'bir adrese ping atmak',
+  'ipscan.steps.cannot.ports': 'ağınızdaki bir makinenin TCP portlarını denemek',
+  'ipscan.steps.cannot.arp': 'bir adresin boş olduğunun doğrulandığı tek yer olan ARP tablosunu okumak',
+  'ipscan.steps.can.map': 'aralığı harita olarak çizer: dolu, kayıtlı, boş',
+  'ipscan.steps.can.servers': 'sunucu listenizi üstüne koyar',
+  'ipscan.steps.can.pick': 'kullanılabilecek boş adresleri seçer',
+  'ipscan.steps.s1': 'ip_scan.py’yi indirin',
+  'ipscan.steps.s1Text': 'Tek bir Python 3 dosyası, kurulum yok. Taradığınız ağdaki bir makineye kopyalayın.',
+  'ipscan.steps.s2': 'O ağda çalıştırın',
+  'ipscan.steps.s2Text': 'Aralıkla aynı ağdaki bir makineden: bir adresin boş olduğu yalnızca orada doğrulanabilir.',
+  'ipscan.steps.s3': 'Raporu burada açın',
+  'ipscan.steps.s3Text': 'scan.json’u sayfaya bırakın ya da seçin: harita dolar ve hiçbir şey tarayıcıdan çıkmaz.',
+  'ipscan.steps.s3Open': 'Raporu aç',
+  'ipscan.steps.tips': 'Komut satırından ayrıca',
+  'ipscan.steps.summary': '{count} rapor açık · ağınızda ip_scan.py ile tarandı',
   'ipscan.how.download': 'ip_scan.py’yi indir',
   'ipscan.how.free': 'Yalnızca boş adresler, her satırda bir tane:',
   'ipscan.how.check': 'Tek bir adresi vermeden önce (doluysa çıkış kodu 1):',
@@ -313,7 +344,7 @@ registerStrings('tr', {
   'ipscan.noneToExport': 'Dışa aktarılacak boş adres yok',
 
   'ipscan.noScan.title': 'Henüz taranmadı',
-  'ipscan.noScan.body': 'ip_scan.py’yi bu ağdaki bir makineden çalıştırın ve raporunu burada açın. O zamana kadar harita yalnızca sunucu listenizin sahiplendiği adresleri işaretler.',
+  'ipscan.noScan.body': 'Yukarıdaki adımları izleyin: ip_scan.py’yi bu ağda çalıştırın ve raporunu burada açın. O zamana kadar harita yalnızca sunucu listenizin sahiplendiği adresleri işaretler.',
   'ipscan.outside': '{count} rapor adresi bu aralığın dışında.',
   'ipscan.outsideUse': 'Raporların aralığını göster',
   'ipscan.unscannedNote': 'Aralıktaki {count} adres hiçbir raporda yok: onları da tarayın.',
@@ -465,7 +496,7 @@ export function moveIndex(key, index, count, lead = 0) {
  * `range`: the range on screen (parsed when Show map was pressed); `selected`: the address whose
  * details are open.
  */
-const S = { text: '', range: null, reports: [], errors: [], paste: '', filter: 'all', tab: 'map', selected: null, importOpen: false };
+const S = { text: '', range: null, reports: [], errors: [], paste: '', filter: 'all', tab: 'map', selected: null, importOpen: false, stepsOpen: false };
 let subscribed = false;
 let rerender = null;
 
@@ -571,9 +602,10 @@ export function mount(container, ctx) {
     privacy: PrivacyNote({ text: t('ipscan.privacy'), className: 'ipscan-privacy' })
   });
 
+  const stepsHost = h('div', { class: 'ipscan-steps-host' });
   const reportsHost = h('div', { class: 'ipscan-reports-host' });
   const resultsHost = h('div', { class: 'ipscan-results-host stack', dataset: { shortcutScope: 'results' } });
-  container.append(h('div', { class: 'ipscan-view' }, tool.el, reportsHost, resultsHost, runBar.float));
+  container.append(h('div', { class: 'ipscan-view' }, stepsHost, tool.el, reportsHost, resultsHost, runBar.float));
 
   function issueText(issue) {
     return t(`ipscan.issue.${issue.code}`, { ...issue.params, max: formatNumber(issue.params.max ?? IPSCAN_MAX_ADDRESSES) });
@@ -599,6 +631,8 @@ export function mount(container, ctx) {
       alert.dataset.issue = issue.code;
       issuesEl.append(alert);
     }
+    // step 2's command follows the range typed
+    renderSteps();
     return parsed;
   }
 
@@ -686,7 +720,53 @@ export function mount(container, ctx) {
     if (target) target.focus({ preventScroll: true });
   }
 
+  /** The drop zone's file picker (step 3's button). */
+  let openPicker = null;
+
+  /**
+   * "The scan does not run in the browser" (ui/cli-steps.js): the steps — download, run on that
+   * network (the command for the range typed), open the report here — in full while no report is
+   * open, folded into one line once one is (unfolded on a click; kept over a redraw).
+   */
+  function renderSteps() {
+    clear(stepsHost);
+    const target = S.range || parseScanRange(rangeField.value);
+    const ok = target && target.ok;
+    const label = ok ? target.blocks.map((b) => b.label).join(' ') : EXAMPLE_RANGE;
+    const one = ok ? target.addresses.find((ip, i) => i > 0) || target.addresses[0] : '10.0.5.37';
+    // more commands, folded: the steps stay one screen high
+    const tips = Disclosure({
+      summary: t('ipscan.steps.tips'),
+      className: 'ipscan-steps-tips',
+      children: h('div', { class: 'stack-sm' },
+        h('p', { class: 'text-sm muted' }, t('ipscan.how.free')),
+        CodeBlock(`python3 ${CLI_FILE} ${label} --free`, { label: 'CLI', wrap: true }),
+        h('p', { class: 'text-sm muted' }, t('ipscan.how.check')),
+        CodeBlock(`python3 ${CLI_FILE} ${one} --expect-free`, { label: 'CLI', wrap: true }))
+    });
+    stepsHost.append(CliSteps({
+      className: 'ipscan-steps',
+      compact: S.reports.length > 0,
+      open: S.stepsOpen,
+      onToggle: (open) => { S.stepsOpen = open; },
+      summary: t('ipscan.steps.summary', { count: S.reports.length }),
+      title: t('ipscan.steps.title'),
+      why: t('ipscan.steps.why'),
+      cannot: ['ping', 'ports', 'arp'].map((k) => t(`ipscan.steps.cannot.${k}`)),
+      can: ['map', 'servers', 'pick'].map((k) => t(`ipscan.steps.can.${k}`)),
+      steps: [
+        { place: 'browser', icon: 'download', title: t('ipscan.steps.s1'), text: t('ipscan.steps.s1Text'),
+          action: ButtonLink({ href: CLI_PATH, label: t('ipscan.how.download'), icon: 'download', variant: 'secondary', size: 'sm', download: CLI_FILE }) },
+        { place: 'machine', icon: 'terminal', title: t('ipscan.steps.s2'), text: t('ipscan.steps.s2Text'), code: cliCommand(ok ? target : null) },
+        { place: 'browser', icon: 'upload', title: t('ipscan.steps.s3'), text: t('ipscan.steps.s3Text'),
+          action: Button({ label: t('ipscan.steps.s3Open'), icon: 'upload', size: 'sm', dataset: { action: 'ipscan-open-report' }, onClick: () => { if (openPicker) openPicker(); } }) }
+      ],
+      footer: tips
+    }));
+  }
+
   function renderReports() {
+    renderSteps();
     clear(reportsHost);
     const drop = FileDrop({
       accept: '.json',
@@ -700,23 +780,7 @@ export function mount(container, ctx) {
       paste: true,
       onFiles: (files) => importFiles(files)
     });
-    const command = cliCommand(S.range || parseScanRange(rangeField.value));
-    const target = (S.range || parseScanRange(rangeField.value));
-    const label = target && target.ok ? target.blocks.map((b) => b.label).join(' ') : EXAMPLE_RANGE;
-    const one = target && target.ok ? target.addresses.find((ip, i) => i > 0) || target.addresses[0] : '10.0.5.37';
-    const how = Disclosure({
-      summary: t('ipscan.how.summary'),
-      className: 'ipscan-how',
-      open: !S.reports.length,
-      children: h('div', { class: 'stack-sm' },
-        h('p', { class: 'text-sm' }, t('ipscan.how.body')),
-        h('div', { class: 'cluster' }, ButtonLink({ href: CLI_PATH, label: t('ipscan.how.download'), icon: 'download', variant: 'secondary', download: CLI_FILE })),
-        CodeBlock(command, { label: 'CLI', wrap: true }),
-        h('p', { class: 'text-sm muted' }, t('ipscan.how.free')),
-        CodeBlock(`python3 ${CLI_FILE} ${label} --free`, { label: 'CLI', wrap: true }),
-        h('p', { class: 'text-sm muted' }, t('ipscan.how.check')),
-        CodeBlock(`python3 ${CLI_FILE} ${one} --expect-free`, { label: 'CLI', wrap: true }))
-    });
+    openPicker = () => drop.open();
     const errors = S.errors.length ? Alert({
       variant: 'warn',
       title: t('ipscan.errorsTitle'),
@@ -751,7 +815,7 @@ export function mount(container, ctx) {
         icon: 'file-text',
         className: 'ipscan-import',
         label: t('ipscan.reports.title'),
-        body: [drop.el, errors, how, paste],
+        body: [drop.el, errors, paste],
         privacy
       }).el);
       return;
@@ -763,7 +827,7 @@ export function mount(container, ctx) {
       more: t('ipscan.loaded', { count: S.reports.length }),
       moreClass: 'ipscan-import-more',
       moreOpen: S.importOpen,
-      body: [list, drop.el, errors, how, paste],
+      body: [list, drop.el, errors, paste],
       actions: [
         Button({ label: t('ipscan.addFiles'), icon: 'plus', size: 'sm', dataset: { action: 'ipscan-add' }, onClick: () => drop.open() }),
         Button({ label: t('ipscan.forget'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'ipscan-forget' }, onClick: forget })
@@ -906,8 +970,7 @@ export function mount(container, ctx) {
       out.push(note('ipscan-noscan', {
         variant: 'info',
         title: t('ipscan.noScan.title'),
-        children: h('div', { class: 'stack-sm' }, h('p', null, t('ipscan.noScan.body')), CodeBlock(cliCommand(S.range), { label: 'CLI', wrap: true }),
-          h('div', { class: 'cluster' }, ButtonLink({ href: CLI_PATH, label: t('ipscan.how.download'), icon: 'download', variant: 'secondary', size: 'sm', download: CLI_FILE })))
+        message: t('ipscan.noScan.body')
       }));
       return out;
     }

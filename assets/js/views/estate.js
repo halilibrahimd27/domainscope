@@ -34,7 +34,7 @@
 
 import { h, clear, scrollBehavior } from '../ui/dom.js';
 import {
-  Alert, Tag, Button, CodeBlock, DataTable, Disclosure, EmptyState, FileDrop, IconButton, Tabs,
+  Alert, Tag, Button, ButtonLink, DataTable, Disclosure, EmptyState, FileDrop, IconButton, Tabs,
   TruncatedList, announce, select, textarea, toast
 } from '../ui/components.js';
 // The page template (docs/DESIGN.md §5; phase 3): the file input, the result header, the figures, the notes.
@@ -43,6 +43,7 @@ import {
 } from '../ui/template.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { SummaryButton } from '../ui/summary-button.js';
+import { CliSteps } from '../ui/cli-steps.js';
 import { permalinkParams } from '../ui/view-summaries.js';
 import { AriCell, RevocationCell, statusDetails } from '../ui/revocation.js';
 import { formatDate, formatDateTime, formatNumber, registerStrings } from '../i18n.js';
@@ -63,6 +64,8 @@ export const icon = 'certificate';
 export const ESTATE_TABS = Object.freeze(['certificates', 'conflicts', 'keys']);
 /** The CLI command the import card offers. */
 export const CLI_EXAMPLE = 'python3 ssl_origin_scan.py -t hosts.ini -n names.txt --estate --json estate.json';
+/** Where the published site serves the CLI (tools/assemble-site.mjs copies cli/). */
+export const CLI_PATH = 'cli/ssl_origin_scan.py';
 /** Files the drop zone offers. */
 const ACCEPT = '.json';
 /** At most this many endpoints of a certificate are listed in its table row (its details list all). */
@@ -93,8 +96,23 @@ registerStrings('en', {
   'estate.paste.summary': 'Paste a report',
   'estate.paste.label': 'Report (JSON, as --json - prints it)',
   'estate.paste.read': 'Read report',
-  'estate.how.summary': 'How to make a report',
-  'estate.how.body': 'Run the CLI from a machine that reaches your servers. --estate asks every address without SNI and for every name you give with -n and every host name among the targets; no certificate file is needed. Any --json report of the CLI opens here too.',
+  'estate.steps.title': 'The scan does not run in the browser',
+  'estate.steps.why': 'A web page cannot connect to your servers one by one and read the certificate each serves: a browser offers no raw TLS connection and cannot reach an internal address. So the scan runs on a machine that reaches your servers, with ssl_origin_scan.py from this site; this page then reads its report, and nothing is sent from here.',
+  'estate.steps.cannot.tls': 'open a TLS connection to an address and read its certificate',
+  'estate.steps.cannot.reach': 'reach servers behind a firewall or a CDN',
+  'estate.steps.cannot.sni': 'ask every name with SNI on every address',
+  'estate.steps.can.list': 'lists every certificate your servers serve',
+  'estate.steps.can.conflicts': 'finds names served with different certificates, and shared keys',
+  'estate.steps.can.first': 'says what expires first',
+  'estate.steps.s1': 'Download ssl_origin_scan.py',
+  'estate.steps.s1Text': 'One Python 3 file, nothing to install.',
+  'estate.steps.download': 'Download ssl_origin_scan.py',
+  'estate.steps.s2': 'Run it where your servers are reachable',
+  'estate.steps.s2Text': 'From a jump host or a machine inside the network. -t takes your server list, -n your host names; --estate also asks every address without SNI. Any --json report of the CLI opens here too.',
+  'estate.steps.s3': 'Open the report here',
+  'estate.steps.s3Text': 'Drop estate.json on the page or choose it; several reports at once (one per site or jump host) are merged.',
+  'estate.steps.s3Open': 'Open the report',
+  'estate.steps.summary': { one: 'Scanned from your network with ssl_origin_scan.py · {count} report open', other: 'Scanned from your network with ssl_origin_scan.py · {count} reports open' },
   'estate.reports.title': 'Reports',
   'estate.reports.count': { one: '{count} report', other: '{count} reports' },
   'estate.reports.meta': 'scanned {when} · {servers} · {endpoints} · {certs}',
@@ -248,8 +266,23 @@ registerStrings('tr', {
   'estate.paste.summary': 'Bir raporu yapıştırın',
   'estate.paste.label': 'Rapor (JSON, --json - çıktısı gibi)',
   'estate.paste.read': 'Raporu oku',
-  'estate.how.summary': 'Rapor nasıl hazırlanır',
-  'estate.how.body': 'CLI’yi sunucularınıza erişen bir makineden çalıştırın. --estate her adrese SNI olmadan ve -n ile verdiğiniz her ad ile hedefler arasındaki her host adı için sorar; sertifika dosyası gerekmez. CLI’nin her --json raporu da burada açılır.',
+  'estate.steps.title': 'Tarama tarayıcıda çalışmaz',
+  'estate.steps.why': 'Bir web sayfası sunucularınıza tek tek bağlanıp her birinin sunduğu sertifikayı okuyamaz: tarayıcı ham bir TLS bağlantısı sunmaz ve iç adreslere erişemez. Bu yüzden tarama sunucularınıza erişen bir makinede, bu sitedeki ssl_origin_scan.py ile yapılır; bu sayfa sonra raporunu okur ve buradan hiçbir şey gönderilmez.',
+  'estate.steps.cannot.tls': 'bir adrese TLS bağlantısı açıp sertifikasını okumak',
+  'estate.steps.cannot.reach': 'güvenlik duvarı ya da CDN arkasındaki sunuculara erişmek',
+  'estate.steps.cannot.sni': 'her adrese her adı SNI ile sormak',
+  'estate.steps.can.list': 'sunucularınızın sunduğu her sertifikayı listeler',
+  'estate.steps.can.conflicts': 'farklı sertifikalarla sunulan adları ve paylaşılan anahtarları bulur',
+  'estate.steps.can.first': 'önce neyin süresinin dolacağını söyler',
+  'estate.steps.s1': 'ssl_origin_scan.py’yi indirin',
+  'estate.steps.s1Text': 'Tek bir Python 3 dosyası, kurulum yok.',
+  'estate.steps.download': 'ssl_origin_scan.py’yi indir',
+  'estate.steps.s2': 'Sunucularınıza erişilen yerde çalıştırın',
+  'estate.steps.s2Text': 'Bir atlama sunucusundan ya da ağın içindeki bir makineden. -t sunucu listenizi, -n host adlarınızı alır; --estate her adrese SNI olmadan da sorar. CLI’nin her --json raporu da burada açılır.',
+  'estate.steps.s3': 'Raporu burada açın',
+  'estate.steps.s3Text': 'estate.json’u sayfaya bırakın ya da seçin; aynı anda birkaç rapor (her konum ya da atlama sunucusu için bir tane) birleştirilir.',
+  'estate.steps.s3Open': 'Raporu aç',
+  'estate.steps.summary': '{count} rapor açık · ağınızdan ssl_origin_scan.py ile tarandı',
   'estate.reports.title': 'Raporlar',
   'estate.reports.count': { one: '{count} rapor', other: '{count} rapor' },
   'estate.reports.meta': 'Tarama: {when} · {servers} · {endpoints} · {certs}',
@@ -486,7 +519,7 @@ export function endpointLabel(ip, port) {
  * Page-session state (module memory only; see the module comment). `importOpen`: the compact
  * input's "n reports loaded" disclosure is open (kept over a redraw).
  */
-const S = { reports: [], errors: [], paste: '', filter: 'all', tab: 'certificates', view: null, importOpen: false };
+const S = { reports: [], errors: [], paste: '', filter: 'all', tab: 'certificates', view: null, importOpen: false, stepsOpen: false };
 let subscribed = false;
 let rerender = null;
 
@@ -616,7 +649,7 @@ export function mount(container, ctx) {
     table = null;
     tabs = null;
     clear(root);
-    root.append(importCard());
+    root.append(stepsCard(), importCard());
     if (!S.view) {
       // The empty result region (docs/DESIGN.md §5.2): what the tool gives, the chips of what it reads.
       root.append(h('div', { class: 'estate-empty' }, ToolEmptyState({
@@ -691,6 +724,34 @@ export function mount(container, ctx) {
     toast(t('estate.csvDone', { file }), { type: 'success', timeout: 2500 });
   }
 
+  /** The drop zone's file picker (step 3's button). */
+  let openPicker = null;
+
+  /**
+   * "The scan does not run in the browser" (ui/cli-steps.js): download, run where the servers are
+   * reachable, open the report here — in full while no report is open, one line once one is.
+   */
+  function stepsCard() {
+    return CliSteps({
+      className: 'estate-steps',
+      compact: S.reports.length > 0,
+      open: S.stepsOpen,
+      onToggle: (open) => { S.stepsOpen = open; },
+      summary: t('estate.steps.summary', { count: S.reports.length }),
+      title: t('estate.steps.title'),
+      why: t('estate.steps.why'),
+      cannot: ['tls', 'reach', 'sni'].map((k) => t(`estate.steps.cannot.${k}`)),
+      can: ['list', 'conflicts', 'first'].map((k) => t(`estate.steps.can.${k}`)),
+      steps: [
+        { place: 'browser', icon: 'download', title: t('estate.steps.s1'), text: t('estate.steps.s1Text'),
+          action: ButtonLink({ href: CLI_PATH, label: t('estate.steps.download'), icon: 'download', variant: 'secondary', size: 'sm', download: 'ssl_origin_scan.py' }) },
+        { place: 'machine', icon: 'terminal', title: t('estate.steps.s2'), text: t('estate.steps.s2Text'), code: CLI_EXAMPLE },
+        { place: 'browser', icon: 'upload', title: t('estate.steps.s3'), text: t('estate.steps.s3Text'),
+          action: Button({ label: t('estate.steps.s3Open'), icon: 'upload', size: 'sm', dataset: { action: 'estate-open-report' }, onClick: () => { if (openPicker) openPicker(); } }) }
+      ]
+    });
+  }
+
   function importCard() {
     const drop = FileDrop({
       accept: ACCEPT,
@@ -705,14 +766,7 @@ export function mount(container, ctx) {
       onFiles: (files) => importFiles(files)
     });
     drop.el.dataset.shortcut = 'focus';
-    const how = Disclosure({
-      summary: t('estate.how.summary'),
-      className: 'estate-how',
-      open: !S.reports.length,
-      children: h('div', { class: 'stack-sm' },
-        h('p', { class: 'text-sm' }, t('estate.how.body')),
-        CodeBlock(CLI_EXAMPLE, { label: 'CLI', wrap: true }))
-    });
+    openPicker = () => drop.open();
     const errors = S.errors.length ? Alert({
       variant: 'warn',
       title: t('estate.errorsTitle'),
@@ -751,7 +805,7 @@ export function mount(container, ctx) {
         icon: 'file-text',
         className: 'estate-import',
         label: t('nav.estate'),
-        body: [drop.el, errors, paste, how],
+        body: [drop.el, errors, paste],
         privacy
       }).el;
     }
@@ -762,7 +816,7 @@ export function mount(container, ctx) {
       more: t('estate.loaded', { count: S.reports.length }),
       moreClass: 'estate-import-more',
       moreOpen: S.importOpen,
-      body: [list, drop.el, errors, paste, how],
+      body: [list, drop.el, errors, paste],
       actions: [
         Button({ label: t('estate.addFiles'), icon: 'plus', size: 'sm', dataset: { action: 'estate-add' }, onClick: () => drop.open() }),
         Button({ label: t('estate.forget'), icon: 'trash', size: 'sm', variant: 'ghost', dataset: { action: 'estate-forget' }, onClick: forget })

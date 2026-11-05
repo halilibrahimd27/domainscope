@@ -1,7 +1,7 @@
 {
   "format": 1,
-  "generated": "2026-10-08",
-  "digest": "925847e3397f7c7b5839fc81a619f51a8a6c5cfd3450032ed023065ee589fa88",
+  "generated": "2026-11-03",
+  "digest": "fe224fdb54d0a44c5104c029a9aaee50ede162cd2ff700a93765ba3fd8b92bc8",
   "sources": [
     {
       "id": "cloudflare-v4",
@@ -24,16 +24,16 @@
       "name": "Fastly: public IP list",
       "url": "https://api.fastly.com/public-ip-list",
       "published": null,
-      "prefixes": 21,
-      "sha256": "915ca1d790a5f2a5f8c21d567740948320df77a0b93580ffc2601edaa265466b"
+      "prefixes": 24,
+      "sha256": "51552abdde3949330712e8ccfa3089d812a4cb06641e8ece450a5b3db3a8e30f"
     },
     {
       "id": "aws",
       "name": "AWS: ip-ranges.json",
       "url": "https://ip-ranges.amazonaws.com/ip-ranges.json",
-      "published": "2026-10-08-08-37-06",
-      "prefixes": 17533,
-      "sha256": "a213b3958ce4d666815fdc3c49f0c6868e7a6fb1863a6632fb5e93c50227d321"
+      "published": "2026-11-03-09-27-05",
+      "prefixes": 17760,
+      "sha256": "09b99e7cf033a5d2081614cce4dbb81de943063acaf7386defe64f54b36861af"
     },
     {
       "id": "github",
@@ -47,75 +47,75 @@
       "id": "google",
       "name": "Google: goog.json (all Google ranges)",
       "url": "https://www.gstatic.com/ipranges/goog.json",
-      "published": "2026-10-08T01:06:45.374347",
-      "prefixes": 145,
-      "sha256": "52af8d02d762c4a3ea7fe25318ebf16534f12f41b5dec5375df9409ce3c9cc2e"
+      "published": "2026-11-03T00:14:03.507846",
+      "prefixes": 148,
+      "sha256": "7f9b72afe0bbc48fac8c92946f868827dafb326a2ad8237019b1c474989ce130"
     },
     {
       "id": "google-cloud",
       "name": "Google Cloud: cloud.json (customer ranges)",
       "url": "https://www.gstatic.com/ipranges/cloud.json",
-      "published": "2026-10-08T01:06:45.374347",
-      "prefixes": 1107,
-      "sha256": "2dd52f90700cb30eba41eeb25eb002e7b72e423de0dc3a4d5267aa1046c82d90"
+      "published": "2026-11-03T00:14:03.507846",
+      "prefixes": 1151,
+      "sha256": "823d2e575fc012d5e18d714dbbcb7dec0493b79a8ba7b984fa00d2811e75bd39"
     },
     {
       "id": "oracle",
       "name": "Oracle Cloud: public_ip_ranges.json",
       "url": "https://docs.oracle.com/en-us/iaas/tools/public_ip_ranges.json",
-      "published": "2026-08-25T08:06:24.590745",
-      "prefixes": 1327,
-      "sha256": "8e62e4e18974525da24980fbdf5b1f2d13277592cbf50b656f410434f8c8c93e"
+      "published": "2026-10-28T02:47:53.012304",
+      "prefixes": 1342,
+      "sha256": "4feb783093ceb90fc2615391d3aa4dae324a22057e296067b3ca55c6e4540f98"
     },
     {
       "id": "digitalocean",
       "name": "DigitalOcean: geo feed (RFC 8805)",
       "url": "https://www.digitalocean.com/geo/google.csv",
       "published": null,
-      "prefixes": 1230,
-      "sha256": "9f170acbd303dbc476141aa1bbeaa999bf3dd69007580b7ab2c48ab854d29fd1"
+      "prefixes": 1236,
+      "sha256": "734ca9d73be1f12b3badcb2a3570a4ad820e6a3f4f42392d2b1ed542b2cbd33a"
     },
     {
       "id": "as13335",
       "name": "RIPEstat: prefixes announced by AS13335 (Cloudflare)",
       "url": "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS13335",
-      "published": "2026-10-08T00:00:00",
-      "prefixes": 5716,
-      "sha256": "1f59eabfbd4f08ff6ef1eec480899ab461f7473e7c1500e58d399232728b1a6f"
+      "published": "2026-11-03T00:00:00",
+      "prefixes": 5653,
+      "sha256": "e37e0fa9feeb43ca159fd221861fa6b3bb39e08b658d03ad6a0bd5a819458fd6"
     },
     {
       "id": "as209242",
       "name": "RIPEstat: prefixes announced by AS209242 (Cloudflare)",
       "url": "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS209242",
-      "published": "2026-10-08T00:00:00",
-      "prefixes": 302,
-      "sha256": "da069112889ca479e274fe3afceb7108bc7e2ba1a7cc3679abc09540deb54695"
+      "published": "2026-11-03T00:00:00",
+      "prefixes": 289,
+      "sha256": "13e77c0a647c59b4b06fc466b1d507f47834392df3c389cb166594333c1a0949"
     }
   ],
   "files": {
     "edges.json": {
-      "bytes": 5178,
-      "sha256": "6117bfb8f3ba048b0c7d6ba011bf94193e3c754d113a3820c42ed8f2a6d88904"
+      "bytes": 5303,
+      "sha256": "53fdc3115426fa3d9418212dc788eb2f33bc1c1acc2eedc2a919808db2353fbe"
     },
     "networks.json": {
-      "bytes": 136270,
-      "sha256": "49a256b50f2e425336cd14efa217abc36171ec3dd2f1eb3b555c318ce01c6b87"
+      "bytes": 136385,
+      "sha256": "9df5ecbd716862ffbb4c36d449fc43769fb149416140a9180a24743c7293aa04"
     }
   },
   "counts": {
     "edges": {
       "cloudflare": 22,
-      "cloudfront": 211,
-      "fastly": 21,
+      "cloudfront": 215,
+      "fastly": 24,
       "github-pages": 10
     },
     "networks": {
-      "aws": 4085,
-      "cloudflare": 855,
-      "digitalocean": 235,
-      "google": 145,
-      "google-cloud": 479,
-      "oracle": 932
+      "aws": 4109,
+      "cloudflare": 784,
+      "digitalocean": 237,
+      "google": 148,
+      "google-cloud": 495,
+      "oracle": 947
     }
   }
 }

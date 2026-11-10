@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isStaleModuleError, confirmStaleModule, pageIsOutdated, moduleReloadReason, getGlobalping } from '../../assets/js/app.js';
+import { isStaleModuleError, confirmStaleModule, pageIsOutdated, moduleReloadReason, getGlobalping, isViewFetchError, viewRetryUrl } from '../../assets/js/app.js';
 import { wordlistFellShort } from '../../assets/js/views/subdomains.js';
 import { hasString, t, setLang } from '../../assets/js/i18n.js';
 
@@ -124,6 +124,35 @@ test('a module whose download failed but that answers now is stuck in this page:
   const link = new SyntaxError("The requested module './netinfo.js' does not provide an export named 'isSharedProvider'");
   assert.equal(await moduleReloadReason(link, { online: true, probe: probeBy(new Error('no probe'), 200) }), 'outdated');
   assert.equal(await moduleReloadReason(new TypeError('Failed to fetch'), { online: true, probe: probeBy(200, 200) }), null, 'not an import');
+});
+
+test('a view module that failed to fetch is retried in place; a link mismatch is not', () => {
+  // A fetch failure: the file still exists, the cache or the document poisoned it — a fresh import helps.
+  for (const message of [
+    'Failed to fetch dynamically imported module: https://example.com/app/v/0123456789ab/assets/js/views/bulk.js',
+    'error loading dynamically imported module: https://example.com/app/v/0123456789ab/assets/js/views/bulk.js',
+    'Importing a module script failed.'
+  ]) {
+    assert.equal(isViewFetchError(new TypeError(message)), true, message);
+  }
+  // A link mismatch between two deploys, or anything else, must keep the reload offer (no retry).
+  assert.equal(isViewFetchError(new SyntaxError("The requested module './netinfo.js' does not provide an export named 'x'")), false);
+  assert.equal(isViewFetchError(new TypeError('Failed to fetch')), false, 'a plain network error, not a module import');
+  assert.equal(isViewFetchError(new TypeError("Cannot read properties of undefined (reading 'mount')")), false);
+  for (const v of [null, undefined, '', 42, {}, new Error('Failed to fetch dynamically imported module')]) {
+    assert.equal(isViewFetchError(v), false, String(v));
+  }
+});
+
+test('the retry URL re-imports the view past the service worker and the poisoned-fetch cache', () => {
+  const base = 'https://example.com/app/v/0123456789ab/assets/js/app.js';
+  const a = new URL(viewRetryUrl({ id: 'bulk' }, base));
+  assert.equal(a.origin + a.pathname, 'https://example.com/app/v/0123456789ab/assets/js/views/bulk.js');
+  // A query string: sw.js route() leaves it to the network, and the browser treats it as a new module.
+  assert.ok(a.searchParams.get('reload'), 'a cache-busting reload query');
+  // Each call is a fresh URL, so a second failure is not answered from the first retry's own cache.
+  assert.notEqual(viewRetryUrl({ id: 'bulk' }, base), viewRetryUrl({ id: 'bulk' }, base));
+  assert.match(new URL(viewRetryUrl({ id: 'ipscan' }, base)).pathname, /\/views\/ipscan\.js$/);
 });
 
 test('a scan whose wordlist fell short asks the shell to check for a newer deploy', () => {

@@ -371,6 +371,38 @@ export async function moduleReloadReason(err, env = {}) {
   return probe(url[0]).then((status) => (status < 300 ? 'stuck' : null), () => null);
 }
 
+/**
+ * Could a failed view import be recovered in place, without a page reload? Only a fetch failure
+ * (a TypeError, {@link STALE_FETCH_RE}): the service worker cache lost the module, or the browser
+ * poisoned this one dynamic import for the rest of the document even though the file still answers.
+ * A link mismatch between two deploys (a SyntaxError) cannot — the modules already loaded stay —
+ * and neither can any other error, so only those keep their Retry / reload offer unchanged.
+ * @param {unknown} err rejection of a view's import()
+ * @returns {boolean}
+ */
+export function isViewFetchError(err) {
+  return !!err && typeof err === 'object' && err.name === 'TypeError'
+    && STALE_FETCH_RE.test(typeof err.message === 'string' ? err.message : '');
+}
+
+/**
+ * Where to re-import a view module from after {@link isViewFetchError}: its own URL (every view
+ * loads from ./views/<id>.js) with a fresh `reload` query. sw.js route() leaves a request that
+ * carries a query string to the network, and the browser counts a new URL as a new module, so the
+ * retry goes past both the worker's cache and the document's poisoned-fetch cache, straight to the
+ * server (which still serves the file — the page's version directory is current).
+ * @param {{ id: string }} def a view of {@link VIEWS}
+ * @param {string} [base] import.meta.url of this module (tests pass their own)
+ * @returns {string}
+ */
+let viewRetrySeq = 0;
+export function viewRetryUrl(def, base = import.meta.url) {
+  const url = new URL(`./views/${def.id}.js`, base);
+  viewRetrySeq += 1;
+  url.searchParams.set('reload', viewRetrySeq.toString(36));
+  return url.href;
+}
+
 let outdatedNoticeShown = false;
 
 /**
@@ -824,7 +856,14 @@ const moduleCache = new Map();
 
 function loadView(def) {
   if (!moduleCache.has(def.id)) {
-    const p = def.load();
+    // A fetch failure (a cache that lost the module, or a dynamic import the browser poisoned for
+    // the document) is retried once past every cache, so the view recovers in place instead of
+    // dead-ending at "reload the page"; any other failure (a link mismatch, an outdated page that
+    // now 404s) rejects as before, and the retry's own failure rethrows the first error.
+    const p = def.load().catch((err) => {
+      if (!isViewFetchError(err)) throw err;
+      return import(viewRetryUrl(def)).catch(() => { throw err; });
+    });
     moduleCache.set(def.id, p);
     p.catch(() => moduleCache.delete(def.id)); // allow a retry
   }

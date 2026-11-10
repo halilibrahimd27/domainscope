@@ -2711,19 +2711,20 @@ async function main() {
         }
       });
 
-      // Chrome has kept a failed module fetch for the rest of the document: back online, opening that
-      // view again failed at once although its file answered, so only a reload could load it — the
-      // shell then offers one ('stuck'). Newer Chrome builds fetch the module again: the view loads at
-      // once. Either way the view comes back without a stale claim; the reload path is checked when
-      // the browser takes it.
-      await step('back online, the view whose download failed loads: at once, or through the page reload offered when the browser keeps the failure', async () => {
+      // Chrome kept the failed module fetch for the rest of the document: back online, importing the
+      // view by its own URL fails at once although the file answers. loadView then re-imports it past
+      // every cache (viewRetryUrl: a fresh ?reload= query the browser counts as a new module), so the
+      // view loads in place with no reload — the fix for a dynamic import the browser poisoned. (Newer
+      // Chrome builds already refetch the plain URL; either way the view comes back without a reload.)
+      // Should even the retry fail — it must not here, online with the file served — the shell's reload
+      // offer still stands, and that branch is checked when a browser takes it.
+      await step('back online, the view whose download failed loads in place through the cache-busting retry (no reload)', async () => {
         await tab.evaluate(() => { window.location.hash = '#/health'; });
         await tab.waitFor(() => !!document.querySelector('#page-body [data-action="reload-page"]')
           || (document.querySelector('#page-body')?.dataset.view === 'health' && document.querySelector('#page-body').childElementCount > 0
             && !document.querySelector('#page-body .page-loading, #page-body > .alert')), { timeout: 15000, message: 'reload offered, or Domain Health loaded' });
         if (!await tab.evaluate(() => !!document.querySelector('#page-body [data-action="reload-page"]'))) {
-          console.log('        (this browser fetched the failed module again: no reload needed)');
-          await tab.resetProblems(); // the failed import of the offline step is logged on purpose
+          await tab.resetProblems(); // the failed first import (offline step, and the poisoned retry) is logged on purpose
           await assertClean(tab, 'loaded again');
           return;
         }
@@ -2740,7 +2741,9 @@ async function main() {
       });
 
       await step('online with only the view file unreachable (app.js still served), the same: no update claimed', async () => {
-        await tab.send('Network.setBlockedURLs', { urls: ['*/views/bulk.js'] });
+        // Block the cache-busting retry (…/views/bulk.js?reload=N) as well: the file is truly
+        // unreachable, so loadView's retry must fail too and leave the network error with Retry.
+        await tab.send('Network.setBlockedURLs', { urls: ['*/views/bulk.js', '*/views/bulk.js?*'] });
         try {
           await failedView('bulk');
         } finally {

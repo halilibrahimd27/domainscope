@@ -429,10 +429,42 @@ export class Page {
 
   /**
    * Real mouse click in the middle of the first element matching `selector` (scrolled into view).
+   *
+   * The click is checked: on a loaded machine (CI running every suite at once) a press now and then
+   * does not reach the element just measured, and the step then fails far from the cause (a copy
+   * that never arrives, a run that never starts). When the press reaches no element matching
+   * `selector` — none of its pointerdown, mousedown or click — it is measured and pressed again, up
+   * to three times (each retry is logged), and then it throws, naming what the press reached. A press
+   * that reached a match counts, whatever its handler did then (a navigation, a re-render that
+   * replaced the element), so an action never runs twice. A control that cannot take a click on
+   * purpose — disabled, inert, aria-disabled, or outside the open modal dialog — gets the one plain
+   * press it always had (a test may click it to see that nothing happens); so does `verify: false`.
    * @param {string} selector
+   * @param {{ verify?: boolean }} [opts]
    */
-  async click(selector) {
-    const box = await this.evaluate(async (sel) => {
+  async click(selector, { verify = true } = {}) {
+    let reached = null;
+    for (let attempt = 0; attempt < (verify ? 3 : 1); attempt += 1) {
+      if (attempt) {
+        console.warn(`        (click: ${selector} missed — the press reached ${reached || 'nothing'}; pressing again)`);
+        await sleep(150 * attempt);
+      }
+      const result = await this.pressOnce(selector, verify);
+      if (result === true) return;
+      reached = result;
+    }
+    throw new Error(`click: ${selector} missed three times — the press reached ${reached || 'nothing (a disabled control?)'}`);
+  }
+
+  /**
+   * One measured press of {@link click}. Unchecked (`verify` false, or a control that cannot take a
+   * click on purpose) it resolves true once dispatched; checked, true when the press reached a match
+   * of `selector` (or the page navigated away on it), else a description of what it reached (null:
+   * nothing took the events).
+   * @returns {Promise<true|string|null>}
+   */
+  async pressOnce(selector, verify) {
+    const box = await this.evaluate(async (sel, armed) => {
       const el = document.querySelector(sel);
       if (!el) return null;
       // A smooth scroll still in flight (the app's own, e.g. to the results after "Start scan")
@@ -458,14 +490,57 @@ export class Page {
         }
         if (box.x >= 0 && box.y >= 0 && box.x <= innerWidth && box.y <= innerHeight) break;
       }
-      return box;
-    }, selector);
+      // A control that cannot take the click on purpose: the plain press, unchecked.
+      let blocked = false;
+      try {
+        const modal = [...document.querySelectorAll('dialog[open]')].find((d) => d.matches(':modal'));
+        blocked = el.matches(':disabled') || !!el.closest('[inert], [aria-disabled="true"]') || (!!modal && !modal.contains(el));
+      } catch {
+        blocked = false;
+      }
+      if (armed && !blocked && box && box.w && box.h) {
+        // Record where this press lands: did its pointerdown, mousedown or click reach a match of `sel`?
+        const describe = (t) => {
+          const e = t && t.nodeType === 1 ? t : t && t.parentElement;
+          if (!e) return null;
+          const hook = e.closest('[data-action],[data-menu],[data-export]');
+          const tag = hook ? `${hook.tagName.toLowerCase()}[${Object.entries(hook.dataset).map(([k, v]) => `${k}=${v}`).join(' ')}]` : e.tagName.toLowerCase();
+          return e.closest('.toast') ? `a toast (${tag})` : `${tag}${e.className && typeof e.className === 'string' ? `.${e.className.trim().split(/\s+/).join('.')}` : ''}`;
+        };
+        const probe = { hit: false, at: null };
+        const record = (ev) => {
+          if (!probe.at) probe.at = describe(ev.target);
+          const t = ev.target && ev.target.nodeType === 1 ? ev.target : ev.target && ev.target.parentElement;
+          if (t && [...document.querySelectorAll(sel)].some((m) => m.contains(t))) probe.hit = true;
+        };
+        if (window.__clickProbe) window.__clickProbe.off(); // a press whose check never ran (a CDP error)
+        // On window, capturing: before any listener of the page's own can stop the event.
+        const TYPES = ['pointerdown', 'mousedown', 'click'];
+        for (const type of TYPES) window.addEventListener(type, record, true);
+        window.__clickProbe = { probe, off: () => { for (const type of TYPES) window.removeEventListener(type, record, true); } };
+      }
+      return { ...box, checked: !!(armed && !blocked) };
+    }, selector, verify);
     if (!box) throw new Error(`click: no element matches ${selector}`);
     if (!box.w || !box.h) throw new Error(`click: element ${selector} is not visible`);
     const base = { x: box.x, y: box.y, button: 'left', clickCount: 1 };
     await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
     await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
     await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
+    if (!box.checked) return true;
+    let probe;
+    try {
+      probe = await this.evaluate(() => {
+        const p = window.__clickProbe;
+        if (!p) return { hit: true }; // a new document: the click navigated or reloaded the page
+        p.off();
+        delete window.__clickProbe;
+        return p.probe;
+      });
+    } catch {
+      return true; // the page went away on the click (a navigation in progress)
+    }
+    return probe && probe.hit ? true : (probe && probe.at) || null;
   }
 
   /**

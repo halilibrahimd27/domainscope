@@ -516,6 +516,7 @@ async function main() {
       await stubClipboard(page);
       await resultAction(page, '[data-action="copy-link"]', '.retire-head');
       const [link] = await takeClipboard(page);
+      assert(link, 'Copy link wrote nothing to the clipboard');
       assertEqual(new URL(link).hash, '#/retire?domains=example.com', 'the result’s Copy link leaves out the inventory address too');
       // The standard actions in their order; CSV and JSON in the Export ▾ menu.
       assertEqual(await page.evaluate(() => [...document.querySelectorAll('.retire-head .result-actions [data-action], .retire-head .result-actions [data-menu]')]

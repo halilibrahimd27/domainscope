@@ -736,8 +736,8 @@ export class Browser {
 
 /**
  * Launch headless Chrome (fallback Edge) with a throw-away profile under tests/e2e/.profile-<n>.
- * A start that does not answer within `timeout` ms (or exits at once) is killed and made again,
- * up to three starts in all.
+ * A start that does not answer within `timeout` ms is killed and made again, up to three starts in
+ * all; one that exits at once rejects at once.
  * @param {{ browser?: 'auto'|'chrome'|'edge', executablePath?: string, headless?: boolean, args?: string[],
  *   profileRoot?: string, timeout?: number, lang?: string }} [opts] `lang` is the browser's UI and
  *   page language (navigator.languages, Accept-Language) on every OS, en-US by default
@@ -748,15 +748,16 @@ export async function launchBrowser(opts = {}) {
   if (typeof WebSocket !== 'function') throw new Error(`cdp.mjs needs Node 22 or later (for its global WebSocket); this is Node ${process.versions.node}.`);
   const found = opts.executablePath ? { name: path.basename(opts.executablePath), path: opts.executablePath } : findBrowser(opts.browser || 'auto');
   if (!found) throw new Error('No Chrome or Edge installation found (set CHROME_PATH).');
-  // A start that hangs or dies does not get better by waiting: the first Chrome on a fresh CI
-  // machine once never wrote DevToolsActivePort in 30 s (cold disk and font caches). Kill it and
-  // start another one, on a new profile, twice at most; each retry is logged.
+  // A start that hangs does not get better by waiting: the first Chrome on a fresh CI machine once
+  // never wrote DevToolsActivePort in 30 s (cold disk and font caches). Kill it and start another
+  // one, on a new profile, twice at most; each retry is logged. A browser that exits at once (a bad
+  // flag, no sandbox, a missing library) would only exit again: that error comes at once.
   const ATTEMPTS = 3;
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await launchOnce(found, opts);
     } catch (err) {
-      if (attempt >= ATTEMPTS || !/did not expose DevToolsActivePort|exited early/.test(err.message)) throw err;
+      if (attempt >= ATTEMPTS || !/did not expose DevToolsActivePort/.test(err.message)) throw err;
       console.warn(`        (${found.name} did not start: ${err.message.split('\n')[0].slice(0, 200)}; starting it again, ${attempt + 1}/${ATTEMPTS})`);
       await sleep(1000);
     }

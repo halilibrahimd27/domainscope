@@ -238,6 +238,31 @@ test('cdp: launchBrowser gives the page language as --lang and as --accept-lang 
   }
 });
 
+test('cdp: launchBrowser starts a hanging browser again (three starts), one that exits at once only once', { skip: process.platform === 'win32' && 'the stand-in browser is a POSIX shell script' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ds-browser-'));
+  const starts = join(dir, 'starts.txt');
+  // stand-ins that count their starts: one never writes DevToolsActivePort, one exits at once
+  const hang = join(dir, 'hang-chrome');
+  writeFileSync(hang, `#!/bin/sh\necho start >> '${starts}'\nexec sleep 60\n`, { mode: 0o755 });
+  const quit = join(dir, 'quit-chrome');
+  writeFileSync(quit, `#!/bin/sh\necho start >> '${starts}'\nexit 3\n`, { mode: 0o755 });
+  const count = () => (existsSync(starts) ? readFileSync(starts, 'utf8').trim().split('\n').length : 0);
+  const warn = console.warn;
+  const warned = [];
+  console.warn = (...a) => warned.push(a.join(' '));
+  try {
+    await assert.rejects(launchBrowser({ executablePath: hang, profileRoot: dir, timeout: 400 }), /did not expose DevToolsActivePort within 400 ms/);
+    assert.equal(count(), 3, 'a start that hangs is killed and made again, three starts in all');
+    assert.equal(warned.filter((w) => /starting it again, [23]\/3/.test(w)).length, 2, `each retry is logged: ${warned.join(' | ')}`);
+    rmSync(starts, { force: true });
+    await assert.rejects(launchBrowser({ executablePath: quit, profileRoot: dir, timeout: 10000 }), /exited early \(code 3\)/);
+    assert.equal(count(), 1, 'a browser that exits at once would only exit again: no second start');
+  } finally {
+    console.warn = warn;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('cdp: a suite whose browser fails to start ends with the error and leaves no browser running', { skip: process.platform === 'win32' && 'the stand-in browsers are POSIX shell scripts', timeout: 60000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ds-launch-'));
   const pidFile = join(dir, 'browser.pid');

@@ -134,7 +134,7 @@ const JS = join(ASSETS, 'js');
  * note line, the filter note, a metric strip on its own surface, a findings card's title, a textarea as the compact card's field, a status
  * item's wrapped words, less the run bar's own [hidden] rule) and the DataTable's card mode (`dt-cards`: its rules reach the card table's own
  * rows and cells only, and below 360 px a label sits above its value). lib/summarycore.js by 30 bytes: the Copy summary kinds of Bulk Resolve
- * and Reverse DNS and their link params. The tools, lib/certtools.js, lib/netresults.js, lib/summary.js's builders and the Watch & report
+ * and Reverse DNS and their link params. The tools, lib/certtools.js, lib/ipresults.js, lib/summary.js's builders and the Watch & report
  * libraries load with their views, never with Home.
  * Wave 9 (the phase 6 clean-up: the StatCard / Badge adapters and the .stat* rules gone, Density in Settings; the workspace colour dot, watchlist
  * and attention count), as measured after the three branches were merged: ≈ 278 KB (284,790 bytes), 94,090 bytes under the budget.

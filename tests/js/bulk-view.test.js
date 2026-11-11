@@ -7,7 +7,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { parseBulkInput, createJob, runJob, ipCellNa, exportCell, bulkStats, bulkRowMatches } from '../../assets/js/views/bulk.js';
-import { bulkStatus, bulkSummaryFacts } from '../../assets/js/lib/netresults.js';
+import { bulkStatus, bulkSummaryFacts } from '../../assets/js/lib/ipresults.js';
 import { classifyResolution } from '../../assets/js/lib/netinfo.js';
 import { getLang, setLang, t } from '../../assets/js/i18n.js';
 

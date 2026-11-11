@@ -14,7 +14,7 @@
  * page's primary button), the workspace, the saved state, Clear, the file import, the formats and
  * the privacy note — never compact, its output is live as you type. The result header (`.inv-head`)
  * counts the servers, the lines and the addresses, the status summary (warnings, addresses, groups:
- * lib/netresults.js inventoryStatus) and Export ▾ (targets.txt, CSV, JSON); then the warnings, where
+ * lib/ipresults.js inventoryStatus) and Export ▾ (targets.txt, CSV, JSON); then the warnings, where
  * TLS terminates and the table (a card per server on a phone).
  */
 
@@ -34,7 +34,7 @@ import { workspaceLabel } from '../ui/workspace-ui.js';
 import { OriginMapPanel } from '../ui/origin-map-panel.js';
 import { ExposurePanel } from '../ui/exposure-panel.js';
 import { PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput } from '../ui/template.js';
-import { exportColumns, exportObjects, inventoryFigures, inventoryStatus } from '../lib/netresults.js';
+import { exportColumns, exportObjects, inventoryFigures, inventoryStatus } from '../lib/ipresults.js';
 import { toCsv, toJson } from '../lib/export.js';
 
 /** Route id. */

@@ -493,7 +493,7 @@ const NET_MAX_NAMES = 3;
  * job got. One host name is the title's subject; more are counted.
  * @param {{ names: number, one?: string|null, status: string, done?: number, resolved: number, cloudflare?: number, cdn?: number,
  *   direct?: number, private?: number, notFound?: string[], failed?: string[], ips: number, mine?: number|null, at?: Date|null }} facts
- *   lib/netresults.js bulkSummaryFacts; `mine`: addresses in the server list (null: no list loaded)
+ *   lib/ipresults.js bulkSummaryFacts; `mine`: addresses in the server list (null: no list loaded)
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {SummaryDoc}
  */
@@ -529,7 +529,7 @@ export function bulkSummary(facts, opts) {
  * the title's subject. Nothing from the server list.
  * @param {{ label: string, planned: number, status: string, done: number, withPtr: number, templated?: number, noReverse?: number,
  *   failed?: number, confirmed?: number, mismatch?: number, mismatches?: Array<{ ip: string, name: string }>, focus?: string|null,
- *   focusNames?: string[], at?: Date|null }} facts lib/netresults.js ptrSummaryFacts
+ *   focusNames?: string[], at?: Date|null }} facts lib/ipresults.js ptrSummaryFacts
  * @param {{ t: Function, lang?: string, url?: string|null, now?: Date }} opts
  * @returns {SummaryDoc}
  */

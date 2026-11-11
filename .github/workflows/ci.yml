@@ -83,3 +83,20 @@ jobs:
       # (/usr/bin/google-chrome).
       - name: Offline E2E (shell, home, subdomains, dirmap, zone, scan, verify, renewal, dane, pfx, chainfix, renew, estate, global, ptr, ipscan, retire, carry, ip, lookup, health, workspaces, wsextras, origins, domain, change, cutover, privacy, reports, portfolio, secscore, locales, explain, revocation, takeover, waivers, regwatch, dmarchistory, monitor, investigate, certificates, migrate, network, watch, transparency)
         run: npm run test:e2e:offline
+
+  blocklists:
+    name: Filter lists (no file of the site blocked by an ad or tracker blocker)
+    runs-on: ubuntu-latest
+    # downloads about 27 MB of lists (60 s at most each) and matches them in about 10 s
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # EasyPrivacy's `/netresults.js` once blocked lib/netresults.js, and with it IP Intel, Bulk
+      # Resolve, Reverse DNS and Servers, for every uBlock Origin / AdGuard / Brave user: a file of
+      # the site named like a tracker fails here, before the deploy (pages.yml runs this workflow
+      # first). A list that cannot be downloaded is a warning, not a failure.
+      - name: No file of the site is blocked by EasyList, EasyPrivacy, uBlock Origin or AdGuard
+        run: node tools/blocklist-check.mjs

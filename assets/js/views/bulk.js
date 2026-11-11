@@ -17,7 +17,7 @@
  * the screen while the list is long), the parse summary, the file import and the privacy note, and
  * turns compact from the first job. The job's result header (`.bulk-progress`) has its title, its
  * progress or time, the status summary (lookups failed, not resolving, behind a CDN, resolving,
- * direct, your servers: lib/netresults.js bulkStatus; a press is the host table's Show filter),
+ * direct, your servers: lib/ipresults.js bulkStatus; a press is the host table's Show filter),
  * Copy summary with ¶ (lib/summary.js bulkSummary), Export ▾ (the host names and the IP addresses as
  * CSV or JSON) and Copy link (`names=`, up to 40 names), and the next step "Use in IP Intel"; each
  * tab has its metric strip and its table (a card per row on a phone).
@@ -50,7 +50,7 @@ import { NaMark } from '../ui/source-status.js';
 import { startJob as trackJob, NotifyButton } from '../ui/jobs.js';
 import { EmptyState, MetricStrip, NextSteps, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput } from '../ui/template.js';
 import { inputCompact, optionsSummary, templateState } from '../lib/template.js';
-import { BULK_FOLDABLE, bulkLinkParams, bulkLookupFailed, bulkStatus, bulkSummaryFacts, exportColumns, exportObjects, handoffIps } from '../lib/netresults.js';
+import { BULK_FOLDABLE, bulkLinkParams, bulkLookupFailed, bulkStatus, bulkSummaryFacts, exportColumns, exportObjects, handoffIps } from '../lib/ipresults.js';
 import { toCsv, toJson } from '../lib/export.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 import { permalinkParams } from '../ui/view-summaries.js';

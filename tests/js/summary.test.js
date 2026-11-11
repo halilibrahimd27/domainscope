@@ -921,7 +921,7 @@ describe('ip (one line)', () => {
 });
 
 describe('bulk (Bulk Resolve)', () => {
-  /** The facts of a finished job (lib/netresults.js bulkSummaryFacts). */
+  /** The facts of a finished job (lib/ipresults.js bulkSummaryFacts). */
   const facts = (extra = {}) => ({
     names: 8, one: null, status: 'done', done: 8, resolved: 6, cloudflare: 2, cdn: 1, direct: 3, private: 1,
     notFound: ['staging.example.net'], failed: ['broken.example.net'], ips: 7, v4: 6, v6: 1, mine: 2,
@@ -975,8 +975,8 @@ describe('bulk (Bulk Resolve)', () => {
     assert.match(md(S.bulkSummary(facts({ status: 'cancelled', done: 5 }), opts('tr'))), /^- İptal edildi: 8 host adından 5 tanesi çözümlendi$/m);
   });
 
-  test('from a job (lib/netresults.js bulkSummaryFacts): a name on a hosting platform or behind a load balancer is "other CDN / platform"', async () => {
-    const { bulkSummaryFacts } = await imp('assets/js/lib/netresults.js');
+  test('from a job (lib/ipresults.js bulkSummaryFacts): a name on a hosting platform or behind a load balancer is "other CDN / platform"', async () => {
+    const { bulkSummaryFacts } = await imp('assets/js/lib/ipresults.js');
     const row = (name, kind, ip, hidesOrigin = false) => ({ name, ips: [ip], servers: [], resolution: { status: 'NOERROR' }, classification: { kind, hidesOrigin } });
     const rows = [row('docs.example.net', 'platform', '192.0.2.80'), row('lb.example.net', 'platform', '198.51.100.8', true), row('www.example.net', 'direct', '192.0.2.1')];
     const ips = new Map(rows.map((r) => [r.ips[0], { ip: r.ips[0], version: 4, servers: [] }]));
@@ -995,7 +995,7 @@ describe('bulk (Bulk Resolve)', () => {
 });
 
 describe('ptr (Reverse DNS)', () => {
-  /** The facts of a finished sweep (lib/netresults.js ptrSummaryFacts). */
+  /** The facts of a finished sweep (lib/ipresults.js ptrSummaryFacts). */
   const facts = (extra = {}) => ({
     label: '192.0.2.0/28', planned: 16, status: 'done', done: 16, withPtr: 12, templated: 9, noReverse: 3, failed: 1, confirmed: 10, mismatch: 2,
     mismatches: [{ ip: '192.0.2.2', name: 'www.example.com' }, { ip: '192.0.2.10', name: '192-0-2-10.dyn.isp.example.net' }],

@@ -1,5 +1,5 @@
 /**
- * lib/netresults.js — the page template on "Map IPs to servers" and Servers (docs/DESIGN.md §5, §8
+ * lib/ipresults.js — the page template on "Map IPs to servers" and Servers (docs/DESIGN.md §5, §8
  * phase 5): the figures, status items, filters and folded zeros of IP Intel, Bulk Resolve,
  * Reverse DNS and Servers, the facts of Bulk Resolve's and Reverse DNS's Copy summary, the links a
  * result hands over and the columns of a table's Export ▾. The status items as lib/template.js
@@ -12,7 +12,7 @@ import {
   BULK_METRICS, BULK_FOLDABLE, HANDOFF_MAX_IPS, BULK_LINK_MAX_NAMES, bulkStatus, bulkLookupFailed, bulkLinkParams, handoffIps, bulkSummaryFacts,
   PTR_METRICS, PTR_FOLDABLE, ptrStatus, ptrStatusOfFilter, ptrSummaryFacts,
   inventoryFigures, inventoryStatus, exportColumns, exportObjects
-} from '../../assets/js/lib/netresults.js';
+} from '../../assets/js/lib/ipresults.js';
 import { statusItems } from '../../assets/js/lib/template.js';
 import { toCsv } from '../../assets/js/lib/export.js';
 import { SWEEP_FILTERS, sweepSummary } from '../../assets/js/lib/ptrsweep.js';

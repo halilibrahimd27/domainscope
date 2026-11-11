@@ -1,5 +1,5 @@
 /**
- * lib/netresults.js — the results of "Map IPs to servers" (IP Intel, Bulk Resolve, Reverse DNS) and
+ * lib/ipresults.js — the results of "Map IPs to servers" (IP Intel, Bulk Resolve, Reverse DNS) and
  * of Servers as the page template draws them (docs/DESIGN.md §5, §8 phase 5): the result title's
  * count, the status summary's items with the table filters they press, the metric strip's figures
  * and which zeros fold, the facts of the Copy summary builders of Bulk Resolve and Reverse DNS

@@ -665,7 +665,7 @@ assets/js/lib/           DOM-free libraries (run in browsers and Node): x509, dn
                          egress / egresslog (What this page sent), ctrelated (related domains), keycontinuity,
                          dmarcreport / tlsrpt / zipread / reportsummary / senders / dmarchistory (DMARC & TLS reports),
                          portfolio / policy / ics / portfoliosummary (Domain portfolio), waivers (accepted risks),
-                         regwatch (the registration watch), monitor / monitorfetch / monitorsummary / runreport (Monitoring), homedigest / expiry / regstatus / digests / ctseen (Home), template (the page template as data), certtools (the certificate tools' counts and findings as data), netresults (the counts of IP Intel, Bulk Resolve, Reverse DNS and Servers as data), …
+                         regwatch (the registration watch), monitor / monitorfetch / monitorsummary / runreport (Monitoring), homedigest / expiry / regstatus / digests / ctseen (Home), template (the page template as data), certtools (the certificate tools' counts and findings as data), ipresults (the counts of IP Intel, Bulk Resolve, Reverse DNS and Servers as data), …
 assets/js/workspace-db.js   the IndexedDB backend of the workspaces (browser only)
 assets/js/views/         one module per tool (home.js is the start page)
 assets/js/ui/            safe DOM builder + component library (+ verify-panel.js, the SSL Targets › Verify tab;
@@ -699,6 +699,8 @@ tools/build-senders.mjs  rebuilds assets/data/senders (the sender lists of DMARC
 tools/assemble-site.mjs  the GitHub Pages bundle: copies the site, assets/ under v/<commit>/, writes the precache list into sw.js
                          and version.json next to the assets (deploy only)
 tools/build-icons.mjs    renders icons/*.png from favicon.svg with headless Chrome (maintainers only)
+tools/blocklist-check.mjs  fails when a default ad / tracker filter list (EasyList, EasyPrivacy, uBlock Origin, AdGuard)
+                         would block one of the site's own files, as EasyPrivacy's /netresults.js once did (CI only)
 tools/ds.mjs             the headless runner (Node 22+): health, subdomains, drift, ct, renew, dane, audit, tls, takeover and watch over the libraries, for cron and CI,
                          with alerts to chat, PagerDuty, ntfy or a signed webhook (tools/ds/notify.mjs)
 tools/ds/                its command line, the ten checks, the CT watch of `ct`, the takeover watch, the change watch and its direct questions to the name servers (UDP / TCP 53), the history lines of the Monitoring view, the alerts, "Changes since the baseline" and the summaries (not in the Pages bundle)

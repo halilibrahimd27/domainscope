@@ -17,7 +17,7 @@
  * holds the box, Look up on its row, the example chips (they only fill the box), "My servers' IPs",
  * Clear and the privacy note, and turns compact from the first lookup. The result header
  * (`.ipi-results-bar`) says how many addresses (one by itself), when, the status summary (sources
- * failed, behind a CDN, networks, countries, your servers, private: lib/netresults.js ipStatus; a
+ * failed, behind a CDN, networks, countries, your servers, private: lib/ipresults.js ipStatus; a
  * press on the ones that filter lists their rows only), Copy summary with ¶, Export ▾ (CSV, JSON:
  * what the table lists) and Copy link, the next step "Domains on these addresses" and a chip per
  * service. The metric strip (zero counts folded into one sentence) and the table (a card per row on
@@ -62,7 +62,7 @@ import {
   EmptyState, ExampleChips, MetricStrip, NextSteps, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput
 } from '../ui/template.js';
 import { inputCompact, statusItems, templateState } from '../lib/template.js';
-import { IP_FOLDABLE, exportColumns, ipFigures, ipMetricIds, ipRowMatches, ipStatus } from '../lib/netresults.js';
+import { IP_FOLDABLE, exportColumns, ipFigures, ipMetricIds, ipRowMatches, ipStatus } from '../lib/ipresults.js';
 import { toCsv, toJson } from '../lib/export.js';
 import { downloadText, timestampedName } from '../ui/download.js';
 
@@ -484,7 +484,7 @@ export function mount(container, ctx) {
   const head = ResultHeader({ className: 'ipi-results-bar' });
   head.set('notes', notesEl);
   head.set('sources', sourcesEl);
-  /** The status items' table filter, pressed (lib/netresults.js IP_FILTERS by item key), or null. */
+  /** The status items' table filter, pressed (lib/ipresults.js IP_FILTERS by item key), or null. */
   let pressed = null;
   const status = StatusSummary({ items: [] });
   head.set('status', status.el);
@@ -794,7 +794,7 @@ export function mount(container, ctx) {
     };
   }
 
-  /** The metric strip's figure of each id (lib/netresults.js IP_METRICS), with its hint. */
+  /** The metric strip's figure of each id (lib/ipresults.js IP_METRICS), with its hint. */
   const METRIC_OF = {
     ips: (f) => ({ label: t('ipi.stat.ips'), value: f.ips, hint: t('ipi.stat.ipsHint', { v4: formatNumber(f.v4), v6: formatNumber(f.v6) }) }),
     cdn: (f) => ({ label: t('ipi.stat.cdn'), value: f.cdn, hint: f.providers.slice(0, 3).join(', ') || null }),
@@ -804,7 +804,7 @@ export function mount(container, ctx) {
     countries: (f) => ({ label: t('ipi.stat.countries'), value: f.countries.length, hint: f.countries.slice(0, 6).join(' ') || null })
   };
 
-  /** The status summary's words of each item (lib/netresults.js ipStatus). */
+  /** The status summary's words of each item (lib/ipresults.js ipStatus). */
   const statusWords = (key, count) => (key === 'sources' ? t('result.sourcesFailed', { count }) : t(`ipi.status.${key}`, { count }));
   /** What the status summary shows now, in words: announced once when a lookup ends. */
   let statusLine = [];

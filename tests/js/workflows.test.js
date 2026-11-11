@@ -62,9 +62,12 @@ describe('ci.yml', () => {
     assert.match(block(ci, 'on').join('\n'), /push:\n {4}branches: \[main\]/);
   });
 
-  test('has the unit, CLI and offline E2E jobs', () => {
+  test('has the unit, CLI, offline E2E and filter-list jobs', () => {
     const j = jobs(ci);
-    assert.deepEqual(Object.keys(j).sort(), ['e2e', 'js', 'python']);
+    assert.deepEqual(Object.keys(j).sort(), ['blocklists', 'e2e', 'js', 'python']);
+    // no file of the site may be named like a tracker (EasyPrivacy's /netresults.js once blocked four views)
+    assert.match(j.blocklists, /run: node tools\/blocklist-check\.mjs$/m);
+    assert.match(j.blocklists, /^ {4}timeout-minutes: \d+$/m, 'a stalled download must not hold the deploy');
     assert.match(j.js, /run: node --test --test-timeout=\d+ "tests\/js\/\*\.test\.js"/);
     assert.match(j.python, /python -m unittest discover -s tests\/python/);
     assert.match(j.e2e, /runs-on: ubuntu-latest/);

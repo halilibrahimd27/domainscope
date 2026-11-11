@@ -29,7 +29,7 @@
  * behind Edit, named in the summary line). A link's prompt is a result header of its own (the
  * ready state, `.ptr-prompt`). The sweep's result header (`.ptr-progress`) says "Reverse DNS of
  * <target>", its progress or time, the status summary (failed, not resolving back, confirmed, with
- * a PTR name, none: lib/netresults.js ptrStatus; a press is the table's Show filter), Copy summary
+ * a PTR name, none: lib/ipresults.js ptrStatus; a press is the table's Show filter), Copy summary
  * with ¶ (lib/summary.js ptrSummary), Export ▾ (names.txt, CSV, JSON) and Copy link, and the next
  * steps; the metric strip and the table (a card per row on a phone) are the body.
  */
@@ -59,7 +59,7 @@ import {
   EmptyState, ExampleChips, MetricStrip, NextSteps, PrivacyNote, ResultActions, ResultHeader, ResultTitle, RunBar, StatusSummary, ToolInput, withSubject
 } from '../ui/template.js';
 import { inputCompact, templateState } from '../lib/template.js';
-import { PTR_FOLDABLE, ptrStatus, ptrStatusOfFilter, ptrSummaryFacts } from '../lib/netresults.js';
+import { PTR_FOLDABLE, ptrStatus, ptrStatusOfFilter, ptrSummaryFacts } from '../lib/ipresults.js';
 import { permalinkParams } from '../ui/view-summaries.js';
 import { SummaryButton } from '../ui/summary-button.js';
 

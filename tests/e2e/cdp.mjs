@@ -465,7 +465,7 @@ export class Page {
    */
   async pressOnce(selector, verify) {
     const box = await this.evaluate(async (sel, armed) => {
-      const el = document.querySelector(sel);
+      let el = document.querySelector(sel);
       if (!el) return null;
       // A smooth scroll still in flight (the app's own, e.g. to the results after "Start scan")
       // keeps moving the page after the jump: measure once two frames agree, or the click misses.
@@ -473,13 +473,25 @@ export class Page {
         requestAnimationFrame(r);
         setTimeout(r, 100); // a background tab may not paint
       });
+      // The element to measure: the one found first, or — when a re-render replaced it during the
+      // frames waited (a detached element measures 0 × 0) — the match on screen now.
+      const current = () => {
+        if (!el.isConnected) {
+          const now = document.querySelector(sel);
+          if (now) {
+            el = now;
+            el.scrollIntoView({ block: 'center', inline: 'center' });
+          }
+        }
+        return el;
+      };
       const centre = () => {
-        const r = el.getBoundingClientRect();
+        const r = current().getBoundingClientRect();
         return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
       };
       let box = null;
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        el.scrollIntoView({ block: 'center', inline: 'center' });
+        current().scrollIntoView({ block: 'center', inline: 'center' });
         let last = '';
         for (let i = 0; i < 60; i += 1) {
           await frame();

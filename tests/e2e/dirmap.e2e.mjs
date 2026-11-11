@@ -154,7 +154,12 @@ async function main() {
       await page.waitFor(() => !!document.querySelector('.toast'), { message: 'copied' });
       const md = (await takeClipboard(page)).join('\n');
       assert(md.includes('Endpoint map · 2 hosts') && md.includes('3 found'), `summary: ${md}`);
-      for (const secret of ['application/json', 'cdn.example.net', '42']) assert(!md.includes(secret), `summary leaks ${secret}`);
+      // Not one of the reports' response details: a content type, a redirect target, a body length
+      // (42 bytes). The page link is left out of the check: it carries the test server's random
+      // port, which once was 59642.
+      const text = md.replace(/https?:\/\/\S+/g, '');
+      for (const secret of ['application/json', 'cdn.example.net']) assert(!text.includes(secret), `summary leaks ${secret}`);
+      assert(!/\b42\b/.test(text), `summary leaks the body length 42: ${text}`);
       await resultAction(page, '[data-export="csv"]', '.dirmap-head');
       await resultAction(page, '[data-export="found"]', '.dirmap-head');
       const files = await takeDownloads(page);

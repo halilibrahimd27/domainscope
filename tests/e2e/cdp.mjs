@@ -430,9 +430,9 @@ export class Page {
   /**
    * Real mouse click in the middle of the first element matching `selector` (scrolled into view).
    *
-   * The click is checked: on a loaded machine (CI running every suite at once) a press now and then
-   * does not reach the element just measured, and the step then fails far from the cause (a copy
-   * that never arrives, a run that never starts). When the press reaches no element matching
+   * The click is checked: now and then (on CI, and in long local runs) a press does not reach the
+   * element just measured, and the step then fails far from the cause (a copy that never arrives,
+   * a run that never starts). When the press reaches no element matching
    * `selector` — none of its pointerdown, mousedown or click — it is measured and pressed again, up
    * to three times (each retry is logged), and then it throws, naming what the press reached. A press
    * that reached a match counts, whatever its handler did then (a navigation, a re-render that
@@ -736,18 +736,37 @@ export class Browser {
 
 /**
  * Launch headless Chrome (fallback Edge) with a throw-away profile under tests/e2e/.profile-<n>.
+ * A start that does not answer within `timeout` ms (or exits at once) is killed and made again,
+ * up to three starts in all.
  * @param {{ browser?: 'auto'|'chrome'|'edge', executablePath?: string, headless?: boolean, args?: string[],
  *   profileRoot?: string, timeout?: number, lang?: string }} [opts] `lang` is the browser's UI and
  *   page language (navigator.languages, Accept-Language) on every OS, en-US by default
  * @returns {Promise<Browser>}
  */
-export async function launchBrowser({
-  browser = 'auto', executablePath = null, headless = true, args = [], profileRoot = HERE, timeout = 30000, lang = 'en-US'
-} = {}) {
+export async function launchBrowser(opts = {}) {
   // Node 20 and 21 have no global WebSocket: say so before starting a browser nothing could reach.
   if (typeof WebSocket !== 'function') throw new Error(`cdp.mjs needs Node 22 or later (for its global WebSocket); this is Node ${process.versions.node}.`);
-  const found = executablePath ? { name: path.basename(executablePath), path: executablePath } : findBrowser(browser);
+  const found = opts.executablePath ? { name: path.basename(opts.executablePath), path: opts.executablePath } : findBrowser(opts.browser || 'auto');
   if (!found) throw new Error('No Chrome or Edge installation found (set CHROME_PATH).');
+  // A start that hangs or dies does not get better by waiting: the first Chrome on a fresh CI
+  // machine once never wrote DevToolsActivePort in 30 s (cold disk and font caches). Kill it and
+  // start another one, on a new profile, twice at most; each retry is logged.
+  const ATTEMPTS = 3;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await launchOnce(found, opts);
+    } catch (err) {
+      if (attempt >= ATTEMPTS || !/did not expose DevToolsActivePort|exited early/.test(err.message)) throw err;
+      console.warn(`        (${found.name} did not start: ${err.message.split('\n')[0].slice(0, 200)}; starting it again, ${attempt + 1}/${ATTEMPTS})`);
+      await sleep(1000);
+    }
+  }
+}
+
+/** One start of the browser for {@link launchBrowser}; kills it again when it cannot be reached. */
+async function launchOnce(found, {
+  headless = true, args = [], profileRoot = HERE, timeout = 30000, lang = 'en-US'
+} = {}) {
   profileCounter += 1;
   const profileDir = path.join(profileRoot, `.profile-${process.pid}-${profileCounter}`);
   await rm(profileDir, { recursive: true, force: true }).catch(() => {});
